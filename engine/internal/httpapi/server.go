@@ -55,6 +55,7 @@ func (s *Server) Routes() *http.ServeMux {
 
 	mux.HandleFunc("GET "+oidc.PathAuthorize, s.handleAuthorize)
 	mux.HandleFunc("POST "+oidc.PathToken, s.handleToken)
+	mux.HandleFunc("GET "+oidc.PathEndSession, s.handleEndSession)
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.rateLimitedLogin)
 	return mux

@@ -25,6 +25,7 @@ import (
 	"github.com/sulimanbenhalim/idp/engine/internal/keys"
 	"github.com/sulimanbenhalim/idp/engine/internal/migrate"
 	"github.com/sulimanbenhalim/idp/engine/internal/oidc"
+	"github.com/sulimanbenhalim/idp/engine/internal/outbox"
 	"github.com/sulimanbenhalim/idp/engine/internal/passwords"
 )
 
@@ -213,6 +214,14 @@ func serve(conn *pgx.Conn, addr string) error {
 	if err != nil {
 		return err
 	}
+
+	// The outbox worker is a SINGLETON: running it on every node would deliver
+	// each logout notice once per node. It claims rows FOR UPDATE SKIP LOCKED so
+	// a second worker started by mistake divides the work rather than duplicating
+	// it, but the intent is one.
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+	go outbox.New(pool, set, issuer, log).Run(workerCtx, 2*time.Second)
 
 	log.Info("serving", "addr", addr, "issuer", issuer, "algs", set.Algorithms())
 	h := &http.Server{

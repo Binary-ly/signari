@@ -680,3 +680,55 @@ func splitFields(s string) []string {
 var errorPage = template.Must(template.New("err").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Sign-in error</title></head>
 <body><h1>Sign-in error</h1><p><strong>{{.Code}}</strong></p><p>{{.Description}}</p></body></html>`))
+
+func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := r.URL.Query()
+
+	cookie := sessionCookie(r)
+	if cookie != "" {
+		sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
+		if err != nil {
+			s.log.Error("resolving session for logout", "err", err)
+		} else if sid != "" {
+			tx, err := s.db.Begin(ctx)
+			if err == nil {
+				if _, err := store.TerminateSessions(ctx, tx, sid, "", store.ReasonLogout); err != nil {
+					s.log.Error("terminating session", "err", err)
+					_ = tx.Rollback(ctx)
+				} else if err := tx.Commit(ctx); err != nil {
+					s.log.Error("committing logout", "err", err)
+				}
+			}
+		}
+	}
+	// Always clear the cookie, even if there was no live session: the user asked
+	// to be signed out, and leaving a stale cookie behind is confusing.
+	s.clearSessionCookie(w)
+
+	// post_logout_redirect_uri must be REGISTERED before we redirect to it.
+	// An unvalidated post-logout redirect is an open redirector reached from a
+	// link that looks like a sign-out, which is a good phishing pretext.
+	target := q.Get("post_logout_redirect_uri")
+	if target != "" {
+		var ok bool
+		if err := s.db.QueryRow(ctx,
+			`SELECT true FROM core.client_post_logout_redirect_uris WHERE redirect_uri = $1`,
+			target).Scan(&ok); err != nil || !ok {
+			writeError(w, http.StatusBadRequest, "invalid_request",
+				"post_logout_redirect_uri is not registered")
+			return
+		}
+		if st := q.Get("state"); st != "" {
+			if u, err := url.Parse(target); err == nil {
+				vals := u.Query()
+				vals.Set("state", st)
+				u.RawQuery = vals.Encode()
+				target = u.String()
+			}
+		}
+		http.Redirect(w, r, target, http.StatusFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "signed out"})
+}

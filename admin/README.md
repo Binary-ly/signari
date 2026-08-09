@@ -1,9 +1,21 @@
 # Laravel admin (scaffolded, dependencies not installed)
 
 The Laravel skeleton and `app/Console/Commands/VerifyBoundary.php` are committed.
-`composer install` did not complete in the agent's sandbox: it fetched 36 packages
-(~14MB), then stalled with no further progress across several attempts, while
-packagist itself answered in under a second. Not diagnosed further.
+`composer install` cannot complete in the agent's sandbox. Diagnosed:
+
+    repo.packagist.org  (metadata)        200 in ~1s
+    api.github.com                        200 in ~1s
+    codeload.github.com (dist archives)   HANGS to timeout
+
+Composer resolves all 109 packages and writes the lock file, then stalls on the
+first download, because dist archives are served from codeload.github.com. The
+same hang occurs from the host, from a container, and with the vendor tree on a
+container-local filesystem -- so it is neither a bind-mount speed problem nor a
+composer configuration issue.
+
+For contrast, everything else worked from the same environment today: `go get`
+(proxy.golang.org), `npm install`, `git clone` from GitLab, and Docker registry
+pulls. The restriction is specific to codeload.github.com.
 
 Run it yourself:
 

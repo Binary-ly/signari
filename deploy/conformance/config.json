@@ -1,0 +1,17 @@
+{
+  "alias": "idp",
+  "description": "idp engine -- Basic OP + Config OP",
+  "server": {
+    "discoveryUrl": "http://idp-engine:8080/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "conformance-1",
+    "client_secret": "REPLACED_BY_SETUP"
+  },
+  "client2": {
+    "client_id": "conformance-2",
+    "client_secret": "REPLACED_BY_SETUP"
+  },
+  "consent": {},
+  "browser": []
+}

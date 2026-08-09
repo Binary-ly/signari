@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -146,6 +147,24 @@ func IsSessionLive(ctx context.Context, q interface {
 		return false, err
 	}
 	return live, nil
+}
+
+func ResolveSessionCookie(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, cookieHash []byte) (sid string, live bool, err error) {
+	err = q.QueryRow(ctx, `
+		SELECT s.sid,
+		       s.revoked_at IS NULL AND s.not_after > now() AND u.status = 'active'
+		FROM core.sessions s
+		JOIN core.users u ON u.id = s.user_id
+		WHERE s.cookie_hash = $1`, cookieHash).Scan(&sid, &live)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return sid, live, nil
 }
 
 // TouchSessionClient records that a relying party saw this session, so logout can

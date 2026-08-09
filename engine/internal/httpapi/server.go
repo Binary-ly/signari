@@ -4,24 +4,31 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sulimanbenhalim/idp/engine/internal/keys"
 	"github.com/sulimanbenhalim/idp/engine/internal/oidc"
+	"github.com/sulimanbenhalim/idp/engine/internal/passwords"
 )
 
 // Server holds the public endpoints. Everything it serves is derived from a live
 // key set, so metadata cannot drift from what the server can actually do.
 type Server struct {
-	cfg  oidc.Config
-	log  *slog.Logger
-	jwks *bucket
+	cfg    oidc.Config
+	log    *slog.Logger
+	jwks   *bucket
+	login  *bucket
+	db     *pgxpool.Pool
+	hasher *passwords.Hasher
 }
 
-func New(cfg oidc.Config, log *slog.Logger) (*Server, error) {
+func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger) (*Server, error) {
 	// Fail at construction if the metadata is not renderable, rather than serving
 	// 500s from a discovery endpoint that relying parties poll.
 	if _, err := oidc.Build(cfg); err != nil {
@@ -30,7 +37,13 @@ func New(cfg oidc.Config, log *slog.Logger) (*Server, error) {
 	return &Server{
 		cfg:  cfg,
 		log:  log,
+		db:   db,
 		jwks: newBucket(20, 40), // 20 req/s sustained, burst 40
+		// The login endpoint is the expensive one: every attempt costs an Argon2
+		// evaluation. Rate limiting in FRONT of the hash is what keeps a flood
+		// from turning into memory exhaustion, independent of the semaphore.
+		login:  newBucket(5, 20),
+		hasher: passwords.NewHasher(passwords.MemoryBudgetMiB),
 	}, nil
 }
 
@@ -39,8 +52,68 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET "+oidc.PathDiscovery, s.handleDiscovery)
 	mux.HandleFunc("GET "+oidc.PathJWKS, s.handleJWKS)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+
+	mux.HandleFunc("GET "+oidc.PathAuthorize, s.handleAuthorize)
+	mux.HandleFunc("POST "+oidc.PathToken, s.handleToken)
+	mux.HandleFunc("GET /login", s.handleLoginGet)
+	mux.HandleFunc("POST /login", s.rateLimitedLogin)
 	return mux
 }
+
+func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
+	s.renderLogin(w, r, r.URL.Query().Get("authz"), "")
+}
+
+// rateLimitedLogin caps attempts before any hashing happens.
+func (s *Server) rateLimitedLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.login.allow() {
+		w.Header().Set("Retry-After", "2")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many sign-in attempts")
+		return
+	}
+	s.handleLoginPost(w, r)
+}
+
+// renderLogin shows the sign-in form, carrying the parked authorization request
+// so the flow can resume after authentication.
+func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, authzQuery, msg string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// A login page must never be cached: it is per-session and carries state.
+	w.Header().Set("Cache-Control", "no-store")
+	// Defence in depth for a page that renders user-supplied error text.
+	w.Header().Set("Content-Security-Policy",
+		`default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
+	w.Header().Set("X-Frame-Options", "DENY")
+	if msg != "" {
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+	_ = loginPage.Execute(w, map[string]string{"Authz": authzQuery, "Error": msg})
+}
+
+// loginPage is deliberately minimal and server-rendered: no JavaScript, so it
+// works with autofill, password managers, and screen readers by default.
+// html/template escapes every interpolation, so the parked query string cannot
+// break out of the value attribute.
+var loginPage = template.Must(template.New("login").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in</title>
+<style>body{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem}
+label{display:block;margin:.75rem 0 .25rem}input{width:100%;padding:.5rem;font-size:1rem}
+button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;width:100%}
+.err{color:#b00020;margin:.5rem 0}</style></head>
+<body>
+<h1>Sign in</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+<form method="POST" action="/login">
+<input type="hidden" name="authz" value="{{.Authz}}">
+<label for="u">Username or email</label>
+<input id="u" name="username" autocomplete="username" autocapitalize="none" autofocus required>
+<label for="p">Password</label>
+<input id="p" name="password" type="password" autocomplete="current-password" required>
+<button type="submit">Sign in</button>
+</form>
+</body></html>`))
 
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	md, err := oidc.Build(s.cfg)

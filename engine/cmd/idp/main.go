@@ -8,19 +8,24 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sulimanbenhalim/idp/engine/internal/httpapi"
 	"github.com/sulimanbenhalim/idp/engine/internal/keys"
 	"github.com/sulimanbenhalim/idp/engine/internal/migrate"
 	"github.com/sulimanbenhalim/idp/engine/internal/oidc"
+	"github.com/sulimanbenhalim/idp/engine/internal/passwords"
 )
 
 func main() {
@@ -39,7 +44,9 @@ commands:
   migrate status      show applied version, pending migrations, live fingerprint
   verify              run the startup schema gate and exit
   instance create     create an instance and its first signing keys
-  serve               serve discovery + JWKS
+  user create         create a user with a password
+  client create       register an OAuth client
+  serve               serve the OIDC endpoints
 
 env:
   IDP_ROOT_KEY        base64 of 32 random bytes; wraps stored private key material
@@ -62,10 +69,15 @@ func run(args []string) error {
 	issuer := fs.String("issuer", "", "issuer URL, e.g. https://id.example.com")
 	name := fs.String("name", "", "instance display name")
 	addr := fs.String("addr", ":8080", "listen address for `serve`")
+	email := fs.String("email", "", "user email")
+	password := fs.String("password", "", "user password")
+	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
+	redirect := fs.String("redirect", "", "registered redirect_uri (exact match)")
+	public := fs.Bool("public", false, "register a public client (PKCE, no secret)")
 
 	cmd := args[0]
 	rest := args[1:]
-	if cmd == "migrate" || cmd == "instance" {
+	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -102,6 +114,10 @@ func run(args []string) error {
 		return nil
 	case "instance create":
 		return instanceCreate(ctx, conn, *issuer, *name)
+	case "user create":
+		return userCreate(ctx, conn, *email, *password)
+	case "client create":
+		return clientCreate(ctx, conn, *clientID, *redirect, *public)
 	case "serve":
 		return serve(conn, *addr)
 	default:
@@ -187,7 +203,13 @@ func serve(conn *pgx.Conn, addr string) error {
 		return fmt.Errorf("loading signing keys: %w", err)
 	}
 
-	srv, err := httpapi.New(oidc.Config{Issuer: issuer, Keys: set}, log)
+	pool, err := pgxpool.New(ctx, conn.Config().ConnString())
+	if err != nil {
+		return fmt.Errorf("creating connection pool: %w", err)
+	}
+	defer pool.Close()
+
+	srv, err := httpapi.New(oidc.Config{Issuer: issuer, Keys: set}, pool, log)
 	if err != nil {
 		return err
 	}
@@ -255,6 +277,109 @@ func status(ctx context.Context, conn *pgx.Conn) error {
 			tier = "bootstrap (superuser)"
 		}
 		fmt.Printf("  %04d_%-24s %s\n", m.Version, m.Name, tier)
+	}
+	return nil
+}
+
+// firstOrg returns the only organisation, creating a default one if the instance
+// has none. Development convenience; the admin API owns this in production.
+func firstOrg(ctx context.Context, conn *pgx.Conn) (string, error) {
+	var orgID string
+	err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).Scan(&orgID)
+	if err == nil {
+		return orgID, nil
+	}
+	var instanceID string
+	if err := conn.QueryRow(ctx,
+		`SELECT id::text FROM core.instances ORDER BY created_at LIMIT 1`).Scan(&instanceID); err != nil {
+		return "", fmt.Errorf("no instance -- run `idp instance create` first: %w", err)
+	}
+	if err := conn.QueryRow(ctx, `
+		INSERT INTO core.organizations (instance_id, slug, display_name)
+		VALUES ($1, 'default', 'Default') RETURNING id::text`, instanceID).Scan(&orgID); err != nil {
+		return "", err
+	}
+	return orgID, nil
+}
+
+func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) error {
+	if email == "" || password == "" {
+		return fmt.Errorf("-email and -password are both required")
+	}
+	orgID, err := firstOrg(ctx, conn)
+	if err != nil {
+		return err
+	}
+
+	// 64 random bytes, stable for the life of the account. This is the WebAuthn
+	// user handle and it must never be the email or a sequential id: it is sent
+	// to authenticators and stored on the user's device essentially forever.
+	handle := make([]byte, 64)
+	if _, err := io.ReadFull(rand.Reader, handle); err != nil {
+		return err
+	}
+
+	hasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+	hash, err := hasher.Hash(ctx, password)
+	if err != nil {
+		return err
+	}
+
+	var userID string
+	if err := conn.QueryRow(ctx, `
+		INSERT INTO core.users (org_id, user_handle, email)
+		VALUES ($1, $2, $3) RETURNING id::text`, orgID, handle, email).Scan(&userID); err != nil {
+		return fmt.Errorf("creating user: %w", err)
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm)
+		VALUES ($1, $2, $3, 'argon2id')`, userID, orgID, hash); err != nil {
+		return fmt.Errorf("storing credential: %w", err)
+	}
+	fmt.Printf("user %s\n  email %s\n", userID, email)
+	return nil
+}
+
+func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, redirect string, public bool) error {
+	if clientID == "" || redirect == "" {
+		return fmt.Errorf("-client-id and -redirect are both required")
+	}
+	orgID, err := firstOrg(ctx, conn)
+	if err != nil {
+		return err
+	}
+
+	kind, secret, secretHash := "public", "", ""
+	if !public {
+		kind = "confidential"
+		b := make([]byte, 32)
+		if _, err := io.ReadFull(rand.Reader, b); err != nil {
+			return err
+		}
+		secret = base64.RawURLEncoding.EncodeToString(b)
+		hasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+		if secretHash, err = hasher.Hash(ctx, secret); err != nil {
+			return err
+		}
+	}
+
+	// client_id is settable verbatim so an existing relying party's configuration
+	// does not have to change during a migration.
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.clients (client_id, org_id, display_name, client_type, client_secret_hash)
+		VALUES ($1, $2, $1, $3, NULLIF($4, ''))`,
+		clientID, orgID, kind, secretHash); err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+	if _, err := conn.Exec(ctx,
+		`INSERT INTO core.client_redirect_uris (client_id, redirect_uri) VALUES ($1, $2)`,
+		clientID, redirect); err != nil {
+		return fmt.Errorf("registering redirect_uri: %w", err)
+	}
+
+	fmt.Printf("client %s (%s)\n  redirect_uri %s\n", clientID, kind, redirect)
+	if secret != "" {
+		fmt.Printf("  client_secret %s\n  (shown once)\n", secret)
 	}
 	return nil
 }

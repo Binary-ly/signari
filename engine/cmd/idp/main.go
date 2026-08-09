@@ -42,6 +42,7 @@ func usage() error {
 commands:
   migrate bootstrap   apply 0001 (roles, schemas, grants) -- needs a superuser DSN
   migrate up          apply 0002+ (tables, policies, views) as idp_engine
+  migrate all         bootstrap then up, in one invocation (for containers)
   migrate status      show applied version, pending migrations, live fingerprint
   verify              run the startup schema gate and exit
   instance create     create an instance and its first signing keys
@@ -104,6 +105,14 @@ func run(args []string) error {
 	case "migrate bootstrap":
 		return up(ctx, conn, migrate.TierBootstrap, *to)
 	case "migrate up":
+		return up(ctx, conn, migrate.TierCore, *to)
+	case "migrate all":
+		// One command so the container image needs no shell to chain two.
+		// The runtime image is distroless -- there is no /bin/sh to fall back on,
+		// and adding one to a security product to save a CLI verb is a bad trade.
+		if err := up(ctx, conn, migrate.TierBootstrap, *to); err != nil {
+			return err
+		}
 		return up(ctx, conn, migrate.TierCore, *to)
 	case "migrate status":
 		return status(ctx, conn)

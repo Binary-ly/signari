@@ -1,0 +1,79 @@
+# Development stack.
+#
+# It exists for two reasons: it is the deployment artifact, and it puts the engine
+# on a Docker network the OIDF conformance suite can reach. The suite runs inside
+# the container runtime, so an engine listening on the macOS host at
+# `localhost:8099` is unreachable from it -- and since relying parties compare the
+# issuer byte-for-byte, the issuer has to be the name the suite will actually use.
+# That is why IDP_ISSUER below is a service name, not localhost.
+
+name: idp
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: idp_superuser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_DB: idp
+    healthcheck:
+      # The engine must not start against a database that is still initialising:
+      # its startup gate would report a schema mismatch and exit, which looks like
+      # a migration bug rather than a race.
+      test: ["CMD-SHELL", "pg_isready -U idp_superuser -d idp"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # Migrations run as a separate one-shot service rather than on engine startup.
+  # An engine replica that migrates on boot means N replicas racing to migrate,
+  # and it makes rollback ambiguous: which version is the schema at when half the
+  # fleet is old?
+  migrate:
+    build:
+      context: ../engine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      IDP_DSN: postgres://idp_superuser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/idp?sslmode=disable
+    # `migrate all` rather than a shell chaining two commands: the runtime image
+    # is distroless and has no /bin/sh, and adding a shell to a security product
+    # to save a CLI verb is a bad trade.
+    command: ["migrate", "all"]
+    restart: "no"
+
+  engine:
+    build:
+      context: ../engine
+      args:
+        # Flip to "certified" to build against the CMVP-validated FIPS module.
+        GOFIPS140: "off"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      IDP_DSN: postgres://idp_superuser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/idp?sslmode=disable
+      # 32 random bytes, base64. Deliberately has no default: a generated-on-boot
+      # root key would make every restart invalidate every stored signing key.
+      IDP_ROOT_KEY: ${IDP_ROOT_KEY:?set IDP_ROOT_KEY -- head -c 32 /dev/urandom | base64}
+      IDP_ROOT_KEY_REF: ${IDP_ROOT_KEY_REF:-dev}
+    ports:
+      - "8099:8080"
+    networks:
+      default:
+        aliases:
+          # The name the conformance suite resolves. The issuer must match this
+          # exactly, or every relying party rejects our tokens on the iss check.
+          - idp-engine
+
+volumes:
+  pgdata:
+
+networks:
+  default:
+    name: idp-net

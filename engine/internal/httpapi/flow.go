@@ -170,9 +170,9 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeTokenError(w, gerr)
 		return
 	}
-	if req.GrantType != "authorization_code" {
+	if req.GrantType != "authorization_code" && req.GrantType != "refresh_token" {
 		writeTokenError(w, &oauth.TokenError{Code: "unsupported_grant_type",
-			Description: "only authorization_code is implemented so far",
+			Description: "only authorization_code and refresh_token are implemented so far",
 			Status:      http.StatusBadRequest})
 		return
 	}
@@ -194,6 +194,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 				Description: "client authentication failed", Status: http.StatusUnauthorized})
 			return
 		}
+	}
+
+	if req.GrantType == "refresh_token" {
+		s.handleRefreshGrant(w, r, c, req)
+		return
 	}
 
 	tx, err := s.db.Begin(ctx)
@@ -237,7 +242,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.mintTokens(ctx, c, consumed)
+	resp, err := s.mintTokens(ctx, tx, c, consumed)
 	if err != nil {
 		s.log.Error("minting tokens", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
@@ -252,81 +257,208 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 }
 
 type tokenResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresIn   int    `json:"expires_in"`
-	IDToken     string `json:"id_token,omitempty"`
-	Scope       string `json:"scope,omitempty"`
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
+	IDToken      string `json:"id_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	Scope        string `json:"scope,omitempty"`
 }
 
-func (s *Server) mintTokens(ctx context.Context, c *clients.Client, g *store.ConsumedCode) (*tokenResponse, error) {
+// mintSet issues the access token, ID token, and -- when offline_access was
+// granted -- a refresh token, all from one authenticated subject.
+//
+// familyID is empty for a first issuance (an authorization code) and set when
+// rotating, so a rotated token stays in its original lineage. Starting a new
+// family on every refresh would make reuse detection impossible: there would be
+// nothing to revoke.
+func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
+	orgID, userID, sid string, scopes, resources []string, familyID string) (*tokenResponse, []byte, error) {
+
 	alg := keys.Algorithm(c.IDTokenAlg)
 	key, err := s.cfg.Keys.Active(alg)
 	if err != nil {
-		return nil, fmt.Errorf("no active key for the client's algorithm %s: %w", alg, err)
+		return nil, nil, fmt.Errorf("no active key for the client's algorithm %s: %w", alg, err)
 	}
 	signer := tokens.NewSigner(key)
 
 	now := time.Now()
-	exp := now.Add(tokens.DefaultAccessTokenTTL)
-
 	jti, err := newSID()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+
 	at, err := signer.SignJSON(tokens.AccessTokenClaims{
 		Issuer:    s.cfg.Issuer,
-		Subject:   g.UserID,
+		Subject:   userID,
 		Audience:  []string{c.ClientID},
-		Expiry:    exp.Unix(),
+		Expiry:    now.Add(tokens.DefaultAccessTokenTTL).Unix(),
 		IssuedAt:  now.Unix(),
 		JTI:       jti,
 		ClientID:  c.ClientID,
-		Scope:     joinScopes(g.Scopes),
-		SessionID: g.SessionID,
+		Scope:     joinScopes(scopes),
+		SessionID: sid,
 	}, tokens.TypAccessToken)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
 	atHash, err := tokens.AtHash(alg, at)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	var authTime time.Time
-	var acr string
-	var amr []string
-	if err := s.db.QueryRow(ctx,
-		`SELECT auth_time, acr, amr FROM core.sessions WHERE sid = $1`, g.SessionID).
-		Scan(&authTime, &acr, &amr); err != nil {
-		return nil, fmt.Errorf("loading session context: %w", err)
-	}
-
-	idt, err := signer.SignIDToken(tokens.IDTokenClaims{
-		Issuer:          s.cfg.Issuer,
-		Subject:         g.UserID,
-		Audience:        c.ClientID,
-		Expiry:          now.Add(tokens.DefaultIDTokenTTL).Unix(),
-		IssuedAt:        now.Unix(),
-		AuthTime:        authTime.Unix(),
-		ACR:             acr,
-		AMR:             amr,
-		SessionID:       g.SessionID,
-		AuthorizedParty: c.ClientID,
-		AccessTokenHash: atHash,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &tokenResponse{
+	resp := &tokenResponse{
 		AccessToken: at,
 		TokenType:   "Bearer",
 		ExpiresIn:   int(tokens.DefaultAccessTokenTTL.Seconds()),
-		IDToken:     idt,
-		Scope:       joinScopes(g.Scopes),
-	}, nil
+		Scope:       joinScopes(scopes),
+	}
+
+	// An ID token is an authentication statement, so it is only minted where
+	// openid was granted -- a pure refresh of an API token should not re-assert
+	// who the user is.
+	if containsScope(scopes, "openid") {
+		var authTime time.Time
+		var acr string
+		var amr []string
+		if err := tx.QueryRow(ctx,
+			`SELECT auth_time, acr, amr FROM core.sessions WHERE sid = $1`, sid).
+			Scan(&authTime, &acr, &amr); err != nil {
+			return nil, nil, fmt.Errorf("loading session context: %w", err)
+		}
+		idt, err := signer.SignIDToken(tokens.IDTokenClaims{
+			Issuer:          s.cfg.Issuer,
+			Subject:         userID,
+			Audience:        c.ClientID,
+			Expiry:          now.Add(tokens.DefaultIDTokenTTL).Unix(),
+			IssuedAt:        now.Unix(),
+			AuthTime:        authTime.Unix(),
+			ACR:             acr,
+			AMR:             amr,
+			SessionID:       sid,
+			AuthorizedParty: c.ClientID,
+			AccessTokenHash: atHash,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		resp.IDToken = idt
+	}
+
+	if !containsScope(scopes, "offline_access") {
+		return resp, nil, nil
+	}
+
+	if familyID == "" {
+		familyID, err = store.NewRefreshFamily(ctx, tx, orgID, c.ClientID, userID, sid)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	rt, err := newSID()
+	if err != nil {
+		return nil, nil, err
+	}
+	rtHash := store.HashToken(rt)
+	ttl := time.Duration(c.RefreshTokenTTLSeconds()) * time.Second
+	if err := store.IssueRefreshToken(ctx, tx, familyID, rtHash, scopes, resources, ttl); err != nil {
+		return nil, nil, err
+	}
+	resp.RefreshToken = rt
+	return resp, rtHash, nil
+}
+
+func (s *Server) mintTokens(ctx context.Context, tx pgx.Tx, c *clients.Client, g *store.ConsumedCode) (*tokenResponse, error) {
+	resp, _, err := s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, g.Scopes, g.Resources, "")
+	return resp, err
+}
+
+func (s *Server) mintFromGrant(ctx context.Context, tx pgx.Tx, c *clients.Client, g *store.RefreshGrant) (*tokenResponse, []byte, error) {
+	return s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, g.Scopes, g.Resources, g.FamilyID)
+}
+
+func containsScope(scopes []string, want string) bool {
+	for _, s := range scopes {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// handleRefreshGrant rotates a refresh token.
+//
+// Rotation without reuse detection is just churn: the value comes entirely from
+// what happens when an already-rotated token is presented. That means a leaked
+// token is detectable exactly once -- when the legitimate client and the thief
+// both try to use the same generation -- so the response is to destroy the whole
+// lineage rather than the single token.
+func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
+	c *clients.Client, req oauth.TokenRequest) {
+
+	ctx := r.Context()
+	if req.RefreshToken == "" {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: "refresh_token is required", Status: http.StatusBadRequest})
+		return
+	}
+	if !c.AllowsGrantType("refresh_token") {
+		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
+			Description: "client may not use the refresh_token grant", Status: http.StatusBadRequest})
+		return
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	oldHash := store.HashToken(req.RefreshToken)
+	grant, rerr := store.RotateRefreshToken(ctx, tx, oldHash)
+
+	if errors.Is(rerr, store.ErrRefreshReused) {
+		n, revErr := store.RevokeFamilyByToken(ctx, tx, oldHash, "reuse_detected")
+		if revErr != nil {
+			s.log.Error("revoking family after refresh reuse", "err", revErr)
+		} else if err := tx.Commit(ctx); err != nil {
+			s.log.Error("committing revocation after refresh reuse", "err", err)
+		}
+		s.log.Warn("refresh token reuse detected -- family revoked",
+			"client_id", c.ClientID, "families_revoked", n)
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "refresh token has already been used", Status: http.StatusBadRequest})
+		return
+	}
+	if rerr != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "refresh token is invalid or expired", Status: http.StatusBadRequest})
+		return
+	}
+
+	// A refresh token must not belong to a different client than the one
+	// presenting it, even when that client authenticated correctly.
+	if grant.ClientID != c.ClientID {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "refresh token was not issued to this client", Status: http.StatusBadRequest})
+		return
+	}
+
+	resp, newHash, err := s.mintFromGrant(ctx, tx, c, grant)
+	if err != nil {
+		s.log.Error("minting from refresh", "err", err)
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+	if err := store.LinkSuccessor(ctx, tx, oldHash, newHash); err != nil {
+		s.log.Error("linking successor", "err", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleLoginPost verifies credentials and creates a session.

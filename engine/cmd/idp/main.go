@@ -366,8 +366,10 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, redirect string
 	// client_id is settable verbatim so an existing relying party's configuration
 	// does not have to change during a migration.
 	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.clients (client_id, org_id, display_name, client_type, client_secret_hash)
-		VALUES ($1, $2, $1, $3, NULLIF($4, ''))`,
+		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
+		                          client_secret_hash, scopes)
+		VALUES ($1, $2, $1, $3, NULLIF($4, ''),
+		        ARRAY['openid','profile','email','offline_access'])`,
 		clientID, orgID, kind, secretHash); err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}

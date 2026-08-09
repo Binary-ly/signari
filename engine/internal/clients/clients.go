@@ -32,6 +32,16 @@ type Client struct {
 	PKCEMethods   []string
 	IDTokenAlg    string
 	RedirectURIs  []string
+	RefreshTTL    int
+}
+
+// RefreshTokenTTLSeconds is the client's configured refresh lifetime, with a
+// sane floor so a misconfigured zero does not mint tokens that expire instantly.
+func (c *Client) RefreshTokenTTLSeconds() int {
+	if c.RefreshTTL <= 0 {
+		return 30 * 24 * 3600
+	}
+	return c.RefreshTTL
 }
 
 // Store reads clients. It takes the querier rather than a pool so callers can
@@ -57,12 +67,12 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	err := q.QueryRow(ctx, `
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce, pkce_methods,
-		       id_token_signed_alg
+		       id_token_signed_alg, refresh_token_ttl_s
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
 			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE, &c.PKCEMethods,
-			&c.IDTokenAlg)
+			&c.IDTokenAlg, &c.RefreshTTL)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

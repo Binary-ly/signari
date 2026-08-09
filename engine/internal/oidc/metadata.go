@@ -55,6 +55,19 @@ type Metadata struct {
 type Config struct {
 	Issuer string
 	Keys   *keys.Set
+
+	// AllowInsecureIssuer permits a plaintext issuer on a non-localhost host.
+	//
+	// It exists for exactly one reason: the OIDF conformance suite runs inside a
+	// container runtime and must reach the engine by a service name, and relying
+	// parties compare the issuer byte-for-byte -- so the issuer has to be that
+	// service name, which is neither https nor localhost.
+	//
+	// It is off by default, must be set explicitly, and the engine logs a warning
+	// on every start when it is on. It is NOT a convenience: an issuer served over
+	// plaintext means every token, code and secret in the flow crosses the network
+	// readable, so anything that sets this in production has no security at all.
+	AllowInsecureIssuer bool
 }
 
 // Paths are fixed relative to the issuer so that discovery, the routes the server
@@ -79,8 +92,9 @@ func Build(cfg Config) (*Metadata, error) {
 	if err != nil {
 		return nil, fmt.Errorf("issuer %q is not a URL: %w", cfg.Issuer, err)
 	}
-	if u.Scheme != "https" && u.Hostname() != "localhost" {
-		return nil, fmt.Errorf("issuer must be https (got %q)", cfg.Issuer)
+	if u.Scheme != "https" && u.Hostname() != "localhost" && !cfg.AllowInsecureIssuer {
+		return nil, fmt.Errorf(
+			"issuer must be https (got %q); set IDP_INSECURE_ISSUER=1 only for local testing", cfg.Issuer)
 	}
 	// The issuer is compared byte-for-byte by relying parties, and RFC 8414
 	// forbids a query or fragment. A trailing slash silently breaks RPs that

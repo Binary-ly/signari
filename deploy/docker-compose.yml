@@ -62,6 +62,8 @@ services:
       # root key would make every restart invalidate every stored signing key.
       IDP_ROOT_KEY: ${IDP_ROOT_KEY:?set IDP_ROOT_KEY -- head -c 32 /dev/urandom | base64}
       IDP_ROOT_KEY_REF: ${IDP_ROOT_KEY_REF:-dev}
+      # Local conformance testing only -- see the comment on Config.AllowInsecureIssuer.
+      IDP_INSECURE_ISSUER: ${IDP_INSECURE_ISSUER:-0}
     ports:
       - "8099:8080"
     networks:

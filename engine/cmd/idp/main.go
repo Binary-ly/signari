@@ -219,7 +219,18 @@ func serve(conn *pgx.Conn, addr string) error {
 	}
 	defer pool.Close()
 
-	srv, err := httpapi.New(oidc.Config{Issuer: issuer, Keys: set}, pool, log)
+	insecureIssuer := os.Getenv("IDP_INSECURE_ISSUER") == "1"
+	if insecureIssuer {
+		log.Warn("IDP_INSECURE_ISSUER is set: the issuer may be plaintext HTTP. " +
+			"Every token, code and client secret in the flow crosses the network readable. " +
+			"This must never be set outside local testing.")
+	}
+
+	srv, err := httpapi.New(oidc.Config{
+		Issuer:              issuer,
+		Keys:                set,
+		AllowInsecureIssuer: insecureIssuer,
+	}, pool, log)
 	if err != nil {
 		return err
 	}

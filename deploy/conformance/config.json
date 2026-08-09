@@ -2,7 +2,7 @@
   "alias": "idp",
   "description": "idp engine -- Basic OP",
   "server": {
-    "discoveryUrl": "http://idp-engine:8080/.well-known/openid-configuration"
+    "discoveryUrl": "https://idp-engine:8080/.well-known/openid-configuration"
   },
   "client": {
     "client_id": "conformance-1",
@@ -15,11 +15,11 @@
   "consent": {},
   "browser": [
     {
-      "match": "http://idp-engine:8080/oauth2/authorize*",
+      "match": "https://idp-engine:8080/oauth2/authorize*",
       "tasks": [
         {
           "task": "Sign in",
-          "match": "http://idp-engine:8080/oauth2/authorize*",
+          "match": "https://idp-engine:8080/oauth2/authorize*",
           "commands": [
             [
               "text",

@@ -64,6 +64,13 @@ services:
       IDP_ROOT_KEY_REF: ${IDP_ROOT_KEY_REF:-dev}
       # Local conformance testing only -- see the comment on Config.AllowInsecureIssuer.
       IDP_INSECURE_ISSUER: ${IDP_INSECURE_ISSUER:-0}
+      # When set, the engine serves HTTPS. Required for anything real: browsers
+      # refuse to store the __Host- session cookie over plaintext on a non-localhost
+      # host, so sign-in silently fails to persist without it.
+      IDP_TLS_CERT: ${IDP_TLS_CERT:-}
+      IDP_TLS_KEY: ${IDP_TLS_KEY:-}
+    volumes:
+      - ./tls:/tls:ro
     ports:
       - "8099:8080"
     networks:

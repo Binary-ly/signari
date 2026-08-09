@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"flag"
 	"fmt"
@@ -71,6 +72,8 @@ func run(args []string) error {
 	issuer := fs.String("issuer", "", "issuer URL, e.g. https://id.example.com")
 	name := fs.String("name", "", "instance display name")
 	addr := fs.String("addr", ":8080", "listen address for `serve`")
+	tlsCert := fs.String("tls-cert", os.Getenv("IDP_TLS_CERT"), "PEM certificate chain; enables HTTPS")
+	tlsKey := fs.String("tls-key", os.Getenv("IDP_TLS_KEY"), "PEM private key")
 	email := fs.String("email", "", "user email")
 	password := fs.String("password", "", "user password")
 	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
@@ -129,7 +132,7 @@ func run(args []string) error {
 	case "client create":
 		return clientCreate(ctx, conn, *clientID, *redirect, *public)
 	case "serve":
-		return serve(conn, *addr)
+		return serve(conn, *addr, *tlsCert, *tlsKey)
 	default:
 		return usage()
 	}
@@ -185,7 +188,7 @@ func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) er
 	return nil
 }
 
-func serve(conn *pgx.Conn, addr string) error {
+func serve(conn *pgx.Conn, addr, tlsCert, tlsKey string) error {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -243,13 +246,41 @@ func serve(conn *pgx.Conn, addr string) error {
 	defer stopWorker()
 	go outbox.New(pool, set, issuer, log).Run(workerCtx, 2*time.Second)
 
-	log.Info("serving", "addr", addr, "issuer", issuer, "algs", set.Algorithms())
 	h := &http.Server{
-		Addr:              addr,
-		Handler:           srv.Routes(),
+		Addr:    addr,
+		Handler: srv.Routes(),
+		// A slow-header attack costs an attacker nothing and holds a connection
+		// open indefinitely without this.
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
-	return h.ListenAndServe()
+
+	if tlsCert == "" || tlsKey == "" {
+		log.Info("serving over plaintext HTTP", "addr", addr, "issuer", issuer,
+			"algs", set.Algorithms())
+		log.Warn("no TLS configured: browsers will refuse to store the __Host- session " +
+			"cookie over plaintext on any host except localhost, so sign-in will silently " +
+			"fail to persist. Supply -tls-cert and -tls-key outside local testing.")
+		return h.ListenAndServe()
+	}
+
+	// TLS 1.2 floor. 1.0 and 1.1 are deprecated and their cipher suites are not
+	// worth the compatibility they buy for a service whose whole job is secrets.
+	h.TLSConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		// Go picks sane defaults for TLS 1.3; this constrains 1.2 to suites with
+		// forward secrecy and AEAD only.
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		},
+	}
+	log.Info("serving over HTTPS", "addr", addr, "issuer", issuer, "algs", set.Algorithms())
+	return h.ListenAndServeTLS(tlsCert, tlsKey)
 }
 
 func up(ctx context.Context, conn *pgx.Conn, tier migrate.Tier, to int) error {

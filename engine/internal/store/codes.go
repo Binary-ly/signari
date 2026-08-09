@@ -66,7 +66,10 @@ func IssueCode(ctx context.Context, tx pgx.Tx, orgID, clientID, sid, userID stri
 			 code_challenge, code_challenge_method, resources, expires_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		hash, orgID, clientID, sid, userID, g.RedirectURI, g.Scopes,
-		g.CodeChallenge, g.CodeChallengeMethod, resources, g.ExpiresAt)
+		// NULL, not "", when the client did not use PKCE. The database enforces
+		// that the challenge and its method are both present or both absent.
+		nullIfEmpty(g.CodeChallenge), nullIfEmpty(g.CodeChallengeMethod),
+		resources, g.ExpiresAt)
 	if err != nil {
 		return fmt.Errorf("issuing authorization code: %w", err)
 	}
@@ -96,6 +99,7 @@ type ConsumedCode struct {
 // must be distinguished: the second case requires revoking the token family.
 func ConsumeCode(ctx context.Context, tx pgx.Tx, hash []byte) (*ConsumedCode, error) {
 	var c ConsumedCode
+	var challenge, method *string
 	err := tx.QueryRow(ctx, `
 		UPDATE core.authorization_codes
 		SET consumed_at = now()
@@ -103,7 +107,7 @@ func ConsumeCode(ctx context.Context, tx pgx.Tx, hash []byte) (*ConsumedCode, er
 		RETURNING org_id::text, client_id, sid, user_id::text, redirect_uri, scopes,
 		          code_challenge, code_challenge_method, resources, expires_at`, hash).
 		Scan(&c.OrgID, &c.ClientID, &c.SessionID, &c.UserID, &c.RedirectURI, &c.Scopes,
-			&c.CodeChallenge, &c.CodeChallengeMethod, &c.Resources, &c.ExpiresAt)
+			&challenge, &method, &c.Resources, &c.ExpiresAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Distinguish "never existed" from "already spent". Only the latter is a
@@ -119,7 +123,22 @@ func ConsumeCode(ctx context.Context, tx pgx.Tx, hash []byte) (*ConsumedCode, er
 	if err != nil {
 		return nil, fmt.Errorf("consuming authorization code: %w", err)
 	}
+	if challenge != nil {
+		c.CodeChallenge = *challenge
+	}
+	if method != nil {
+		c.CodeChallengeMethod = *method
+	}
 	return &c, nil
+}
+
+// nullIfEmpty maps "" to SQL NULL. An empty challenge is not a challenge, and
+// storing it as "" is what broke the CHECK constraint that 0005 replaced.
+func nullIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // RevokeFamilyForCode kills every refresh-token family descended from a code's

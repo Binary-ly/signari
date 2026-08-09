@@ -1,0 +1,199 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// TerminationReason is why a session ended. Every reason routes through the same
+// function; there is no "quick path" that skips notification.
+type TerminationReason string
+
+const (
+	ReasonLogout          TerminationReason = "logout"
+	ReasonAdminRevoke     TerminationReason = "admin_revoke"
+	ReasonUserDeleted     TerminationReason = "user_deleted"
+	ReasonUserDeactivated TerminationReason = "user_deactivated"
+	ReasonPasswordChange  TerminationReason = "password_change"
+	ReasonMFAReset        TerminationReason = "mfa_reset"
+	ReasonExpired         TerminationReason = "expired"
+	ReasonReuseDetected   TerminationReason = "reuse_detected"
+)
+
+// LogoutNotice is one queued back-channel logout delivery.
+type LogoutNotice struct {
+	ClientID  string `json:"client_id"`
+	Endpoint  string `json:"endpoint"`
+	SessionID string `json:"sid,omitempty"`
+	Subject   string `json:"sub,omitempty"`
+	Reason    string `json:"reason"`
+}
+
+// Terminated reports what one termination did.
+type Terminated struct {
+	Sessions int
+	Notices  int
+}
+
+func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reason TerminationReason) (*Terminated, error) {
+	if (sid == "") == (userID == "") {
+		return nil, fmt.Errorf("TerminateSessions needs exactly one of sid or userID")
+	}
+
+	// 1. Snapshot. Only live sessions: re-revoking an already-revoked session
+	// must not re-notify, or an expiry sweep would replay logout storms.
+	rows, err := tx.Query(ctx, `
+		SELECT s.sid, s.user_id::text, sc.client_id, c.backchannel_logout_uri
+		FROM core.sessions s
+		JOIN core.session_clients sc ON sc.sid = s.sid
+		JOIN core.clients c          ON c.client_id = sc.client_id
+		WHERE s.revoked_at IS NULL
+		  AND ($1::text IS NULL OR s.sid = $1)
+		  AND ($2::uuid IS NULL OR s.user_id = $2)
+		  AND c.backchannel_logout_uri IS NOT NULL`,
+		nullIf(sid), nullIf(userID))
+	if err != nil {
+		return nil, fmt.Errorf("snapshotting sessions: %w", err)
+	}
+
+	var notices []LogoutNotice
+	for rows.Next() {
+		var gotSID, gotUser, clientID, endpoint string
+		if err := rows.Scan(&gotSID, &gotUser, &clientID, &endpoint); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		n := LogoutNotice{ClientID: clientID, Endpoint: endpoint, Reason: string(reason)}
+		if sid != "" {
+			n.SessionID = gotSID // one session: address it by sid
+		} else {
+			n.Subject = gotUser // all sessions: address them by sub
+		}
+		notices = append(notices, n)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// 2. Queue. Deduplicated: ending all of a user's sessions must send one
+	// sub-addressed notice per relying party, not one per session.
+	seen := map[string]bool{}
+	queued := 0
+	for _, n := range notices {
+		key := n.ClientID + "|" + n.SessionID + "|" + n.Subject
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		payload, err := json.Marshal(n)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO core.outbox (topic, payload) VALUES ('backchannel_logout', $1)`,
+			payload); err != nil {
+			return nil, fmt.Errorf("queuing logout notice: %w", err)
+		}
+		queued++
+	}
+
+	// 3. Destroy. Only now, once delivery is durably queued in the same
+	// transaction: if this rolls back, the notices roll back with it.
+	tag, err := tx.Exec(ctx, `
+		UPDATE core.sessions
+		SET revoked_at = now(), revocation_reason = $3
+		WHERE revoked_at IS NULL
+		  AND ($1::text IS NULL OR sid = $1)
+		  AND ($2::uuid IS NULL OR user_id = $2)`,
+		nullIf(sid), nullIf(userID), string(reason))
+	if err != nil {
+		return nil, fmt.Errorf("revoking sessions: %w", err)
+	}
+
+	// Refresh families follow their session. Leaving them live would let a
+	// refresh token outlive the session it was minted under.
+	if _, err := tx.Exec(ctx, `
+		UPDATE core.refresh_token_families f
+		SET revoked_at = now(), revocation_reason = $3
+		FROM core.sessions s
+		WHERE f.sid = s.sid AND f.revoked_at IS NULL
+		  AND ($1::text IS NULL OR s.sid = $1)
+		  AND ($2::uuid IS NULL OR s.user_id = $2)`,
+		nullIf(sid), nullIf(userID), string(reason)); err != nil {
+		return nil, fmt.Errorf("revoking refresh families: %w", err)
+	}
+
+	return &Terminated{Sessions: int(tag.RowsAffected()), Notices: queued}, nil
+}
+
+func IsSessionLive(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, sid string) (bool, error) {
+	var live bool
+	err := q.QueryRow(ctx, `
+		SELECT s.revoked_at IS NULL
+		   AND s.not_after > now()
+		   AND u.status = 'active'
+		FROM core.sessions s
+		JOIN core.users u ON u.id = s.user_id
+		WHERE s.sid = $1`, sid).Scan(&live)
+	if err != nil {
+		return false, err
+	}
+	return live, nil
+}
+
+// TouchSessionClient records that a relying party saw this session, so logout can
+// enumerate it later. Idempotent.
+func TouchSessionClient(ctx context.Context, tx pgx.Tx, sid, clientID string) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO core.session_clients (sid, client_id) VALUES ($1, $2)
+		ON CONFLICT (sid, client_id) DO NOTHING`, sid, clientID)
+	return err
+}
+
+// SweepExpiredSessions ends sessions past not_after, through the same single
+// termination path so relying parties are notified.
+func SweepExpiredSessions(ctx context.Context, tx pgx.Tx, limit int) (int, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT sid FROM core.sessions
+		WHERE revoked_at IS NULL AND not_after <= now()
+		ORDER BY not_after LIMIT $1`, limit)
+	if err != nil {
+		return 0, err
+	}
+	var sids []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		sids = append(sids, s)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	for _, s := range sids {
+		if _, err := TerminateSessions(ctx, tx, s, "", ReasonExpired); err != nil {
+			return 0, err
+		}
+	}
+	return len(sids), nil
+}
+
+func nullIf(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+var _ = time.Now

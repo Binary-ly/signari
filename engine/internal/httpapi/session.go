@@ -11,15 +11,6 @@ import (
 
 const SessionCookieName = "__Host-idp_session"
 
-// CrossSiteCookieName is a SEPARATE, narrowly scoped cookie for the one case
-// that genuinely needs SameSite=None: a form_post response landing back on us
-// cross-site. It never carries session authority.
-//
-// Putting SameSite=None on the session cookie to "make form_post work" is the
-// root of most "login works in Chrome but not Safari" reports, and it widens the
-// session cookie's exposure for the sake of one narrow flow.
-const CrossSiteCookieName = "idp_xs"
-
 // CSRFCookieName carries the double-submit token for the sign-in form.
 //
 // Double-submit is usually criticised because an attacker on a sibling subdomain
@@ -111,9 +102,9 @@ func newSID() (string, error) {
 // setSessionCookie writes the session cookie.
 //
 // SameSite=Lax, not Strict: Strict would drop the cookie on the top-level
-// redirect back from an external identity provider or a form_post callback, so
-// the user would land logged-in-but-not-recognised. Lax still blocks the
-// cross-site POST cases that matter.
+// redirect back from an external identity provider, so the user would land
+// logged-in-but-not-recognised. Lax still blocks the cross-site POST cases that
+// matter.
 func (s *Server) setSessionCookie(w http.ResponseWriter, sid string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,

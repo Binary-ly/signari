@@ -175,10 +175,24 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 			"client is not registered for scope(s): "+strings.Join(bad, ", "))
 	}
 
-	// 8. response_mode. Fragment is only meaningful for front-channel token
-	// delivery, which we do not do.
+	// 8. response_mode.
+	//
+	// `query` only. `fragment` is for front-channel token delivery, which this
+	// server does not do.
+	//
+	// form_post is REFUSED rather than accepted-and-ignored. It used to be
+	// accepted here and then silently treated as `query`, which is worse than
+	// not supporting it: a client asking for form_post is usually doing so to
+	// keep the response out of URLs, referrers and browser history, and getting
+	// `query` back defeats exactly that. It has since been removed from
+	// discovery too -- with `code` as the only response type there is nothing
+	// sensitive in the redirect that form_post would protect, so it buys the
+	// caller nothing and costs a SameSite=None cookie to implement.
 	switch req.ResponseMode {
-	case "", "query", "form_post":
+	case "", "query":
+	case "form_post":
+		return redirectErr("invalid_request",
+			"response_mode form_post is not supported; the authorization code is returned in the query")
 	default:
 		return redirectErr("invalid_request",
 			fmt.Sprintf("response_mode %q is not supported", req.ResponseMode))

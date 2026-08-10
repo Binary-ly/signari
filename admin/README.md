@@ -95,3 +95,30 @@ Filters: status, "imported hash not yet upgraded", and "ready for passwordless".
 The empty state says *"an empty table means no organisation context, not an empty
 database"* -- because under ADR-006 that is by far the more likely cause, and an
 operator who does not know that will go looking in the wrong place.
+
+
+## Clients resource, and a silent bug it surfaced
+
+`App\Filament\Resources\EngineClients` -- read-only on the same terms. The view
+deliberately omits `client_secret_hash`: a secret hash has no reason to reach the
+admin plane, and the surest way to keep it out of a screenshot, a log or a CSV
+export is for it never to arrive.
+
+Columns flag the things worth noticing rather than every column available:
+a public client with PKCE off (anyone holding the client_id can redeem a code),
+and a client with no back-channel logout endpoint (cannot be told its user signed
+out, and back-channel is the only logout that still works now browsers block
+third-party cookies).
+
+Building it found migration 0006. `redirect_uris` was a `text[]`, which the pgsql
+driver returns as the array LITERAL `{https://app.test/cb}`. Eloquent's array cast
+JSON-decodes that, fails, and yields an EMPTY LIST -- silently. A client with three
+redirect URIs rendered as having none, on the one field whose exact contents decide
+whether an authorization request succeeds.
+
+Two gotchas from fixing it, both worth knowing:
+
+- `CREATE OR REPLACE VIEW` cannot change a column's type. It needs DROP + CREATE,
+  and dropping takes the grants with it, so they are re-issued.
+- The migrations are `go:embed`ed, so editing SQL without rebuilding the binary
+  re-runs the OLD statement. The failure looks identical to the fix not working.

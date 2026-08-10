@@ -690,25 +690,25 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
 
-	cookie := sessionCookie(r)
-	if cookie != "" {
-		sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
-		if err != nil {
-			s.log.Error("resolving session for logout", "err", err)
-		} else if sid != "" {
-			tx, err := s.db.Begin(ctx)
-			if err == nil {
-				if _, err := store.TerminateSessions(ctx, tx, sid, "", store.ReasonLogout); err != nil {
-					s.log.Error("terminating session", "err", err)
-					_ = tx.Rollback(ctx)
-				} else if err := tx.Commit(ctx); err != nil {
-					s.log.Error("committing logout", "err", err)
-				}
-			}
-		}
+	// Terminate FIRST, and let the failure be visible. The previous shape logged
+	// every error and then fell through to "signed out" regardless -- so a
+	// database blip cleared the cookie, told the user they were signed out, and
+	// left the session live with no back-channel notification sent. A user who
+	// believes they signed out on a shared machine and did not is worse off than
+	// one who is told it failed and tries again.
+	if err := s.terminateOwnSession(ctx, sessionCookie(r)); err != nil {
+		s.log.Error("ending session", "err", err)
+		// The cookie is still cleared: it is defence in depth for THIS browser,
+		// and withholding it would leave the user with neither outcome. But we
+		// do not redirect and do not claim success.
+		s.clearSessionCookie(w)
+		writeError(w, http.StatusInternalServerError, "server_error",
+			"sign-out could not be completed; your session may still be active")
+		return
 	}
-	// Always clear the cookie, even if there was no live session: the user asked
-	// to be signed out, and leaving a stale cookie behind is confusing.
+
+	// Clear the cookie even if there was no live session: the user asked to be
+	// signed out, and leaving a stale cookie behind is confusing.
 	s.clearSessionCookie(w)
 
 	// post_logout_redirect_uri must be REGISTERED before we redirect to it.
@@ -748,6 +748,43 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "signed out"})
+}
+
+// terminateOwnSession revokes the session behind the presented cookie.
+//
+// Every failure is returned rather than logged-and-ignored, because the caller's
+// only honest options are "signed out" and "sign-out failed" -- and it cannot
+// tell them apart if the errors are swallowed here. An absent or already-dead
+// cookie is NOT a failure: there is nothing to terminate and the user's intent
+// is already satisfied.
+func (s *Server) terminateOwnSession(ctx context.Context, cookie string) error {
+	if cookie == "" {
+		return nil
+	}
+	sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
+	if err != nil {
+		return fmt.Errorf("resolving session cookie: %w", err)
+	}
+	if sid == "" {
+		return nil
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning logout transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := store.TerminateSessions(ctx, tx, sid, "", store.ReasonLogout); err != nil {
+		return fmt.Errorf("terminating session: %w", err)
+	}
+	// The commit is what makes the revocation AND the queued back-channel logout
+	// notifications durable -- they share this transaction by design, so a failed
+	// commit means neither happened.
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing logout: %w", err)
+	}
+	return nil
 }
 
 // clientFromIDTokenHint reads the audience of an id_token_hint.

@@ -66,8 +66,27 @@ func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
 	s.renderLogin(w, r, r.URL.Query().Get("authz"), "")
 }
 
-// rateLimitedLogin caps attempts before any hashing happens.
+// rateLimitedLogin rejects forged submissions and caps attempts before any
+// hashing happens.
 func (s *Server) rateLimitedLogin(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "malformed form", http.StatusBadRequest)
+		return
+	}
+
+	// CSRF is checked BEFORE the rate limiter, not after. The limiter is a single
+	// global bucket, so charging forged cross-site posts against it would let one
+	// attacker page lock every real user out of signing in.
+	if !checkCSRF(r) {
+		// Re-rendered rather than returned as a bare error: the common real cause
+		// is a cookie the browser dropped or a form left open across a restart,
+		// and handing the user a working form is the useful response. The mint in
+		// renderLogin gives them a fresh token.
+		s.renderLoginStatus(w, r, r.PostForm.Get("authz"),
+			"Your sign-in session expired. Please try again.", http.StatusForbidden)
+		return
+	}
+
 	if !s.login.allow() {
 		w.Header().Set("Retry-After", "2")
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many sign-in attempts")
@@ -79,6 +98,24 @@ func (s *Server) rateLimitedLogin(w http.ResponseWriter, r *http.Request) {
 // renderLogin shows the sign-in form, carrying the parked authorization request
 // so the flow can resume after authentication.
 func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, authzQuery, msg string) {
+	// A message here always means a rejected credential.
+	status := http.StatusOK
+	if msg != "" {
+		status = http.StatusUnauthorized
+	}
+	s.renderLoginStatus(w, r, authzQuery, msg, status)
+}
+
+func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authzQuery, msg string, status int) {
+	// Minted before any header is written: Set-Cookie after WriteHeader is
+	// silently dropped, which would produce a form whose token can never match.
+	csrf, err := s.csrfToken(w, r)
+	if err != nil {
+		s.log.Error("minting csrf token", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "sign-in unavailable")
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// A login page must never be cached: it is per-session and carries state.
 	w.Header().Set("Cache-Control", "no-store")
@@ -86,10 +123,10 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, authzQuery,
 	w.Header().Set("Content-Security-Policy",
 		`default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
 	w.Header().Set("X-Frame-Options", "DENY")
-	if msg != "" {
-		w.WriteHeader(http.StatusUnauthorized)
-	}
-	_ = loginPage.Execute(w, map[string]string{"Authz": authzQuery, "Error": msg})
+	w.WriteHeader(status)
+	_ = loginPage.Execute(w, map[string]string{
+		"Authz": authzQuery, "Error": msg, "CSRF": csrf, "CSRFField": csrfFormField,
+	})
 }
 
 // loginPage is deliberately minimal and server-rendered: no JavaScript, so it
@@ -109,6 +146,7 @@ button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;width:100%}
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 <form method="POST" action="/login">
 <input type="hidden" name="authz" value="{{.Authz}}">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 <label for="u">Username or email</label>
 <input id="u" name="username" autocomplete="username" autocapitalize="none" autofocus required>
 <label for="p">Password</label>

@@ -171,13 +171,6 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeTokenError(w, gerr)
 		return
 	}
-	if req.GrantType != "authorization_code" && req.GrantType != "refresh_token" {
-		writeTokenError(w, &oauth.TokenError{Code: "unsupported_grant_type",
-			Description: "only authorization_code and refresh_token are implemented so far",
-			Status:      http.StatusBadRequest})
-		return
-	}
-
 	c, lookupErr := s.lookupClient(ctx, req.ClientID)
 	if lookupErr != nil || c == nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
@@ -199,6 +192,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	if req.GrantType == "refresh_token" {
 		s.handleRefreshGrant(w, r, c, req)
+		return
+	}
+	if req.GrantType == "client_credentials" {
+		s.handleClientCredentialsGrant(w, r, c, req)
 		return
 	}
 
@@ -398,6 +395,101 @@ func containsScope(scopes []string, want string) bool {
 // token is detectable exactly once -- when the legitimate client and the thief
 // both try to use the same generation -- so the response is to destroy the whole
 // lineage rather than the single token.
+// handleClientCredentialsGrant issues a token for the client itself.
+//
+// There is no user here, and every difference from the other grants follows from
+// that one fact:
+//
+//   - No ID token. An ID token is an authentication statement about a person;
+//     there is no person. Issuing one with the client as `sub` is a well-known
+//     way to confuse a downstream relying party into treating a machine as a
+//     user, and OIDC Core does not define it for this grant.
+//   - No refresh token. The client can always authenticate again -- it holds the
+//     secret -- so a refresh token would be a second, longer-lived credential
+//     with no benefit. RFC 6749 §4.4.3 says so explicitly.
+//   - No session, so no sid, and nothing for logout to terminate.
+//   - `sub` is the client_id, per RFC 9068 §5.
+//
+// Public clients are refused: this grant IS the client's secret, so a client
+// without one has nothing to authenticate with.
+func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Request,
+	c *clients.Client, req oauth.TokenRequest) {
+
+	if !c.AllowsGrantType("client_credentials") {
+		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
+			Description: "client may not use the client_credentials grant",
+			Status:      http.StatusBadRequest})
+		return
+	}
+	if c.Type != "confidential" {
+		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
+			Description: "the client_credentials grant requires a confidential client",
+			Status:      http.StatusBadRequest})
+		return
+	}
+
+	// Default to the client's registered scopes when none are asked for, which is
+	// what callers expect; narrow to what was requested otherwise.
+	scopes := c.Scopes
+	if req.Scope != "" {
+		scopes = splitScopes(req.Scope)
+		if unknown := c.UnknownScopes(scopes); len(unknown) > 0 {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
+				Description: "client is not registered for scope " + unknown[0],
+				Status:      http.StatusBadRequest})
+			return
+		}
+	}
+	// `openid` asks for an authentication statement about a user. There isn't
+	// one. Silently dropping it would leave a caller waiting for an id_token
+	// that never comes, so it is refused with the reason.
+	if containsScope(scopes, "openid") {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
+			Description: "openid is not available to the client_credentials grant: there is no user to authenticate",
+			Status:      http.StatusBadRequest})
+		return
+	}
+
+	alg := keys.Algorithm(c.IDTokenAlg)
+	key, err := s.cfg.Keys.Active(alg)
+	if err != nil {
+		s.log.Error("no active key for client_credentials", "alg", alg, "err", err)
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+	jti, err := newSID()
+	if err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+
+	now := time.Now()
+	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
+		Issuer:   s.cfg.Issuer,
+		Subject:  c.ClientID,
+		Audience: []string{c.ClientID},
+		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		IssuedAt: now.Unix(),
+		JTI:      jti,
+		ClientID: c.ClientID,
+		Scope:    joinScopes(scopes),
+		// No SessionID: nothing to tie this to, and inventing one would make
+		// logout appear to cover a token it cannot.
+	}, tokens.TypAccessToken)
+	if err != nil {
+		s.log.Error("signing client_credentials token", "err", err)
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, &tokenResponse{
+		AccessToken: at,
+		TokenType:   "Bearer",
+		ExpiresIn:   int(tokens.DefaultAccessTokenTTL.Seconds()),
+		Scope:       joinScopes(scopes),
+	})
+}
+
 func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	c *clients.Client, req oauth.TokenRequest) {
 

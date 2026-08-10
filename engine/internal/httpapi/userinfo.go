@@ -36,6 +36,19 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An explicitly revoked token must stop working here immediately. This is the
+	// endpoint where /revoke earns its 200: we are the resource server, so there
+	// is no excuse for honouring a token the client told us to drop.
+	if revoked, err := store.JTIRevoked(ctx, s.db, claims.JTI); err != nil || revoked {
+		if err != nil {
+			s.log.Error("userinfo revocation check failed", "err", err)
+		}
+		w.Header().Set("WWW-Authenticate",
+			`Bearer realm="idp", error="invalid_token", error_description="The access token has been revoked"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
 	// The session must still be live. See (1) above.
 	if claims.SessionID != "" {
 		live, err := store.IsSessionLive(ctx, s.db, claims.SessionID)

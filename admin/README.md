@@ -1,7 +1,7 @@
 # Laravel admin
 
 The Laravel skeleton and `app/Console/Commands/VerifyBoundary.php` are committed.
-## Status: boundary verified, read model built, UI pending
+## Status: boundary verified, read model and users table built
 
 Laravel 13.24 installed. `php artisan idp:verify-boundary` passes 6/6 against a
 migrated database.
@@ -78,3 +78,20 @@ ADR-004 and says writes go through the engine Admin API.
   header. A tenant selector an attacker can set is not a tenant boundary.
 - No organisation means no context, which means zero rows. A missing scope must
   never widen access.
+
+
+## Users resource
+
+`App\Filament\Resources\EngineUsers` -- read-only, deliberately. There is no
+create, edit or delete page, and `canCreate`/`canEdit`/`canDelete` all return
+false, so Filament generates no routes, row actions or bulk actions for operations
+the database would refuse. A write form here would be a button that cannot work.
+
+The columns are chosen for what an operator actually needs to see:
+
+
+Filters: status, "imported hash not yet upgraded", and "ready for passwordless".
+
+The empty state says *"an empty table means no organisation context, not an empty
+database"* -- because under ADR-006 that is by far the more likely cause, and an
+operator who does not know that will go looking in the wrong place.

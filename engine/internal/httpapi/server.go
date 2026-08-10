@@ -47,7 +47,15 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger) (*Server, error) {
 	}, nil
 }
 
-func (s *Server) Routes() *http.ServeMux {
+// Routes returns the public endpoints, wrapped so every request carries a
+// correlation id. Returned as http.Handler rather than *ServeMux because the
+// wrapper is not optional -- a route reachable without an id would be the one
+// nobody can trace.
+func (s *Server) Routes() http.Handler {
+	return s.withCorrelation(s.mux())
+}
+
+func (s *Server) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+oidc.PathDiscovery, s.handleDiscovery)
 	mux.HandleFunc("GET "+oidc.PathJWKS, s.handleJWKS)
@@ -127,8 +135,16 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		`default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.WriteHeader(status)
+	// The reference is only shown alongside an error. On a normal page it is
+	// noise; on a failure it is the one string that connects what the user saw
+	// to the audit rows and log lines for that exact request.
+	ref := ""
+	if msg != "" {
+		ref = shortCode(correlationID(r.Context()))
+	}
 	_ = loginPage.Execute(w, map[string]string{
 		"Authz": authzQuery, "Error": msg, "CSRF": csrf, "CSRFField": csrfFormField,
+		"Reference": ref,
 	})
 }
 
@@ -143,10 +159,12 @@ var loginPage = template.Must(template.New("login").Parse(`<!doctype html>
 <style>body{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem}
 label{display:block;margin:.75rem 0 .25rem}input{width:100%;padding:.5rem;font-size:1rem}
 button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;width:100%}
-.err{color:#b00020;margin:.5rem 0}</style></head>
+.err{color:#b00020;margin:.5rem 0}
+.ref{color:#666;font-size:.85rem;margin:.25rem 0}</style></head>
 <body>
 <h1>Sign in</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+{{if .Reference}}<p class="ref">Reference: <code>{{.Reference}}</code></p>{{end}}
 <form method="POST" action="/login">
 <input type="hidden" name="authz" value="{{.Authz}}">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">

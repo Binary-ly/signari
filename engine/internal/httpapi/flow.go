@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sulimanbenhalim/idp/engine/internal/audit"
 	"github.com/sulimanbenhalim/idp/engine/internal/clients"
 	"github.com/sulimanbenhalim/idp/engine/internal/keys"
 	"github.com/sulimanbenhalim/idp/engine/internal/oauth"
@@ -216,10 +217,24 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		n, rerr := store.RevokeFamilyForCode(ctx, tx, hash)
 		if rerr != nil {
 			s.log.Error("revoking after code reuse", "err", rerr)
+		} else if aerr := audit.Write(ctx, tx, audit.Event{
+			Type:          audit.EventCodeReused,
+			ClientID:      req.ClientID,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"families_revoked": n},
+		}); aerr != nil {
+			// The revocation still commits below if it can. Losing the audit row
+			// for a theft signal is bad; failing to revoke the stolen tokens
+			// because of it would be worse.
+			s.log.Error("auditing code reuse", "err", aerr)
+			if err := tx.Commit(ctx); err != nil {
+				s.log.Error("committing revocation after code reuse", "err", err)
+			}
 		} else if err := tx.Commit(ctx); err != nil {
 			s.log.Error("committing revocation after code reuse", "err", err)
 		}
-		s.log.Warn("authorization code reuse detected", "client_id", req.ClientID, "families_revoked", n)
+		s.log.Warn("authorization code reuse detected", "client_id", req.ClientID,
+			"families_revoked", n, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "authorization code has already been used", Status: http.StatusBadRequest})
 		return
@@ -637,12 +652,27 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		// Still spend the hashing budget so a missing user is not measurably
 		// faster than a wrong password.
 		_, _ = s.hasher.Verify(ctx, dummyHash, password)
+		// No subject recorded: there is no account, and writing the submitted
+		// identifier would put an attacker-chosen string -- often someone else's
+		// email -- into an append-only table.
+		s.auditDetached(ctx, audit.Event{
+			Type:          audit.EventLoginFailed,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": "unknown_identifier"},
+		})
 		s.renderLogin(w, r, authzQuery, generic)
 		return
 	}
 
 	needsRehash, verr := s.hasher.Verify(ctx, stored, password)
 	if verr != nil {
+		s.auditDetached(ctx, audit.Event{
+			Type:          audit.EventLoginFailed,
+			OrgID:         orgID,
+			SubjectID:     userID,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": "bad_password"},
+		})
 		s.renderLogin(w, r, authzQuery, generic)
 		return
 	}
@@ -673,6 +703,20 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		VALUES ($1, $2, $3, $4, '1', ARRAY['pwd'], now(), now() + $5::interval)`,
 		sid, store.HashToken(cookieToken), orgID, userID, sessionTTL.String()); err != nil {
 		s.log.Error("creating session", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type:          audit.EventLoginSucceeded,
+		OrgID:         orgID,
+		SubjectID:     userID,
+		CorrelationID: correlationID(ctx),
+		Detail:        map[string]any{"amr": []string{"pwd"}},
+	}); err != nil {
+		// Rule 4 of the package doc: no record, no session. A sign-in nobody can
+		// prove happened is exactly what an investigation cannot work with.
+		s.log.Error("auditing login", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

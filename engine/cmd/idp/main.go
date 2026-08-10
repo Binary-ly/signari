@@ -24,6 +24,7 @@ import (
 
 	"github.com/sulimanbenhalim/idp/engine/internal/adminapi"
 	"github.com/sulimanbenhalim/idp/engine/internal/httpapi"
+	"github.com/sulimanbenhalim/idp/engine/internal/janitor"
 	"github.com/sulimanbenhalim/idp/engine/internal/keys"
 	"github.com/sulimanbenhalim/idp/engine/internal/migrate"
 	"github.com/sulimanbenhalim/idp/engine/internal/oidc"
@@ -50,6 +51,7 @@ commands:
   instance create     create an instance and its first signing keys
   user create         create a user with a password
   client create       register an OAuth client
+  janitor once        run one maintenance pass (serve runs this continuously)
   serve               serve the OIDC endpoints
 
 env:
@@ -84,7 +86,7 @@ func run(args []string) error {
 
 	cmd := args[0]
 	rest := args[1:]
-	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" {
+	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" || cmd == "janitor" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -135,9 +137,50 @@ func run(args []string) error {
 		return clientCreate(ctx, conn, *clientID, *redirect, *public)
 	case "serve":
 		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr)
+	case "janitor once":
+		return janitorOnce(ctx, conn)
 	default:
 		return usage()
 	}
+}
+
+// janitorOnce runs a single maintenance pass and reports it.
+//
+// `serve` already runs the janitor, so this exists for the cases where that is
+// not what you want: a one-shot after an incident, a cron in a deployment that
+// runs the engine read-only, or simply seeing what a pass would do. It takes the
+// same advisory lock, so running it against a live cluster is safe.
+func janitorOnce(ctx context.Context, conn *pgx.Conn) error {
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	pool, err := pgxpool.New(ctx, conn.Config().ConnString())
+	if err != nil {
+		return fmt.Errorf("creating connection pool: %w", err)
+	}
+	defer pool.Close()
+
+	st, err := janitor.RunOnce(ctx, pool, log)
+	if err != nil {
+		return err
+	}
+	if st.Skipped {
+		fmt.Println("janitor: another node holds the lock; nothing done")
+		return nil
+	}
+
+	fmt.Printf("janitor: swept %d expired session(s), purged %d code(s)\n",
+		st.SessionsSwept, st.CodesPurged)
+	if len(st.Parked) == 0 {
+		return nil
+	}
+	// Printed to stdout as well as logged: this is the output an operator ran the
+	// command to see.
+	fmt.Printf("\n%d relying part%s were never told a session ended:\n",
+		len(st.Parked), map[bool]string{true: "y", false: "ies"}[len(st.Parked) == 1])
+	for _, p := range st.Parked {
+		fmt.Printf("  - %s\n", p)
+	}
+	return nil
 }
 
 // rootKey reads the wrapping key for private key material. It is deliberately
@@ -247,6 +290,13 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go outbox.New(pool, set, issuer, log).Run(workerCtx, 2*time.Second)
+
+	// The janitor is likewise a singleton, but it enforces that itself with an
+	// advisory lock rather than by convention -- so it is safe to start on every
+	// node, and there is no separate unit an operator can forget to deploy. The
+	// jobs it runs are the ones whose absence is invisible until it matters:
+	// relying parties never told a session ended, and a table that only grows.
+	go janitor.Run(workerCtx, pool, log, janitor.DefaultInterval)
 
 	// The admin API listens on its OWN address, and is off unless one is given.
 	// It is the write surface for the entire identity provider; exposing it on

@@ -1,3 +1,9 @@
 vendor/
 composer.lock
 .env
+.env.*
+!.env.example
+storage/
+bootstrap/cache/
+node_modules/
+public/build/

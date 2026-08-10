@@ -1,32 +1,24 @@
-# Laravel admin (scaffolded, dependencies not installed)
+# Laravel admin
 
 The Laravel skeleton and `app/Console/Commands/VerifyBoundary.php` are committed.
-`composer install` cannot complete in the agent's sandbox. Diagnosed:
+## Status: boundary verified, UI not built
 
-    repo.packagist.org  (metadata)        200 in ~1s
-    api.github.com                        200 in ~1s
-    codeload.github.com (dist archives)   HANGS to timeout
+Laravel 13.24 installed. `php artisan idp:verify-boundary` passes 6/6 against a
+migrated database.
 
-Composer resolves all 109 packages and writes the lock file, then stalls on the
-first download, because dist archives are served from codeload.github.com. The
-same hang occurs from the host, from a container, and with the vendor tree on a
-container-local filesystem -- so it is neither a bind-mount speed problem nor a
-composer configuration issue.
+**Network note for this machine:** `composer install` fails here because
+`github.com` and `codeload.github.com` (where every dist archive is served) time
+out, while `api.github.com` -- an adjacent IP in the same /24 -- answers in 1.5s.
+That is per-destination filtering upstream, not DNS and not composer. Install
+through a VPN, or on a host without the filtering, then copy `vendor/` across.
 
-For contrast, everything else worked from the same environment today: `go get`
-(proxy.golang.org), `npm install`, `git clone` from GitLab, and Docker registry
-pulls. The restriction is specific to codeload.github.com.
+## Configuration
 
-Run it yourself:
-
-    cd admin && composer install
-
-Then point it at the engine's database AS THE ADMIN ROLE -- never as the superuser,
-or `idp:verify-boundary` passes vacuously:
+Point it at the engine's database AS THE ADMIN ROLE -- never as the superuser, or
+the checks pass vacuously:
 
     DB_CONNECTION=pgsql
     DB_HOST=127.0.0.1
-    DB_PORT=5432
     DB_DATABASE=idp
     DB_USERNAME=idp_admin
     DB_PASSWORD=...        # set on the role out-of-band
@@ -46,3 +38,14 @@ It asserts the boundary from the side that would benefit from cheating:
 
 It also checks `current_user = idp_admin` first, because connecting as a superuser
 would make every other assertion pass for the wrong reason.
+
+## One thing this found
+
+`SET LOCAL app.org_id = ?` does not work: PostgreSQL accepts no bind parameters in
+SET. The tempting fix is to interpolate the value into the string, which would turn
+the org id into an injection vector on the single call whose entire purpose is
+tenant isolation. The correct form is:
+
+    SELECT set_config('app.org_id', ?, true)
+
+parameterisable, with `is_local = true` giving exactly SET LOCAL semantics.

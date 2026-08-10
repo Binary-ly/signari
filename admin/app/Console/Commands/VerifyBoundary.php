@@ -98,7 +98,17 @@ class VerifyBoundary extends Command
         } else {
             // SET LOCAL inside a transaction. The context must evaporate at commit.
             $scoped = DB::transaction(function () use ($org) {
-                DB::statement('SET LOCAL app.org_id = ?', [$org]);
+                // NOT "SET LOCAL app.org_id = ?" -- PostgreSQL does not accept bind
+                // parameters in SET, and interpolating the value into the string
+                // would make the org id an injection vector on the one call whose
+                // whole job is tenant isolation.
+                //
+                // set_config(name, value, is_local) is the parameterisable form, and
+                // is_local = true gives exactly SET LOCAL semantics: it reverts at
+                // commit and cannot leak to the next transaction on a pooled
+                // connection.
+                DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org]);
+
                 return (int) DB::selectOne('SELECT count(*) AS c FROM core_v1.users')->c;
             });
             $check('ADR-006: core_v1.users returns rows WITH org context', $scoped > 0, "rows={$scoped}");

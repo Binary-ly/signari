@@ -228,6 +228,11 @@ func Ensure(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootKe
 // timestamp or a counter tells an attacker about your rotation schedule, and a
 // kid derived from the public key means rotating to the same key material
 // silently reuses an id.
+// NewKID is the exported form, for callers that mint a key outside this package
+// (the rotate command). It exists so a caller cannot be tempted to invent its own
+// scheme -- the properties above are the whole point.
+func NewKID() string { return newKID() }
+
 func newKID() string {
 	b := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {

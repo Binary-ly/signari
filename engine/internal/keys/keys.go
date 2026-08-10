@@ -213,6 +213,31 @@ func NewSet(keys ...Key) (*Set, error) {
 	return s, nil
 }
 
+// Keys returns every published key, whatever its state.
+//
+// A copy, so a caller building a rotation cannot mutate the live set out from
+// under the server that is signing with it.
+func (s *Set) Keys() []Key {
+	out := make([]Key, len(s.keys))
+	copy(out, s.keys)
+	return out
+}
+
+// WithState returns k in a different state, for persisting a rotation step.
+//
+// PublishedAt is carried over unchanged, and that is the important part: it is
+// what every dwell-time calculation is measured from. Re-stamping it on promotion
+// would restart the clock and make the "published long enough" guarantee
+// unfalsifiable -- the key would always look freshly published.
+func WithState(k Key, state State) (Key, error) {
+	switch state {
+	case StateNext, StateActive, StatePassive:
+	default:
+		return nil, fmt.Errorf("unknown key state %q", state)
+	}
+	return NewSoftwareKey(k.KID(), k.Algorithm(), state, k.Signer(), k.PublishedAt())
+}
+
 // Active returns the key currently signing for alg.
 func (s *Set) Active(alg Algorithm) (Key, error) {
 	for _, k := range s.keys {

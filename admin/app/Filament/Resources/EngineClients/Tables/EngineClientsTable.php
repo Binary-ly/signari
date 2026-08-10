@@ -21,14 +21,14 @@ class EngineClientsTable
 
                 TextColumn::make('client_type')
                     ->badge()
-                    ->color(fn (string $s): string => $s === 'confidential' ? 'success' : 'info'),
+                    ->color(fn (string $state): string => $state === 'confidential' ? 'success' : 'info'),
 
                 IconColumn::make('enabled')
                     ->boolean()
                     // Disabled is read from the database on every request, never
                     // cached -- a disabled client stops working on the very next
                     // call, which is the CVE class this design defends against.
-                    ->tooltip(fn ($r): string => $r->enabled
+                    ->tooltip(fn ($record): string => $record->enabled
                         ? 'Enabled'
                         : 'Disabled -- rejected on the next request, not the next cache refresh'),
 
@@ -61,7 +61,7 @@ class EngineClientsTable
                     ->toggleable(isToggledHiddenByDefault: true),
 
                 TextColumn::make('access_token_ttl_s')->label('AT TTL')
-                    ->formatStateUsing(fn (int $s): string => $s.'s')
+                    ->formatStateUsing(fn (int $state): string => $state.'s')
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([

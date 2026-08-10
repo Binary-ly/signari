@@ -23,8 +23,19 @@
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
-        <env name="DB_CONNECTION" value="sqlite"/>
-        <env name="DB_DATABASE" value=":memory:"/>
+        <!--
+            Deliberately NOT overridden to sqlite.
+
+            Everything this console's correctness depends on is PostgreSQL-only:
+            FORCE ROW LEVEL SECURITY, set_config, the core_v1 views, and the
+            GRANT/REVOKE boundary in ADR-004. On sqlite every one of those is
+            absent, so the suite would pass while proving nothing about the thing
+            most likely to be wrong. Tests run against the configured pgsql
+            database and must clean up after themselves. RefreshDatabase would try
+            to drop schemas the admin role cannot touch, which is the boundary
+            working as designed.
+        -->
+        <env name="DB_CONNECTION" value="pgsql"/>
         <env name="DB_URL" value=""/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>

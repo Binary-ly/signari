@@ -2,6 +2,7 @@
 
 namespace App\Providers\Filament;
 
+use App\Http\Middleware\ScopeToOrganisation;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -52,8 +53,18 @@ class AdminPanelProvider extends PanelProvider
                 DisableBladeIconComponents::class,
                 DispatchServingFilamentEvent::class,
             ])
+            /*
+             * authMiddleware, not middleware. ScopeToOrganisation resolves the
+             * organisation from $request->user(), which is only populated once
+             * Authenticate has run -- registered in the outer stack it would find
+             * null on every request, set no context, and leave the console
+             * permanently empty while looking correctly wired.
+             *
+             * Order matters within this list too: it must come after Authenticate.
+             */
             ->authMiddleware([
                 Authenticate::class,
+                ScopeToOrganisation::class,
             ]);
     }
 }

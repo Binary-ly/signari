@@ -95,7 +95,17 @@ return [
             'charset' => env('DB_CHARSET', 'utf8'),
             'prefix' => '',
             'prefix_indexes' => true,
-            'search_path' => 'public',
+            /*
+             * `admin`, not `public`. Migration 0001 revokes everything on public
+             * and creates a schema `admin` owned by idp_admin precisely so the
+             * console's own tables (users, sessions, jobs, cache) live somewhere
+             * the engine role cannot read or write -- the boundary runs both ways.
+             *
+             * `core_v1` is on the path so the read-model Eloquent models resolve,
+             * but note they name their views explicitly (`core_v1.users`), so the
+             * path is a convenience, not the mechanism.
+             */
+            'search_path' => env('DB_SEARCH_PATH', 'admin,core_v1'),
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 

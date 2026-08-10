@@ -1,7 +1,7 @@
 # Laravel admin
 
 The Laravel skeleton and `app/Console/Commands/VerifyBoundary.php` are committed.
-## Status: boundary verified, UI not built
+## Status: boundary verified, read model built, UI pending
 
 Laravel 13.24 installed. `php artisan idp:verify-boundary` passes 6/6 against a
 migrated database.
@@ -49,3 +49,32 @@ tenant isolation. The correct form is:
     SELECT set_config('app.org_id', ?, true)
 
 parameterisable, with `is_local = true` giving exactly SET LOCAL semantics.
+
+
+## Read model
+
+Filament v4.12.6 installed. `App\Models\EngineUser` points Eloquent at
+`core_v1.users` -- the versioned read-only view -- because ADR-004 leaves the admin
+no access to `core` at all. The view is a contract the engine holds stable while
+the physical tables move underneath it, which is the same mechanism that makes its
+zero-downtime migrations possible.
+
+`php artisan idp:read-model-smoke --org=<uuid>` asserts 7 properties, including
+that every write path throws rather than reaching the database. Postgres would
+refuse them regardless, but a raw PDO permission error surfacing from inside
+Filament is a poor way to learn an architectural rule -- the exception names
+ADR-004 and says writes go through the engine Admin API.
+
+`App\Http\Middleware\ScopeToOrganisation` sets the org context per request:
+
+- `set_config('app.org_id', ?, true)` -- NOT `SET LOCAL app.org_id = ?`, which
+  PostgreSQL rejects (no bind parameters in SET) and whose obvious workaround,
+  string interpolation, would make the org id an injection vector on the one call
+  whose entire purpose is tenant isolation.
+- The whole request is wrapped in a transaction, because `is_local = true` reverts
+  at commit -- with no transaction there is nothing for it to be local to, and it
+  leaks to the next request on that pooled connection.
+- The org comes from the authenticated admin's own record, never a query string or
+  header. A tenant selector an attacker can set is not a tenant boundary.
+- No organisation means no context, which means zero rows. A missing scope must
+  never widen access.

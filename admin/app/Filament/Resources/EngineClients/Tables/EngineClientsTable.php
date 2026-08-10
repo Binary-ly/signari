@@ -2,12 +2,16 @@
 
 namespace App\Filament\Resources\EngineClients\Tables;
 
+use App\Services\EngineAdminApi;
+use Filament\Actions\Action;
+use Filament\Notifications\Notification;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use RuntimeException;
 
 class EngineClientsTable
 {
@@ -80,7 +84,9 @@ class EngineClientsTable
                     ->label('No back-channel logout endpoint')
                     ->query(fn (Builder $q): Builder => $q->whereNull('backchannel_logout_uri')),
             ])
-            ->recordActions([])
+            ->recordActions([
+                self::toggleEnabledAction(),
+            ])
             ->toolbarActions([])
             ->defaultSort('created_at', 'desc')
             ->emptyStateHeading('No clients in scope')
@@ -88,5 +94,59 @@ class EngineClientsTable
                 'Rows are scoped to your organisation by row-level security. '.
                 'An empty table means no organisation context, not an empty registry.'
             );
+    }
+
+    /**
+     * Enable or disable a client through the engine's Admin API.
+     *
+     * This does NOT write to the database. It cannot: idp_admin has no privilege
+     * on schema core (ADR-004), and core_v1.clients is a read-only view. The
+     * engine owns the write, and owning it is what guarantees config_version is
+     * bumped in the same transaction -- an update issued from here would be
+     * durable but invisible to every running node.
+     *
+     * Disabling is the operator's emergency stop for a leaked client secret, so
+     * it is worth being precise about what it promises: the engine reads
+     * `enabled` on the request path, so rejection begins with the next request,
+     * not the next cache refresh.
+     */
+    private static function toggleEnabledAction(): Action
+    {
+        return Action::make('toggleEnabled')
+            ->label(fn ($record): string => $record->enabled ? 'Disable' : 'Enable')
+            ->icon(fn ($record): string => $record->enabled ? 'heroicon-m-no-symbol' : 'heroicon-m-check-circle')
+            ->color(fn ($record): string => $record->enabled ? 'danger' : 'success')
+            ->requiresConfirmation()
+            ->modalHeading(fn ($record): string => ($record->enabled ? 'Disable ' : 'Enable ').$record->client_id)
+            // Said plainly, because the blast radius of disabling a live client is
+            // every sign-in through it, starting immediately.
+            ->modalDescription(fn ($record): string => $record->enabled
+                ? 'Every authorization and token request from this client starts failing on the next request. Sessions already issued are not revoked.'
+                : 'This client can request authorization and tokens again from the next request.')
+            ->action(function ($record): void {
+                try {
+                    $version = EngineAdminApi::fromConfig()
+                        ->setClientEnabled($record->client_id, ! $record->enabled);
+                } catch (RuntimeException $e) {
+                    // The engine refused or is unreachable. Nothing changed, and
+                    // saying so beats a green toast over a failed write.
+                    Notification::make()
+                        ->title('Nothing was changed')
+                        ->body($e->getMessage())
+                        ->danger()
+                        ->persistent()
+                        ->send();
+
+                    return;
+                }
+
+                Notification::make()
+                    ->title($record->enabled ? 'Client disabled' : 'Client enabled')
+                    // The version is the operator's evidence the change reached
+                    // the engine rather than merely the database.
+                    ->body("Engine config version is now {$version}.")
+                    ->success()
+                    ->send();
+            });
     }
 }

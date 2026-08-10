@@ -67,3 +67,41 @@ Recorded honestly, so a red result is read correctly rather than explained away:
 
     ./setup.sh    # bring up the stack, register both clients, print the config
     ./run.sh      # execute the plan via scripts/run-test-plan.py
+
+
+## Where this got to, and the honest limit
+
+The engine's side of the flow is **verified working** by the suite's own log:
+
+    Incoming HTTP request to /test/a/idp/callback
+    url: .../callback?code=q_qz6FNQpPQqVbenkjBlt4FLwmeJFxaCYah239U-yyE&iss=https%3A%2F...
+
+We issue a valid authorization code carrying `iss` (RFC 9207) to a registered
+redirect URI, and the suite receives it. 721 conditions passed across 36 modules.
+
+Two blockers were found and one was fixed:
+
+1. **FIXED -- alias conflict.** `run-test-plan.py` parallelises by default, and every
+   module in a plan shares `alias: idp`, so each new module interrupted the previous
+   one. **Use `--no-parallel`.** This accounted for ~30 of the INTERRUPTED results.
+
+2. **NOT FIXED -- the suite's WebRunner stalls after the callback.** With serial
+   execution the module still sits in WAITING after
+   "Created random implicit submission URL" / "Completed processing of webpage".
+   The browser never returns to submit. The suite hardcodes `HtmlUnitDriver`
+   (`BrowserControl.java:312`, a `ResponseCodeHtmlUnitDriver` subclass) with no
+   configuration to substitute a real browser.
+
+   The logged JavaScript error is a red herring worth recording so nobody chases it:
+
+       org.htmlunit.ScriptException: syntax error
+         (https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.min.js#6)
+
+   That is HtmlUnit failing to parse Bootstrap on the SUITE'S OWN results page, and
+   `setThrowExceptionOnScriptError(false)` means it is logged and ignored.
+
+**Recommended next step:** stop building the suite locally. Use the OIDF's hosted
+instance at https://www.certification.openid.net against a publicly reachable
+deployment of the engine. Local self-hosting of the suite is supported but the
+browser automation is the fragile part, and certification requires a public
+deployment anyway.

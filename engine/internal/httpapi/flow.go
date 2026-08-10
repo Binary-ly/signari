@@ -324,7 +324,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			Scan(&authTime, &acr, &amr); err != nil {
 			return nil, nil, fmt.Errorf("loading session context: %w", err)
 		}
-		idt, err := signer.SignIDToken(tokens.IDTokenClaims{
+		claims := tokens.IDTokenClaims{
 			Issuer:          s.cfg.Issuer,
 			Subject:         userID,
 			Audience:        c.ClientID,
@@ -337,7 +337,12 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			SessionID:       sid,
 			AuthorizedParty: c.ClientID,
 			AccessTokenHash: atHash,
-		})
+		}
+		if err := s.addProfileClaims(ctx, tx, &claims, userID, scopes); err != nil {
+			return nil, nil, err
+		}
+
+		idt, err := signer.SignIDToken(claims)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -395,6 +400,54 @@ func containsScope(scopes []string, want string) bool {
 // token is detectable exactly once -- when the legitimate client and the thief
 // both try to use the same generation -- so the response is to destroy the whole
 // lineage rather than the single token.
+// addProfileClaims puts the identity claims in the ID token itself.
+//
+// These were advertised in claims_supported and only ever available from
+// userinfo, which forces every relying party into a second round trip for an
+// email address they were told the ID token carries.
+//
+// Release is strictly by granted scope, and `profile` and `email` are separate
+// grants that must not leak into each other -- the same rule userinfo applies,
+// deliberately duplicated here rather than assumed, because two endpoints
+// disagreeing about which scope releases what is how data escapes.
+//
+// A user who no longer exists or is deactivated is an ERROR, not an empty claim
+// set: minting an authentication statement about a deactivated account is the
+// one outcome that must not happen quietly.
+func (s *Server) addProfileClaims(ctx context.Context, tx pgx.Tx,
+	claims *tokens.IDTokenClaims, userID string, scopes []string) error {
+
+	wantEmail := containsScope(scopes, "email")
+	wantProfile := containsScope(scopes, "profile")
+	if !wantEmail && !wantProfile {
+		return nil
+	}
+
+	var email, username string
+	var verified bool
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(email,''), COALESCE(username,''), email_verified_at IS NOT NULL
+		FROM core.users WHERE id = $1 AND status = 'active'`, userID).
+		Scan(&email, &username, &verified); err != nil {
+		return fmt.Errorf("loading identity claims for %s: %w", userID, err)
+	}
+
+	if wantEmail && email != "" {
+		claims.Email = email
+		// A pointer, so `false` is emitted rather than dropped by omitempty.
+		// "email_verified absent" and "email_verified false" mean different
+		// things to a relying party deciding whether to trust the address.
+		claims.EmailVerified = &verified
+	}
+	if wantProfile {
+		claims.Username = username
+		// No `name`: there is no display name stored anywhere, so there is
+		// nothing honest to put in it. It has been removed from claims_supported
+		// rather than emitted empty.
+	}
+	return nil
+}
+
 // handleClientCredentialsGrant issues a token for the client itself.
 //
 // There is no user here, and every difference from the other grants follows from

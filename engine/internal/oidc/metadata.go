@@ -160,7 +160,9 @@ func Build(cfg Config) (*Metadata, error) {
 		ClaimsSupported: []string{
 			"iss", "sub", "aud", "exp", "iat", "auth_time", "nonce",
 			"acr", "amr", "azp", "sid", "email", "email_verified",
-			"name", "preferred_username",
+			// No "name": nothing stores a display name, and advertising a claim
+			// that is never emitted is the failure this file exists to prevent.
+			"preferred_username",
 		},
 
 		AuthorizationResponseIssParamSupported: true,

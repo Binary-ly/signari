@@ -115,3 +115,45 @@ func HasScope(scope, want string) bool {
 }
 
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
+
+// VerifyIDTokenAudience verifies an ID token and returns its audience.
+//
+// Used for `id_token_hint` at the end-session endpoint, where the only question is
+// which client is asking. Expiry is deliberately NOT enforced: a user signing out
+// after their ID token expired is the normal case, and refusing the hint would
+// make logout harder precisely when it matters. The signature and issuer still
+// must check out, so the hint cannot be forged.
+func VerifyIDTokenAudience(set *keys.Set, issuer, raw string) (string, error) {
+	permitted := []jose.SignatureAlgorithm{jose.RS256, jose.ES256, jose.PS256, jose.EdDSA}
+	tok, err := jose.ParseSigned(raw, permitted)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidToken, err)
+	}
+	if len(tok.Signatures) != 1 {
+		return "", fmt.Errorf("%w: expected exactly one signature", ErrInvalidToken)
+	}
+	h := tok.Signatures[0].Header
+	if h.JSONWebKey != nil || h.ExtraHeaders[jose.HeaderKey("jku")] != nil ||
+		h.ExtraHeaders[jose.HeaderKey("x5u")] != nil {
+		return "", fmt.Errorf("%w: token carries its own key material", ErrInvalidToken)
+	}
+	key, ok := set.ByKID(h.KeyID)
+	if !ok {
+		return "", fmt.Errorf("%w: unknown kid", ErrInvalidToken)
+	}
+	if string(key.Algorithm()) != h.Algorithm {
+		return "", fmt.Errorf("%w: kid/alg mismatch", ErrInvalidToken)
+	}
+	payload, err := tok.Verify(key.Signer().Public())
+	if err != nil {
+		return "", fmt.Errorf("%w: signature does not verify", ErrInvalidToken)
+	}
+	var c IDTokenClaims
+	if err := json.Unmarshal(payload, &c); err != nil {
+		return "", fmt.Errorf("%w: malformed claims", ErrInvalidToken)
+	}
+	if c.Issuer != issuer {
+		return "", fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
+	}
+	return c.Audience, nil
+}

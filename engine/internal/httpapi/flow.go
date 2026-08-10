@@ -111,6 +111,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		RedirectURI:         req.RedirectURI,
 		CodeChallenge:       req.CodeChallenge,
 		CodeChallengeMethod: req.CodeChallengeMethod,
+		Nonce:               req.Nonce,
 		Scopes:              splitScopes(req.Scope),
 		ExpiresAt:           time.Now().Add(codeTTL),
 	}
@@ -273,7 +274,7 @@ type tokenResponse struct {
 // family on every refresh would make reuse detection impossible: there would be
 // nothing to revoke.
 func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
-	orgID, userID, sid string, scopes, resources []string, familyID string) (*tokenResponse, []byte, error) {
+	orgID, userID, sid, nonce string, scopes, resources []string, familyID string) (*tokenResponse, []byte, error) {
 
 	alg := keys.Algorithm(c.IDTokenAlg)
 	key, err := s.cfg.Keys.Active(alg)
@@ -335,6 +336,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			AuthTime:        authTime.Unix(),
 			ACR:             acr,
 			AMR:             amr,
+			Nonce:           nonce,
 			SessionID:       sid,
 			AuthorizedParty: c.ClientID,
 			AccessTokenHash: atHash,
@@ -369,12 +371,15 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 }
 
 func (s *Server) mintTokens(ctx context.Context, tx pgx.Tx, c *clients.Client, g *store.ConsumedCode) (*tokenResponse, error) {
-	resp, _, err := s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, g.Scopes, g.Resources, "")
+	resp, _, err := s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, g.Nonce, g.Scopes, g.Resources, "")
 	return resp, err
 }
 
 func (s *Server) mintFromGrant(ctx context.Context, tx pgx.Tx, c *clients.Client, g *store.RefreshGrant) (*tokenResponse, []byte, error) {
-	return s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, g.Scopes, g.Resources, g.FamilyID)
+	// No nonce on refresh: the claim belongs to the original authorization
+	// request, and re-emitting a stale one would assert a binding that no longer
+	// corresponds to any live client request.
+	return s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, "", g.Scopes, g.Resources, g.FamilyID)
 }
 
 func containsScope(scopes []string, want string) bool {
@@ -711,10 +716,22 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	// link that looks like a sign-out, which is a good phishing pretext.
 	target := q.Get("post_logout_redirect_uri")
 	if target != "" {
+		// Scoped to the CLIENT, not global. The previous query asked only whether
+		// SOME client had registered this URI, so any client's registered
+		// post-logout URI worked for every other client -- a redirect reachable
+		// from a link that looks like a sign-out, which is a good phishing pretext.
+		//
+		// The client is identified by client_id, or derived from id_token_hint when
+		// the caller follows the spec and sends one.
+		clientID := q.Get("client_id")
+		if clientID == "" {
+			clientID = s.clientFromIDTokenHint(q.Get("id_token_hint"))
+		}
 		var ok bool
-		if err := s.db.QueryRow(ctx,
-			`SELECT true FROM core.client_post_logout_redirect_uris WHERE redirect_uri = $1`,
-			target).Scan(&ok); err != nil || !ok {
+		if err := s.db.QueryRow(ctx, `
+			SELECT true FROM core.client_post_logout_redirect_uris
+			WHERE redirect_uri = $1 AND client_id = $2`,
+			target, clientID).Scan(&ok); err != nil || !ok {
 			writeError(w, http.StatusBadRequest, "invalid_request",
 				"post_logout_redirect_uri is not registered")
 			return
@@ -731,4 +748,22 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "signed out"})
+}
+
+// clientFromIDTokenHint reads the audience of an id_token_hint.
+//
+// The hint is used ONLY to identify which client is asking, never to authorise
+// anything: the post-logout URI is still checked against that client's registered
+// set. A hint that fails to verify yields "" and the redirect is refused, which is
+// the safe direction.
+func (s *Server) clientFromIDTokenHint(hint string) string {
+	if hint == "" {
+		return ""
+	}
+	claims, err := tokens.VerifyIDTokenAudience(s.cfg.Keys, s.cfg.Issuer, hint)
+	if err != nil {
+		s.log.Info("id_token_hint did not verify", "err", err)
+		return ""
+	}
+	return claims
 }

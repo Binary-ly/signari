@@ -114,9 +114,13 @@ type GrantRecord struct {
 	RedirectURI         string
 	CodeChallenge       string
 	CodeChallengeMethod string
-	Scopes              []string
-	ExpiresAt           time.Time
-	ConsumedAt          *time.Time
+	// Nonce binds the ID token to the client's own authorization request. Without
+	// it an ID token can be replayed into a different session, which is the whole
+	// reason OIDC requires the claim to be echoed verbatim.
+	Nonce      string
+	Scopes     []string
+	ExpiresAt  time.Time
+	ConsumedAt *time.Time
 }
 
 // ValidateCodeRedemption checks a code exchange.

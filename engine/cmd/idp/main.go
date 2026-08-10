@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sulimanbenhalim/idp/engine/internal/adminapi"
 	"github.com/sulimanbenhalim/idp/engine/internal/httpapi"
 	"github.com/sulimanbenhalim/idp/engine/internal/keys"
 	"github.com/sulimanbenhalim/idp/engine/internal/migrate"
@@ -74,6 +75,7 @@ func run(args []string) error {
 	addr := fs.String("addr", ":8080", "listen address for `serve`")
 	tlsCert := fs.String("tls-cert", os.Getenv("IDP_TLS_CERT"), "PEM certificate chain; enables HTTPS")
 	tlsKey := fs.String("tls-key", os.Getenv("IDP_TLS_KEY"), "PEM private key")
+	adminAddr := fs.String("admin-addr", os.Getenv("IDP_ADMIN_ADDR"), "listen address for the admin API (empty = disabled)")
 	email := fs.String("email", "", "user email")
 	password := fs.String("password", "", "user password")
 	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
@@ -132,7 +134,7 @@ func run(args []string) error {
 	case "client create":
 		return clientCreate(ctx, conn, *clientID, *redirect, *public)
 	case "serve":
-		return serve(conn, *addr, *tlsCert, *tlsKey)
+		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr)
 	default:
 		return usage()
 	}
@@ -188,7 +190,7 @@ func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) er
 	return nil
 }
 
-func serve(conn *pgx.Conn, addr, tlsCert, tlsKey string) error {
+func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -245,6 +247,29 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey string) error {
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go outbox.New(pool, set, issuer, log).Run(workerCtx, 2*time.Second)
+
+	// The admin API listens on its OWN address, and is off unless one is given.
+	// It is the write surface for the entire identity provider; exposing it on
+	// the same public listener as the protocol endpoints would put it one
+	// misconfigured route away from the internet. Bind it to a private interface.
+	if adminAddr != "" {
+		adminToken := os.Getenv("IDP_ADMIN_TOKEN")
+		adminSrv, err := adminapi.New(pool, log, adminToken)
+		if err != nil {
+			return fmt.Errorf("admin API: %w", err)
+		}
+		go func() {
+			log.Info("admin API listening", "addr", adminAddr)
+			ah := &http.Server{
+				Addr:              adminAddr,
+				Handler:           adminSrv.Routes(),
+				ReadHeaderTimeout: 10 * time.Second,
+			}
+			if err := ah.ListenAndServe(); err != nil {
+				log.Error("admin API stopped", "err", err)
+			}
+		}()
+	}
 
 	h := &http.Server{
 		Addr:    addr,

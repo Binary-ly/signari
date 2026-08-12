@@ -60,6 +60,43 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A live session is NOT automatically sufficient. This is where a step-up
+	// requirement becomes real: acr_values, max_age and prompt=login are each a
+	// client saying it does not trust what we already have.
+	//
+	// Re-evaluated per authorization request, deliberately. Treating acr as a
+	// property frozen at login is a genuine bypass -- a password-only session
+	// would satisfy every future multi-factor demand for as long as it lives.
+	if live {
+		var authTime time.Time
+		var amr []string
+		if err := s.db.QueryRow(ctx,
+			`SELECT auth_time, amr FROM core.sessions WHERE sid = $1`, sid).Scan(&authTime, &amr); err != nil {
+			s.log.Error("loading session context for step-up", "err", err)
+			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
+				Description: "could not verify session", Disposition: oauth.DispositionRedirect})
+			return
+		}
+		if reason, detail := oauth.SessionSufficient(amr, authTime, time.Now(),
+			req.ACRValues, req.MaxAge, req.Prompt); reason != oauth.StepUpNone {
+			s.log.Info("step-up required", "sid", sid, "reason", reason,
+				"correlation_id", correlationID(ctx))
+			// The session stays live. Step-up asks for another factor; it does
+			// not throw away an authentication that was legitimately performed.
+			live = false
+
+			// prompt=none plus an unmet requirement is unsatisfiable by
+			// definition: the client forbade interaction and we need some.
+			if req.Prompt == "none" {
+				s.writeAuthzError(w, r, req, &oauth.AuthzError{
+					Code:        stepUpErrorCode(reason),
+					Description: detail,
+					Disposition: oauth.DispositionRedirect})
+				return
+			}
+		}
+	}
+
 	if !live {
 		// prompt=none means "do not interact". A client asking for silent
 		// authentication must get an error it can handle, not a login page.
@@ -992,4 +1029,17 @@ func (s *Server) clientFromIDTokenHint(hint string) string {
 		return ""
 	}
 	return claims
+}
+
+// stepUpErrorCode maps a step-up reason to the OIDC error a client can act on.
+//
+// The distinction matters: login_required tells a client to send the user to
+// interactive sign-in, while unmet_authentication_requirements (RFC 9470) tells
+// it the requirement itself could not be met. A client that retries the wrong
+// one loops forever.
+func stepUpErrorCode(r oauth.StepUpReason) string {
+	if r == oauth.StepUpNeedStronger {
+		return "unmet_authentication_requirements"
+	}
+	return "login_required"
 }

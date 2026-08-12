@@ -4,6 +4,7 @@ package oauth
 import (
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"signari.dev/engine/internal/clients"
@@ -21,6 +22,8 @@ type AuthzRequest struct {
 	CodeChallengeMethod string
 	ResponseMode        string
 	Prompt              string
+	ACRValues           string
+	MaxAge              *int
 	Resources           []string // RFC 8707 `resource`, repeatable
 }
 
@@ -39,7 +42,12 @@ func ParseAuthz(q url.Values) AuthzRequest {
 		CodeChallengeMethod: q.Get("code_challenge_method"),
 		ResponseMode:        q.Get("response_mode"),
 		Prompt:              q.Get("prompt"),
-		Resources:           q["resource"],
+		ACRValues:           q.Get("acr_values"),
+		// A POINTER, so "absent" and "max_age=0" stay distinguishable. They mean
+		// opposite things: absent is "reuse whatever you have", zero is
+		// "authenticate right now".
+		MaxAge:    parseMaxAge(q.Get("max_age")),
+		Resources: q["resource"],
 	}
 }
 
@@ -251,4 +259,20 @@ func containsStr(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// parseMaxAge reads the max_age parameter, ignoring anything malformed.
+//
+// A negative or unparsable value is treated as absent rather than as an error:
+// OIDC does not define a failure for it, and refusing the whole authorization
+// request over a malformed optional hint is worse for the user than ignoring it.
+func parseMaxAge(s string) *int {
+	if s == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return nil
+	}
+	return &n
 }

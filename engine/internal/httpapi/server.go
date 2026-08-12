@@ -70,6 +70,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST "+oidc.PathIntrospection, s.handleIntrospect)
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.rateLimitedLogin)
+	mux.HandleFunc("POST /login/mfa", s.handleMFAPost)
 	return mux
 }
 

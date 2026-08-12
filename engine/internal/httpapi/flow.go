@@ -714,6 +714,57 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Lazy rehash, before either branch: a successful password check upgrades a
+	// foreign or below-policy hash whether or not a second factor follows.
+	if needsRehash {
+		if fresh, herr := s.hasher.Hash(ctx, password); herr == nil {
+			if _, err := s.db.Exec(ctx, `
+				UPDATE core.password_credentials
+				SET hash = $2, algorithm = 'argon2id', is_current = true, updated_at = now()
+				WHERE user_id = $1`, userID, fresh); err != nil {
+				s.log.Error("rehashing password", "err", err)
+			}
+		}
+	}
+
+	// A correct password does NOT create a session when a second factor is
+	// enrolled. It creates a pending authentication that can do nothing but
+	// present a code -- otherwise a stolen password alone has already produced
+	// something usable, which is the whole thing MFA exists to prevent.
+	enrolled, err := store.HasConfirmedTOTP(ctx, s.db, userID)
+	if err != nil {
+		s.log.Error("checking second factor", "err", err)
+		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
+		return
+	}
+	if enrolled {
+		s.beginMFAChallenge(w, r, userID, orgID, authzQuery, []string{oauth.AMRPassword})
+		return
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	s.completeSignIn(w, r, tx, userID, orgID, []string{oauth.AMRPassword}, authzQuery)
+}
+
+// completeSignIn creates the session once every required factor is proven.
+//
+// Shared by the password-only path and the second-factor path so there is ONE
+// place a session comes into existence. Two paths would eventually disagree
+// about acr, or about auditing, and the MFA one would be the one that drifted.
+//
+// It takes an open transaction and commits it: the session row, the audit entry
+// and any second-factor state must land together or not at all.
+func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx,
+	userID, orgID string, amr []string, authzQuery string) {
+
+	ctx := r.Context()
+
 	// Two independent random values: a public sid that goes in tokens, and a
 	// secret cookie token that never leaves the browser. Deriving one from the
 	// other would collapse them back into a single value.
@@ -728,17 +779,14 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	// acr is DERIVED from the factors actually used, never asserted. Writing a
+	// literal here is how a password-only session ends up claiming multi-factor.
+	acr := oauth.ACRFromAMR(amr)
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO core.sessions (sid, cookie_hash, org_id, user_id, acr, amr, auth_time, not_after)
-		VALUES ($1, $2, $3, $4, '1', ARRAY['pwd'], now(), now() + $5::interval)`,
-		sid, store.HashToken(cookieToken), orgID, userID, sessionTTL.String()); err != nil {
+		VALUES ($1, $2, $3, $4, $5, $6, now(), now() + $7::interval)`,
+		sid, store.HashToken(cookieToken), orgID, userID, acr, amr, sessionTTL.String()); err != nil {
 		s.log.Error("creating session", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -749,7 +797,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		OrgID:         orgID,
 		SubjectID:     userID,
 		CorrelationID: correlationID(ctx),
-		Detail:        map[string]any{"amr": []string{"pwd"}},
+		Detail:        map[string]any{"amr": amr, "acr": acr},
 	}); err != nil {
 		// Rule 4 of the package doc: no record, no session. A sign-in nobody can
 		// prove happened is exactly what an investigation cannot work with.
@@ -758,24 +806,12 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Lazy rehash: a successful login silently upgrades a foreign or
-	// below-policy hash, inside the same transaction as the login.
-	if needsRehash {
-		if fresh, herr := s.hasher.Hash(ctx, password); herr == nil {
-			if _, err := tx.Exec(ctx, `
-				UPDATE core.password_credentials
-				SET hash = $2, algorithm = 'argon2id', is_current = true, updated_at = now()
-				WHERE user_id = $1`, userID, fresh); err != nil {
-				s.log.Error("rehashing password", "err", err)
-			}
-		}
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
+	s.clearPending(w)
 	s.setSessionCookie(w, cookieToken)
 
 	// Back to the parked authorization request, if there was one.

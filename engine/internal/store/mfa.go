@@ -276,3 +276,24 @@ func hashRecoveryCode(code string) []byte {
 func ConstantTimeCodeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
+
+// HasConfirmedTOTP reports whether a user has a usable second factor.
+//
+// Checked on the pool, not in a transaction, and deliberately cheap: it runs on
+// every password sign-in. `confirmed_at` is what matters -- an enrolment the
+// user never proved must not block them out of their own account.
+func HasConfirmedTOTP(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID string) (bool, error) {
+	var confirmed bool
+	err := db.QueryRow(ctx, `
+		SELECT confirmed_at IS NOT NULL FROM core.totp_credentials
+		WHERE user_id = $1::uuid`, userID).Scan(&confirmed)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking for a second factor: %w", err)
+	}
+	return confirmed, nil
+}

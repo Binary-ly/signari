@@ -433,6 +433,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	srv, err := httpapi.New(oidc.Config{
 		Issuer:              issuer,
 		Keys:                set,
+		Root:                root,
 		AllowInsecureIssuer: insecureIssuer,
 	}, pool, log)
 	if err != nil {

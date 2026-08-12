@@ -157,3 +157,54 @@ func VerifyIDTokenAudience(set *keys.Set, issuer, raw string) (string, error) {
 	}
 	return c.Audience, nil
 }
+
+// VerifyTyped verifies a token this server issued for its own internal use and
+// returns the raw payload.
+//
+// The `typ` is checked against an expected value, which is what keeps
+// single-purpose tokens single-purpose: a pending-authentication token must not
+// be accepted where an access token is expected, and vice versa. Enforcing that
+// structurally beats relying on every call site to remember.
+//
+// Deliberately NOT exported for general token verification -- it does not
+// enforce subject, jti or audience, because internal tokens carry their own
+// shape. Callers must validate their own claims after unmarshalling.
+func VerifyTyped(set *keys.Set, issuer, raw, wantTyp string) ([]byte, error) {
+	permitted := []jose.SignatureAlgorithm{jose.RS256, jose.ES256, jose.PS256, jose.EdDSA}
+	tok, err := jose.ParseSigned(raw, permitted)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+	}
+	if len(tok.Signatures) != 1 {
+		return nil, fmt.Errorf("%w: expected exactly one signature", ErrInvalidToken)
+	}
+	h := tok.Signatures[0].Header
+	if h.JSONWebKey != nil || h.ExtraHeaders[jose.HeaderKey("jku")] != nil ||
+		h.ExtraHeaders[jose.HeaderKey("x5u")] != nil {
+		return nil, fmt.Errorf("%w: token carries its own key material", ErrInvalidToken)
+	}
+	if typ, _ := h.ExtraHeaders[jose.HeaderKey("typ")].(string); typ != wantTyp {
+		return nil, fmt.Errorf("%w: typ is %q, want %q", ErrInvalidToken, typ, wantTyp)
+	}
+	key, ok := set.ByKID(h.KeyID)
+	if !ok {
+		return nil, fmt.Errorf("%w: unknown kid", ErrInvalidToken)
+	}
+	if string(key.Algorithm()) != h.Algorithm {
+		return nil, fmt.Errorf("%w: kid/alg mismatch", ErrInvalidToken)
+	}
+	payload, err := tok.Verify(key.PublicJWK().Key)
+	if err != nil {
+		return nil, fmt.Errorf("%w: signature does not verify", ErrInvalidToken)
+	}
+	var probe struct {
+		Issuer string `json:"iss"`
+	}
+	if err := json.Unmarshal(payload, &probe); err != nil {
+		return nil, fmt.Errorf("%w: malformed claims", ErrInvalidToken)
+	}
+	if probe.Issuer != issuer {
+		return nil, fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
+	}
+	return payload, nil
+}

@@ -56,6 +56,11 @@ type Config struct {
 	Issuer string
 	Keys   *keys.Set
 
+	// Root wraps per-subject encryption keys. Needed wherever a stored personal
+	// secret must be read back -- today the TOTP secret. Held here rather than
+	// passed around so there is exactly one place it enters the request path.
+	Root *keys.RootKey
+
 	// AllowInsecureIssuer permits a plaintext issuer on a non-localhost host.
 	//
 	// It exists for exactly one reason: the OIDF conformance suite runs inside a

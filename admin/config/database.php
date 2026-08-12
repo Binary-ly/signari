@@ -109,6 +109,29 @@ return [
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 
+        /*
+         * Test-only. Seeding engine-owned data needs privileges the console does
+         * not have and must never have -- idp_admin cannot read schema core, and
+         * cannot even SET ROLE to something that can. That is ADR-004 working.
+         *
+         * So tests that need to plant engine state use a separate, privileged
+         * connection, exactly as an operator would. It is deliberately NOT the
+         * default connection: nothing in app/ may reach for it.
+         */
+        'maintenance' => [
+            'driver' => 'pgsql',
+            'host' => env('DB_HOST', '127.0.0.1'),
+            'port' => env('DB_PORT', '5432'),
+            'database' => env('DB_DATABASE', 'signari_dev'),
+            'username' => env('DB_MAINTENANCE_USERNAME', env('USER', 'postgres')),
+            'password' => env('DB_MAINTENANCE_PASSWORD', ''),
+            'charset' => 'utf8',
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'core,public',
+            'sslmode' => env('DB_SSLMODE', 'prefer'),
+        ],
+
         'sqlsrv' => [
             'driver' => 'sqlsrv',
             'url' => env('DB_URL'),

@@ -68,6 +68,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET "+oidc.PathEndSession, s.handleEndSession)
 	mux.HandleFunc("POST "+oidc.PathRevocation, s.handleRevoke)
 	mux.HandleFunc("POST "+oidc.PathIntrospection, s.handleIntrospect)
+	mux.HandleFunc("GET /passkey.js", s.handlePasskeyJS)
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.rateLimitedLogin)
 	mux.HandleFunc("POST /login/mfa", s.handleMFAPost)
@@ -138,8 +139,12 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 	// A login page must never be cached: it is per-session and carries state.
 	w.Header().Set("Cache-Control", "no-store")
 	// Defence in depth for a page that renders user-supplied error text.
+	// script-src 'self' -- NOT 'unsafe-inline'. The passkey code is served from
+	// its own path precisely so this page never has to allow inline script, which
+	// would disable script CSP on the one page where an injection is worth most.
 	w.Header().Set("Content-Security-Policy",
-		`default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
+		`default-src 'none'; script-src 'self'; connect-src 'self'; `+
+			`style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.WriteHeader(status)
 	// The reference is only shown alongside an error. On a normal page it is
@@ -167,7 +172,8 @@ var loginPage = template.Must(template.New("login").Parse(`<!doctype html>
 label{display:block;margin:.75rem 0 .25rem}input{width:100%;padding:.5rem;font-size:1rem}
 button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;width:100%}
 .err{color:#b00020;margin:.5rem 0}
-.ref{color:#666;font-size:.85rem;margin:.25rem 0}</style></head>
+.ref{color:#666;font-size:.85rem;margin:.25rem 0}
+.alt{margin-top:1.25rem;border-top:1px solid #e4e4e7;padding-top:1rem}</style></head>
 <body>
 <h1>Sign in</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
@@ -176,11 +182,13 @@ button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;width:100%}
 <input type="hidden" name="authz" value="{{.Authz}}">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 <label for="u">Username or email</label>
-<input id="u" name="username" autocomplete="username" autocapitalize="none" autofocus required>
+<input id="u" name="username" autocomplete="username webauthn" autocapitalize="none" autofocus required>
 <label for="p">Password</label>
 <input id="p" name="password" type="password" autocomplete="current-password" required>
 <button type="submit">Sign in</button>
 </form>
+<p class="alt"><button type="button" id="passkey-signin">Sign in with a passkey</button></p>
+<script src="/passkey.js"></script>
 </body></html>`))
 
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {

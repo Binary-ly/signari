@@ -13,6 +13,7 @@ package passkeys
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -186,4 +187,25 @@ func descriptors(creds []webauthn.Credential) []protocol.CredentialDescriptor {
 		out = append(out, c.Descriptor())
 	}
 	return out
+}
+
+// FinishRegistration verifies the authenticator's attestation response.
+//
+// Delegated straight to the library: this is the part where the cryptography and
+// the many structural checks of the WebAuthn spec live, and second-guessing it
+// is how implementations introduce the bugs the library exists to avoid.
+func (r *Relying) FinishRegistration(u *User, sd webauthn.SessionData, req *http.Request) (*webauthn.Credential, error) {
+	return r.w.FinishRegistration(u, sd, req)
+}
+
+// FinishLogin verifies an assertion for a known user.
+func (r *Relying) FinishLogin(u *User, sd webauthn.SessionData, req *http.Request) (*webauthn.Credential, error) {
+	return r.w.FinishLogin(u, sd, req)
+}
+
+// FinishDiscoverableLogin verifies an assertion where the user was not known in
+// advance; the handler resolves the user from the handle the authenticator
+// returned.
+func (r *Relying) FinishDiscoverableLogin(h webauthn.DiscoverableUserHandler, sd webauthn.SessionData, req *http.Request) (*webauthn.Credential, error) {
+	return r.w.FinishDiscoverableLogin(h, sd, req)
 }

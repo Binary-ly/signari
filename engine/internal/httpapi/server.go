@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/passwords"
 )
@@ -26,9 +27,19 @@ type Server struct {
 	login  *bucket
 	db     *pgxpool.Pool
 	hasher *passwords.Hasher
+	// mailer is never nil: New substitutes a logging driver when no SMTP is
+	// configured, so no call site has to nil-check before telling a user
+	// something important.
+	mailer mail.Sender
 }
 
-func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger) (*Server, error) {
+func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender) (*Server, error) {
+	if mailer == nil {
+		// A nil mailer would mean recovery silently does nothing, which is worse
+		// than not offering it. The logging driver at least puts the link where a
+		// developer can see it and warns on every send.
+		mailer = mail.NewLogSender(log, "noreply@invalid")
+	}
 	// Fail at construction if the metadata is not renderable, rather than serving
 	// 500s from a discovery endpoint that relying parties poll.
 	if _, err := oidc.Build(cfg); err != nil {
@@ -44,6 +55,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger) (*Server, error) {
 		// from turning into memory exhaustion, independent of the semaphore.
 		login:  newBucket(5, 20),
 		hasher: passwords.NewHasher(passwords.MemoryBudgetMiB),
+		mailer: mailer,
 	}, nil
 }
 
@@ -73,6 +85,11 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /login", s.rateLimitedLogin)
 	mux.HandleFunc("POST /login/mfa", s.handleMFAPost)
 	mux.HandleFunc("POST /consent", s.handleConsentPost)
+	mux.HandleFunc("GET /recover", s.handleRecoverGet)
+	mux.HandleFunc("POST /recover", s.handleRecoverPost)
+	mux.HandleFunc("GET /recover/cancel", s.handleRecoverCancel)
+	mux.HandleFunc("GET /recover/reset", s.handleResetGet)
+	mux.HandleFunc("POST /recover/reset", s.handleResetPost)
 	mux.HandleFunc("GET /account/mfa/totp", s.handleTOTPStart)
 	mux.HandleFunc("POST /account/mfa/totp", s.handleTOTPConfirm)
 	mux.HandleFunc("POST /account/passkeys/begin", s.handlePasskeyRegisterBegin)

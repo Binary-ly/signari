@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -26,6 +27,7 @@ import (
 	"signari.dev/engine/internal/httpapi"
 	"signari.dev/engine/internal/janitor"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/migrate"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/outbox"
@@ -423,6 +425,11 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	}
 	defer pool.Close()
 
+	// Mail is optional to START but never optional to HAVE: without SMTP the log
+	// driver keeps account recovery working locally and warns on every send, which
+	// is better than a deployment that looks configured and silently sends nothing.
+	mailer := buildMailer(log)
+
 	insecureIssuer := os.Getenv("SIGNARI_INSECURE_ISSUER") == "1"
 	if insecureIssuer {
 		log.Warn("SIGNARI_INSECURE_ISSUER is set: the issuer may be plaintext HTTP. " +
@@ -435,7 +442,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 		Keys:                set,
 		Root:                root,
 		AllowInsecureIssuer: insecureIssuer,
-	}, pool, log)
+	}, pool, log, mailer)
 	if err != nil {
 		return err
 	}
@@ -676,4 +683,28 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, redirect string
 		fmt.Printf("  client_secret %s\n  (shown once)\n", secret)
 	}
 	return nil
+}
+
+// buildMailer returns an SMTP sender when configured, or the logging driver.
+func buildMailer(log *slog.Logger) mail.Sender {
+	host := os.Getenv("SIGNARI_SMTP_HOST")
+	from := os.Getenv("SIGNARI_MAIL_FROM")
+	if host == "" || from == "" {
+		log.Warn("no SMTP configured (SIGNARI_SMTP_HOST, SIGNARI_MAIL_FROM): " +
+			"account recovery emails will be written to this log instead of sent")
+		return mail.NewLogSender(log, "noreply@invalid")
+	}
+	port := 587
+	if p := os.Getenv("SIGNARI_SMTP_PORT"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			port = n
+		}
+	}
+	return &mail.SMTPSender{
+		Host: host, Port: port,
+		Username: os.Getenv("SIGNARI_SMTP_USERNAME"),
+		Password: os.Getenv("SIGNARI_SMTP_PASSWORD"),
+		FromAddr: from,
+		FromName: os.Getenv("SIGNARI_MAIL_FROM_NAME"),
+	}
 }

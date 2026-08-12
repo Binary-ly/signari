@@ -3,7 +3,7 @@
 The Laravel skeleton and `app/Console/Commands/VerifyBoundary.php` are committed.
 ## Status: boundary verified, read model and users table built
 
-Laravel 13.24 installed. `php artisan idp:verify-boundary` passes 6/6 against a
+Laravel 13.24 installed. `php artisan signari:verify-boundary` passes 6/6 against a
 migrated database.
 
 **Network note for this machine:** `composer install` fails here because
@@ -19,11 +19,11 @@ the checks pass vacuously:
 
     DB_CONNECTION=pgsql
     DB_HOST=127.0.0.1
-    DB_DATABASE=idp
-    DB_USERNAME=idp_admin
+    DB_DATABASE=signari_dev
+    DB_USERNAME=signari_admin
     DB_PASSWORD=...        # set on the role out-of-band
 
-    php artisan idp:verify-boundary --org=<uuid>
+    php artisan signari:verify-boundary --org=<uuid>
 
 ## What that command proves
 
@@ -36,7 +36,7 @@ It asserts the boundary from the side that would benefit from cheating:
 - **pooling safety** the org context does not survive the transaction, so a pooled
   connection cannot hand the next request the previous tenant's scope
 
-It also checks `current_user = idp_admin` first, because connecting as a superuser
+It also checks `current_user = signari_admin` first, because connecting as a superuser
 would make every other assertion pass for the wrong reason.
 
 ## One thing this found
@@ -59,7 +59,7 @@ no access to `core` at all. The view is a contract the engine holds stable while
 the physical tables move underneath it, which is the same mechanism that makes its
 zero-downtime migrations possible.
 
-`php artisan idp:read-model-smoke --org=<uuid>` asserts 7 properties, including
+`php artisan signari:read-model-smoke --org=<uuid>` asserts 7 properties, including
 that every write path throws rather than reaching the database. Postgres would
 refuse them regardless, but a raw PDO permission error surfacing from inside
 Filament is a poor way to learn an architectural rule -- the exception names

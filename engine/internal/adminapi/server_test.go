@@ -17,16 +17,16 @@ const testToken = "0123456789abcdef0123456789abcdef" // 32 chars
 
 func newTestServer(t *testing.T) (*Server, *pgxpool.Pool) {
 	t.Helper()
-	dsn := os.Getenv("IDP_TEST_DSN")
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
 	if dsn == "" {
-		t.Skip("IDP_TEST_DSN not set")
+		t.Skip("SIGNARI_TEST_DSN not set")
 	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := pool.Exec(context.Background(), "SET ROLE idp_maintenance"); err != nil {
+	if _, err := pool.Exec(context.Background(), "SET ROLE signari_maintenance"); err != nil {
 		t.Fatalf("role: %v", err)
 	}
 	s, err := New(pool, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})), testToken)

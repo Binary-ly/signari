@@ -10,17 +10,17 @@ import (
 
 func connect(t *testing.T) *pgx.Conn {
 	t.Helper()
-	dsn := os.Getenv("IDP_TEST_DSN")
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
 	if dsn == "" {
-		t.Skip("IDP_TEST_DSN not set; skipping database-backed tests")
+		t.Skip("SIGNARI_TEST_DSN not set; skipping database-backed tests")
 	}
 	conn, err := pgx.Connect(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	if _, err := conn.Exec(context.Background(), "SET ROLE idp_maintenance"); err != nil {
-		t.Fatalf("assuming idp_maintenance: %v", err)
+	if _, err := conn.Exec(context.Background(), "SET ROLE signari_maintenance"); err != nil {
+		t.Fatalf("assuming signari_maintenance: %v", err)
 	}
 	return conn
 }

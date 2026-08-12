@@ -17,7 +17,7 @@ use Tests\TestCase;
  * The console's only write path.
  *
  * The whole architecture rests on this being an HTTP call and not an UPDATE:
- * idp_admin has no privilege on schema core (ADR-004), and only the engine's
+ * signari_admin has no privilege on schema core (ADR-004), and only the engine's
  * Admin API bumps config_version in the same transaction as the change (ADR-008).
  * A well-meaning refactor to "just save the model" would appear to work in review
  * and fail at the database, so the assertion here is specifically that a request

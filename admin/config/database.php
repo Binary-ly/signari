@@ -97,7 +97,7 @@ return [
             'prefix_indexes' => true,
             /*
              * `admin`, not `public`. Migration 0001 revokes everything on public
-             * and creates a schema `admin` owned by idp_admin precisely so the
+             * and creates a schema `admin` owned by signari_admin precisely so the
              * console's own tables (users, sessions, jobs, cache) live somewhere
              * the engine role cannot read or write -- the boundary runs both ways.
              *

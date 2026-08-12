@@ -99,7 +99,7 @@ class EngineClientsTable
     /**
      * Enable or disable a client through the engine's Admin API.
      *
-     * This does NOT write to the database. It cannot: idp_admin has no privilege
+     * This does NOT write to the database. It cannot: signari_admin has no privilege
      * on schema core (ADR-004), and core_v1.clients is a read-only view. The
      * engine owns the write, and owning it is what guarantees config_version is
      * bumped in the same transaction -- an update issued from here would be

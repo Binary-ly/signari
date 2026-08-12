@@ -64,7 +64,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		const prefix = "Bearer "
 		if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) ||
 			!constantTimeEqual(h[len(prefix):], s.token) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="idp-admin"`)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="signari-admin"`)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}

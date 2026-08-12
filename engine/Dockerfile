@@ -24,7 +24,7 @@ ARG GOFIPS140=off
 # -trimpath keeps build paths out of the binary; they leak directory structure
 # and make builds non-reproducible.
 RUN CGO_ENABLED=0 GOFIPS140=${GOFIPS140} \
-    go build -trimpath -ldflags="-s -w" -o /out/idp ./cmd/idp
+    go build -trimpath -ldflags="-s -w" -o /out/signari ./cmd/signari
 
 # Runtime stage.
 #
@@ -32,7 +32,7 @@ RUN CGO_ENABLED=0 GOFIPS140=${GOFIPS140} \
 # execution inside an identity provider should not find a toolchain waiting.
 FROM gcr.io/distroless/static-debian12:nonroot
 
-COPY --from=build /out/idp /idp
+COPY --from=build /out/signari /signari
 
 # Non-root, from the base image. An IdP has no reason to run as root.
 USER nonroot:nonroot
@@ -41,5 +41,5 @@ EXPOSE 8080
 
 # The engine gates its own startup on the schema fingerprint, so a container that
 # starts at all has already verified it is talking to a database it understands.
-ENTRYPOINT ["/idp"]
+ENTRYPOINT ["/signari"]
 CMD ["serve", "-addr", "0.0.0.0:8080"]

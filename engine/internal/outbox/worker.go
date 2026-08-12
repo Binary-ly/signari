@@ -27,9 +27,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sulimanbenhalim/idp/engine/internal/keys"
-	"github.com/sulimanbenhalim/idp/engine/internal/store"
-	"github.com/sulimanbenhalim/idp/engine/internal/tokens"
+	"github.com/sulimanbenhalim/signari/engine/internal/keys"
+	"github.com/sulimanbenhalim/signari/engine/internal/store"
+	"github.com/sulimanbenhalim/signari/engine/internal/tokens"
 )
 
 // BackchannelLogoutEvent is the event URI required in a logout token's `events`

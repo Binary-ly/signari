@@ -26,11 +26,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sulimanbenhalim/idp/engine/migrations"
+	"github.com/sulimanbenhalim/signari/engine/migrations"
 )
 
 // Tier separates migrations by the role they must run as. 0001 creates roles and
-// schemas and therefore needs a superuser; everything after runs as idp_engine.
+// schemas and therefore needs a superuser; everything after runs as signari_engine.
 // Mixing them is how you get "permission denied to create role" halfway through
 // a deploy.
 type Tier int
@@ -38,7 +38,7 @@ type Tier int
 const (
 	// TierBootstrap is migration 0001 only: roles, schemas, grants. Superuser.
 	TierBootstrap Tier = iota
-	// TierCore is 0002 onward: tables, policies, views. Runs as idp_engine.
+	// TierCore is 0002 onward: tables, policies, views. Runs as signari_engine.
 	TierCore
 )
 
@@ -183,16 +183,16 @@ func applyOne(ctx context.Context, conn *pgx.Conn, m Migration, tier Tier) error
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Core migrations run as idp_engine so that every object they create is
-	// OWNED by idp_engine, regardless of which superuser ran the deploy. Object
+	// Core migrations run as signari_engine so that every object they create is
+	// OWNED by signari_engine, regardless of which superuser ran the deploy. Object
 	// ownership is what the whole GRANT boundary rests on, so it must not depend
 	// on who happened to be holding the psql session.
 	//
 	// SET LOCAL, not SET: it reverts at commit and cannot leak to the next
 	// transaction on a pooled connection.
 	if tier == TierCore {
-		if _, err := tx.Exec(ctx, `SET LOCAL ROLE idp_engine`); err != nil {
-			return fmt.Errorf("assuming idp_engine: %w", err)
+		if _, err := tx.Exec(ctx, `SET LOCAL ROLE signari_engine`); err != nil {
+			return fmt.Errorf("assuming signari_engine: %w", err)
 		}
 	}
 
@@ -240,7 +240,7 @@ func Verify(ctx context.Context, conn *pgx.Conn) error {
 	}
 	if current != want {
 		return fmt.Errorf(
-			"schema version mismatch: database is at %d, this binary expects %d -- run `idp migrate up`",
+			"schema version mismatch: database is at %d, this binary expects %d -- run `signari migrate up`",
 			current, want)
 	}
 

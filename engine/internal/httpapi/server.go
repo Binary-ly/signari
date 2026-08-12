@@ -12,9 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sulimanbenhalim/idp/engine/internal/keys"
-	"github.com/sulimanbenhalim/idp/engine/internal/oidc"
-	"github.com/sulimanbenhalim/idp/engine/internal/passwords"
+	"github.com/sulimanbenhalim/signari/engine/internal/keys"
+	"github.com/sulimanbenhalim/signari/engine/internal/oidc"
+	"github.com/sulimanbenhalim/signari/engine/internal/passwords"
 )
 
 // Server holds the public endpoints. Everything it serves is derived from a live

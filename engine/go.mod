@@ -1,4 +1,4 @@
-module github.com/sulimanbenhalim/idp/engine
+module github.com/sulimanbenhalim/signari/engine
 
 go 1.26.5
 

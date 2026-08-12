@@ -3,18 +3,18 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-: "${IDP_ROOT_KEY:?set IDP_ROOT_KEY -- head -c 32 /dev/urandom | base64}"
+: "${SIGNARI_ROOT_KEY:?set SIGNARI_ROOT_KEY -- head -c 32 /dev/urandom | base64}"
 export COMPOSE_FILE=../docker-compose.yml
 
 docker compose up -d --build postgres migrate engine
-until docker compose exec -T engine /idp verify >/dev/null 2>&1 \
+until docker compose exec -T engine /signari verify >/dev/null 2>&1 \
    || curl -sf http://localhost:8099/healthz >/dev/null 2>&1; do sleep 1; done
 
 # The issuer must be the name the SUITE resolves, not the one a human types.
 # Relying parties compare it byte-for-byte.
-ISSUER="http://idp-engine:8080"
+ISSUER="http://signari-engine:8080"
 
-run() { docker compose exec -T engine /idp "$@"; }
+run() { docker compose exec -T engine /signari "$@"; }
 
 run instance create -issuer "$ISSUER" -name conformance
 
@@ -23,7 +23,7 @@ run instance create -issuer "$ISSUER" -name conformance
 # and implementations that normalise or strip it fail.
 for n in 1 2; do
   run client create -client-id "conformance-$n" \
-      -redirect "https://localhost:8443/test/a/idp/callback" || true
+      -redirect "https://localhost:8443/test/a/signari/callback" || true
 done
 
 echo "clients registered; copy the printed secrets into config.json"

@@ -24,7 +24,7 @@ class EngineAdminApi
     ) {
         if ($this->token === '') {
             throw new RuntimeException(
-                'IDP_ADMIN_TOKEN is not set. The admin console cannot write without it, '.
+                'SIGNARI_ADMIN_TOKEN is not set. The admin console cannot write without it, '.
                 'and it has no database fallback by design (ADR-004).'
             );
         }
@@ -33,8 +33,8 @@ class EngineAdminApi
     public static function fromConfig(): self
     {
         return new self(
-            rtrim((string) env('IDP_ADMIN_URL', 'http://127.0.0.1:8090'), '/'),
-            (string) env('IDP_ADMIN_TOKEN', ''),
+            rtrim((string) env('SIGNARI_ADMIN_URL', 'http://127.0.0.1:8090'), '/'),
+            (string) env('SIGNARI_ADMIN_TOKEN', ''),
         );
     }
 

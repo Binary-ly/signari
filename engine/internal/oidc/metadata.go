@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/sulimanbenhalim/idp/engine/internal/keys"
+	"github.com/sulimanbenhalim/signari/engine/internal/keys"
 )
 
 // Metadata is the OpenID Provider configuration served at
@@ -94,7 +94,7 @@ func Build(cfg Config) (*Metadata, error) {
 	}
 	if u.Scheme != "https" && u.Hostname() != "localhost" && !cfg.AllowInsecureIssuer {
 		return nil, fmt.Errorf(
-			"issuer must be https (got %q); set IDP_INSECURE_ISSUER=1 only for local testing", cfg.Issuer)
+			"issuer must be https (got %q); set SIGNARI_INSECURE_ISSUER=1 only for local testing", cfg.Issuer)
 	}
 	// The issuer is compared byte-for-byte by relying parties, and RFC 8414
 	// forbids a query or fragment. A trailing slash silently breaks RPs that

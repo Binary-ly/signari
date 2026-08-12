@@ -27,7 +27,7 @@ host at `localhost:8099` is unreachable from it.
 Worse, this cannot be papered over with port forwarding, because **relying
 parties compare the issuer byte-for-byte**. The issuer in our discovery document
 must be exactly the URL the suite will use to reach us. That is why
-`docker-compose.yml` gives the engine the network alias `idp-engine` and the
+`docker-compose.yml` gives the engine the network alias `signari-engine` and the
 issuer is set to match it, rather than to `localhost`.
 
 This is the same trap flagged back in iteration 4, when the dev issuer
@@ -40,8 +40,8 @@ Several Basic OP tests need a second client to prove that a code issued to one
 client cannot be redeemed by another. `setup.sh` registers both, with the
 suite's callback URLs:
 
-    https://localhost:8443/test/a/idp/callback
-    https://localhost:8443/test/a/idp/callback?dummy1=lorem&dummy2=ipsum
+    https://localhost:8443/test/a/signari/callback
+    https://localhost:8443/test/a/signari/callback?dummy1=lorem&dummy2=ipsum
 
 The second is not a typo. The suite deliberately tests a redirect URI carrying
 query parameters, because implementations that "helpfully" normalise or strip
@@ -73,7 +73,7 @@ Recorded honestly, so a red result is read correctly rather than explained away:
 
 The engine's side of the flow is **verified working** by the suite's own log:
 
-    Incoming HTTP request to /test/a/idp/callback
+    Incoming HTTP request to /test/a/signari/callback
     url: .../callback?code=q_qz6FNQpPQqVbenkjBlt4FLwmeJFxaCYah239U-yyE&iss=https%3A%2F...
 
 We issue a valid authorization code carrying `iss` (RFC 9207) to a registered
@@ -82,7 +82,7 @@ redirect URI, and the suite receives it. 721 conditions passed across 36 modules
 Two blockers were found and one was fixed:
 
 1. **FIXED -- alias conflict.** `run-test-plan.py` parallelises by default, and every
-   module in a plan shares `alias: idp`, so each new module interrupted the previous
+   module in a plan shares `alias: signari`, so each new module interrupted the previous
    one. **Use `--no-parallel`.** This accounted for ~30 of the INTERRUPTED results.
 
 2. **NOT FIXED -- the suite's WebRunner stalls after the callback.** With serial

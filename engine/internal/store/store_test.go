@@ -12,7 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sulimanbenhalim/idp/engine/internal/oauth"
+	"github.com/sulimanbenhalim/signari/engine/internal/oauth"
 )
 
 // These tests need a real PostgreSQL with the core schema applied. The
@@ -20,9 +20,9 @@ import (
 // properties of the database, so a fake would test nothing.
 func testDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("IDP_TEST_DSN")
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
 	if dsn == "" {
-		t.Skip("IDP_TEST_DSN not set; skipping database-backed tests")
+		t.Skip("SIGNARI_TEST_DSN not set; skipping database-backed tests")
 	}
 	return dsn
 }
@@ -35,8 +35,8 @@ func connect(t *testing.T) *pgx.Conn {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	if _, err := conn.Exec(ctx, "SET ROLE idp_maintenance"); err != nil {
-		t.Fatalf("assuming idp_maintenance: %v", err)
+	if _, err := conn.Exec(ctx, "SET ROLE signari_maintenance"); err != nil {
+		t.Fatalf("assuming signari_maintenance: %v", err)
 	}
 	return conn
 }
@@ -124,7 +124,7 @@ func TestConsumeCodeIsAtomicUnderConcurrency(t *testing.T) {
 				return
 			}
 			defer func() { _ = c.Close(ctx) }()
-			_, _ = c.Exec(ctx, "SET ROLE idp_maintenance")
+			_, _ = c.Exec(ctx, "SET ROLE signari_maintenance")
 
 			tx, err := c.Begin(ctx)
 			if err != nil {

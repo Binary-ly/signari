@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sulimanbenhalim/idp/engine/internal/store"
-	"github.com/sulimanbenhalim/idp/engine/internal/tokens"
+	"github.com/sulimanbenhalim/signari/engine/internal/store"
+	"github.com/sulimanbenhalim/signari/engine/internal/tokens"
 )
 
 func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
@@ -14,7 +14,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 
 	raw := bearerToken(r)
 	if raw == "" {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="idp"`)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="signari"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -24,14 +24,14 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		// Logged with the reason, returned without it.
 		s.log.Info("userinfo token rejected", "err", err)
 		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="idp", error="invalid_token", error_description="The access token is invalid"`)
+			`Bearer realm="signari", error="invalid_token", error_description="The access token is invalid"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
 	if !tokens.HasScope(claims.Scope, "openid") {
 		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="idp", error="insufficient_scope", scope="openid"`)
+			`Bearer realm="signari", error="insufficient_scope", scope="openid"`)
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -44,7 +44,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 			s.log.Error("userinfo revocation check failed", "err", err)
 		}
 		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="idp", error="invalid_token", error_description="The access token has been revoked"`)
+			`Bearer realm="signari", error="invalid_token", error_description="The access token has been revoked"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -54,7 +54,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		live, err := store.IsSessionLive(ctx, s.db, claims.SessionID)
 		if err != nil || !live {
 			w.Header().Set("WWW-Authenticate",
-				`Bearer realm="idp", error="invalid_token", error_description="The session has ended"`)
+				`Bearer realm="signari", error="invalid_token", error_description="The session has ended"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -72,7 +72,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		claims.Subject).Scan(&email, &username, &verified); err != nil {
 		// A token for a user who no longer exists or is deactivated.
 		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="idp", error="invalid_token", error_description="The subject is not active"`)
+			`Bearer realm="signari", error="invalid_token", error_description="The subject is not active"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/sulimanbenhalim/idp/engine/internal/clients"
+	"github.com/sulimanbenhalim/signari/engine/internal/clients"
 )
 
 // AuthzRequest is a parsed, not-yet-validated /oauth2/authorize request.

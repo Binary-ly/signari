@@ -104,7 +104,7 @@ func TestLoadFSSortsByVersion(t *testing.T) {
 	}
 }
 
-// 0001 needs a superuser; everything after must run as idp_engine. Applying a
+// 0001 needs a superuser; everything after must run as signari_engine. Applying a
 // core migration with superuser rights would silently create objects owned by the
 // wrong role and quietly dissolve the GRANT boundary.
 func TestTierSplit(t *testing.T) {

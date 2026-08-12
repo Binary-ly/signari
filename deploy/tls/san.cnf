@@ -2,6 +2,6 @@
 distinguished_name = dn
 [dn]
 [ext]
-subjectAltName = DNS:idp-engine, DNS:localhost, IP:127.0.0.1
+subjectAltName = DNS:signari-engine, DNS:localhost, IP:127.0.0.1
 keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth

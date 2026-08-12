@@ -12,7 +12,7 @@ SET search_path = core, public;
 --
 -- Two traps, both of which silently disable the protection you think you have:
 --
---   1. FORCE. The table OWNER bypasses RLS by default, and idp_engine owns these
+--   1. FORCE. The table OWNER bypasses RLS by default, and signari_engine owns these
 --      tables. Without FORCE, every policy below is decorative.
 --
 --   2. SET LOCAL, never SET. `SET` persists on the connection; with any pooled
@@ -48,8 +48,8 @@ END
 $$;
 
 -- Cross-org maintenance (key rotation, expiry sweeps, the bootstrap CLI) runs as
--- idp_maintenance, which is BYPASSRLS. That role is created in 0001, because
--- CREATE ROLE requires superuser and this migration runs as idp_engine.
+-- signari_maintenance, which is BYPASSRLS. That role is created in 0001, because
+-- CREATE ROLE requires superuser and this migration runs as signari_engine.
 
 -- ===========================================================================
 -- core_v1 -- the contract with the Laravel admin
@@ -125,16 +125,16 @@ FROM core.audit_events;
 CREATE OR REPLACE VIEW core_v1.config_status AS
 SELECT version, bumped_at FROM core.config_version;
 
-GRANT USAGE ON SCHEMA core_v1 TO idp_admin;
-GRANT SELECT ON ALL TABLES IN SCHEMA core_v1 TO idp_admin;
+GRANT USAGE ON SCHEMA core_v1 TO signari_admin;
+GRANT SELECT ON ALL TABLES IN SCHEMA core_v1 TO signari_admin;
 
 -- The views read core tables, so the admin needs to reach through them. Views
 -- run with the OWNER's privileges (security invoker is off by default), which is
--- exactly what we want: idp_admin gets the view, never the table.
+-- exactly what we want: signari_admin gets the view, never the table.
 --
 -- VERIFIED CONSEQUENCE (measured, not assumed -- see ADR-006):
---   The owner is idp_engine, and idp_engine is subject to FORCE ROW LEVEL
---   SECURITY. So a SELECT from core_v1.* by idp_admin returns ZERO ROWS unless
+--   The owner is signari_engine, and signari_engine is subject to FORCE ROW LEVEL
+--   SECURITY. So a SELECT from core_v1.* by signari_admin returns ZERO ROWS unless
 --   the admin's transaction has also done:
 --
 --       SET LOCAL app.org_id = '<uuid>';
@@ -146,5 +146,5 @@ GRANT SELECT ON ALL TABLES IN SCHEMA core_v1 TO idp_admin;
 --
 --   Cross-org / instance-level reads (the "list every org" screen) deliberately
 --   do NOT go through these views. They go through the Admin API, which runs as
---   idp_maintenance. That keeps "see all tenants" an explicit, audited API call
+--   signari_maintenance. That keeps "see all tenants" an explicit, audited API call
 --   rather than an ambient property of a database role.

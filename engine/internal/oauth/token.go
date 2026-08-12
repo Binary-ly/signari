@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sulimanbenhalim/idp/engine/internal/clients"
+	"github.com/sulimanbenhalim/signari/engine/internal/clients"
 )
 
 // TokenRequest is a parsed POST to /oauth2/token.

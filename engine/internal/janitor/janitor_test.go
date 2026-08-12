@@ -14,9 +14,9 @@ import (
 
 func newPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("IDP_TEST_DSN")
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
 	if dsn == "" {
-		t.Skip("IDP_TEST_DSN not set; skipping database-backed tests")
+		t.Skip("SIGNARI_TEST_DSN not set; skipping database-backed tests")
 	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -25,7 +25,7 @@ func newPool(t *testing.T) *pgxpool.Pool {
 	// Every pooled connection, not just the first: the janitor's work spans
 	// several checkouts and a connection without the role would fail on RLS.
 	cfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
-		_, err := c.Exec(ctx, "SET ROLE idp_maintenance")
+		_, err := c.Exec(ctx, "SET ROLE signari_maintenance")
 		return err
 	}
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)

@@ -15,7 +15,7 @@ use Throwable;
  */
 class ReadModelSmoke extends Command
 {
-    protected $signature = 'idp:read-model-smoke {--org=}';
+    protected $signature = 'signari:read-model-smoke {--org=}';
     protected $description = 'Read core_v1 through Eloquent and assert writes are refused';
 
     public function handle(): int

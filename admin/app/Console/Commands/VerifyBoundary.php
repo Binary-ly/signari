@@ -9,7 +9,7 @@ use Throwable;
 /**
  * Proves the engine/admin boundary from the ADMIN side.
  *
- * The Go tests assert that idp_admin is denied on core. That is the same codebase
+ * The Go tests assert that signari_admin is denied on core. That is the same codebase
  * asserting its own design. This asserts it from the consumer -- the runtime that
  * would actually benefit from cheating -- which is the side that matters.
  *
@@ -31,7 +31,7 @@ use Throwable;
  */
 class VerifyBoundary extends Command
 {
-    protected $signature = 'idp:verify-boundary {--org= : organisation UUID to scope to}';
+    protected $signature = 'signari:verify-boundary {--org= : organisation UUID to scope to}';
 
     protected $description = 'Assert the engine/admin database boundary holds';
 
@@ -55,7 +55,7 @@ class VerifyBoundary extends Command
         // connects as the superuser would make every check below pass vacuously,
         // which is the failure mode this whole file exists to prevent.
         $role = DB::selectOne('SELECT current_user AS r')->r;
-        $check('connected as idp_admin, not a superuser', $role === 'idp_admin', "current_user={$role}");
+        $check('connected as signari_admin, not a superuser', $role === 'signari_admin', "current_user={$role}");
 
         // ADR-004: no reach into core at all.
         $denied = false;

@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const SessionCookieName = "__Host-idp_session"
+const SessionCookieName = "__Host-signari_session"
 
 // CSRFCookieName carries the double-submit token for the sign-in form.
 //
@@ -23,7 +23,7 @@ const SessionCookieName = "__Host-idp_session"
 // Not HttpOnly. The value must be readable by a future JS-driven sign-in page;
 // it is not a credential on its own, only proof the request came from a form we
 // served.
-const CSRFCookieName = "__Host-idp_csrf"
+const CSRFCookieName = "__Host-signari_csrf"
 
 // csrfFormField is the hidden input name carrying the same value.
 const csrfFormField = "csrf_token"

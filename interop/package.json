@@ -1,5 +1,5 @@
 {
-  "name": "idp-interop",
+  "name": "signari-interop",
   "private": true,
   "type": "module",
   "description": "Cross-language conformance checks: verify tokens minted by the Go engine with an independent JOSE implementation.",

@@ -8,7 +8,7 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 
-	"github.com/sulimanbenhalim/idp/engine/internal/keys"
+	"github.com/sulimanbenhalim/signari/engine/internal/keys"
 )
 
 // ErrInvalidToken is the only failure a caller can distinguish. The reason is

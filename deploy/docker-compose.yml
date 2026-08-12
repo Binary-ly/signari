@@ -5,22 +5,22 @@
 # the container runtime, so an engine listening on the macOS host at
 # `localhost:8099` is unreachable from it -- and since relying parties compare the
 # issuer byte-for-byte, the issuer has to be the name the suite will actually use.
-# That is why IDP_ISSUER below is a service name, not localhost.
+# That is why SIGNARI_ISSUER below is a service name, not localhost.
 
-name: idp
+name: signari
 
 services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: idp_superuser
+      POSTGRES_USER: signari_superuser
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
-      POSTGRES_DB: idp
+      POSTGRES_DB: signari
     healthcheck:
       # The engine must not start against a database that is still initialising:
       # its startup gate would report a schema mismatch and exit, which looks like
       # a migration bug rather than a race.
-      test: ["CMD-SHELL", "pg_isready -U idp_superuser -d idp"]
+      test: ["CMD-SHELL", "pg_isready -U signari_superuser -d signari"]
       interval: 2s
       timeout: 3s
       retries: 15
@@ -38,7 +38,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      IDP_DSN: postgres://idp_superuser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/idp?sslmode=disable
+      SIGNARI_DSN: postgres://signari_superuser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/signari?sslmode=disable
     # `migrate all` rather than a shell chaining two commands: the runtime image
     # is distroless and has no /bin/sh, and adding a shell to a security product
     # to save a CLI verb is a bad trade.
@@ -57,18 +57,18 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      IDP_DSN: postgres://idp_superuser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/idp?sslmode=disable
+      SIGNARI_DSN: postgres://signari_superuser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/signari?sslmode=disable
       # 32 random bytes, base64. Deliberately has no default: a generated-on-boot
       # root key would make every restart invalidate every stored signing key.
-      IDP_ROOT_KEY: ${IDP_ROOT_KEY:?set IDP_ROOT_KEY -- head -c 32 /dev/urandom | base64}
-      IDP_ROOT_KEY_REF: ${IDP_ROOT_KEY_REF:-dev}
+      SIGNARI_ROOT_KEY: ${SIGNARI_ROOT_KEY:?set SIGNARI_ROOT_KEY -- head -c 32 /dev/urandom | base64}
+      SIGNARI_ROOT_KEY_REF: ${SIGNARI_ROOT_KEY_REF:-dev}
       # Local conformance testing only -- see the comment on Config.AllowInsecureIssuer.
-      IDP_INSECURE_ISSUER: ${IDP_INSECURE_ISSUER:-0}
+      SIGNARI_INSECURE_ISSUER: ${SIGNARI_INSECURE_ISSUER:-0}
       # When set, the engine serves HTTPS. Required for anything real: browsers
       # refuse to store the __Host- session cookie over plaintext on a non-localhost
       # host, so sign-in silently fails to persist without it.
-      IDP_TLS_CERT: ${IDP_TLS_CERT:-}
-      IDP_TLS_KEY: ${IDP_TLS_KEY:-}
+      SIGNARI_TLS_CERT: ${SIGNARI_TLS_CERT:-}
+      SIGNARI_TLS_KEY: ${SIGNARI_TLS_KEY:-}
     volumes:
       - ./tls:/tls:ro
     ports:
@@ -78,11 +78,11 @@ services:
         aliases:
           # The name the conformance suite resolves. The issuer must match this
           # exactly, or every relying party rejects our tokens on the iss check.
-          - idp-engine
+          - signari-engine
 
 volumes:
   pgdata:
 
 networks:
   default:
-    name: idp-net
+    name: signari-net

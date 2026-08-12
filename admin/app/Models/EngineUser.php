@@ -14,7 +14,7 @@ use RuntimeException;
  * underneath it -- which is also how the engine performs zero-downtime migrations.
  *
  * EVERY write path is disabled at the model level. The database will refuse them
- * anyway (idp_admin has no privilege on core, and a view is not updatable here),
+ * anyway (signari_admin has no privilege on core, and a view is not updatable here),
  * but a PDO permission error surfacing from deep inside Filament is a poor way to
  * learn about an architectural rule. Failing here says what the rule IS.
  *

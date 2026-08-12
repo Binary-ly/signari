@@ -30,7 +30,7 @@ class OrganisationScopingTest extends TestCase
 
     protected function tearDown(): void
     {
-        // No RefreshDatabase: it would try to drop schemas idp_admin has no
+        // No RefreshDatabase: it would try to drop schemas signari_admin has no
         // privilege on. Clean up only what this test made.
         if ($this->createdUserIds !== []) {
             User::whereIn('id', $this->createdUserIds)->delete();

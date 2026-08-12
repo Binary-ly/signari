@@ -11,14 +11,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sulimanbenhalim/idp/engine/internal/audit"
-	"github.com/sulimanbenhalim/idp/engine/internal/clients"
-	"github.com/sulimanbenhalim/idp/engine/internal/keys"
-	"github.com/sulimanbenhalim/idp/engine/internal/oauth"
-	"github.com/sulimanbenhalim/idp/engine/internal/oidc"
-	"github.com/sulimanbenhalim/idp/engine/internal/passwords"
-	"github.com/sulimanbenhalim/idp/engine/internal/store"
-	"github.com/sulimanbenhalim/idp/engine/internal/tokens"
+	"github.com/sulimanbenhalim/signari/engine/internal/audit"
+	"github.com/sulimanbenhalim/signari/engine/internal/clients"
+	"github.com/sulimanbenhalim/signari/engine/internal/keys"
+	"github.com/sulimanbenhalim/signari/engine/internal/oauth"
+	"github.com/sulimanbenhalim/signari/engine/internal/oidc"
+	"github.com/sulimanbenhalim/signari/engine/internal/passwords"
+	"github.com/sulimanbenhalim/signari/engine/internal/store"
+	"github.com/sulimanbenhalim/signari/engine/internal/tokens"
 )
 
 const (
@@ -822,7 +822,7 @@ func writeTokenError(w http.ResponseWriter, e *oauth.TokenError) {
 	}
 	if e.Code == "invalid_client" {
 		// RFC 6749 §5.2: a 401 for invalid_client must carry a challenge.
-		w.Header().Set("WWW-Authenticate", `Basic realm="idp"`)
+		w.Header().Set("WWW-Authenticate", `Basic realm="signari"`)
 	}
 	writeJSON(w, status, map[string]string{
 		"error":             e.Code,

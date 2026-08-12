@@ -30,8 +30,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sulimanbenhalim/idp/engine/internal/outbox"
-	"github.com/sulimanbenhalim/idp/engine/internal/store"
+	"github.com/sulimanbenhalim/signari/engine/internal/outbox"
+	"github.com/sulimanbenhalim/signari/engine/internal/store"
 )
 
 // lockID identifies the janitor's advisory lock. Any constant works as long as

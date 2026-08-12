@@ -64,4 +64,4 @@ SELECT
     (s.revoked_at IS NULL AND s.not_after > now()) AS is_live
 FROM core.sessions s;
 
-GRANT SELECT ON core_v1.clients, core_v1.sessions TO idp_admin;
+GRANT SELECT ON core_v1.clients, core_v1.sessions TO signari_admin;

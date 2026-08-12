@@ -2,7 +2,7 @@
 # Executes the conformance plan against the running engine.
 set -euo pipefail
 cd "$(dirname "$0")"
-SUITE="${SUITE_DIR:-$HOME/.cache/idp-conformance}"
+SUITE="${SUITE_DIR:-$HOME/.cache/signari-conformance}"
 
 [ -f "$SUITE/target/fapi-test-suite.jar" ] || {
   echo "suite jar missing -- build it first:"
@@ -12,9 +12,9 @@ SUITE="${SUITE_DIR:-$HOME/.cache/idp-conformance}"
 }
 
 # The suite and the engine must share a network, or the suite cannot resolve
-# idp-engine and the issuer check fails before any test runs.
+# signari-engine and the issuer check fails before any test runs.
 ( cd "$SUITE" && docker compose up -d )
-docker network connect idp-net conformance-suite-server-1 2>/dev/null || true
+docker network connect signari-net conformance-suite-server-1 2>/dev/null || true
 
 python3 "$SUITE/scripts/run-test-plan.py" \
   --show-untested-test-modules \

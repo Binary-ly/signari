@@ -1,9 +1,9 @@
-// Command idp is the engine's operator CLI.
+// Command signari is the engine's operator CLI.
 //
-//	idp migrate bootstrap   roles, schemas, grants  (requires superuser)
-//	idp migrate up          tables, policies, views (runs as idp_engine)
-//	idp migrate status      what the database is at, and what this binary expects
-//	idp verify              the startup gate, runnable on its own
+//	signari migrate bootstrap   roles, schemas, grants  (requires superuser)
+//	signari migrate up          tables, policies, views (runs as signari_engine)
+//	signari migrate status      what the database is at, and what this binary expects
+//	signari verify              the startup gate, runnable on its own
 package main
 
 import (
@@ -22,29 +22,29 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sulimanbenhalim/idp/engine/internal/adminapi"
-	"github.com/sulimanbenhalim/idp/engine/internal/httpapi"
-	"github.com/sulimanbenhalim/idp/engine/internal/janitor"
-	"github.com/sulimanbenhalim/idp/engine/internal/keys"
-	"github.com/sulimanbenhalim/idp/engine/internal/migrate"
-	"github.com/sulimanbenhalim/idp/engine/internal/oidc"
-	"github.com/sulimanbenhalim/idp/engine/internal/outbox"
-	"github.com/sulimanbenhalim/idp/engine/internal/passwords"
+	"github.com/sulimanbenhalim/signari/engine/internal/adminapi"
+	"github.com/sulimanbenhalim/signari/engine/internal/httpapi"
+	"github.com/sulimanbenhalim/signari/engine/internal/janitor"
+	"github.com/sulimanbenhalim/signari/engine/internal/keys"
+	"github.com/sulimanbenhalim/signari/engine/internal/migrate"
+	"github.com/sulimanbenhalim/signari/engine/internal/oidc"
+	"github.com/sulimanbenhalim/signari/engine/internal/outbox"
+	"github.com/sulimanbenhalim/signari/engine/internal/passwords"
 )
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "idp: %v\n", err)
+		fmt.Fprintf(os.Stderr, "signari: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 func usage() error {
-	fmt.Fprint(os.Stderr, `usage: idp <command> [flags]
+	fmt.Fprint(os.Stderr, `usage: signari <command> [flags]
 
 commands:
   migrate bootstrap   apply 0001 (roles, schemas, grants) -- needs a superuser DSN
-  migrate up          apply 0002+ (tables, policies, views) as idp_engine
+  migrate up          apply 0002+ (tables, policies, views) as signari_engine
   migrate all         bootstrap then up, in one invocation (for containers)
   migrate status      show applied version, pending migrations, live fingerprint
   verify              run the startup schema gate and exit
@@ -57,10 +57,10 @@ commands:
   serve               serve the OIDC endpoints
 
 env:
-  IDP_ROOT_KEY        base64 of 32 random bytes; wraps stored private key material
+  SIGNARI_ROOT_KEY        base64 of 32 random bytes; wraps stored private key material
 
 flags:
-  -dsn string   PostgreSQL connection string (or set IDP_DSN)
+  -dsn string   PostgreSQL connection string (or set SIGNARI_DSN)
   -to int       stop at this version instead of the latest
 `)
 	return fmt.Errorf("no command given")
@@ -71,15 +71,15 @@ func run(args []string) error {
 		return usage()
 	}
 
-	fs := flag.NewFlagSet("idp", flag.ContinueOnError)
-	dsn := fs.String("dsn", os.Getenv("IDP_DSN"), "PostgreSQL connection string")
+	fs := flag.NewFlagSet("signari", flag.ContinueOnError)
+	dsn := fs.String("dsn", os.Getenv("SIGNARI_DSN"), "PostgreSQL connection string")
 	to := fs.Int("to", 0, "stop at this version (0 = latest)")
 	issuer := fs.String("issuer", "", "issuer URL, e.g. https://id.example.com")
 	name := fs.String("name", "", "instance display name")
 	addr := fs.String("addr", ":8080", "listen address for `serve`")
-	tlsCert := fs.String("tls-cert", os.Getenv("IDP_TLS_CERT"), "PEM certificate chain; enables HTTPS")
-	tlsKey := fs.String("tls-key", os.Getenv("IDP_TLS_KEY"), "PEM private key")
-	adminAddr := fs.String("admin-addr", os.Getenv("IDP_ADMIN_ADDR"), "listen address for the admin API (empty = disabled)")
+	tlsCert := fs.String("tls-cert", os.Getenv("SIGNARI_TLS_CERT"), "PEM certificate chain; enables HTTPS")
+	tlsKey := fs.String("tls-key", os.Getenv("SIGNARI_TLS_KEY"), "PEM private key")
+	adminAddr := fs.String("admin-addr", os.Getenv("SIGNARI_ADMIN_ADDR"), "listen address for the admin API (empty = disabled)")
 	email := fs.String("email", "", "user email")
 	password := fs.String("password", "", "user password")
 	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
@@ -101,7 +101,7 @@ func run(args []string) error {
 		return err
 	}
 	if *dsn == "" {
-		return fmt.Errorf("no -dsn given and IDP_DSN is unset")
+		return fmt.Errorf("no -dsn given and SIGNARI_DSN is unset")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -202,7 +202,7 @@ func loadInstanceKeys(ctx context.Context, conn *pgx.Conn) (instanceID string, s
 	if err = conn.QueryRow(ctx,
 		`SELECT id::text, issuer FROM core.instances ORDER BY created_at LIMIT 1`).
 		Scan(&instanceID, &issuer); err != nil {
-		return "", nil, nil, fmt.Errorf("no instance found -- run `idp instance create -issuer …` first: %w", err)
+		return "", nil, nil, fmt.Errorf("no instance found -- run `signari instance create -issuer …` first: %w", err)
 	}
 	set, err = keys.LoadSet(ctx, conn, instanceID, root)
 	if err != nil {
@@ -289,7 +289,7 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 			if err := keys.Save(ctx, tx, instanceID, generated, root); err != nil {
 				return err
 			}
-			fmt.Printf("%s: published %s as `next`. Run `idp keys rotate` again after %s to promote it.\n",
+			fmt.Printf("%s: published %s as `next`. Run `signari keys rotate` again after %s to promote it.\n",
 				a, generated.KID(), keys.MinPublishBeforeActive)
 			continue
 		}
@@ -343,13 +343,13 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 // required rather than defaulted: a generated-on-boot root key would silently
 // make every restart invalidate every stored signing key.
 func rootKey() (*keys.RootKey, error) {
-	b64 := os.Getenv("IDP_ROOT_KEY")
+	b64 := os.Getenv("SIGNARI_ROOT_KEY")
 	if b64 == "" {
 		return nil, fmt.Errorf(
-			"IDP_ROOT_KEY is unset (32 random bytes, base64) -- generate one with:\n" +
+			"SIGNARI_ROOT_KEY is unset (32 random bytes, base64) -- generate one with:\n" +
 				"  head -c 32 /dev/urandom | base64")
 	}
-	return keys.NewRootKeyFromBase64(os.Getenv("IDP_ROOT_KEY_REF"), b64)
+	return keys.NewRootKeyFromBase64(os.Getenv("SIGNARI_ROOT_KEY_REF"), b64)
 }
 
 func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) error {
@@ -409,7 +409,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 		`SELECT id::text, issuer FROM core.instances ORDER BY created_at LIMIT 1`).
 		Scan(&instanceID, &issuer)
 	if err != nil {
-		return fmt.Errorf("no instance found -- run `idp instance create -issuer …` first: %w", err)
+		return fmt.Errorf("no instance found -- run `signari instance create -issuer …` first: %w", err)
 	}
 
 	set, err := keys.LoadSet(ctx, conn, instanceID, root)
@@ -423,9 +423,9 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	}
 	defer pool.Close()
 
-	insecureIssuer := os.Getenv("IDP_INSECURE_ISSUER") == "1"
+	insecureIssuer := os.Getenv("SIGNARI_INSECURE_ISSUER") == "1"
 	if insecureIssuer {
-		log.Warn("IDP_INSECURE_ISSUER is set: the issuer may be plaintext HTTP. " +
+		log.Warn("SIGNARI_INSECURE_ISSUER is set: the issuer may be plaintext HTTP. " +
 			"Every token, code and client secret in the flow crosses the network readable. " +
 			"This must never be set outside local testing.")
 	}
@@ -459,7 +459,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	// the same public listener as the protocol endpoints would put it one
 	// misconfigured route away from the internet. Bind it to a private interface.
 	if adminAddr != "" {
-		adminToken := os.Getenv("IDP_ADMIN_TOKEN")
+		adminToken := os.Getenv("SIGNARI_ADMIN_TOKEN")
 		adminSrv, err := adminapi.New(pool, log, adminToken)
 		if err != nil {
 			return fmt.Errorf("admin API: %w", err)
@@ -583,7 +583,7 @@ func firstOrg(ctx context.Context, conn *pgx.Conn) (string, error) {
 	var instanceID string
 	if err := conn.QueryRow(ctx,
 		`SELECT id::text FROM core.instances ORDER BY created_at LIMIT 1`).Scan(&instanceID); err != nil {
-		return "", fmt.Errorf("no instance -- run `idp instance create` first: %w", err)
+		return "", fmt.Errorf("no instance -- run `signari instance create` first: %w", err)
 	}
 	if err := conn.QueryRow(ctx, `
 		INSERT INTO core.organizations (instance_id, slug, display_name)

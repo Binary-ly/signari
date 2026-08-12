@@ -11,7 +11,7 @@ use Symfony\Component\HttpFoundation\Response;
  * Sets the PostgreSQL org context for the duration of one request.
  *
  * This is ADR-006 made operational. `core_v1.*` views run with the owner's
- * privileges, and that owner (idp_engine) is subject to FORCE ROW LEVEL SECURITY,
+ * privileges, and that owner (signari_engine) is subject to FORCE ROW LEVEL SECURITY,
  * so without this middleware every admin query returns zero rows. That is the
  * design: the admin is under the same database-enforced tenant isolation as the
  * engine, rather than being trusted to remember a WHERE clause.

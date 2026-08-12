@@ -98,13 +98,48 @@ window.signariRegisterPasskey = async function (name) {
   return postJSON("/account/passkeys/finish" + q, encodeAttestation(cred));
 };
 
-// Sign-in. Used both by the button and by conditional UI.
+// ONE ceremony at a time, shared between conditional UI and the button.
+//
+// Conditional UI starts a ceremony unprompted on page load. If the button then
+// started a second, its /begin would overwrite the ceremony cookie while the
+// first get() is still pending -- and whichever assertion arrives is checked
+// against the OTHER challenge. The server correctly rejects it with "Error
+// validating challenge", which reads like a server fault and is not one.
+//
+// So the challenge is fetched once and reused, and the outstanding get() is
+// aborted before a new one starts: the WebAuthn API permits only one in flight,
+// and the second call otherwise rejects the first.
+let ceremony = null;
+let inflight = null;
+
+function beginOnce() {
+  if (!ceremony) {
+    ceremony = postJSON("/login/passkey/begin")
+      .then(r => decodeRequest(r.publicKey))
+      .catch(e => { ceremony = null; throw e; });
+  }
+  return ceremony;
+}
+
 async function passkeySignIn(mediation) {
-  const options = decodeRequest((await postJSON("/login/passkey/begin")).publicKey);
-  const req = { publicKey: options };
+  const options = await beginOnce();
+  if (inflight) inflight.abort();
+  inflight = new AbortController();
+
+  const req = { publicKey: options, signal: inflight.signal };
   if (mediation) req.mediation = mediation;
-  const cred = await navigator.credentials.get(req);
+
+  let cred;
+  try {
+    cred = await navigator.credentials.get(req);
+  } finally {
+    inflight = null;
+  }
   if (!cred) return null;
+
+  // Spent: the server clears the cookie on both outcomes, so the next attempt
+  // must fetch a fresh challenge rather than reuse this one.
+  ceremony = null;
 
   const authz = document.querySelector('input[name="authz"]');
   const q = authz && authz.value ? "?authz=" + encodeURIComponent(authz.value) : "";

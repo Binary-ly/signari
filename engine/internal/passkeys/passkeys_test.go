@@ -123,11 +123,31 @@ func TestExistingCredentialsAreExcluded(t *testing.T) {
 	}
 }
 
-func contains(hay []string, needle string) bool {
-	for _, h := range hay {
-		if h == needle {
-			return true
+// THE PORT IS PART OF THE ORIGIN.
+//
+// This is the bug the real-browser test caught and every unit test above missed:
+// a browser at http://localhost:9411 does not match an origin of
+// http://localhost, and the ceremony fails with "Error validating origin" --
+// a message naming neither the port nor the parameter.
+func TestOriginsIncludeThePort(t *testing.T) {
+	got := originsFor("localhost", "http://localhost:9411")
+	if !contains(got, "http://localhost:9411") {
+		t.Fatalf("the issuer's port was dropped from the origin list: %v", got)
+	}
+
+	got = originsFor("example.com", "https://id.example.com:8443")
+	if !contains(got, "https://id.example.com:8443") {
+		t.Fatalf("a non-default https port was dropped: %v", got)
+	}
+}
+
+// An IP address cannot be an RP ID: the spec requires a domain and Chrome
+// refuses the ceremony, so a deployment reached over an IP cannot use passkeys.
+// Saying so here beats an opaque browser failure.
+func TestIPAddressRPIDIsRefused(t *testing.T) {
+	for _, ip := range []string{"127.0.0.1", "::1", "192.168.1.10"} {
+		if _, err := New(ip, "Signari", "http://"+ip+":9411"); err == nil {
+			t.Errorf("rp_id %q was accepted", ip)
 		}
 	}
-	return false
 }

@@ -13,6 +13,7 @@ package passkeys
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -42,6 +43,13 @@ func New(rpID, displayName string, issuer string) (*Relying, error) {
 	if strings.Contains(rpID, "://") || strings.Contains(rpID, ":") || strings.Contains(rpID, "/") {
 		return nil, fmt.Errorf("passkeys: rp_id %q must be a bare domain, with no scheme, port or path", rpID)
 	}
+	// An IP address is not a valid RP ID. The spec requires a domain, and Chrome
+	// refuses the ceremony outright -- so a deployment reached over an IP cannot
+	// use passkeys at all, and saying so here beats an opaque browser failure.
+	if net.ParseIP(rpID) != nil {
+		return nil, fmt.Errorf("passkeys: rp_id %q is an IP address; WebAuthn requires a domain "+
+			"(use localhost for development)", rpID)
+	}
 	if displayName == "" {
 		displayName = rpID
 	}
@@ -69,6 +77,11 @@ func (r *Relying) RPID() string { return r.rpID }
 // https://id.example.com). localhost additionally gets http, because browsers
 // treat it as a secure context and it is the only place passkeys work without
 // TLS.
+// An origin is scheme://host:port. THE PORT IS PART OF IT -- a browser at
+// http://localhost:9411 does not match an origin of http://localhost, and the
+// ceremony fails with "Error validating origin", which names neither the port
+// nor the parameter. This is the single most common WebAuthn misconfiguration
+// and it cost this implementation a real bug that unit tests did not catch.
 func originsFor(rpID, issuer string) []string {
 	origins := []string{"https://" + rpID}
 
@@ -90,7 +103,9 @@ func originsFor(rpID, issuer string) []string {
 		secure := u.Scheme == "https" || host == "localhost" || host == "127.0.0.1"
 
 		if underRPID && secure {
-			if o := u.Scheme + "://" + u.Host; o != origins[0] {
+			// u.Host, NOT u.Hostname(): Host keeps the port, and the port is part
+			// of the origin the browser will send.
+			if o := u.Scheme + "://" + u.Host; !contains(origins, o) {
 				origins = append(origins, o)
 			}
 		}
@@ -208,4 +223,13 @@ func (r *Relying) FinishLogin(u *User, sd webauthn.SessionData, req *http.Reques
 // returned.
 func (r *Relying) FinishDiscoverableLogin(h webauthn.DiscoverableUserHandler, sd webauthn.SessionData, req *http.Request) (*webauthn.Credential, error) {
 	return r.w.FinishDiscoverableLogin(h, sd, req)
+}
+
+func contains(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }

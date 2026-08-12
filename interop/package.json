@@ -3,5 +3,8 @@
   "private": true,
   "type": "module",
   "description": "Cross-language conformance checks: verify tokens minted by the Go engine with an independent JOSE implementation.",
-  "dependencies": { "jose": "^5.9.6" }
+  "dependencies": {
+    "jose": "^5.9.6",
+    "ws": "^8.21.3"
+  }
 }

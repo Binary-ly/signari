@@ -29,6 +29,9 @@ type Client struct {
 	ResponseTypes []string
 	Scopes        []string
 	RequirePKCE   bool
+	// FirstParty clients skip the consent screen -- see migration 0010. It
+	// suppresses only that question; every other check still applies.
+	FirstParty bool
 	PKCEMethods   []string
 	IDTokenAlg    string
 	RedirectURIs  []string
@@ -67,12 +70,12 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	err := q.QueryRow(ctx, `
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce, pkce_methods,
-		       id_token_signed_alg, refresh_token_ttl_s
+		       id_token_signed_alg, refresh_token_ttl_s, first_party
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
 			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE, &c.PKCEMethods,
-			&c.IDTokenAlg, &c.RefreshTTL)
+			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

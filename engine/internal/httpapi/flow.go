@@ -111,6 +111,37 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Consent is checked AFTER authentication and step-up, and BEFORE any code is
+	// issued. Asking first would show a stranger which clients exist and what
+	// they request; issuing first would make the question decorative.
+	var userID string
+	if err := s.db.QueryRow(ctx,
+		`SELECT user_id::text FROM core.sessions WHERE sid = $1`, sid).Scan(&userID); err != nil {
+		s.log.Error("loading session user for consent", "err", err)
+		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
+			Description: "could not verify session", Disposition: oauth.DispositionRedirect})
+		return
+	}
+	decision, ask, err := s.needsConsent(r, c, userID, req)
+	if err != nil {
+		s.log.Error("checking consent", "err", err)
+		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
+			Description: "could not check consent", Disposition: oauth.DispositionRedirect})
+		return
+	}
+	if ask {
+		// prompt=none forbade interaction, and consent is interaction. The client
+		// gets an error it can act on rather than a screen it cannot show.
+		if req.Prompt == "none" {
+			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "consent_required",
+				Description: "the user has not consented to the requested scopes",
+				Disposition: oauth.DispositionRedirect})
+			return
+		}
+		s.renderConsent(w, r, c, decision, r.URL.RawQuery)
+		return
+	}
+
 	s.issueCodeAndRedirect(w, r, req, c, sid)
 }
 

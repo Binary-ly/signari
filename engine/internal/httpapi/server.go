@@ -75,6 +75,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /account/mfa/totp", s.handleTOTPConfirm)
 	mux.HandleFunc("POST /account/passkeys/begin", s.handlePasskeyRegisterBegin)
 	mux.HandleFunc("POST /account/passkeys/finish", s.handlePasskeyRegisterFinish)
+	mux.HandleFunc("POST /login/passkey/begin", s.handlePasskeyLoginBegin)
+	mux.HandleFunc("POST /login/passkey/finish", s.handlePasskeyLoginFinish)
 	return mux
 }
 

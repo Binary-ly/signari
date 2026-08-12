@@ -333,3 +333,198 @@ func (s *Server) passkeyUser(ctx context.Context, userID string) (*passkeys.User
 		Creds: passkeys.ToLibrary(stored),
 	}, nil
 }
+
+// handlePasskeyLoginBegin starts a sign-in with no identifier at all.
+//
+// This is the flow passkeys exist for: the user clicks "sign in", the browser
+// offers whatever credential it holds for this RP ID, and nobody types a
+// username. It only works because registration requires resident keys.
+//
+// No user is named, so nothing is leaked: the response is identical whether or
+// not any account exists, which removes the enumeration oracle that a
+// username-first passkey flow always has.
+func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	orgID, err := s.defaultOrg(ctx)
+	if err != nil {
+		s.log.Error("resolving the org for a passkey login", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "passkeys_unavailable", "unavailable")
+		return
+	}
+	rp, err := s.relyingParty(ctx, orgID)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "passkeys_unavailable", err.Error())
+		return
+	}
+
+	assertion, sd, err := rp.BeginDiscoverableLogin()
+	if err != nil {
+		s.log.Error("beginning discoverable login", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	// No subject: we genuinely do not know who this is yet, and inventing one
+	// would defeat the point of the flow.
+	if err := s.issueCeremony(w, "login", "", orgID, sd); err != nil {
+		s.log.Error("issuing ceremony", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, assertion)
+}
+
+// handlePasskeyLoginFinish verifies the assertion and signs the user in.
+func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	defer s.clearCeremony(w)
+
+	cl, sd, err := s.readCeremony(r, "login")
+	if err != nil {
+		s.log.Info("passkey login ceremony rejected", "err", err)
+		writeError(w, http.StatusBadRequest, "invalid_request", "no valid sign-in in progress")
+		return
+	}
+	rp, err := s.relyingParty(ctx, cl.OrgID)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "passkeys_unavailable", err.Error())
+		return
+	}
+
+	// The handler is how the library asks "who does this credential belong to".
+	// Resolution is by USER HANDLE, not by anything the caller supplies: the
+	// handle came back inside the signed assertion, so it cannot be chosen.
+	var resolvedUser, resolvedOrg string
+	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
+		u, userID, orgID, err := s.userByHandle(ctx, userHandle)
+		if err != nil {
+			return nil, err
+		}
+		resolvedUser, resolvedOrg = userID, orgID
+		return u, nil
+	}
+
+	cred, err := rp.FinishDiscoverableLogin(handler, *sd, r)
+	if err != nil {
+		s.log.Info("passkey assertion rejected", "err", err)
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, CorrelationID: correlationID(ctx),
+			Detail: map[string]any{"reason": "passkey_assertion_rejected"},
+		})
+		writeError(w, http.StatusUnauthorized, "invalid_grant", "the passkey was not accepted")
+		return
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	stored, _, err := store.CredentialByID(ctx, tx, cred.ID)
+	if err != nil {
+		s.log.Error("loading the asserted credential", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+
+	// Cloning check. A backwards counter does NOT abort the sign-in on its own --
+	// it is evidence, not proof, and a false positive here locks a legitimate
+	// user out of their own account. It is recorded at WARN and audited so an
+	// operator can act on a pattern rather than a single event.
+	if err := store.UpdateSignCount(ctx, tx, cred.ID, stored.SignCount,
+		cred.Authenticator.SignCount); err != nil {
+		if errors.Is(err, store.ErrCredentialCloned) {
+			s.log.Warn("passkey signature counter went backwards; possible cloned authenticator",
+				"user_id", resolvedUser, "stored", stored.SignCount,
+				"presented", cred.Authenticator.SignCount, "correlation_id", correlationID(ctx))
+			if aerr := audit.Write(ctx, tx, audit.Event{
+				Type: "mfa.passkey_counter_regression", OrgID: resolvedOrg, SubjectID: resolvedUser,
+				CorrelationID: correlationID(ctx),
+				Detail: map[string]any{
+					"stored": stored.SignCount, "presented": cred.Authenticator.SignCount,
+				},
+			}); aerr != nil {
+				s.log.Error("auditing counter regression", "err", aerr)
+			}
+		} else {
+			s.log.Error("updating the signature counter", "err", err)
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+	}
+
+	s.completeSignIn(w, r, tx, resolvedUser, resolvedOrg, amrForPasskey(cred), r.URL.Query().Get("authz"))
+}
+
+// amrForPasskey reports what the assertion actually proved (RFC 8176).
+//
+// Honest rather than flattering, because acr is derived from this and a wrong
+// value here silently upgrades every session that used a passkey:
+//
+//   - `user` always: the authenticator confirmed someone was present.
+//   - `hwk` or `swk` by whether the credential is backup-eligible. A synced
+//     passkey lives in a keychain across devices and is software-backed; a
+//     device-bound one is hardware. Claiming `hwk` for a synced credential
+//     overstates what the user physically holds.
+//   - `mfa` ONLY when the authenticator reports user verification. That flag is
+//     what distinguishes "someone touched this device" from "the device checked
+//     a biometric or PIN first" -- one factor versus two. Without the check, a
+//     tapped security key would satisfy an MFA requirement.
+func amrForPasskey(cred *webauthn.Credential) []string {
+	amr := []string{"user"}
+	if cred.Flags.BackupEligible {
+		amr = append(amr, "swk")
+	} else {
+		amr = append(amr, "hwk")
+	}
+	if cred.Flags.UserVerified {
+		amr = append(amr, "mfa")
+	}
+	return amr
+}
+
+// userByHandle resolves the 64-byte user handle from a signed assertion.
+func (s *Server) userByHandle(ctx context.Context, handle []byte) (*passkeys.User, string, string, error) {
+	var userID, orgID, email, username string
+	if err := s.db.QueryRow(ctx, `
+		SELECT id::text, org_id::text, COALESCE(email,''), COALESCE(username,'')
+		FROM core.users WHERE user_handle = $1 AND status = 'active'`, handle).
+		Scan(&userID, &orgID, &email, &username); err != nil {
+		return nil, "", "", fmt.Errorf("no active user for that credential: %w", err)
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, "", "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err := store.CredentialsForUser(ctx, tx, userID)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	name := email
+	if name == "" {
+		name = username
+	}
+	return &passkeys.User{ID: handle, Name: name, DisplayName: name,
+		Creds: passkeys.ToLibrary(stored)}, userID, orgID, nil
+}
+
+// defaultOrg picks the organisation a usernameless sign-in belongs to.
+//
+// Single-org deployments are the common case and this is correct for them. A
+// multi-tenant deployment must instead scope by hostname, because the RP ID (and
+// therefore which credentials the browser will even offer) is per instance --
+// left explicit here rather than silently guessing wrong later.
+func (s *Server) defaultOrg(ctx context.Context) (string, error) {
+	var orgID string
+	err := s.db.QueryRow(ctx, `
+		SELECT o.id::text FROM core.organizations o
+		JOIN core.instances i ON i.id = o.instance_id
+		WHERE i.issuer = $1
+		ORDER BY o.created_at LIMIT 1`, s.cfg.Issuer).Scan(&orgID)
+	return orgID, err
+}

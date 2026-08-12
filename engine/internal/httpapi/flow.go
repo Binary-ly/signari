@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -732,8 +733,33 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Checked BEFORE spending an Argon2 evaluation. Verifying first would make
+	// the throttle an amplifier: every rejected attempt would still cost the
+	// server 19MB and a CPU burst, which is what the limiter exists to prevent.
+	throttle, terr := store.CheckLoginThrottle(ctx, s.db, userID)
+	if terr != nil {
+		s.log.Error("checking login throttle", "err", terr)
+	}
+	if throttle.Throttled {
+		// The generic message is kept: revealing that an account is throttled
+		// confirms it exists. Retry-After carries the interval for a client that
+		// wants it, and the header is not an enumeration signal on its own
+		// because it is sent on the generic failure either way.
+		w.Header().Set("Retry-After", strconv.Itoa(int(throttle.RetryAfter.Seconds())))
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": "throttled", "failures": throttle.Failures},
+		})
+		s.renderLogin(w, r, authzQuery, generic)
+		return
+	}
+
 	needsRehash, verr := s.hasher.Verify(ctx, stored, password)
 	if verr != nil {
+		if err := store.RecordLoginFailure(ctx, s.db, userID); err != nil {
+			s.log.Error("recording login failure", "err", err)
+		}
 		s.auditDetached(ctx, audit.Event{
 			Type:          audit.EventLoginFailed,
 			OrgID:         orgID,
@@ -743,6 +769,13 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		})
 		s.renderLogin(w, r, authzQuery, generic)
 		return
+	}
+
+	// A correct password clears the throttle: we now know who this is, and
+	// carrying their earlier typos forward would penalise the one user we have
+	// just positively identified.
+	if err := store.ClearLoginThrottle(ctx, s.db, userID); err != nil {
+		s.log.Error("clearing login throttle", "err", err)
 	}
 
 	// Lazy rehash, before either branch: a successful password check upgrades a

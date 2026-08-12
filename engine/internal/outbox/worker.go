@@ -222,6 +222,20 @@ type logoutClaims struct {
 }
 
 func (w *Worker) mintLogoutToken(n store.LogoutNotice) (string, error) {
+	// A notice naming neither a session nor a subject produces a valid, signed
+	// instruction to end NOTHING. The relying party has no way to act on it, and
+	// no way to tell it apart from a logout it handled correctly -- so the
+	// delivery is recorded as a success and a session survives that everyone
+	// believes was ended.
+	//
+	// Refused here as well as at the queueing site: this is the last point where
+	// the mistake is still cheap, and a signed token is the point after which it
+	// is not.
+	if n.SessionID == "" && n.Subject == "" {
+		return "", fmt.Errorf("refusing to mint a logout token for client %q that names "+
+			"neither a sid nor a sub: it would instruct the relying party to end nothing", n.ClientID)
+	}
+
 	// Sign with whatever is active. RS256 first: it is the universal floor, and a
 	// logout endpoint is exactly the kind of lightly-maintained code path most
 	// likely to support only RS256.

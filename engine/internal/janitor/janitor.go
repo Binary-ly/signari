@@ -67,7 +67,9 @@ type Stats struct {
 	// RevocationsPurged are denylist rows dropped because the token they name
 	// has expired anyway.
 	RevocationsPurged int64
-	Parked            []string
+	// RecoveriesPurged are password-reset requests dropped after expiry.
+	RecoveriesPurged int64
+	Parked           []string
 	// Skipped means another node held the lock. Not an error, and deliberately
 	// distinguished from "nothing to do" so a misconfigured cluster where every
 	// pass is skipped is visible rather than looking idle.
@@ -110,6 +112,14 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	if st.RevocationsPurged, err = store.PurgeExpiredRevocations(ctx, tx); err != nil {
 		return st, fmt.Errorf("purging expired revocations: %w", err)
 	}
+	// Recovery requests nobody can use any more. Each row holds two token hashes
+	// for a password reset, so keeping them past their expiry stores credentials
+	// that grant nothing -- all risk, no purpose.
+	n, err := store.PurgeExpiredRecoveries(ctx, tx)
+	if err != nil {
+		return st, fmt.Errorf("purging expired recovery requests: %w", err)
+	}
+	st.RecoveriesPurged = n
 
 	if err := tx.Commit(ctx); err != nil {
 		return st, fmt.Errorf("committing janitor pass: %w", err)
@@ -163,10 +173,11 @@ func (s Stats) Log(log *slog.Logger) {
 	if s.Skipped {
 		return
 	}
-	if s.SessionsSwept > 0 || s.CodesPurged > 0 || s.RevocationsPurged > 0 {
+	if s.SessionsSwept > 0 || s.CodesPurged > 0 || s.RevocationsPurged > 0 || s.RecoveriesPurged > 0 {
 		log.Info("janitor pass",
 			"sessions_swept", s.SessionsSwept, "codes_purged", s.CodesPurged,
-			"revocations_purged", s.RevocationsPurged)
+			"revocations_purged", s.RevocationsPurged,
+			"recoveries_purged", s.RecoveriesPurged)
 	}
 	// WARN, and one line per RP. Each of these is a relying party that still
 	// believes a signed-out user is signed in, which is a security fact an

@@ -166,25 +166,45 @@ async function main() {
 
     // --- 1. sign in through YOUR app --------------------------------------
     await goto(args["rp-login"]);
-    // Submitted as a real form, NOT via fetch. Sign-in ends in a redirect back
-    // to the application on a different origin, and fetch cannot follow a
-    // cross-origin redirect without CORS -- it fails with an opaque
-    // "Failed to fetch" that looks like the application's fault. A browser
-    // navigation follows it exactly as a user's would.
-    const found = await evalJS(`(() => {
+    // Sign-in is done in TWO steps, and the split is the point.
+    //
+    // A single fetch cannot do it: the flow ends in a cross-origin redirect back
+    // to the application, and fetch cannot follow one without CORS -- it dies
+    // with an opaque "Failed to fetch" that looks like the application's fault.
+    //
+    // A single form.submit() cannot do it either, in this harness: the browser
+    // ends up parked at /authorize with no session, because the navigation and
+    // the cookie it depends on race.
+    //
+    // So: POST with fetch, which reliably stores the session cookie, and IGNORE
+    // the redirect failure -- by the time fetch gives up, Set-Cookie has already
+    // been applied. Then NAVIGATE, which follows cross-origin redirects exactly
+    // as a user's browser would, now carrying the session.
+    const posted = await evalJS(`(async () => {
       const f = document.querySelector('input[name=csrf_token]');
-      if (!f) return false;
+      if (!f) return { ok: false, why: 'no Signari login form appeared -- is --rp-login the URL that redirects to the IdP?' };
       const form = f.closest('form');
-      form.querySelector('[name=username]').value = ${JSON.stringify(args.username)};
-      form.querySelector('[name=password]').value = ${JSON.stringify(args.password)};
-      form.submit();
-      return true;
+      const body = new URLSearchParams({
+        username: ${JSON.stringify(args.username)},
+        password: ${JSON.stringify(args.password)},
+        csrf_token: f.value,
+        authz: (form.querySelector('[name=authz]') || {}).value || ''
+      });
+      try {
+        await fetch('/login', { method: 'POST', body, credentials: 'same-origin', redirect: 'follow' });
+      } catch (e) {
+        // Expected: the chain leaves this origin. The cookie is already set.
+      }
+      return { ok: true };
     })()`);
-    if (!found) {
-      check("sign in through your application", false,
-        "no Signari login form appeared -- is --rp-login the URL that redirects to the IdP?");
+    if (!posted.ok) {
+      check("sign in through your application", false, posted.why);
       throw new Error("cannot continue without a session");
     }
+
+    // Now walk the flow again as a navigation. With the IdP session live this
+    // sails through authorize and lands back on the application.
+    await goto(args["rp-login"]);
     await sleep(3500); // let the redirect chain settle back onto the application
 
     const before = await protectedState();

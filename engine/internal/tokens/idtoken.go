@@ -11,7 +11,7 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/keys"
+	"signari.dev/engine/internal/keys"
 )
 
 // Type values for the JWT `typ` header.

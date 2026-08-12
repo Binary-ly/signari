@@ -22,14 +22,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/adminapi"
-	"github.com/sulimanbenhalim/signari/engine/internal/httpapi"
-	"github.com/sulimanbenhalim/signari/engine/internal/janitor"
-	"github.com/sulimanbenhalim/signari/engine/internal/keys"
-	"github.com/sulimanbenhalim/signari/engine/internal/migrate"
-	"github.com/sulimanbenhalim/signari/engine/internal/oidc"
-	"github.com/sulimanbenhalim/signari/engine/internal/outbox"
-	"github.com/sulimanbenhalim/signari/engine/internal/passwords"
+	"signari.dev/engine/internal/adminapi"
+	"signari.dev/engine/internal/httpapi"
+	"signari.dev/engine/internal/janitor"
+	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/migrate"
+	"signari.dev/engine/internal/oidc"
+	"signari.dev/engine/internal/outbox"
+	"signari.dev/engine/internal/passwords"
 )
 
 func main() {

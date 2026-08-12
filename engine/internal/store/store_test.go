@@ -12,7 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/oauth"
+	"signari.dev/engine/internal/oauth"
 )
 
 // These tests need a real PostgreSQL with the core schema applied. The

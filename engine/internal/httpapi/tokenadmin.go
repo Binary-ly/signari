@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/clients"
-	"github.com/sulimanbenhalim/signari/engine/internal/oauth"
-	"github.com/sulimanbenhalim/signari/engine/internal/store"
-	"github.com/sulimanbenhalim/signari/engine/internal/tokens"
+	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tokens"
 )
 
 // authenticateTokenEndpointClient is the shared front half of /revoke and

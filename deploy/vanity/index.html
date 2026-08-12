@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<!--
+  Go vanity import path for signari.dev/engine.
+
+  THE PREFIX IS `signari.dev`, NOT `signari.dev/engine`, and that is not a typo.
+
+  Per cmd/go, the import-prefix in a go-import tag is "the import path
+  corresponding to the REPOSITORY ROOT" -- not to the module. Our repository root
+  is polyglot (engine/, admin/, deploy/, interop/), and the Go module lives in
+  engine/. So:
+
+      repo root  github.com/binary-ly/signari   ->  signari.dev
+      engine/go.mod (module signari.dev/engine) ->  signari.dev/engine
+
+  Declaring the prefix as `signari.dev/engine` would tell the go command to look
+  for a go.mod at the repository ROOT, which does not exist, and `go get` would
+  fail with a mismatched-module error that reads like a network problem. This is
+  the same layout as cloud.google.com/go/storage.
+
+  Serve this for `/` AND for every path under it -- the go command requests the
+  FULL import path with ?go-get=1 first (signari.dev/engine?go-get=1) and only
+  walks up if that yields nothing. A catch-all is the safe configuration.
+
+  Changing where the code is hosted means editing the repo URL below and nothing
+  else. That is the entire reason the module path is a domain rather than a
+  GitHub path: import paths in downstream code never change.
+-->
+<meta name="go-import" content="signari.dev git https://github.com/binary-ly/signari">
+<meta name="go-source" content="signari.dev https://github.com/binary-ly/signari https://github.com/binary-ly/signari/tree/main{/dir} https://github.com/binary-ly/signari/blob/main{/dir}/{file}#L{line}">
+<meta http-equiv="refresh" content="0; url=https://github.com/binary-ly/signari">
+<title>signari.dev</title>
+<p>Signari — redirecting to <a href="https://github.com/binary-ly/signari">the repository</a>.</p>

@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/clients"
+	"signari.dev/engine/internal/clients"
 )
 
 // AuthzRequest is a parsed, not-yet-validated /oauth2/authorize request.

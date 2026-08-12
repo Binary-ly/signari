@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/clients"
+	"signari.dev/engine/internal/clients"
 )
 
 const goodChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"

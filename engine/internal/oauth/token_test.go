@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/clients"
+	"signari.dev/engine/internal/clients"
 )
 
 const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"

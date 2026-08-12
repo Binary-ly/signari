@@ -11,14 +11,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/audit"
-	"github.com/sulimanbenhalim/signari/engine/internal/clients"
-	"github.com/sulimanbenhalim/signari/engine/internal/keys"
-	"github.com/sulimanbenhalim/signari/engine/internal/oauth"
-	"github.com/sulimanbenhalim/signari/engine/internal/oidc"
-	"github.com/sulimanbenhalim/signari/engine/internal/passwords"
-	"github.com/sulimanbenhalim/signari/engine/internal/store"
-	"github.com/sulimanbenhalim/signari/engine/internal/tokens"
+	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/oidc"
+	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tokens"
 )
 
 const (

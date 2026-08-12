@@ -13,7 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/oauth"
+	"signari.dev/engine/internal/oauth"
 )
 
 // ErrCodeReused means the authorization code had already been consumed. The

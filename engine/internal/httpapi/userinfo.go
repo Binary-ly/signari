@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/store"
-	"github.com/sulimanbenhalim/signari/engine/internal/tokens"
+	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tokens"
 )
 
 func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {

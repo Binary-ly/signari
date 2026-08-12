@@ -26,7 +26,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sulimanbenhalim/signari/engine/migrations"
+	"signari.dev/engine/migrations"
 )
 
 // Tier separates migrations by the role they must run as. 0001 creates roles and

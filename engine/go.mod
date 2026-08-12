@@ -1,4 +1,4 @@
-module github.com/sulimanbenhalim/signari/engine
+module signari.dev/engine
 
 go 1.26.5
 

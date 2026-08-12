@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/audit"
+	"signari.dev/engine/internal/audit"
 )
 
 type correlationKey struct{}

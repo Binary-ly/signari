@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/sulimanbenhalim/signari/engine/internal/keys"
+	"signari.dev/engine/internal/keys"
 )
 
 // Metadata is the OpenID Provider configuration served at

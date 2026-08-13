@@ -14,6 +14,7 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
@@ -718,6 +719,14 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	const generic = "Incorrect username or password."
 
 	if !ok {
+		// No local credential. Before treating this as "no such user", check
+		// whether it is a user we imported whose password still lives at the
+		// provider being migrated away from. Those two cases look identical at
+		// this form and must be handled completely differently.
+		if done := s.tryDelegated(w, r, identifier, password, authzQuery); done {
+			return
+		}
+
 		// Still spend the hashing budget so a missing user is not measurably
 		// faster than a wrong password.
 		_, _ = s.hasher.Verify(ctx, dummyHash, password)
@@ -1142,4 +1151,84 @@ func stepUpErrorCode(r oauth.StepUpReason) string {
 		return "unmet_authentication_requirements"
 	}
 	return "login_required"
+}
+
+func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
+	identifier, password, authzQuery string) bool {
+
+	ctx := r.Context()
+	if s.cfg.Root == nil {
+		return false
+	}
+	pending, ok, err := store.LookupMigrationCandidate(ctx, s.db, identifier, s.cfg.Root)
+	if err != nil {
+		s.log.Error("looking up migration candidate", "err", err)
+		return false
+	}
+	if !ok {
+		return false
+	}
+
+	verr := s.delegator.Verify(ctx, pending.Source, identifier, password)
+	switch {
+	case errors.Is(verr, delegated.ErrUnavailable):
+		// The OLD provider is broken, not the user. Reported as a temporary
+		// failure and NOT counted against the account -- otherwise someone
+		// else's outage locks out every user still to be migrated.
+		store.RecordDelegationFailure(ctx, s.db, pending.Source.ID, verr.Error())
+		s.log.Error("migration source unavailable", "source", pending.Source.DisplayName,
+			"err", verr, "correlation_id", correlationID(ctx))
+		s.renderLogin(w, r, authzQuery,
+			"Sign-in is temporarily unavailable. Please try again shortly.")
+		return true
+
+	case verr != nil:
+		store.RecordDelegationFailure(ctx, s.db, pending.Source.ID, "rejected")
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: pending.OrgID, SubjectID: pending.UserID,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": "delegated_rejected", "source": pending.Source.DisplayName},
+		})
+		s.renderLogin(w, r, authzQuery, "Incorrect username or password.")
+		return true
+	}
+
+	// Accepted by the old provider. Take a local hash NOW, in the same
+	// transaction as the session -- so this user never needs the old system
+	// again, and the migration shrinks by one.
+	hash, err := s.hasher.Hash(ctx, password)
+	if err != nil {
+		s.log.Error("hashing a migrated password", "err", err)
+		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
+		return true
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return true
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := store.CompleteMigration(ctx, tx, pending.UserID, pending.OrgID,
+		pending.Source.ID, hash); err != nil {
+		s.log.Error("completing migration", "err", err)
+		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
+		return true
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "account.migrated", OrgID: pending.OrgID, SubjectID: pending.UserID,
+		CorrelationID: correlationID(ctx),
+		Detail:        map[string]any{"source": pending.Source.DisplayName},
+	}); err != nil {
+		s.log.Error("auditing migration", "err", err)
+		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
+		return true
+	}
+
+	s.log.Info("user migrated on first sign-in", "source", pending.Source.DisplayName,
+		"correlation_id", correlationID(ctx))
+	s.completeSignIn(w, r, tx, pending.UserID, pending.OrgID,
+		[]string{oauth.AMRPassword}, authzQuery)
+	return true
 }

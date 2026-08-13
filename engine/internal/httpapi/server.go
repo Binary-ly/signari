@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/oidc"
@@ -31,6 +32,8 @@ type Server struct {
 	// configured, so no call site has to nil-check before telling a user
 	// something important.
 	mailer mail.Sender
+	// delegator verifies credentials against a provider being migrated from.
+	delegator *delegated.Verifier
 }
 
 func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender) (*Server, error) {
@@ -53,9 +56,10 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// The login endpoint is the expensive one: every attempt costs an Argon2
 		// evaluation. Rate limiting in FRONT of the hash is what keeps a flood
 		// from turning into memory exhaustion, independent of the semaphore.
-		login:  newBucket(5, 20),
-		hasher: passwords.NewHasher(passwords.MemoryBudgetMiB),
-		mailer: mailer,
+		login:     newBucket(5, 20),
+		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
+		mailer:    mailer,
+		delegator: delegated.New(),
 	}, nil
 }
 

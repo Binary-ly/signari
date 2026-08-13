@@ -153,3 +153,29 @@ func EraseSubject(ctx context.Context, tx pgx.Tx, subjectID string) error {
 	}
 	return nil
 }
+
+// Seal and Open on the ROOT key, for secrets that belong to an ORGANISATION
+// rather than a person -- today, a migration source's client secret.
+//
+// Deliberately separate from SubjectKey: a subject key is destroyed when that
+// person is erased, and an organisation's configuration must survive that. Using
+// the wrong one here would mean erasing any single user silently broke the
+// migration for everyone else in the org.
+func (r *RootKey) Seal(plaintext []byte, context string) ([]byte, error) {
+	return r.seal(append([]byte(context+"\x00"), plaintext...))
+}
+
+// Open reverses Seal, checking the context binding.
+func (r *RootKey) Open(sealed []byte, context string) ([]byte, error) {
+	raw, err := r.open(sealed)
+	if err != nil {
+		return nil, err
+	}
+	prefix := []byte(context + "\x00")
+	if len(raw) < len(prefix) || string(raw[:len(prefix)]) != string(prefix) {
+		// The blob decrypted but was sealed for a different purpose -- almost
+		// always a value copied between columns.
+		return nil, errors.New("keys: ciphertext was sealed for a different purpose")
+	}
+	return raw[len(prefix):], nil
+}

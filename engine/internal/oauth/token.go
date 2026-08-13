@@ -223,7 +223,8 @@ func RequireClientAuth(c *clients.Client, req TokenRequest) *TokenError {
 // ValidateGrantType rejects everything we do not implement, before any lookup.
 func ValidateGrantType(gt string) *TokenError {
 	switch gt {
-	case "authorization_code", "refresh_token", "client_credentials":
+	case "authorization_code", "refresh_token", "client_credentials",
+		GrantTypeTokenExchange:
 		return nil
 	case "":
 		return tokenErr("invalid_request", "grant_type is required")

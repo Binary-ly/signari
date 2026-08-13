@@ -36,11 +36,16 @@ type Client struct {
 	// IssuerAlias, when set, is a REGISTERED legacy issuer this client's tokens
 	// are minted under, so an application migrated from another provider keeps
 	// working without being reconfigured. Cutover only -- see migration 0015.
-	IssuerAlias  string
-	PKCEMethods  []string
-	IDTokenAlg   string
-	RedirectURIs []string
-	RefreshTTL   int
+	IssuerAlias string
+
+	// MayExchange and ExchangeAudiences gate RFC 8693. Off by default: exchange
+	// transfers privilege, so it is granted deliberately or not at all.
+	MayExchange       bool
+	ExchangeAudiences []string
+	PKCEMethods       []string
+	IDTokenAlg        string
+	RedirectURIs      []string
+	RefreshTTL        int
 }
 
 // RefreshTokenTTLSeconds is the client's configured refresh lifetime, with a
@@ -76,12 +81,14 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	err := q.QueryRow(ctx, `
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce, pkce_methods,
-		       id_token_signed_alg, refresh_token_ttl_s, first_party, issuer_alias
+		       id_token_signed_alg, refresh_token_ttl_s, first_party, issuer_alias,
+		       may_exchange, exchange_audiences
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
 			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE, &c.PKCEMethods,
-			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias)
+			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias,
+			&c.MayExchange, &c.ExchangeAudiences)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

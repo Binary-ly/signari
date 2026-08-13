@@ -176,6 +176,24 @@ type AccessTokenClaims struct {
 	ClientID  string `json:"client_id"`
 	Scope     string `json:"scope,omitempty"`
 	SessionID string `json:"sid,omitempty"`
+
+	// Act is the RFC 8693 §4.1 actor claim: WHO is acting on the subject's
+	// behalf. It nests, so a chain of delegation stays visible rather than
+	// collapsing into "somebody did this".
+	//
+	// This is what makes delegated access auditable instead of merely permitted.
+	// Without it, a token obtained by exchange is indistinguishable from one the
+	// subject requested themselves, and an investigation cannot answer the only
+	// question that matters: who actually did this, on whose behalf.
+	Act *Actor `json:"act,omitempty"`
+}
+
+// Actor identifies a party acting for someone else. Nested, so A-acting-for-B
+// -acting-for-C is representable -- which is exactly the shape an AI agent
+// operating under a user's authority takes.
+type Actor struct {
+	Subject string `json:"sub"`
+	Act     *Actor `json:"act,omitempty"`
 }
 
 // Lifetime bounds. Short access tokens are how revocation stays bounded without

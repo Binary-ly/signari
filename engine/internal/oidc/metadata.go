@@ -157,7 +157,11 @@ func Build(cfg Config) (*Metadata, error) {
 
 		// No `password` grant: ROPC is removed in OAuth 2.1 and there is no
 		// version of it that is safe to offer.
-		GrantTypesSupported: []string{"authorization_code", "refresh_token", "client_credentials"},
+		// token-exchange is listed only now that the grant is reachable and
+		// enforced -- the rule this file exists to hold: nothing enters discovery
+		// before it works.
+		GrantTypesSupported: []string{"authorization_code", "refresh_token",
+			"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"},
 
 		SubjectTypesSupported:    []string{"public"},
 		IDTokenSigningAlgValues:  algNames,

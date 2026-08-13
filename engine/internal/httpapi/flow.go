@@ -269,6 +269,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		s.handleClientCredentialsGrant(w, r, c, req)
 		return
 	}
+	if req.GrantType == oauth.GrantTypeTokenExchange {
+		s.handleTokenExchange(w, r, c)
+		return
+	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -1273,4 +1277,112 @@ func (s *Server) issuerFor(c *clients.Client) string {
 // deployment's issuer plus any registered legacy aliases.
 func (s *Server) acceptedIssuers() []string {
 	return append([]string{s.cfg.Issuer}, s.cfg.IssuerAliases...)
+}
+
+// handleTokenExchange implements RFC 8693.
+//
+// The validation rules live in internal/oauth (scope ceiling, audience
+// allow-list, permitted subject token types). This is the part that must get one
+// thing right that validation cannot check for it:
+//
+//	THE SUBJECT TOKEN'S SCOPES COME FROM THE VERIFIED TOKEN, NEVER THE REQUEST.
+//
+// Reading them from the form would let a caller describe its own token as
+// carrying any scope it liked, and the ceiling would then be measured against a
+// number the attacker chose.
+func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *clients.Client) {
+	ctx := r.Context()
+	ex := oauth.ParseExchange(r.PostForm)
+
+	// Verified first. Everything downstream reasons about what this token
+	// actually says, not what the request claims about it.
+	subject, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), ex.SubjectToken)
+	if err != nil {
+		s.log.Info("token exchange: subject token rejected", "err", err,
+			"caller", c.ClientID, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "the subject token is not valid", Status: http.StatusBadRequest})
+		return
+	}
+
+	// A revoked or signed-out token must not be exchangeable. Otherwise
+	// exchange becomes a way to launder a dead credential into a live one --
+	// the token the user revoked yesterday still produces working tokens today.
+	if revoked, rerr := store.JTIRevoked(ctx, s.db, subject.JTI); rerr != nil || revoked {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "the subject token has been revoked", Status: http.StatusBadRequest})
+		return
+	}
+	if subject.SessionID != "" {
+		live, serr := store.SessionLive(ctx, s.db, subject.SessionID)
+		if serr != nil || !live {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the session behind the subject token has ended",
+				Status:      http.StatusBadRequest})
+			return
+		}
+	}
+
+	granted, audience, terr := oauth.ValidateExchange(ex, c.MayExchange, c.ExchangeAudiences,
+		subject.ClientID, c.ClientID, splitScopes(subject.Scope))
+	if terr != nil {
+		writeTokenError(w, terr)
+		return
+	}
+
+	key, err := s.cfg.Keys.Active(keys.Algorithm(c.IDTokenAlg))
+	if err != nil {
+		s.log.Error("token exchange: no active key", "err", err)
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+	jti, err := newSID()
+	if err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+
+	// The actor chain. The caller is recorded as acting for the subject, and any
+	// chain the subject token already carried is nested beneath -- so a token
+	// three delegations deep still names every party, in order.
+	act := &tokens.Actor{Subject: c.ClientID, Act: subject.Act}
+
+	now := time.Now()
+	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
+		Issuer:   s.issuerFor(c),
+		Subject:  subject.Subject, // still the USER; exchange delegates, it does not impersonate
+		Audience: audience,
+		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		IssuedAt: now.Unix(),
+		JTI:      jti,
+		ClientID: c.ClientID,
+		Scope:    joinScopes(granted),
+		// The session is carried through deliberately: an exchanged token must
+		// die when the user signs out, exactly like the token it came from.
+		SessionID: subject.SessionID,
+		Act:       act,
+	}, tokens.TypAccessToken)
+	if err != nil {
+		s.log.Error("token exchange: signing", "err", err)
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+
+	s.auditDetached(ctx, audit.Event{
+		Type: "oauth.token_exchanged", SubjectID: subject.Subject, ClientID: c.ClientID,
+		CorrelationID: correlationID(ctx),
+		Detail: map[string]any{
+			"acting_for": subject.ClientID, "audience": audience, "scope": granted,
+		},
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access_token": at,
+		// RFC 8693 §2.2.1 requires issued_token_type, and token_type must be
+		// "Bearer" spelled exactly so.
+		"issued_token_type": oauth.TokenTypeAccess,
+		"token_type":        "Bearer",
+		"expires_in":        int(tokens.DefaultAccessTokenTTL.Seconds()),
+		"scope":             joinScopes(granted),
+	})
 }

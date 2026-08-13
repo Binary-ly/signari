@@ -158,6 +158,43 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 		}
 		return true, nil
 
+	// --- imported formats -------------------------------------------------
+	// Each returns needsRehash=true unconditionally: a foreign hash is by
+	// definition not current policy, so a successful sign-in upgrades it to
+	// Argon2id in the same transaction. The foreign format is transitional.
+
+	case strings.HasPrefix(stored, "$P$"), strings.HasPrefix(stored, "$H$"):
+		// WordPress, phpBB, Drupal 7 -- the systems most in need of migrating off.
+		if err := verifyPHPass(stored, password); err != nil {
+			return false, err
+		}
+		return true, nil
+
+	case strings.HasPrefix(stored, "$S$"):
+		if err := verifyDrupal7(stored, password); err != nil {
+			return false, err
+		}
+		return true, nil
+
+	// NOT HANDLED: $5$ and $6$ (glibc SHA-crypt, used by /etc/shadow, FreeIPA and
+	// most LDAP directories).
+	//
+	// An implementation was written and then removed, because it disagreed with
+	// PHP's crypt(3) on real vectors. Shipping it would have been worse than
+	// having nothing: every user imported from an LDAP directory would have been
+	// told their password was wrong, with no indication that the fault was ours.
+	//
+	// It falls through to the default below and is refused, so such an import
+	// fails loudly at sign-in rather than silently accepting anything. Finishing
+	// it needs the glibc permutation table checked against published vectors --
+	// see internal/passwords/foreign.go.
+
+	case strings.HasPrefix(stored, "$scrypt$"):
+		if err := verifyScrypt(stored, password); err != nil {
+			return false, err
+		}
+		return true, nil
+
 	default:
 		// An unrecognised format is a mismatch, never a pass. Failing open on an
 		// unknown prefix would turn a bad import into an authentication bypass.

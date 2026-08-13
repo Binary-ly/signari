@@ -94,7 +94,8 @@ func Parse(r io.Reader) (*KeycloakRealm, error) {
 // Runs in ONE transaction: a half-imported realm is the worst outcome, because
 // nobody can tell which half, and the natural response -- run it again -- is
 // exactly what an idempotent importer is for but a partial one punishes.
-func Import(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm, dryRun bool) (*Result, error) {
+func Import(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm,
+	hasher *passwords.Hasher, dryRun bool) (*Result, error) {
 	res := &Result{}
 
 	for _, u := range realm.Users {
@@ -182,9 +183,23 @@ func Import(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm, 
 		if c.PublicClient {
 			kind = "public"
 		}
-		// The secret is imported VERBATIM. That is the point: the downstream
-		// application keeps the credentials it already has, so migrating it is a
-		// configuration change of one URL rather than a coordinated release.
+		// The application keeps the secret it already has -- that is the point of
+		// the whole feature -- but it is HASHED before storage, exactly like one
+		// we generated.
+		//
+		// The first version of this wrote the plaintext into client_secret_hash.
+		// Two things were wrong with that and only one of them is obvious: a
+		// plaintext secret sat in a column named `_hash`, AND the Argon2 verifier
+		// correctly refused it, so every imported client silently could not
+		// authenticate. "Verbatim import" meant "verbatim and unusable".
+		secretHash := ""
+		if c.Secret != "" {
+			h, herr := hasher.Hash(ctx, c.Secret)
+			if herr != nil {
+				return nil, fmt.Errorf("importer: hashing the secret for %s: %w", c.ClientID, herr)
+			}
+			secretHash = h
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 			                          client_secret_hash, enabled, grant_types, scopes, require_pkce)
@@ -192,7 +207,7 @@ func Import(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm, 
 			        ARRAY['authorization_code','refresh_token'],
 			        ARRAY['openid','profile','email'], $6)
 			ON CONFLICT (client_id) DO NOTHING`,
-			c.ClientID, orgID, kind, c.Secret, c.Enabled, c.PublicClient); err != nil {
+			c.ClientID, orgID, kind, secretHash, c.Enabled, c.PublicClient); err != nil {
 			return nil, fmt.Errorf("importer: creating client %s: %w", c.ClientID, err)
 		}
 		for _, u := range c.RedirectURIs {

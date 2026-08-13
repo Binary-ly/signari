@@ -770,7 +770,8 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	res, err := importer.Import(ctx, tx, orgID, realm, dryRun)
+	res, err := importer.Import(ctx, tx, orgID, realm,
+		passwords.NewHasher(passwords.MemoryBudgetMiB), dryRun)
 	if err != nil {
 		return err
 	}

@@ -2,7 +2,7 @@
 # Executes the conformance plan against the running engine.
 set -euo pipefail
 cd "$(dirname "$0")"
-SUITE="${SUITE_DIR:-$HOME/.cache/signari-conformance}"
+SUITE="${SUITE_DIR:-$HOME/.cache/idp-conformance}"
 
 [ -f "$SUITE/target/fapi-test-suite.jar" ] || {
   echo "suite jar missing -- build it first:"

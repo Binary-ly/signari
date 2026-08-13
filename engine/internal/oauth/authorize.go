@@ -183,6 +183,17 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 			"client is not registered for scope(s): "+strings.Join(bad, ", "))
 	}
 
+	// 7b. RFC 8707 resource indicators.
+	//
+	// Validated because the requested resources BECOME the access token's
+	// audience. Unchecked, a client could name any audience it liked -- including
+	// another service's identifier -- and mint a token that service would accept.
+	// The parameter exists to NARROW a token, and it must not be usable to widen
+	// one.
+	if err := validateResources(req.Resources); err != nil {
+		return redirectErr("invalid_target", err.Error())
+	}
+
 	// 8. response_mode.
 	//
 	// `query` only. `fragment` is for front-channel token delivery, which this
@@ -275,4 +286,36 @@ func parseMaxAge(s string) *int {
 		return nil
 	}
 	return &n
+}
+
+// validateResources checks RFC 8707 §2 resource indicators.
+//
+// Each must be an absolute URI with no fragment. The spec says so, and the
+// reason matters here: the value ends up as an `aud` claim that a resource
+// server compares against its own identifier, and a relative or fragment-bearing
+// value cannot be compared reliably by anyone.
+func validateResources(resources []string) error {
+	if len(resources) == 0 {
+		return nil
+	}
+	// Bounded: an audience list is compared by resource servers on every request,
+	// and an unbounded one is a cheap way to inflate every token we issue.
+	if len(resources) > 8 {
+		return fmt.Errorf("at most 8 resource indicators may be requested")
+	}
+	for _, r := range resources {
+		u, err := url.Parse(r)
+		if err != nil || !u.IsAbs() {
+			return fmt.Errorf("resource %q must be an absolute URI", r)
+		}
+		if u.Fragment != "" || strings.Contains(r, "#") {
+			return fmt.Errorf("resource %q must not contain a fragment", r)
+		}
+		if u.Scheme != "https" && u.Scheme != "http" {
+			// Not a spec requirement, but an audience nobody can reach is one
+			// nobody can verify, and it is nearly always a typo.
+			return fmt.Errorf("resource %q must be an http or https URI", r)
+		}
+	}
+	return nil
 }

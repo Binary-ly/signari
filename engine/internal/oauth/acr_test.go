@@ -147,3 +147,34 @@ func TestRequiredFactorNamesWhatIsMissing(t *testing.T) {
 		t.Errorf("no acr_values should require nothing, got %q", got)
 	}
 }
+
+// RFC 8707 resource indicators become the access token's AUDIENCE, so they are
+// validated rather than trusted. The parameter exists to NARROW a token; it must
+// not be usable to widen one by naming an audience the client has no claim to.
+func TestResourceIndicatorValidation(t *testing.T) {
+	for _, ok := range [][]string{
+		nil,
+		{"https://api.example.com"},
+		{"https://api.example.com/billing", "https://api.example.com/admin"},
+	} {
+		if err := validateResources(ok); err != nil {
+			t.Errorf("rejected a valid resource set %v: %v", ok, err)
+		}
+	}
+
+	for _, bad := range [][]string{
+		{"api.example.com"},              // not absolute
+		{"/billing"},                     // relative
+		{"https://api.example.com#frag"}, // fragment: cannot be compared reliably
+		{"urn:example:api"},              // not reachable, nearly always a typo
+		{"ftp://api.example.com"},        // ditto
+		// An unbounded audience list inflates every token and is compared by
+		// resource servers on every request.
+		{"https://a", "https://b", "https://c", "https://d",
+			"https://e", "https://f", "https://g", "https://h", "https://i"},
+	} {
+		if err := validateResources(bad); err == nil {
+			t.Errorf("accepted an invalid resource set %v", bad)
+		}
+	}
+}

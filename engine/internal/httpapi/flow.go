@@ -373,10 +373,27 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 
 	issuer := s.issuerFor(c)
 
+	// RFC 8707: the requested resources become the AUDIENCE.
+	//
+	// Until now `resource` was parsed, stored and carried through refresh, and
+	// then quietly dropped -- every access token was audienced to the client
+	// itself. That means a token a client obtained for the billing API is
+	// equally valid at the admin API, because neither can tell them apart: the
+	// only audience either sees is "this client". Asking for a narrow token and
+	// receiving a universal one is the opposite of what the parameter is for.
+	//
+	// With resources present, they ARE the audience. The client id stays only
+	// when none were requested, which preserves today's behaviour for callers
+	// that do not use the parameter.
+	audience := []string{c.ClientID}
+	if len(resources) > 0 {
+		audience = resources
+	}
+
 	at, err := signer.SignJSON(tokens.AccessTokenClaims{
 		Issuer:    issuer,
 		Subject:   userID,
-		Audience:  []string{c.ClientID},
+		Audience:  audience,
 		Expiry:    now.Add(tokens.DefaultAccessTokenTTL).Unix(),
 		IssuedAt:  now.Unix(),
 		JTI:       jti,

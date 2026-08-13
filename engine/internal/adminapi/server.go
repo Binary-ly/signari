@@ -27,6 +27,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/passwords"
 )
 
 // Server is the admin write API. It listens separately from the public protocol
@@ -36,6 +38,11 @@ type Server struct {
 	db    *pgxpool.Pool
 	log   *slog.Logger
 	token string
+	// hasher is the ENGINE's Argon2 configuration. Passwords set by an
+	// administrator must be written with the same parameters the login path
+	// expects; a hash produced elsewhere is a credential that may simply not
+	// work, and the failure looks like the user mistyping.
+	hasher *passwords.Hasher
 }
 
 func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
@@ -44,12 +51,15 @@ func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
 	if len(token) < 32 {
 		return nil, fmt.Errorf("admin API token must be at least 32 characters (got %d)", len(token))
 	}
-	return &Server{db: db, log: log, token: token}, nil
+	return &Server{db: db, log: log, token: token,
+		hasher: passwords.NewHasher(passwords.MemoryBudgetMiB)}, nil
 }
 
 func (s *Server) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /admin/clients/{clientID}", s.auth(s.patchClient))
+	mux.HandleFunc("POST /admin/users", s.auth(s.createUser))
+	mux.HandleFunc("PATCH /admin/users/{userID}", s.auth(s.patchUser))
 	mux.HandleFunc("GET /admin/config-version", s.auth(s.configVersion))
 	return mux
 }

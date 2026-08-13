@@ -25,6 +25,7 @@ import (
 
 	"signari.dev/engine/internal/adminapi"
 	"signari.dev/engine/internal/httpapi"
+	"signari.dev/engine/internal/importer"
 	"signari.dev/engine/internal/janitor"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
@@ -54,6 +55,7 @@ commands:
   user create         create a user with a password
   client create       register an OAuth client
   janitor once        run one maintenance pass (serve runs this continuously)
+  import keycloak     import users and clients from a Keycloak realm export
   keys list           show signing keys, their state and when each may advance
   keys rotate         advance the rotation one safe step (run it again later)
   serve               serve the OIDC endpoints
@@ -87,13 +89,16 @@ func run(args []string) error {
 	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
 	redirect := fs.String("redirect", "", "registered redirect_uri (exact match)")
 	public := fs.Bool("public", false, "register a public client (PKCE, no secret)")
+	file := fs.String("file", "", "path to a realm export (import)")
+	orgID := fs.String("org", "", "organisation uuid to import into")
+	dryRun := fs.Bool("dry-run", false, "report what would be imported and change nothing")
 	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm (default: all in use)")
 	promoteNow := fs.Bool("now", false, "promote without waiting for the publication dwell -- key compromise only")
 
 	cmd := args[0]
 	rest := args[1:]
 	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
-		cmd == "janitor" || cmd == "keys" {
+		cmd == "janitor" || cmd == "keys" || cmd == "import" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -146,6 +151,8 @@ func run(args []string) error {
 		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr)
 	case "janitor once":
 		return janitorOnce(ctx, conn)
+	case "import keycloak":
+		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
 	case "keys list":
 		return keysList(ctx, conn)
 	case "keys rotate":
@@ -728,4 +735,61 @@ func buildMailer(log *slog.Logger) mail.Sender {
 		FromAddr: from,
 		FromName: os.Getenv("SIGNARI_MAIL_FROM_NAME"),
 	}
+}
+
+// importKeycloak reads a realm export and creates the equivalent users and
+// clients.
+//
+// One transaction, and a --dry-run that changes nothing: an import is run
+// against a production directory by someone who wants to know what it will do
+// before it does it, and refusing them that is how imports get run blind.
+func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dryRun bool) error {
+	if path == "" || orgID == "" {
+		return fmt.Errorf("-file and -org are both required")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	realm, err := importer.Parse(f)
+	if err != nil {
+		return err
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	res, err := importer.Import(ctx, tx, orgID, realm, dryRun)
+	if err != nil {
+		return err
+	}
+
+	if dryRun {
+		fmt.Printf("DRY RUN -- nothing was written.\n")
+	} else if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	fmt.Printf("realm %q\n  users:   %d created, %d updated, %d skipped\n  clients: %d created, %d skipped\n",
+		realm.Realm, res.UsersCreated, res.UsersUpdated, len(res.UsersSkipped),
+		res.ClientsCreated, len(res.ClientsSkipped))
+
+	// Skipped entries are PRINTED, never merely counted. A number tells an
+	// operator something went wrong; the list tells them who cannot sign in.
+	for _, s := range res.UsersSkipped {
+		fmt.Printf("  skipped user:   %s\n", s)
+	}
+	for _, s := range res.ClientsSkipped {
+		fmt.Printf("  skipped client: %s\n", s)
+	}
+	if !dryRun && res.UsersCreated+res.UsersUpdated > 0 {
+		fmt.Printf("\nImported users are marked migration_state=pending and keep their Keycloak\n" +
+			"password hash. Each one is upgraded to Argon2id on their first sign-in.\n")
+	}
+	return nil
 }

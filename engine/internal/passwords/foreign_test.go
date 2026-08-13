@@ -2,7 +2,11 @@ package passwords
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"testing"
+
+	"golang.org/x/crypto/pbkdf2"
 )
 
 // Cross-implementation vectors. Every hash here was produced by ANOTHER program
@@ -86,4 +90,41 @@ func TestKeycloakCredential(t *testing.T) {
 			t.Errorf("accepted malformed keycloak credential: %s / %s", tc.cd, tc.sd)
 		}
 	}
+}
+
+// A Keycloak credential must survive the pack/verify round trip through the
+// normal dispatch, so an imported user signs in on the same path as everyone
+// else and gets upgraded to Argon2id on first success.
+func TestKeycloakPackedRoundTrip(t *testing.T) {
+	// Built with the same PBKDF2-SHA256 Keycloak uses, so this exercises the
+	// packing and dispatch rather than re-testing the primitive.
+	const salt = "c2FsdHNhbHRzYWx0c2FsdA" // 16 bytes, base64
+	cd := `{"hashIterations":1000,"algorithm":"pbkdf2-sha256"}`
+	sd := keycloakSecretData(t, "correct-horse", salt, 1000)
+
+	stored := EncodeKeycloak(cd, sd)
+	h := NewHasher(MemoryBudgetMiB)
+
+	needsRehash, err := h.Verify(context.Background(), stored, "correct-horse")
+	if err != nil {
+		t.Fatalf("a packed Keycloak credential was rejected: %v", err)
+	}
+	if !needsRehash {
+		t.Error("an imported Keycloak hash did not request a rehash")
+	}
+	if _, err := h.Verify(context.Background(), stored, "wrong"); err == nil {
+		t.Fatal("the wrong password was accepted")
+	}
+}
+
+// keycloakSecretData builds the secretData blob Keycloak stores.
+func keycloakSecretData(t *testing.T, password, saltB64 string, iterations int) string {
+	t.Helper()
+	salt, err := base64.StdEncoding.DecodeString(saltB64 + "==")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := pbkdf2.Key([]byte(password), salt, iterations, 32, sha256.New)
+	return `{"value":"` + base64.StdEncoding.EncodeToString(key) +
+		`","salt":"` + base64.StdEncoding.EncodeToString(salt) + `"}`
 }

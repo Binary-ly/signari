@@ -189,6 +189,12 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 	// it needs the glibc permutation table checked against published vectors --
 	// see internal/passwords/foreign.go.
 
+	case strings.HasPrefix(stored, "$keycloak$"):
+		if err := verifyKeycloakPacked(stored, password); err != nil {
+			return false, err
+		}
+		return true, nil
+
 	case strings.HasPrefix(stored, "$scrypt$"):
 		if err := verifyScrypt(stored, password); err != nil {
 			return false, err

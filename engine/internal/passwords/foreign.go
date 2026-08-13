@@ -422,3 +422,34 @@ func shaCryptEncode(sum []byte, size int) string {
 	}
 	return out.String()
 }
+
+// EncodeKeycloak packs a Keycloak credential into a single storable string.
+//
+// Keycloak keeps its parameters in one JSON column and the salt+hash in another,
+// which does not fit a hash column. Rather than add columns for one vendor's
+// layout, the two blobs are packed into a PHC-shaped string the normal verifier
+// dispatch recognises -- so an imported Keycloak user goes through exactly the
+// same login path as everyone else, and gets rehashed to Argon2id on first
+// sign-in like every other foreign format.
+func EncodeKeycloak(credentialData, secretData string) string {
+	return "$keycloak$" +
+		base64.RawStdEncoding.EncodeToString([]byte(credentialData)) + "$" +
+		base64.RawStdEncoding.EncodeToString([]byte(secretData))
+}
+
+// verifyKeycloakPacked unpacks what EncodeKeycloak produced.
+func verifyKeycloakPacked(stored, password string) error {
+	parts := strings.Split(stored, "$")
+	if len(parts) != 4 {
+		return ErrMismatch
+	}
+	cd, err := base64.RawStdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return ErrMismatch
+	}
+	sd, err := base64.RawStdEncoding.DecodeString(parts[3])
+	if err != nil {
+		return ErrMismatch
+	}
+	return VerifyKeycloak(string(cd), string(sd), password)
+}

@@ -437,8 +437,29 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 			"This must never be set outside local testing.")
 	}
 
+	// Legacy issuers this deployment also claims, so tokens minted for clients
+	// mid-migration are still accepted by our own userinfo and introspection.
+	var aliases []string
+	if rows, err := pool.Query(ctx,
+		`SELECT issuer FROM core.instance_issuer_aliases WHERE instance_id = $1::uuid
+		   AND (retire_after IS NULL OR retire_after > now())`, instanceID); err == nil {
+		for rows.Next() {
+			var a string
+			if rows.Scan(&a) == nil {
+				aliases = append(aliases, a)
+			}
+		}
+		rows.Close()
+		if len(aliases) > 0 {
+			log.Info("accepting legacy issuer aliases for migrated clients", "aliases", aliases)
+		}
+	} else {
+		log.Error("loading issuer aliases", "err", err)
+	}
+
 	srv, err := httpapi.New(oidc.Config{
 		Issuer:              issuer,
+		IssuerAliases:       aliases,
 		Keys:                set,
 		Root:                root,
 		AllowInsecureIssuer: insecureIssuer,

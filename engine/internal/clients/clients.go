@@ -32,10 +32,15 @@ type Client struct {
 	// FirstParty clients skip the consent screen -- see migration 0010. It
 	// suppresses only that question; every other check still applies.
 	FirstParty bool
-	PKCEMethods   []string
-	IDTokenAlg    string
-	RedirectURIs  []string
-	RefreshTTL    int
+
+	// IssuerAlias, when set, is a REGISTERED legacy issuer this client's tokens
+	// are minted under, so an application migrated from another provider keeps
+	// working without being reconfigured. Cutover only -- see migration 0015.
+	IssuerAlias  string
+	PKCEMethods  []string
+	IDTokenAlg   string
+	RedirectURIs []string
+	RefreshTTL   int
 }
 
 // RefreshTokenTTLSeconds is the client's configured refresh lifetime, with a
@@ -66,16 +71,17 @@ type Querier interface {
 func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	c := &Client{ClientID: clientID}
 	var secret *string
+	var alias *string
 
 	err := q.QueryRow(ctx, `
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce, pkce_methods,
-		       id_token_signed_alg, refresh_token_ttl_s, first_party
+		       id_token_signed_alg, refresh_token_ttl_s, first_party, issuer_alias
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
 			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE, &c.PKCEMethods,
-			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty)
+			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -84,6 +90,9 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	}
 	if secret != nil {
 		c.SecretHash = *secret
+	}
+	if alias != nil {
+		c.IssuerAlias = *alias
 	}
 
 	rows, err := q.Query(ctx,

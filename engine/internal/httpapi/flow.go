@@ -371,8 +371,10 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		return nil, nil, err
 	}
 
+	issuer := s.issuerFor(c)
+
 	at, err := signer.SignJSON(tokens.AccessTokenClaims{
-		Issuer:    s.cfg.Issuer,
+		Issuer:    issuer,
 		Subject:   userID,
 		Audience:  []string{c.ClientID},
 		Expiry:    now.Add(tokens.DefaultAccessTokenTTL).Unix(),
@@ -410,7 +412,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			return nil, nil, fmt.Errorf("loading session context: %w", err)
 		}
 		claims := tokens.IDTokenClaims{
-			Issuer:          s.cfg.Issuer,
+			Issuer:          issuer,
 			Subject:         userID,
 			Audience:        c.ClientID,
 			Expiry:          now.Add(tokens.DefaultIDTokenTTL).Unix(),
@@ -1231,4 +1233,27 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 	s.completeSignIn(w, r, tx, pending.UserID, pending.OrgID,
 		[]string{oauth.AMRPassword}, authzQuery)
 	return true
+}
+
+// issuerFor returns the issuer to stamp on this client's tokens.
+//
+// Almost always the deployment's own issuer. A client carrying an issuer_alias
+// is mid-migration from another provider and still checks the OLD `iss` value,
+// so its tokens are minted under that instead -- which is what lets an
+// application move with a DNS change rather than a code change.
+//
+// The alias is validated at write time by a database trigger against the
+// instance's registered aliases (migration 0015), so a value read here has
+// already been proven to be one this deployment legitimately claims.
+func (s *Server) issuerFor(c *clients.Client) string {
+	if c != nil && c.IssuerAlias != "" {
+		return c.IssuerAlias
+	}
+	return s.cfg.Issuer
+}
+
+// acceptedIssuers is what our own resource endpoints will honour: this
+// deployment's issuer plus any registered legacy aliases.
+func (s *Server) acceptedIssuers() []string {
+	return append([]string{s.cfg.Issuer}, s.cfg.IssuerAliases...)
 }

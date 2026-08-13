@@ -56,6 +56,11 @@ type Config struct {
 	Issuer string
 	Keys   *keys.Set
 
+	// IssuerAliases are legacy issuers this deployment also claims, for clients
+	// still being migrated from another provider. Tokens minted under one must
+	// still be accepted by our own userinfo and introspection.
+	IssuerAliases []string
+
 	// Root wraps per-subject encryption keys. Needed wherever a stored personal
 	// secret must be read back -- today the TOTP secret. Held here rather than
 	// passed around so there is exactly one place it enters the request path.

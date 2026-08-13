@@ -34,7 +34,23 @@ const Leeway = 60 * time.Second
 //   - The key is resolved by `kid` against OUR key set only.
 //   - `typ` must be at+jwt. Without this a logout token or an ID token can be
 //     presented as an access token, since they share a signer.
+//
+// VerifyAccessToken accepts a token minted under the deployment's own issuer.
 func VerifyAccessToken(set *keys.Set, issuer, raw string) (*AccessTokenClaims, error) {
+	return VerifyAccessTokenAny(set, []string{issuer}, raw)
+}
+
+// VerifyAccessTokenAny accepts any of several issuers.
+//
+// Needed because a client mid-migration has its tokens minted under a REGISTERED
+// legacy issuer (migration 0015), and would otherwise be unable to call our own
+// userinfo or introspection with the tokens we just gave it -- the migration
+// feature would break the very applications it exists to keep working.
+//
+// The list is the deployment's issuer plus its registered aliases, and nothing
+// else. It is emphatically not "skip the issuer check": an unregistered issuer
+// is still refused, which is what keeps this from being a mix-up attack.
+func VerifyAccessTokenAny(set *keys.Set, issuers []string, raw string) (*AccessTokenClaims, error) {
 	// Only the algorithms we actually sign with. jose requires this list up
 	// front, which is exactly the right shape: it is impossible to "forget" to
 	// pin the algorithm.
@@ -83,9 +99,17 @@ func VerifyAccessToken(set *keys.Set, issuer, raw string) (*AccessTokenClaims, e
 		return nil, fmt.Errorf("%w: malformed claims", ErrInvalidToken)
 	}
 
+	accepted := false
+	for _, i := range issuers {
+		if i != "" && c.Issuer == i {
+			accepted = true
+			break
+		}
+	}
+
 	now := time.Now()
 	switch {
-	case c.Issuer != issuer:
+	case !accepted:
 		return nil, fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
 	case c.Subject == "":
 		return nil, fmt.Errorf("%w: no subject", ErrInvalidToken)

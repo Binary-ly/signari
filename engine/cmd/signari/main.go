@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -413,12 +414,17 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 		return err
 	}
 
-	var instanceID, issuer string
-	err = conn.QueryRow(ctx,
-		`SELECT id::text, issuer FROM core.instances ORDER BY created_at LIMIT 1`).
-		Scan(&instanceID, &issuer)
+	// Which instance to serve.
+	//
+	// Previously "the oldest one", which is fine with exactly one and silently
+	// wrong with more than one -- the server comes up claiming an issuer nobody
+	// intended, and every token it mints is audienced to the wrong deployment.
+	// It is the kind of failure that looks like a client misconfiguration.
+	//
+	// So: name it explicitly, or be told what the choices are.
+	instanceID, issuer, err := selectInstance(ctx, conn, os.Getenv("SIGNARI_ISSUER"))
 	if err != nil {
-		return fmt.Errorf("no instance found -- run `signari instance create -issuer …` first: %w", err)
+		return err
 	}
 
 	set, err := keys.LoadSet(ctx, conn, instanceID, root)
@@ -792,4 +798,60 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 			"password hash. Each one is upgraded to Argon2id on their first sign-in.\n")
 	}
 	return nil
+}
+
+// selectInstance resolves which instance this process serves.
+//
+// With one instance, no configuration is needed. With several, refusing to guess
+// is the whole point: starting up under the wrong issuer produces tokens every
+// relying party rejects, and the error surfaces at the client rather than here.
+func selectInstance(ctx context.Context, conn *pgx.Conn, want string) (id, issuer string, err error) {
+	if want != "" {
+		err = conn.QueryRow(ctx,
+			`SELECT id::text, issuer FROM core.instances WHERE issuer = $1`, want).Scan(&id, &issuer)
+		if err != nil {
+			return "", "", fmt.Errorf("no instance with issuer %q -- create it with "+
+				"`signari instance create -issuer %s`: %w", want, want, err)
+		}
+		return id, issuer, nil
+	}
+
+	rows, err := conn.Query(ctx,
+		`SELECT id::text, issuer FROM core.instances ORDER BY created_at`)
+	if err != nil {
+		return "", "", err
+	}
+	defer rows.Close()
+
+	type inst struct{ id, issuer string }
+	var found []inst
+	for rows.Next() {
+		var i inst
+		if err := rows.Scan(&i.id, &i.issuer); err != nil {
+			return "", "", err
+		}
+		found = append(found, i)
+	}
+
+	switch len(found) {
+	case 0:
+		return "", "", fmt.Errorf("no instance found -- run `signari instance create -issuer …` first")
+	case 1:
+		return found[0].id, found[0].issuer, nil
+	default:
+		// Capped. A development database accumulates test instances, and printing
+		// three hundred of them turns an actionable error into a wall of text
+		// nobody reads.
+		const show = 10
+		var b strings.Builder
+		for i, in := range found {
+			if i == show {
+				fmt.Fprintf(&b, "\n  ... and %d more", len(found)-show)
+				break
+			}
+			fmt.Fprintf(&b, "\n  %s", in.issuer)
+		}
+		return "", "", fmt.Errorf("this database has %d instances; set SIGNARI_ISSUER to name "+
+			"the one to serve. Available:%s", len(found), b.String())
+	}
 }

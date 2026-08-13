@@ -50,6 +50,44 @@ class EngineAdminApi
         return $this->patch("/admin/clients/{$clientId}", ['enabled' => $enabled]);
     }
 
+    /**
+     * Create a user.
+     *
+     * Returns the new user's id. The PASSWORD IS OPTIONAL and omitting it is the
+     * better default for onboarding: a user created without one cannot sign in
+     * with a password and must use recovery, so nobody has to invent a
+     * credential on somebody else's behalf and then transmit it to them.
+     */
+    public function createUser(string $orgId, ?string $email, ?string $username, ?string $password = null): string
+    {
+        $body = array_filter([
+            'org_id' => $orgId,
+            'email' => $email,
+            'username' => $username,
+            'password' => $password,
+        ], fn ($v) => filled($v));
+
+        return (string) $this->request('post', '/admin/users', $body)['id'];
+    }
+
+    /**
+     * Activate or deactivate a user.
+     *
+     * Deactivating ENDS EVERY SESSION -- the engine does that, in the same
+     * transaction, through the single termination path. The count comes back so
+     * the console can say how many were ended rather than implying none were.
+     */
+    public function setUserActive(string $userId, bool $active): array
+    {
+        return $this->request('patch', "/admin/users/{$userId}", ['active' => $active]);
+    }
+
+    /** Set a user's password. Also ends every session, for the same reason. */
+    public function setUserPassword(string $userId, string $password): array
+    {
+        return $this->request('patch', "/admin/users/{$userId}", ['password' => $password]);
+    }
+
     /** The engine's current config version, for showing propagation state. */
     public function configVersion(): int
     {
@@ -59,6 +97,12 @@ class EngineAdminApi
     private function patch(string $path, array $body): int
     {
         return (int) $this->request('patch', $path, $body)['config_version'];
+    }
+
+    /** Accepted so a create can be distinguished from an update by status. */
+    private function acceptable(int $status): bool
+    {
+        return $status === 200 || $status === 201;
     }
 
     private function request(string $method, string $path, array $body = []): array
@@ -83,6 +127,18 @@ class EngineAdminApi
         }
         if ($response->status() === 404) {
             throw new RuntimeException('The engine does not know that record.');
+        }
+        if ($response->status() === 409) {
+            // Surfaced as its own message: "already exists" is something the
+            // operator can fix, unlike a generic failure.
+            throw new RuntimeException(
+                (string) $response->json('detail', 'That record already exists.')
+            );
+        }
+        if ($response->status() === 400) {
+            throw new RuntimeException(
+                (string) $response->json('detail', $response->json('error', 'The engine rejected that.'))
+            );
         }
         if ($response->failed()) {
             throw new RuntimeException(sprintf(

@@ -58,18 +58,23 @@ func New(db *pgxpool.Pool, keySet *keys.Set, issuer string, log *slog.Logger) *W
 		issuer: issuer,
 		log:    log,
 		batch:  25,
-		client: &http.Client{
-			// A relying party's logout endpoint is a third-party service that may
-			// be down, slow, or hostile. Bound the wait so one bad RP cannot stall
-			// every other delivery.
-			Timeout: 10 * time.Second,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				// Never follow redirects: the target is configured, and following
-				// one would let an RP bounce a signed logout token anywhere.
-				return http.ErrUseLastResponse
-			},
-		},
+		// A relying party's endpoint is a third-party service that may be down,
+		// slow, or hostile. The timeout bounds the wait so one bad receiver
+		// cannot stall every other delivery.
+		client: withNoRedirects(outboundClient(10 * time.Second)),
 	}
+}
+
+// withNoRedirects stops a receiver bouncing a signed token elsewhere.
+//
+// The target is configured; following a redirect would let whoever controls that
+// endpoint forward a signed logout token or security event to a destination we
+// never approved.
+func withNoRedirects(c *http.Client) *http.Client {
+	c.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return c
 }
 
 // Run drains the outbox until the context is cancelled.
@@ -85,6 +90,14 @@ func (w *Worker) Run(ctx context.Context, interval time.Duration) {
 				w.log.Error("draining outbox", "err", err)
 			} else if n > 0 {
 				w.log.Info("delivered logout notices", "count", n)
+			}
+			// Security events drain on the same tick and independently: a
+			// receiver that is down must not hold up logout delivery to everybody
+			// else, and vice versa.
+			if n, err := w.DrainSSF(ctx); err != nil {
+				w.log.Error("draining security events", "err", err)
+			} else if n > 0 {
+				w.log.Info("delivered security events", "count", n)
 			}
 		}
 	}

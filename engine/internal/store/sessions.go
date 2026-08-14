@@ -101,6 +101,42 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 			return nil, fmt.Errorf("queuing logout notice: %w", err)
 		}
 		queued++
+
+	}
+
+	// 2b. CAEP security events, queued INDEPENDENTLY of back-channel logout.
+	//
+	// The first version emitted these inside the loop above -- and that loop only
+	// visits clients with a registered `backchannel_logout_uri`. A receiver that
+	// subscribed to security events but does not implement back-channel logout
+	// got nothing at all, silently. The two are different features for different
+	// audiences and neither should be a prerequisite for the other.
+	//
+	// Queued only for streams that are enabled, asked for THIS event type, and
+	// whose client actually participated in the session: a stream is not a
+	// licence to learn about every user in the directory.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.outbox (topic, payload)
+		SELECT DISTINCT 'ssf_event', jsonb_build_object(
+			'stream_id', st.id::text,
+			'client_id', st.client_id,
+			'endpoint',  st.endpoint_url,
+			'event',     $3::text,
+			'subject',   s.user_id::text,
+			'sid',       s.sid,
+			'reason',    $4::text)
+		FROM core.sessions s
+		JOIN core.session_clients sc ON sc.sid = s.sid
+		JOIN core.ssf_streams st     ON st.client_id = sc.client_id
+		WHERE s.revoked_at IS NULL
+		  AND ($1::text IS NULL OR s.sid = $1)
+		  AND ($2::uuid IS NULL OR s.user_id = $2)
+		  AND st.status = 'enabled'
+		  AND $3::text = ANY(st.events_requested)`,
+		nullIf(sid), nullIf(userID),
+		"https://schemas.openid.net/secevent/caep/event-type/session-revoked",
+		string(reason)); err != nil {
+		return nil, fmt.Errorf("queuing CAEP session-revoked events: %w", err)
 	}
 
 	// 3. Destroy. Only now, once delivery is durably queued in the same

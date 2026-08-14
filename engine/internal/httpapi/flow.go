@@ -1161,6 +1161,10 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	// them.
 	chainSID, chainUser, chainOrg := s.sessionIdentity(ctx, sessionCookie(r))
 
+	// Read BEFORE terminating: ending the session cascades session_clients away,
+	// and with it the record of which relying parties to notify.
+	frontChannel := s.frontChannelTargets(ctx, chainSID, s.cfg.Issuer)
+
 	if err := s.terminateOwnSession(ctx, sessionCookie(r)); err != nil {
 		s.log.Error("ending session", "err", err)
 		// The cookie is still cleared: it is defence in depth for THIS browser,
@@ -1212,7 +1216,13 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 		// The post-logout target is now VALIDATED, so it is safe to hand to the
 		// SAML chain as the place to land once propagation finishes.
 		if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, target); chain != "" {
+			// SAML first: its chain needs the browser, and the front channel would
+			// otherwise navigate away mid-chain.
 			http.Redirect(w, r, chain, http.StatusFound)
+			return
+		}
+		if len(frontChannel) > 0 {
+			s.renderFrontChannelLogout(w, r, frontChannel, target)
 			return
 		}
 		http.Redirect(w, r, target, http.StatusFound)
@@ -1222,6 +1232,10 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	// No post-logout redirect: propagate, then report.
 	if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, ""); chain != "" {
 		http.Redirect(w, r, chain, http.StatusFound)
+		return
+	}
+	if len(frontChannel) > 0 {
+		s.renderFrontChannelLogout(w, r, frontChannel, "/login")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "signed out"})

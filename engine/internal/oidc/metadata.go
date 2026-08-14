@@ -29,6 +29,9 @@ type Metadata struct {
 	IntrospectionEndpoint string `json:"introspection_endpoint"`
 
 	ScopesSupported []string `json:"scopes_supported"`
+	// OpenID Connect Front-Channel Logout 1.0 §3.
+	FrontchannelLogoutSupported        bool `json:"frontchannel_logout_supported,omitempty"`
+	FrontchannelLogoutSessionSupported bool `json:"frontchannel_logout_session_supported,omitempty"`
 	// RFC 9126 §5.
 	PushedAuthorizationRequestEndpoint string `json:"pushed_authorization_request_endpoint,omitempty"`
 	// RFC 9449 §5.1.
@@ -175,6 +178,12 @@ func Build(cfg Config) (*Metadata, error) {
 			"ES256", "ES384", "ES512", "EdDSA",
 		},
 		PushedAuthorizationRequestEndpoint: at("/oauth2/par"),
+		// Both logout channels are advertised because both run. Back-channel is
+		// the reliable one; the front channel reaches browser-held state the back
+		// channel cannot. Claiming either alone would overstate what a logout
+		// achieves.
+		FrontchannelLogoutSupported:        true,
+		FrontchannelLogoutSessionSupported: true,
 		DPoPSigningAlgValuesSupported: []string{
 			"RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
 			"ES256", "ES384", "ES512", "EdDSA",

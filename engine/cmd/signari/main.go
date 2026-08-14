@@ -12,6 +12,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -25,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -64,6 +66,7 @@ commands:
   instance create     create an instance and its first signing keys
   user create         create a user with a password
   client create       register an OAuth client
+  client set-keys     switch a client to private_key_jwt with its public JWKS
   janitor once        run one maintenance pass (serve runs this continuously)
   import keycloak     import users and clients from a Keycloak realm export
   keys list           show signing keys, their state and when each may advance
@@ -140,6 +143,7 @@ func run(args []string) error {
 	groupName := fs.String("group", "", "group name")
 	memberEmail := fs.String("email-member", "", "member's email or username")
 	removeMember := fs.Bool("remove", false, "remove the member instead of adding")
+	jwksPath := fs.String("jwks", "", "file containing the client's PUBLIC JWKS")
 	onlyGroups := fs.String("only", "", "comma-separated groups to release (default: all)")
 	apply := fs.Bool("apply", false, "actually make changes (scim sync defaults to a preview)")
 
@@ -203,6 +207,8 @@ func run(args []string) error {
 		return instanceCreate(ctx, conn, *issuer, *name)
 	case "user create":
 		return userCreate(ctx, conn, *email, *password)
+	case "client set-keys":
+		return clientSetKeys(ctx, conn, *clientID, *jwksPath)
 	case "client create":
 		return clientCreate(ctx, conn, *clientID, *redirect, *public)
 	case "serve":
@@ -1824,4 +1830,55 @@ func groupList(ctx context.Context, conn *pgx.Conn) error {
 		fmt.Println("(none -- create one with `signari group create`)")
 	}
 	return rows.Err()
+}
+
+// clientSetKeys configures a client for private_key_jwt.
+func clientSetKeys(ctx context.Context, conn *pgx.Conn, clientID, jwksPath string) error {
+	if clientID == "" || jwksPath == "" {
+		return fmt.Errorf("give -client-id and -jwks (a file containing the client's PUBLIC JWKS)")
+	}
+	raw, err := os.ReadFile(jwksPath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", jwksPath, err)
+	}
+
+	// Parsed and checked HERE rather than at first use. A key set that turns out
+	// to be unusable at 3am, during somebody's first token request, is a much
+	// worse discovery than one refused at the moment it is registered.
+	var set jose.JSONWebKeySet
+	if err := json.Unmarshal(raw, &set); err != nil {
+		return fmt.Errorf("%s is not a JWKS document: %w", jwksPath, err)
+	}
+	if len(set.Keys) == 0 {
+		return fmt.Errorf("%s contains no keys", jwksPath)
+	}
+	for _, k := range set.Keys {
+		if !k.IsPublic() {
+			return fmt.Errorf("%s contains PRIVATE key material. Register the public "+
+				"half only -- the whole point of private_key_jwt is that we never hold "+
+				"anything that can authenticate as this client", jwksPath)
+		}
+		if !k.Valid() {
+			return fmt.Errorf("%s contains a key that is not usable", jwksPath)
+		}
+	}
+
+	tag, err := conn.Exec(ctx, `
+		UPDATE core.clients
+		SET token_endpoint_auth_method = 'private_key_jwt', jwks = $2::jsonb,
+		    client_secret_hash = NULL, updated_at = now()
+		WHERE client_id = $1`, clientID, string(raw))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no client with id %q", clientID)
+	}
+
+	fmt.Printf("%s now authenticates with private_key_jwt (%d key(s))\n", clientID, len(set.Keys))
+	// The secret is dropped, not kept. Leaving it would let an attacker who
+	// obtained it keep authenticating -- the exact thing this change retires.
+	fmt.Println("\n  The client secret has been REMOVED. It would otherwise remain a")
+	fmt.Println("  working credential, which is what moving to keys was meant to end.")
+	return nil
 }

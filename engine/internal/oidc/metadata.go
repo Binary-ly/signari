@@ -31,10 +31,12 @@ type Metadata struct {
 	ScopesSupported []string `json:"scopes_supported"`
 	// RFC 9449 §5.1.
 	DPoPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
-	ResponseTypesSupported        []string `json:"response_types_supported"`
-	ResponseModesSupported        []string `json:"response_modes_supported"`
-	GrantTypesSupported           []string `json:"grant_types_supported"`
-	SubjectTypesSupported         []string `json:"subject_types_supported"`
+	// OIDC Discovery §3.
+	TokenEndpointAuthSigningAlgValuesSupported []string `json:"token_endpoint_auth_signing_alg_values_supported,omitempty"`
+	ResponseTypesSupported                     []string `json:"response_types_supported"`
+	ResponseModesSupported                     []string `json:"response_modes_supported"`
+	GrantTypesSupported                        []string `json:"grant_types_supported"`
+	SubjectTypesSupported                      []string `json:"subject_types_supported"`
 
 	IDTokenSigningAlgValues       []string `json:"id_token_signing_alg_values_supported"`
 	TokenEndpointAuthMethods      []string `json:"token_endpoint_auth_methods_supported"`
@@ -163,6 +165,13 @@ func Build(cfg Config) (*Metadata, error) {
 		// Advertised because it works end to end: bound at the token endpoint,
 		// enforced at the resource. A client reads this to decide whether to
 		// generate a key at all.
+		// The signing algorithms accepted for a private_key_jwt assertion.
+		// Asymmetric only: an HMAC assertion is client_secret_jwt, a different
+		// mechanism verified with a key both sides hold.
+		TokenEndpointAuthSigningAlgValuesSupported: []string{
+			"RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
+			"ES256", "ES384", "ES512", "EdDSA",
+		},
 		DPoPSigningAlgValuesSupported: []string{
 			"RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
 			"ES256", "ES384", "ES512", "EdDSA",
@@ -186,9 +195,14 @@ func Build(cfg Config) (*Metadata, error) {
 		GrantTypesSupported: []string{"authorization_code", "refresh_token",
 			"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"},
 
-		SubjectTypesSupported:    []string{"public"},
-		IDTokenSigningAlgValues:  algNames,
-		TokenEndpointAuthMethods: []string{"client_secret_basic", "client_secret_post", "none"},
+		SubjectTypesSupported:   []string{"public"},
+		IDTokenSigningAlgValues: algNames,
+		// private_key_jwt is advertised because it is implemented AND enforced --
+		// a client configured for it cannot fall back to a secret, which is the
+		// downgrade that would make advertising it dishonest.
+		TokenEndpointAuthMethods: []string{
+			"client_secret_basic", "client_secret_post", "private_key_jwt", "none",
+		},
 
 		// S256 only, and the authorize endpoint enforces it. `plain` is not
 		// listed because it is not accepted.

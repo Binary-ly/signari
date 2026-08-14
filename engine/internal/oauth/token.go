@@ -24,7 +24,12 @@ type TokenRequest struct {
 	// Client credentials, from wherever they were presented.
 	ClientID     string
 	ClientSecret string
-	AuthMethod   string // client_secret_basic | client_secret_post | none
+	// ClientAssertion is a private_key_jwt proof (RFC 7523). Parsed here only so
+	// the authentication gate can see that a credential was presented; it is
+	// verified elsewhere, against the client's registered keys.
+	ClientAssertion     string
+	ClientAssertionType string
+	AuthMethod          string // client_secret_basic | client_secret_post | none
 }
 
 // TokenError is an RFC 6749 §5.2 token endpoint error.
@@ -64,6 +69,16 @@ func ParseTokenRequest(header http.Header, form url.Values) (TokenRequest, *Toke
 
 	basicID, basicSecret, hasBasic := parseBasic(header.Get("Authorization"))
 	bodyID, bodySecret := form.Get("client_id"), form.Get("client_secret")
+	r.ClientAssertion = form.Get("client_assertion")
+	r.ClientAssertionType = form.Get("client_assertion_type")
+
+	// A client assertion and a secret are two credentials for one request, and
+	// accepting both leaves which one authenticated the caller up to whichever
+	// check happens to run first. Refused rather than resolved by precedence.
+	if r.ClientAssertion != "" && (bodySecret != "" || hasBasic) {
+		return r, tokenErr("invalid_request",
+			"present either a client assertion or a client secret, not both")
+	}
 
 	switch {
 	case hasBasic && bodySecret != "":
@@ -77,6 +92,8 @@ func ParseTokenRequest(header http.Header, form url.Values) (TokenRequest, *Toke
 		r.ClientID, r.ClientSecret, r.AuthMethod = basicID, basicSecret, "client_secret_basic"
 	case bodySecret != "":
 		r.ClientID, r.ClientSecret, r.AuthMethod = bodyID, bodySecret, "client_secret_post"
+	case r.ClientAssertion != "":
+		r.ClientID, r.AuthMethod = bodyID, "private_key_jwt"
 	default:
 		// A public client authenticates with PKCE, not a secret.
 		r.ClientID, r.AuthMethod = bodyID, "none"
@@ -207,6 +224,18 @@ func ValidateCodeRedemption(req TokenRequest, c *clients.Client, g *GrantRecord,
 func RequireClientAuth(c *clients.Client, req TokenRequest) *TokenError {
 	switch c.Type {
 	case "confidential":
+		// A client assertion IS client authentication (RFC 7523 §2.2). This gate
+		// predates private_key_jwt and demanded a secret, so a correctly
+		// authenticated client was refused before its assertion was ever looked
+		// at -- and the error said "authentication is required" to a caller that
+		// had supplied it.
+		//
+		// Only the PRESENCE is checked here. Whether the assertion is any good is
+		// decided later, against the client's registered keys, by code that can
+		// read them.
+		if req.ClientAssertion != "" {
+			return nil
+		}
 		if req.AuthMethod == "none" || req.ClientSecret == "" {
 			return tokenErr("invalid_client", "client authentication is required")
 		}

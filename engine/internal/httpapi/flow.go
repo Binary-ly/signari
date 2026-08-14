@@ -266,8 +266,9 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c.Type == "confidential" {
-		ok, err := s.verifyClientSecret(ctx, c, req.ClientSecret)
-		if err != nil || !ok {
+		if err := s.authenticateConfidentialClient(ctx, r, c, req.ClientSecret); err != nil {
+			s.log.Info("client authentication failed", "client_id", c.ClientID, "err", err,
+				"correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
 				Description: "client authentication failed", Status: http.StatusUnauthorized})
 			return

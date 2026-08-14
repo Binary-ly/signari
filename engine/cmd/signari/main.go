@@ -77,6 +77,10 @@ commands:
   scim list           show provisioning targets
   scim sync           converge targets on this directory (preview unless -apply)
   scim verify         read each target back and report anyone still active
+  group create        create a group
+  group member        add or remove a member (-remove)
+  group release       let a client see group membership
+  group list          show groups and their sizes
   serve               serve the OIDC endpoints
 
 env:
@@ -133,13 +137,17 @@ func run(args []string) error {
 	scimToken := fs.String("token", "", "bearer token the SCIM target issued")
 	onDeactivate := fs.String("on-deactivate", "deactivate", "deactivate, delete or nothing")
 	dryRun2 := fs.Bool("scim-dry-run", false, "register the target in dry-run mode: record, never send")
+	groupName := fs.String("group", "", "group name")
+	memberEmail := fs.String("email-member", "", "member's email or username")
+	removeMember := fs.Bool("remove", false, "remove the member instead of adding")
+	onlyGroups := fs.String("only", "", "comma-separated groups to release (default: all)")
 	apply := fs.Bool("apply", false, "actually make changes (scim sync defaults to a preview)")
 
 	cmd := args[0]
 	rest := args[1:]
 	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
 		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
-		cmd == "saml" || cmd == "idp" || cmd == "scim" {
+		cmd == "saml" || cmd == "idp" || cmd == "scim" || cmd == "group" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -224,6 +232,14 @@ func run(args []string) error {
 		return scimSync(ctx, conn, *slug, *apply)
 	case "scim verify":
 		return scimVerify(ctx, conn, *slug)
+	case "group create":
+		return groupCreate(ctx, conn, *orgID, *groupName, *name)
+	case "group member":
+		return groupMember(ctx, conn, *orgID, *groupName, *memberEmail, *removeMember)
+	case "group release":
+		return groupRelease(ctx, conn, *orgID, *clientID, *onlyGroups)
+	case "group list":
+		return groupList(ctx, conn)
 	default:
 		return usage()
 	}
@@ -1694,4 +1710,118 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// groupCreate adds a group.
+func groupCreate(ctx context.Context, conn *pgx.Conn, orgID, name, displayName string) error {
+	if orgID == "" || name == "" {
+		return fmt.Errorf("give -org and -name")
+	}
+	if _, err := store.CreateGroup(ctx, conn, orgID, name, displayName, ""); err != nil {
+		if strings.Contains(err.Error(), "groups_name_shape") {
+			return fmt.Errorf("%q is not a usable group name. It travels through JSON "+
+				"arrays, SAML attribute values and LDAP filters, so it must be letters, "+
+				"digits, dot, underscore or hyphen only", name)
+		}
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("a group named %q already exists in that organisation", name)
+		}
+		return err
+	}
+	fmt.Printf("created group %s\n", name)
+	fmt.Println("\n  No client sees this group until you release it:")
+	fmt.Println("    signari group release -org <uuid> -client-id <id>")
+	fmt.Println("  Group membership is authorization data, so release is an allow-list.")
+	return nil
+}
+
+// groupMember adds or removes a member.
+func groupMember(ctx context.Context, conn *pgx.Conn, orgID, name, email string, remove bool) error {
+	if orgID == "" || name == "" || email == "" {
+		return fmt.Errorf("give -org, -name and -email")
+	}
+	var userID string
+	if err := conn.QueryRow(ctx,
+		`SELECT id::text FROM core.users WHERE org_id = $1::uuid
+		   AND (lower(email) = lower($2) OR lower(username) = lower($2))`,
+		orgID, email).Scan(&userID); err != nil {
+		return fmt.Errorf("no user %q in that organisation", email)
+	}
+
+	if remove {
+		removed, err := store.RemoveGroupMember(ctx, conn, orgID, name, userID)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			fmt.Printf("%s was not in %s; nothing to do\n", email, name)
+			return nil
+		}
+		fmt.Printf("removed %s from %s\n", email, name)
+		// The honest caveat. Access tokens already issued keep their claims until
+		// they expire, and saying so is the difference between an operator who
+		// knows to revoke the session and one who assumes the removal was instant.
+		fmt.Println("\n  Tokens ALREADY ISSUED still carry this group until they expire.")
+		fmt.Println("  New tokens will not: membership is read at issuance, not cached.")
+		fmt.Println("  To cut it off now, end their sessions:")
+		fmt.Println("    PATCH /admin/users/<id> {\"active\": false}  (then re-activate)")
+		return nil
+	}
+
+	if err := store.AddGroupMember(ctx, conn, orgID, name, userID, ""); err != nil {
+		return err
+	}
+	fmt.Printf("added %s to %s\n", email, name)
+	return nil
+}
+
+// groupRelease permits a client to see group membership.
+func groupRelease(ctx context.Context, conn *pgx.Conn, orgID, clientID, only string) error {
+	if orgID == "" || clientID == "" {
+		return fmt.Errorf("give -org and -client-id")
+	}
+	var onlyGroups []string
+	for _, g := range strings.Split(only, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			onlyGroups = append(onlyGroups, g)
+		}
+	}
+	if err := store.ReleaseGroupsToClient(ctx, conn, orgID, clientID, onlyGroups); err != nil {
+		return err
+	}
+	if len(onlyGroups) == 0 {
+		fmt.Printf("%s may now see ALL group membership\n", clientID)
+	} else {
+		fmt.Printf("%s may now see only: %s\n", clientID, strings.Join(onlyGroups, ", "))
+	}
+	fmt.Println("\n  The client must also request the `groups` scope. Both gates apply:")
+	fmt.Println("  the scope is asked for by the client, the release is decided by you.")
+	return nil
+}
+
+// groupList shows groups and their sizes.
+func groupList(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT g.name, g.display_name,
+		       (SELECT count(*) FROM core.group_members m WHERE m.group_id = g.id)
+		FROM core.groups g ORDER BY g.name`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	fmt.Printf("%-24s %-28s %s\n", "NAME", "DISPLAY NAME", "MEMBERS")
+	var n int
+	for rows.Next() {
+		var name, disp string
+		var members int
+		if err := rows.Scan(&name, &disp, &members); err != nil {
+			return err
+		}
+		n++
+		fmt.Printf("%-24s %-28s %d\n", name, disp, members)
+	}
+	if n == 0 {
+		fmt.Println("(none -- create one with `signari group create`)")
+	}
+	return rows.Err()
 }

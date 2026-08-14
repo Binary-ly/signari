@@ -528,7 +528,8 @@ func (s *Server) addProfileClaims(ctx context.Context, tx pgx.Tx,
 
 	wantEmail := containsScope(scopes, "email")
 	wantProfile := containsScope(scopes, "profile")
-	if !wantEmail && !wantProfile {
+	wantGroups := containsScope(scopes, "groups")
+	if !wantEmail && !wantProfile && !wantGroups {
 		return nil
 	}
 
@@ -553,6 +554,25 @@ func (s *Server) addProfileClaims(ctx context.Context, tx pgx.Tx,
 		// No `name`: there is no display name stored anywhere, so there is
 		// nothing honest to put in it. It has been removed from claims_supported
 		// rather than emitted empty.
+	}
+	if wantGroups {
+		// TWO gates, not one: the scope must be granted AND the client must be
+		// released groups. The scope is asked for by the client; the release is
+		// decided by the operator. A client that asks for `groups` and was never
+		// released them gets nothing, silently -- which is the correct outcome,
+		// because the alternative is that any client can learn the shape of the
+		// organisation by adding a word to its scope parameter.
+		//
+		// Read HERE, at issuance, never from the session: a session established
+		// this morning must not still mint tokens claiming a group somebody was
+		// removed from at lunchtime.
+		// The audience IS the client id for an ID token, which is what the
+		// release policy is keyed on.
+		groups, err := store.GroupsForUser(ctx, s.db, userID, claims.Audience)
+		if err != nil {
+			return fmt.Errorf("loading group membership for %s: %w", userID, err)
+		}
+		claims.Groups = groups
 	}
 	return nil
 }

@@ -282,6 +282,18 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 		return "", "", err
 	}
 
+	// Group attributes, if this provider is released any. Read here, inside the
+	// same transaction that mints the assertion, for the same reason the OIDC
+	// path reads them at issuance: an assertion is an authorization statement
+	// with a lifetime, and a stale group in one is privilege that outlived its
+	// revocation.
+	attrs := map[string][]string{}
+	if attrName, groups, gerr := store.GroupsForSAML(ctx, tx, userID, p.ID); gerr != nil {
+		return "", "", gerr
+	} else if attrName != "" && len(groups) > 0 {
+		attrs[attrName] = groups
+	}
+
 	lifetime := time.Duration(p.LifetimeSeconds) * time.Second
 	doc, err = saml.BuildResponse(saml.ResponseInput{
 		Issuer:      s.samlEntityID(),
@@ -299,6 +311,7 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 			// for. Claiming multi-factor for a password-only session is a lie the
 			// service provider makes access decisions on.
 			AuthnContext: samlAuthnContext(acr, amr),
+			Attributes:   attrs,
 		},
 	}, key.KID(), key.Signer(), certDER)
 	if err != nil {

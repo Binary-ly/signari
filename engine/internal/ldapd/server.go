@@ -38,6 +38,10 @@ type Identity struct {
 	Email       string
 	DisplayName string
 	Active      bool
+	// Groups is published as memberOf. Applications that bind to a directory
+	// almost always gate on it, and one that cannot read groups falls back to
+	// giving everybody the same access.
+	Groups []string
 }
 
 // Config is one LDAP listener.
@@ -439,6 +443,16 @@ func (s *Server) entryFor(id *Identity) *entry {
 	}
 	if id.DisplayName != "" {
 		attrs["displayName"] = []string{id.DisplayName}
+	}
+	if len(id.Groups) > 0 {
+		// Full DNs, which is what directory-aware software expects to match on --
+		// a bare name here works with some clients and silently matches nothing
+		// in others.
+		dns := make([]string, 0, len(id.Groups))
+		for _, g := range id.Groups {
+			dns = append(dns, fmt.Sprintf("cn=%s,ou=groups,%s", g, s.cfg.BaseDN))
+		}
+		attrs["memberOf"] = dns
 	}
 	return &entry{DN: s.dnFor(id.Username), Attrs: attrs}
 }

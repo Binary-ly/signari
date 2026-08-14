@@ -84,6 +84,17 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	if tokens.HasScope(claims.Scope, "profile") && username != "" {
 		out["preferred_username"] = username
 	}
+	// Same two gates as the ID token, and read fresh for the same reason: a
+	// long-lived access token must not keep asserting a group after the
+	// membership is gone.
+	if tokens.HasScope(claims.Scope, "groups") {
+		groups, err := store.GroupsForUser(ctx, s.db, claims.Subject, claims.ClientID)
+		if err != nil {
+			s.log.Error("loading group membership for userinfo", "err", err)
+		} else if len(groups) > 0 {
+			out["groups"] = groups
+		}
+	}
 
 	writeJSON(w, http.StatusOK, out)
 }

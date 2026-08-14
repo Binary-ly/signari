@@ -62,6 +62,11 @@ type IDTokenClaims struct {
 	EmailVerified *bool  `json:"email_verified,omitempty"`
 	Name          string `json:"name,omitempty"`
 	Username      string `json:"preferred_username,omitempty"`
+	// Groups is authorization data, not identity: downstream software gates on
+	// it. omitempty matters -- an empty array and an absent claim mean different
+	// things to a relying party, and "absent" is the honest answer when the
+	// client is not released groups at all.
+	Groups []string `json:"groups,omitempty"`
 }
 
 // Signer mints tokens with a specific key.

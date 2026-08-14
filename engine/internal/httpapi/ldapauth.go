@@ -10,6 +10,7 @@ import (
 
 	"signari.dev/engine/internal/ldapd"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/store"
 )
 
 // LDAPAuthenticator connects the LDAP shim to the real credential path.
@@ -88,15 +89,36 @@ func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd
 		return nil, nil
 	}
 	id.DisplayName = id.Username
+
+	// Groups, unfiltered by any release policy: an LDAP listener is configured
+	// per organisation by an operator, unlike an OIDC client which asks for
+	// itself. There is no third party here to withhold them from.
+	var userID string
+	if err := a.db.QueryRow(ctx,
+		`SELECT id::text FROM core.users WHERE org_id = $1::uuid
+		   AND (lower(username) = lower($2) OR lower(email) = lower($2))`,
+		a.orgID, username).Scan(&userID); err == nil {
+		if groups, gerr := store.AllGroupsForUser(ctx, a.db, userID); gerr == nil {
+			id.Groups = groups
+		}
+	}
 	return &id, nil
 }
 
 func (a *LDAPAuthenticator) List(ctx context.Context, limit int) ([]*ldapd.Identity, error) {
+	// Groups come back in the SAME query. The obvious shape -- list users, then
+	// look up each one's groups -- is a query per user on a path a client can
+	// call repeatedly, which is a denial of service with a valid bind.
 	rows, err := a.db.Query(ctx, `
-		SELECT COALESCE(NULLIF(username,''), email, id::text), COALESCE(email,'')
-		FROM core.users
-		WHERE org_id = $1::uuid AND status = 'active'
-		ORDER BY created_at
+		SELECT COALESCE(NULLIF(u.username,''), u.email, u.id::text), COALESCE(u.email,''),
+		       COALESCE(array_agg(g.name ORDER BY g.name)
+		                FILTER (WHERE g.name IS NOT NULL), '{}')
+		FROM core.users u
+		LEFT JOIN core.group_members m ON m.user_id = u.id
+		LEFT JOIN core.groups g ON g.id = m.group_id
+		WHERE u.org_id = $1::uuid AND u.status = 'active'
+		GROUP BY u.id, u.username, u.email, u.created_at
+		ORDER BY u.created_at
 		LIMIT $2`, a.orgID, limit)
 	if err != nil {
 		return nil, err
@@ -106,7 +128,7 @@ func (a *LDAPAuthenticator) List(ctx context.Context, limit int) ([]*ldapd.Ident
 	var out []*ldapd.Identity
 	for rows.Next() {
 		var id ldapd.Identity
-		if err := rows.Scan(&id.Username, &id.Email); err != nil {
+		if err := rows.Scan(&id.Username, &id.Email, &id.Groups); err != nil {
 			return nil, err
 		}
 		id.Active = true

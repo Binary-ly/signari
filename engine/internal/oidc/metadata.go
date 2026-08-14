@@ -149,7 +149,15 @@ func Build(cfg Config) (*Metadata, error) {
 		RevocationEndpoint:    at(PathRevocation),
 		IntrospectionEndpoint: at(PathIntrospection),
 
-		ScopesSupported: []string{"openid", "profile", "email", "offline_access"},
+		// `groups` is advertised because it now works. Every scope and claim in
+		// this document is one the engine actually honours -- the rule this file
+		// has enforced since the first audit found three endpoints advertised and
+		// unimplemented.
+		//
+		// Note what advertising it does NOT mean: asking for `groups` gets a
+		// client nothing unless an operator has also released groups to that
+		// client. Both gates apply, and only one of them is the client's to pass.
+		ScopesSupported: []string{"openid", "profile", "email", "groups", "offline_access"},
 
 		// Code only. OAuth 2.1 removes implicit and the hybrid flows, and every
 		// response type that returns a token in the front channel is a class of
@@ -178,6 +186,7 @@ func Build(cfg Config) (*Metadata, error) {
 		CodeChallengeMethodsSupported: []string{"S256"},
 
 		ClaimsSupported: []string{
+			"groups",
 			"iss", "sub", "aud", "exp", "iat", "auth_time", "nonce",
 			"acr", "amr", "azp", "sid", "email", "email_verified",
 			// No "name": nothing stores a display name, and advertising a claim

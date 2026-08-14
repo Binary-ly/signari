@@ -61,6 +61,8 @@ commands:
   keys list           show signing keys, their state and when each may advance
   keys rotate         advance the rotation one safe step (run it again later)
   proxy check         prove a forward-auth deployment actually protects the app
+  saml add-sp         register a SAML service provider
+  saml list           show registered SAML service providers
   serve               serve the OIDC endpoints
 
 env:
@@ -101,11 +103,15 @@ func run(args []string) error {
 	origin := fs.String("origin", "", "the application's own address, to test the bypass (proxy check)")
 	probePath := fs.String("path", "", "extra path to probe, repeatable as a comma-separated list (proxy check)")
 	insecure := fs.Bool("insecure", false, "skip certificate verification (internal CA or self-signed only)")
+	entityID := fs.String("entity-id", "", "the service provider's SAML EntityID")
+	acsURL := fs.String("acs", "", "AssertionConsumerService URL, matched exactly (https only)")
+	nameIDFormat := fs.String("nameid-format", "persistent", "persistent (pairwise), emailAddress or transient")
 
 	cmd := args[0]
 	rest := args[1:]
 	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
-		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" {
+		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
+		cmd == "saml" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -173,6 +179,10 @@ func run(args []string) error {
 		return keysList(ctx, conn)
 	case "keys rotate":
 		return keysRotate(ctx, conn, *alg, *promoteNow)
+	case "saml add-sp":
+		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat)
+	case "saml list":
+		return samlListSPs(ctx, conn)
 	default:
 		return usage()
 	}
@@ -991,4 +1001,116 @@ func wrap(s string, width int, indent string) string {
 		col += len(w)
 	}
 	return out.String()
+}
+
+// samlAddSP registers a service provider.
+//
+// The validation here is the same as the authorization endpoint applies to a
+// redirect_uri, and for the same reason: the ACS URL is where a signed assertion
+// for a real user gets delivered. Checking it at REGISTRATION means a mistake
+// surfaces now, with a message about the registration, rather than during
+// someone else's integration as an unexplained refusal.
+func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, nameIDFormat string) error {
+	switch {
+	case orgID == "":
+		return fmt.Errorf("give -org, the organisation uuid this service provider belongs to")
+	case entityID == "":
+		return fmt.Errorf("give -entity-id, the service provider's EntityID")
+	case acs == "":
+		return fmt.Errorf("give -acs, the AssertionConsumerService URL assertions are POSTed to")
+	}
+	if !strings.HasPrefix(acs, "https://") {
+		return fmt.Errorf("the ACS URL must be https: %q would carry a signed assertion "+
+			"for a real user across the network in the clear", acs)
+	}
+	if strings.Contains(acs, "*") {
+		return fmt.Errorf("%q contains a wildcard. ACS URLs are matched exactly, because "+
+			"anything looser lets a request steer where the assertion is delivered", acs)
+	}
+	if name == "" {
+		name = entityID
+	}
+	switch nameIDFormat {
+	case "", "persistent":
+		nameIDFormat = "persistent"
+	case "emailAddress", "transient":
+	default:
+		return fmt.Errorf("unknown NameID format %q: use persistent, emailAddress or transient",
+			nameIDFormat)
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var id string
+	err = tx.QueryRow(ctx, `
+		INSERT INTO core.saml_providers (org_id, entity_id, display_name, name_id_format)
+		VALUES ($1::uuid, $2, $3, $4)
+		RETURNING id::text`, orgID, entityID, name, nameIDFormat).Scan(&id)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("a service provider with entity id %q is already registered "+
+				"in that organisation", entityID)
+		}
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.saml_acs_urls (provider_id, url, binding, is_default)
+		VALUES ($1::uuid, $2, 'HTTP-POST', true)`, id, acs); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	fmt.Printf("registered %s\n  entity id : %s\n  ACS       : %s\n  NameID    : %s\n",
+		name, entityID, acs, nameIDFormat)
+	if nameIDFormat == "persistent" {
+		fmt.Println("\n  The NameID is pairwise: this service provider sees an opaque identifier\n" +
+			"  that no other provider can correlate, and it survives an email change.")
+	}
+	fmt.Println("\n  Point the service provider at /saml/metadata to import the certificate.")
+	return nil
+}
+
+// samlListSPs shows what is registered.
+func samlListSPs(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled,
+		       COALESCE(string_agg(a.url, ', ' ORDER BY a.url), '(none)')
+		FROM core.saml_providers p
+		LEFT JOIN core.saml_acs_urls a ON a.provider_id = p.id
+		GROUP BY p.id, p.entity_id, p.display_name, p.name_id_format, p.enabled
+		ORDER BY p.display_name`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-38s %-12s %-8s %s\n", "ENTITY ID", "NAMEID", "ENABLED", "ACS")
+	var n int
+	for rows.Next() {
+		var entity, name, format, acs string
+		var enabled bool
+		if err := rows.Scan(&entity, &name, &format, &enabled, &acs); err != nil {
+			return err
+		}
+		n++
+		fmt.Printf("%-38s %-12s %-8t %s\n", truncateMiddle(entity, 38), format, enabled, acs)
+	}
+	if n == 0 {
+		fmt.Println("(none registered -- add one with `signari saml add-sp`)")
+	}
+	return rows.Err()
+}
+
+func truncateMiddle(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	half := (n - 3) / 2
+	return s[:half] + "..." + s[len(s)-half:]
 }

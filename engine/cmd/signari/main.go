@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -38,6 +39,8 @@ import (
 	"signari.dev/engine/internal/outbox"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/proxycheck"
+	"signari.dev/engine/internal/scim"
+	"signari.dev/engine/internal/store"
 )
 
 func main() {
@@ -68,6 +71,10 @@ commands:
   saml list           show registered SAML service providers
   idp add             register an external sign-in provider (Google, GitHub, ...)
   idp list            show external sign-in providers
+  scim add            register a SCIM provisioning target
+  scim list           show provisioning targets
+  scim sync           converge targets on this directory (preview unless -apply)
+  scim verify         read each target back and report anyone still active
   serve               serve the OIDC endpoints
 
 env:
@@ -120,12 +127,17 @@ func run(args []string) error {
 	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
 	allowLinking := fs.Bool("allow-linking", true, "let users add this provider to an existing account")
 	trustEmail := fs.Bool("trust-email-verification", false, "generic OIDC only: believe this provider's email_verified claim")
+	baseURL := fs.String("base-url", "", "SCIM base URL of the target application")
+	scimToken := fs.String("token", "", "bearer token the SCIM target issued")
+	onDeactivate := fs.String("on-deactivate", "deactivate", "deactivate, delete or nothing")
+	dryRun2 := fs.Bool("scim-dry-run", false, "register the target in dry-run mode: record, never send")
+	apply := fs.Bool("apply", false, "actually make changes (scim sync defaults to a preview)")
 
 	cmd := args[0]
 	rest := args[1:]
 	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
 		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
-		cmd == "saml" || cmd == "idp" {
+		cmd == "saml" || cmd == "idp" || cmd == "scim" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -202,6 +214,14 @@ func run(args []string) error {
 			*issuer, *allowSignup, *allowLinking, *trustEmail)
 	case "idp list":
 		return idpList(ctx, conn)
+	case "scim add":
+		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2)
+	case "scim list":
+		return scimList(ctx, conn)
+	case "scim sync":
+		return scimSync(ctx, conn, *slug, *apply)
+	case "scim verify":
+		return scimVerify(ctx, conn, *slug)
 	default:
 		return usage()
 	}
@@ -1298,6 +1318,302 @@ func idpList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	if n == 0 {
 		fmt.Println("(none registered -- add one with `signari idp add`)")
+	}
+	return rows.Err()
+}
+
+// scimHTTPClient builds the client used to reach SCIM targets.
+//
+// SIGNARI_SCIM_CA_BUNDLE adds a certificate authority to the trust store for
+// these requests. Internal provisioning targets frequently sit behind a private
+// CA, and the alternative operators reach for is disabling verification
+// entirely -- so a narrow, explicit way to trust the right CA is offered
+// instead of a flag that trusts everything.
+//
+// It ADDS to the system pool rather than replacing it, so configuring an
+// internal CA does not silently stop public targets from verifying.
+func scimHTTPClient() (*http.Client, error) {
+	bundle := os.Getenv("SIGNARI_SCIM_CA_BUNDLE")
+	if bundle == "" {
+		return &http.Client{Timeout: 30 * time.Second}, nil
+	}
+	pem, err := os.ReadFile(bundle)
+	if err != nil {
+		return nil, fmt.Errorf("reading SIGNARI_SCIM_CA_BUNDLE: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("%s contains no certificates", bundle)
+	}
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+		},
+	}, nil
+}
+
+// scimAdd registers a provisioning target.
+func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, token,
+	onDeactivate string, dryRun bool) error {
+
+	switch {
+	case orgID == "":
+		return fmt.Errorf("give -org, the organisation uuid")
+	case slug == "":
+		return fmt.Errorf("give -slug, a short name for this target")
+	case baseURL == "":
+		return fmt.Errorf("give -base-url, the target's SCIM base URL, e.g. " +
+			"https://api.slack.com/scim/v2")
+	case token == "":
+		return fmt.Errorf("give -token, the bearer token the target issued")
+	}
+	if !strings.HasPrefix(baseURL, "https://") {
+		return fmt.Errorf("the base URL must be https: this token can create and delete " +
+			"accounts in that system, and it is sent on every request")
+	}
+	switch onDeactivate {
+	case "deactivate", "delete", "nothing":
+	default:
+		return fmt.Errorf("-on-deactivate must be deactivate, delete or nothing")
+	}
+	if name == "" {
+		name = slug
+	}
+
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	if err := store.AddSCIMTarget(ctx, conn, root, orgID, slug, name, baseURL, token,
+		onDeactivate, dryRun); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("a target named %q is already registered", slug)
+		}
+		return err
+	}
+
+	fmt.Printf("registered %s\n  base URL      : %s\n  on deactivate : %s\n  dry run       : %t\n",
+		name, baseURL, onDeactivate, dryRun)
+	fmt.Println("\n  Nothing is sent until you run `signari scim sync`.")
+	fmt.Println("  Run `signari scim verify` afterwards: it reads the target's actual state")
+	fmt.Println("  back, which is the only way to know a deactivation really happened.")
+	return nil
+}
+
+// scimVerify reconciles what each target holds against what it should hold.
+//
+// The command that makes deprovisioning checkable. Everything else records what
+// we MEANT; this asks the target.
+func scimVerify(ctx context.Context, conn *pgx.Conn, only string) error {
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	targets, err := store.LoadSCIMTargets(ctx, conn, root, only)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		fmt.Println("no enabled provisioning targets (add one with `signari scim add`)")
+		return nil
+	}
+
+	var criticals, unreachable, findings int
+	for _, t := range targets {
+		desired, err := store.SCIMDesiredState(ctx, conn, t)
+		if err != nil {
+			return err
+		}
+		var expected []scim.Expected
+		for _, d := range desired {
+			if d.RemoteID == "" {
+				continue // never provisioned; sync's job, not verify's
+			}
+			expected = append(expected, scim.Expected{
+				UserID: d.UserID, RemoteID: d.RemoteID, UserName: d.UserName,
+				Active: d.Active, Synced: d.Synced,
+			})
+		}
+
+		hc, err := scimHTTPClient()
+		if err != nil {
+			return err
+		}
+		client := scim.NewClient(t, hc)
+		rep, err := scim.Verify(ctx, client, expected, nil)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("\n  %s\n", rep.Summary())
+		if rep.Unreachable {
+			unreachable++
+			continue
+		}
+		for _, f := range rep.Findings {
+			fmt.Printf("    [%-8s] %-28s %s\n", f.Severity, f.UserName, f.Summary)
+			if f.Severity == scim.Critical {
+				fmt.Printf("               -> %s\n", wrap(f.Fix, 62, "                  "))
+			}
+		}
+		criticals += len(rep.CriticalFindings())
+		findings += len(rep.Findings)
+	}
+
+	fmt.Println()
+	switch {
+	case criticals > 0:
+		// Non-zero exit, so this can gate a deploy or run from cron and be noticed.
+		return fmt.Errorf("%d user(s) retain access at a target after being deactivated here",
+			criticals)
+	case unreachable > 0:
+		return fmt.Errorf("%d target(s) could not be reached, so their state is unknown",
+			unreachable)
+	case findings > 0:
+		// Exit 0: nobody has access they should not, which is what this command
+		// gates on. But saying "every target agrees" here would be a plain
+		// falsehood -- it printed the disagreements four lines earlier.
+		fmt.Printf("  %d finding(s), none of them a security problem. "+
+			"Nobody has access they should not.\n", findings)
+		return nil
+	}
+	fmt.Println("  Every target agrees with this directory.")
+	return nil
+}
+
+// scimSync converges each target on the desired state.
+func scimSync(ctx context.Context, conn *pgx.Conn, only string, apply bool) error {
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	targets, err := store.LoadSCIMTargets(ctx, conn, root, only)
+	if err != nil {
+		return err
+	}
+
+	for _, t := range targets {
+		desired, err := store.SCIMDesiredState(ctx, conn, t)
+		if err != nil {
+			return err
+		}
+		hc, err := scimHTTPClient()
+		if err != nil {
+			return err
+		}
+		client := scim.NewClient(t, hc)
+		var created, deactivated, deleted, failed int
+
+		for _, d := range desired {
+			switch {
+			case d.RemoteID == "" && d.Active:
+				if !apply {
+					created++
+					continue
+				}
+				u := scim.NewUser(d.UserID, d.UserName, d.DisplayName, d.Email, true)
+				id, err := client.CreateUser(ctx, u)
+				if err != nil {
+					// A conflict means the account is already there; find it and
+					// record its id rather than creating a duplicate or giving up.
+					var se *scim.Error
+					if errors.As(err, &se) && se.Conflict {
+						if found, ferr := client.FindByUserName(ctx, d.UserName); ferr == nil && found != nil {
+							id = found.ID
+						}
+					}
+					if id == "" {
+						fmt.Printf("    create %s: %v\n", d.UserName, err)
+						failed++
+						continue
+					}
+				}
+				if err := store.RecordSCIMLink(ctx, conn, t.ID, d.UserID, t.OrgID, id, true); err != nil {
+					return err
+				}
+				created++
+
+			case d.RemoteID != "" && !d.Active:
+				if t.OnDeactivate == "nothing" {
+					continue
+				}
+				if !apply {
+					deactivated++
+					continue
+				}
+				if err := store.MarkSCIMIntent(ctx, conn, t.ID, d.UserID, false); err != nil {
+					return err
+				}
+				if t.OnDeactivate == "delete" {
+					if err := client.DeleteUser(ctx, d.RemoteID); err != nil {
+						fmt.Printf("    delete %s: %v\n", d.UserName, err)
+						failed++
+						continue
+					}
+					if err := store.DropSCIMLink(ctx, conn, t.ID, d.UserID); err != nil {
+						return err
+					}
+					deleted++
+					continue
+				}
+				if err := client.SetActive(ctx, d.RemoteID, false); err != nil {
+					fmt.Printf("    deactivate %s: %v\n", d.UserName, err)
+					failed++
+					continue
+				}
+				if err := store.ConfirmSCIMSync(ctx, conn, t.ID, d.UserID); err != nil {
+					return err
+				}
+				deactivated++
+			}
+		}
+
+		verb := "would"
+		if apply {
+			verb = "did"
+		}
+		fmt.Printf("  %s: %s create %d, deactivate %d, delete %d, failed %d\n",
+			t.Slug, verb, created, deactivated, deleted, failed)
+	}
+
+	if !apply {
+		fmt.Println("\n  Nothing was sent. Re-run with -apply to make these changes.")
+		return nil
+	}
+	fmt.Println("\n  Run `signari scim verify` to confirm the targets agree.")
+	return nil
+}
+
+// scimList shows configured targets.
+func scimList(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT t.slug, t.display_name, t.base_url, t.on_deactivate, t.dry_run, t.enabled,
+		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id),
+		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id AND NOT l.should_be_active)
+		FROM core.scim_targets t ORDER BY t.slug`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-12s %-38s %-12s %-8s %s\n", "SLUG", "BASE URL", "ON DEACTIVATE", "LINKED", "SHOULD BE GONE")
+	var n int
+	for rows.Next() {
+		var slug, name, base, onDeact string
+		var dry, enabled bool
+		var linked, inactive int
+		if err := rows.Scan(&slug, &name, &base, &onDeact, &dry, &enabled, &linked, &inactive); err != nil {
+			return err
+		}
+		n++
+		fmt.Printf("%-12s %-38s %-12s %-8d %d\n", slug, truncateMiddle(base, 38), onDeact, linked, inactive)
+	}
+	if n == 0 {
+		fmt.Println("(none registered -- add one with `signari scim add`)")
 	}
 	return rows.Err()
 }

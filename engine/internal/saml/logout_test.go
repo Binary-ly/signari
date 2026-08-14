@@ -307,24 +307,42 @@ func TestRedirectSignRoundTrip(t *testing.T) {
 	}
 }
 
-// TestRedirectSignatureIsOverWhatIsSent. If the query were rebuilt after
-// signing, the signature would cover different bytes than the receiver checks.
-func TestRedirectSignatureIsOverWhatIsSent(t *testing.T) {
-	key, certDER := testSigner(t)
-	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}))
+// TestReEncodingTheQueryBreaksTheSignature.
+//
+// The point of taking raw substrings rather than a parsed map. A RelayState
+// written as %41%42 decodes to "AB", and re-encoding produces "AB" -- different
+// bytes from what was signed. An implementation that rebuilds the query before
+// verifying rejects requests that are perfectly valid.
+//
+// Deterministic by construction: the fixture uses an encoding Go's own encoder
+// would never emit, so the rebuilt string is guaranteed to differ.
+func TestReEncodingTheQueryBreaksTheSignature(t *testing.T) {
+	key, certPEM := spSigner(t)
 
-	q, err := SignRedirectQuery("SAMLRequest", "AAAA~BBBB", "a b~c", key)
+	// Signed with RelayState percent-encoded the long way, as some senders do.
+	signed := "SAMLRequest=req&RelayState=%41%42&SigAlg=" + url.QueryEscape(sigAlgRSASHA256)
+	sum := sha256.Sum256([]byte(signed))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, sum[:])
 	if err != nil {
 		t.Fatal(err)
 	}
+	q := signed + "&Signature=" + url.QueryEscape(base64.StdEncoding.EncodeToString(sig))
+
 	if err := VerifyRedirectSignature(q, certPEM, "SAMLRequest"); err != nil {
-		t.Fatalf("verification failed: %v", err)
+		t.Fatalf("the query as sent did not verify: %v", err)
 	}
-	// Re-encoding the query the way url.Values would must BREAK it -- that is the
-	// mistake this design avoids, and if it did not break, the test proves nothing.
-	vals, _ := url.ParseQuery(q)
+
+	// Now the mistake: parse and re-encode before verifying.
+	vals, err := url.ParseQuery(q)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rebuilt := vals.Encode()
+	if strings.Contains(rebuilt, "%41%42") {
+		t.Fatal("Go re-emitted %41%42; the fixture no longer demonstrates the difference")
+	}
 	if err := VerifyRedirectSignature(rebuilt, certPEM, "SAMLRequest"); err == nil {
-		t.Skip("re-encoding happened to produce identical bytes for this input")
+		t.Error("a re-encoded query still verified, so this test cannot show why the " +
+			"raw substrings matter -- check signedOctets is not normalising")
 	}
 }

@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -248,4 +250,122 @@ func SAMLParticipantsForSession(ctx context.Context, tx pgx.Tx, sid, exclude str
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// LogoutStep is one service provider still to be visited by a logout chain.
+type LogoutStep struct {
+	ProviderID   string `json:"provider_id"`
+	EntityID     string `json:"entity_id"`
+	SLOURL       string `json:"slo_url"`
+	NameID       string `json:"name_id"`
+	SessionIndex string `json:"session_index"`
+}
+
+// LogoutChain is the state of a front-channel logout in progress.
+type LogoutChain struct {
+	OrgID         string
+	SID           string
+	UserID        string
+	Remaining     []LogoutStep
+	Notified      []LogoutStep
+	Failed        []LogoutStep
+	FinalRedirect string
+}
+
+// BeginLogoutChain records the providers to visit and returns the token that
+// identifies the chain.
+//
+// The token is returned in plaintext once and stored only as a hash -- the same
+// rule this schema applies to every other value a client holds.
+func BeginLogoutChain(ctx context.Context, tx pgx.Tx, c LogoutChain) (string, error) {
+	token, err := newOpaqueID()
+	if err != nil {
+		return "", err
+	}
+	remaining, err := json.Marshal(c.Remaining)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(token))
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.saml_logout_progress
+			(token_hash, org_id, sid, user_id, remaining, final_redirect)
+		VALUES ($1, $2::uuid, $3, NULLIF($4,'')::uuid, $5, NULLIF($6,''))`,
+		sum[:], c.OrgID, c.SID, c.UserID, remaining, c.FinalRedirect); err != nil {
+		return "", fmt.Errorf("recording the logout chain: %w", err)
+	}
+	return token, nil
+}
+
+// AdvanceLogoutChain marks the provider just visited and returns the next.
+//
+// One statement, so two browsers arriving at once cannot both be handed the same
+// next step and send two LogoutRequests to the same provider. `ok` reports
+// whether the chain exists and is unexpired; `next` is nil when it is finished.
+func AdvanceLogoutChain(ctx context.Context, tx pgx.Tx, token string, previousFailed bool) (chain *LogoutChain, next *LogoutStep, ok bool, err error) {
+	sum := sha256.Sum256([]byte(token))
+
+	var remainingJSON, notifiedJSON, failedJSON []byte
+	var c LogoutChain
+	err = tx.QueryRow(ctx, `
+		SELECT org_id::text, sid, COALESCE(user_id::text,''),
+		       remaining, notified, failed, COALESCE(final_redirect,'')
+		FROM core.saml_logout_progress
+		WHERE token_hash = $1 AND expires_at > now()
+		FOR UPDATE`, sum[:]).Scan(&c.OrgID, &c.SID, &c.UserID,
+		&remainingJSON, &notifiedJSON, &failedJSON, &c.FinalRedirect)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, false, nil
+		}
+		return nil, nil, false, err
+	}
+	if err := json.Unmarshal(remainingJSON, &c.Remaining); err != nil {
+		return nil, nil, false, err
+	}
+	_ = json.Unmarshal(notifiedJSON, &c.Notified)
+	_ = json.Unmarshal(failedJSON, &c.Failed)
+
+	// The head of `remaining` is the provider the browser has just come back
+	// from -- it was moved there when we sent it, not when it answered.
+	if len(c.Remaining) > 0 {
+		done := c.Remaining[0]
+		c.Remaining = c.Remaining[1:]
+		if previousFailed {
+			c.Failed = append(c.Failed, done)
+		} else {
+			c.Notified = append(c.Notified, done)
+		}
+	}
+
+	remainingJSON, _ = json.Marshal(c.Remaining)
+	notifiedJSON, _ = json.Marshal(c.Notified)
+	failedJSON, _ = json.Marshal(c.Failed)
+	if _, err := tx.Exec(ctx, `
+		UPDATE core.saml_logout_progress
+		SET remaining = $2, notified = $3, failed = $4
+		WHERE token_hash = $1`, sum[:], remainingJSON, notifiedJSON, failedJSON); err != nil {
+		return nil, nil, false, err
+	}
+
+	if len(c.Remaining) == 0 {
+		// Finished. Deleted rather than left to expire: it is spent, and a spent
+		// token that still resolves is a token somebody can replay.
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM core.saml_logout_progress WHERE token_hash = $1`, sum[:]); err != nil {
+			return nil, nil, false, err
+		}
+		return &c, nil, true, nil
+	}
+	return &c, &c.Remaining[0], true, nil
+}
+
+// SweepExpiredLogoutChains removes abandoned chains. Called by the janitor.
+func SweepExpiredLogoutChains(ctx context.Context, tx pgx.Tx) (int64, error) {
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM core.saml_logout_progress WHERE expires_at <= now()`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }

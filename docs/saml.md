@@ -158,24 +158,57 @@ Verified live against the running engine:
 RSA-SHA1 is refused outright. Chosen-prefix collisions against SHA-1 are
 practical, and a warning nobody reads is not a control.
 
+## Logout propagation
+
+Signing out of Signari now signs the user out of the SAML service providers too.
+
+SAML has no usable back-channel — the SOAP binding exists and almost nothing
+implements it — so propagation means walking the **browser** through each
+provider's logout endpoint in turn. Signari redirects to provider one, it ends
+its session and redirects back, then provider two, until the list is empty.
+
+**Our session is terminated before the chain starts, never at the end.** A chain
+that ended the local session last would leave the user signed in here whenever a
+provider fails to redirect back — and they fail all the time: closed tab, 500,
+dropped network. By the time the first redirect is issued, signing out of Signari
+has already happened. Everything after is best-effort notification, and what
+could not be reached is recorded rather than assumed:
+
+```json
+{"status":"signed out",
+ "notified":["https://spb.test/md","https://spa.test/md"],
+ "failed":[]}
+```
+
+Verified end to end against two service providers:
+
+| | |
+|---|---|
+| requests sent | exactly one per provider |
+| NameID | each provider received its **own** pairwise value |
+| SessionIndex | the one from that provider's assertion |
+| signature | verified by **openssl** against the key in our published metadata |
+| local session | revoked before the chain began |
+
+The chain state lives in the database, not a cookie and not the URL. A cookie
+would be editable by the user, and it names the endpoints to visit — an attacker
+could rewrite it and have a browser carrying our signature visit their own
+server. The URL would leak it into every referrer header and access log along
+the way. The chain token travels as `RelayState`, which providers return
+unmodified, and only its hash is stored.
+
+Chains are bounded at ten providers and expire after five minutes; the janitor
+sweeps abandoned ones.
+
+**One deliberate asymmetry:** an inbound LogoutRequest must be signed, but a
+LogoutResponse coming back is not required to be. A response ends nothing — the
+session is already gone — so the worst a forged one achieves is advancing our own
+bookkeeping past a provider we were about to notify, and it costs a valid chain
+token the attacker does not have. Requiring a signature would instead strand the
+chain at every provider that answers unsigned, which most do.
+
 ## Not yet built
 
-- **IdP-initiated logout propagation.** Signing out of Signari ends the session
-  here and notifies OIDC relying parties through the back-channel outbox, but
-  does **not** notify SAML service providers — that needs a front-channel
-  redirect chain through each one, which is not built.
-
-  This is exactly the "logout does not work" failure this project exists to make
-  visible, so it is not left silent. Every such logout logs the providers that
-  were not told:
-
-  ```
-  WARN SAML service providers were NOT notified of this logout; their sessions
-       remain live until they expire. providers=[https://sp.example.com/md]
-  ```
-
-  A gap that is recorded is an operational fact. A gap that is silent is the
-  industry default.
 - **Single logout on the HTTP-POST binding.** That binding carries an enveloped
   XML signature rather than signed query octets — a different job, with the
   wrapping attacks living in it. Refused plainly rather than half-implemented.

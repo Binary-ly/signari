@@ -44,9 +44,22 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 
 	encoded := r.URL.Query().Get("SAMLRequest")
 	if encoded == "" {
-		if r.URL.Query().Get("SAMLResponse") != "" {
-			// A response to a logout WE initiated. Nothing to do: the session is
-			// already gone, and this only confirms delivery.
+		if resp := r.URL.Query().Get("SAMLResponse"); resp != "" {
+			// A provider answering a logout WE initiated. Move the chain along.
+			//
+			// The response signature is NOT required here, and that is deliberate:
+			// this ends nothing. Our session was terminated before the chain
+			// started, and the only thing a forged response could achieve is
+			// advancing our own bookkeeping one step -- which costs an attacker a
+			// valid chain token they do not have, to make us skip notifying a
+			// provider we were about to notify anyway.
+			//
+			// Requiring a signature here would instead mean every provider that
+			// answers unsigned strands the chain, and most answer unsigned.
+			failed := logoutResponseFailed(resp)
+			if s.continueSAMLLogoutChain(w, r, r.URL.Query().Get("RelayState"), failed) {
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -194,6 +207,31 @@ func (s *Server) endSAMLSession(ctx context.Context, v *saml.ValidatedLogout, p 
 		return "", err
 	}
 	return saml.StatusSuccess, tx.Commit(ctx)
+}
+
+// logoutResponseFailed reports whether a provider's LogoutResponse said it did
+// not succeed.
+//
+// Best-effort by design: this only decides which bucket the provider lands in
+// for the record. A response we cannot read counts as failed, because "we could
+// not tell" and "it worked" must not be the same answer -- the whole purpose of
+// this chain is being able to say what was actually reached.
+func logoutResponseFailed(encoded string) bool {
+	raw, err := saml.DecodeRedirect(encoded)
+	if err != nil {
+		return true
+	}
+	var lr struct {
+		Status struct {
+			StatusCode struct {
+				Value string `xml:"Value,attr"`
+			} `xml:"StatusCode"`
+		} `xml:"Status"`
+	}
+	if err := saml.Unmarshal(raw, &lr); err != nil {
+		return true
+	}
+	return lr.Status.StatusCode.Value != saml.StatusSuccess
 }
 
 func firstSLOURL(ctx context.Context, s *Server, providerID string) string {

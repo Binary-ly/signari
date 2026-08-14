@@ -1055,10 +1055,10 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	// left the session live with no back-channel notification sent. A user who
 	// believes they signed out on a shared machine and did not is worse off than
 	// one who is told it failed and tries again.
-	// Which SAML providers this session reached, read BEFORE termination cascades
-	// the rows away. See warnUnnotifiedSAML for why this is recorded rather than
-	// acted on.
-	unnotified := s.samlParticipantsToWarnAbout(ctx, sessionCookie(r))
+	// The session identity is captured BEFORE termination, because terminating
+	// cascades the SAML participant rows away and the logout chain is built from
+	// them.
+	chainSID, chainUser, chainOrg := s.sessionIdentity(ctx, sessionCookie(r))
 
 	if err := s.terminateOwnSession(ctx, sessionCookie(r)); err != nil {
 		s.log.Error("ending session", "err", err)
@@ -1074,8 +1074,6 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	// Clear the cookie even if there was no live session: the user asked to be
 	// signed out, and leaving a stale cookie behind is confusing.
 	s.clearSessionCookie(w)
-
-	s.warnUnnotifiedSAML(ctx, unnotified)
 
 	// post_logout_redirect_uri must be REGISTERED before we redirect to it.
 	// An unvalidated post-logout redirect is an open redirector reached from a
@@ -1110,7 +1108,19 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 				target = u.String()
 			}
 		}
+		// The post-logout target is now VALIDATED, so it is safe to hand to the
+		// SAML chain as the place to land once propagation finishes.
+		if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, target); chain != "" {
+			http.Redirect(w, r, chain, http.StatusFound)
+			return
+		}
 		http.Redirect(w, r, target, http.StatusFound)
+		return
+	}
+
+	// No post-logout redirect: propagate, then report.
+	if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, ""); chain != "" {
+		http.Redirect(w, r, chain, http.StatusFound)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "signed out"})
@@ -1467,55 +1477,21 @@ func parkedReturn(authzQuery string) (string, bool) {
 	return dest, true
 }
 
-// samlParticipantsToWarnAbout lists the SAML providers this session reached.
+// sessionIdentity resolves who a session cookie belongs to.
 //
-// Read before termination, because ending the session cascades the participant
-// rows away and there would be nothing left to report.
-func (s *Server) samlParticipantsToWarnAbout(ctx context.Context, cookie string) []string {
+// Read BEFORE termination: ending the session cascades away the rows the SAML
+// logout chain is built from, so afterwards there is nothing left to propagate
+// to.
+func (s *Server) sessionIdentity(ctx context.Context, cookie string) (sid, userID, orgID string) {
 	if cookie == "" {
-		return nil
+		return "", "", ""
 	}
 	sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
 	if err != nil || sid == "" {
-		return nil
+		return "", "", ""
 	}
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	parts, err := store.SAMLParticipantsForSession(ctx, tx, sid, "")
-	if err != nil {
-		return nil
-	}
-	var out []string
-	for _, p := range parts {
-		out = append(out, p.EntityID)
-	}
-	return out
-}
-
-// warnUnnotifiedSAML records that SAML providers were NOT told about a logout.
-//
-// # Why this is a log line and not a feature
-//
-// OIDC relying parties are notified through the back-channel outbox, with
-// retries and parked failures surfaced in the console. SAML service providers
-// are not: propagating a logout to them means a front-channel redirect chain
-// through each provider in turn, which is real work and is not built yet.
-//
-// Until it is, the session ends HERE and those providers keep theirs. That is
-// precisely the "logout does not work" failure this project exists to make
-// visible, so it is stated in the log and the audit trail rather than left for
-// somebody to discover. A gap that is recorded is an operational fact; a gap
-// that is silent is the industry default.
-func (s *Server) warnUnnotifiedSAML(ctx context.Context, entityIDs []string) {
-	if len(entityIDs) == 0 {
-		return
-	}
-	s.log.Warn("SAML service providers were NOT notified of this logout; their "+
-		"sessions remain live until they expire. Front-channel single logout is not "+
-		"implemented -- see docs/saml.md",
-		"providers", entityIDs, "correlation_id", correlationID(ctx))
+	_ = s.db.QueryRow(ctx,
+		`SELECT user_id::text, org_id::text FROM core.sessions WHERE sid = $1`, sid).
+		Scan(&userID, &orgID)
+	return sid, userID, orgID
 }

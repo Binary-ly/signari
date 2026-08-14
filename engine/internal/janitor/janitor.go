@@ -69,7 +69,9 @@ type Stats struct {
 	RevocationsPurged int64
 	// RecoveriesPurged are password-reset requests dropped after expiry.
 	RecoveriesPurged int64
-	Parked           []string
+	// LogoutChainsSwept are SAML front-channel logouts the user abandoned.
+	LogoutChainsSwept int64
+	Parked            []string
 	// Skipped means another node held the lock. Not an error, and deliberately
 	// distinguished from "nothing to do" so a misconfigured cluster where every
 	// pass is skipped is visible rather than looking idle.
@@ -120,6 +122,14 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 		return st, fmt.Errorf("purging expired recovery requests: %w", err)
 	}
 	st.RecoveriesPurged = n
+
+	// Abandoned SAML logout chains. A front-channel logout walks the browser
+	// through each service provider in turn, and a user who closes the tab
+	// halfway leaves a row behind holding a live chain token. They expire on
+	// their own; this is what stops the table growing forever.
+	if st.LogoutChainsSwept, err = store.SweepExpiredLogoutChains(ctx, tx); err != nil {
+		return st, fmt.Errorf("sweeping abandoned SAML logout chains: %w", err)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return st, fmt.Errorf("committing janitor pass: %w", err)

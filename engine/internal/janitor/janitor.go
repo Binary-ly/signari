@@ -71,7 +71,9 @@ type Stats struct {
 	RecoveriesPurged int64
 	// LogoutChainsSwept are SAML front-channel logouts the user abandoned.
 	LogoutChainsSwept int64
-	Parked            []string
+	// FederatedLoginsSwept are external sign-ins abandoned at the provider.
+	FederatedLoginsSwept int64
+	Parked               []string
 	// Skipped means another node held the lock. Not an error, and deliberately
 	// distinguished from "nothing to do" so a misconfigured cluster where every
 	// pass is skipped is visible rather than looking idle.
@@ -129,6 +131,13 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	// their own; this is what stops the table growing forever.
 	if st.LogoutChainsSwept, err = store.SweepExpiredLogoutChains(ctx, tx); err != nil {
 		return st, fmt.Errorf("sweeping abandoned SAML logout chains: %w", err)
+	}
+
+	// External logins the user abandoned at the provider's consent screen. Each
+	// row holds a PKCE verifier and a nonce, so keeping them past expiry stores
+	// live flow state for a flow nobody is going to finish.
+	if st.FederatedLoginsSwept, err = store.SweepExpiredFederatedLogins(ctx, tx); err != nil {
+		return st, fmt.Errorf("sweeping abandoned external logins: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

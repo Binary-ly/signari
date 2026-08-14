@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/adminapi"
+	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/httpapi"
 	"signari.dev/engine/internal/importer"
 	"signari.dev/engine/internal/janitor"
@@ -65,6 +66,8 @@ commands:
   proxy check         prove a forward-auth deployment actually protects the app
   saml add-sp         register a SAML service provider
   saml list           show registered SAML service providers
+  idp add             register an external sign-in provider (Google, GitHub, ...)
+  idp list            show external sign-in providers
   serve               serve the OIDC endpoints
 
 env:
@@ -110,12 +113,18 @@ func run(args []string) error {
 	nameIDFormat := fs.String("nameid-format", "persistent", "persistent (pairwise), emailAddress or transient")
 	sloURL := fs.String("slo", "", "the provider's SingleLogoutService URL (https)")
 	spCert := fs.String("sp-cert", "", "path to the provider's signing certificate (PEM), required for single logout")
+	slug := fs.String("slug", "", "short name used in /login/with/<slug>")
+	kind := fs.String("kind", "oidc", "oidc, google, github or microsoft")
+	extClientID := fs.String("client-id-ext", "", "client id issued by the external provider")
+	extSecret := fs.String("client-secret", "", "client secret issued by the external provider")
+	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
+	allowLinking := fs.Bool("allow-linking", true, "let users add this provider to an existing account")
 
 	cmd := args[0]
 	rest := args[1:]
 	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
 		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
-		cmd == "saml" {
+		cmd == "saml" || cmd == "idp" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -187,6 +196,11 @@ func run(args []string) error {
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL, *spCert)
 	case "saml list":
 		return samlListSPs(ctx, conn)
+	case "idp add":
+		return idpAdd(ctx, conn, *orgID, *slug, *name, *kind, *extClientID, *extSecret,
+			*issuer, *allowSignup, *allowLinking)
+	case "idp list":
+		return idpList(ctx, conn)
 	default:
 		return usage()
 	}
@@ -1159,4 +1173,109 @@ func truncateMiddle(s string, n int) string {
 	}
 	half := (n - 3) / 2
 	return s[:half] + "..." + s[len(s)-half:]
+}
+
+// idpAdd registers an external identity provider.
+func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, clientID, secret,
+	issuer string, allowSignup, allowLinking bool) error {
+
+	switch {
+	case orgID == "":
+		return fmt.Errorf("give -org, the organisation uuid this provider belongs to")
+	case slug == "":
+		return fmt.Errorf("give -slug, the short name used in the URL /login/with/<slug>")
+	case clientID == "":
+		return fmt.Errorf("give -client-id, issued by the provider")
+	}
+	preset, err := federation.PresetFor(federation.Kind(kind))
+	if err != nil {
+		return err
+	}
+	if kind == "oidc" && issuer == "" {
+		return fmt.Errorf("a generic OIDC provider needs -issuer, so its endpoints and " +
+			"signing keys can be discovered")
+	}
+	if name == "" {
+		name = slug
+	}
+
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	var sealed []byte
+	if secret != "" {
+		if sealed, err = root.Seal([]byte(secret), "idp_client_secret"); err != nil {
+			return fmt.Errorf("sealing the client secret: %w", err)
+		}
+	}
+
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.identity_providers
+			(org_id, slug, display_name, kind, client_id, client_secret, issuer,
+			 scopes, allow_signup, allow_linking)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, NULLIF($7,''), $8, $9, $10)`,
+		orgID, slug, name, kind, clientID, sealed, issuer,
+		preset.Scopes, allowSignup, allowLinking); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("a provider with slug %q is already registered in that "+
+				"organisation", slug)
+		}
+		return err
+	}
+
+	fmt.Printf("registered %s (%s)\n", name, kind)
+	fmt.Printf("  sign-in URL  : /login/with/%s\n", slug)
+	fmt.Printf("  callback URL : <issuer>/login/callback/%s\n", slug)
+	fmt.Print("     register that callback with the provider, exactly as written\n")
+	fmt.Printf("  scopes       : %s\n", strings.Join(preset.Scopes, " "))
+
+	// The email-verification policy is the part an operator most needs told,
+	// because it decides whether sign-up works at all and there is no way to
+	// discover it from the provider's own console.
+	fmt.Print("\n  Email verification: ")
+	switch {
+	case preset.TrustsEmailVerification && preset.EmailNeedsSeparateCheck:
+		fmt.Printf("established by an extra check.\n    %s\n", preset.Note)
+	case preset.TrustsEmailVerification:
+		fmt.Printf("trusted as returned.\n    %s\n", preset.Note)
+	default:
+		fmt.Printf("NOT trusted.\n    %s\n", preset.Note)
+		fmt.Print("    This provider can link to existing accounts but cannot create\n" +
+			"    new ones until verification can be established.\n")
+	}
+	fmt.Printf("\n  Accounts are matched on the provider's subject identifier only.\n"+
+		"  A matching email address never links an account -- the user signs in\n"+
+		"  locally first and adds the provider from /account/link/%s.\n", slug)
+	return nil
+}
+
+// idpList shows configured providers.
+func idpList(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT slug, display_name, kind, allow_signup, allow_linking, enabled,
+		       (SELECT count(*) FROM core.federated_identities f WHERE f.provider_id = p.id)
+		FROM core.identity_providers p ORDER BY slug`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-14s %-12s %-8s %-8s %-8s %s\n",
+		"SLUG", "KIND", "SIGNUP", "LINKING", "ENABLED", "LINKED ACCOUNTS")
+	var n int
+	for rows.Next() {
+		var slug, name, kind string
+		var signup, linking, enabled bool
+		var linked int
+		if err := rows.Scan(&slug, &name, &kind, &signup, &linking, &enabled, &linked); err != nil {
+			return err
+		}
+		n++
+		fmt.Printf("%-14s %-12s %-8t %-8t %-8t %d\n", slug, kind, signup, linking, enabled, linked)
+	}
+	if n == 0 {
+		fmt.Println("(none registered -- add one with `signari idp add`)")
+	}
+	return rows.Err()
 }

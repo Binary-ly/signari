@@ -34,13 +34,25 @@ type Preset struct {
 	// GitHub does not -- it is plain OAuth 2.0 with a user API bolted on.
 	OIDC bool
 
-	// TrustsEmailVerification records whether this provider's assertion that an
-	// address is verified is worth anything AS RETURNED. Where it is false, the
-	// provider may still be usable -- see EmailNeedsSeparateCheck.
+	// TrustsEmailVerification records whether the EmailVerified value THIS
+	// PACKAGE PRODUCES for the provider can be believed.
+	//
+	// The distinction matters and it caused a bug. The obvious reading is "does
+	// the provider's raw response tell the truth", and by that reading GitHub is
+	// false -- its /user endpoint returns unconfirmed addresses. But we do not
+	// use that endpoint's flag: we query /user/emails and only report verified
+	// when GitHub says the address is confirmed. So the value we produce IS
+	// trustworthy, and marking the provider untrusted made sign-up impossible
+	// for a provider we had gone to the trouble of verifying properly.
+	//
+	// It is therefore a statement about our own handling, one line below the
+	// code that does the handling.
 	TrustsEmailVerification bool
 
-	// EmailNeedsSeparateCheck means verification requires a second call or an
-	// extra claim, and the plain response must not be believed on its own.
+	// EmailNeedsSeparateCheck records that the trustworthiness above is EARNED by
+	// extra work -- a second request or an additional claim -- rather than by the
+	// response being reliable on its own. Documentation for the reader; changing
+	// the handling means revisiting the flag above.
 	EmailNeedsSeparateCheck bool
 
 	// EmailsURL is a second endpoint some providers need for verification.
@@ -84,10 +96,11 @@ var presets = map[Kind]Preset{
 		// /user returns a `email` field that is whatever the user set as public,
 		// INCLUDING addresses they never confirmed, and it can be null. The
 		// verified flag lives on a different endpoint entirely.
-		TrustsEmailVerification: false,
+		// True because of what githubIdentity does, not because /user is honest.
+		TrustsEmailVerification: true,
 		EmailNeedsSeparateCheck: true,
-		Note: "GET /user returns an unconfirmed address; /user/emails is queried " +
-			"for the primary address with verified=true.",
+		Note: "GET /user returns an unconfirmed address, so /user/emails is queried " +
+			"instead and only a confirmed address counts as verified.",
 	},
 
 	KindMicrosoft: {
@@ -112,11 +125,15 @@ var presets = map[Kind]Preset{
 		// present. An operator who wants Microsoft sign-up must add the optional
 		// claim to their app registration, which is a two-minute change and the
 		// difference between a verified address and an asserted one.
-		TrustsEmailVerification: false,
+		// True for the same reason: we never read Microsoft's email_verified, only
+		// xms_edov. An address is reported verified here ONLY when Microsoft has
+		// said the domain owner was verified.
+		TrustsEmailVerification: true,
 		EmailNeedsSeparateCheck: true,
-		Note: "Microsoft documents the email claim as not guaranteed correct. " +
-			"Add the optional claim xms_edov to your app registration; it is the " +
-			"only signal here that the domain owner was verified.",
+		Note: "Microsoft documents the email claim as not guaranteed correct, so it " +
+			"is ignored. Add the optional claim xms_edov to your app registration -- " +
+			"without it no Microsoft address can be treated as verified, and sign-up " +
+			"will refuse.",
 	},
 
 	KindOIDC: {

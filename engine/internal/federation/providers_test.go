@@ -15,10 +15,14 @@ func TestNoProviderIsTrustedByAccident(t *testing.T) {
 	}{
 		{KindGoogle, true,
 			"Google's email_verified in the id_token is authoritative"},
-		{KindGitHub, false,
-			"GET /user returns whatever the user set as public, including unconfirmed addresses"},
-		{KindMicrosoft, false,
-			"Microsoft documents the email claim as not guaranteed correct and says never to use it for authorization"},
+		// True for both, and NOT because these providers are honest -- because
+		// this package does extra work for each. GitHub's verified flag is read
+		// from /user/emails rather than /user; Microsoft's comes from xms_edov
+		// rather than email_verified. The flag describes what we produce.
+		{KindGitHub, true,
+			"we read /user/emails, so the value we produce is a confirmed address"},
+		{KindMicrosoft, true,
+			"we read xms_edov and ignore email_verified, so a verified value means the domain owner was verified"},
 		{KindOIDC, false,
 			"an unknown provider's verification means nothing until an operator says it does"},
 	}
@@ -34,17 +38,37 @@ func TestNoProviderIsTrustedByAccident(t *testing.T) {
 	}
 }
 
-// TestUntrustedProvidersSayHowToVerify. A provider we do not trust is useless
-// for sign-up unless the operator is told what to do about it.
-func TestUntrustedProvidersSayHowToVerify(t *testing.T) {
+// TestEveryProviderExplainsItsPolicy. Trusted or not, an operator choosing a
+// provider has to be told how verification is established -- it decides whether
+// sign-up works at all, and it cannot be discovered from the provider's console.
+func TestEveryProviderExplainsItsPolicy(t *testing.T) {
 	for _, k := range Kinds() {
 		p, _ := PresetFor(k)
-		if p.TrustsEmailVerification {
-			continue
-		}
 		if p.Note == "" {
-			t.Errorf("%s is not trusted and offers no explanation", k)
+			t.Errorf("%s offers no explanation of its verification policy", k)
 		}
+	}
+}
+
+// TestTrustEarnedBySeparateCheckIsMarkedAsSuch.
+//
+// Where trust comes from extra work rather than an honest response, that must be
+// recorded -- otherwise somebody simplifying the client later removes the
+// /user/emails call and leaves the provider marked trusted.
+func TestTrustEarnedBySeparateCheckIsMarkedAsSuch(t *testing.T) {
+	for _, k := range []Kind{KindGitHub, KindMicrosoft} {
+		p, _ := PresetFor(k)
+		if !p.TrustsEmailVerification {
+			t.Errorf("%s should be trusted -- the client does the work to earn it", k)
+		}
+		if !p.EmailNeedsSeparateCheck {
+			t.Errorf("%s is trusted only because of a separate check, which is not recorded", k)
+		}
+	}
+	// Google needs no extra work; Google's own flag is authoritative.
+	g, _ := PresetFor(KindGoogle)
+	if g.EmailNeedsSeparateCheck {
+		t.Error("Google is marked as needing a separate check; its id_token flag is authoritative")
 	}
 }
 

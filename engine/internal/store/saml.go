@@ -178,3 +178,74 @@ func SessionAuthContext(ctx context.Context, tx pgx.Tx, sid string) (acr string,
 	}
 	return acr, amr, authTime, nil
 }
+
+// SAMLParticipant is one service provider's view of a session.
+type SAMLParticipant struct {
+	SID          string
+	ProviderID   string
+	EntityID     string
+	SessionIndex string
+	NameID       string
+	SLOURLs      []string
+}
+
+// FindSAMLSession resolves the session a LogoutRequest is about.
+//
+// Looked up by (provider, NameID), because those are the only handles the
+// service provider has -- the NameID is pairwise, so it is meaningless at any
+// other provider, which is exactly the property that makes this lookup safe.
+// SessionIndex narrows further when supplied.
+//
+// Deliberately scoped to the requesting provider: without that, a provider
+// could name a session it never participated in.
+func FindSAMLSession(ctx context.Context, tx pgx.Tx, providerID, nameID, sessionIndex string) (sid, userID, orgID string, err error) {
+	err = tx.QueryRow(ctx, `
+		SELECT p.sid, s.user_id::text, p.org_id::text
+		FROM core.saml_session_participants p
+		JOIN core.sessions s ON s.sid = p.sid
+		WHERE p.provider_id = $1::uuid
+		  AND p.name_id = $2
+		  AND ($3 = '' OR p.session_index = $3)
+		  AND s.revoked_at IS NULL
+		ORDER BY p.first_seen_at DESC
+		LIMIT 1`, providerID, nameID, sessionIndex).Scan(&sid, &userID, &orgID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", "", pgx.ErrNoRows
+		}
+		return "", "", "", fmt.Errorf("finding the session for a logout request: %w", err)
+	}
+	return sid, userID, orgID, nil
+}
+
+// SAMLParticipantsForSession lists every provider this session reached, so
+// logout can propagate.
+//
+// exclude is the provider that ASKED for the logout, which must not be sent a
+// LogoutRequest of its own: it already knows, and telling it can bounce the
+// exchange back and forth.
+func SAMLParticipantsForSession(ctx context.Context, tx pgx.Tx, sid, exclude string) ([]SAMLParticipant, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT p.provider_id::text, sp.entity_id, p.session_index, p.name_id,
+		       COALESCE(array_agg(u.url) FILTER (WHERE u.url IS NOT NULL), '{}')
+		FROM core.saml_session_participants p
+		JOIN core.saml_providers sp ON sp.id = p.provider_id
+		LEFT JOIN core.saml_slo_urls u ON u.provider_id = p.provider_id
+		WHERE p.sid = $1 AND ($2 = '' OR p.provider_id <> $2::uuid) AND sp.enabled
+		GROUP BY p.provider_id, sp.entity_id, p.session_index, p.name_id`, sid, exclude)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []SAMLParticipant
+	for rows.Next() {
+		var p SAMLParticipant
+		if err := rows.Scan(&p.ProviderID, &p.EntityID, &p.SessionIndex, &p.NameID, &p.SLOURLs); err != nil {
+			return nil, err
+		}
+		p.SID = sid
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

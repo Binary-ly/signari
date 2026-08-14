@@ -53,8 +53,13 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 
 	doc, err := saml.Metadata(saml.MetadataInput{
-		EntityID:     s.samlEntityID(),
-		SSOURL:       s.cfg.Issuer + "/saml/sso",
+		EntityID: s.samlEntityID(),
+		SSOURL:   s.cfg.Issuer + "/saml/sso",
+		// Advertised now that it is implemented, and not before -- the same rule
+		// OIDC discovery follows here. An endpoint in metadata that answers with
+		// an error is worse than one that is absent: the service provider calls
+		// it, fails, and blames its own configuration.
+		SLOURL:       s.cfg.Issuer + "/saml/slo",
 		Certificates: certs,
 		NameIDFormat: saml.NameIDFormatPersistent,
 	})
@@ -449,6 +454,20 @@ func (s *Server) samlSigningKey() (keys.Key, error) {
 	}
 	return nil, fmt.Errorf("SAML needs an active RS256 key and this instance has none; " +
 		"add one with `signari keys rotate -alg RS256`")
+}
+
+// samlCertificateFor returns the stored certificate for one key.
+func (s *Server) samlCertificateFor(ctx context.Context, k keys.Key) ([]byte, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	der, err := saml.EnsureCertificate(ctx, tx, k.KID(), s.cfg.Issuer, k.Signer())
+	if err != nil {
+		return nil, err
+	}
+	return der, tx.Commit(ctx)
 }
 
 // samlCertificates returns every certificate a service provider should accept,

@@ -10,7 +10,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
@@ -106,6 +108,8 @@ func run(args []string) error {
 	entityID := fs.String("entity-id", "", "the service provider's SAML EntityID")
 	acsURL := fs.String("acs", "", "AssertionConsumerService URL, matched exactly (https only)")
 	nameIDFormat := fs.String("nameid-format", "persistent", "persistent (pairwise), emailAddress or transient")
+	sloURL := fs.String("slo", "", "the provider's SingleLogoutService URL (https)")
+	spCert := fs.String("sp-cert", "", "path to the provider's signing certificate (PEM), required for single logout")
 
 	cmd := args[0]
 	rest := args[1:]
@@ -180,7 +184,7 @@ func run(args []string) error {
 	case "keys rotate":
 		return keysRotate(ctx, conn, *alg, *promoteNow)
 	case "saml add-sp":
-		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat)
+		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL, *spCert)
 	case "saml list":
 		return samlListSPs(ctx, conn)
 	default:
@@ -1010,7 +1014,7 @@ func wrap(s string, width int, indent string) string {
 // for a real user gets delivered. Checking it at REGISTRATION means a mistake
 // surfaces now, with a message about the registration, rather than during
 // someone else's integration as an unexplained refusal.
-func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, nameIDFormat string) error {
+func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, nameIDFormat, slo, certPath string) error {
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this service provider belongs to")
@@ -1039,6 +1043,35 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 			nameIDFormat)
 	}
 
+	// Single logout needs BOTH a place to send to and a certificate to verify
+	// with. A provider configured with a logout URL and no certificate is the
+	// dangerous half-configuration: it looks set up, and the endpoint refuses
+	// every request because there is nothing to check the signature against.
+	var certPEM string
+	if certPath != "" {
+		b, err := os.ReadFile(certPath)
+		if err != nil {
+			return fmt.Errorf("reading the service provider certificate: %w", err)
+		}
+		block, _ := pem.Decode(b)
+		if block == nil {
+			return fmt.Errorf("%s is not PEM. Export the provider's SIGNING certificate, "+
+				"not its private key or metadata", certPath)
+		}
+		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+			return fmt.Errorf("%s did not parse as a certificate: %w", certPath, err)
+		}
+		certPEM = string(b)
+	}
+	if slo != "" && certPEM == "" {
+		return fmt.Errorf("a logout URL was given with no -sp-cert. A LogoutRequest is " +
+			"acted on only when signed, so without the provider's certificate every " +
+			"logout would be refused -- which looks configured and is not")
+	}
+	if slo != "" && !strings.HasPrefix(slo, "https://") {
+		return fmt.Errorf("the logout URL must be https: %q", slo)
+	}
+
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -1047,9 +1080,10 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO core.saml_providers (org_id, entity_id, display_name, name_id_format)
-		VALUES ($1::uuid, $2, $3, $4)
-		RETURNING id::text`, orgID, entityID, name, nameIDFormat).Scan(&id)
+		INSERT INTO core.saml_providers (org_id, entity_id, display_name, name_id_format,
+		                                 sp_signing_cert)
+		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''))
+		RETURNING id::text`, orgID, entityID, name, nameIDFormat, certPEM).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return fmt.Errorf("a service provider with entity id %q is already registered "+
@@ -1062,6 +1096,13 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 		VALUES ($1::uuid, $2, 'HTTP-POST', true)`, id, acs); err != nil {
 		return err
 	}
+	if slo != "" {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO core.saml_slo_urls (provider_id, url, binding)
+			VALUES ($1::uuid, $2, 'HTTP-Redirect')`, id, slo); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -1071,6 +1112,11 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	if nameIDFormat == "persistent" {
 		fmt.Println("\n  The NameID is pairwise: this service provider sees an opaque identifier\n" +
 			"  that no other provider can correlate, and it survives an email change.")
+	}
+	if slo != "" {
+		fmt.Printf("  logout    : %s (signature verified against the certificate given)\n", slo)
+	} else {
+		fmt.Println("  logout    : not configured -- single logout is unavailable for this provider")
 	}
 	fmt.Println("\n  Point the service provider at /saml/metadata to import the certificate.")
 	return nil

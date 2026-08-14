@@ -87,6 +87,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /saml/metadata", s.handleSAMLMetadata)
 	mux.HandleFunc("GET /saml/sso", s.handleSAMLSSO)
 	mux.HandleFunc("POST /saml/sso", s.handleSAMLSSO)
+	mux.HandleFunc("GET /saml/slo", s.handleSAMLSLO)
+	mux.HandleFunc("POST /saml/slo", s.handleSAMLSLO)
 	mux.HandleFunc("GET /proxy/verify", s.handleProxyVerify)
 	mux.HandleFunc("GET /proxy/start", s.handleProxyStart)
 	mux.HandleFunc("GET /passkey.js", s.handlePasskeyJS)

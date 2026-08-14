@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestResponseValidatesAgainstTheOfficialSchema.
@@ -77,5 +78,51 @@ func TestExactlyOneSignature(t *testing.T) {
 	if iIssuer < 0 {
 		t.Error("the signature does not immediately follow the assertion's Issuer; " +
 			"the schema fixes this order and strict providers enforce it")
+	}
+}
+
+// TestLogoutDocumentsValidateAgainstTheOfficialSchema.
+//
+// StatusResponseType and RequestAbstractType fix their child order the same way
+// AssertionType does, and these documents go through the same signature
+// repositioning -- so they need the same independent check rather than an
+// assumption that the fix generalised.
+func TestLogoutDocumentsValidateAgainstTheOfficialSchema(t *testing.T) {
+	bin, err := exec.LookPath("xmllint")
+	if err != nil {
+		t.Skip("xmllint not installed")
+	}
+	key, certDER := testSigner(t)
+
+	req, err := BuildLogoutRequest(LogoutRequestInput{
+		Issuer: "https://auth.example.com/saml", Destination: "https://sp.example.com/slo",
+		NameID: "opaque", NameIDFormat: NameIDFormatPersistent, SessionIndex: "s1",
+		Now: time.Now(),
+	}, key, certDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := BuildLogoutResponse(LogoutResponseInput{
+		Issuer: "https://auth.example.com/saml", Destination: "https://sp.example.com/slo",
+		InResponse: "_lo1", Now: time.Now(),
+	}, key, certDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	schema, err := filepath.Abs("testdata/xsd/saml-schema-protocol-2.0.xsd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, doc := range map[string]string{"LogoutRequest": req, "LogoutResponse": resp} {
+		path := filepath.Join(t.TempDir(), name+".xml")
+		if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command(bin, "--noout", "--schema", schema, path).CombinedOutput()
+		if err != nil {
+			t.Errorf("%s does not validate against the official schema:\n%s\n---\n%s",
+				name, out, doc)
+		}
 	}
 }

@@ -90,3 +90,68 @@ func rewriteUser(dsn, user string) string {
 	}
 	return dsn[:i+3] + user + dsn[i+3+j:]
 }
+
+// TestEveryRLSTableGrantsTheEngine catches the bug of 0018 BEFORE it can bite
+// again, and for tables that are still empty.
+//
+// The row-counting test above can only fail once a table has rows in it. A
+// table added later with an org-only policy is invisible to that test until
+// somebody puts data in it and a flow breaks in production. This one reads the
+// policies themselves, so a new table with the wrong policy fails the moment it
+// is created.
+//
+// The failure it guards against is silent by construction: row-level security
+// does not raise an error when it filters everything, it returns nothing, and
+// the engine reports "unknown client" for a client that is sitting right there.
+func TestEveryRLSTableGrantsTheEngine(t *testing.T) {
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
+	if dsn == "" {
+		t.Skip("SIGNARI_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Skipf("cannot connect: %v", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+
+	rows, err := conn.Query(ctx, `
+		SELECT c.relname, p.polname, pg_get_expr(p.polqual, p.polrelid)
+		FROM pg_policy p
+		JOIN pg_class c ON c.oid = p.polrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'core'
+		ORDER BY c.relname`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	var checked int
+	for rows.Next() {
+		var table, policy, qual string
+		if err := rows.Scan(&table, &policy, &qual); err != nil {
+			t.Fatal(err)
+		}
+		checked++
+		// A policy that does not filter by organisation at all (qual `true`, as
+		// revoked_jtis uses -- a global replay list belongs to no tenant) is
+		// permissive and the engine reads it fine. The dangerous shape is
+		// specifically "filters by org, does not exempt the engine".
+		if !strings.Contains(qual, "current_org_id") {
+			continue
+		}
+		if !strings.Contains(qual, "is_engine") {
+			t.Errorf("core.%s policy %q does not mention is_engine():\n    %s\n"+
+				"  The engine sets no app.org_id, so this table reads as EMPTY to it -- "+
+				"silently, with no error anywhere.", table, policy, qual)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if checked == 0 {
+		t.Fatal("no policies found in schema core; this test proves nothing")
+	}
+	t.Logf("checked %d policies", checked)
+}

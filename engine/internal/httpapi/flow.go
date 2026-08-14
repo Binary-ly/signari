@@ -1407,6 +1407,21 @@ func resumeAfterSignIn(authzQuery string) string {
 	return oidc.PathAuthorize + "?" + authzQuery
 }
 
+// parkLogin builds the URL that sends a browser to sign in and come back.
+//
+// The return path is encoded as a query VALUE, not concatenated. Writing
+// "return=" + dest looks equivalent and is not: the moment dest carries its own
+// query string, its `&` separates parameters when the parked value is parsed
+// again, and everything after the first one is silently lost.
+//
+// That was a live bug. A SAML request parked as
+// `return=/saml/sso?RelayState=x&SAMLRequest=...` came back as
+// `/saml/sso?RelayState=x` with the request gone, and the endpoint answered
+// "no SAMLRequest" -- a failure that points at the wrong component entirely.
+func parkLogin(dest string) string {
+	return "/login?authz=" + url.QueryEscape(url.Values{"return": {dest}}.Encode())
+}
+
 // parkedReturn extracts a local return path, refusing anything that could leave
 // this origin.
 //

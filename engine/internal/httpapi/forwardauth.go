@@ -177,7 +177,7 @@ func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 		if rd != "" {
 			back += "?rd=" + url.QueryEscape(rd)
 		}
-		http.Redirect(w, r, "/login?authz="+url.QueryEscape("return="+back), http.StatusFound)
+		http.Redirect(w, r, parkLogin(back), http.StatusFound)
 		return
 	}
 

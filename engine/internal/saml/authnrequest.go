@@ -72,8 +72,12 @@ type ACSURL struct {
 // equivalent of honouring an unregistered redirect_uri, and it delivers a valid
 // assertion for a real user to a server the attacker controls.
 type Validated struct {
-	RequestID    string
-	Issuer       string
+	RequestID string
+	Issuer    string
+	// IssueInstant is when the service provider asked. Carried because it is
+	// what makes ForceAuthn decidable: a session established AFTER this moment
+	// is, by definition, a fresh authentication for this request.
+	IssueInstant time.Time
 	ACSURL       string
 	Binding      string
 	NameIDFormat string
@@ -122,6 +126,7 @@ func ValidateAuthnRequest(r *AuthnRequest, p *Provider, destination string, now 
 			r.Destination, destination)
 	}
 
+	var issued time.Time
 	if r.IssueInstant != "" {
 		t, err := time.Parse(time.RFC3339, r.IssueInstant)
 		if err != nil {
@@ -132,6 +137,13 @@ func ValidateAuthnRequest(r *AuthnRequest, p *Provider, destination string, now 
 			return nil, fmt.Errorf("AuthnRequest IssueInstant is %s away from now, "+
 				"outside the %s tolerance", d.Round(time.Second), clockSkew)
 		}
+		issued = t
+	}
+	if issued.IsZero() {
+		// Absent is legal. Treat it as "now" so ForceAuthn still terminates:
+		// anything else leaves the freshness comparison with nothing to compare
+		// against and the flow loops.
+		issued = now
 	}
 
 	acs, binding, err := resolveACS(r, p)
@@ -155,6 +167,7 @@ func ValidateAuthnRequest(r *AuthnRequest, p *Provider, destination string, now 
 	return &Validated{
 		RequestID:    r.ID,
 		Issuer:       r.Issuer,
+		IssueInstant: issued,
 		ACSURL:       acs,
 		Binding:      binding,
 		NameIDFormat: p.NameIDFormat,
@@ -219,10 +232,10 @@ func sameURL(a, b string) bool {
 
 // Full URN forms, and the short names used in configuration and the database.
 const (
-	NameIDFormatPersistent = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"
-	NameIDFormatTransient  = "urn:oasis:names:tc:SAML:2.0:nameid-format:transient"
-	NameIDFormatEmail      = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
-	NameIDFormatUnspecified  = "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
+	NameIDFormatPersistent  = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"
+	NameIDFormatTransient   = "urn:oasis:names:tc:SAML:2.0:nameid-format:transient"
+	NameIDFormatEmail       = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+	NameIDFormatUnspecified = "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
 )
 
 func shortNameIDFormat(urn string) string {

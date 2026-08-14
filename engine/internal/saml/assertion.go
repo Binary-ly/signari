@@ -366,3 +366,59 @@ func sortedKeys(m map[string][]string) []string {
 func ParseCertificate(der []byte) (*x509.Certificate, error) {
 	return x509.ParseCertificate(der)
 }
+
+// StatusInput builds a response that carries a status other than Success.
+type StatusInput struct {
+	Issuer      string
+	Destination string
+	InResponse  string
+	Status      string
+	Message     string
+	Now         time.Time
+}
+
+// BuildStatusResponse renders a non-success response.
+//
+// UNSIGNED, deliberately. It carries no identity and no authorisation, so there
+// is nothing for a signature to protect; signing it would only mean holding the
+// key on a path that error handling can reach. A service provider that treats
+// an unsigned failure as meaningful is making its own mistake -- failures are
+// not something an attacker gains by forging.
+func BuildStatusResponse(in StatusInput) (string, error) {
+	if in.Destination == "" {
+		return "", fmt.Errorf("refusing to build a status response with no Destination")
+	}
+	id, err := newID()
+	if err != nil {
+		return "", err
+	}
+	now := in.Now.UTC().Truncate(time.Second)
+
+	doc := etree.NewDocument()
+	resp := doc.CreateElement("samlp:Response")
+	resp.CreateAttr("xmlns:samlp", nsProtocol)
+	resp.CreateAttr("xmlns:saml", nsAssertion)
+	resp.CreateAttr("ID", id)
+	resp.CreateAttr("Version", "2.0")
+	resp.CreateAttr("IssueInstant", now.Format(time.RFC3339))
+	resp.CreateAttr("Destination", in.Destination)
+	if in.InResponse != "" {
+		resp.CreateAttr("InResponseTo", in.InResponse)
+	}
+	resp.CreateElement("saml:Issuer").SetText(in.Issuer)
+
+	status := resp.CreateElement("samlp:Status")
+	code := status.CreateElement("samlp:StatusCode")
+	code.CreateAttr("Value", StatusResponder)
+	if in.Status != StatusResponder {
+		// The specific reason is a SECOND-level code. The schema allows only the
+		// top-level values here, so putting a second-level URN in the first
+		// position produces a document strict providers reject.
+		sub := code.CreateElement("samlp:StatusCode")
+		sub.CreateAttr("Value", in.Status)
+	}
+	if in.Message != "" {
+		status.CreateElement("samlp:StatusMessage").SetText(in.Message)
+	}
+	return doc.WriteToString()
+}

@@ -1012,6 +1012,18 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	s.clearPending(w)
 	s.setSessionCookie(w, cookieToken)
 
+	// Where this sign-in came from, for the next travel check.
+	//
+	// Recorded AFTER the session is committed and deliberately outside its
+	// transaction: failing to note a position must never stop somebody signing
+	// in. A risk signal that can deny access when its own bookkeeping fails is
+	// worse than no signal.
+	loc := s.geo.Resolve(clientIP(r))
+	loc.At = time.Now()
+	if lerr := store.RecordAuthLocation(ctx, s.db, userID, orgID, loc); lerr != nil {
+		s.log.Error("recording the sign-in location", "err", lerr)
+	}
+
 	// Back to whatever was parked, if anything was.
 	if authzQuery != "" {
 		http.Redirect(w, r, resumeAfterSignIn(authzQuery), http.StatusFound)

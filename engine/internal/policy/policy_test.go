@@ -313,3 +313,33 @@ func TestVersionIsChecked(t *testing.T) {
 		t.Error("an unsupported version was accepted")
 	}
 }
+
+// TestImpossibleTravelCondition.
+//
+// Note the third case: the condition is satisfied when the check could not run.
+// A condition that failed whenever it could not be evaluated would lock out
+// every first-time user and every deployment without a GeoIP database -- which
+// is how a risk signal becomes an outage.
+func TestImpossibleTravelCondition(t *testing.T) {
+	const travel = `
+version: 1
+policies:
+  - name: refuse-impossible-travel
+    when: {client: bank}
+    require: {no_impossible_travel: true}
+    message: This sign-in came from an unexpected place. Contact support.
+tests:
+  - name: an ordinary sign-in
+    given: {client: bank, impossible_travel: false}
+    expect: allow
+  - name: a sign-in from two places at once
+    given: {client: bank, impossible_travel: true}
+    expect: deny
+  - name: a first sign-in, with nothing to compare against
+    given: {client: bank}
+    expect: allow
+`
+	if _, err := Parse([]byte(travel)); err != nil {
+		t.Fatalf("the travel policy failed its own tests: %v", err)
+	}
+}

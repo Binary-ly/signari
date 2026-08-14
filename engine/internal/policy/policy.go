@@ -85,6 +85,14 @@ type Conditions struct {
 	MFA bool `yaml:"mfa"`
 	// FromNetworks limits the request to these CIDR ranges.
 	FromNetworks []string `yaml:"from_networks"`
+	// NoImpossibleTravel refuses when the previous sign-in was somewhere this
+	// person could not have travelled from in the time available.
+	//
+	// It is satisfied when the check did NOT run -- no position, too close
+	// together, no history. A condition that failed whenever it could not be
+	// evaluated would lock out every first-time user and every deployment
+	// without a GeoIP database, which is how a risk signal becomes an outage.
+	NoImpossibleTravel bool `yaml:"no_impossible_travel"`
 }
 
 // TestCase is an assertion the file makes about itself.
@@ -101,6 +109,10 @@ type Request struct {
 	Groups []string `yaml:"groups"`
 	MFA    bool     `yaml:"mfa"`
 	IP     string   `yaml:"ip"`
+	// ImpossibleTravel is set by the caller from a risk check that RAN. A test
+	// case can set it directly, which is how the condition is covered by the
+	// file's own tests without a GeoIP database.
+	ImpossibleTravel bool `yaml:"impossible_travel"`
 }
 
 // Decision is the result.
@@ -181,7 +193,8 @@ func (f *File) validate() error {
 }
 
 func (c Conditions) isEmpty() bool {
-	return len(c.Groups) == 0 && len(c.AnyGroup) == 0 && !c.MFA && len(c.FromNetworks) == 0
+	return len(c.Groups) == 0 && len(c.AnyGroup) == 0 && !c.MFA &&
+		len(c.FromNetworks) == 0 && !c.NoImpossibleTravel
 }
 
 // RunTests evaluates every case in the file.
@@ -303,6 +316,9 @@ func (c Conditions) satisfiedBy(req Request) bool {
 	if c.MFA && !req.MFA {
 		return false
 	}
+	if c.NoImpossibleTravel && req.ImpossibleTravel {
+		return false
+	}
 	if len(c.FromNetworks) > 0 {
 		// An absent or unparseable address fails the check. Treating "we do not
 		// know where this came from" as "inside the office network" is how a
@@ -348,4 +364,18 @@ func hasScope(scope, want string) bool {
 // Summary describes a loaded policy, for the startup log.
 func (f *File) Summary() string {
 	return fmt.Sprintf("%d rule(s), %d test(s), all passing", len(f.Policies), len(f.Tests))
+}
+
+// UsesImpossibleTravel reports whether any rule asks about travel.
+//
+// Checked before doing the work: resolving a position and querying history on
+// every authorization would be effort spent for nothing in the deployments --
+// most of them -- whose policy never mentions it.
+func (f *File) UsesImpossibleTravel() bool {
+	for _, r := range f.Policies {
+		if r.Require.NoImpossibleTravel {
+			return true
+		}
+	}
+	return false
 }

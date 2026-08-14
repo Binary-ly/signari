@@ -12,6 +12,7 @@ import (
 
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/policy"
+	"signari.dev/engine/internal/risk"
 	"signari.dev/engine/internal/store"
 )
 
@@ -118,9 +119,18 @@ func (s *Server) checkAccessPolicy(ctx context.Context, r *http.Request,
 			Message: "Access could not be checked. Please try again."}
 	}
 
+	// The travel check runs only when a policy actually asks about it. Resolving
+	// a position and querying history on every authorization would be work done
+	// for nothing in the deployments -- most of them -- whose policy never
+	// mentions it.
+	impossible := false
+	if f.UsesImpossibleTravel() {
+		impossible = s.impossibleTravel(ctx, userID, clientIP(r))
+	}
+
 	d := f.Evaluate(policy.Request{
 		Client: clientID, Scope: scope, Groups: groups, MFA: mfa,
-		IP: clientIP(r),
+		IP: clientIP(r), ImpossibleTravel: impossible,
 	})
 	if d.Allowed {
 		return nil
@@ -168,4 +178,28 @@ func sessionHasMFA(ctx context.Context, db interface {
 		}
 	}
 	return acr == oauth.ACRMultiFactor || acr == oauth.ACRPapeMultiFactor
+}
+
+// impossibleTravel reports whether this sign-in could not have followed the
+// previous one.
+//
+// False when the check could not run -- no GeoIP database, no history, or two
+// sign-ins too close together. That is the honest answer and the safe one: a
+// signal that fails closed when it cannot be evaluated locks out every
+// first-time user.
+func (s *Server) impossibleTravel(ctx context.Context, userID, ip string) bool {
+	previous, err := store.PreviousAuthLocation(ctx, s.db, userID)
+	if err != nil {
+		s.log.Error("reading the previous sign-in location", "err", err)
+		return false
+	}
+	current := s.geo.Resolve(ip)
+	current.At = time.Now()
+
+	v := risk.CheckTravel(previous, current)
+	if v.Impossible {
+		s.log.Warn("impossible travel", "user_id", userID, "reason", v.Reason,
+			"correlation_id", correlationID(ctx))
+	}
+	return v.Impossible
 }

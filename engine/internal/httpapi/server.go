@@ -17,6 +17,7 @@ import (
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/risk"
 )
 
 // Server holds the public endpoints. Everything it serves is derived from a live
@@ -29,6 +30,7 @@ type Server struct {
 	db       *pgxpool.Pool
 	hasher   *passwords.Hasher
 	policies *policyCache
+	geo      risk.Resolver
 	// mailer is never nil: New substitutes a logging driver when no SMTP is
 	// configured, so no call site has to nil-check before telling a user
 	// something important.
@@ -60,6 +62,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		login:     newBucket(5, 20),
 		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
 		policies:  newPolicyCache(),
+		geo:       risk.NewResolver(),
 		mailer:    mailer,
 		delegator: delegated.New(),
 	}, nil

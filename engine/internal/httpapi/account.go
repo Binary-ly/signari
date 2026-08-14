@@ -19,6 +19,13 @@ type externalProvider struct {
 // all. An identity provider whose login screen 500s because a secondary feature
 // is unavailable has turned a small fault into an outage.
 func (s *Server) externalProviders(ctx context.Context) []externalProvider {
+	if s.db == nil {
+		// No database configured at all. The sign-in form still has to render --
+		// that is the whole point of failing quietly here -- and a nil pool
+		// panics rather than returning an error, so it is checked rather than
+		// caught.
+		return nil
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT slug, display_name FROM core.identity_providers
 		WHERE enabled ORDER BY display_name`)

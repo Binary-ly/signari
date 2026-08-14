@@ -121,11 +121,64 @@ this instance's active key is ECDSA, which most SAML service providers cannot
 verify. Rotate in an RS256 key before enabling SAML: `signari keys rotate -alg RS256`
 ```
 
+## Single logout
+
+Service-provider-initiated logout works on the HTTP-Redirect binding:
+
+```sh
+signari saml add-sp ... -slo https://sp.example.com/slo -sp-cert ./sp.crt
+```
+
+**A LogoutRequest is acted on only when signed.** gosaml2 GHSA-pcgw-qcv5-h8ch
+accepted unsigned ones, which meant anybody who could reach the endpoint could
+sign any user out of everything, needing no credential at all — the cheapest
+denial of service there is against an identity provider.
+
+So a provider with no certificate on file cannot use single logout, and
+registering a logout URL without one is refused at the CLI rather than
+producing a configuration that looks complete and rejects every request.
+
+The signature is checked over the **raw query-string octets** in the order the
+specification fixes, not over any `<ds:Signature>` the document happens to
+carry. On the redirect binding the signature *is* the query parameters; an
+embedded element proves nothing about what was actually sent. Rebuilding the
+string from a parsed map is the classic mistake — Go's encoder escapes a
+different character set, sorts keys, and drops an empty RelayState, so the bytes
+verified are not the bytes signed.
+
+Verified live against the running engine:
+
+| | |
+|---|---|
+| unsigned LogoutRequest | refused, session stays live |
+| valid request substituted for the signed one | refused at signature verification |
+| correctly signed | `200`, session revoked |
+| replay of the same request id | `Requester`, session not touched again |
+
+RSA-SHA1 is refused outright. Chosen-prefix collisions against SHA-1 are
+practical, and a warning nobody reads is not a control.
+
 ## Not yet built
 
-- **Single logout.** The schema and session-participant tracking are in place;
-  the endpoint is not. Until it exists, signing out of Signari does not sign the
-  user out of SAML service providers.
+- **IdP-initiated logout propagation.** Signing out of Signari ends the session
+  here and notifies OIDC relying parties through the back-channel outbox, but
+  does **not** notify SAML service providers — that needs a front-channel
+  redirect chain through each one, which is not built.
+
+  This is exactly the "logout does not work" failure this project exists to make
+  visible, so it is not left silent. Every such logout logs the providers that
+  were not told:
+
+  ```
+  WARN SAML service providers were NOT notified of this logout; their sessions
+       remain live until they expire. providers=[https://sp.example.com/md]
+  ```
+
+  A gap that is recorded is an operational fact. A gap that is silent is the
+  industry default.
+- **Single logout on the HTTP-POST binding.** That binding carries an enveloped
+  XML signature rather than signed query octets — a different job, with the
+  wrapping attacks living in it. Refused plainly rather than half-implemented.
 - **Signed AuthnRequests.** `want_authn_requests_signed` is stored and not yet
   enforced. Leave it off until it is.
 - **Encrypted assertions.** Transport is TLS; the assertion itself is not

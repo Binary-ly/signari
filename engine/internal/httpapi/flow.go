@@ -1055,6 +1055,11 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	// left the session live with no back-channel notification sent. A user who
 	// believes they signed out on a shared machine and did not is worse off than
 	// one who is told it failed and tries again.
+	// Which SAML providers this session reached, read BEFORE termination cascades
+	// the rows away. See warnUnnotifiedSAML for why this is recorded rather than
+	// acted on.
+	unnotified := s.samlParticipantsToWarnAbout(ctx, sessionCookie(r))
+
 	if err := s.terminateOwnSession(ctx, sessionCookie(r)); err != nil {
 		s.log.Error("ending session", "err", err)
 		// The cookie is still cleared: it is defence in depth for THIS browser,
@@ -1069,6 +1074,8 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	// Clear the cookie even if there was no live session: the user asked to be
 	// signed out, and leaving a stale cookie behind is confusing.
 	s.clearSessionCookie(w)
+
+	s.warnUnnotifiedSAML(ctx, unnotified)
 
 	// post_logout_redirect_uri must be REGISTERED before we redirect to it.
 	// An unvalidated post-logout redirect is an open redirector reached from a
@@ -1458,4 +1465,57 @@ func parkedReturn(authzQuery string) (string, bool) {
 		return "", false
 	}
 	return dest, true
+}
+
+// samlParticipantsToWarnAbout lists the SAML providers this session reached.
+//
+// Read before termination, because ending the session cascades the participant
+// rows away and there would be nothing left to report.
+func (s *Server) samlParticipantsToWarnAbout(ctx context.Context, cookie string) []string {
+	if cookie == "" {
+		return nil
+	}
+	sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
+	if err != nil || sid == "" {
+		return nil
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	parts, err := store.SAMLParticipantsForSession(ctx, tx, sid, "")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, p := range parts {
+		out = append(out, p.EntityID)
+	}
+	return out
+}
+
+// warnUnnotifiedSAML records that SAML providers were NOT told about a logout.
+//
+// # Why this is a log line and not a feature
+//
+// OIDC relying parties are notified through the back-channel outbox, with
+// retries and parked failures surfaced in the console. SAML service providers
+// are not: propagating a logout to them means a front-channel redirect chain
+// through each provider in turn, which is real work and is not built yet.
+//
+// Until it is, the session ends HERE and those providers keep theirs. That is
+// precisely the "logout does not work" failure this project exists to make
+// visible, so it is stated in the log and the audit trail rather than left for
+// somebody to discover. A gap that is recorded is an operational fact; a gap
+// that is silent is the industry default.
+func (s *Server) warnUnnotifiedSAML(ctx context.Context, entityIDs []string) {
+	if len(entityIDs) == 0 {
+		return
+	}
+	s.log.Warn("SAML service providers were NOT notified of this logout; their "+
+		"sessions remain live until they expire. Front-channel single logout is not "+
+		"implemented -- see docs/saml.md",
+		"providers", entityIDs, "correlation_id", correlationID(ctx))
 }

@@ -84,6 +84,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET "+oidc.PathEndSession, s.handleEndSession)
 	mux.HandleFunc("POST "+oidc.PathRevocation, s.handleRevoke)
 	mux.HandleFunc("POST "+oidc.PathIntrospection, s.handleIntrospect)
+	mux.HandleFunc("GET /proxy/verify", s.handleProxyVerify)
+	mux.HandleFunc("GET /proxy/start", s.handleProxyStart)
 	mux.HandleFunc("GET /passkey.js", s.handlePasskeyJS)
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.rateLimitedLogin)

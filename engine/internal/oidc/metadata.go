@@ -61,6 +61,12 @@ type Config struct {
 	// still be accepted by our own userinfo and introspection.
 	IssuerAliases []string
 
+	// ProxyCookieDomain scopes the forward-auth cookie to the parent domain, so
+	// every protected subdomain receives it. Empty disables forward auth, which
+	// is the right default: a cookie domain nobody set is one nobody reasoned
+	// about.
+	ProxyCookieDomain string
+
 	// Root wraps per-subject encryption keys. Needed wherever a stored personal
 	// secret must be read back -- today the TOTP secret. Held here rather than
 	// passed around so there is exactly one place it enters the request path.

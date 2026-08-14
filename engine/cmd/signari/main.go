@@ -473,6 +473,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	srv, err := httpapi.New(oidc.Config{
 		Issuer:              issuer,
 		IssuerAliases:       aliases,
+		ProxyCookieDomain:   os.Getenv("SIGNARI_PROXY_COOKIE_DOMAIN"),
 		Keys:                set,
 		Root:                root,
 		AllowInsecureIssuer: insecureIssuer,

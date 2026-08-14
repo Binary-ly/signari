@@ -23,19 +23,21 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		kind         string
 		secretSealed []byte
 		enabled      bool
+		trustEmail   bool
 	)
 	err := db.QueryRow(ctx, `
 		SELECT id::text, org_id::text, slug, display_name, kind, client_id,
 		       client_secret, COALESCE(issuer,''), COALESCE(authorize_url,''),
 		       COALESCE(token_url,''), COALESCE(userinfo_url,''), COALESCE(jwks_url,''),
-		       scopes, allow_signup, allow_linking, require_verified_email, enabled
+		       scopes, allow_signup, allow_linking, require_verified_email, enabled,
+		       trust_email_verification
 		FROM core.identity_providers
 		WHERE slug = $1`, slug).Scan(
 		&c.ID, &c.OrgID, &c.Slug, &c.DisplayName, &kind, &c.ClientID,
 		&secretSealed, &c.IssuerOverride, &c.AuthorizeOverride,
 		&c.TokenOverride, &c.UserinfoOverride, &c.JWKSOverride,
 		&c.Scopes, &c.Policy.AllowSignup, &c.Policy.AllowLinking,
-		&c.Policy.RequireVerifiedEmail, &enabled)
+		&c.Policy.RequireVerifiedEmail, &enabled, &trustEmail)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProviderUnknown
@@ -52,10 +54,18 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		return nil, err
 	}
 	c.Preset = preset
-	// The provider's own verification policy comes from the preset, not the
-	// database: it is a property of how that provider actually behaves, not
-	// something an operator should be able to talk themselves into.
-	c.Policy.TrustsEmailVerification = preset.TrustsEmailVerification
+	// For a NAMED provider the policy comes from the preset, not the database:
+	// it describes how that provider actually behaves and what this package does
+	// about it, which is not something an operator should be able to talk
+	// themselves out of.
+	//
+	// For a generic OIDC provider there is nothing to know in advance, so the
+	// operator's setting is the only available answer -- off unless they say so.
+	if c.Kind == federation.KindOIDC {
+		c.Policy.TrustsEmailVerification = trustEmail
+	} else {
+		c.Policy.TrustsEmailVerification = preset.TrustsEmailVerification
+	}
 
 	if len(secretSealed) > 0 {
 		plain, err := root.Open(secretSealed, "idp_client_secret")

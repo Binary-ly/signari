@@ -119,6 +119,7 @@ func run(args []string) error {
 	extSecret := fs.String("client-secret", "", "client secret issued by the external provider")
 	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
 	allowLinking := fs.Bool("allow-linking", true, "let users add this provider to an existing account")
+	trustEmail := fs.Bool("trust-email-verification", false, "generic OIDC only: believe this provider's email_verified claim")
 
 	cmd := args[0]
 	rest := args[1:]
@@ -198,7 +199,7 @@ func run(args []string) error {
 		return samlListSPs(ctx, conn)
 	case "idp add":
 		return idpAdd(ctx, conn, *orgID, *slug, *name, *kind, *extClientID, *extSecret,
-			*issuer, *allowSignup, *allowLinking)
+			*issuer, *allowSignup, *allowLinking, *trustEmail)
 	case "idp list":
 		return idpList(ctx, conn)
 	default:
@@ -1177,7 +1178,7 @@ func truncateMiddle(s string, n int) string {
 
 // idpAdd registers an external identity provider.
 func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, clientID, secret,
-	issuer string, allowSignup, allowLinking bool) error {
+	issuer string, allowSignup, allowLinking, trustEmail bool) error {
 
 	switch {
 	case orgID == "":
@@ -1191,9 +1192,21 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 	if err != nil {
 		return err
 	}
-	if kind == "oidc" && issuer == "" {
-		return fmt.Errorf("a generic OIDC provider needs -issuer, so its endpoints and " +
-			"signing keys can be discovered")
+	// A generic provider is discovered NOW, so a wrong issuer fails in front of
+	// the person who typed it rather than at somebody's first sign-in.
+	var authorizeURL, tokenURL, userinfoURL, jwksURL string
+	if kind == "oidc" {
+		if issuer == "" {
+			return fmt.Errorf("a generic OIDC provider needs -issuer, so its endpoints " +
+				"and signing keys can be discovered")
+		}
+		d, derr := federation.Discover(ctx, &http.Client{Timeout: 15 * time.Second}, issuer)
+		if derr != nil {
+			return fmt.Errorf("discovering %s: %w", issuer, derr)
+		}
+		authorizeURL, tokenURL, userinfoURL, jwksURL = d.AuthorizeURL, d.TokenURL, d.UserinfoURL, d.JWKSURL
+		fmt.Printf("discovered %s\n  authorize : %s\n  token     : %s\n  jwks      : %s\n\n",
+			issuer, authorizeURL, tokenURL, jwksURL)
 	}
 	if name == "" {
 		name = slug
@@ -1213,10 +1226,14 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO core.identity_providers
 			(org_id, slug, display_name, kind, client_id, client_secret, issuer,
-			 scopes, allow_signup, allow_linking)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, NULLIF($7,''), $8, $9, $10)`,
+			 authorize_url, token_url, userinfo_url, jwks_url,
+			 scopes, allow_signup, allow_linking, trust_email_verification)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, NULLIF($7,''),
+		        NULLIF($8,''), NULLIF($9,''), NULLIF($10,''), NULLIF($11,''),
+		        $12, $13, $14, $15)`,
 		orgID, slug, name, kind, clientID, sealed, issuer,
-		preset.Scopes, allowSignup, allowLinking); err != nil {
+		authorizeURL, tokenURL, userinfoURL, jwksURL,
+		preset.Scopes, allowSignup, allowLinking, trustEmail && kind == "oidc"); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return fmt.Errorf("a provider with slug %q is already registered in that "+
 				"organisation", slug)
@@ -1239,6 +1256,11 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 		fmt.Printf("established by an extra check.\n    %s\n", preset.Note)
 	case preset.TrustsEmailVerification:
 		fmt.Printf("trusted as returned.\n    %s\n", preset.Note)
+	case kind == "oidc" && trustEmail:
+		fmt.Print("trusted, because you passed -trust-email-verification.\n" +
+			"    Signari cannot check that claim for an unknown provider. If this one\n" +
+			"    does not actually verify addresses, anyone who can register there\n" +
+			"    with somebody else's address can create an account here as them.\n")
 	default:
 		fmt.Printf("NOT trusted.\n    %s\n", preset.Note)
 		fmt.Print("    This provider can link to existing accounts but cannot create\n" +

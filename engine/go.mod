@@ -1,6 +1,12 @@
 module signari.dev/engine
 
-go 1.26.5
+go 1.26.6
+
+// Pinned because govulncheck found seven standard-library advisories fixed
+// in 1.26.6 -- encoding/xml (SAML parsing), net/url (every redirect check),
+// html/template, crypto/tls and net/http. Building with an older toolchain
+// reintroduces all of them, and nothing in this repository would say so.
+toolchain go1.26.6
 
 require (
 	github.com/go-jose/go-jose/v4 v4.1.4

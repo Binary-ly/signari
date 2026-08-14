@@ -139,7 +139,10 @@ func Run(ctx context.Context, opt Options) (*Report, error) {
 	client := &http.Client{
 		Timeout: opt.Timeout,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: opt.Insecure}, //nolint:gosec // operator-selected, and reported
+			// #nosec G402 -- operator-selected via -insecure, and the report says so
+			// on its own line whenever it is on. Existing for internal CAs is the
+			// alternative to operators disabling verification some worse way.
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: opt.Insecure, MinVersion: tls.VersionTLS12},
 		},
 		// Redirects are NOT followed. Following them would turn "sent to the login
 		// page" into "200 from the login page" and invert the result of every

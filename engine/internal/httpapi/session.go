@@ -49,8 +49,15 @@ func (s *Server) csrfToken(w http.ResponseWriter, r *http.Request) (string, erro
 		Path:  "/",
 		// __Host- requires all three. Browsers treat http://localhost as a secure
 		// context, so this does not break local development.
-		Secure:   true,
-		HttpOnly: false,
+		Secure: true,
+		// HttpOnly, because nothing needs to read this from JavaScript.
+		//
+		// The double-submit pattern is sometimes written with a readable cookie so
+		// a script can copy it into a header. Here the token is rendered into the
+		// form server-side, so script access buys nothing -- and costs real
+		// defence: an XSS that can read the token can forge requests that pass the
+		// comparison. Found by gosec (G124), which was right.
+		HttpOnly: true,
 		// Lax, matching the session cookie: a cross-site POST does not carry the
 		// cookie at all, so the comparison fails before the token even matters.
 		// That is a second, independent barrier -- not a replacement for the token,

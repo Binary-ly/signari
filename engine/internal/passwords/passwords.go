@@ -235,6 +235,8 @@ func verifyArgon2id(stored, password string) (current bool, err error) {
 		return false, ErrMismatch
 	}
 
+	// #nosec G115 -- the length of a decoded Argon2 hash, bounded by the parser
+	// that produced it at well under 2^32.
 	got := argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(want)))
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		return false, ErrMismatch

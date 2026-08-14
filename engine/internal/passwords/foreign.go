@@ -1,8 +1,13 @@
 package passwords
 
 import (
+	// #nosec G501 -- md5 and sha1 appear here to VERIFY hashes made by other
+	// systems during a migration. Verifying a legacy hash requires the legacy
+	// algorithm; there is no version of this that uses a modern one. Nothing here
+	// creates a hash: every verified credential is immediately re-hashed with
+	// Argon2id, which is the point of the migration.
 	"crypto/md5"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- see the note on the md5 import above
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
@@ -56,10 +61,10 @@ func verifyPHPass(stored, password string) error {
 	count := 1 << uint(countLog2)
 	salt := stored[4:12]
 
-	sum := md5.Sum(append([]byte(salt), password...))
+	sum := md5.Sum(append([]byte(salt), password...)) // #nosec G401 -- verifying a foreign hash
 	digest := sum[:]
 	for i := 0; i < count; i++ {
-		s := md5.Sum(append(digest, password...))
+		s := md5.Sum(append(digest, password...)) // #nosec G401 -- verifying a foreign hash
 		digest = s[:]
 	}
 

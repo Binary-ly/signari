@@ -26,6 +26,10 @@ package mfa
 import (
 	"crypto/hmac"
 	"crypto/rand"
+	// #nosec G505 -- RFC 6238 specifies HMAC-SHA1 for TOTP and every
+	// authenticator app implements it. HMAC-SHA1 is not affected by the collision
+	// attacks that retired SHA-1 for signatures, and choosing SHA-256 here would
+	// produce codes that Google Authenticator and 1Password cannot generate.
 	"crypto/sha1"
 	"crypto/subtle"
 	"encoding/base32"
@@ -94,6 +98,8 @@ func Code(secret []byte, counter int64, digits int) string {
 		digits = DefaultDigits
 	}
 	var buf [8]byte
+	// #nosec G115 -- counter is unix time divided by the period, so it is
+	// positive until the year 292277026596.
 	binary.BigEndian.PutUint64(buf[:], uint64(counter))
 
 	mac := hmac.New(sha1.New, secret)

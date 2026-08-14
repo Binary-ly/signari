@@ -96,7 +96,7 @@ func CredentialsForUser(ctx context.Context, tx pgx.Tx, userID string) ([]WebAut
 			&c.Transports, &c.AAGUID, &c.RPID, &c.FriendlyName, &c.CreatedAt, &c.LastUsedAt); err != nil {
 			return nil, err
 		}
-		c.SignCount = uint32(count)
+		c.SignCount = clampSignCount(count)
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -121,7 +121,7 @@ func CredentialByID(ctx context.Context, tx pgx.Tx, credentialID []byte) (*WebAu
 	if err != nil {
 		return nil, "", fmt.Errorf("loading webauthn credential: %w", err)
 	}
-	c.SignCount = uint32(count)
+	c.SignCount = clampSignCount(count)
 	return &c, userID, nil
 }
 
@@ -229,4 +229,26 @@ func DeleteCredential(ctx context.Context, tx pgx.Tx, userID, credentialRowID st
 		return fmt.Errorf("deleting webauthn credential: %w", err)
 	}
 	return nil
+}
+
+// clampSignCount narrows a stored counter without wrapping.
+//
+// signCount is a uint32 on the wire and an int64 in the database. A plain cast
+// of a value above the uint32 range wraps to a small number -- and this counter
+// is the CLONING DETECTOR: a wrapped value reads as "the counter went
+// backwards", or worse, lets a replayed assertion look like progress. Clamping
+// keeps the comparison monotonic whatever is in the column.
+//
+// Flagged by gosec (G115). The overflow is not reachable through the normal
+// path, because what goes in came from a uint32; it is reachable through a
+// corrupted or hand-edited row, which is exactly when a cloning detector should
+// still behave.
+func clampSignCount(v int64) uint32 {
+	if v < 0 {
+		return 0
+	}
+	if v > int64(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(v)
 }

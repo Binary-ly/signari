@@ -86,7 +86,9 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST "+oidc.PathIntrospection, s.handleIntrospect)
 	mux.HandleFunc("GET /login/with/{slug}", s.handleFederatedStart)
 	mux.HandleFunc("GET /login/callback/{slug}", s.handleFederatedCallback)
+	mux.HandleFunc("GET /account", s.handleAccount)
 	mux.HandleFunc("GET /account/link/{slug}", s.handleFederatedLink)
+	mux.HandleFunc("POST /account/unlink/{slug}", s.handleAccountUnlink)
 	mux.HandleFunc("GET /saml/metadata", s.handleSAMLMetadata)
 	mux.HandleFunc("GET /saml/sso", s.handleSAMLSSO)
 	mux.HandleFunc("POST /saml/sso", s.handleSAMLSSO)
@@ -186,9 +188,14 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 	if msg != "" {
 		ref = shortCode(correlationID(r.Context()))
 	}
-	_ = loginPage.Execute(w, map[string]string{
+	_ = loginPage.Execute(w, map[string]any{
 		"Authz": authzQuery, "Error": msg, "CSRF": csrf, "CSRFField": csrfFormField,
 		"Reference": ref,
+		// The external providers are read per render rather than cached at
+		// startup: adding one should take effect immediately, and an operator who
+		// has to restart the engine to see their new sign-in button will assume it
+		// is broken.
+		"Providers": s.externalProviders(r.Context()),
 	})
 }
 
@@ -205,7 +212,9 @@ label{display:block;margin:.75rem 0 .25rem}input{width:100%;padding:.5rem;font-s
 button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;width:100%}
 .err{color:#b00020;margin:.5rem 0}
 .ref{color:#666;font-size:.85rem;margin:.25rem 0}
-.alt{margin-top:1.25rem;border-top:1px solid #e4e4e7;padding-top:1rem}</style></head>
+.alt{margin-top:1.25rem;border-top:1px solid #e4e4e7;padding-top:1rem}
+.ext{display:block;padding:.6rem 1rem;border:1px solid #d4d4d8;border-radius:.25rem;
+text-align:center;text-decoration:none;color:inherit}</style></head>
 <body>
 <h1>Sign in</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
@@ -220,6 +229,9 @@ button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;width:100%}
 <button type="submit">Sign in</button>
 </form>
 <p class="alt"><button type="button" id="passkey-signin">Sign in with a passkey</button></p>
+{{if .Providers}}<div class="alt">
+{{range .Providers}}<p><a class="ext" href="/login/with/{{.Slug}}">Continue with {{.Name}}</a></p>{{end}}
+</div>{{end}}
 <script src="/passkey.js"></script>
 </body></html>`))
 

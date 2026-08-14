@@ -29,6 +29,8 @@ type Metadata struct {
 	IntrospectionEndpoint string `json:"introspection_endpoint"`
 
 	ScopesSupported []string `json:"scopes_supported"`
+	// RFC 9126 §5.
+	PushedAuthorizationRequestEndpoint string `json:"pushed_authorization_request_endpoint,omitempty"`
 	// RFC 9449 §5.1.
 	DPoPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
 	// OIDC Discovery §3.
@@ -172,6 +174,7 @@ func Build(cfg Config) (*Metadata, error) {
 			"RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
 			"ES256", "ES384", "ES512", "EdDSA",
 		},
+		PushedAuthorizationRequestEndpoint: at("/oauth2/par"),
 		DPoPSigningAlgValuesSupported: []string{
 			"RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
 			"ES256", "ES384", "ES512", "EdDSA",

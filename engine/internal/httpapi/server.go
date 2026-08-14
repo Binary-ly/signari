@@ -79,6 +79,7 @@ func (s *Server) mux() *http.ServeMux {
 
 	mux.HandleFunc("GET "+oidc.PathAuthorize, s.handleAuthorize)
 	mux.HandleFunc("POST "+oidc.PathToken, s.handleToken)
+	mux.HandleFunc("POST /oauth2/par", s.handlePAR)
 	mux.HandleFunc("GET "+oidc.PathUserinfo, s.handleUserinfo)
 	mux.HandleFunc("POST "+oidc.PathUserinfo, s.handleUserinfo)
 	mux.HandleFunc("GET "+oidc.PathEndSession, s.handleEndSession)

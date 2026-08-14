@@ -39,12 +39,52 @@ const (
 // pages reached from unvalidated links.
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	req := oauth.ParseAuthz(r.URL.Query())
+	query := r.URL.Query()
+
+	// # Redeeming a pushed request
+	//
+	// When request_uri is present, the pushed parameters REPLACE the query
+	// entirely -- only client_id survives, because it is needed to find the
+	// handle in the first place (RFC 9126 §4).
+	//
+	// Merging the two would undo the whole feature: whoever controls the browser
+	// could append `scope=admin` to a URL whose other parameters are protected,
+	// and the request would be authorized with a scope the client never pushed.
+	if requestURI := query.Get("request_uri"); requestURI != "" {
+		pushed, err := s.consumePushedRequest(ctx, requestURI, query.Get("client_id"))
+		if err != nil {
+			s.log.Info("pushed request refused", "err", err,
+				"correlation_id", correlationID(ctx))
+			// Rendered locally. There is no validated redirect_uri to send an
+			// error to -- the parameters that would have named one are exactly
+			// what could not be retrieved.
+			s.renderAuthzFailure(w, r, err.Error())
+			return
+		}
+		pushed.Set("client_id", query.Get("client_id"))
+		query = pushed
+	}
+
+	req := oauth.ParseAuthz(query)
 
 	c, lookupErr := s.lookupClient(ctx, req.ClientID)
 	if authzErr := oauth.ValidateAuthz(req, c, lookupErr); authzErr != nil {
 		s.writeAuthzError(w, r, req, authzErr)
 		return
+	}
+
+	// A client marked as requiring PAR must not be able to start an ordinary
+	// authorization. Without this the feature is advisory: such a client has
+	// gained an option, not the integrity property.
+	if c != nil && query.Get("request_uri") == "" {
+		mustPush, perr := s.clientRequiresPAR(ctx, c.ClientID)
+		if perr == nil && mustPush {
+			s.log.Info("plain authorization request refused for a PAR-only client",
+				"client_id", c.ClientID, "correlation_id", correlationID(ctx))
+			s.renderAuthzFailure(w, r,
+				"This client must start authorization by pushing the request first.")
+			return
+		}
 	}
 
 	sid := ""

@@ -15,8 +15,13 @@ out. Exit code alone was not evidence. It now runs properly:
 ```
 Files : 76
 Lines : 21330
-Issues: 33
+Issues: 33      # at the time of the first real run
 ```
+
+The baseline is now **17** with `-exclude=G101` (11 open redirects, 4 operator
+file paths, 1 path traversal, 1 `template.URL`). It moves only when a new
+redirect site or file read is added, and each addition is checked by hand
+against the table below before the number is accepted.
 
 Two of the first run's findings were **real** and are fixed:
 
@@ -44,7 +49,7 @@ it is signal.
 |---|---|---|
 | G101 hardcoded credentials | 17 | **False.** Substring matches on protocol constants — `TypLogoutToken = "logout+jwt"`, `PathToken = "/oauth2/token"`, SAML status URNs. No secrets. Excluded by flag rather than 17 annotations. |
 | G710 open redirect | 11 | **Guarded, in a different function.** Taint analysis cannot follow the validation. Each site checked by hand — see below. |
-| G304 file inclusion | 3 | TLS certificate, key and CA-bundle paths from operator configuration. Someone who can set them can already read any file the process can. |
+| G304 file inclusion | 4 | TLS certificate, key, CA-bundle and client-JWKS paths from operator configuration. Someone who can set them can already read any file the process can. |
 | G703 path traversal | 1 | `SIGNARI_SCIM_CA_BUNDLE`, same reasoning. |
 | G203 no auto-escape | 1 | `template.URL` on the `otpauth://` enrolment URI. Deliberate: `html/template`'s URL sanitiser rewrites unknown schemes to `#ZgotmplZ`, producing a dead QR link with no error anywhere. It only bypasses the *URL* sanitiser — contextual attribute escaping still applies — and the scheme is fixed. |
 

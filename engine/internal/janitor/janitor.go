@@ -75,7 +75,9 @@ type Stats struct {
 	FederatedLoginsSwept int64
 	// DPoPProofsSwept are proof identifiers past their replay window.
 	DPoPProofsSwept int64
-	Parked          []string
+	// PushedRequestsSwept are PAR handles nobody redeemed.
+	PushedRequestsSwept int64
+	Parked              []string
 	// Skipped means another node held the lock. Not an error, and deliberately
 	// distinguished from "nothing to do" so a misconfigured cluster where every
 	// pass is skipped is visible rather than looking idle.
@@ -140,6 +142,11 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	// live flow state for a flow nobody is going to finish.
 	if st.FederatedLoginsSwept, err = store.SweepExpiredFederatedLogins(ctx, tx); err != nil {
 		return st, fmt.Errorf("sweeping abandoned external logins: %w", err)
+	}
+
+	// Pushed authorization requests nobody redeemed.
+	if st.PushedRequestsSwept, err = store.SweepExpiredPushedRequests(ctx, tx); err != nil {
+		return st, fmt.Errorf("sweeping pushed authorization requests: %w", err)
 	}
 
 	// DPoP proof identifiers past their replay window.

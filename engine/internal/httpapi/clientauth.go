@@ -39,11 +39,20 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 		}
 		assertion := r.PostFormValue("client_assertion")
 
-		// BOTH the issuer and the token endpoint are accepted as the audience.
-		// Implementations legitimately differ about which to use, and rejecting
-		// one breaks real clients for no security gain -- either value names this
-		// server and nobody else.
-		aud := []string{s.cfg.Issuer, s.cfg.Issuer + "/oauth2/token"}
+		// Accepted audiences: the issuer, the token endpoint, and THE ENDPOINT
+		// BEING CALLED.
+		//
+		// The last one was missing and it broke PAR outright -- a client
+		// authenticating at /oauth2/par naturally addresses its assertion to
+		// /oauth2/par, and the list only knew about the token endpoint. Every
+		// value here names this server and nobody else, which is what the
+		// audience check is for; being strict about WHICH of our own URLs was
+		// used buys nothing and breaks real clients.
+		aud := []string{
+			s.cfg.Issuer,
+			s.cfg.Issuer + "/oauth2/token",
+			s.cfg.Issuer + r.URL.Path,
+		}
 
 		a, err := clientauth.VerifyPrivateKeyJWT(assertion, c.ClientID, jwks, aud, time.Now())
 		if err != nil {

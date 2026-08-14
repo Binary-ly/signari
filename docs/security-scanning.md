@@ -18,8 +18,8 @@ Lines : 21330
 Issues: 33      # at the time of the first real run
 ```
 
-The baseline is now **23** with `-exclude=G101` (12 open redirects, 4 operator
-file paths, 1 path traversal, 1 `template.URL`). It moves only when a new
+The baseline is now **24** with `-exclude=G101` (12 open redirects, 8 operator
+file paths, 3 unhandled-error sites, 1 `template.URL`). It moves only when a new
 redirect site or file read is added, and each addition is checked by hand
 against the table below before the number is accepted.
 
@@ -133,3 +133,23 @@ The lesson is the same one this project keeps relearning: a tool reporting
 success is not the same as a tool having run. I had carried "govulncheck is
 clean" forward from an earlier run rather than re-running it after adding SAML,
 federation, SCIM and LDAP.
+
+
+## SHA-1 in `internal/saml/encrypt.go`
+
+G505 and G401 fire on `crypto/sha1` there, and both are annotated `#nosec` with
+the reason at the line rather than excluded globally.
+
+The SHA-1 is inside RSA-OAEP's mask generation function, which is the key
+transport algorithm `rsa-oaep-mgf1p` — the one every SAML service provider
+implements. MGF1 needs a pseudorandom function, not collision resistance, and
+SHA-1 is still a fine PRF. That is a different question from SHA-1 in a
+*signature*, where chosen-prefix collisions are practical and where this package
+refuses it outright, on both SAML bindings.
+
+Excluding G505 across the repo would have hidden any future SHA-1 that *is* in a
+signature, which is the finding that would matter.
+
+The 23 -> 24 move was a new `G304` in `saml add-sp`: reading the
+`-sp-encryption-cert` file an operator names on the command line, the same class
+as the other operator file paths.

@@ -392,6 +392,9 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 		Audience:    p.EntityID,
 		Lifetime:    lifetime,
 		Now:         time.Now(),
+		// Empty unless the provider registered an encryption certificate, which
+		// is what makes this opt-in without a second code path.
+		EncryptionCert: p.SPEncryptionCert,
 		Subject: saml.Subject{
 			NameID:       nameID,
 			NameIDFormat: saml.FullNameIDFormat(p.NameIDFormat),

@@ -49,6 +49,9 @@ type ResponseInput struct {
 	Subject     Subject
 	Lifetime    time.Duration
 	Now         time.Time
+	// EncryptionCert, when set, is the service provider's PEM encryption
+	// certificate. The assertion is signed and then encrypted to it.
+	EncryptionCert string
 }
 
 // BuildResponse constructs a signed SAML Response.
@@ -142,7 +145,18 @@ func BuildResponse(in ResponseInput, kid string, signer crypto.Signer, certDER [
 	if err := moveSignatureAfterIssuer(signed); err != nil {
 		return "", err
 	}
-	resp.AddChild(signed)
+
+	// Encryption happens LAST, over the signed element. See EncryptAssertion for
+	// why that order is not interchangeable.
+	if in.EncryptionCert != "" {
+		encrypted, eerr := EncryptAssertion(signed, in.EncryptionCert)
+		if eerr != nil {
+			return "", fmt.Errorf("encrypting the assertion: %w", eerr)
+		}
+		resp.AddChild(encrypted)
+	} else {
+		resp.AddChild(signed)
+	}
 
 	// NOT indented. etree's Indent inserts whitespace text nodes between
 	// elements, and doing that after signing changes the bytes the digest was

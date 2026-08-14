@@ -282,3 +282,29 @@ func TestCommentsAreRefusedHereToo(t *testing.T) {
 		t.Fatal("a document containing an XML comment was accepted")
 	}
 }
+
+// weakKeyPair is a deliberately undersized RSA certificate, for the refusal
+// tests. 1024 bits is below what anything should accept in 2026.
+func weakKeyPair(t *testing.T) *spKeyPair {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 1024) //nolint:gosec // that is the point
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "weak.test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &spKeyPair{key: key, cert: cert,
+		certPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))}
+}

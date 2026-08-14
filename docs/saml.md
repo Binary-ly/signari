@@ -342,10 +342,76 @@ openssl dgst -sha256 -verify idp.pub -signature sig.bin signed.bin
 Verified OK
 ```
 
+## Encrypted assertions
+
+Opt-in per provider, with a **separate certificate** from the signing one:
+
+```sh
+signari saml add-sp ... -sp-cert sp-signing.crt -sp-encryption-cert sp-encryption.crt
+```
+
+Service providers sign with one key and decrypt with another — in SAML metadata
+they appear as separate `KeyDescriptor` elements with `use="signing"` and
+`use="encryption"`. Passing the same file for both is refused at registration,
+because the failure is otherwise silent: assertions encrypt perfectly and the
+provider cannot read a single one. RSA below 2048 bits is refused at registration
+*and* again at the point of use, since a certificate can be replaced later.
+
+### Sign, then encrypt
+
+The assertion is signed first and encrypted afterwards. The other order leaves the
+signature over ciphertext — which says who produced the envelope and nothing about
+the identity inside it, so a provider that decrypts is left holding an unsigned
+assertion and has to trust the wrapper.
+
+### AES-256-GCM only, never CBC
+
+XML Encryption's CBC modes are broken in practice, not in theory. Jager and
+Somorovsky (CCS 2011) recovered plaintext at a few thousand queries per block,
+using the service provider itself as a decryption oracle: it distinguishes "this
+decrypted to malformed XML" from "this decrypted cleanly", and that one bit is
+enough.
+
+GCM rejects the whole ciphertext on the authentication tag before anything is
+parsed, so there is no oracle to query. CBC is not offered at all — a provider
+that cannot do GCM is better served by TLS alone than by encryption that does not
+hold. There is a test that tampers with a ciphertext and requires the decryption
+to fail.
+
+Key transport is `rsa-oaep-mgf1p`. The SHA-1 in its name is OAEP's mask
+generation function, which needs a pseudorandom function rather than collision
+resistance — a different question from SHA-1 in a signature, which this package
+refuses on both bindings. See `docs/security-scanning.md`.
+
+### Proved end to end, by tools that are not ours
+
+A real login through an encryption-enabled provider, then decrypted the way the
+service provider would:
+
+```
+openssl pkeyutl -decrypt -inkey enc.key -pkeyopt rsa_padding_mode:oaep \
+        -pkeyopt rsa_oaep_md:sha1 -pkeyopt rsa_mgf1_md:sha1
+  -> session key unwrapped, 32 bytes
+
+AES-256-GCM(iv || ciphertext || tag)
+  -> 3294 bytes of assertion
+
+xmlsec1 --verify --trusted-pem idp.crt --id-attr:ID ... assertion.xml
+  Verification status: OK
+```
+
+The envelope was checked for leakage too: no `Assertion`, `Issuer`, `NameID` or
+`SignatureValue` appears in the clear, and each encryption uses a fresh session
+key and IV.
+
 ## Not yet built
 
-- **Encrypted assertions.** Transport is TLS; the assertion itself is not
-  encrypted.
+- **`xmlenc11#rsa-oaep` key transport with SHA-256.** `rsa-oaep-mgf1p` is what
+  service providers actually implement, and the SHA-1 in it is not a weakness (see
+  above). Worth adding when a provider asks for it; not worth a second code path
+  before then.
+- **Decrypting inbound encrypted `NameID`s.** We encrypt outbound assertions; we
+  do not accept encrypted identifiers in inbound requests.
 
 Each is absent from the metadata document as well as from this list — the rule
 that an endpoint enters discovery only once it works applies here too.

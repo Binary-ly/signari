@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -138,6 +139,8 @@ func run(args []string) error {
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+	spEncCert := fs.String("sp-encryption-cert", "",
+		"path to the provider's ENCRYPTION certificate (PEM); assertions are encrypted to it")
 	slug := fs.String("slug", "", "short name used in /login/with/<slug>")
 	kind := fs.String("kind", "oidc", "oidc, google, github or microsoft")
 	extClientID := fs.String("client-id-ext", "", "client id issued by the external provider")
@@ -242,7 +245,7 @@ func run(args []string) error {
 		return keysRotate(ctx, conn, *alg, *promoteNow)
 	case "saml add-sp":
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
-			*spCert, *wantSignedReq, *sloBinding)
+			*spCert, *wantSignedReq, *sloBinding, *spEncCert)
 	case "saml list":
 		return samlListSPs(ctx, conn)
 	case "idp add":
@@ -1166,7 +1169,7 @@ func wrap(s string, width int, indent string) string {
 // surfaces now, with a message about the registration, rather than during
 // someone else's integration as an unexplained refusal.
 func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, nameIDFormat,
-	slo, certPath string, wantSignedRequests bool, sloBinding string) error {
+	slo, certPath string, wantSignedRequests bool, sloBinding, encCertPath string) error {
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this service provider belongs to")
@@ -1223,6 +1226,46 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	if slo != "" && !strings.HasPrefix(slo, "https://") {
 		return fmt.Errorf("the logout URL must be https: %q", slo)
 	}
+	// The ENCRYPTION certificate, which is a different key from the signing one.
+	// A provider signs with one and decrypts with another; treating them as
+	// interchangeable means either encrypting to a key the provider cannot
+	// decrypt with, or encrypting to a key held somewhere it should not be.
+	var encCertPEM string
+	if encCertPath != "" {
+		b, err := os.ReadFile(encCertPath)
+		if err != nil {
+			return fmt.Errorf("reading the service provider encryption certificate: %w", err)
+		}
+		block, _ := pem.Decode(b)
+		if block == nil {
+			return fmt.Errorf("%s is not PEM. Export the provider's ENCRYPTION certificate "+
+				"-- in its SAML metadata it is the KeyDescriptor with use=\"encryption\"",
+				encCertPath)
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return fmt.Errorf("%s did not parse as a certificate: %w", encCertPath, err)
+		}
+		pub, ok := cert.PublicKey.(*rsa.PublicKey)
+		if !ok {
+			return fmt.Errorf("%s holds a %T key; assertion encryption here needs RSA",
+				encCertPath, cert.PublicKey)
+		}
+		if pub.N.BitLen() < 2048 {
+			return fmt.Errorf("%s is a %d-bit RSA key; 2048 is the minimum",
+				encCertPath, pub.N.BitLen())
+		}
+		// Caught at registration rather than at first login. The same file given
+		// for both is the mistake this separation exists to prevent, and it is
+		// silent otherwise: assertions encrypt fine and the provider cannot read
+		// a single one.
+		if certPEM != "" && strings.TrimSpace(string(b)) == strings.TrimSpace(certPEM) {
+			return fmt.Errorf("the signing and encryption certificates are the same file. " +
+				"Service providers use separate keys for the two")
+		}
+		encCertPEM = string(b)
+	}
+
 	// The binding is stored because it decides how the LogoutResponse is sent
 	// back. Getting it wrong means the provider receives a form POST where it
 	// expects query parameters, or the reverse -- it parses nothing and reports a
@@ -1250,10 +1293,11 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	var id string
 	err = tx.QueryRow(ctx, `
 		INSERT INTO core.saml_providers (org_id, entity_id, display_name, name_id_format,
-		                                 sp_signing_cert, want_authn_requests_signed)
-		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''), $6)
+		                                 sp_signing_cert, want_authn_requests_signed,
+		                                 sp_encryption_cert)
+		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''), $6, NULLIF($7,''))
 		RETURNING id::text`, orgID, entityID, name, nameIDFormat, certPEM,
-		wantSignedRequests).Scan(&id)
+		wantSignedRequests, encCertPEM).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return fmt.Errorf("a service provider with entity id %q is already registered "+
@@ -1282,6 +1326,10 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	if nameIDFormat == "persistent" {
 		fmt.Println("\n  The NameID is pairwise: this service provider sees an opaque identifier\n" +
 			"  that no other provider can correlate, and it survives an email change.")
+	}
+	if encCertPEM != "" {
+		fmt.Println("  assertion : encrypted to the certificate given (AES-256-GCM,\n" +
+			"              RSA-OAEP key transport)")
 	}
 	if wantSignedRequests {
 		fmt.Println("  requests  : must be signed -- an unsigned AuthnRequest from this\n" +

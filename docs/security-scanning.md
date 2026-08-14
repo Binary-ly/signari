@@ -18,7 +18,7 @@ Lines : 21330
 Issues: 33      # at the time of the first real run
 ```
 
-The baseline is now **17** with `-exclude=G101` (11 open redirects, 4 operator
+The baseline is now **22** with `-exclude=G101` (11 open redirects, 4 operator
 file paths, 1 path traversal, 1 `template.URL`). It moves only when a new
 redirect site or file read is added, and each addition is checked by hand
 against the table below before the number is accepted.
@@ -49,8 +49,8 @@ it is signal.
 |---|---|---|
 | G101 hardcoded credentials | 17 | **False.** Substring matches on protocol constants — `TypLogoutToken = "logout+jwt"`, `PathToken = "/oauth2/token"`, SAML status URNs. No secrets. Excluded by flag rather than 17 annotations. |
 | G710 open redirect | 11 | **Guarded, in a different function.** Taint analysis cannot follow the validation. Each site checked by hand — see below. |
-| G304 file inclusion | 4 | TLS certificate, key, CA-bundle and client-JWKS paths from operator configuration. Someone who can set them can already read any file the process can. |
-| G703 path traversal | 1 | `SIGNARI_SCIM_CA_BUNDLE`, same reasoning. |
+| G304 file inclusion | 7 | TLS certificate, key, CA-bundle, client-JWKS, policy-file and GeoIP-database paths from operator configuration. Someone who can set them can already read any file the process can. |
+| G703 path traversal | 3 | `SIGNARI_CA_BUNDLE`, `SIGNARI_GEOIP_DB` and the policy file path, same reasoning. |
 | G203 no auto-escape | 1 | `template.URL` on the `otpauth://` enrolment URI. Deliberate: `html/template`'s URL sanitiser rewrites unknown schemes to `#ZgotmplZ`, producing a dead QR link with no error anywhere. It only bypasses the *URL* sanitiser — contextual attribute escaping still applies — and the scheme is fixed. |
 
 ### Each open-redirect site
@@ -86,7 +86,12 @@ Eight `#nosec` annotations, each with the reason at the site:
   codes Google Authenticator cannot generate.
 - **`InsecureSkipVerify` in `internal/proxycheck`** — operator-selected via
   `-insecure`, and the report prints a line saying so whenever it is on.
-- **Two integer conversions** bounded by their inputs.
+- **md5 and HMAC-MD5 in `internal/radius`** — RFC 2865 specifies MD5 for the
+  Response Authenticator and RFC 3579 specifies HMAC-MD5 for
+  Message-Authenticator. There is no version of RADIUS that uses anything else,
+  and the HMAC is precisely what defends against the MD5 collision attack
+  (CVE-2024-3596) that the bare construction is vulnerable to.
+- **Three integer conversions** bounded by their inputs.
 
 ## govulncheck
 

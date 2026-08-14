@@ -267,6 +267,17 @@ func (s *Server) validateProxyRedirect(ctx context.Context, orgID, rd string) (s
 	return u.String(), nil
 }
 
+// isLoopback reports whether a host is unreachable from the network.
+//
+// The `.localhost` SUFFIX counts, not just the bare name. RFC 6761 reserves the
+// whole TLD and requires it to resolve to loopback, and browsers treat
+// `app.localhost` as a secure context exactly like `localhost` -- which is why
+// it is the conventional way to run several services locally on real hostnames.
+//
+// Matching only the exact string rejected `n8n.localhost` as insecure, which is
+// wrong and would have made local development of forward auth impossible.
 func isLoopback(h string) bool {
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	h = strings.ToLower(h)
+	return h == "localhost" || h == "127.0.0.1" || h == "::1" ||
+		strings.HasSuffix(h, ".localhost")
 }

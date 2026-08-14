@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/adminapi"
+	"signari.dev/engine/internal/doctor"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/httpapi"
 	"signari.dev/engine/internal/importer"
@@ -209,6 +210,8 @@ func run(args []string) error {
 		return up(ctx, conn, migrate.TierCore, *to)
 	case "migrate status":
 		return status(ctx, conn)
+	case "doctor":
+		return doctorCmd(ctx, conn, *issuer)
 	case "verify":
 		if err := migrate.Verify(ctx, conn); err != nil {
 			return err
@@ -1962,5 +1965,42 @@ func policyShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		return nil
 	}
 	fmt.Printf("# applied %s\n%s", applied.UTC().Format(time.RFC3339), doc)
+	return nil
+}
+
+// doctorCmd inspects a deployment and reports what is wrong with it.
+//
+// Exit status is the point: non-zero when anything critical is found, so it can
+// gate a deploy or run from cron. A report nobody reads changes nothing.
+func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string) error {
+	if issuer == "" {
+		issuer = os.Getenv("SIGNARI_ISSUER")
+	}
+	rep, err := doctor.Inspect(ctx, conn, issuer)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("\n  signari doctor\n\n")
+	if len(rep.Findings) == 0 {
+		fmt.Println("  Nothing to report.")
+	}
+	for _, f := range rep.Findings {
+		fmt.Printf("  [%-8s] %-14s %s\n", f.Severity, f.Area, f.Summary)
+		if f.Severity != doctor.Info {
+			fmt.Printf("               -> %s\n", wrap(f.Fix, 62, "                  "))
+		}
+	}
+
+	// What RAN is printed, always. "No findings" and "nothing ran" have looked
+	// identical at least three times in this project's own history, and each
+	// time the difference mattered.
+	fmt.Printf("\n  checked: %s\n", strings.Join(rep.Checked, ", "))
+
+	crit, warn := rep.Count(doctor.Critical), rep.Count(doctor.Warning)
+	fmt.Printf("  %d critical, %d warning, %d info\n\n", crit, warn, rep.Count(doctor.Info))
+	if crit > 0 {
+		return fmt.Errorf("%d critical finding(s)", crit)
+	}
 	return nil
 }

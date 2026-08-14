@@ -139,6 +139,9 @@ func BuildResponse(in ResponseInput, kid string, signer crypto.Signer, certDER [
 	if err != nil {
 		return "", fmt.Errorf("signing the assertion: %w", err)
 	}
+	if err := moveSignatureAfterIssuer(signed); err != nil {
+		return "", err
+	}
 	resp.AddChild(signed)
 
 	// NOT indented. etree's Indent inserts whitespace text nodes between
@@ -252,6 +255,63 @@ func signElement(el *etree.Element, signer crypto.Signer, certDER []byte) (*etre
 		return nil, err
 	}
 	return ctx.SignEnveloped(el)
+}
+
+// moveSignatureAfterIssuer puts the signature where the schema requires it.
+//
+// The SAML assertion schema fixes the order of children: Issuer, Signature,
+// Subject, Conditions, Advice, then statements. goxmldsig APPENDS the signature
+// to the end of the element, which lands it after AttributeStatement and makes
+// the document schema-invalid.
+//
+// That combination is the worst kind of bug: the signature verifies perfectly,
+// lenient service providers accept it, and the strict ones -- Shibboleth, and
+// anything that validates against the published XSD -- reject it. So it works
+// everywhere except at one customer, and it looks like their problem.
+//
+// Moving the element is safe. The enveloped-signature transform excludes the
+// Signature element itself from the digest wherever it sits, so its position
+// cannot change what was signed. Verified by the xmlsec1 test, which runs
+// against the document AFTER this reordering.
+func moveSignatureAfterIssuer(assertion *etree.Element) error {
+	// Indices into Child (every token), not into ChildElements (elements only).
+	// The two coincide today because nothing indents this document before
+	// signing, and relying on that coincidence is how a later pretty-printer
+	// silently moves the signature somewhere else.
+	sigIdx, issuerIdx := -1, -1
+	for i, tok := range assertion.Child {
+		el, ok := tok.(*etree.Element)
+		if !ok {
+			continue
+		}
+		switch el.Tag {
+		case "Signature":
+			sigIdx = i
+		case "Issuer":
+			if issuerIdx < 0 {
+				issuerIdx = i
+			}
+		}
+	}
+	if sigIdx < 0 {
+		return fmt.Errorf("the signed assertion contains no Signature element")
+	}
+	if issuerIdx < 0 {
+		return fmt.Errorf("the assertion has no Issuer element to place the signature after")
+	}
+
+	// RemoveChildAt, NOT RemoveChild. goxmldsig appends the signature directly
+	// onto the Child slice without setting its parent, so RemoveChild -- which
+	// works through the parent link -- silently does nothing, and the subsequent
+	// insert leaves the SAME element in the list twice. The document then
+	// carries two identical signatures: it still verifies, so no test that only
+	// checks the signature notices, and strict service providers reject it.
+	sig := assertion.RemoveChildAt(sigIdx)
+	if sigIdx < issuerIdx {
+		issuerIdx--
+	}
+	assertion.InsertChildAt(issuerIdx+1, sig)
+	return nil
 }
 
 // staticKeyStore hands goxmldsig the one key we are signing with.

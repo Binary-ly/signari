@@ -222,6 +222,18 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 
 // handleToken implements /oauth2/token for the authorization_code grant.
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
+	// A proof at the token endpoint accompanies no access token yet, so `ath` is
+	// absent and only the key matters. Its thumbprint becomes the binding.
+	if jkt, err := s.verifyDPoPForRequest(r, ""); err != nil {
+		s.log.Info("DPoP proof refused at the token endpoint", "err", err,
+			"correlation_id", correlationID(r.Context()))
+		w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof"`)
+		writeError(w, http.StatusBadRequest, "invalid_dpop_proof", err.Error())
+		return
+	} else if jkt != "" {
+		r = r.WithContext(withDPoPThumbprint(r.Context(), jkt))
+	}
+
 	ctx := r.Context()
 
 	// Token responses must never be cached: they carry bearer credentials.
@@ -363,6 +375,13 @@ type tokenResponse struct {
 func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	orgID, userID, sid, nonce string, scopes, resources []string, familyID string) (*tokenResponse, []byte, error) {
 
+	// The DPoP thumbprint for this request, if the caller proved possession of a
+	// key at the token endpoint. Carried on the context rather than as another
+	// parameter because every caller of mintSet would otherwise have to thread a
+	// value most of them never set -- and a parameter that is usually empty is
+	// one somebody eventually forgets to pass.
+	jkt := dpopThumbprintFrom(ctx)
+
 	alg := keys.Algorithm(c.IDTokenAlg)
 	key, err := s.cfg.Keys.Active(alg)
 	if err != nil {
@@ -405,6 +424,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		ClientID:  c.ClientID,
 		Scope:     joinScopes(scopes),
 		SessionID: sid,
+		Cnf:       confirmationFor(jkt),
 	}, tokens.TypAccessToken)
 	if err != nil {
 		return nil, nil, err
@@ -416,9 +436,12 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 
 	resp := &tokenResponse{
 		AccessToken: at,
-		TokenType:   "Bearer",
-		ExpiresIn:   int(tokens.DefaultAccessTokenTTL.Seconds()),
-		Scope:       joinScopes(scopes),
+		// "DPoP", not "Bearer", when the token is sender-constrained (RFC 9449
+		// §5). Not cosmetic: a client told "Bearer" sends no proof, and every
+		// request it makes is then refused.
+		TokenType: bearerOrDPoP(jkt),
+		ExpiresIn: int(tokens.DefaultAccessTokenTTL.Seconds()),
+		Scope:     joinScopes(scopes),
 	}
 
 	// An ID token is an authentication statement, so it is only minted where

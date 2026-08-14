@@ -73,7 +73,9 @@ type Stats struct {
 	LogoutChainsSwept int64
 	// FederatedLoginsSwept are external sign-ins abandoned at the provider.
 	FederatedLoginsSwept int64
-	Parked               []string
+	// DPoPProofsSwept are proof identifiers past their replay window.
+	DPoPProofsSwept int64
+	Parked          []string
 	// Skipped means another node held the lock. Not an error, and deliberately
 	// distinguished from "nothing to do" so a misconfigured cluster where every
 	// pass is skipped is visible rather than looking idle.
@@ -138,6 +140,11 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	// live flow state for a flow nobody is going to finish.
 	if st.FederatedLoginsSwept, err = store.SweepExpiredFederatedLogins(ctx, tx); err != nil {
 		return st, fmt.Errorf("sweeping abandoned external logins: %w", err)
+	}
+
+	// DPoP proof identifiers past their replay window.
+	if st.DPoPProofsSwept, err = store.SweepExpiredDPoPProofs(ctx, tx); err != nil {
+		return st, fmt.Errorf("sweeping DPoP proof records: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

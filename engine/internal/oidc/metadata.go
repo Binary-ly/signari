@@ -28,11 +28,13 @@ type Metadata struct {
 	RevocationEndpoint    string `json:"revocation_endpoint"`
 	IntrospectionEndpoint string `json:"introspection_endpoint"`
 
-	ScopesSupported        []string `json:"scopes_supported"`
-	ResponseTypesSupported []string `json:"response_types_supported"`
-	ResponseModesSupported []string `json:"response_modes_supported"`
-	GrantTypesSupported    []string `json:"grant_types_supported"`
-	SubjectTypesSupported  []string `json:"subject_types_supported"`
+	ScopesSupported []string `json:"scopes_supported"`
+	// RFC 9449 §5.1.
+	DPoPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
+	ResponseTypesSupported        []string `json:"response_types_supported"`
+	ResponseModesSupported        []string `json:"response_modes_supported"`
+	GrantTypesSupported           []string `json:"grant_types_supported"`
+	SubjectTypesSupported         []string `json:"subject_types_supported"`
 
 	IDTokenSigningAlgValues       []string `json:"id_token_signing_alg_values_supported"`
 	TokenEndpointAuthMethods      []string `json:"token_endpoint_auth_methods_supported"`
@@ -158,6 +160,13 @@ func Build(cfg Config) (*Metadata, error) {
 		// client nothing unless an operator has also released groups to that
 		// client. Both gates apply, and only one of them is the client's to pass.
 		ScopesSupported: []string{"openid", "profile", "email", "groups", "offline_access"},
+		// Advertised because it works end to end: bound at the token endpoint,
+		// enforced at the resource. A client reads this to decide whether to
+		// generate a key at all.
+		DPoPSigningAlgValuesSupported: []string{
+			"RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
+			"ES256", "ES384", "ES512", "EdDSA",
+		},
 
 		// Code only. OAuth 2.1 removes implicit and the hybrid flows, and every
 		// response type that returns a token in the front channel is a class of

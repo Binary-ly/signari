@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"signari.dev/engine/internal/dpop"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
@@ -55,6 +56,39 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		if err != nil || !live {
 			w.Header().Set("WWW-Authenticate",
 				`Bearer realm="signari", error="invalid_token", error_description="The session has ended"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+	}
+
+	// # Enforcement
+	//
+	// A token carrying `cnf.jkt` is sender-constrained, and holding it is not
+	// enough. Without this check the claim would be a decoration: relying parties
+	// reading `cnf` would believe the token was bound while a thief used it
+	// freely -- which is worse than an honest bearer token.
+	if claims.Cnf != nil && claims.Cnf.JKT != "" {
+		jkt, derr := s.verifyDPoPForRequest(r, raw)
+		if derr != nil || jkt == "" {
+			reason := "a DPoP proof is required for this token"
+			if derr != nil {
+				reason = derr.Error()
+			}
+			s.log.Info("DPoP enforcement refused a userinfo request", "reason", reason,
+				"correlation_id", correlationID(ctx))
+			w.Header().Set("WWW-Authenticate",
+				`DPoP realm="signari", error="invalid_token", error_description="`+
+					`the access token is sender-constrained and the DPoP proof did not match"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if err := dpop.BoundTo(&dpop.Confirmation{JKT: claims.Cnf.JKT},
+			&dpop.Proof{JKT: jkt}); err != nil {
+			s.log.Info("DPoP binding mismatch", "err", err,
+				"correlation_id", correlationID(ctx))
+			w.Header().Set("WWW-Authenticate",
+				`DPoP realm="signari", error="invalid_token", error_description="`+
+					`this access token is bound to a different key"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -117,9 +151,19 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 func bearerToken(r *http.Request) string {
 	var header string
 	h := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if len(h) > len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
-		header = strings.TrimSpace(h[len(prefix):])
+	// Both schemes. RFC 9449 §7.1: a sender-constrained token is presented as
+	// `Authorization: DPoP <token>`, not Bearer. Accepting only Bearer would
+	// make every DPoP-bound token unusable at the very endpoint that enforces
+	// the binding -- the feature would appear to work at issuance and fail at
+	// use, which is the most confusing possible split.
+	//
+	// Accepting the DPoP scheme is not itself an authorisation decision: the
+	// binding is checked by the caller, against the token's own cnf claim.
+	for _, prefix := range []string{"Bearer ", "DPoP "} {
+		if len(h) > len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
+			header = strings.TrimSpace(h[len(prefix):])
+			break
+		}
 	}
 
 	if r.Method != http.MethodPost {

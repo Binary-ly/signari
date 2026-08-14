@@ -1,0 +1,369 @@
+package dpop
+
+import (
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/go-jose/go-jose/v4"
+)
+
+const (
+	testMethod = "GET"
+	testURI    = "https://auth.example.com/oauth2/userinfo"
+)
+
+type clientKey struct {
+	priv *ecdsa.PrivateKey
+	jwk  jose.JSONWebKey
+}
+
+func newClientKey(t *testing.T) *clientKey {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &clientKey{priv: k, jwk: jose.JSONWebKey{Key: &k.PublicKey, Algorithm: "ES256"}}
+}
+
+func (c *clientKey) thumbprint(t *testing.T) string {
+	t.Helper()
+	th, err := c.jwk.Thumbprint(crypto.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(th)
+}
+
+// sign builds a proof. Every field is a parameter so a test can make exactly
+// one of them wrong.
+func (c *clientKey) sign(t *testing.T, typ string, claims map[string]any) string {
+	t.Helper()
+	opts := (&jose.SignerOptions{}).
+		WithHeader(jose.HeaderType, typ).
+		WithHeader("jwk", c.jwk)
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: c.priv}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(claims)
+	obj, err := signer.Sign(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := obj.CompactSerialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func goodClaims() map[string]any {
+	return map[string]any{
+		"jti": "proof-1", "htm": testMethod, "htu": testURI,
+		"iat": time.Now().Unix(),
+	}
+}
+
+func TestValidProofIsAccepted(t *testing.T) {
+	k := newClientKey(t)
+	p, err := Verify(k.sign(t, TypDPoP, goodClaims()), testMethod, testURI, "", time.Now())
+	if err != nil {
+		t.Fatalf("a valid proof was refused: %v", err)
+	}
+	if p.JKT != k.thumbprint(t) {
+		t.Errorf("JKT = %q, want the key's thumbprint", p.JKT)
+	}
+	if p.JTI != "proof-1" {
+		t.Errorf("JTI = %q", p.JTI)
+	}
+}
+
+// TestProofAttacks. Every entry is a proof that must not be accepted. Any one
+// accepted makes the binding decorative.
+func TestProofAttacks(t *testing.T) {
+	k := newClientKey(t)
+	now := time.Now()
+
+	cases := []struct {
+		name   string
+		proof  func() string
+		method string
+		uri    string
+		token  string
+		why    string
+	}{
+		{
+			name:  "wrong typ (a JWT minted for another purpose)",
+			proof: func() string { return k.sign(t, "JWT", goodClaims()) },
+			why:   "an ID token or access token would otherwise be usable as a proof",
+		},
+		{
+			name:   "method the proof did not authorise",
+			proof:  func() string { return k.sign(t, TypDPoP, goodClaims()) },
+			method: "POST",
+			why:    "a proof for a read would authorise a write",
+		},
+		{
+			name:  "different endpoint",
+			proof: func() string { return k.sign(t, TypDPoP, goodClaims()) },
+			uri:   "https://auth.example.com/admin/users",
+			why:   "a proof for /userinfo would authorise /admin",
+		},
+		{
+			name:  "different host, same path",
+			proof: func() string { return k.sign(t, TypDPoP, goodClaims()) },
+			uri:   "https://evil.test/oauth2/userinfo",
+			why:   "a proof captured by one server would authorise a request to another",
+		},
+		{
+			name: "no jti",
+			proof: func() string {
+				c := goodClaims()
+				delete(c, "jti")
+				return k.sign(t, TypDPoP, c)
+			},
+			why: "without a jti a replay cannot be detected at all",
+		},
+		{
+			name: "stale",
+			proof: func() string {
+				c := goodClaims()
+				c["iat"] = now.Add(-10 * time.Minute).Unix()
+				return k.sign(t, TypDPoP, c)
+			},
+			why: "a proof captured earlier would still work",
+		},
+		{
+			name: "timestamped far in the future",
+			proof: func() string {
+				c := goodClaims()
+				c["iat"] = now.Add(10 * time.Minute).Unix()
+				return k.sign(t, TypDPoP, c)
+			},
+			why: "a client could mint proofs valid long after capture",
+		},
+		{
+			name: "no iat",
+			proof: func() string {
+				c := goodClaims()
+				delete(c, "iat")
+				return k.sign(t, TypDPoP, c)
+			},
+			why: "age cannot be checked, so no proof ever expires",
+		},
+		{
+			name:  "access token present but no ath",
+			proof: func() string { return k.sign(t, TypDPoP, goodClaims()) },
+			token: "the-access-token",
+			why:   "the proof would not be bound to the token it accompanies",
+		},
+		{
+			name: "ath for a different access token",
+			proof: func() string {
+				c := goodClaims()
+				c["ath"] = AccessTokenHash("some-other-token")
+				return k.sign(t, TypDPoP, c)
+			},
+			token: "the-access-token",
+			why:   "a proof made while using one token would authorise another",
+		},
+		{
+			name:  "not a JWT",
+			proof: func() string { return "not-a-proof" },
+			why:   "malformed input must not reach the claim checks",
+		},
+		{
+			name:  "two proofs in one header",
+			proof: func() string { return k.sign(t, TypDPoP, goodClaims()) + "," + k.sign(t, TypDPoP, goodClaims()) },
+			why:   "which one was checked would be up to the parser",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			method, uri := c.method, c.uri
+			if method == "" {
+				method = testMethod
+			}
+			if uri == "" {
+				uri = testURI
+			}
+			if _, err := Verify(c.proof(), method, uri, c.token, now); err == nil {
+				t.Fatalf("ACCEPTED: %s -- %s", c.name, c.why)
+			}
+		})
+	}
+}
+
+// TestUnsignedProofIsRefused. `alg: none` is the first thing anybody tries.
+func TestUnsignedProofIsRefused(t *testing.T) {
+	k := newClientKey(t)
+	hdr, _ := json.Marshal(map[string]any{"alg": "none", "typ": TypDPoP, "jwk": k.jwk})
+	body, _ := json.Marshal(goodClaims())
+	unsigned := base64.RawURLEncoding.EncodeToString(hdr) + "." +
+		base64.RawURLEncoding.EncodeToString(body) + "."
+
+	if _, err := Verify(unsigned, testMethod, testURI, "", time.Now()); err == nil {
+		t.Fatal("an UNSIGNED proof was accepted")
+	}
+}
+
+// TestSymmetricAlgorithmIsRefused.
+//
+// The proof carries its own verification key. With HMAC that key is also the
+// signing key, so anybody could mint a proof for any key: the signature would
+// verify perfectly and demonstrate nothing.
+func TestSymmetricAlgorithmIsRefused(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: secret},
+		(&jose.SignerOptions{}).WithHeader(jose.HeaderType, TypDPoP).
+			WithHeader("jwk", jose.JSONWebKey{Key: secret}))
+	if err != nil {
+		t.Skip("the library refused to build a symmetric signer with a jwk header, which " +
+			"is itself the right answer")
+	}
+	payload, _ := json.Marshal(goodClaims())
+	obj, err := signer.Sign(payload)
+	if err != nil {
+		t.Skip("signing refused")
+	}
+	s, _ := obj.CompactSerialize()
+	if _, err := Verify(s, testMethod, testURI, "", time.Now()); err == nil {
+		t.Fatal("an HMAC-signed proof was accepted; anybody could mint one for any key")
+	}
+}
+
+// TestProofSignedByADifferentKeyThanItAdvertises.
+func TestProofSignedByADifferentKeyThanItAdvertises(t *testing.T) {
+	signerKey := newClientKey(t)
+	otherKey := newClientKey(t)
+
+	// Advertise other's public key, sign with signerKey's private key.
+	opts := (&jose.SignerOptions{}).
+		WithHeader(jose.HeaderType, TypDPoP).
+		WithHeader("jwk", otherKey.jwk)
+	s, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: signerKey.priv}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(goodClaims())
+	obj, _ := s.Sign(payload)
+	compact, _ := obj.CompactSerialize()
+
+	if _, err := Verify(compact, testMethod, testURI, "", time.Now()); err == nil {
+		t.Fatal("a proof whose signature does not match its advertised key was accepted")
+	}
+}
+
+// TestPrivateKeyInProofIsRefused. A client that publishes its own private key
+// has destroyed the binding; continuing would authorise a request with a key
+// everybody now holds.
+func TestPrivateKeyInProofIsRefused(t *testing.T) {
+	k, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv := jose.JSONWebKey{Key: k, Algorithm: "RS256"}
+	opts := (&jose.SignerOptions{}).
+		WithHeader(jose.HeaderType, TypDPoP).
+		WithHeader("jwk", priv)
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: k}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(goodClaims())
+	obj, _ := signer.Sign(payload)
+	compact, _ := obj.CompactSerialize()
+
+	if _, err := Verify(compact, testMethod, testURI, "", time.Now()); err == nil {
+		t.Fatal("a proof carrying PRIVATE key material was accepted")
+	}
+}
+
+// TestBindingIsWhatMakesItReal.
+//
+// The scenario the whole feature exists for: an attacker has the access token
+// but not the key. They can mint a perfectly valid proof -- with their own key.
+// Only the binding check stops them.
+func TestBindingIsWhatMakesItReal(t *testing.T) {
+	legit := newClientKey(t)
+	thief := newClientKey(t)
+	const token = "stolen-access-token"
+
+	cnf := &Confirmation{JKT: legit.thumbprint(t)}
+
+	// The rightful holder.
+	c := goodClaims()
+	c["ath"] = AccessTokenHash(token)
+	good, err := Verify(legit.sign(t, TypDPoP, c), testMethod, testURI, token, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := BoundTo(cnf, good); err != nil {
+		t.Fatalf("the rightful holder was refused: %v", err)
+	}
+
+	// The thief: a VALID proof, from a key they generated. Everything about it
+	// verifies. It is the binding, and only the binding, that refuses them.
+	c2 := goodClaims()
+	c2["jti"] = "thief-proof"
+	c2["ath"] = AccessTokenHash(token)
+	stolen, err := Verify(thief.sign(t, TypDPoP, c2), testMethod, testURI, token, time.Now())
+	if err != nil {
+		t.Fatalf("the thief's proof should VERIFY on its own terms: %v", err)
+	}
+	if err := BoundTo(cnf, stolen); err == nil {
+		t.Fatal("A STOLEN TOKEN WAS ACCEPTED with a proof from the thief's own key. " +
+			"The binding check is what makes DPoP more than decoration.")
+	}
+}
+
+// TestUnboundTokenIsNotSilentlyAccepted. A token with no cnf must not pass a
+// binding check just because a proof was supplied.
+func TestUnboundTokenIsNotSilentlyAccepted(t *testing.T) {
+	k := newClientKey(t)
+	p, _ := Verify(k.sign(t, TypDPoP, goodClaims()), testMethod, testURI, "", time.Now())
+
+	if err := BoundTo(nil, p); err == nil {
+		t.Error("a nil confirmation passed the binding check")
+	}
+	if err := BoundTo(&Confirmation{}, p); err == nil {
+		t.Error("an empty confirmation passed the binding check")
+	}
+	if err := BoundTo(&Confirmation{JKT: k.thumbprint(t)}, nil); err == nil {
+		t.Error("a bound token was accepted with NO proof at all")
+	}
+}
+
+// TestQueryAndFragmentAreIgnoredInHTU. RFC 9449 §4.3 specifies htu without
+// them; comparing them would fail against clients that include them, and that
+// interoperability failure looks like an attack in the logs.
+func TestQueryAndFragmentAreIgnoredInHTU(t *testing.T) {
+	k := newClientKey(t)
+	c := goodClaims()
+	c["htu"] = testURI + "?foo=bar#frag"
+	if _, err := Verify(k.sign(t, TypDPoP, c), testMethod, testURI+"?other=1", "", time.Now()); err != nil {
+		t.Errorf("query and fragment were compared: %v", err)
+	}
+}
+
+func TestAccessTokenHashIsStable(t *testing.T) {
+	if AccessTokenHash("abc") != AccessTokenHash("abc") {
+		t.Error("not deterministic")
+	}
+	if AccessTokenHash("abc") == AccessTokenHash("abd") {
+		t.Error("collides on a one-character change")
+	}
+	if strings.ContainsAny(AccessTokenHash("abc"), "+/=") {
+		t.Error("not base64url without padding")
+	}
+}

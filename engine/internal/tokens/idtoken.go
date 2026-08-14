@@ -170,6 +170,11 @@ func AtHash(alg keys.Algorithm, accessToken string) (string, error) {
 }
 
 // AccessTokenClaims is the RFC 9068 JWT access token payload.
+// Confirmation carries the DPoP key thumbprint (RFC 9449 §6.1).
+type Confirmation struct {
+	JKT string `json:"jkt"`
+}
+
 type AccessTokenClaims struct {
 	Issuer   string   `json:"iss"`
 	Subject  string   `json:"sub"`
@@ -191,6 +196,13 @@ type AccessTokenClaims struct {
 	// subject requested themselves, and an investigation cannot answer the only
 	// question that matters: who actually did this, on whose behalf.
 	Act *Actor `json:"act,omitempty"`
+
+	// Cnf is the RFC 7800 confirmation claim. When present the token is
+	// SENDER-CONSTRAINED: holding it is not enough, and a resource server must
+	// also see a DPoP proof from the key named here. omitempty matters -- an
+	// absent cnf means an ordinary bearer token, and emitting an empty one would
+	// make every token look constrained while constraining nothing.
+	Cnf *Confirmation `json:"cnf,omitempty"`
 }
 
 // Actor identifies a party acting for someone else. Nested, so A-acting-for-B

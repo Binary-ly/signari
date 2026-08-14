@@ -22,6 +22,19 @@ type MetadataInput struct {
 	// reason rotation is survivable at all.
 	Certificates [][]byte
 	NameIDFormat string
+	// WantAuthnRequestsSigned states whether this IdP requires the service
+	// provider to sign its AuthnRequests. Per-provider in this implementation --
+	// see the note in Metadata.
+	WantAuthnRequestsSigned bool
+}
+
+// boolAttr renders an XML boolean. Written out rather than using strconv so the
+// two spellings SAML allows ("true"/"1") never leak in inconsistently.
+func boolAttr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 // Metadata renders the IdP metadata document a service provider imports.
@@ -53,10 +66,15 @@ func Metadata(in MetadataInput) (string, error) {
 
 	idp := ed.CreateElement("md:IDPSSODescriptor")
 	idp.CreateAttr("protocolSupportEnumeration", "urn:oasis:names:tc:SAML:2.0:protocol")
-	// We always sign assertions, so this is a statement of fact rather than a
-	// preference. An SP reading it knows to require a signature -- and an SP that
-	// requires one cannot be downgraded by an unsigned assertion later.
-	idp.CreateAttr("WantAuthnRequestsSigned", "false")
+	// This attribute is about the OTHER direction: whether we require the service
+	// provider to sign the AuthnRequests it sends us. (What we do to assertions is
+	// WantAssertionsSigned, which is the SP's declaration, not ours.)
+	//
+	// The requirement is configured per service provider, so a single document
+	// cannot state it truthfully for everyone. The unparameterised metadata
+	// reports the default -- false, what a newly registered provider gets -- and
+	// `?sp=<entityID>` reports what is actually configured for that one.
+	idp.CreateAttr("WantAuthnRequestsSigned", boolAttr(in.WantAuthnRequestsSigned))
 
 	for _, der := range in.Certificates {
 		kd := idp.CreateElement("md:KeyDescriptor")

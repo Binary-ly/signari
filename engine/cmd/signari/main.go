@@ -134,6 +134,8 @@ func run(args []string) error {
 	nameIDFormat := fs.String("nameid-format", "persistent", "persistent (pairwise), emailAddress or transient")
 	sloURL := fs.String("slo", "", "the provider's SingleLogoutService URL (https)")
 	spCert := fs.String("sp-cert", "", "path to the provider's signing certificate (PEM), required for single logout")
+	wantSignedReq := fs.Bool("want-signed-requests", false,
+		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	slug := fs.String("slug", "", "short name used in /login/with/<slug>")
 	kind := fs.String("kind", "oidc", "oidc, google, github or microsoft")
 	extClientID := fs.String("client-id-ext", "", "client id issued by the external provider")
@@ -237,7 +239,8 @@ func run(args []string) error {
 	case "keys rotate":
 		return keysRotate(ctx, conn, *alg, *promoteNow)
 	case "saml add-sp":
-		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL, *spCert)
+		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
+			*spCert, *wantSignedReq)
 	case "saml list":
 		return samlListSPs(ctx, conn)
 	case "idp add":
@@ -1160,7 +1163,8 @@ func wrap(s string, width int, indent string) string {
 // for a real user gets delivered. Checking it at REGISTRATION means a mistake
 // surfaces now, with a message about the registration, rather than during
 // someone else's integration as an unexplained refusal.
-func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, nameIDFormat, slo, certPath string) error {
+func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, nameIDFormat,
+	slo, certPath string, wantSignedRequests bool) error {
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this service provider belongs to")
@@ -1217,6 +1221,14 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	if slo != "" && !strings.HasPrefix(slo, "https://") {
 		return fmt.Errorf("the logout URL must be https: %q", slo)
 	}
+	// The same fail-closed rule as the logout URL, for the same reason. Requiring
+	// signed AuthnRequests with no certificate to verify them against means every
+	// login is refused: configured-looking and completely broken.
+	if wantSignedRequests && certPEM == "" {
+		return fmt.Errorf("-want-signed-requests was given with no -sp-cert. There would " +
+			"be nothing to verify a signature against, so every AuthnRequest from this " +
+			"provider would be refused and nobody could sign in through it")
+	}
 
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -1227,9 +1239,10 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	var id string
 	err = tx.QueryRow(ctx, `
 		INSERT INTO core.saml_providers (org_id, entity_id, display_name, name_id_format,
-		                                 sp_signing_cert)
-		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''))
-		RETURNING id::text`, orgID, entityID, name, nameIDFormat, certPEM).Scan(&id)
+		                                 sp_signing_cert, want_authn_requests_signed)
+		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''), $6)
+		RETURNING id::text`, orgID, entityID, name, nameIDFormat, certPEM,
+		wantSignedRequests).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return fmt.Errorf("a service provider with entity id %q is already registered "+
@@ -1258,6 +1271,10 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	if nameIDFormat == "persistent" {
 		fmt.Println("\n  The NameID is pairwise: this service provider sees an opaque identifier\n" +
 			"  that no other provider can correlate, and it survives an email change.")
+	}
+	if wantSignedRequests {
+		fmt.Println("  requests  : must be signed -- an unsigned AuthnRequest from this\n" +
+			"              provider is refused, on both bindings")
 	}
 	if slo != "" {
 		fmt.Printf("  logout    : %s (signature verified against the certificate given)\n", slo)

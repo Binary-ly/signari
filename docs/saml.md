@@ -207,13 +207,97 @@ bookkeeping past a provider we were about to notify, and it costs a valid chain
 token the attacker does not have. Requiring a signature would instead strand the
 chain at every provider that answers unsigned, which most do.
 
+## Signed AuthnRequests
+
+Off by default, per provider:
+
+```sh
+signari saml add-sp -org <uuid> -entity-id https://sp.test/md \
+  -acs https://sp.test/acs -sp-cert sp.crt -want-signed-requests
+```
+
+The certificate is not optional. Requiring signatures with nothing to verify them
+against refuses every login through that provider, so `-want-signed-requests`
+without `-sp-cert` is rejected at registration — the same fail-closed rule the
+logout URL already had. `signari doctor` reports the same combination as critical
+if it is ever created another way.
+
+The signature is checked **before** validation, because everything validation goes
+on to decide — which ACS URL, which NameID format, whether to force
+re-authentication — is read out of the document.
+
+### The two bindings sign different things
+
+| Binding | What is signed | Verified by |
+| --- | --- | --- |
+| HTTP-Redirect | the raw query octets, `SigAlg`/`Signature` as separate parameters | `VerifyRedirectSignature` |
+| HTTP-POST | an enveloped `<ds:Signature>` inside the document | `VerifyEmbeddedSignature` |
+
+A redirect-binding request may *also* contain a `<ds:Signature>`. Verifying that
+one proves nothing — the attacker supplied the whole document — so the binding the
+request arrived on decides which check runs, and there is no fallback between them.
+
+### What the POST binding needed on top of goxmldsig
+
+goxmldsig gets the cryptography right and deliberately leaves the policy to its
+caller. Three of its behaviours are individually reasonable and collectively a
+bypass:
+
+- `findSignature` **traverses the tree**, so a signature anywhere inside the
+  document can satisfy it.
+- a `Reference URI` of `""` is accepted, meaning "the whole document".
+- **RSA-SHA1 is accepted.** The redirect binding here already refuses SHA-1, and a
+  signature scheme is only as strong as the weakest binding that accepts it.
+
+So the structure is checked first, and only then is anything verified
+cryptographically:
+
+1. exactly one `Signature` element in the whole document,
+2. and it is a **direct child of the root**,
+3. exactly one `Reference`, whose URI is `#<root ID>`,
+4. no duplicate `ID` attributes anywhere,
+5. SHA-1 refused on both the signature method and the digest,
+6. and afterwards, the element goxmldsig says it verified must still be the
+   element we parsed — compared by ID and tag.
+
+Rule 2 is the one that stops classic wrapping, and the test for it uses distinct
+IDs deliberately so the duplicate-ID rule cannot be what passes it. Without rule 2
+that document has one valid signature, no duplicate IDs, and sails through.
+
+### Surviving the sign-in redirect
+
+A request that arrives before the user is signed in gets parked. On the redirect
+binding the signed bytes are *the query as the service provider encoded it*, so
+rebuilding that query with `url.Values` changes the escaping and the ordering and
+the signature no longer verifies — which would surface **after** the user had
+already typed their password, the worst place to discover it.
+
+The original query is therefore carried across verbatim as one opaque `SigQuery`
+value. It is attacker-supplied like anything else on a URL, so it earns nothing on
+its own: it still has to verify against the registered certificate, and it must
+name the same `SAMLRequest` being processed. Both were tested by tampering:
+
+```
+drop SigQuery from the resumed URL     -> "no signature on the redirect binding"
+swap in a different signed AuthnRequest -> "the preserved signature covers a
+                                            different AuthnRequest than the one
+                                            being processed"
+```
+
+### Metadata
+
+`WantAuthnRequestsSigned` is per provider here, so one global document cannot state
+it truthfully for everyone. `/saml/metadata` reports the default (`false`, what a
+new registration gets) and `/saml/metadata?sp=<entityID>` reports what is actually
+configured for that provider. An unknown entity id gets the default document rather
+than an error — failing would make the endpoint a way to enumerate which service
+providers are registered.
+
 ## Not yet built
 
-- **Single logout on the HTTP-POST binding.** That binding carries an enveloped
-  XML signature rather than signed query octets — a different job, with the
-  wrapping attacks living in it. Refused plainly rather than half-implemented.
-- **Signed AuthnRequests.** `want_authn_requests_signed` is stored and not yet
-  enforced. Leave it off until it is.
+- **Single logout on the HTTP-POST binding.** The verification half now exists
+  (`VerifyEmbeddedSignature` is not AuthnRequest-specific), but the binding is not
+  wired into the logout endpoint. Refused plainly rather than half-implemented.
 - **Encrypted assertions.** Transport is TLS; the assertion itself is not
   encrypted.
 

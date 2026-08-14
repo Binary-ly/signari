@@ -72,7 +72,10 @@ func TestUnsignedLogoutRequestIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("an UNSIGNED LogoutRequest was accepted")
 	}
-	if !strings.Contains(err.Error(), "not signed") {
+	// The wording is general because this function verifies AuthnRequests too;
+	// what matters is that it names the missing parameters, so whoever reads the
+	// log knows the message arrived unsigned rather than signed-and-invalid.
+	if !strings.Contains(err.Error(), "no signature") {
 		t.Errorf("the error should say the request was unsigned; got %v", err)
 	}
 }

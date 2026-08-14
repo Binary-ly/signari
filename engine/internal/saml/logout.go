@@ -128,8 +128,12 @@ func VerifyRedirectSignature(rawQuery string, certPEM string, param string) erro
 	sigB64 := values.Get("Signature")
 	sigAlg := values.Get("SigAlg")
 	if sigB64 == "" || sigAlg == "" {
-		return fmt.Errorf("the request is not signed. A LogoutRequest is acted on only " +
-			"when signed, because an unsigned one lets anybody sign anybody out")
+		// Wording kept general: this verifies AuthnRequests as well as
+		// LogoutRequests, and an error that names the wrong message type sends
+		// whoever is debugging it to the wrong place.
+		return fmt.Errorf("the message carries no signature on the redirect binding " +
+			"(no SigAlg/Signature parameters), and this service provider is configured " +
+			"to require one")
 	}
 
 	switch sigAlg {

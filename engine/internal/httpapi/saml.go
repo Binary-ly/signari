@@ -52,9 +52,29 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// `?sp=<entityID>` tailors the document to one registered provider. The
+	// signing requirement is per-provider, so without this the operator has to
+	// know a fact the metadata does not state -- and getting it wrong means every
+	// login through that provider is refused with a signature error.
+	//
+	// An unknown entity id is NOT an error: it is answered with the default
+	// document, because failing here would turn this endpoint into a way to
+	// enumerate which service providers are registered.
+	var wantSigned bool
+	if sp := r.URL.Query().Get("sp"); sp != "" {
+		if p, perr := store.LoadSAMLProvider(ctx, s.db, sp); perr == nil {
+			wantSigned = p.WantAuthnRequestsSigned
+		} else if !errors.Is(perr, store.ErrSAMLProviderUnknown) {
+			s.log.Error("loading SAML provider for metadata", "err", perr)
+			http.Error(w, "unavailable", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	doc, err := saml.Metadata(saml.MetadataInput{
-		EntityID: s.samlEntityID(),
-		SSOURL:   s.cfg.Issuer + "/saml/sso",
+		EntityID:                s.samlEntityID(),
+		SSOURL:                  s.cfg.Issuer + "/saml/sso",
+		WantAuthnRequestsSigned: wantSigned,
 		// Advertised now that it is implemented, and not before -- the same rule
 		// OIDC discovery follows here. An endpoint in metadata that answers with
 		// an error is worse than one that is absent: the service provider calls
@@ -151,6 +171,19 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Signature BEFORE validation, when the provider requires it. Everything
+	// ValidateAuthnRequest goes on to decide -- which ACS URL, which NameID
+	// format, whether to force re-authentication -- is read out of this document,
+	// so an unauthenticated document must not get that far.
+	if provider.WantAuthnRequestsSigned {
+		if err := verifyAuthnRequestSignature(r, provider, &req, raw); err != nil {
+			s.log.Info("SAML AuthnRequest signature refused", "entity_id", req.Issuer,
+				"err", err, "correlation_id", correlationID(ctx))
+			s.samlRefuse(w, r, err.Error())
+			return
+		}
+	}
+
 	validated, err := saml.ValidateAuthnRequest(&req, provider, s.cfg.Issuer+"/saml/sso", time.Now())
 	if err != nil {
 		// Refused locally, again. Every failure here is a statement about the
@@ -195,7 +228,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 				"the user is not signed in and IsPassive was requested", relayState)
 			return
 		}
-		back := "/saml/sso?" + samlResumeQuery(encoded, relayState, r.Method)
+		back := "/saml/sso?" + samlResumeQuery(encoded, relayState, r.Method, r.URL.RawQuery)
 		http.Redirect(w, r, parkLogin(back), http.StatusFound)
 		return
 	}
@@ -227,6 +260,58 @@ func (s *Server) sessionAuthedAfter(ctx context.Context, sid string, t time.Time
 	return authTime.After(t), nil
 }
 
+// verifyAuthnRequestSignature checks the signature by the binding the request
+// actually arrived on.
+//
+// The two bindings sign completely different things, and using the wrong one
+// proves nothing:
+//
+//   - HTTP-POST carries an enveloped <ds:Signature> INSIDE the document.
+//   - HTTP-Redirect signs the raw query-string octets and carries the result in
+//     separate SigAlg/Signature parameters. A redirect-binding document may also
+//     contain a <ds:Signature>, and verifying that one instead would be checking
+//     a signature the attacker supplied over content the attacker chose.
+func verifyAuthnRequestSignature(r *http.Request, p *saml.Provider,
+	req *saml.AuthnRequest, raw []byte) error {
+
+	if r.Method == http.MethodPost || samlBindingFromQuery(r) {
+		// Survives the park/resume round trip without help: the signature travels
+		// inside the document, and the document is carried verbatim.
+		return saml.VerifyEmbeddedSignature(raw, p.SPSigningCert, "AuthnRequest", req.ID)
+	}
+
+	// # Why the original query has to be preserved across sign-in
+	//
+	// The signed octets are the query as the service provider encoded it. Parking
+	// the request across a login and rebuilding the query with url.Values changes
+	// the escaping and the parameter order, so the bytes verified would not be the
+	// bytes signed and every signed request would fail AFTER the user had already
+	// typed their password -- the worst possible place to discover it.
+	rawQuery := r.URL.RawQuery
+	if preserved := r.URL.Query().Get(samlSigQueryParam); preserved != "" {
+		// The preserved query is attacker-supplied like everything else on a URL,
+		// so it buys nothing on its own: it still has to verify against the
+		// certificate registered for this provider. What must be checked is that it
+		// describes the SAME request we are about to act on, rather than some other
+		// correctly-signed request captured earlier.
+		vals, err := url.ParseQuery(preserved)
+		if err != nil {
+			return fmt.Errorf("the preserved signature query did not parse: %w", err)
+		}
+		if vals.Get("SAMLRequest") != r.URL.Query().Get("SAMLRequest") {
+			return fmt.Errorf("the preserved signature covers a different AuthnRequest " +
+				"than the one being processed")
+		}
+		rawQuery = preserved
+	}
+	return saml.VerifyRedirectSignature(rawQuery, p.SPSigningCert, "SAMLRequest")
+}
+
+// samlSigQueryParam carries the service provider's original, byte-exact query
+// string across the sign-in redirect. Named distinctly so it can never be
+// confused with a parameter the specification defines.
+const samlSigQueryParam = "SigQuery"
+
 // samlResumeQuery rebuilds the query that brings the browser back here after
 // sign-in.
 //
@@ -234,7 +319,7 @@ func (s *Server) sessionAuthedAfter(ctx context.Context, sid string, t time.Time
 // the login redirect there is no POST body left to resume from. That is safe:
 // the AuthnRequest is not a secret, it is signed or it is not, and either way
 // it is re-validated from scratch on the way back through.
-func samlResumeQuery(encoded, relayState, method string) string {
+func samlResumeQuery(encoded, relayState, method, originalQuery string) string {
 	q := url.Values{}
 	q.Set("SAMLRequest", encoded)
 	if relayState != "" {
@@ -245,6 +330,11 @@ func samlResumeQuery(encoded, relayState, method string) string {
 		// so the resumed request is decoded the same way rather than being fed to
 		// the inflater and failing.
 		q.Set("Binding", "POST")
+	} else if strings.Contains(originalQuery, "Signature=") {
+		// Redirect binding, signed. The original query is carried verbatim as ONE
+		// opaque value, because the signature is over those exact octets and any
+		// re-encoding breaks it. See verifyAuthnRequestSignature.
+		q.Set(samlSigQueryParam, originalQuery)
 	}
 	return q.Encode()
 }

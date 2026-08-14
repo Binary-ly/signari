@@ -269,6 +269,25 @@ func checkSAML(ctx context.Context, conn *pgx.Conn, r *Report) error {
 		Scan(&sloWithoutCert); err != nil {
 		return err
 	}
+	// The same half-configuration in the other direction. The CLI refuses to
+	// create it, but the admin console and a hand-written UPDATE can, and the
+	// symptom -- every login through that provider refused with a signature error
+	// -- looks like the service provider's fault from every angle except this one.
+	var signedWithoutCert int
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*) FROM core.saml_providers
+		WHERE want_authn_requests_signed AND sp_signing_cert IS NULL`).
+		Scan(&signedWithoutCert); err != nil {
+		return err
+	}
+	if signedWithoutCert > 0 {
+		r.add(Critical, "saml",
+			fmt.Sprintf("%d provider(s) require signed AuthnRequests but have no signing "+
+				"certificate", signedWithoutCert),
+			"nothing can verify the signature, so every login through them is refused. "+
+				"Register the certificate, or turn the requirement off")
+	}
+
 	if sloWithoutCert > 0 {
 		r.add(Warning, "saml",
 			fmt.Sprintf("%d provider(s) have a logout URL but no signing certificate",

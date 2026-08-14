@@ -4,6 +4,9 @@ namespace App\Filament\Resources\EngineClients\Tables;
 
 use App\Services\EngineAdminApi;
 use Filament\Actions\Action;
+use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
@@ -84,8 +87,12 @@ class EngineClientsTable
                     ->label('No back-channel logout endpoint')
                     ->query(fn (Builder $q): Builder => $q->whereNull('backchannel_logout_uri')),
             ])
+            ->headerActions([
+                self::createClientAction(),
+            ])
             ->recordActions([
                 self::toggleEnabledAction(),
+                self::rotateSecretAction(),
             ])
             ->toolbarActions([])
             ->defaultSort('created_at', 'desc')
@@ -148,5 +155,115 @@ class EngineClientsTable
                     ->success()
                     ->send();
             });
+    }
+
+    /**
+     * Register an application.
+     *
+     * The optional "existing secret" field is the migration path: an application
+     * moving from another provider keeps the credential it already has, so the
+     * move is a configuration change of one URL rather than a coordinated
+     * release on their side.
+     */
+    private static function createClientAction(): Action
+    {
+        return Action::make('createClient')
+            ->label('New client')
+            ->icon('heroicon-m-plus')
+            ->schema([
+                TextInput::make('client_id')->required()
+                    ->helperText('What the application sends as client_id. Settable verbatim, so an imported app keeps its own.'),
+                TextInput::make('display_name')->label('Display name'),
+                Toggle::make('public')->label('Public client (mobile or SPA)')
+                    ->helperText('Public clients authenticate with PKCE and get no secret: a secret in a distributable binary is not a secret.'),
+                // A textarea rather than a repeater: registering an application
+                // usually means pasting the list its documentation gives you, and
+                // one-per-line is the shape that arrives from a clipboard.
+                Textarea::make('redirect_uris')
+                    ->label('Redirect URIs (one per line)')
+                    ->required()->rows(3)
+                    ->helperText('Matched EXACTLY. No wildcards, no trailing-slash tolerance.'),
+                TextInput::make('secret')->label('Existing secret (optional)')
+                    ->password()->revealable()
+                    ->helperText('Only when migrating an app that already has one. Leave blank to generate.'),
+            ])
+            ->action(function (array $data): void {
+                $orgId = auth()->user()?->org_id;
+                if (blank($orgId)) {
+                    Notification::make()->title('You are not assigned to an organisation')
+                        ->danger()->send();
+
+                    return;
+                }
+                try {
+                    $r = EngineAdminApi::fromConfig()->createClient(
+                        $orgId, $data['client_id'], $data['display_name'] ?: $data['client_id'],
+                        self::splitURIs($data['redirect_uris'] ?? ''),
+                        (bool) ($data['public'] ?? false),
+                        filled($data['secret'] ?? null) ? $data['secret'] : null,
+                    );
+                } catch (RuntimeException $e) {
+                    Notification::make()->title('Client not created')->body($e->getMessage())
+                        ->danger()->persistent()->send();
+
+                    return;
+                }
+                self::announceSecret('Client created', $r['client_secret'] ?? null);
+            });
+    }
+
+    /** One URI per line, blanks and stray whitespace discarded. */
+    private static function splitURIs(string $raw): array
+    {
+        return array_values(array_filter(array_map('trim', preg_split('/\r?\n/', $raw))));
+    }
+
+    private static function rotateSecretAction(): Action
+    {
+        return Action::make('rotateSecret')
+            ->label('Rotate secret')
+            ->icon('heroicon-m-arrow-path')
+            ->color('warning')
+            ->visible(fn ($record): bool => $record->client_type === 'confidential')
+            ->requiresConfirmation()
+            ->modalHeading(fn ($record): string => 'Rotate the secret for '.$record->client_id)
+            // Stated plainly, because the usual expectation is an overlap window
+            // and there is not one. Rotation is what you do when a secret has
+            // leaked, and a window in which the leaked value still works is the
+            // thing you were trying to end.
+            ->modalDescription('The current secret stops working IMMEDIATELY. Any deployment still using it will fail to get tokens until it is updated.')
+            ->action(function ($record): void {
+                try {
+                    $r = EngineAdminApi::fromConfig()->rotateClientSecret($record->client_id);
+                } catch (RuntimeException $e) {
+                    Notification::make()->title('Nothing was rotated')->body($e->getMessage())
+                        ->danger()->persistent()->send();
+
+                    return;
+                }
+                self::announceSecret('Secret rotated', $r['client_secret'] ?? null);
+            });
+    }
+
+    /**
+     * Show a secret exactly once.
+     *
+     * Persistent, because a toast that fades takes the only copy with it: the
+     * engine stores a hash, so this notification is the sole opportunity to read
+     * the value. The wording says so rather than assuming the operator knows.
+     */
+    private static function announceSecret(string $title, ?string $secret): void
+    {
+        if (blank($secret)) {
+            Notification::make()->title($title)->success()->send();
+
+            return;
+        }
+        Notification::make()
+            ->title($title)
+            ->body("Copy this now — it is stored only as a hash and cannot be shown again:\n\n{$secret}")
+            ->success()
+            ->persistent()
+            ->send();
     }
 }

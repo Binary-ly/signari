@@ -88,6 +88,36 @@ class EngineAdminApi
         return $this->request('patch', "/admin/users/{$userId}", ['password' => $password]);
     }
 
+    /**
+     * Create a client. Returns the engine's response, including `client_secret`
+     * for a confidential client.
+     *
+     * THE SECRET IS IN THIS RESPONSE AND NOWHERE ELSE. Only a hash is stored, so
+     * the caller must surface it now or the operator has to rotate.
+     */
+    public function createClient(string $orgId, string $clientId, string $displayName,
+        array $redirectUris, bool $public = false, ?string $importSecret = null): array
+    {
+        return $this->request('post', '/admin/clients', array_filter([
+            'client_id' => $clientId,
+            'org_id' => $orgId,
+            'display_name' => $displayName,
+            'redirect_uris' => $redirectUris,
+            'public' => $public,
+            'secret' => $importSecret,
+        ], fn ($v) => $v !== null && $v !== ''));
+    }
+
+    /**
+     * Rotate a client secret. The previous one stops working IMMEDIATELY -- there
+     * is no overlap window, because rotation is what you do when a secret has
+     * leaked.
+     */
+    public function rotateClientSecret(string $clientId): array
+    {
+        return $this->request('post', "/admin/clients/{$clientId}/rotate-secret");
+    }
+
     /** The engine's current config version, for showing propagation state. */
     public function configVersion(): int
     {

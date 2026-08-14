@@ -153,3 +153,40 @@ func TestIsLoopback(t *testing.T) {
 		}
 	}
 }
+
+// TestCookieReaches covers the redirect-loop guard.
+//
+// Getting this wrong in either direction is bad: too strict and a valid
+// deployment is refused, too loose and the operator gets an infinite loop with
+// no error anywhere to explain it.
+func TestCookieReaches(t *testing.T) {
+	ok := [][2]string{
+		{"example.com", "app.example.com"},
+		{"example.com", "example.com"},      // the domain itself
+		{".example.com", "app.example.com"}, // leading dot, as cookies are often written
+		{"example.com", "a.b.example.com"},  // any depth
+		{"localhost", "n8n.localhost"},      // the local development shape
+		{"example.com", "app.example.com."}, // fully-qualified, trailing dot
+		{"EXAMPLE.com", "APP.example.COM"},  // host comparison is case-insensitive
+	}
+	for _, c := range ok {
+		if err := cookieReaches(c[0], c[1]); err != nil {
+			t.Errorf("cookieReaches(%q, %q) = %v, want nil", c[0], c[1], err)
+		}
+	}
+
+	bad := [][2]string{
+		{"", "app.example.com"},                  // unset: the cookie is host-only
+		{"example.com", "example.com.evil.test"}, // suffix the wrong way round
+		{"example.com", "notexample.com"},        // no label boundary
+		{"example.com", "evilexample.com"},       // ditto
+		{"localhost", "127.0.0.1"},               // the case found by running it
+		{"app.example.com", "other.example.com"}, // sibling, not descendant
+	}
+	for _, c := range bad {
+		if err := cookieReaches(c[0], c[1]); err == nil {
+			t.Errorf("cookieReaches(%q, %q) = nil, but the browser would never send "+
+				"that cookie, so the deployment would loop", c[0], c[1])
+		}
+	}
+}

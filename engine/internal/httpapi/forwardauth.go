@@ -264,7 +264,41 @@ func (s *Server) validateProxyRedirect(ctx context.Context, orgID, rd string) (s
 		orgID, u.Host).Scan(&allowed); err != nil || !allowed {
 		return "", fmt.Errorf("%q is not a registered protected host", u.Host)
 	}
+
+	// The cookie has to REACH the protected host, or this endpoint issues a
+	// credential the browser will never send back. The proxy then answers 401,
+	// which sends the browser here, which sets the cookie again: an infinite
+	// redirect loop, and the single most confusing way forward auth fails.
+	//
+	// It is caught here, at configuration time, because the loop itself gives an
+	// operator nothing to go on -- the cookie is set, every response is a valid
+	// redirect, and no component reports an error.
+	if err := cookieReaches(s.cfg.ProxyCookieDomain, u.Hostname()); err != nil {
+		return "", err
+	}
 	return u.String(), nil
+}
+
+// cookieReaches reports whether a cookie scoped to domain would be sent to host,
+// using the same suffix rule the browser applies (RFC 6265 §5.1.3).
+func cookieReaches(domain, host string) error {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	domain = strings.ToLower(strings.TrimPrefix(strings.TrimSuffix(domain, "."), "."))
+
+	if domain == "" {
+		return fmt.Errorf("no proxy cookie domain is configured, so the proxy cookie "+
+			"is scoped to this issuer alone and %q would never receive it -- the "+
+			"browser would loop between the proxy and here forever. Set "+
+			"SIGNARI_PROXY_COOKIE_DOMAIN to the domain shared by this issuer and "+
+			"the protected host", host)
+	}
+	if host == domain || strings.HasSuffix(host, "."+domain) {
+		return nil
+	}
+	return fmt.Errorf("the proxy cookie is scoped to %q, which %q is not under, so "+
+		"the browser would never send it back and would loop between the proxy and "+
+		"here forever. Both this issuer and the protected host must sit under "+
+		"SIGNARI_PROXY_COOKIE_DOMAIN", domain, host)
 }
 
 // isLoopback reports whether a host is unreachable from the network.

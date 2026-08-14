@@ -34,6 +34,7 @@ import (
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/outbox"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/proxycheck"
 )
 
 func main() {
@@ -59,6 +60,7 @@ commands:
   import keycloak     import users and clients from a Keycloak realm export
   keys list           show signing keys, their state and when each may advance
   keys rotate         advance the rotation one safe step (run it again later)
+  proxy check         prove a forward-auth deployment actually protects the app
   serve               serve the OIDC endpoints
 
 env:
@@ -95,11 +97,15 @@ func run(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "report what would be imported and change nothing")
 	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm (default: all in use)")
 	promoteNow := fs.Bool("now", false, "promote without waiting for the publication dwell -- key compromise only")
+	appURL := fs.String("app", "", "protected application URL, as the browser reaches it (proxy check)")
+	origin := fs.String("origin", "", "the application's own address, to test the bypass (proxy check)")
+	probePath := fs.String("path", "", "extra path to probe, repeatable as a comma-separated list (proxy check)")
+	insecure := fs.Bool("insecure", false, "skip certificate verification (internal CA or self-signed only)")
 
 	cmd := args[0]
 	rest := args[1:]
 	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
-		cmd == "janitor" || cmd == "keys" || cmd == "import" {
+		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -108,6 +114,15 @@ func run(args []string) error {
 	if err := fs.Parse(rest); err != nil {
 		return err
 	}
+	// `proxy check` deliberately runs BEFORE the database is required. It is a
+	// black-box prober: it must be runnable from a laptop, from CI, or from
+	// outside the network entirely -- which is where an attacker sits, and
+	// therefore the only place the answer is meaningful. Needing the database
+	// would confine it to the one host where the result matters least.
+	if cmd == "proxy check" {
+		return proxyCheck(*appURL, *issuer, *origin, *probePath, *insecure)
+	}
+
 	if *dsn == "" {
 		return fmt.Errorf("no -dsn given and SIGNARI_DSN is unset")
 	}
@@ -856,4 +871,124 @@ func selectInstance(ctx context.Context, conn *pgx.Conn, want string) (id, issue
 		return "", "", fmt.Errorf("this database has %d instances; set SIGNARI_ISSUER to name "+
 			"the one to serve. Available:%s", len(found), b.String())
 	}
+}
+
+// proxyCheck probes a forward-auth deployment and prints what answered.
+//
+// Exit status is the point of the command: non-zero when anything served
+// content to an anonymous request, so it can sit in CI or a deployment script
+// and FAIL the deploy. A report nobody reads changes nothing; a failing exit
+// code stops the release.
+func proxyCheck(app, issuer, origin, extraPaths string, insecure bool) error {
+	if app == "" {
+		return fmt.Errorf("give -app, the protected application URL as the browser " +
+			"reaches it, e.g. -app https://n8n.example.com")
+	}
+	var paths []string
+	for _, p := range strings.Split(extraPaths, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			if !strings.HasPrefix(p, "/") {
+				p = "/" + p
+			}
+			paths = append(paths, p)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	rep, err := proxycheck.Run(ctx, proxycheck.Options{
+		BaseURL: app, Issuer: issuer, Origin: origin, Paths: paths, Insecure: insecure,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("\n  forward-auth check: %s\n\n", app)
+	label := map[proxycheck.Status]string{
+		proxycheck.Protected: "  ok  ",
+		proxycheck.Exposed:   " OPEN ",
+		proxycheck.Absent:    "  --  ",
+		proxycheck.Unknown:   "  ??  ",
+	}
+	for _, r := range rep.Results {
+		fmt.Printf("  [%s] %-34s %s\n", label[r.Status], r.Probe, r.Detail)
+		if r.Fix != "" {
+			fmt.Printf("           -> %s\n", wrap(r.Fix, 66, "              "))
+		}
+	}
+
+	open := rep.Exposed()
+	fmt.Printf("\n  %d probes, %d open\n", len(rep.Results), len(open))
+
+	// Never render a verdict on a host that never answered. A mistyped URL
+	// otherwise produces a page of "could not tell" and a clean-looking summary,
+	// which is the most dangerous output this command could produce.
+	if !rep.Reached {
+		fmt.Printf("\n  Nothing answered at %s, so nothing here was tested.\n"+
+			"  Check the URL, and that this machine can reach it.\n\n", app)
+		return fmt.Errorf("the application never answered; this run proves nothing")
+	}
+
+	if len(open) > 0 {
+		// Named plainly, and named ACCURATELY -- an origin bypass is a different
+		// sentence from an unprotected path, and an operator acts on the words.
+		fmt.Printf("\n  %s\n\n", summarise(open))
+		return fmt.Errorf("%d of %d probes reached the application unauthenticated",
+			len(open), len(rep.Results))
+	}
+	fmt.Printf("\n  No probe reached the application unauthenticated.\n" +
+		"  That is evidence, not a guarantee: it covers the paths and methods\n" +
+		"  listed above, from where this ran.\n\n")
+	return nil
+}
+
+// summarise says what was actually found, rather than one sentence stretched
+// over every kind of finding.
+func summarise(open []proxycheck.Result) string {
+	var paths, methods, other int
+	for _, r := range open {
+		switch {
+		case strings.HasPrefix(r.Probe, "unauthenticated GET"):
+			paths++
+		case strings.HasPrefix(r.Probe, "unauthenticated "):
+			methods++
+		default:
+			other++
+		}
+	}
+	var parts []string
+	if paths > 0 {
+		parts = append(parts, fmt.Sprintf("%d path(s) served content to an anonymous request", paths))
+	}
+	if methods > 0 {
+		parts = append(parts, fmt.Sprintf("%d method(s) bypassed authentication", methods))
+	}
+	for _, r := range open {
+		if strings.Contains(r.Probe, "direct-to-origin") {
+			parts = append(parts, "the application answers directly, so the proxy is optional")
+		}
+		if strings.Contains(r.Probe, "header injection") {
+			parts = append(parts, "a forged identity header was accepted")
+		}
+	}
+	return "Found: " + strings.Join(parts, "; ") + "."
+}
+
+// wrap reflows a fix so a long sentence stays readable in a terminal.
+func wrap(s string, width int, indent string) string {
+	var out strings.Builder
+	col := 0
+	for _, w := range strings.Fields(s) {
+		if col > 0 && col+len(w)+1 > width {
+			out.WriteString("\n" + indent)
+			col = 0
+		} else if col > 0 {
+			out.WriteString(" ")
+			col++
+		}
+		out.WriteString(w)
+		col += len(w)
+	}
+	return out.String()
 }

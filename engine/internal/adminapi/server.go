@@ -59,6 +59,8 @@ func (s *Server) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /admin/clients/{clientID}", s.auth(s.patchClient))
 	mux.HandleFunc("POST /admin/users", s.auth(s.createUser))
+	mux.HandleFunc("POST /admin/clients", s.auth(s.createClient))
+	mux.HandleFunc("POST /admin/clients/{clientID}/rotate-secret", s.auth(s.rotateClientSecret))
 	mux.HandleFunc("PATCH /admin/users/{userID}", s.auth(s.patchUser))
 	mux.HandleFunc("GET /admin/config-version", s.auth(s.configVersion))
 	return mux

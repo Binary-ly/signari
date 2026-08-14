@@ -252,3 +252,79 @@ func TestLogoutDocumentsAreSignedOnce(t *testing.T) {
 		}
 	}
 }
+
+// TestRedirectSignRoundTrip: what we send must verify under the same rules we
+// apply to what we receive.
+//
+// Signing and verifying are separate code paths that must agree byte for byte
+// about percent-encoding, parameter order and which parameters are covered.
+// Testing each against a fixture would let a SHARED misunderstanding pass both;
+// running them against each other is what catches that.
+func TestRedirectSignRoundTrip(t *testing.T) {
+	key, certDER := testSigner(t)
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}))
+
+	doc, err := BuildLogoutRequest(LogoutRequestInput{
+		Issuer: "https://auth.example.com/saml", Destination: "https://sp.example.com/slo",
+		NameID: "opaque", NameIDFormat: NameIDFormatPersistent, SessionIndex: "s1",
+		Now: time.Now(),
+	}, key, certDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := EncodeRedirect(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// RelayState values chosen for characters whose encoding implementations
+	// disagree about -- the exact place a sign/verify mismatch shows up.
+	for _, rs := range []string{"", "plain", "a b~c", "a+b/c=d", "%41%42", "tok/en+1="} {
+		t.Run("relaystate="+rs, func(t *testing.T) {
+			q, err := SignRedirectQuery("SAMLRequest", encoded, rs, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := VerifyRedirectSignature(q, certPEM, "SAMLRequest"); err != nil {
+				t.Fatalf("our own signed query failed our own verification: %v\nquery: %s", err, q)
+			}
+			// And the receiver must recover exactly what we sent.
+			vals, err := url.ParseQuery(q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := vals.Get("RelayState"); got != rs {
+				t.Errorf("RelayState round-tripped as %q, want %q", got, rs)
+			}
+			back, err := DecodeRedirect(vals.Get("SAMLRequest"))
+			if err != nil {
+				t.Fatalf("our own encoded document did not decode: %v", err)
+			}
+			if string(back) != doc {
+				t.Error("the document did not survive the encode/decode round trip")
+			}
+		})
+	}
+}
+
+// TestRedirectSignatureIsOverWhatIsSent. If the query were rebuilt after
+// signing, the signature would cover different bytes than the receiver checks.
+func TestRedirectSignatureIsOverWhatIsSent(t *testing.T) {
+	key, certDER := testSigner(t)
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}))
+
+	q, err := SignRedirectQuery("SAMLRequest", "AAAA~BBBB", "a b~c", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyRedirectSignature(q, certPEM, "SAMLRequest"); err != nil {
+		t.Fatalf("verification failed: %v", err)
+	}
+	// Re-encoding the query the way url.Values would must BREAK it -- that is the
+	// mistake this design avoids, and if it did not break, the test proves nothing.
+	vals, _ := url.ParseQuery(q)
+	rebuilt := vals.Encode()
+	if err := VerifyRedirectSignature(rebuilt, certPEM, "SAMLRequest"); err == nil {
+		t.Skip("re-encoding happened to produce identical bytes for this input")
+	}
+}

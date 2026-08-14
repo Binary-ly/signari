@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"compress/flate"
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -338,4 +340,64 @@ func BuildLogoutRequest(in LogoutRequestInput, signer crypto.Signer, certDER []b
 	out := etree.NewDocument()
 	out.SetRoot(signed)
 	return out.WriteToString()
+}
+
+// newFlateWriter produces the RAW deflate stream the binding specifies -- no
+// zlib header, which is what compress/flate gives and compress/zlib does not.
+func newFlateWriter(w io.Writer) (*flate.Writer, error) {
+	return flate.NewWriter(w, flate.BestCompression)
+}
+
+// EncodeRedirect prepares a document for the HTTP-Redirect binding: raw DEFLATE,
+// then base64.
+func EncodeRedirect(doc string) (string, error) {
+	var buf strings.Builder
+	b64 := base64.NewEncoder(base64.StdEncoding, &buf)
+	fw, err := newFlateWriter(b64)
+	if err != nil {
+		return "", err
+	}
+	if _, err := fw.Write([]byte(doc)); err != nil {
+		return "", err
+	}
+	if err := fw.Close(); err != nil {
+		return "", err
+	}
+	if err := b64.Close(); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// SignRedirectQuery builds a signed HTTP-Redirect binding query string.
+//
+// The bytes we sign and the bytes we send MUST be the same, and the only way to
+// guarantee that is to build one string and derive the other from it. Encoding
+// twice -- once to sign, once to send -- is how an implementation signs `%7E`
+// and transmits `~`, producing a signature that fails at every receiver while
+// looking correct in every log.
+//
+// This is the mirror of VerifyRedirectSignature, and the two are tested against
+// each other precisely because a shared misunderstanding of the encoding would
+// otherwise stay invisible.
+func SignRedirectQuery(param, encodedDoc, relayState string, signer crypto.Signer) (string, error) {
+	key, ok := signer.(*rsa.PrivateKey)
+	if !ok {
+		return "", fmt.Errorf("SAML redirect signing needs an in-process RSA key, got %T", signer)
+	}
+
+	parts := []string{param + "=" + url.QueryEscape(encodedDoc)}
+	if relayState != "" {
+		parts = append(parts, "RelayState="+url.QueryEscape(relayState))
+	}
+	parts = append(parts, "SigAlg="+url.QueryEscape(sigAlgRSASHA256))
+	signed := strings.Join(parts, "&")
+
+	sum := sha256.Sum256([]byte(signed))
+	sig, err := rsa.SignPKCS1v15(nil, key, crypto.SHA256, sum[:])
+	if err != nil {
+		return "", fmt.Errorf("signing the redirect query: %w", err)
+	}
+	// Appended to the EXACT string that was signed, never rebuilt from a map.
+	return signed + "&Signature=" + url.QueryEscape(base64.StdEncoding.EncodeToString(sig)), nil
 }

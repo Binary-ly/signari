@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -910,9 +911,9 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	s.clearPending(w)
 	s.setSessionCookie(w, cookieToken)
 
-	// Back to the parked authorization request, if there was one.
+	// Back to whatever was parked, if anything was.
 	if authzQuery != "" {
-		http.Redirect(w, r, oidc.PathAuthorize+"?"+authzQuery, http.StatusFound)
+		http.Redirect(w, r, resumeAfterSignIn(authzQuery), http.StatusFound)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "signed in"})
@@ -1385,4 +1386,61 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		"expires_in":        int(tokens.DefaultAccessTokenTTL.Seconds()),
 		"scope":             joinScopes(granted),
 	})
+}
+
+// resumeAfterSignIn decides where a freshly signed-in browser goes.
+//
+// Two shapes are parked. Nearly always it is an OIDC authorization request,
+// which is resumed by replaying its query at the authorization endpoint. But
+// flows that are not OIDC at all -- forward auth, and SAML -- park
+// `return=<local path>` instead, because replaying their query at the
+// authorization endpoint lands the user on a request with no client_id.
+//
+// That bug was live: /proxy/start parked `return=/proxy/start?rd=...` and
+// sign-in sent the browser to /oauth2/authorize?return=/proxy/start, so the
+// whole not-yet-signed-in half of forward auth was broken. It went unnoticed
+// because every test signed in first.
+func resumeAfterSignIn(authzQuery string) string {
+	if dest, ok := parkedReturn(authzQuery); ok {
+		return dest
+	}
+	return oidc.PathAuthorize + "?" + authzQuery
+}
+
+// parkedReturn extracts a local return path, refusing anything that could leave
+// this origin.
+//
+// This runs immediately AFTER authentication, which makes it one of the most
+// attractive open-redirect sinks in the whole application: a link to our own
+// login page that deposits the user on an attacker's site once they have
+// entered their password is a credible phishing step, and the URL the user
+// checked before typing was genuinely ours.
+func parkedReturn(authzQuery string) (string, bool) {
+	q, err := url.ParseQuery(authzQuery)
+	if err != nil {
+		return "", false
+	}
+	dest := q.Get("return")
+	if dest == "" {
+		return "", false
+	}
+	// Must be a path on THIS origin. A single leading slash, and nothing that a
+	// browser would read as the start of an authority:
+	//
+	//   //evil.test        protocol-relative, goes to evil.test
+	//   /\evil.test       browsers normalise the backslash and it goes there too
+	//   /%2f%2fevil.test   decoded by some proxies before the browser sees it
+	if !strings.HasPrefix(dest, "/") ||
+		strings.HasPrefix(dest, "//") ||
+		strings.HasPrefix(dest, "/\\") ||
+		strings.Contains(dest, "\\") {
+		return "", false
+	}
+	// Parse it as well, so a value carrying its own scheme or host is refused
+	// rather than reasoned about.
+	u, err := url.Parse(dest)
+	if err != nil || u.Scheme != "" || u.Host != "" {
+		return "", false
+	}
+	return dest, true
 }

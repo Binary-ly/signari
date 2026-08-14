@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -45,6 +46,18 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params = r.PostForm
+	}
+
+	// The same 80-byte bound the SSO endpoint applies, which this path had been
+	// missing. It matters more here now: a LogoutResponse on the redirect binding
+	// carries RelayState in the URL rather than a form field, and an oversized one
+	// produces a redirect that browsers and proxies silently truncate -- so the
+	// provider receives a RelayState it never sent and fails in a way nothing here
+	// would explain. Our own chain token is 32 characters, well inside this.
+	if rs := params.Get("RelayState"); len(rs) > maxRelayState {
+		s.samlRefuse(w, r, fmt.Sprintf("RelayState is %d bytes, over the %d the "+
+			"specification allows", len(rs), maxRelayState))
+		return
 	}
 
 	encoded := params.Get("SAMLRequest")

@@ -18,10 +18,24 @@ Lines : 21330
 Issues: 33      # at the time of the first real run
 ```
 
-The baseline is now **22** with `-exclude=G101` (11 open redirects, 4 operator
+The baseline is now **23** with `-exclude=G101` (12 open redirects, 4 operator
 file paths, 1 path traversal, 1 `template.URL`). It moves only when a new
 redirect site or file read is added, and each addition is checked by hand
 against the table below before the number is accepted.
+
+The most recent move, 22 -> 23, was **G710 at `samlslo.go`**: the `LogoutResponse`
+now leaves on the HTTP-Redirect binding when that is what the provider registered,
+which is a new `http.Redirect` site. The destination comes from
+`core.saml_slo_urls` for a provider whose signature has already verified against
+its registered certificate -- an operator-configured URL, not a request parameter
+-- and `SignRedirectQuery` percent-encodes the RelayState it appends. Same class
+as the other eleven.
+
+Checking it did surface something real, though: `RelayState` was bounded on the
+SSO path and not on the SLO path. That mattered little while every response went
+out as a form field, and matters now that it goes in a URL, where an oversized
+value is silently truncated by browsers and proxies -- the provider then receives
+a RelayState it never sent. Now bounded at the specification's 80 bytes on both.
 
 Two of the first run's findings were **real** and are fixed:
 

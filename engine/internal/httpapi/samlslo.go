@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -32,19 +33,23 @@ import (
 func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	if r.Method == http.MethodPost {
-		// The POST binding carries an enveloped XML signature rather than signed
-		// query octets, and verifying that is a different job with a different set
-		// of failure modes -- the wrapping attacks live there. Refusing plainly
-		// beats a half-implementation that accepts something it should not.
-		s.samlRefuse(w, r, "single logout on the HTTP-POST binding is not implemented; "+
-			"configure the service provider to use HTTP-Redirect")
-		return
+	// Which binding this arrived on decides how it is decoded AND how its
+	// signature is checked. The two are not interchangeable: HTTP-Redirect signs
+	// the raw query octets, HTTP-POST signs the document itself, and checking the
+	// wrong one proves nothing about what was actually sent.
+	post := r.Method == http.MethodPost
+	params := r.URL.Query()
+	if post {
+		if err := r.ParseForm(); err != nil {
+			s.samlRefuse(w, r, "the request could not be parsed")
+			return
+		}
+		params = r.PostForm
 	}
 
-	encoded := r.URL.Query().Get("SAMLRequest")
+	encoded := params.Get("SAMLRequest")
 	if encoded == "" {
-		if resp := r.URL.Query().Get("SAMLResponse"); resp != "" {
+		if resp := params.Get("SAMLResponse"); resp != "" {
 			// A provider answering a logout WE initiated. Move the chain along.
 			//
 			// The response signature is NOT required here, and that is deliberate:
@@ -57,7 +62,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 			// Requiring a signature here would instead mean every provider that
 			// answers unsigned strands the chain, and most answer unsigned.
 			failed := logoutResponseFailed(resp)
-			if s.continueSAMLLogoutChain(w, r, r.URL.Query().Get("RelayState"), failed) {
+			if s.continueSAMLLogoutChain(w, r, params.Get("RelayState"), failed) {
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -67,7 +72,13 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, err := saml.DecodeRedirect(encoded)
+	var raw []byte
+	var err error
+	if post {
+		raw, err = saml.DecodePOST(encoded)
+	} else {
+		raw, err = saml.DecodeRedirect(encoded)
+	}
 	if err != nil {
 		s.samlRefuse(w, r, err.Error())
 		return
@@ -91,10 +102,21 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 
 	// SIGNATURE FIRST, before anything else is believed about the request.
 	//
-	// Over the raw query octets, not any <ds:Signature> the document might
-	// carry: on the redirect binding the signature is the query parameters, and
-	// an embedded element proves nothing about what was actually sent.
-	if err := saml.VerifyRedirectSignature(r.URL.RawQuery, provider.SPSigningCert, "SAMLRequest"); err != nil {
+	// On the redirect binding that means the raw query octets, NOT any
+	// <ds:Signature> the document might also carry -- an embedded element there
+	// proves nothing about what was actually sent. On the POST binding it is the
+	// enveloped signature, checked with the wrapping defences in
+	// saml.VerifyEmbeddedSignature.
+	//
+	// Unlike AuthnRequests, this is never optional. A LogoutRequest acted on
+	// unsigned lets anybody sign anybody out, needing no credential at all
+	// (gosaml2 GHSA-pcgw-qcv5-h8ch).
+	if post {
+		err = saml.VerifyEmbeddedSignature(raw, provider.SPSigningCert, "LogoutRequest", req.ID)
+	} else {
+		err = saml.VerifyRedirectSignature(r.URL.RawQuery, provider.SPSigningCert, "SAMLRequest")
+	}
+	if err != nil {
 		s.log.Info("SAML logout refused", "entity_id", req.Issuer, "err", err,
 			"correlation_id", correlationID(ctx))
 		s.samlRefuse(w, r, err.Error())
@@ -126,7 +148,11 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sloURL := firstSLOURL(ctx, s, provider.ID)
+	requestBinding := bindingRedirect
+	if post {
+		requestBinding = bindingPOST
+	}
+	sloURL, respBinding := sloEndpoint(ctx, s, provider.ID, requestBinding)
 	if sloURL == "" {
 		// Nowhere to answer. The session is still ended -- the logout succeeded,
 		// we simply cannot say so.
@@ -154,7 +180,39 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 	// credential for a session that no longer exists -- harmless, but it makes
 	// every subsequent log line look like an attack.
 	s.clearSessionCookie(w)
-	s.postSAMLResponse(w, sloURL, doc, r.URL.Query().Get("RelayState"))
+
+	relayState := params.Get("RelayState")
+
+	// # Answer on the binding the endpoint was registered with
+	//
+	// Previously every LogoutResponse went out as an auto-submitting POST form,
+	// including to endpoints registered as HTTP-Redirect -- which was every one of
+	// them, since that was the only binding `saml add-sp` could store. A service
+	// provider expecting `SAMLResponse`/`SigAlg`/`Signature` as query parameters
+	// receives a form POST instead and has nothing to parse. Verified on the wire
+	// before it was changed, because reading the code had not made it obvious.
+	if respBinding == bindingPOST {
+		s.postSAMLResponse(w, sloURL, doc, relayState)
+		return
+	}
+
+	respEncoded, err := saml.EncodeRedirect(doc)
+	if err != nil {
+		s.log.Error("encoding a LogoutResponse for the redirect binding", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	query, err := saml.SignRedirectQuery("SAMLResponse", respEncoded, relayState, key.Signer())
+	if err != nil {
+		s.log.Error("signing a LogoutResponse query", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	sep := "?"
+	if strings.ContainsRune(sloURL, '?') {
+		sep = "&"
+	}
+	http.Redirect(w, r, sloURL+sep+query, http.StatusFound)
 }
 
 // endSAMLSession terminates the session a LogoutRequest names.
@@ -234,11 +292,28 @@ func logoutResponseFailed(encoded string) bool {
 	return lr.Status.StatusCode.Value != saml.StatusSuccess
 }
 
-func firstSLOURL(ctx context.Context, s *Server, providerID string) string {
-	var u string
+// The two bindings, spelled once. They are stored in the database as these
+// strings, and a typo in one comparison would silently select the wrong
+// response format for every provider.
+const (
+	bindingRedirect = "HTTP-Redirect"
+	bindingPOST     = "HTTP-POST"
+)
+
+// sloEndpoint picks where a LogoutResponse goes and on which binding.
+//
+// `prefer` is the binding the request arrived on. A provider that registered
+// both is answered the way it asked, which is the least surprising thing to do
+// and the only one that keeps a POST conversation on POST. Otherwise whatever is
+// registered is used, because a response on the wrong binding is still better
+// than no response at all -- and the alternative, refusing, would leave the
+// provider believing the logout failed when the session is already gone.
+func sloEndpoint(ctx context.Context, s *Server, providerID, prefer string) (string, string) {
+	var u, binding string
 	_ = s.db.QueryRow(ctx, `
-		SELECT url FROM core.saml_slo_urls
-		WHERE provider_id = $1::uuid AND binding = 'HTTP-Redirect'
-		ORDER BY url LIMIT 1`, providerID).Scan(&u)
-	return u
+		SELECT url, binding FROM core.saml_slo_urls
+		WHERE provider_id = $1::uuid
+		ORDER BY (binding = $2) DESC, url
+		LIMIT 1`, providerID, prefer).Scan(&u, &binding)
+	return u, binding
 }

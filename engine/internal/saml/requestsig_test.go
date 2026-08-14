@@ -103,8 +103,10 @@ func TestUnsignedRequestIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("an unsigned request was accepted by a provider that requires signing")
 	}
-	if !strings.Contains(err.Error(), "not signed") {
-		t.Errorf("the error should say the request is unsigned; got %v", err)
+	// The message names the element received, so a LogoutRequest refusal does not
+	// talk about AuthnRequests.
+	if !strings.Contains(err.Error(), "AuthnRequest carries no signature") {
+		t.Errorf("the error should name the unsigned AuthnRequest; got %v", err)
 	}
 }
 

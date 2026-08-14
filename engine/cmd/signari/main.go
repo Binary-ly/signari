@@ -136,6 +136,8 @@ func run(args []string) error {
 	spCert := fs.String("sp-cert", "", "path to the provider's signing certificate (PEM), required for single logout")
 	wantSignedReq := fs.Bool("want-signed-requests", false,
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
+	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
+		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
 	slug := fs.String("slug", "", "short name used in /login/with/<slug>")
 	kind := fs.String("kind", "oidc", "oidc, google, github or microsoft")
 	extClientID := fs.String("client-id-ext", "", "client id issued by the external provider")
@@ -240,7 +242,7 @@ func run(args []string) error {
 		return keysRotate(ctx, conn, *alg, *promoteNow)
 	case "saml add-sp":
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
-			*spCert, *wantSignedReq)
+			*spCert, *wantSignedReq, *sloBinding)
 	case "saml list":
 		return samlListSPs(ctx, conn)
 	case "idp add":
@@ -1164,7 +1166,7 @@ func wrap(s string, width int, indent string) string {
 // surfaces now, with a message about the registration, rather than during
 // someone else's integration as an unexplained refusal.
 func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, nameIDFormat,
-	slo, certPath string, wantSignedRequests bool) error {
+	slo, certPath string, wantSignedRequests bool, sloBinding string) error {
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this service provider belongs to")
@@ -1221,6 +1223,15 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	if slo != "" && !strings.HasPrefix(slo, "https://") {
 		return fmt.Errorf("the logout URL must be https: %q", slo)
 	}
+	// The binding is stored because it decides how the LogoutResponse is sent
+	// back. Getting it wrong means the provider receives a form POST where it
+	// expects query parameters, or the reverse -- it parses nothing and reports a
+	// logout failure for a session that was in fact ended.
+	switch sloBinding {
+	case "HTTP-Redirect", "HTTP-POST":
+	default:
+		return fmt.Errorf("unknown -slo-binding %q: use HTTP-Redirect or HTTP-POST", sloBinding)
+	}
 	// The same fail-closed rule as the logout URL, for the same reason. Requiring
 	// signed AuthnRequests with no certificate to verify them against means every
 	// login is refused: configured-looking and completely broken.
@@ -1258,7 +1269,7 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	if slo != "" {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.saml_slo_urls (provider_id, url, binding)
-			VALUES ($1::uuid, $2, 'HTTP-Redirect')`, id, slo); err != nil {
+			VALUES ($1::uuid, $2, $3)`, id, slo, sloBinding); err != nil {
 			return err
 		}
 	}
@@ -1277,7 +1288,8 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 			"              provider is refused, on both bindings")
 	}
 	if slo != "" {
-		fmt.Printf("  logout    : %s (signature verified against the certificate given)\n", slo)
+		fmt.Printf("  logout    : %s on %s (signature verified against the certificate given)\n",
+			slo, sloBinding)
 	} else {
 		fmt.Println("  logout    : not configured -- single logout is unavailable for this provider")
 	}

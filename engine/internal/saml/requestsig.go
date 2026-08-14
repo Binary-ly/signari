@@ -136,8 +136,11 @@ func checkSignaturePlacement(doc *etree.Document, root *etree.Element, wantID st
 	sigs := doc.FindElements("//Signature")
 	switch {
 	case len(sigs) == 0:
-		return fmt.Errorf("the request is not signed, and this service provider is " +
-			"configured to require signed AuthnRequests")
+		// Named after the element actually received. A LogoutRequest refused with a
+		// message about AuthnRequests sends whoever is reading the log to the wrong
+		// configuration entirely.
+		return fmt.Errorf("the %s carries no signature, and one is required from this "+
+			"service provider", root.Tag)
 	case len(sigs) > 1:
 		return fmt.Errorf("the document contains %d Signature elements; only one is "+
 			"accepted, because choosing between them is the attacker's decision to make",

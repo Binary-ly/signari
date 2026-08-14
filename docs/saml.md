@@ -293,11 +293,57 @@ configured for that provider. An unknown entity id gets the default document rat
 than an error — failing would make the endpoint a way to enumerate which service
 providers are registered.
 
+## Single logout on both bindings
+
+`GET /saml/slo` takes the HTTP-Redirect binding, `POST /saml/slo` the HTTP-POST
+binding. Which one a request arrived on decides how it is decoded **and** how its
+signature is checked — redirect signs the raw query octets, POST signs the
+document — and there is no fallback between them.
+
+Unlike AuthnRequests this is never optional. A LogoutRequest acted on unsigned
+lets anybody sign anybody out with no credential at all (gosaml2
+GHSA-pcgw-qcv5-h8ch), so a provider with no certificate on file cannot use single
+logout.
+
+Tested against the running server with a service provider built separately from
+the engine:
+
+| request | result |
+| --- | --- |
+| correctly signed | accepted, session ended |
+| unsigned | refused — "the LogoutRequest carries no signature" |
+| subject changed after signing | refused — signature does not verify |
+| signature-wrapped | refused — "the Signature is not a direct child of the LogoutRequest" |
+
+The wrapping case used a **different** outer ID, so the duplicate-ID rule was not
+what caught it. The placement rule was.
+
+### The response goes back on the binding that was registered
+
+Found by watching the wire rather than reading the code: every `LogoutResponse`
+used to leave as an auto-submitting POST form, including to endpoints registered
+as `HTTP-Redirect` — which was all of them, since that was the only binding
+`saml add-sp` could store. A provider expecting `SAMLResponse`/`SigAlg`/`Signature`
+as query parameters got a form POST and had nothing to parse.
+
+The binding is now stored and honoured:
+
+```sh
+signari saml add-sp ... -slo https://sp.test/slo -slo-binding HTTP-POST
+```
+
+A provider that registered both is answered on whichever binding it used. The
+redirect-bound response was checked with **openssl**, against the certificate the
+IdP publishes in its own metadata — an entirely separate path from the code that
+produced it:
+
+```
+openssl dgst -sha256 -verify idp.pub -signature sig.bin signed.bin
+Verified OK
+```
+
 ## Not yet built
 
-- **Single logout on the HTTP-POST binding.** The verification half now exists
-  (`VerifyEmbeddedSignature` is not AuthnRequest-specific), but the binding is not
-  wired into the logout endpoint. Refused plainly rather than half-implemented.
 - **Encrypted assertions.** Transport is TLS; the assertion itself is not
   encrypted.
 

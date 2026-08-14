@@ -42,6 +42,7 @@ import (
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/outbox"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/proxycheck"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
@@ -84,6 +85,9 @@ commands:
   group member        add or remove a member (-remove)
   group release       let a client see group membership
   group list          show groups and their sizes
+  policy test         check a policy file (no database needed -- for CI)
+  policy apply        install a policy file
+  policy show         print the policy in force
   serve               serve the OIDC endpoints
 
 env:
@@ -143,6 +147,7 @@ func run(args []string) error {
 	groupName := fs.String("group", "", "group name")
 	memberEmail := fs.String("email-member", "", "member's email or username")
 	removeMember := fs.Bool("remove", false, "remove the member instead of adding")
+	policyFile := fs.String("policy-file", "", "path to a policy file")
 	jwksPath := fs.String("jwks", "", "file containing the client's PUBLIC JWKS")
 	onlyGroups := fs.String("only", "", "comma-separated groups to release (default: all)")
 	apply := fs.Bool("apply", false, "actually make changes (scim sync defaults to a preview)")
@@ -151,7 +156,8 @@ func run(args []string) error {
 	rest := args[1:]
 	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
 		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
-		cmd == "saml" || cmd == "idp" || cmd == "scim" || cmd == "group" {
+		cmd == "saml" || cmd == "idp" || cmd == "scim" || cmd == "group" ||
+		cmd == "policy" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -160,6 +166,12 @@ func run(args []string) error {
 	if err := fs.Parse(rest); err != nil {
 		return err
 	}
+	// `policy test` needs no database either: checking a file before it is
+	// deployed is something you do in CI, where there is no database to reach.
+	if cmd == "policy test" {
+		return policyTest(*policyFile)
+	}
+
 	// `proxy check` deliberately runs BEFORE the database is required. It is a
 	// black-box prober: it must be runnable from a laptop, from CI, or from
 	// outside the network entirely -- which is where an attacker sits, and
@@ -246,6 +258,10 @@ func run(args []string) error {
 		return groupRelease(ctx, conn, *orgID, *clientID, *onlyGroups)
 	case "group list":
 		return groupList(ctx, conn)
+	case "policy apply":
+		return policyApply(ctx, conn, *orgID, *policyFile)
+	case "policy show":
+		return policyShow(ctx, conn, *orgID)
 	default:
 		return usage()
 	}
@@ -1880,5 +1896,71 @@ func clientSetKeys(ctx context.Context, conn *pgx.Conn, clientID, jwksPath strin
 	// obtained it keep authenticating -- the exact thing this change retires.
 	fmt.Println("\n  The client secret has been REMOVED. It would otherwise remain a")
 	fmt.Println("  working credential, which is what moving to keys was meant to end.")
+	return nil
+}
+
+// policyTest checks a policy file without deploying it.
+//
+// The same load path the engine uses, so "it passes here" and "it will load"
+// are the same statement rather than two things that drift.
+func policyTest(path string) error {
+	if path == "" {
+		return fmt.Errorf("give -policy-file, the policy file to check")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	f, err := policy.Parse(data)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  %s: %s\n", path, f.Summary())
+	for _, tc := range f.Tests {
+		fmt.Printf("    ok   %s\n", tc.Name)
+	}
+	fmt.Println("\n  This file will load. Its rules do what its tests say.")
+	return nil
+}
+
+// policyApply installs a policy file.
+func policyApply(ctx context.Context, conn *pgx.Conn, orgID, path string) error {
+	if orgID == "" || path == "" {
+		return fmt.Errorf("give -org and -policy-file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	// Parsed BEFORE storing. A file that would not load must not reach the
+	// database, or the next engine start fails on something an operator already
+	// believes is deployed.
+	f, err := policy.Parse(data)
+	if err != nil {
+		return err
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.access_policies (org_id, document, applied_at)
+		VALUES ($1::uuid, $2, now())
+		ON CONFLICT (org_id) DO UPDATE
+			SET document = EXCLUDED.document, applied_at = now()`,
+		orgID, string(data)); err != nil {
+		return err
+	}
+	fmt.Printf("applied %s (%s)\n", path, f.Summary())
+	return nil
+}
+
+// policyShow prints the policy currently in force.
+func policyShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	var doc string
+	var applied time.Time
+	if err := conn.QueryRow(ctx,
+		`SELECT document, applied_at FROM core.access_policies WHERE org_id = $1::uuid`,
+		orgID).Scan(&doc, &applied); err != nil {
+		fmt.Println("no policy is in force for that organisation (everything is allowed)")
+		return nil
+	}
+	fmt.Printf("# applied %s\n%s", applied.UTC().Format(time.RFC3339), doc)
 	return nil
 }

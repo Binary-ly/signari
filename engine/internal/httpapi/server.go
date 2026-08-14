@@ -22,12 +22,13 @@ import (
 // Server holds the public endpoints. Everything it serves is derived from a live
 // key set, so metadata cannot drift from what the server can actually do.
 type Server struct {
-	cfg    oidc.Config
-	log    *slog.Logger
-	jwks   *bucket
-	login  *bucket
-	db     *pgxpool.Pool
-	hasher *passwords.Hasher
+	cfg      oidc.Config
+	log      *slog.Logger
+	jwks     *bucket
+	login    *bucket
+	db       *pgxpool.Pool
+	hasher   *passwords.Hasher
+	policies *policyCache
 	// mailer is never nil: New substitutes a logging driver when no SMTP is
 	// configured, so no call site has to nil-check before telling a user
 	// something important.
@@ -58,6 +59,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// from turning into memory exhaustion, independent of the semaphore.
 		login:     newBucket(5, 20),
 		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
+		policies:  newPolicyCache(),
 		mailer:    mailer,
 		delegator: delegated.New(),
 	}, nil

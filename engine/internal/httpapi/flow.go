@@ -165,6 +165,23 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			Description: "could not verify session", Disposition: oauth.DispositionRedirect})
 		return
 	}
+	// # Access policy
+	//
+	// Evaluated AFTER authentication and step-up (so `mfa` reflects what actually
+	// happened) and BEFORE consent -- there is no point asking somebody to
+	// approve scopes for an application they are not permitted to reach.
+	if pd := s.checkAccessPolicy(ctx, r, c.OrgID, c.ClientID, userID,
+		req.Scope, sessionHasMFA(ctx, s.db, sid)); pd != nil {
+		s.log.Info("access refused by policy", "client_id", c.ClientID,
+			"rule", pd.Rule, "correlation_id", correlationID(ctx))
+		// Rendered to the person, not redirected to the client. A policy refusal
+		// is about who they are, and the message names what to do next; bouncing
+		// it back as `access_denied` would leave them looking at an application
+		// error page that cannot explain anything.
+		s.renderAuthzFailure(w, r, pd.Message)
+		return
+	}
+
 	decision, ask, err := s.needsConsent(r, c, userID, req)
 	if err != nil {
 		s.log.Error("checking consent", "err", err)

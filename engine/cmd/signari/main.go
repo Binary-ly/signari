@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -33,6 +34,7 @@ import (
 	"signari.dev/engine/internal/importer"
 	"signari.dev/engine/internal/janitor"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/ldapd"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/migrate"
 	"signari.dev/engine/internal/oidc"
@@ -580,6 +582,74 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 			}
 			if err := ah.ListenAndServe(); err != nil {
 				log.Error("admin API stopped", "err", err)
+			}
+		}()
+	}
+
+	// The LDAP shim, for applications that can only authenticate by binding to a
+	// directory. Off unless an address is given: it is a second authentication
+	// surface, and one nobody asked for should not be listening.
+	if ldapAddr := os.Getenv("SIGNARI_LDAP_ADDR"); ldapAddr != "" {
+		// ONE organisation per listener, and it is named explicitly.
+		//
+		// LDAP has no way to express which tenant a bind belongs to -- the DN is
+		// the only input, and it is chosen by the client. Serving several
+		// organisations from one port would mean inferring the tenant from
+		// attacker-controlled data, and inferring it wrong means binding somebody
+		// against another organisation's directory.
+		//
+		// So: stated, not derived. The single-organisation case is filled in
+		// automatically because there is nothing to be ambiguous about.
+		ldapOrgID := os.Getenv("SIGNARI_LDAP_ORG_ID")
+		if ldapOrgID == "" {
+			var n int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM core.organizations`).Scan(&n); err != nil {
+				return fmt.Errorf("counting organisations for the LDAP listener: %w", err)
+			}
+			if n != 1 {
+				return fmt.Errorf("SIGNARI_LDAP_ORG_ID is not set and this database holds "+
+					"%d organisations. An LDAP listener serves exactly one, and which one "+
+					"cannot be inferred from a bind DN the client chose", n)
+			}
+			if err := pool.QueryRow(ctx, `SELECT id::text FROM core.organizations`).Scan(&ldapOrgID); err != nil {
+				return fmt.Errorf("resolving the organisation for the LDAP listener: %w", err)
+			}
+		}
+		baseDN := os.Getenv("SIGNARI_LDAP_BASE_DN")
+		if baseDN == "" {
+			return fmt.Errorf("SIGNARI_LDAP_ADDR is set but SIGNARI_LDAP_BASE_DN is not; " +
+				"the base DN is what every bind DN must sit under and there is no safe default")
+		}
+		ldapSrv := ldapd.New(ldapd.Config{
+			BaseDN:   baseDN,
+			UserAttr: envOr("SIGNARI_LDAP_USER_ATTR", "uid"),
+			// Anonymous search stays off unless asked for: it publishes a user
+			// directory to anyone who can reach the port.
+			AllowAnonymousSearch: os.Getenv("SIGNARI_LDAP_ANONYMOUS_SEARCH") == "1",
+		}, httpapi.NewLDAPAuthenticator(pool,
+			passwords.NewHasher(passwords.MemoryBudgetMiB), ldapOrgID), log)
+
+		ln, err := net.Listen("tcp", ldapAddr)
+		if err != nil {
+			return fmt.Errorf("LDAP listener: %w", err)
+		}
+		if tlsCert == "" {
+			log.Warn("LDAP is listening WITHOUT TLS: every bind sends a password in the " +
+				"clear. Supply -tls-cert and -tls-key, or restrict this listener to a " +
+				"trusted network.")
+		} else {
+			cert, cerr := tls.LoadX509KeyPair(tlsCert, tlsKey)
+			if cerr != nil {
+				return fmt.Errorf("LDAP TLS: %w", cerr)
+			}
+			ln = tls.NewListener(ln, &tls.Config{
+				Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12,
+			})
+		}
+		go func() {
+			log.Info("LDAP listening", "addr", ldapAddr, "base_dn", baseDN, "tls", tlsCert != "")
+			if err := ldapSrv.Serve(ctx, ln); err != nil {
+				log.Error("LDAP stopped", "err", err)
 			}
 		}()
 	}
@@ -1616,4 +1686,12 @@ func scimList(ctx context.Context, conn *pgx.Conn) error {
 		fmt.Println("(none registered -- add one with `signari scim add`)")
 	}
 	return rows.Err()
+}
+
+// envOr reads an environment variable with a fallback.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

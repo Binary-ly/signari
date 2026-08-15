@@ -115,6 +115,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkAdminTokens(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkEmailFactor(ctx, conn, r); err != nil {
+		return nil, err
+	}
 
 	sort.SliceStable(r.Findings, func(i, j int) bool {
 		return r.Findings[i].Severity < r.Findings[j].Severity
@@ -412,6 +415,32 @@ func checkAdminTokens(ctx context.Context, conn *pgx.Conn, r *Report) error {
 				"revoked without restarting every node. Mint scoped ones with "+
 				"`signari admin-token create` and keep the environment token for "+
 				"break-glass")
+	}
+	return nil
+}
+
+// checkEmailFactor catches the combination that locks people out.
+//
+// Email codes with no way to send email is not a degraded configuration, it is
+// an outage: the person is asked for a code that will never arrive, and unlike
+// account recovery there is no alternative path in the middle of a sign-in.
+func checkEmailFactor(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	if _, err := conn.Exec(ctx, `SELECT 1 FROM core.email_otp_credentials LIMIT 1`); err != nil {
+		return nil // older schema
+	}
+	r.ran("email second factor")
+
+	var enrolled int
+	if err := conn.QueryRow(ctx,
+		`SELECT count(*) FROM core.email_otp_credentials`).Scan(&enrolled); err != nil {
+		return err
+	}
+	if enrolled > 0 && (os.Getenv("SIGNARI_SMTP_HOST") == "" || os.Getenv("SIGNARI_MAIL_FROM") == "") {
+		r.add(Critical, "mail",
+			fmt.Sprintf("%d user(s) use email as a second factor and no SMTP is configured",
+				enrolled),
+			"they cannot sign in: the code is written to the log instead of sent. "+
+				"Set SIGNARI_SMTP_HOST and SIGNARI_MAIL_FROM")
 	}
 	return nil
 }

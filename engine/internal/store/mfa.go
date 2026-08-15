@@ -277,23 +277,35 @@ func ConstantTimeCodeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
-// HasConfirmedTOTP reports whether a user has a usable second factor.
+// HasSecondFactor reports whether a user has any usable second factor.
+//
+// Was HasConfirmedTOTP, and checked only TOTP while its own comment claimed to
+// report "a usable second factor". That was harmless until email codes existed
+// and then immediately was not: a user whose only factor was email would have
+// been waved straight through with a password alone, having explicitly turned
+// on a second factor. The name and the query now agree.
 //
 // Checked on the pool, not in a transaction, and deliberately cheap: it runs on
-// every password sign-in. `confirmed_at` is what matters -- an enrolment the
-// user never proved must not block them out of their own account.
-func HasConfirmedTOTP(ctx context.Context, db interface {
+// every password sign-in. For TOTP, `confirmed_at` is what matters -- an
+// enrolment the user never proved must not lock them out of their own account.
+// Email enrolment has no such half state: the row exists only after a code sent
+// to that address was entered.
+func HasSecondFactor(ctx context.Context, db interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, userID string) (bool, error) {
-	var confirmed bool
+	var any bool
 	err := db.QueryRow(ctx, `
-		SELECT confirmed_at IS NOT NULL FROM core.totp_credentials
-		WHERE user_id = $1::uuid`, userID).Scan(&confirmed)
-	if err == pgx.ErrNoRows {
-		return false, nil
-	}
+		SELECT EXISTS (
+			SELECT 1 FROM core.totp_credentials
+			WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL
+		) OR EXISTS (
+			SELECT 1 FROM core.email_otp_credentials WHERE user_id = $1::uuid
+		)`, userID).Scan(&any)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
 		return false, fmt.Errorf("checking for a second factor: %w", err)
 	}
-	return confirmed, nil
+	return any, nil
 }

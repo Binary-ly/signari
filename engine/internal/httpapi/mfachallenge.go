@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -93,7 +95,63 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(pendingTTL.Seconds()),
 	})
+	// If email is the enrolled factor, the code has to be sent now -- the person
+	// is looking at a form asking for a code that does not exist yet.
+	//
+	// Failure here is logged and NOT surfaced: which factors somebody has
+	// enrolled is not something an unauthenticated form should disclose, and the
+	// challenge page is identical either way.
+	s.sendEmailOTPIfEnrolled(r.Context(), userID)
+
 	s.renderMFA(w, r, authzQuery, "")
+}
+
+// sendEmailOTPIfEnrolled issues and mails a code, when that factor is enrolled.
+//
+// Best effort by design. A user with both an authenticator app and email
+// enrolled can still use the app if mail is slow or broken, and blocking the
+// sign-in because SMTP is down would turn a mail outage into an authentication
+// outage.
+func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		s.log.Error("beginning a transaction for the email code", "err", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	code, address, err := store.IssueEmailOTP(ctx, tx, userID)
+	switch {
+	case errors.Is(err, store.ErrNoEmailOTP):
+		return // not enrolled; nothing to do
+	case errors.Is(err, store.ErrEmailOTPTooSoon):
+		// A code was sent moments ago and is still live. Saying nothing is right:
+		// the person has one in their inbox.
+		return
+	case err != nil:
+		s.log.Error("issuing an email code", "err", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.log.Error("storing an email code", "err", err)
+		return
+	}
+
+	if err := s.mailer.Send(ctx, mail.Message{
+		To:      address,
+		Subject: "Your sign-in code",
+		Body: fmt.Sprintf(
+			"Your sign-in code is %s\n\n"+
+				"It expires in %d minutes and can be used once.\n\n"+
+				"If you did not just try to sign in, somebody has your password. "+
+				"Change it, and tell whoever runs your systems.\n",
+			code, int(store.EmailOTPLifetime.Minutes())),
+	}); err != nil {
+		// The code is already stored, so a resend can succeed later. Logged
+		// rather than surfaced: telling the form that mail failed would confirm
+		// the account exists and has email enrolled.
+		s.log.Error("sending an email code", "err", err, "user_id", userID)
+	}
 }
 
 // readPending verifies the pending cookie.
@@ -209,6 +267,15 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 			}
 			return []string{"otp"}, true, nil
 		}
+	}
+
+	// Email code next. Checked before recovery codes because it is the factor a
+	// user who chose it will actually be holding -- and because a recovery code
+	// is the last resort, not the second guess.
+	if ok, eerr := store.VerifyEmailOTP(ctx, tx, userID, strings.TrimSpace(code)); eerr != nil {
+		return nil, false, eerr
+	} else if ok {
+		return []string{"otp"}, true, nil
 	}
 
 	used, err := store.ConsumeRecoveryCode(ctx, tx, userID, code)

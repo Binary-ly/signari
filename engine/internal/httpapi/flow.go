@@ -948,7 +948,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// enrolled. It creates a pending authentication that can do nothing but
 	// present a code -- otherwise a stolen password alone has already produced
 	// something usable, which is the whole thing MFA exists to prevent.
-	enrolled, err := store.HasConfirmedTOTP(ctx, s.db, userID)
+	enrolled, err := store.HasSecondFactor(ctx, s.db, userID)
 	if err != nil {
 		s.log.Error("checking second factor", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")

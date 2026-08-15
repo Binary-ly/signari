@@ -2,8 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"html/template"
 	"net/http"
+	"signari.dev/engine/internal/mail"
 	"strings"
 	"time"
 
@@ -304,4 +307,171 @@ retrieve them for you later.</p>
 <ol>{{range .Codes}}<li>{{.}}</li>{{end}}</ol>
 <p class="hint">Keep them somewhere other than the device with your authenticator app.
 If you lose both, you lose the account.</p>
+</body></html>`))
+
+// handleEmailOTPEnrol turns on email as a second factor.
+//
+// Enrolment requires proving control of the address by entering a code sent to
+// it — the same standard the factor will be held to later. Trusting the address
+// on the account record instead would let somebody who has stolen a session
+// enrol a factor they already control, which is a way of locking the real owner
+// out rather than a way of protecting them.
+func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	_, userID, orgID, ok := s.currentSession(r)
+	if !ok {
+		http.Redirect(w, r, parkLogin("/account/mfa/email"), http.StatusFound)
+		return
+	}
+
+	csrf, err := s.csrfToken(w, r)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	render := func(stage, addr, msg string) {
+		s.renderPage(w, emailOTPPage, map[string]any{
+			"Stage": stage, "Address": addr, "Error": msg,
+			"CSRF": csrf, "CSRFField": csrfFormField,
+		})
+	}
+
+	if r.Method == http.MethodGet {
+		var current string
+		if err := s.db.QueryRow(ctx,
+			`SELECT COALESCE(email,'') FROM core.users WHERE id = $1::uuid`,
+			userID).Scan(&current); err != nil {
+			s.log.Error("reading the account address", "err", err)
+		}
+		render("start", current, "")
+		return
+	}
+
+	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
+		render("start", "", "That form expired. Try again.")
+		return
+	}
+
+	switch r.PostForm.Get("step") {
+	case "verify":
+		tx, terr := s.db.Begin(ctx)
+		if terr != nil {
+			render("start", "", "Something went wrong. Try again.")
+			return
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		okCode, verr := store.VerifyEmailOTP(ctx, tx, userID,
+			strings.TrimSpace(r.PostForm.Get("code")))
+		if verr != nil {
+			s.log.Error("verifying an enrolment code", "err", verr)
+			render("start", "", "Something went wrong. Try again.")
+			return
+		}
+		if !okCode {
+			render("code", r.PostForm.Get("address"),
+				"That code did not match, or it has expired.")
+			return
+		}
+		if err := tx.Commit(ctx); err != nil {
+			render("start", "", "Something went wrong. Try again.")
+			return
+		}
+		s.log.Info("email second factor enrolled", "user_id", userID,
+			"correlation_id", correlationID(ctx))
+		render("done", "", "")
+
+	default: // send a code to the address being enrolled
+		address := strings.TrimSpace(r.PostForm.Get("address"))
+		if !strings.Contains(address, "@") || len(address) > 320 {
+			render("start", address, "That does not look like an email address.")
+			return
+		}
+
+		tx, terr := s.db.Begin(ctx)
+		if terr != nil {
+			render("start", address, "Something went wrong. Try again.")
+			return
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		if err := store.EnrollEmailOTP(ctx, tx, userID, orgID, address); err != nil {
+			s.log.Error("enrolling the email factor", "err", err)
+			render("start", address, "Something went wrong. Try again.")
+			return
+		}
+		code, addr, ierr := store.IssueEmailOTP(ctx, tx, userID)
+		if errors.Is(ierr, store.ErrEmailOTPTooSoon) {
+			render("code", address, "A code was just sent. Check your inbox.")
+			return
+		}
+		if ierr != nil {
+			s.log.Error("issuing an enrolment code", "err", ierr)
+			render("start", address, "Something went wrong. Try again.")
+			return
+		}
+		if err := tx.Commit(ctx); err != nil {
+			render("start", address, "Something went wrong. Try again.")
+			return
+		}
+
+		if err := s.mailer.Send(ctx, mail.Message{
+			To:      addr,
+			Subject: "Confirm this address for sign-in codes",
+			Body: fmt.Sprintf("Your confirmation code is %s\n\n"+
+				"It expires in %d minutes.\n\n"+
+				"If you did not ask to use this address for sign-in codes, "+
+				"somebody may be signed in to your account. Change your password.\n",
+				code, int(store.EmailOTPLifetime.Minutes())),
+		}); err != nil {
+			s.log.Error("sending an enrolment code", "err", err)
+			// Said out loud HERE, unlike at sign-in: this person is already
+			// authenticated, so there is nothing to disclose, and silently
+			// showing a code entry form for mail that never left is cruel.
+			render("code", address,
+				"We could not send that code. Check the address, or try again shortly.")
+			return
+		}
+		render("code", address, "")
+	}
+}
+
+var emailOTPPage = template.Must(template.New("emailotp").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Email sign-in codes</title><style>` + pageCSS + `</style></head>
+<body>
+{{if eq .Stage "done"}}
+<h1>Email codes are on</h1>
+<p>You will be asked for a code from this address when you sign in.</p>
+<p class="hint">This is the weakest of the second factors we offer, because
+account recovery already goes to your email &mdash; anybody with your mailbox can
+do both. An authenticator app or a passkey is stronger, and you can add one at
+any time.</p>
+{{else if eq .Stage "code"}}
+<h1>Check your email</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+<p>We sent a code to <strong>{{.Address}}</strong>.</p>
+<form method="POST" action="/account/mfa/email">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<input type="hidden" name="step" value="verify">
+<input type="hidden" name="address" value="{{.Address}}">
+<label for="c">Code</label>
+<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
+<button type="submit">Confirm</button>
+</form>
+{{else}}
+<h1>Email sign-in codes</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+<p>We will send a code to this address each time you sign in.</p>
+<form method="POST" action="/account/mfa/email">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="a">Email address</label>
+<input id="a" name="address" type="email" value="{{.Address}}" autofocus required>
+<button type="submit">Send a code</button>
+</form>
+<p class="hint">An authenticator app is stronger: your email is also how your
+account is recovered, so a code sent there protects you from a stolen password
+but not from a stolen mailbox.</p>
+{{end}}
 </body></html>`))

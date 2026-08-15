@@ -93,6 +93,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /oauth2/device_authorization", s.handleDeviceAuthorization)
 	// Both methods on one path: GET renders the code entry screen, POST handles
 	// entry and the approve/refuse decision.
+	mux.HandleFunc("GET /account/mfa/email", s.handleEmailOTPEnrol)
+	mux.HandleFunc("POST /account/mfa/email", s.handleEmailOTPEnrol)
 	mux.HandleFunc("GET /device", s.handleDeviceVerification)
 	mux.HandleFunc("POST /device", s.handleDeviceVerification)
 	mux.HandleFunc("GET "+oidc.PathUserinfo, s.handleUserinfo)

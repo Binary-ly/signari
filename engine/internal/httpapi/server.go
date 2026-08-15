@@ -166,6 +166,13 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /saml/source/{slug}/start", s.handleSAMLSourceStart)
 	mux.HandleFunc("POST /saml/source/{slug}/acs", s.handleSAMLSourceACS)
 	mux.HandleFunc("GET /saml/source/{slug}/metadata", s.handleSAMLSourceMetadata)
+
+	// SCIM as a source: an upstream provisions users INTO this engine. The
+	// mirror of internal/scim's client, which pushes them out.
+	mux.HandleFunc("GET /scim/v2/ServiceProviderConfig", s.handleSCIMServiceProviderConfig)
+	mux.HandleFunc("GET /scim/v2/ResourceTypes", s.handleSCIMResourceTypes)
+	mux.HandleFunc("/scim/v2/Users", s.handleSCIMUsers)
+	mux.HandleFunc("/scim/v2/Users/{id}", s.handleSCIMUser)
 	mux.HandleFunc("GET /proxy/verify", s.handleProxyVerify)
 	mux.HandleFunc("GET /proxy/start", s.handleProxyStart)
 	mux.HandleFunc("GET /passkey.js", s.handlePasskeyJS)

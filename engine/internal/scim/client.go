@@ -65,9 +65,37 @@ type User struct {
 	Active     bool     `json:"active"`
 	Name       *Name    `json:"name,omitempty"`
 	Emails     []Email  `json:"emails,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
 
 	// ID is assigned BY THE TARGET and only ever read, never sent.
 	ID string `json:"id,omitempty"`
+}
+
+// InboundUser is a User as an UPSTREAM sends it.
+//
+// The one difference is Active, and it matters: as a plain bool, a create that
+// omits `active` decodes as false and silently provisions a disabled account.
+// The person is then told their brand new account does not work, and the
+// upstream reports a successful sync. SCIM leaves the attribute optional, so
+// absence has to mean "not stated" rather than "no".
+type InboundUser struct {
+	User
+	Active *bool `json:"active"`
+}
+
+// ActiveOrDefault reads the flag, defaulting to active when it was not sent.
+func (u InboundUser) ActiveOrDefault() bool {
+	if u.Active == nil {
+		return true
+	}
+	return *u.Active
+}
+
+// Resolved returns the user with Active filled in from the pointer.
+func (u InboundUser) Resolved() User {
+	out := u.User
+	out.Active = u.ActiveOrDefault()
+	return out
 }
 
 type Name struct {

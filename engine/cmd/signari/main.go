@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -63,6 +64,20 @@ func main() {
 		fmt.Fprintf(os.Stderr, "signari: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// twoWordCommands are the groups whose first word is followed by a verb.
+//
+// A set rather than a chain of comparisons. As a chain it was a list every new
+// command group had to be added to, and forgetting -- which happened with
+// `scim-source` -- makes the command print the usage text instead of running,
+// with no hint that the dispatch is what is wrong.
+var twoWordCommands = map[string]bool{
+	"migrate": true, "instance": true, "user": true, "client": true,
+	"janitor": true, "keys": true, "import": true, "proxy": true,
+	"saml": true, "idp": true, "scim": true, "scim-source": true,
+	"group": true, "policy": true, "admin-token": true, "radius": true,
+	"ssf": true, "registration": true, "export": true, "dir": true,
 }
 
 func usage() error {
@@ -222,11 +237,7 @@ func run(args []string) error {
 
 	cmd := args[0]
 	rest := args[1:]
-	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
-		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
-		cmd == "saml" || cmd == "idp" || cmd == "scim" || cmd == "group" ||
-		cmd == "policy" || cmd == "admin-token" || cmd == "radius" || cmd == "ssf" ||
-		cmd == "registration" || cmd == "export" || cmd == "dir" {
+	if twoWordCommands[cmd] {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -349,6 +360,10 @@ func run(args []string) error {
 		return idpList(ctx, conn)
 	case "scim add":
 		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2)
+	case "scim-source add":
+		return scimSourceAdd(ctx, conn, *orgID, *slug, *name, *onDeactivate)
+	case "scim-source list":
+		return scimSourceList(ctx, conn)
 	case "scim list":
 		return scimList(ctx, conn)
 	case "scim sync":
@@ -3285,6 +3300,24 @@ func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID
 			"can sign in.\n\n")
 	}
 
+	// The SSO URL becomes a Location header sent to every user starting a
+	// sign-in, so its scheme is checked here rather than trusted later.
+	u, err := url.Parse(ssoURL)
+	switch {
+	case err != nil:
+		return fmt.Errorf("-sso-url %q is not a URL: %w", ssoURL, err)
+	case u.Scheme != "https" && u.Scheme != "http":
+		return fmt.Errorf("-sso-url must be http or https, not %q: this value is "+
+			"sent to a browser as a redirect", u.Scheme)
+	case u.Host == "":
+		return fmt.Errorf("-sso-url %q has no host", ssoURL)
+	case u.Scheme == "http" && !strings.HasPrefix(u.Host, "localhost") &&
+		!strings.HasPrefix(u.Host, "127.0.0.1"):
+		return fmt.Errorf("-sso-url is plaintext http. The AuthnRequest names this " +
+			"engine and the user being signed in, and the response comes back over " +
+			"the same browser session; use https")
+	}
+
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return err
@@ -3355,4 +3388,91 @@ func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID
 		fmt.Print("  one captured anywhere can be posted here to sign somebody in.\n")
 	}
 	return nil
+}
+
+// scimSourceAdd registers an upstream that may provision users into this engine.
+func scimSourceAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name,
+	onDelete string) error {
+
+	switch {
+	case orgID == "":
+		return fmt.Errorf("give -org, the organisation this upstream provisions into")
+	case slug == "":
+		return fmt.Errorf("give -slug, a short name for this upstream")
+	}
+	if name == "" {
+		name = slug
+	}
+	// The flag is shared with `scim add`, where it means the same thing in the
+	// other direction.
+	switch onDelete {
+	case "", "deactivate":
+		onDelete = "deactivate"
+	case "delete":
+	default:
+		return fmt.Errorf("-on-deactivate must be deactivate or delete (got %q)", onDelete)
+	}
+
+	// 32 bytes. This token can create and deactivate every user in the
+	// organisation, so it is generated here rather than chosen, shown once, and
+	// stored only as a hash.
+	raw := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+		return err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(token))
+
+	var id string
+	if err := conn.QueryRow(ctx, `
+		INSERT INTO core.scim_sources (org_id, slug, display_name, token_hash, on_delete)
+		VALUES ($1::uuid, $2, $3, $4, $5)
+		RETURNING id::text`,
+		orgID, slug, name, sum[:], onDelete).Scan(&id); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("a SCIM source with slug %q already exists in that "+
+				"organisation", slug)
+		}
+		return err
+	}
+
+	fmt.Printf("registered %s\n", name)
+	fmt.Printf("  SCIM base URL : <issuer>/scim/v2\n")
+	fmt.Printf("  bearer token  : %s\n\n", token)
+	fmt.Print("  That token is shown ONCE and stored only as a hash. It can create\n")
+	fmt.Print("  and deactivate every user in this organisation; treat it as a\n")
+	fmt.Print("  password. Lost tokens are replaced, not recovered.\n")
+	if onDelete == "delete" {
+		fmt.Print("\n  WARNING: this source is set to DELETE on deprovisioning, which\n")
+		fmt.Print("  destroys the audit history of everybody it removes. The default,\n")
+		fmt.Print("  deactivate, keeps that history and looks identical upstream.\n")
+	}
+	return nil
+}
+
+// scimSourceList shows the configured upstreams and when each last called.
+func scimSourceList(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT s.slug, s.display_name, s.on_delete, s.enabled,
+		       COALESCE(to_char(s.last_seen_at, 'YYYY-MM-DD HH24:MI'), 'never'),
+		       (SELECT count(*) FROM core.scim_source_links l WHERE l.source_id = s.id)
+		FROM core.scim_sources s ORDER BY s.slug`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-16s %-22s %-11s %-8s %-17s %s\n",
+		"SLUG", "NAME", "ON DELETE", "ENABLED", "LAST SEEN", "USERS")
+	for rows.Next() {
+		var slug, name, onDelete, lastSeen string
+		var enabled bool
+		var users int
+		if err := rows.Scan(&slug, &name, &onDelete, &enabled, &lastSeen, &users); err != nil {
+			return err
+		}
+		fmt.Printf("%-16s %-22s %-11s %-8t %-17s %d\n",
+			slug, name, onDelete, enabled, lastSeen, users)
+	}
+	return rows.Err()
 }

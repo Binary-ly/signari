@@ -109,32 +109,6 @@ func WithdrawConsent(ctx context.Context, tx pgx.Tx, userID, clientID string) er
 	return nil
 }
 
-// GrantedScopes lists everything a user has agreed to across all clients, for
-// the account screen. Without this a user can grant access and never see it
-// again, which is consent as a formality rather than a control.
-func GrantedScopes(ctx context.Context, db *pgxpool.Pool, userID string) (map[string][]string, error) {
-	rows, err := db.Query(ctx, `
-		SELECT client_id, scopes FROM core.consents
-		WHERE user_id = $1::uuid AND withdrawn_at IS NULL
-		ORDER BY client_id`, userID)
-	if err != nil {
-		return nil, fmt.Errorf("listing consents: %w", err)
-	}
-	defer rows.Close()
-
-	out := map[string][]string{}
-	for rows.Next() {
-		var clientID string
-		var scopes []string
-		if err := rows.Scan(&clientID, &scopes); err != nil {
-			return nil, err
-		}
-		sort.Strings(scopes)
-		out[clientID] = scopes
-	}
-	return out, rows.Err()
-}
-
 // ConnectedApp is one application a user has granted access to.
 type ConnectedApp struct {
 	ClientID    string

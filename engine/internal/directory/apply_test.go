@@ -115,6 +115,28 @@ func TestApplyCreatesLinksAndDeactivates(t *testing.T) {
 			create, update, deactivate)
 	}
 
+	// Bob is signed in when he leaves.
+	//
+	// This one line is the difference between a test that passes and a test that
+	// finds the bug. Without a session, the UPDATE that revokes sessions matches
+	// zero rows and its values are never checked against the column's
+	// constraint -- so a deactivation that could never work in production
+	// passed here for as long as nobody was logged in.
+	var bobID string
+	if err := pool.QueryRow(ctx,
+		`SELECT id::text FROM core.users WHERE org_id=$1::uuid AND email=$2`,
+		orgID, remote[1].Email).Scan(&bobID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO core.sessions (sid, org_id, user_id, acr, amr, auth_time,
+		                           not_after, cookie_hash)
+		VALUES ($1, $2::uuid, $3::uuid, '1', ARRAY['pwd'], now(),
+		        now() + interval '12 hours', sha256($4::bytea))`,
+		"dir-test-"+suffix, orgID, bobID, []byte("cookie-"+suffix)); err != nil {
+		t.Fatal(err)
+	}
+
 	// Now Bob leaves.
 	local, _ = LoadLocal(ctx, pool, sourceID, orgID)
 	plan = BuildPlan(remote[:1], local, "deactivate", 60)
@@ -133,6 +155,17 @@ func TestApplyCreatesLinksAndDeactivates(t *testing.T) {
 	}
 	if status != "deactivated" {
 		t.Errorf("the departed user is %q, want deactivated", status)
+	}
+	// And his session is gone. A deactivated account with a live session is
+	// still a signed-in person.
+	var live int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM core.sessions WHERE user_id=$1::uuid AND revoked_at IS NULL`,
+		bobID).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live != 0 {
+		t.Errorf("the departed user still has %d live session(s)", live)
 	}
 	// And Alice is untouched.
 	if err := pool.QueryRow(ctx,

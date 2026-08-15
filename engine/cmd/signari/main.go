@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -46,6 +47,7 @@ import (
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/proxycheck"
+	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
 )
@@ -90,6 +92,8 @@ commands:
   policy test         check a policy file (no database needed -- for CI)
   policy apply        install a policy file
   policy show         print the policy in force
+  radius add-client   register a network device permitted to send Access-Requests
+  radius list         show registered RADIUS clients
   admin-token create  mint a scoped, revocable admin API token
   admin-token list    show admin tokens, their scopes and when each was last used
   admin-token revoke  revoke one immediately, with no restart
@@ -143,6 +147,8 @@ func run(args []string) error {
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+	radiusNet := fs.String("network", "", "CIDR the RADIUS device sends from, e.g. 10.0.0.0/24")
+	radiusSecret := fs.String("secret", "", "shared secret configured on the RADIUS device")
 	tokenScopes := fs.String("scopes", "",
 		"comma-separated admin token scopes, e.g. users:write,clients:write")
 	tokenExpires := fs.Duration("expires-in", 0,
@@ -174,7 +180,7 @@ func run(args []string) error {
 	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
 		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
 		cmd == "saml" || cmd == "idp" || cmd == "scim" || cmd == "group" ||
-		cmd == "policy" || cmd == "admin-token" {
+		cmd == "policy" || cmd == "admin-token" || cmd == "radius" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -248,6 +254,10 @@ func run(args []string) error {
 		return janitorOnce(ctx, conn)
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
+	case "radius add-client":
+		return radiusAddClient(ctx, conn, *orgID, *name, *radiusNet, *radiusSecret)
+	case "radius list":
+		return radiusListClients(ctx, conn)
 	case "admin-token create":
 		return adminTokenCreate(ctx, conn, *name, *orgID, *tokenScopes, *tokenExpires)
 	case "admin-token list":
@@ -714,6 +724,63 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 			log.Info("LDAP listening", "addr", ldapAddr, "base_dn", baseDN, "tls", tlsCert != "")
 			if err := ldapSrv.Serve(ctx, ln); err != nil {
 				log.Error("LDAP stopped", "err", err)
+			}
+		}()
+	}
+
+	// # RADIUS
+	//
+	// This listener did not exist. internal/radius was complete, tested against
+	// CVE-2024-3596, and imported by nothing -- so `signari serve` had no way to
+	// answer an Access-Request, while the roadmap recorded RADIUS as done. Every
+	// test passed throughout, because tests prove a package behaves and say
+	// nothing about whether anything calls it.
+	if radiusAddr := os.Getenv("SIGNARI_RADIUS_ADDR"); radiusAddr != "" {
+		radiusOrgID := os.Getenv("SIGNARI_RADIUS_ORG_ID")
+		if radiusOrgID == "" {
+			var n int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM core.organizations`).Scan(&n); err != nil {
+				return fmt.Errorf("counting organisations for the RADIUS listener: %w", err)
+			}
+			if n != 1 {
+				return fmt.Errorf("SIGNARI_RADIUS_ORG_ID is not set and this database holds "+
+					"%d organisations. A RADIUS listener serves exactly one, and a user "+
+					"name arriving from a switch does not say which", n)
+			}
+			if err := pool.QueryRow(ctx, `SELECT id::text FROM core.organizations`).Scan(&radiusOrgID); err != nil {
+				return fmt.Errorf("resolving the organisation for the RADIUS listener: %w", err)
+			}
+		}
+
+		root, rerr := rootKey()
+		if rerr != nil {
+			return fmt.Errorf("RADIUS shared secrets are sealed with the root key: %w", rerr)
+		}
+		clients, cerr := loadRADIUSClients(ctx, pool, radiusOrgID, root)
+		if cerr != nil {
+			return cerr
+		}
+
+		// radius.New refuses an empty client list, and that refusal is the point:
+		// a server that trusts everybody is an authentication oracle for the whole
+		// network. Surfaced here with the command that fixes it rather than as a
+		// bare error from a package the operator has never heard of.
+		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients},
+			httpapi.NewRADIUSAuthenticator(pool,
+				passwords.NewHasher(passwords.MemoryBudgetMiB), radiusOrgID), log)
+		if rerr2 != nil {
+			return fmt.Errorf("%w -- register one with `signari radius add-client`", rerr2)
+		}
+
+		pc, perr := net.ListenPacket("udp", radiusAddr)
+		if perr != nil {
+			return fmt.Errorf("RADIUS listener: %w", perr)
+		}
+		go func() {
+			log.Info("RADIUS listening", "addr", radiusAddr, "clients", len(clients),
+				"org_id", radiusOrgID)
+			if err := radiusSrv.Serve(ctx, pc); err != nil {
+				log.Error("RADIUS stopped", "err", err)
 			}
 		}()
 	}
@@ -2223,4 +2290,128 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+// radiusAddClient registers a network device permitted to send Access-Requests.
+func radiusAddClient(ctx context.Context, conn *pgx.Conn, orgID, name, network, secret string) error {
+	switch {
+	case orgID == "":
+		return fmt.Errorf("give -org, the organisation uuid this device authenticates against")
+	case name == "":
+		return fmt.Errorf("give -name; it is what appears in the logs when this device asks")
+	case network == "":
+		return fmt.Errorf("give -network, the CIDR the device sends from, e.g. 10.0.0.0/24")
+	}
+	if secret == "" {
+		return fmt.Errorf("give -secret, the shared secret configured on the device")
+	}
+	if err := radius.ValidSecret(secret); err != nil {
+		return err
+	}
+
+	_, ipnet, err := net.ParseCIDR(network)
+	if err != nil {
+		return fmt.Errorf("-network %q is not a CIDR: %w", network, err)
+	}
+	if ones, _ := ipnet.Mask.Size(); ones == 0 {
+		return fmt.Errorf("-network %q accepts every source address on the internet. "+
+			"RADIUS has no handshake and no certificate, so the address range is part "+
+			"of the credential -- narrow it to the devices that actually ask", network)
+	}
+
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	sealed, err := root.Seal([]byte(secret), "radius-client-secret")
+	if err != nil {
+		return fmt.Errorf("sealing the shared secret: %w", err)
+	}
+
+	var id string
+	err = conn.QueryRow(ctx, `
+		INSERT INTO core.radius_clients (org_id, name, network, secret_enc)
+		VALUES ($1::uuid, $2, $3::cidr, $4)
+		RETURNING id::text`, orgID, name, ipnet.String(), sealed).Scan(&id)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("a RADIUS client for %s is already registered in that "+
+				"organisation; two entries for one range with different secrets is a "+
+				"configuration nobody can reason about", ipnet.String())
+		}
+		return err
+	}
+
+	fmt.Printf("registered %s\n  network : %s\n  id      : %s\n", name, ipnet.String(), id)
+	fmt.Println("\n  Start the listener with SIGNARI_RADIUS_ADDR (and SIGNARI_RADIUS_ORG_ID\n" +
+		"  if this database holds more than one organisation).")
+	return nil
+}
+
+func radiusListClients(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT c.name, host(c.network) || '/' || masklen(c.network), c.enabled, o.slug
+		FROM core.radius_clients c
+		JOIN core.organizations o ON o.id = c.org_id
+		ORDER BY o.slug, c.name`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	n := 0
+	fmt.Printf("\n  %-28s %-20s %-10s %s\n", "NAME", "NETWORK", "STATE", "ORG")
+	for rows.Next() {
+		var name, network, org string
+		var enabled bool
+		if err := rows.Scan(&name, &network, &enabled, &org); err != nil {
+			return err
+		}
+		n++
+		state := "enabled"
+		if !enabled {
+			state = "disabled"
+		}
+		fmt.Printf("  %-28s %-20s %-10s %s\n", truncate(name, 28), network, state, org)
+	}
+	if n == 0 {
+		fmt.Println("\n  No RADIUS clients. The listener refuses to start without at least one:")
+		fmt.Println("  a server that trusts everybody is an authentication oracle for the")
+		fmt.Println("  whole network.")
+	}
+	return rows.Err()
+}
+
+// loadRADIUSClients reads and unseals the configured devices for one organisation.
+func loadRADIUSClients(ctx context.Context, pool *pgxpool.Pool, orgID string,
+	root *keys.RootKey) ([]radius.Client, error) {
+
+	rows, err := pool.Query(ctx, `
+		SELECT name, network, secret_enc FROM core.radius_clients
+		WHERE org_id = $1::uuid AND enabled`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []radius.Client
+	for rows.Next() {
+		var name string
+		var network netip.Prefix
+		var sealed []byte
+		if err := rows.Scan(&name, &network, &sealed); err != nil {
+			return nil, err
+		}
+		secret, err := root.Open(sealed, "radius-client-secret")
+		if err != nil {
+			return nil, fmt.Errorf("unsealing the secret for RADIUS client %q: %w", name, err)
+		}
+		_, ipnet, err := net.ParseCIDR(network.String())
+		if err != nil {
+			return nil, fmt.Errorf("RADIUS client %q has an unusable network %q: %w",
+				name, network, err)
+		}
+		out = append(out, radius.Client{Net: ipnet, Secret: string(secret), Name: name})
+	}
+	return out, rows.Err()
 }

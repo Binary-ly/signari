@@ -40,6 +40,8 @@ class ConfigurationScreensTest extends TestCase
         '/admin/groups',
         '/admin/scim-targets',
         '/admin/admin-tokens',
+        '/admin/radius-clients',
+        '/admin/access-policies',
     ];
 
     protected function tearDown(): void
@@ -213,6 +215,32 @@ class ConfigurationScreensTest extends TestCase
             $this->assertNotNull(
                 $token->org_id,
                 'a deployment-wide token is listed on a tenant screen'
+            );
+        }
+    }
+
+    /**
+     * The RADIUS shared secret must not be reachable from the console.
+     *
+     * Sharper than the token case: this one is stored ENCRYPTED rather than
+     * hashed, because RADIUS needs the secret itself to verify a request. So it
+     * is recoverable by anything holding the root key, and the console must not
+     * be on that list.
+     */
+    public function test_the_radius_secret_is_not_exposed(): void
+    {
+        $columns = DB::select(
+            "SELECT column_name FROM information_schema.columns
+             WHERE table_schema = 'core_v1' AND table_name = 'radius_clients'"
+        );
+
+        $names = array_map(fn ($c) => $c->column_name, $columns);
+
+        foreach (['secret', 'secret_enc', 'shared_secret'] as $forbidden) {
+            $this->assertNotContains(
+                $forbidden,
+                $names,
+                "core_v1.radius_clients exposes {$forbidden}; the console must never see it"
             );
         }
     }

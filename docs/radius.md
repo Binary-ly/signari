@@ -2,10 +2,48 @@
 
 For VPNs, wireless controllers and switches that authenticate users by RADIUS.
 
+```sh
+# Register the devices allowed to ask.
+signari radius add-client -org <org-uuid> \
+  -name "office wifi controller" \
+  -network 10.0.0.0/24 \
+  -secret "<shared secret configured on the device>"
+
+signari radius list
+
+# Then start the listener.
+SIGNARI_RADIUS_ADDR=0.0.0.0:1812 \
+SIGNARI_RADIUS_ORG_ID=<org-uuid> \
+  signari serve
 ```
-SIGNARI_RADIUS_ADDR=0.0.0.0:1812
-SIGNARI_RADIUS_CLIENTS="10.0.0.0/8=<shared-secret>"
-```
+
+## A correction
+
+An earlier version of this page documented `SIGNARI_RADIUS_CLIENTS` as the way to
+configure devices. **That variable never existed.** Nor did the listener:
+`internal/radius` was complete, tested against CVE-2024-3596, and imported by
+nothing at all — so `signari serve` had no way to answer an Access-Request, while
+this page and the roadmap both recorded RADIUS as working.
+
+Every test passed throughout, because tests prove a package behaves and say
+nothing about whether anything calls it. It was found by grepping for importers
+of `internal/radius` and getting no results, next to `internal/ldapd` which the
+CLI imports.
+
+The listener now exists and is verified below.
+
+## Clients live in the database
+
+Not in an environment variable, for two reasons. The console can show them, and
+the shared secret can be sealed with the root key — the one credential in this
+system stored **encrypted rather than hashed**, because RADIUS computes HMAC-MD5
+over a request with the secret itself and needs the value, not a verifier.
+
+The source range is part of the credential, not a convenience. RADIUS has no
+handshake and no certificate, so the address and the secret are the only two
+things distinguishing a real switch from anybody who can send a UDP packet.
+`0.0.0.0/0` is refused at registration, and a secret under 16 characters is
+refused too.
 
 Access-Request only. Accounting and change-of-authorization are separate
 protocols with separate risks, and answering a code we do not implement invites
@@ -85,3 +123,36 @@ Access-Accept we sent would have been discarded by the device that asked for it.
 Found by round-tripping our own response through our own verifier — a test that
 only exists because "we sign it and we check it" is exactly the pair that can be
 consistently wrong together.
+
+
+## Verified on the wire
+
+Against `signari serve` with a listener bound, using a RADIUS client written
+separately from the engine:
+
+| request | result |
+| --- | --- |
+| valid credentials | Access-Accept, `Message-Authenticator` verified |
+| wrong password | Access-Reject, `Message-Authenticator` verified |
+| **no `Message-Authenticator`** | **silence** — this is CVE-2024-3596 |
+| wrong shared secret | silence |
+| source outside the registered range | silence |
+
+Silence rather than a rejection is deliberate for the last three: replying at all
+confirms a RADIUS server is here and turns the port into a discovery tool.
+
+The response `Message-Authenticator` is verified by the test client against the
+**request** authenticator, per RFC 3579 §3.2 — the check that caught our own
+Access-Accept failing our own verification when this was first written.
+
+## One credential path
+
+RADIUS authentication goes through the same code as every other way in, with the
+same Argon2 parameters, the same throttling and the same audit trail. A protocol
+front end with its own quiet password check routes around every control the rest
+of the system has, so `RADIUSAuthenticator` is a thin wrapper over the LDAP
+shim's authenticator rather than its own query.
+
+The identity is discarded: an Access-Accept carries no user attributes here,
+because a network device did not ask for a directory and should not be handed
+one.

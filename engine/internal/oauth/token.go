@@ -236,6 +236,19 @@ func RequireClientAuth(c *clients.Client, req TokenRequest) *TokenError {
 		if req.ClientAssertion != "" {
 			return nil
 		}
+		// And a registered mutual-TLS client authenticates with the certificate
+		// on the connection (RFC 8705 §2), which is not in the request body at
+		// all. This gate caught private_key_jwt the same way once; the lesson is
+		// that "authentication" here means "some method applies", not "a secret
+		// was posted".
+		//
+		// Eligibility only. Whether the certificate actually matches is decided
+		// later, by code that can see the TLS state -- and a client registered
+		// for mTLS that presents nothing is refused there, not waved through.
+		if c.TLSSubjectDN != "" || c.TLSSANDNS != "" || c.TLSSANURI != "" ||
+			len(c.TLSThumbprint) > 0 {
+			return nil
+		}
 		if req.AuthMethod == "none" || req.ClientSecret == "" {
 			return tokenErr("invalid_client", "client authentication is required")
 		}

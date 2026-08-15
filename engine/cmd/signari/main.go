@@ -76,6 +76,7 @@ commands:
   user create         create a user with a password
   client create       register an OAuth client
   client set-keys     switch a client to private_key_jwt with its public JWKS
+  client set-tls      authenticate a client by TLS certificate (RFC 8705)
   janitor once        run one maintenance pass (serve runs this continuously)
   import keycloak     import users and clients from a Keycloak realm export
   import authentik    import users and groups from an authentik dumpdata export
@@ -173,6 +174,10 @@ func run(args []string) error {
 	tokenExpires := fs.Duration("expires-in", 0,
 		"how long an admin token stays valid, e.g. 2160h for 90 days (0 = never)")
 	tokenID := fs.String("token-id", "", "admin token uuid to revoke")
+	tlsSubjectDN := fs.String("tls-subject-dn", "", "certificate subject DN that must match (RFC 4514)")
+	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
+	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
+	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
 	spEncCert := fs.String("sp-encryption-cert", "",
 		"path to the provider's ENCRYPTION certificate (PEM); assertions are encrypted to it")
 	slug := fs.String("slug", "", "short name used in /login/with/<slug>")
@@ -264,6 +269,9 @@ func run(args []string) error {
 		return instanceCreate(ctx, conn, *issuer, *name)
 	case "user create":
 		return userCreate(ctx, conn, *email, *password)
+	case "client set-tls":
+		return clientSetTLS(ctx, conn, *clientID, *tlsSubjectDN, *tlsSANDNS, *tlsSANURI,
+			*spCert, *tlsBound)
 	case "client set-keys":
 		return clientSetKeys(ctx, conn, *clientID, *jwksPath)
 	case "client create":
@@ -653,6 +661,10 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	if err != nil {
 		return err
 	}
+	// The authorities that may issue client certificates, for RFC 8705. Supplied
+	// here because this is where TLS is configured; nil is a valid answer and
+	// means tls_client_auth is refused.
+	srv.SetClientCAs(clientCAPool())
 
 	// The outbox worker is a SINGLETON: running it on every node would deliver
 	// each logout notice once per node. It claims rows FOR UPDATE SKIP LOCKED so
@@ -839,6 +851,19 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	// worth the compatibility they buy for a service whose whole job is secrets.
 	h.TLSConfig = &tls.Config{
 		MinVersion: tls.VersionTLS12,
+		// Request a certificate; verify nothing here.
+		//
+		// RequireAndVerifyClientCert would demand one from browsers and take the
+		// sign-in surface down. VerifyClientCertIfGiven looks right and is worse:
+		// with a CA pool it kills self-signed clients during the handshake, and
+		// with NO pool it rejects every offered certificate outright -- which
+		// breaks self_signed_tls_client_auth, the method that exists because
+		// there is no CA.
+		//
+		// So the chain check moves into clientauth.VerifyClientCertificate, where
+		// it can depend on which method the client actually registered. Both
+		// methods then work on one listener.
+		ClientAuth: tls.RequestClientCert,
 		// Go picks sane defaults for TLS 1.3; this constrains 1.2 to suites with
 		// forward secrecy and AEAD only.
 		CipherSuites: []uint16{
@@ -2780,6 +2805,111 @@ func exportAudit(ctx context.Context, conn *pgx.Conn, orgID, from, to, out strin
 		fmt.Fprintln(os.Stderr, "  This file is still the data as stored, but its integrity cannot be\n"+
 			"  asserted. Investigate before submitting it anywhere that matters.")
 		return fmt.Errorf("the audit chain did not verify")
+	}
+	return nil
+}
+
+// clientCAPool loads the authorities that may issue client certificates.
+//
+// Separate from the server's own chain on purpose. Trusting the system roots
+// here would mean any certificate from any public CA could satisfy
+// tls_client_auth, which is thousands of issuers rather than the one an operator
+// meant.
+//
+// nil means no pool, which is correct rather than permissive: with no pool the
+// TLS layer produces no VerifiedChains, and tls_client_auth is refused. Only
+// self_signed_tls_client_auth works, which is exactly right for a deployment
+// that has not configured a CA.
+func clientCAPool() *x509.CertPool {
+	path := os.Getenv("SIGNARI_TLS_CLIENT_CA")
+	if path == "" {
+		return nil
+	}
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		// Not fatal: the server still serves, and mutual-TLS clients fail with a
+		// specific error rather than the whole deployment refusing to start over
+		// an optional file.
+		fmt.Fprintf(os.Stderr, "signari: reading SIGNARI_TLS_CLIENT_CA: %v\n", err)
+		return nil
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		fmt.Fprintf(os.Stderr, "signari: SIGNARI_TLS_CLIENT_CA contained no certificates\n")
+		return nil
+	}
+	return pool
+}
+
+// clientSetTLS registers a client for mutual-TLS authentication.
+func clientSetTLS(ctx context.Context, conn *pgx.Conn, clientID, subjectDN, sanDNS,
+	sanURI, certPath string, boundTokens bool) error {
+
+	if clientID == "" {
+		return fmt.Errorf("give -client-id")
+	}
+	set := 0
+	for _, v := range []string{subjectDN, sanDNS, sanURI, certPath} {
+		if v != "" {
+			set++
+		}
+	}
+	if set == 0 {
+		return fmt.Errorf("give exactly one of -tls-subject-dn, -tls-san-dns, " +
+			"-tls-san-uri (PKI) or -sp-cert (self-signed)")
+	}
+	if set > 1 {
+		return fmt.Errorf("give exactly ONE matching rule. Several would be an AND " +
+			"nobody expects, and any-of is weaker than it looks")
+	}
+
+	var thumb []byte
+	if certPath != "" {
+		b, err := os.ReadFile(certPath)
+		if err != nil {
+			return err
+		}
+		block, _ := pem.Decode(b)
+		if block == nil {
+			return fmt.Errorf("%s is not PEM", certPath)
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return fmt.Errorf("%s did not parse as a certificate: %w", certPath, err)
+		}
+		sum := sha256.Sum256(cert.Raw)
+		thumb = sum[:]
+	}
+
+	tag, err := conn.Exec(ctx, `
+		UPDATE core.clients
+		SET tls_subject_dn = NULLIF($2,''), tls_san_dns = NULLIF($3,''),
+		    tls_san_uri = NULLIF($4,''), tls_thumbprint = $5,
+		    tls_bound_tokens = $6, updated_at = now()
+		WHERE client_id = $1`,
+		clientID, subjectDN, sanDNS, sanURI, thumb, boundTokens)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no client %q", clientID)
+	}
+
+	method := "tls_client_auth"
+	if thumb != nil {
+		method = "self_signed_tls_client_auth"
+	}
+	fmt.Printf("%s now authenticates with %s\n", clientID, method)
+	if method == "tls_client_auth" {
+		fmt.Println("\n  This needs SIGNARI_TLS_CLIENT_CA set to the authority that issues\n" +
+			"  those certificates. Without it the TLS layer verifies no chain and\n" +
+			"  the client is refused -- deliberately, since an unverified subject\n" +
+			"  string is not an identity.")
+	}
+	if boundTokens {
+		fmt.Println("\n  Access tokens are bound to the certificate (cnf.x5t#S256). A stolen\n" +
+			"  token is useless without the private key -- and every caller must now\n" +
+			"  present that certificate at the resource server too.")
 	}
 	return nil
 }

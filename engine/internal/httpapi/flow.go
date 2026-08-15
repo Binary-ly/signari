@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/clientauth"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/keys"
@@ -291,6 +292,13 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(withDPoPThumbprint(r.Context(), jkt))
 	}
 
+	// The certificate on this connection, if any. Recorded whether or not the
+	// client authenticates with it: a client may use client_secret_basic and
+	// still want certificate-bound tokens, which RFC 8705 §3 explicitly allows.
+	if thumb := clientauth.ThumbprintFromState(r.TLS); thumb != "" {
+		r = r.WithContext(withCertThumbprint(r.Context(), thumb))
+	}
+
 	ctx := r.Context()
 
 	// Token responses must never be cached: they carry bearer credentials.
@@ -444,6 +452,20 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	// one somebody eventually forgets to pass.
 	jkt := dpopThumbprintFrom(ctx)
 
+	// Certificate binding, RFC 8705 §3. Read from the connection rather than
+	// carried on the context: unlike a DPoP proof, the certificate is a property
+	// of the TLS session and cannot be forged into a later request.
+	//
+	// Only when the client is registered for bound tokens. A client that
+	// authenticates by certificate but is not ready for binding keeps getting
+	// plain tokens, because flipping binding on breaks every caller that does not
+	// present the certificate at the resource server -- that is a cutover, not a
+	// side effect of turning on mTLS.
+	certThumb := ""
+	if c.TLSBoundTokens {
+		certThumb = certThumbprintFrom(ctx)
+	}
+
 	alg := keys.Algorithm(c.IDTokenAlg)
 	key, err := s.cfg.Keys.Active(alg)
 	if err != nil {
@@ -486,7 +508,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		ClientID:  c.ClientID,
 		Scope:     joinScopes(scopes),
 		SessionID: sid,
-		Cnf:       confirmationFor(jkt),
+		Cnf:       bindingFor(jkt, certThumb),
 	}, tokens.TypAccessToken)
 	if err != nil {
 		return nil, nil, err
@@ -731,6 +753,18 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 	}
 
 	now := time.Now()
+	// Certificate binding on THIS path too, RFC 8705 §3.
+	//
+	// This is the path a mutual-TLS service client actually uses, and it minted
+	// unbound tokens while the authorization-code path bound them -- the exact
+	// half-implementation the migration for this feature warns about: a client
+	// authenticates with a certificate and receives a token as stealable as any
+	// other.
+	certThumb := ""
+	if c.TLSBoundTokens {
+		certThumb = certThumbprintFrom(r.Context())
+	}
+
 	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
 		Issuer:   s.cfg.Issuer,
 		Subject:  c.ClientID,
@@ -738,6 +772,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
 		IssuedAt: now.Unix(),
 		JTI:      jti,
+		Cnf:      bindingFor(dpopThumbprintFrom(r.Context()), certThumb),
 		ClientID: c.ClientID,
 		Scope:    joinScopes(scopes),
 		// No SessionID: nothing to tie this to, and inventing one would make

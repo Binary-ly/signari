@@ -30,6 +30,18 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 		return fmt.Errorf("reading the client's authentication method: %w", err)
 	}
 
+	// Mutual-TLS first: a client registered for it authenticates by the
+	// certificate on the connection, not by anything in the body. Checked before
+	// the stored method because the expectation lives on the client row rather
+	// than in client_auth_methods, and because a client that presents a
+	// certificate should never fall through to a secret comparison.
+	if exp := c.TLSExpectation(); exp.Configured() {
+		if err := clientauth.VerifyClientCertificate(r.TLS, exp, s.clientCAs); err != nil {
+			return fmt.Errorf("mutual-TLS client authentication failed: %w", err)
+		}
+		return nil
+	}
+
 	switch method {
 	case "private_key_jwt":
 		assertionType := r.PostFormValue("client_assertion_type")

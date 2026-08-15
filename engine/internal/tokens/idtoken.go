@@ -171,8 +171,17 @@ func AtHash(alg keys.Algorithm, accessToken string) (string, error) {
 
 // AccessTokenClaims is the RFC 9068 JWT access token payload.
 // Confirmation carries the DPoP key thumbprint (RFC 9449 §6.1).
+// Confirmation is the RFC 7800 `cnf` claim: what a bearer of this token must
+// also prove possession of.
+//
+// Exactly one member is set. `jkt` is DPoP's key thumbprint (RFC 9449); `x5t#S256`
+// is mutual-TLS's certificate thumbprint (RFC 8705). Both omitempty, so a token
+// with no binding carries no cnf at all rather than an empty object -- a
+// resource server checking for the claim's presence must not be told "yes, and
+// it is blank".
 type Confirmation struct {
-	JKT string `json:"jkt"`
+	JKT     string `json:"jkt,omitempty"`
+	X5TS256 string `json:"x5t#S256,omitempty"`
 }
 
 type AccessTokenClaims struct {

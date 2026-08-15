@@ -118,6 +118,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkEmailFactor(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkMTLS(ctx, conn, r); err != nil {
+		return nil, err
+	}
 
 	sort.SliceStable(r.Findings, func(i, j int) bool {
 		return r.Findings[i].Severity < r.Findings[j].Severity
@@ -441,6 +444,35 @@ func checkEmailFactor(ctx context.Context, conn *pgx.Conn, r *Report) error {
 				enrolled),
 			"they cannot sign in: the code is written to the log instead of sent. "+
 				"Set SIGNARI_SMTP_HOST and SIGNARI_MAIL_FROM")
+	}
+	return nil
+}
+
+// checkMTLS catches the configuration that refuses every mutual-TLS client.
+//
+// tls_client_auth needs an authority to verify against. Registered without one,
+// the client is refused on every request -- correctly, and in a way that looks
+// like the client's fault from every angle except this one.
+func checkMTLS(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	if _, err := conn.Exec(ctx, `SELECT tls_subject_dn FROM core.clients LIMIT 1`); err != nil {
+		return nil // older schema
+	}
+	r.ran("mutual-TLS clients")
+
+	var pkiClients int
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*) FROM core.clients
+		WHERE tls_subject_dn IS NOT NULL OR tls_san_dns IS NOT NULL
+		   OR tls_san_uri IS NOT NULL`).Scan(&pkiClients); err != nil {
+		return err
+	}
+	if pkiClients > 0 && os.Getenv("SIGNARI_TLS_CLIENT_CA") == "" {
+		r.add(Critical, "mutual-TLS",
+			fmt.Sprintf("%d client(s) use tls_client_auth and SIGNARI_TLS_CLIENT_CA is not set",
+				pkiClients),
+			"there is no authority to verify their certificates against, so every "+
+				"request from them is refused. Set it to the CA that issues those "+
+				"certificates, or move them to self_signed_tls_client_auth")
 	}
 	return nil
 }

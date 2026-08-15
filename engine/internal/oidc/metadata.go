@@ -217,7 +217,12 @@ func Build(cfg Config) (*Metadata, error) {
 		// a client configured for it cannot fall back to a secret, which is the
 		// downgrade that would make advertising it dishonest.
 		TokenEndpointAuthMethods: []string{
-			"client_secret_basic", "client_secret_post", "private_key_jwt", "none",
+			"client_secret_basic", "client_secret_post", "private_key_jwt",
+			// RFC 8705. Advertised unconditionally because the token endpoint
+			// accepts them whenever a client is registered for one -- unlike
+			// registration_endpoint, which needs an organisation to opt in before
+			// it answers anything at all.
+			"tls_client_auth", "self_signed_tls_client_auth", "none",
 		},
 
 		// S256 only, and the authorize endpoint enforces it. `plain` is not

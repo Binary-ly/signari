@@ -36,6 +36,19 @@ func confirmationFor(jkt string) *tokens.Confirmation {
 	return &tokens.Confirmation{JKT: jkt}
 }
 
+// confirmationForCert is the mutual-TLS equivalent, RFC 8705 §3.1.
+//
+// Same claim, different member: `cnf.x5t#S256` instead of `cnf.jkt`. A token can
+// carry only one -- a client authenticating with both DPoP and mTLS would be
+// asserting two different possession proofs for one token, and deciding which
+// one a resource server must check is not a question to leave open.
+func confirmationForCert(thumbprint string) *tokens.Confirmation {
+	if thumbprint == "" {
+		return nil
+	}
+	return &tokens.Confirmation{X5TS256: thumbprint}
+}
+
 // bearerOrDPoP names the token type.
 //
 // RFC 9449 §5: a sender-constrained token is issued as token_type "DPoP", not
@@ -90,3 +103,33 @@ var (
 	errDPoPReplay      = errors.New("this DPoP proof has already been used")
 	errDPoPUnavailable = errors.New("DPoP replay detection is unavailable")
 )
+
+// bindingFor chooses the one confirmation a token may carry.
+//
+// DPoP wins when both are present. A client doing both is asserting two
+// possession proofs for one token, and a resource server has to know which to
+// check -- so one is chosen here rather than leaving the question open in the
+// claim. DPoP is preferred because it is the proof the client had to construct
+// deliberately for this request; the certificate is a property of a connection
+// it may not even know is mutually authenticated.
+func bindingFor(jkt, certThumbprint string) *tokens.Confirmation {
+	if jkt != "" {
+		return confirmationFor(jkt)
+	}
+	return confirmationForCert(certThumbprint)
+}
+
+type certThumbKey struct{}
+
+// withCertThumbprint carries the presented certificate's thumbprint.
+func withCertThumbprint(ctx context.Context, thumb string) context.Context {
+	if thumb == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, certThumbKey{}, thumb)
+}
+
+func certThumbprintFrom(ctx context.Context) string {
+	t, _ := ctx.Value(certThumbKey{}).(string)
+	return t
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"signari.dev/engine/internal/clientauth"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -42,10 +43,18 @@ type Client struct {
 	// transfers privilege, so it is granted deliberately or not at all.
 	MayExchange       bool
 	ExchangeAudiences []string
-	PKCEMethods       []string
-	IDTokenAlg        string
-	RedirectURIs      []string
-	RefreshTTL        int
+
+	// Mutual-TLS, RFC 8705. Exactly one of the first four is set; the database
+	// enforces that with a CHECK constraint.
+	TLSSubjectDN   string
+	TLSSANDNS      string
+	TLSSANURI      string
+	TLSThumbprint  []byte
+	TLSBoundTokens bool
+	PKCEMethods    []string
+	IDTokenAlg     string
+	RedirectURIs   []string
+	RefreshTTL     int
 }
 
 // RefreshTokenTTLSeconds is the client's configured refresh lifetime, with a
@@ -77,18 +86,21 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	c := &Client{ClientID: clientID}
 	var secret *string
 	var alias *string
+	var tlsDN, tlsDNS, tlsURI *string
 
 	err := q.QueryRow(ctx, `
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce, pkce_methods,
 		       id_token_signed_alg, refresh_token_ttl_s, first_party, issuer_alias,
-		       may_exchange, exchange_audiences
+		       may_exchange, exchange_audiences,
+		       tls_subject_dn, tls_san_dns, tls_san_uri, tls_thumbprint, tls_bound_tokens
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
 			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE, &c.PKCEMethods,
 			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias,
-			&c.MayExchange, &c.ExchangeAudiences)
+			&c.MayExchange, &c.ExchangeAudiences,
+			&tlsDN, &tlsDNS, &tlsURI, &c.TLSThumbprint, &c.TLSBoundTokens)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -100,6 +112,15 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	}
 	if alias != nil {
 		c.IssuerAlias = *alias
+	}
+	if tlsDN != nil {
+		c.TLSSubjectDN = *tlsDN
+	}
+	if tlsDNS != nil {
+		c.TLSSANDNS = *tlsDNS
+	}
+	if tlsURI != nil {
+		c.TLSSANURI = *tlsURI
 	}
 
 	rows, err := q.Query(ctx,
@@ -164,3 +185,13 @@ func contains(hay []string, needle string) bool {
 }
 
 var _ = Store{}
+
+// TLSExpectation is what this client's certificate must satisfy, if any.
+func (c *Client) TLSExpectation() clientauth.TLSExpectation {
+	return clientauth.TLSExpectation{
+		SubjectDN:  c.TLSSubjectDN,
+		SANDNS:     c.TLSSANDNS,
+		SANURI:     c.TLSSANURI,
+		Thumbprint: c.TLSThumbprint,
+	}
+}

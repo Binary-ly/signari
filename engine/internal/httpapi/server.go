@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -34,6 +35,9 @@ type Server struct {
 	// captcha is nil-safe: every method tolerates a nil receiver, so a
 	// deployment that has never configured one needs no branches elsewhere.
 	captcha *captcha.Verifier
+	// clientCAs verifies mutual-TLS client certificates. nil means no authority
+	// is configured, which refuses tls_client_auth rather than relaxing it.
+	clientCAs *x509.CertPool
 	// device throttles the RFC 8628 verification screen. A user code is short by
 	// necessity, so the endpoint is what limits guessing -- there is no per-code
 	// counter, because a wrong guess names no record to charge it to.
@@ -49,6 +53,13 @@ type Server struct {
 	// delegator verifies credentials against a provider being migrated from.
 	delegator *delegated.Verifier
 }
+
+// SetClientCAs supplies the authorities that may issue client certificates.
+//
+// Set after construction because it comes from the same place the TLS listener
+// is configured, and passing it through New would make every caller that does
+// not use mutual-TLS pass nil.
+func (s *Server) SetClientCAs(pool *x509.CertPool) { s.clientCAs = pool }
 
 func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender) (*Server, error) {
 	if mailer == nil {

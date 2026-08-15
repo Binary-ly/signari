@@ -162,6 +162,12 @@ func run(args []string) error {
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+	srcSSOURL := fs.String("sso-url", "", "upstream SAML SSO URL (idp add -kind saml)")
+	srcUnsolicited := fs.Bool("allow-unsolicited", false,
+		"accept IdP-initiated sign-in, which cannot be tied to a request this browser made")
+	srcForceAuthn := fs.Bool("force-authn", false,
+		"ask the upstream to re-authenticate rather than reuse its session")
+	srcSkew := fs.Int("skew", 30, "clock tolerance in seconds, clamped to 300")
 	ldapURL := fs.String("ldap-url", "", "ldap:// or ldaps:// URL of the directory")
 	ldapBindDN := fs.String("ldap-bind-dn", "", "DN to bind as when reading")
 	ldapPassword := fs.String("ldap-password", "", "password for the bind DN")
@@ -336,7 +342,9 @@ func run(args []string) error {
 		return samlListSPs(ctx, conn)
 	case "idp add":
 		return idpAdd(ctx, conn, *orgID, *slug, *name, *kind, *extClientID, *extSecret,
-			*issuer, *allowSignup, *allowLinking, *trustEmail)
+			*issuer, *allowSignup, *allowLinking, *trustEmail,
+			*entityID, *srcSSOURL, *spCert, *nameIDFormat,
+			*srcUnsolicited, *srcForceAuthn, *srcSkew)
 	case "idp list":
 		return idpList(ctx, conn)
 	case "scim add":
@@ -1551,16 +1559,28 @@ func truncateMiddle(s string, n int) string {
 
 // idpAdd registers an external identity provider.
 func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, clientID, secret,
-	issuer string, allowSignup, allowLinking, trustEmail bool) error {
+	issuer string, allowSignup, allowLinking, trustEmail bool,
+	samlEntityID, samlSSOURL, samlCertPath, samlNameID string,
+	samlUnsolicited, samlForceAuthn bool, samlSkew int) error {
 
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this provider belongs to")
 	case slug == "":
 		return fmt.Errorf("give -slug, the short name used in the URL /login/with/<slug>")
-	case clientID == "":
+	case clientID == "" && kind != "saml":
 		return fmt.Errorf("give -client-id, issued by the provider")
 	}
+
+	// A SAML upstream has no client ID, no scopes and no discovery document. It
+	// shares the linking rules with the OAuth kinds and nothing else, so it
+	// takes its own path here and rejoins them at the same table.
+	if kind == "saml" {
+		return idpAddSAML(ctx, conn, orgID, slug, name, samlEntityID, samlSSOURL,
+			samlCertPath, samlNameID, allowSignup, allowLinking, trustEmail,
+			samlUnsolicited, samlForceAuthn, samlSkew)
+	}
+
 	preset, err := federation.PresetFor(federation.Kind(kind))
 	if err != nil {
 		return err
@@ -3193,4 +3213,136 @@ func postureFromEnv() (*posture.Config, error) {
 		return nil, nil
 	}
 	return cfg, nil
+}
+
+// idpAddSAML registers an upstream SAML identity provider.
+//
+// Two rows in one transaction: the identity_providers row that every provider
+// has, and the saml_sources row carrying what SAML alone needs. One without the
+// other is a provider that cannot be used or a configuration nothing reads, so
+// neither is written on its own.
+func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID,
+	ssoURL, certPath, nameIDFormat string, allowSignup, allowLinking, trustEmail,
+	unsolicited, forceAuthn bool, skew int) error {
+
+	switch {
+	case entityID == "":
+		return fmt.Errorf("give -entity-id: the upstream's entity ID, which is matched " +
+			"exactly against the Issuer in every assertion")
+	case ssoURL == "":
+		return fmt.Errorf("give -sso-url: where AuthnRequests are sent")
+	case certPath == "":
+		return fmt.Errorf("give -sp-cert: the certificate assertions are verified " +
+			"against. Without it there is nothing to check a signature with, and an " +
+			"unverified assertion is an attacker's choice of user")
+	}
+
+	// transient is deliberately absent: a NameID that differs on every sign-in
+	// would create a new orphaned account each time somebody signed in.
+	switch nameIDFormat {
+	case "", "persistent", "emailAddress", "unspecified":
+	default:
+		return fmt.Errorf("-nameid-format must be persistent, emailAddress or "+
+			"unspecified (got %q). transient is refused: it is a different value on "+
+			"every sign-in, so an account linked to it would be abandoned the moment "+
+			"it was created", nameIDFormat)
+	}
+	if nameIDFormat == "" {
+		nameIDFormat = "persistent"
+	}
+
+	// A SAML assertion carries no email_verified claim: there is no field for
+	// one. So the question "is this address verified" has to be answered by the
+	// deployment, and the honest answer for an enterprise upstream is yes -- the
+	// organisation's own directory authenticated the person and stated their
+	// address, which is the entire premise of federating to it.
+	//
+	// Left false (the OAuth default), a freshly registered SAML source refuses
+	// every sign-in with a message about a claim the protocol cannot make. That
+	// is a dead feature, and the first deployment to hit it would reasonably
+	// conclude the software is broken.
+	//
+	// The reason this is safe to default on: an address is NEVER used to find or
+	// match an account here. It is recorded, displayed, and used for
+	// notifications. The takeover vector that makes email trust dangerous
+	// elsewhere is closed by internal/federation refusing to match on email at
+	// all, under any setting.
+	if !trustEmail {
+		trustEmail = true
+		fmt.Print("note: this source's email addresses are recorded as verified, " +
+			"because\n  a SAML assertion has no field to say otherwise. Addresses are " +
+			"never used\n  to match accounts, so this affects what is recorded, not who " +
+			"can sign in.\n\n")
+	}
+
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return err
+	}
+	// Parsed now, so a PEM that is not a certificate is a message here rather
+	// than a refused sign-in later.
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return fmt.Errorf("%s is not PEM", certPath)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("%s is not a certificate: %w", certPath, err)
+	}
+	if time.Now().After(cert.NotAfter) {
+		return fmt.Errorf("that certificate expired on %s, so every assertion it "+
+			"signs would be refused", cert.NotAfter.Format("2006-01-02"))
+	}
+	if name == "" {
+		name = slug
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var providerID string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.identity_providers
+			(org_id, slug, display_name, kind, client_id, scopes,
+			 allow_signup, allow_linking, trust_email_verification)
+		VALUES ($1::uuid, $2, $3, 'saml', '', '{}', $4, $5, $6)
+		RETURNING id::text`,
+		orgID, slug, name, allowSignup, allowLinking, trustEmail).Scan(&providerID); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("a provider with slug %q is already registered in that "+
+				"organisation", slug)
+		}
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.saml_sources
+			(provider_id, org_id, entity_id, sso_url, cert_pem, name_id_format,
+			 force_authn, allow_unsolicited, skew_seconds)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)`,
+		providerID, orgID, entityID, ssoURL, string(certPEM), nameIDFormat,
+		forceAuthn, unsolicited, skew); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	fmt.Printf("registered %s (saml source)\n", name)
+	fmt.Printf("  sign-in URL  : /saml/source/%s/start\n", slug)
+	fmt.Printf("  ACS URL      : <issuer>/saml/source/%s/acs\n", slug)
+	fmt.Printf("  metadata     : <issuer>/saml/source/%s/metadata\n", slug)
+	fmt.Print("\n  Give the upstream that metadata URL rather than typing the two\n")
+	fmt.Print("  values by hand: a mistyped audience produces an assertion this\n")
+	fmt.Print("  engine refuses correctly and unhelpfully.\n")
+	if unsolicited {
+		fmt.Print("\n  WARNING: unsolicited sign-in is enabled. An assertion arriving\n")
+		fmt.Print("  without a matching request cannot be tied to a browser, so a valid\n")
+		fmt.Print("  one captured anywhere can be posted here to sign somebody in.\n")
+	}
+	return nil
 }

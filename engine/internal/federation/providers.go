@@ -19,6 +19,11 @@ const (
 	KindGoogle    Kind = "google"
 	KindGitHub    Kind = "github"
 	KindMicrosoft Kind = "microsoft"
+	// KindSAML is an upstream SAML identity provider. It shares the linking and
+	// account-matching rules with the OAuth kinds and nothing else: there is no
+	// preset, because a SAML upstream's endpoints and certificate come from its
+	// metadata rather than from a list this package could know.
+	KindSAML Kind = "saml"
 )
 
 // Preset is the endpoint configuration and email-verification policy for a kind.

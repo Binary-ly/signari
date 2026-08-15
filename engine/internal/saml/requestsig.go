@@ -63,13 +63,27 @@ func VerifyEmbeddedSignature(raw []byte, certPEM, wantTag, wantID string) error 
 		return fmt.Errorf("the root element is %q, expected %q", root.Tag, wantTag)
 	}
 
-	if err := checkSignaturePlacement(doc, root, wantID); err != nil {
-		return err
+	_, err := verifySignedElement(doc, root, certPEM, wantTag, wantID)
+	return err
+}
+
+// verifySignedElement checks placement and then cryptography for one element,
+// and RETURNS the element goxmldsig actually verified.
+//
+// Returning it is the point. A caller that reads its claims from the returned
+// element cannot be reading a different subtree from the one that was verified,
+// which is signature wrapping stated as a type signature rather than as a rule
+// somebody has to remember.
+func verifySignedElement(doc *etree.Document, target *etree.Element, certPEM,
+	wantTag, wantID string) (*etree.Element, error) {
+
+	if err := checkSignaturePlacement(doc, target, wantID); err != nil {
+		return nil, err
 	}
 
 	cert, err := parseCertPEM(certPEM)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	store := dsig.MemoryX509CertificateStore{Roots: []*x509.Certificate{cert}}
 	ctx := dsig.NewDefaultValidationContext(&store)
@@ -78,10 +92,10 @@ func VerifyEmbeddedSignature(raw []byte, certPEM, wantTag, wantID string) error 
 	// the structure verified and the structure checked are different things.
 	ctx.IdAttribute = "ID"
 
-	validated, err := ctx.Validate(root)
+	validated, err := ctx.Validate(target)
 	if err != nil {
-		return fmt.Errorf("the %s signature did not verify against the certificate "+
-			"registered for this service provider: %w", wantTag, err)
+		return nil, fmt.Errorf("the %s signature did not verify against the "+
+			"certificate registered for this service provider: %w", wantTag, err)
 	}
 
 	// The element goxmldsig returns is the one it actually verified. Confirming it
@@ -89,31 +103,36 @@ func VerifyEmbeddedSignature(raw []byte, certPEM, wantTag, wantID string) error 
 	// were somehow satisfied by a different subtree, the identity comparison here
 	// is what notices.
 	if got := validated.SelectAttrValue("ID", ""); got != wantID {
-		return fmt.Errorf("the signature covers an element with ID %q, but the %s "+
+		return nil, fmt.Errorf("the signature covers an element with ID %q, but the %s "+
 			"being processed has ID %q", got, wantTag, wantID)
 	}
 	if validated.Tag != wantTag {
-		return fmt.Errorf("the signature covers a %q element, not the %s", validated.Tag, wantTag)
+		return nil, fmt.Errorf("the signature covers a %q element, not the %s",
+			validated.Tag, wantTag)
 	}
-	return nil
+	return validated, nil
 }
 
 // checkSignaturePlacement enforces the structural rules before any cryptography
 // happens.
 //
 // Every rule here exists because a real bypass satisfied the version without it.
+// The element is usually the document root -- an AuthnRequest or a LogoutRequest
+// arriving on its own -- but for an inbound Response the signed element is the
+// Assertion nested inside it, so the rules are written in terms of "the signed
+// element" rather than "the root".
 func checkSignaturePlacement(doc *etree.Document, root *etree.Element, wantID string) error {
-	// The ID we are told to expect must actually be this element's ID. A document
-	// whose root carries no ID cannot be referred to by a signature at all, and
-	// goxmldsig would then happily accept a Reference URI of "".
+	// The ID we are told to expect must actually be this element's ID. An element
+	// carrying no ID cannot be referred to by a signature at all, and goxmldsig
+	// would then happily accept a Reference URI of "".
 	rootID := root.SelectAttrValue("ID", "")
 	if rootID == "" {
-		return fmt.Errorf("the root element has no ID attribute, so no signature can " +
-			"refer to it unambiguously")
+		return fmt.Errorf("the %s element has no ID attribute, so no signature can "+
+			"refer to it unambiguously", root.Tag)
 	}
 	if rootID != wantID {
-		return fmt.Errorf("the root element ID %q does not match the parsed ID %q",
-			rootID, wantID)
+		return fmt.Errorf("the %s element ID %q does not match the parsed ID %q",
+			root.Tag, rootID, wantID)
 	}
 
 	// No duplicate IDs anywhere. Two elements with the same ID is the precondition

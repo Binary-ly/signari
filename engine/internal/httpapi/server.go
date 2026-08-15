@@ -149,6 +149,12 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /saml/sso", s.handleSAMLSSO)
 	mux.HandleFunc("GET /saml/slo", s.handleSAMLSLO)
 	mux.HandleFunc("POST /saml/slo", s.handleSAMLSLO)
+
+	// Inbound: signing in FROM an upstream SAML provider. The mirror of the
+	// three routes above, which serve applications consuming what we issue.
+	mux.HandleFunc("GET /saml/source/{slug}/start", s.handleSAMLSourceStart)
+	mux.HandleFunc("POST /saml/source/{slug}/acs", s.handleSAMLSourceACS)
+	mux.HandleFunc("GET /saml/source/{slug}/metadata", s.handleSAMLSourceMetadata)
 	mux.HandleFunc("GET /proxy/verify", s.handleProxyVerify)
 	mux.HandleFunc("GET /proxy/start", s.handleProxyStart)
 	mux.HandleFunc("GET /passkey.js", s.handlePasskeyJS)

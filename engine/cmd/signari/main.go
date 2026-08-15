@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/adminapi"
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/doctor"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/httpapi"
@@ -96,6 +97,7 @@ commands:
   policy test         check a policy file (no database needed -- for CI)
   policy apply        install a policy file
   policy show         print the policy in force
+  export audit        write the audit trail as CSV, with its chain verified
   registration enable turn on dynamic client registration (RFC 7591)
   registration token  mint an initial access token for registration
   ssf add-stream      register a Shared Signals receiver for CAEP events
@@ -155,6 +157,9 @@ func run(args []string) error {
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+	outFile := fs.String("out", "", "write to this file instead of stdout")
+	fromDay := fs.String("from", "", "export from this date, YYYY-MM-DD (inclusive)")
+	toDay := fs.String("until", "", "export up to this date, YYYY-MM-DD (exclusive)")
 	regOpen := fs.Bool("open", false, "allow registration with no initial access token")
 	regMax := fs.Int("max-clients", 100, "ceiling on dynamically registered clients")
 	regUses := fs.Int("uses", 0, "how many clients this token may create (0 = unlimited)")
@@ -195,7 +200,7 @@ func run(args []string) error {
 		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
 		cmd == "saml" || cmd == "idp" || cmd == "scim" || cmd == "group" ||
 		cmd == "policy" || cmd == "admin-token" || cmd == "radius" || cmd == "ssf" ||
-		cmd == "registration" {
+		cmd == "registration" || cmd == "export" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -271,6 +276,8 @@ func run(args []string) error {
 		return importAuthentik(ctx, conn, *file, *orgID, !*apply)
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
+	case "export audit":
+		return exportAudit(ctx, conn, *orgID, *fromDay, *toDay, *outFile)
 	case "registration enable":
 		return registrationEnable(ctx, conn, *orgID, *regOpen, *regMax, *tokenScopes)
 	case "registration token":
@@ -2701,5 +2708,78 @@ func registrationToken(ctx context.Context, conn *pgx.Conn, orgID, name string,
 	}
 	fmt.Println("\n  Shown once. Callers present it as `Authorization: Bearer` at\n" +
 		"  /oauth2/register.")
+	return nil
+}
+
+// exportAudit writes the audit trail as CSV, with its integrity stated.
+func exportAudit(ctx context.Context, conn *pgx.Conn, orgID, from, to, out string) error {
+	parseDay := func(s, what string) (time.Time, error) {
+		if s == "" {
+			return time.Time{}, nil
+		}
+		t, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("-%s must be YYYY-MM-DD: %w", what, err)
+		}
+		return t, nil
+	}
+	fromT, err := parseDay(from, "from")
+	if err != nil {
+		return err
+	}
+	toT, err := parseDay(to, "until")
+	if err != nil {
+		return err
+	}
+	if !fromT.IsZero() && !toT.IsZero() && !toT.After(fromT) {
+		return fmt.Errorf("-until (%s) must be after -from (%s)", to, from)
+	}
+
+	w := os.Stdout
+	if out != "" {
+		f, ferr := os.Create(out)
+		if ferr != nil {
+			return ferr
+		}
+		defer func() { _ = f.Close() }()
+		w = f
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	res, err := audit.ExportCSV(ctx, tx, w, audit.ExportOptions{
+		OrgID: orgID, From: fromT, To: toT,
+	})
+	if err != nil {
+		return err
+	}
+
+	// To stderr, so redirecting stdout to a file still shows the operator what
+	// they just produced -- and so the integrity statement can never be mistaken
+	// for a row in the data.
+	fmt.Fprintf(os.Stderr, "\n  %d rows\n", res.Rows)
+	if res.Rows > 0 {
+		fmt.Fprintf(os.Stderr, "  first entry hash : %s\n  last entry hash  : %s\n",
+			res.FirstHash, res.LastHash)
+	}
+	if res.ChainVerified {
+		fmt.Fprintf(os.Stderr, "\n  Chain verified over all %d entries.\n", res.Checked)
+		fmt.Fprintln(os.Stderr, "  Every row commits to its predecessor, so this file can be checked\n"+
+			"  against the database later: a deleted or altered row breaks the chain\n"+
+			"  at its successor, which is why the hashes are a column rather than a\n"+
+			"  footnote.")
+	} else {
+		// Said loudly. An export that carried the appearance of integrity without
+		// the fact would be worse than no export at all.
+		fmt.Fprintf(os.Stderr, "\n  WARNING: the audit chain is BROKEN at entry %d "+
+			"(after checking %d).\n", res.BrokenAt, res.Checked)
+		fmt.Fprintln(os.Stderr, "  This file is still the data as stored, but its integrity cannot be\n"+
+			"  asserted. Investigate before submitting it anywhere that matters.")
+		return fmt.Errorf("the audit chain did not verify")
+	}
 	return nil
 }

@@ -212,3 +212,49 @@ func TestAttributionIsCoveredByTheChain(t *testing.T) {
 			"swapped without detection")
 	}
 }
+
+// TestRevokingATokenDoesNotRewriteHistory.
+//
+// core.audit_events once had ON DELETE SET NULL on admin_token_id and org_id,
+// and both columns are inside the chain hash. Deleting a token therefore
+// rewrote every audit row it had caused, and the chain then reported those rows
+// as tampered -- for an entirely ordinary administrative action.
+//
+// A smoke alarm that goes off when somebody makes toast gets taken down. That is
+// the real damage: the false positives cost the true ones their meaning.
+//
+// This test asserts the referential actions are gone. It is a schema assertion
+// rather than a behavioural one because the failure was a schema decision, and
+// the natural fix -- someone re-adding a foreign key "for tidiness" -- would be
+// silent without it.
+func TestRevokingATokenDoesNotRewriteHistory(t *testing.T) {
+	conn := connect(t)
+	ctx := t.Context()
+
+	rows, err := conn.Query(ctx, `
+		SELECT conname, confdeltype
+		FROM pg_constraint
+		WHERE conrelid = 'core.audit_events'::regclass AND contype = 'f'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name string
+		var delType string
+		if err := rows.Scan(&name, &delType); err != nil {
+			t.Fatal(err)
+		}
+		// 'a' is NO ACTION, which never mutates. Anything else can reach into a
+		// written row and change it.
+		if delType != "a" && delType != "r" {
+			t.Errorf("core.audit_events has foreign key %q with ON DELETE type %q; "+
+				"a referential action that alters a hashed column rewrites history "+
+				"and breaks the chain", name, delType)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}

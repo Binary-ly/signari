@@ -205,3 +205,13 @@ All three are clean as of this writing, except for benign timestamps written by
 `DEFAULT now()` and read only by cleanup SQL. The last check is the noisiest and
 still the most valuable: a stored setting nothing reads is a promise the system
 does not keep.
+
+
+## The unread-column sweep earning its keep
+
+Run against the tables added for device flow, email codes and dynamic
+registration, it found one: `email_otp_credentials.enrolled_at`, sitting beside
+`created_at` with both `DEFAULT now()` and neither ever read. Two columns holding
+the same fact is a question about which is authoritative, asked of everybody who
+reads the schema afterwards. Dropped in migration 0042 the same day it was
+written.

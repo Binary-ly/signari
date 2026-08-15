@@ -35,6 +35,7 @@ type Metadata struct {
 	// RFC 9126 §5.
 	PushedAuthorizationRequestEndpoint string `json:"pushed_authorization_request_endpoint,omitempty"`
 	DeviceAuthorizationEndpoint        string `json:"device_authorization_endpoint,omitempty"`
+	RegistrationEndpoint               string `json:"registration_endpoint,omitempty"`
 	// RFC 9449 §5.1.
 	DPoPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
 	// OIDC Discovery §3.

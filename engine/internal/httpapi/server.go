@@ -18,6 +18,7 @@ import (
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/risk"
+	"signari.dev/engine/internal/store"
 )
 
 // Server holds the public endpoints. Everything it serves is derived from a live
@@ -91,6 +92,9 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST "+oidc.PathToken, s.handleToken)
 	mux.HandleFunc("POST /oauth2/par", s.handlePAR)
 	mux.HandleFunc("POST /oauth2/device_authorization", s.handleDeviceAuthorization)
+	mux.HandleFunc("POST /oauth2/register", s.handleRegister)
+	mux.HandleFunc("GET /oauth2/register/{clientID}", s.handleRegisteredClient)
+	mux.HandleFunc("DELETE /oauth2/register/{clientID}", s.handleRegisteredClient)
 	// Both methods on one path: GET renders the code entry screen, POST handles
 	// entry and the approve/refuse decision.
 	mux.HandleFunc("GET /account/mfa/email", s.handleEmailOTPEnrol)
@@ -260,6 +264,17 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "metadata unavailable")
 		return
 	}
+	// registration_endpoint is advertised only where dynamic registration is
+	// actually enabled. The endpoint exists either way, but a discovery document
+	// naming one that answers 401 to every possible caller is the "advertised
+	// before it works" mistake this project refuses elsewhere -- and a client
+	// that reads it will try, fail, and blame its own configuration.
+	if on, cerr := store.AnyRegistrationEnabled(r.Context(), s.db); cerr != nil {
+		s.log.Error("checking whether dynamic registration is enabled", "err", cerr)
+	} else if on {
+		md.RegistrationEndpoint = s.cfg.Issuer + "/oauth2/register"
+	}
+
 	// Discovery is public, stable, and polled. Let it be cached, but not so long
 	// that adding a signing algorithm takes a day to become visible.
 	w.Header().Set("Cache-Control", "public, max-age=300")

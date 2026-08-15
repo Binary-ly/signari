@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -95,6 +96,8 @@ commands:
   policy test         check a policy file (no database needed -- for CI)
   policy apply        install a policy file
   policy show         print the policy in force
+  registration enable turn on dynamic client registration (RFC 7591)
+  registration token  mint an initial access token for registration
   ssf add-stream      register a Shared Signals receiver for CAEP events
   ssf list            show Shared Signals receivers
   radius add-client   register a network device permitted to send Access-Requests
@@ -152,6 +155,9 @@ func run(args []string) error {
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+	regOpen := fs.Bool("open", false, "allow registration with no initial access token")
+	regMax := fs.Int("max-clients", 100, "ceiling on dynamically registered clients")
+	regUses := fs.Int("uses", 0, "how many clients this token may create (0 = unlimited)")
 	ssfEndpoint := fs.String("endpoint", "", "https URL to push Security Event Tokens to")
 	ssfToken := fs.String("receiver-token", "", "bearer token the Shared Signals receiver issued us (optional)")
 	ssfEvents := fs.String("events", "", "comma-separated event types the receiver asked for")
@@ -188,7 +194,8 @@ func run(args []string) error {
 	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
 		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
 		cmd == "saml" || cmd == "idp" || cmd == "scim" || cmd == "group" ||
-		cmd == "policy" || cmd == "admin-token" || cmd == "radius" || cmd == "ssf" {
+		cmd == "policy" || cmd == "admin-token" || cmd == "radius" || cmd == "ssf" ||
+		cmd == "registration" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -264,6 +271,10 @@ func run(args []string) error {
 		return importAuthentik(ctx, conn, *file, *orgID, !*apply)
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
+	case "registration enable":
+		return registrationEnable(ctx, conn, *orgID, *regOpen, *regMax, *tokenScopes)
+	case "registration token":
+		return registrationToken(ctx, conn, *orgID, *name, *regUses, *tokenExpires)
 	case "ssf add-stream":
 		return ssfAddStream(ctx, conn, *orgID, *clientID, *ssfEndpoint, *ssfToken, *ssfEvents)
 	case "ssf list":
@@ -2603,5 +2614,92 @@ func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID string, dr
 	fmt.Println("\n  Imported. Everyone signs in with the password they already had:\n" +
 		"  the Django hash is verified as-is and replaced with Argon2id on first\n" +
 		"  successful sign-in. Nobody needs to reset anything.")
+	return nil
+}
+
+// registrationEnable turns dynamic client registration on for an organisation.
+func registrationEnable(ctx context.Context, conn *pgx.Conn, orgID string, open bool,
+	maxClients int, scopes string) error {
+
+	if orgID == "" {
+		return fmt.Errorf("give -org, the organisation to enable registration for")
+	}
+	list := []string{"openid", "profile", "email"}
+	if scopes != "" {
+		list = nil
+		for _, s := range strings.Split(scopes, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				list = append(list, s)
+			}
+		}
+	}
+	if maxClients <= 0 {
+		maxClients = 100
+	}
+
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.registration_policies
+			(org_id, enabled, open, max_clients, allowed_scopes)
+		VALUES ($1::uuid, true, $2, $3, $4)
+		ON CONFLICT (org_id) DO UPDATE SET
+			enabled = true, open = EXCLUDED.open, max_clients = EXCLUDED.max_clients,
+			allowed_scopes = EXCLUDED.allowed_scopes, updated_at = now()`,
+		orgID, open, maxClients, list); err != nil {
+		return err
+	}
+
+	fmt.Printf("dynamic registration enabled\n  scopes  : %s\n  ceiling : %d clients\n",
+		strings.Join(list, ", "), maxClients)
+	if open {
+		fmt.Println("\n  OPEN: anybody who can reach /oauth2/register may create a client.\n" +
+			"  They choose the client_name, and that name appears on a consent screen.\n" +
+			"  Prefer `signari registration token` and leave this off unless an\n" +
+			"  ecosystem genuinely requires it.")
+	} else {
+		fmt.Println("\n  Callers need an initial access token: `signari registration token`.")
+	}
+	return nil
+}
+
+// registrationToken mints an initial access token.
+func registrationToken(ctx context.Context, conn *pgx.Conn, orgID, name string,
+	uses int, expiresIn time.Duration) error {
+
+	if orgID == "" || name == "" {
+		return fmt.Errorf("give -org and -name")
+	}
+	raw := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+		return err
+	}
+	secret := "sgnreg_" + base64.RawURLEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(secret))
+
+	var remaining *int
+	if uses > 0 {
+		remaining = &uses
+	}
+	var expires *time.Time
+	if expiresIn > 0 {
+		t := time.Now().Add(expiresIn)
+		expires = &t
+	}
+
+	var id string
+	if err := conn.QueryRow(ctx, `
+		INSERT INTO core.registration_tokens (org_id, name, token_hash, remaining, expires_at)
+		VALUES ($1::uuid, $2, $3, $4, $5) RETURNING id::text`,
+		orgID, name, sum[:], remaining, expires).Scan(&id); err != nil {
+		return err
+	}
+
+	fmt.Printf("\n  %s\n\n  id   : %s\n  name : %s\n", secret, id, name)
+	if remaining != nil {
+		fmt.Printf("  uses : %d\n", *remaining)
+	} else {
+		fmt.Println("  uses : unlimited -- consider -uses to bound it")
+	}
+	fmt.Println("\n  Shown once. Callers present it as `Authorization: Bearer` at\n" +
+		"  /oauth2/register.")
 	return nil
 }

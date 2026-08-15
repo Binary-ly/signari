@@ -93,6 +93,15 @@ type Conditions struct {
 	// evaluated would lock out every first-time user and every deployment
 	// without a GeoIP database, which is how a risk signal becomes an outage.
 	NoImpossibleTravel bool `yaml:"no_impossible_travel"`
+
+	DeviceManaged bool `yaml:"device_managed"`
+
+	// DeviceCompliant is stricter: managed AND reported healthy by whatever
+	// attests to it. Separate from DeviceManaged because "we issued this laptop"
+	// and "this laptop is patched and encrypted" are different claims, and
+	// collapsing them lets a stolen managed device satisfy a rule meant to check
+	// its state.
+	DeviceCompliant bool `yaml:"device_compliant"`
 }
 
 // TestCase is an assertion the file makes about itself.
@@ -113,6 +122,12 @@ type Request struct {
 	// case can set it directly, which is how the condition is covered by the
 	// file's own tests without a GeoIP database.
 	ImpossibleTravel bool `yaml:"impossible_travel"`
+
+	// DeviceManaged and DeviceCompliant are set by the caller from evidence that
+	// was actually checked. A test case sets them directly, which is how these
+	// conditions are covered by the file's own tests without an MDM.
+	DeviceManaged   bool `yaml:"device_managed"`
+	DeviceCompliant bool `yaml:"device_compliant"`
 }
 
 // Decision is the result.
@@ -194,7 +209,8 @@ func (f *File) validate() error {
 
 func (c Conditions) isEmpty() bool {
 	return len(c.Groups) == 0 && len(c.AnyGroup) == 0 && !c.MFA &&
-		len(c.FromNetworks) == 0 && !c.NoImpossibleTravel
+		len(c.FromNetworks) == 0 && !c.NoImpossibleTravel &&
+		!c.DeviceManaged && !c.DeviceCompliant
 }
 
 // RunTests evaluates every case in the file.
@@ -316,6 +332,15 @@ func (c Conditions) satisfiedBy(req Request) bool {
 	if c.MFA && !req.MFA {
 		return false
 	}
+	if c.DeviceManaged && !req.DeviceManaged {
+		return false
+	}
+	// Compliance implies management: an unmanaged device cannot be reported
+	// compliant by anything we would believe, so the stricter condition checks
+	// both rather than trusting a compliance signal on its own.
+	if c.DeviceCompliant && (!req.DeviceCompliant || !req.DeviceManaged) {
+		return false
+	}
 	if c.NoImpossibleTravel && req.ImpossibleTravel {
 		return false
 	}
@@ -374,6 +399,21 @@ func (f *File) Summary() string {
 func (f *File) UsesImpossibleTravel() bool {
 	for _, r := range f.Policies {
 		if r.Require.NoImpossibleTravel {
+			return true
+		}
+	}
+	return false
+}
+
+// UsesDevicePosture reports whether any rule asks about the device.
+//
+// Same reason as UsesImpossibleTravel: establishing posture verifies a
+// certificate chain or reads proxy headers, and doing that on every
+// authorization for a deployment whose policy never mentions a device is work
+// done for nothing.
+func (f *File) UsesDevicePosture() bool {
+	for _, r := range f.Policies {
+		if r.Require.DeviceManaged || r.Require.DeviceCompliant {
 			return true
 		}
 	}

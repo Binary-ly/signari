@@ -12,6 +12,7 @@ import (
 
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/policy"
+	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/risk"
 	"signari.dev/engine/internal/store"
 )
@@ -128,9 +129,20 @@ func (s *Server) checkAccessPolicy(ctx context.Context, r *http.Request,
 		impossible = s.impossibleTravel(ctx, userID, clientIP(r))
 	}
 
+	// Device posture, likewise only when a rule asks. Evaluating it always would
+	// verify a certificate chain on every authorization for the deployments --
+	// most of them -- whose policy never mentions a device.
+	var device posture.State
+	if f.UsesDevicePosture() {
+		device = s.posture.Evaluate(r)
+		s.log.Debug("device posture", "managed", device.Managed,
+			"compliant", device.Compliant, "source", device.Source)
+	}
+
 	d := f.Evaluate(policy.Request{
 		Client: clientID, Scope: scope, Groups: groups, MFA: mfa,
 		IP: clientIP(r), ImpossibleTravel: impossible,
+		DeviceManaged: device.Managed, DeviceCompliant: device.Compliant,
 	})
 	if d.Allowed {
 		return nil

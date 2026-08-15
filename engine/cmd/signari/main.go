@@ -50,6 +50,7 @@ import (
 	"signari.dev/engine/internal/outbox"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/policy"
+	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/proxycheck"
 	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/scim"
@@ -161,7 +162,6 @@ func run(args []string) error {
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
-	dirKind := fs.String("kind", "", "directory source kind: google or entra")
 	dirDomain := fs.String("domain", "", "Google Workspace domain")
 	dirImpersonate := fs.String("impersonate", "", "administrator the service account acts as")
 	dirTenant := fs.String("tenant", "", "Entra tenant id (read from the credential file)")
@@ -293,7 +293,7 @@ func run(args []string) error {
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
 	case "dir add":
-		return dirAdd(ctx, conn, *orgID, *dirKind, *slug, *name, *file, *dirDomain,
+		return dirAdd(ctx, conn, *orgID, *kind, *slug, *name, *file, *dirDomain,
 			*dirImpersonate, *dirTenant, *dirFilter)
 	case "dir sync":
 		return dirSync(ctx, conn, *slug, *apply)
@@ -678,6 +678,11 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	// here because this is where TLS is configured; nil is a valid answer and
 	// means tls_client_auth is refused.
 	srv.SetClientCAs(clientCAPool())
+	pst, perr := postureFromEnv()
+	if perr != nil {
+		return perr
+	}
+	srv.SetPosture(pst)
 
 	// The outbox worker is a SINGLETON: running it on every node would deliver
 	// each logout notice once per node. It claims rows FOR UPDATE SKIP LOCKED so
@@ -2935,7 +2940,8 @@ func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPa
 	case orgID == "" || slug == "":
 		return fmt.Errorf("give -org and -slug")
 	case kind != "google" && kind != "entra":
-		return fmt.Errorf("-kind must be google or entra")
+		return fmt.Errorf("-kind must be google or entra for a directory source "+
+			"(got %q; that flag is shared with `idp add`, which uses different values)", kind)
 	case credPath == "":
 		return fmt.Errorf("give -file: the service account key (google) or credential " +
 			"JSON (entra)")
@@ -3081,4 +3087,41 @@ func dirSync(ctx context.Context, conn *pgx.Conn, slug string, apply bool) error
 	}
 	fmt.Println("\n  Applied.")
 	return nil
+}
+
+// postureFromEnv reads how device trust is established.
+//
+// Returns nil when nothing is configured, which is the common case and means a
+// policy asking about a device will simply never be satisfied -- visible, rather
+// than silently permissive.
+func postureFromEnv() (*posture.Config, error) {
+	cfg := &posture.Config{
+		ManagedHeader:   envOr("SIGNARI_DEVICE_MANAGED_HEADER", "X-Device-Managed"),
+		CompliantHeader: envOr("SIGNARI_DEVICE_COMPLIANT_HEADER", "X-Device-Compliant"),
+	}
+
+	if path := os.Getenv("SIGNARI_DEVICE_CA"); path != "" {
+		pem, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading SIGNARI_DEVICE_CA: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("SIGNARI_DEVICE_CA contained no certificates")
+		}
+		cfg.DeviceCAs = pool
+	}
+
+	if spec := os.Getenv("SIGNARI_DEVICE_TRUSTED_PROXIES"); spec != "" {
+		nets, err := posture.ParseNetworks(spec)
+		if err != nil {
+			return nil, fmt.Errorf("SIGNARI_DEVICE_TRUSTED_PROXIES: %w", err)
+		}
+		cfg.TrustedProxies = nets
+	}
+
+	if cfg.DeviceCAs == nil && len(cfg.TrustedProxies) == 0 {
+		return nil, nil
+	}
+	return cfg, nil
 }

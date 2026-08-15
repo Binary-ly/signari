@@ -21,6 +21,7 @@ import (
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/risk"
 	"signari.dev/engine/internal/store"
 )
@@ -35,6 +36,8 @@ type Server struct {
 	// captcha is nil-safe: every method tolerates a nil receiver, so a
 	// deployment that has never configured one needs no branches elsewhere.
 	captcha *captcha.Verifier
+	// posture establishes device trust when a policy asks for it. nil-safe.
+	posture *posture.Config
 	// clientCAs verifies mutual-TLS client certificates. nil means no authority
 	// is configured, which refuses tls_client_auth rather than relaxing it.
 	clientCAs *x509.CertPool
@@ -60,6 +63,9 @@ type Server struct {
 // is configured, and passing it through New would make every caller that does
 // not use mutual-TLS pass nil.
 func (s *Server) SetClientCAs(pool *x509.CertPool) { s.clientCAs = pool }
+
+// SetPosture supplies how device trust is established, or nil for none.
+func (s *Server) SetPosture(p *posture.Config) { s.posture = p }
 
 func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender) (*Server, error) {
 	if mailer == nil {

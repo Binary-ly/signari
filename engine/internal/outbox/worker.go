@@ -49,13 +49,20 @@ type Worker struct {
 	log    *slog.Logger
 	client *http.Client
 	batch  int
+	// root unseals the bearer token a Shared Signals receiver issued us. Held
+	// here rather than carried in the outbox payload: a queue table is the last
+	// place a third party's credential should sit, and rows there outlive the
+	// delivery by design.
+	root *keys.RootKey
 }
 
-func New(db *pgxpool.Pool, keySet *keys.Set, issuer string, log *slog.Logger) *Worker {
+func New(db *pgxpool.Pool, keySet *keys.Set, issuer string, root *keys.RootKey,
+	log *slog.Logger) *Worker {
 	return &Worker{
 		db:     db,
 		keys:   keySet,
 		issuer: issuer,
+		root:   root,
 		log:    log,
 		batch:  25,
 		// A relying party's endpoint is a third-party service that may be down,

@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ import (
 	"signari.dev/engine/internal/proxycheck"
 	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/scim"
+	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
 )
 
@@ -92,6 +94,8 @@ commands:
   policy test         check a policy file (no database needed -- for CI)
   policy apply        install a policy file
   policy show         print the policy in force
+  ssf add-stream      register a Shared Signals receiver for CAEP events
+  ssf list            show Shared Signals receivers
   radius add-client   register a network device permitted to send Access-Requests
   radius list         show registered RADIUS clients
   admin-token create  mint a scoped, revocable admin API token
@@ -147,6 +151,9 @@ func run(args []string) error {
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+	ssfEndpoint := fs.String("endpoint", "", "https URL to push Security Event Tokens to")
+	ssfToken := fs.String("receiver-token", "", "bearer token the Shared Signals receiver issued us (optional)")
+	ssfEvents := fs.String("events", "", "comma-separated event types the receiver asked for")
 	radiusNet := fs.String("network", "", "CIDR the RADIUS device sends from, e.g. 10.0.0.0/24")
 	radiusSecret := fs.String("secret", "", "shared secret configured on the RADIUS device")
 	tokenScopes := fs.String("scopes", "",
@@ -180,7 +187,7 @@ func run(args []string) error {
 	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
 		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
 		cmd == "saml" || cmd == "idp" || cmd == "scim" || cmd == "group" ||
-		cmd == "policy" || cmd == "admin-token" || cmd == "radius" {
+		cmd == "policy" || cmd == "admin-token" || cmd == "radius" || cmd == "ssf" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -254,6 +261,10 @@ func run(args []string) error {
 		return janitorOnce(ctx, conn)
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
+	case "ssf add-stream":
+		return ssfAddStream(ctx, conn, *orgID, *clientID, *ssfEndpoint, *ssfToken, *ssfEvents)
+	case "ssf list":
+		return ssfListStreams(ctx, conn)
 	case "radius add-client":
 		return radiusAddClient(ctx, conn, *orgID, *name, *radiusNet, *radiusSecret)
 	case "radius list":
@@ -628,7 +639,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	// it, but the intent is one.
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
-	go outbox.New(pool, set, issuer, log).Run(workerCtx, 2*time.Second)
+	go outbox.New(pool, set, issuer, root, log).Run(workerCtx, 2*time.Second)
 
 	// The janitor is likewise a singleton, but it enforces that itself with an
 	// advisory lock rather than by convention -- so it is safe to start on every
@@ -2414,4 +2425,116 @@ func loadRADIUSClients(ctx context.Context, pool *pgxpool.Pool, orgID string,
 		out = append(out, radius.Client{Net: ipnet, Secret: string(secret), Name: name})
 	}
 	return out, rows.Err()
+}
+
+// ssfAddStream registers a Shared Signals receiver.
+//
+// There was no way to do this at all: the delivery machinery worked and was
+// verified, and a stream could only be created by hand-written SQL. A feature
+// nobody can configure is one nobody uses.
+func ssfAddStream(ctx context.Context, conn *pgx.Conn, orgID, clientID, endpoint,
+	token, events string) error {
+
+	switch {
+	case orgID == "":
+		return fmt.Errorf("give -org, the organisation uuid this receiver belongs to")
+	case clientID == "":
+		return fmt.Errorf("give -client, the relying party this stream is for")
+	case endpoint == "":
+		return fmt.Errorf("give -endpoint, the https URL to push Security Event Tokens to")
+	}
+	if !strings.HasPrefix(endpoint, "https://") {
+		return fmt.Errorf("the endpoint must be https: %q would carry security events "+
+			"about real users across the network in the clear", endpoint)
+	}
+
+	// The events a receiver actually asked for. An allow-list, because sending
+	// one it did not request is at best noise and at worst a disclosure.
+	list := []string{"https://schemas.openid.net/secevent/caep/event-type/session-revoked"}
+	if events != "" {
+		list = nil
+		for _, e := range strings.Split(events, ",") {
+			if e = strings.TrimSpace(e); e != "" {
+				list = append(list, e)
+			}
+		}
+	}
+	for _, e := range list {
+		if !slices.Contains(ssf.SupportedEvents(), e) {
+			return fmt.Errorf("event %q is not one this engine emits. Supported: %s",
+				e, strings.Join(ssf.SupportedEvents(), ", "))
+		}
+	}
+
+	// The bearer token the receiver issued US. Sealed with the root key: it is a
+	// third party's credential and a database backup must not hand it over.
+	var sealed []byte
+	if token != "" {
+		root, err := rootKey()
+		if err != nil {
+			return err
+		}
+		sealed, err = root.Seal([]byte(token), "ssf-stream-token")
+		if err != nil {
+			return fmt.Errorf("sealing the receiver's token: %w", err)
+		}
+	}
+
+	var id string
+	err := conn.QueryRow(ctx, `
+		INSERT INTO core.ssf_streams (org_id, client_id, endpoint_url, auth_token,
+		                              events_requested)
+		VALUES ($1::uuid, $2, $3, $4, $5)
+		RETURNING id::text`, orgID, clientID, endpoint, sealed, list).Scan(&id)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("client %q already has a stream; one receiver per relying "+
+				"party", clientID)
+		}
+		return err
+	}
+
+	fmt.Printf("registered a stream for %s\n  endpoint : %s\n  events   : %s\n",
+		clientID, endpoint, strings.Join(list, ", "))
+	if token == "" {
+		fmt.Println("\n  No -token given. Events are still signed, so the receiver can verify\n" +
+			"  them -- but if it requires a bearer token, every push will be refused.")
+	} else {
+		fmt.Println("\n  The token is sealed with the root key and sent as `Authorization:\n" +
+			"  Bearer` on each push.")
+	}
+	return nil
+}
+
+func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT s.client_id, s.endpoint_url, s.status, (s.auth_token IS NOT NULL),
+		       cardinality(s.events_requested)
+		FROM core.ssf_streams s ORDER BY s.client_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	n := 0
+	fmt.Printf("\n  %-24s %-44s %-10s %s\n", "CLIENT", "ENDPOINT", "STATUS", "AUTH")
+	for rows.Next() {
+		var client, endpoint, status string
+		var hasToken bool
+		var events int
+		if err := rows.Scan(&client, &endpoint, &status, &hasToken, &events); err != nil {
+			return err
+		}
+		n++
+		auth := "none"
+		if hasToken {
+			auth = "bearer"
+		}
+		fmt.Printf("  %-24s %-44s %-10s %s (%d event types)\n",
+			truncate(client, 24), truncate(endpoint, 44), status, auth, events)
+	}
+	if n == 0 {
+		fmt.Println("\n  No Shared Signals receivers. Register one with `signari ssf add-stream`.")
+	}
+	return rows.Err()
 }

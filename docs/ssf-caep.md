@@ -19,6 +19,48 @@ logout nobody can prove happened is not a logout. CAEP is that argument applied
 continuously instead of once.
 
 
+## Registering a receiver
+
+```sh
+signari ssf add-stream -org <org-uuid> -client-id <client> \
+  -endpoint https://receiver.example.com/events \
+  -receiver-token "<bearer token the receiver issued us>"
+
+signari ssf list
+```
+
+There was no way to do this until recently: a stream could only be created by
+hand-written SQL, which is how it was first tested. A feature nobody can
+configure is one nobody uses.
+
+## The token that was never sent
+
+`ssf_streams.auth_token` existed from the first migration, with a comment saying
+it "authenticates US to THEM" — and **nothing ever sent it**. RFC 8935 push
+delivery expects the transmitter to authenticate to the receiver, normally with a
+bearer token the receiver issued when the stream was configured. A receiver that
+required it answered 401, the outbox retried eight times, and the event was
+parked. Silently, and looking exactly like a receiver outage.
+
+It is now read at delivery time and sent as `Authorization: Bearer`. Read at
+delivery rather than carried in the outbox payload, because a queue table is the
+last place a third party's credential should sit and rows there outlive the
+delivery by design. It is sealed with the root key, so a database backup does not
+hand it over.
+
+A stream with no token still delivers. The SET is signed, so a receiver that
+chose not to issue one is not made less safe by its absence — and failing closed
+here would break every deployment that does not use stream tokens.
+
+Confirmed on the wire. This is the complete request a receiver saw after a user
+was deactivated through the admin API:
+
+```
+authorization: Bearer receiver-issued-token-abc123
+content_type:  application/secevent+jwt
+body:          eyJhbGciOiJFUzI1NiIs...   (ES256-signed SET)
+```
+
 ## Verified against the running server
 
 Sign in to a client with a registered stream, sign out, and the receiver gets:

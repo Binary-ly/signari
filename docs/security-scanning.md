@@ -166,3 +166,46 @@ text reaches the markup. That is asserted rather than argued:
 `TestSVGContainsNothingButGeneratedMarkup` pushes `</svg><script>alert(1)</script>`
 through the encoder and requires exactly four opening and four closing brackets in
 the result. See `docs/totp-qr.md`.
+
+## Sweeping for "built but unreachable"
+
+Two real bugs this session were the same shape: code that worked, was tested, and
+that nothing could actually reach. Both are mechanically detectable, so the
+checks are written down rather than left to luck.
+
+**Packages nothing imports.** This is how the RADIUS listener was missing —
+`internal/radius` was complete and imported by no file outside itself:
+
+```sh
+for d in internal/*/; do
+  pkg=$(basename "$d")
+  n=$(grep -rl "signari.dev/engine/internal/$pkg\"" --include="*.go" . |
+       grep -v "^./internal/$pkg/" | wc -l)
+  [ "$n" = "0" ] && echo "UNIMPORTED: internal/$pkg"
+done
+```
+
+**Documented configuration that does not exist.** `SIGNARI_RADIUS_CLIENTS` was
+documented as the way to configure devices and was never read by any code:
+
+```sh
+grep -rhoE "SIGNARI_[A-Z0-9_]+" docs/ *.md | sort -u > /tmp/doc_envs
+grep -rhoE "SIGNARI_[A-Z0-9_]+" engine/ --include="*.go" | sort -u > /tmp/code_envs
+comm -23 /tmp/doc_envs /tmp/code_envs
+```
+
+**Columns nothing reads.** How `want_authn_requests_signed` sat unenforced, and
+how `ssf_streams.auth_token` was never sent:
+
+```sh
+psql -tAc "SELECT table_name||'.'||column_name FROM information_schema.columns
+           WHERE table_schema='core'" |
+while read -r c; do
+  grep -rqw "${c#*.}" --include="*.go" . || echo "UNREAD: core.$c"
+done
+```
+
+All three are clean as of this writing, except for benign timestamps written by
+`DEFAULT now()` and read only by cleanup SQL. The last check is the noisiest and
+still the most valuable: a stored setting nothing reads is a promise the system
+does not keep.

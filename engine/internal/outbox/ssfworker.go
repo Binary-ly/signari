@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"io"
 	"math"
 	"net/http"
@@ -148,6 +150,24 @@ func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
 	req.Header.Set("Content-Type", "application/secevent+jwt")
 	req.Header.Set("Accept", "application/json")
 
+	// # Authenticating US to THEM
+	//
+	// RFC 8935 push delivery expects the transmitter to authenticate to the
+	// receiver, normally with a bearer token the receiver issued when the stream
+	// was configured. The column for it existed from the first migration, with a
+	// comment saying exactly this, and NOTHING EVER SENT IT -- so a receiver that
+	// requires the token answered 401, the outbox retried eight times, and the
+	// event was parked. Silently, and looking like a receiver outage.
+	//
+	// Read at delivery time rather than carried in the payload, and a stream with
+	// no token still delivers: the SET is signed, so a receiver that chose not to
+	// issue one is not made less safe by its absence.
+	if tok, terr := w.streamAuthToken(ctx, p.StreamID); terr != nil {
+		return terr
+	} else if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+
 	resp, err := w.client.Do(req)
 	if err != nil {
 		return err
@@ -184,4 +204,34 @@ func initiatingEntityFor(reason string) string {
 	default:
 		return "system"
 	}
+}
+
+// streamAuthToken unseals the bearer token a receiver issued for this stream.
+//
+// An empty result means the stream has none, which is a valid configuration. A
+// token that will not unseal is an error rather than a silent omission: sending
+// the event unauthenticated instead would look like it worked.
+func (w *Worker) streamAuthToken(ctx context.Context, streamID string) (string, error) {
+	if streamID == "" || w.root == nil {
+		return "", nil
+	}
+	var sealed []byte
+	err := w.db.QueryRow(ctx,
+		`SELECT auth_token FROM core.ssf_streams WHERE id = $1::uuid`, streamID).Scan(&sealed)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The stream was deleted after the event was queued. Nothing to
+			// authenticate to; let the delivery fail on its own terms.
+			return "", nil
+		}
+		return "", fmt.Errorf("reading the stream auth token: %w", err)
+	}
+	if len(sealed) == 0 {
+		return "", nil
+	}
+	raw, err := w.root.Open(sealed, "ssf-stream-token")
+	if err != nil {
+		return "", fmt.Errorf("unsealing the auth token for stream %s: %w", streamID, err)
+	}
+	return string(raw), nil
 }

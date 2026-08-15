@@ -836,6 +836,24 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	identifier := r.PostForm.Get("username")
 	password := r.PostForm.Get("password")
 
+	// The challenge is checked BEFORE the credential lookup, so a solved
+	// challenge is a precondition for spending an Argon2 evaluation rather than
+	// a second opinion afterwards.
+	//
+	// A failure here counts as a login failure too. Otherwise an attacker could
+	// hold the address's counter still by submitting a blank challenge forever,
+	// and adaptive mode would never escalate.
+	if s.captcha.Required(r.RemoteAddr) {
+		if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
+			s.captcha.RecordFailure(r.RemoteAddr)
+			s.log.Info("captcha refused", "err", cerr,
+				"correlation_id", correlationID(ctx))
+			s.renderLogin(w, r, authzQuery,
+				"That challenge was not completed. Please try again.")
+			return
+		}
+	}
+
 	userID, orgID, stored, ok, err := s.lookupCredential(ctx, identifier)
 	if err != nil {
 		s.log.Error("looking up credential", "err", err)
@@ -867,6 +885,9 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"reason": "unknown_identifier"},
 		})
+		// Counted like any other failure. Counting only real accounts would make
+		// the appearance of a challenge an oracle for which usernames exist.
+		s.captcha.RecordFailure(r.RemoteAddr)
 		s.renderLogin(w, r, authzQuery, generic)
 		return
 	}
@@ -895,6 +916,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 
 	needsRehash, verr := s.hasher.Verify(ctx, stored, password)
 	if verr != nil {
+		s.captcha.RecordFailure(r.RemoteAddr)
 		if err := store.RecordLoginFailure(ctx, s.db, userID); err != nil {
 			s.log.Error("recording login failure", "err", err)
 		}
@@ -912,6 +934,9 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// A correct password clears the throttle: we now know who this is, and
 	// carrying their earlier typos forward would penalise the one user we have
 	// just positively identified.
+	// A correct password clears the address's pressure: the next person on that
+	// office NAT should not inherit a challenge from somebody who mistyped.
+	s.captcha.Clear(r.RemoteAddr)
 	if err := store.ClearLoginThrottle(ctx, s.db, userID); err != nil {
 		s.log.Error("clearing login throttle", "err", err)
 	}
@@ -1640,4 +1665,21 @@ func (s *Server) sessionIdentity(ctx context.Context, cookie string) (sid, userI
 		`SELECT user_id::text, org_id::text FROM core.sessions WHERE sid = $1`, sid).
 		Scan(&userID, &orgID)
 	return sid, userID, orgID
+}
+
+// captchaResponse reads whichever field the configured widget submits.
+//
+// The three providers use three different names for the same value, and a
+// deployment that switches provider should not have to change anything here.
+func captchaResponse(r *http.Request) string {
+	for _, f := range []string{
+		"cf-turnstile-response",
+		"h-captcha-response",
+		"g-recaptcha-response",
+	} {
+		if v := r.PostForm.Get(f); v != "" {
+			return v
+		}
+	}
+	return ""
 }

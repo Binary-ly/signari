@@ -7,11 +7,14 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/captcha"
 	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
@@ -28,6 +31,9 @@ type Server struct {
 	log   *slog.Logger
 	jwks  *bucket
 	login *bucket
+	// captcha is nil-safe: every method tolerates a nil receiver, so a
+	// deployment that has never configured one needs no branches elsewhere.
+	captcha *captcha.Verifier
 	// device throttles the RFC 8628 verification screen. A user code is short by
 	// necessity, so the endpoint is what limits guessing -- there is no per-code
 	// counter, because a wrong guess names no record to charge it to.
@@ -56,11 +62,21 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 	if _, err := oidc.Build(cfg); err != nil {
 		return nil, err
 	}
+	// The challenge verifier, from the environment. Absent or malformed
+	// configuration is refused at construction rather than degraded to "off":
+	// an operator who typed the mode wrong believes they have a control they do
+	// not, which is the failure mode this project keeps finding.
+	cap, err := captchaFromEnv()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Server{
-		cfg:  cfg,
-		log:  log,
-		db:   db,
-		jwks: newBucket(20, 40), // 20 req/s sustained, burst 40
+		cfg:     cfg,
+		captcha: cap,
+		log:     log,
+		db:      db,
+		jwks:    newBucket(20, 40), // 20 req/s sustained, burst 40
 		// The login endpoint is the expensive one: every attempt costs an Argon2
 		// evaluation. Rate limiting in FRONT of the hash is what keeps a flood
 		// from turning into memory exhaustion, independent of the semaphore.
@@ -198,9 +214,25 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 	// script-src 'self' -- NOT 'unsafe-inline'. The passkey code is served from
 	// its own path precisely so this page never has to allow inline script, which
 	// would disable script CSP on the one page where an injection is worth most.
+	// # CSP and the cost of a CAPTCHA
+	//
+	// A challenge widget is third-party script running on the sign-in page --
+	// the one page where an injection is worth most. So the policy is widened
+	// ONLY when a challenge is actually configured, and only to that provider's
+	// own origins. A blanket relaxation would leave the hole in place for every
+	// deployment, including the ones that never turn this on.
+	script, frame, connect := "'self'", "'none'", "'self'"
+	if s.captcha.Enabled() {
+		if origins := captchaOrigins(s.captcha.Provider()); origins != "" {
+			script += " " + origins
+			frame = origins
+			connect += " " + origins
+		}
+	}
 	w.Header().Set("Content-Security-Policy",
-		`default-src 'none'; script-src 'self'; connect-src 'self'; `+
-			`style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
+		`default-src 'none'; script-src `+script+`; connect-src `+connect+`; `+
+			`frame-src `+frame+`; style-src 'unsafe-inline'; form-action 'self'; `+
+			`frame-ancestors 'none'`)
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.WriteHeader(status)
 	// The reference is only shown alongside an error. On a normal page it is
@@ -218,6 +250,11 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		// has to restart the engine to see their new sign-in button will assume it
 		// is broken.
 		"Providers": s.externalProviders(r.Context()),
+		// Only when this request actually needs one. In adaptive mode a person
+		// signing in normally never sees a widget at all.
+		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.RemoteAddr),
+		"CaptchaProvider": string(s.captcha.Provider()),
+		"CaptchaSiteKey":  s.captcha.SiteKey(),
 	})
 }
 
@@ -248,6 +285,18 @@ text-align:center;text-decoration:none;color:inherit}</style></head>
 <input id="u" name="username" autocomplete="username webauthn" autocapitalize="none" autofocus required>
 <label for="p">Password</label>
 <input id="p" name="password" type="password" autocomplete="current-password" required>
+{{if .Captcha}}
+{{if eq .CaptchaProvider "turnstile"}}
+<div class="cf-turnstile" data-sitekey="{{.CaptchaSiteKey}}"></div>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+{{else if eq .CaptchaProvider "hcaptcha"}}
+<div class="h-captcha" data-sitekey="{{.CaptchaSiteKey}}"></div>
+<script src="https://hcaptcha.com/1/api.js" async defer></script>
+{{else}}
+<div class="g-recaptcha" data-sitekey="{{.CaptchaSiteKey}}"></div>
+<script src="https://www.google.com/recaptcha/api.js" async defer></script>
+{{end}}
+{{end}}
 <button type="submit">Sign in</button>
 </form>
 <p class="alt"><button type="button" id="passkey-signin">Sign in with a passkey</button></p>
@@ -357,4 +406,69 @@ func (b *bucket) allow() bool {
 	}
 	b.tokens--
 	return true
+}
+
+// captchaOrigins returns the script and frame origins a provider needs.
+//
+// Enumerated rather than derived from the verify URL: the origin that serves a
+// widget is often not the origin that verifies it, and guessing would produce a
+// policy that silently blocks the challenge from rendering.
+func captchaOrigins(p captcha.Provider) string {
+	switch p {
+	case captcha.Turnstile:
+		return "https://challenges.cloudflare.com"
+	case captcha.HCaptcha:
+		return "https://hcaptcha.com https://*.hcaptcha.com"
+	case captcha.ReCaptcha:
+		return "https://www.google.com https://www.gstatic.com"
+	default:
+		return ""
+	}
+}
+
+// captchaFromEnv reads the challenge configuration.
+//
+// Every value is refused rather than defaulted when it does not parse. A CAPTCHA
+// that silently turned itself off because of a typo would be the worst kind of
+// control: one an operator believes they have.
+func captchaFromEnv() (*captcha.Verifier, error) {
+	mode, err := captcha.ParseMode(os.Getenv("SIGNARI_CAPTCHA_MODE"))
+	if err != nil {
+		return nil, err
+	}
+	if mode == captcha.ModeOff {
+		return nil, nil
+	}
+
+	provider, err := captcha.ParseProvider(os.Getenv("SIGNARI_CAPTCHA_PROVIDER"))
+	if err != nil {
+		return nil, err
+	}
+	site := os.Getenv("SIGNARI_CAPTCHA_SITE_KEY")
+	secret := os.Getenv("SIGNARI_CAPTCHA_SECRET")
+	if site == "" || secret == "" {
+		return nil, fmt.Errorf("SIGNARI_CAPTCHA_MODE is %q but SIGNARI_CAPTCHA_SITE_KEY "+
+			"or SIGNARI_CAPTCHA_SECRET is missing; a challenge with no keys renders "+
+			"an empty box and refuses every sign-in", mode)
+	}
+
+	threshold := 3
+	if v := os.Getenv("SIGNARI_CAPTCHA_AFTER_FAILURES"); v != "" {
+		n, cerr := strconv.Atoi(v)
+		if cerr != nil || n < 1 {
+			return nil, fmt.Errorf("SIGNARI_CAPTCHA_AFTER_FAILURES must be a positive "+
+				"integer, got %q", v)
+		}
+		threshold = n
+	}
+
+	return captcha.New(captcha.Config{
+		Mode:                    mode,
+		Provider:                provider,
+		SiteKey:                 site,
+		Secret:                  secret,
+		FailuresBeforeChallenge: threshold,
+		// Opt-in. See captcha.Config for why the default is to stay available.
+		FailClosed: os.Getenv("SIGNARI_CAPTCHA_FAIL_CLOSED") == "1",
+	}, nil), nil
 }

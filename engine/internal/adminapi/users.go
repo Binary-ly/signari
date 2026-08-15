@@ -57,6 +57,10 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if err := requireOrg(r.Context(), req.OrgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
 	if req.Email == "" && req.Username == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "identifier_required", "detail": "email or username is required",
@@ -111,7 +115,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		}
 
 		return audit.Write(ctx, tx, audit.Event{
-			Type: "admin.user_created", OrgID: req.OrgID, SubjectID: userID,
+			Type: "admin.user_created", AdminTokenID: TokenIDFrom(ctx), OrgID: req.OrgID, SubjectID: userID,
 			Detail: map[string]any{"has_password": req.Password != ""},
 		})
 	})
@@ -174,6 +178,9 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
+		if err := requireOrg(ctx, orgID); err != nil {
+			return err
+		}
 
 		if req.Active != nil {
 			status := "active"
@@ -229,7 +236,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		}
 
 		return audit.Write(ctx, tx, audit.Event{
-			Type: "admin.user_updated", OrgID: orgID, SubjectID: userID,
+			Type: "admin.user_updated", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID, SubjectID: userID,
 			Detail: map[string]any{
 				"active_set":     req.Active != nil,
 				"password_set":   req.Password != nil,
@@ -239,6 +246,9 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	})
 
 	switch {
+	case errors.Is(err, errCrossOrg):
+		writeCrossOrg(w, err)
+		return
 	case errors.Is(err, errNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user_not_found"})
 		return

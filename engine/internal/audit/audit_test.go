@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"crypto/sha256"
 	"os"
 	"testing"
 
@@ -159,4 +160,55 @@ func TestTypeIsRequired(t *testing.T) {
 			t.Fatal("an event with no type was accepted")
 		}
 	})
+}
+
+// TestExistingChainSurvivesTheAttributionField.
+//
+// When AdminTokenID was added it was hashed unconditionally, which changed the
+// digest of every entry that did not have one -- so the whole pre-existing chain
+// read as tampered. An append-only table cannot be rehashed, so that would have
+// been unrecoverable in production, and indistinguishable from a real attack.
+//
+// The rule this pins: an event with no attribution must hash exactly as it did
+// before the field existed.
+func TestExistingChainSurvivesTheAttributionField(t *testing.T) {
+	e := Event{
+		Type: "test.event", OrgID: "org", SubjectID: "subj", ActorID: "actor",
+		ClientID: "client", CorrelationID: "corr", Retention: RetentionSecurity,
+	}
+
+	// The formula as it stood before the field was added, written out here so
+	// this test does not depend on the code it is checking.
+	legacy := sha256.New()
+	legacy.Write([]byte(nil))
+	for _, f := range []string{e.Type, e.OrgID, e.SubjectID, e.ActorID, e.ClientID,
+		e.CorrelationID, e.Retention} {
+		legacy.Write([]byte(f))
+		legacy.Write([]byte{0})
+	}
+	legacy.Write([]byte("{}"))
+
+	if got := chainHash(nil, e, "{}"); !equalBytes(got, legacy.Sum(nil)) {
+		t.Fatal("an unattributed event no longer hashes the way it did before " +
+			"AdminTokenID existed; every historic row would now read as tampered")
+	}
+}
+
+// TestAttributionIsCoveredByTheChain. The other half: attribution that the hash
+// does not cover could be rewritten without breaking the chain, leaving a record
+// that looks intact while naming the wrong credential.
+func TestAttributionIsCoveredByTheChain(t *testing.T) {
+	base := Event{Type: "admin.thing", Retention: RetentionSecurity}
+	withToken := base
+	withToken.AdminTokenID = "11111111-1111-1111-1111-111111111111"
+	other := base
+	other.AdminTokenID = "22222222-2222-2222-2222-222222222222"
+
+	if equalBytes(chainHash(nil, base, "{}"), chainHash(nil, withToken, "{}")) {
+		t.Error("adding attribution did not change the hash")
+	}
+	if equalBytes(chainHash(nil, withToken, "{}"), chainHash(nil, other, "{}")) {
+		t.Error("two different tokens produce the same hash; attribution could be " +
+			"swapped without detection")
+	}
 }

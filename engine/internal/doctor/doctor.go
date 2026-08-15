@@ -112,6 +112,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkPolicy(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkAdminTokens(ctx, conn, r); err != nil {
+		return nil, err
+	}
 
 	sort.SliceStable(r.Findings, func(i, j int) bool {
 		return r.Findings[i].Severity < r.Findings[j].Severity
@@ -357,6 +360,58 @@ func checkPolicy(ctx context.Context, conn *pgx.Conn, r *Report) error {
 		r.add(Info, "policy", "no access policy is in force, so every client is open "+
 			"to every user",
 			"that may be correct. If not, write one and apply it with `signari policy apply`")
+	}
+	return nil
+}
+
+func checkAdminTokens(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	if _, err := conn.Exec(ctx, `SELECT 1 FROM core.admin_tokens LIMIT 1`); err != nil {
+		return nil // older schema
+	}
+	r.ran("admin API tokens")
+
+	var live, expiringSoon, neverUsed int
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE revoked_at IS NULL
+		                          AND (expires_at IS NULL OR expires_at > now())),
+		       count(*) FILTER (WHERE revoked_at IS NULL
+		                          AND expires_at BETWEEN now() AND now() + interval '14 days'),
+		       count(*) FILTER (WHERE revoked_at IS NULL AND last_used_at IS NULL
+		                          AND created_at < now() - interval '30 days')
+		FROM core.admin_tokens`).Scan(&live, &expiringSoon, &neverUsed); err != nil {
+		return err
+	}
+
+	// An expiry that arrives unannounced takes the console down, and the symptom
+	// -- every admin action returning 401 -- looks like a credential leak rather
+	// than a calendar entry.
+	if expiringSoon > 0 {
+		r.add(Warning, "admin API",
+			fmt.Sprintf("%d admin token(s) expire within 14 days", expiringSoon),
+			"mint replacements and cut over before they lapse: `signari admin-token list` "+
+				"shows the dates")
+	}
+
+	// Not an error, just unearned standing access. A credential nobody has used
+	// in a month is one nobody will notice being used by somebody else.
+	if neverUsed > 0 {
+		r.add(Info, "admin API",
+			fmt.Sprintf("%d admin token(s) created over 30 days ago have never been used",
+				neverUsed),
+			"revoke them: `signari admin-token revoke -token-id <id>`")
+	}
+
+	// The environment token grants everything, in every organisation, and cannot
+	// be revoked without restarting every node. It is the right break-glass path
+	// and the wrong day-to-day one.
+	if os.Getenv("SIGNARI_ADMIN_TOKEN") != "" && live == 0 {
+		r.add(Warning, "admin API",
+			"the admin API is reachable only with SIGNARI_ADMIN_TOKEN and no scoped "+
+				"tokens exist",
+			"that credential grants every scope in every organisation and cannot be "+
+				"revoked without restarting every node. Mint scoped ones with "+
+				"`signari admin-token create` and keep the environment token for "+
+				"break-glass")
 	}
 	return nil
 }

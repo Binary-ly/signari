@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/passwords"
 )
 
@@ -46,9 +47,11 @@ type Server struct {
 }
 
 func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
-	// Short shared secrets get brute-forced; there is no rate limit that makes a
-	// 12-character admin token safe. Refuse at construction rather than warn.
-	if len(token) < 32 {
+	// Empty is allowed now: a deployment can run entirely on database tokens and
+	// set no environment token at all, which is the better configuration. What is
+	// refused is a SHORT one -- there is no rate limit that makes a 12-character
+	// admin credential safe, and accepting it with a warning is not a control.
+	if token != "" && len(token) < 32 {
 		return nil, fmt.Errorf("admin API token must be at least 32 characters (got %d)", len(token))
 	}
 	return &Server{db: db, log: log, token: token,
@@ -57,31 +60,78 @@ func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
 
 func (s *Server) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("PATCH /admin/clients/{clientID}", s.auth(s.patchClient))
-	mux.HandleFunc("POST /admin/users", s.auth(s.createUser))
-	mux.HandleFunc("POST /admin/clients", s.auth(s.createClient))
-	mux.HandleFunc("POST /admin/clients/{clientID}/rotate-secret", s.auth(s.rotateClientSecret))
-	mux.HandleFunc("PATCH /admin/users/{userID}", s.auth(s.patchUser))
-	mux.HandleFunc("GET /admin/config-version", s.auth(s.configVersion))
+	mux.HandleFunc("PATCH /admin/clients/{clientID}", s.auth(ScopeClientsWrite, s.patchClient))
+	mux.HandleFunc("POST /admin/users", s.auth(ScopeUsersWrite, s.createUser))
+	mux.HandleFunc("POST /admin/clients", s.auth(ScopeClientsWrite, s.createClient))
+	mux.HandleFunc("POST /admin/clients/{clientID}/rotate-secret",
+		s.auth(ScopeClientsWrite, s.rotateClientSecret))
+	mux.HandleFunc("PATCH /admin/users/{userID}", s.auth(ScopeUsersWrite, s.patchUser))
+	mux.HandleFunc("GET /admin/config-version", s.auth(ScopeConfigRead, s.configVersion))
 	return mux
 }
 
-// auth is a constant-time bearer check.
+// auth authenticates the caller and requires a scope.
 //
-// Deliberately not a per-request database lookup: this endpoint is the one an
-// attacker will hammer, and a lookup would turn a guessing attempt into a query.
-func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+// # Why this now reads the database
+//
+// It used to be a constant-time comparison against one environment variable and
+// nothing else, on the reasoning that a lookup turns a guessing attempt into a
+// query. That reasoning was sound about load and wrong about risk: it also meant
+// no revocation, no expiry, no attribution and no organisation boundary, and a
+// leaked token stayed valid until somebody restarted every node.
+//
+// The lookup is a single indexed probe on a SHA-256 of the presented value.
+// Guessing is not the threat against a 256-bit random token; leaking is, and
+// leaking is what the old design had no answer to. The environment token still
+// works and still needs no database, so the break-glass path is unchanged.
+func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		h := r.Header.Get("Authorization")
 		const prefix = "Bearer "
-		if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) ||
-			!constantTimeEqual(h[len(prefix):], s.token) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="signari-admin"`)
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+			unauthorized(w)
 			return
 		}
-		next(w, r)
+
+		p, err := s.resolveToken(r.Context(), h[len(prefix):])
+		if err != nil {
+			if !errors.Is(err, errTokenRejected) {
+				s.log.Error("resolving an admin token", "err", err)
+				writeJSON(w, http.StatusServiceUnavailable,
+					map[string]string{"error": "unavailable"})
+				return
+			}
+			unauthorized(w)
+			return
+		}
+
+		// Authenticated but not permitted is 403, and says which scope was
+		// missing. This is an operator-facing API: "forbidden" with no detail
+		// turns a one-line fix into an afternoon.
+		if !p.Can(scope) {
+			s.log.Info("admin request refused: missing scope", "token", p.Name,
+				"required", scope, "held", p.Scopes)
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error":  "insufficient_scope",
+				"detail": "this token does not hold " + scope,
+			})
+			return
+		}
+
+		if p.BreakGlass {
+			// Logged every single time. A credential that bypasses revocation and
+			// expiry should never be quietly interchangeable with the others.
+			s.log.Warn("admin request used the break-glass environment token",
+				"method", r.Method, "path", r.URL.Path)
+		}
+		s.touch(p.TokenID)
+		next(w, r.WithContext(withPrincipal(r.Context(), p)))
 	}
+}
+
+func unauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="signari-admin"`)
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 }
 
 type patchClientRequest struct {
@@ -107,6 +157,22 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	}
 
 	version, err := s.mutate(ctx, func(tx pgx.Tx) error {
+		// This handler previously changed a client without ever reading which
+		// organisation it belonged to, so there was nothing for the boundary to
+		// check against. The lookup exists for that reason.
+		var orgID string
+		if err := tx.QueryRow(ctx,
+			`SELECT org_id::text FROM core.clients WHERE client_id = $1`,
+			clientID).Scan(&orgID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errNotFound
+			}
+			return err
+		}
+		if err := requireOrg(ctx, orgID); err != nil {
+			return err
+		}
+
 		tag, err := tx.Exec(ctx,
 			`UPDATE core.clients SET enabled = $2, updated_at = now() WHERE client_id = $1`,
 			clientID, *req.Enabled)
@@ -116,10 +182,23 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		if tag.RowsAffected() == 0 {
 			return errNotFound
 		}
-		return nil
+
+		// Disabling a client is the emergency lever -- the way an operator cuts a
+		// compromised integration off from every user at once. It had no audit
+		// record at all, so afterwards there was no way to say who pulled it, or
+		// when, or whether it was pulled rather than the client breaking on its
+		// own.
+		return audit.Write(ctx, tx, audit.Event{
+			Type: "admin.client_updated", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, ClientID: clientID,
+			Detail: map[string]any{"enabled": *req.Enabled},
+		})
 	})
 
 	switch {
+	case errors.Is(err, errCrossOrg):
+		writeCrossOrg(w, err)
+		return
 	case errors.Is(err, errNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client_not_found"})
 		return
@@ -150,6 +229,17 @@ func (s *Server) configVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 var errNotFound = errors.New("not found")
+
+// writeCrossOrg answers a boundary violation with 403 and says so.
+//
+// Not 404. The record exists; this credential simply may not touch it, and
+// pretending otherwise sends an operator hunting for a resource that is right
+// where they left it.
+func writeCrossOrg(w http.ResponseWriter, err error) {
+	writeJSON(w, http.StatusForbidden, map[string]string{
+		"error": "outside_token_organisation", "detail": err.Error(),
+	})
+}
 
 // mutate runs fn inside a transaction and bumps config_version with it.
 //

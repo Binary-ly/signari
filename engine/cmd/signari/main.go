@@ -90,6 +90,10 @@ commands:
   policy test         check a policy file (no database needed -- for CI)
   policy apply        install a policy file
   policy show         print the policy in force
+  admin-token create  mint a scoped, revocable admin API token
+  admin-token list    show admin tokens, their scopes and when each was last used
+  admin-token revoke  revoke one immediately, with no restart
+  doctor              inspect this deployment and report what is wrong with it
   serve               serve the OIDC endpoints
 
 env:
@@ -139,6 +143,11 @@ func run(args []string) error {
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+	tokenScopes := fs.String("scopes", "",
+		"comma-separated admin token scopes, e.g. users:write,clients:write")
+	tokenExpires := fs.Duration("expires-in", 0,
+		"how long an admin token stays valid, e.g. 2160h for 90 days (0 = never)")
+	tokenID := fs.String("token-id", "", "admin token uuid to revoke")
 	spEncCert := fs.String("sp-encryption-cert", "",
 		"path to the provider's ENCRYPTION certificate (PEM); assertions are encrypted to it")
 	slug := fs.String("slug", "", "short name used in /login/with/<slug>")
@@ -165,7 +174,7 @@ func run(args []string) error {
 	if cmd == "migrate" || cmd == "instance" || cmd == "user" || cmd == "client" ||
 		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
 		cmd == "saml" || cmd == "idp" || cmd == "scim" || cmd == "group" ||
-		cmd == "policy" {
+		cmd == "policy" || cmd == "admin-token" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -239,6 +248,12 @@ func run(args []string) error {
 		return janitorOnce(ctx, conn)
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
+	case "admin-token create":
+		return adminTokenCreate(ctx, conn, *name, *orgID, *tokenScopes, *tokenExpires)
+	case "admin-token list":
+		return adminTokenList(ctx, conn)
+	case "admin-token revoke":
+		return adminTokenRevoke(ctx, conn, *tokenID)
 	case "keys list":
 		return keysList(ctx, conn)
 	case "keys rotate":
@@ -2080,4 +2095,132 @@ func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string) error {
 		return fmt.Errorf("%d critical finding(s)", crit)
 	}
 	return nil
+}
+
+// adminTokenCreate mints a scoped admin API credential.
+//
+// The secret is printed once and never stored. Everything about the design
+// pushes toward that: the table holds a SHA-256, and there is no command to
+// retrieve a token, only to replace one.
+func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes string,
+	expiresIn time.Duration) error {
+
+	if name == "" {
+		return fmt.Errorf("give -name; it appears in the audit trail, and \"which token " +
+			"was that\" is unanswerable without one")
+	}
+	var list []string
+	for _, sc := range strings.Split(scopes, ",") {
+		if sc = strings.TrimSpace(sc); sc != "" {
+			list = append(list, sc)
+		}
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("give -scopes, comma separated. Known scopes: %s",
+			strings.Join(adminapi.KnownScopes, ", "))
+	}
+
+	var expires *time.Time
+	if expiresIn > 0 {
+		t := time.Now().Add(expiresIn)
+		expires = &t
+	}
+
+	secret, id, err := adminapi.NewToken(ctx, conn, name, orgID, list, expires)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("\n  %s\n\n", secret)
+	fmt.Printf("  id     : %s\n  name   : %s\n  scopes : %s\n", id, name, strings.Join(list, ", "))
+	if orgID == "" {
+		fmt.Println("  org    : every organisation")
+	} else {
+		fmt.Printf("  org    : %s only\n", orgID)
+	}
+	if expires != nil {
+		fmt.Printf("  expires: %s\n", expires.Format(time.RFC3339))
+	} else {
+		fmt.Println("  expires: never -- consider -expires-in")
+	}
+	fmt.Println("\n  This is the only time the token is shown. It is stored as a hash,\n" +
+		"  so it cannot be recovered -- if it is lost, revoke it and mint another.")
+	return nil
+}
+
+func adminTokenList(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT t.id::text, t.name, COALESCE(o.slug, 'ALL'), t.scopes,
+		       t.created_at, t.expires_at, t.revoked_at, t.last_used_at
+		FROM core.admin_tokens t
+		LEFT JOIN core.organizations o ON o.id = t.org_id
+		ORDER BY t.revoked_at NULLS FIRST, t.created_at DESC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	fmt.Printf("\n  %-38s %-24s %-12s %s\n", "ID", "NAME", "ORG", "STATE")
+	n := 0
+	for rows.Next() {
+		var id, name, org string
+		var scopes []string
+		var created time.Time
+		var expires, revoked, lastUsed *time.Time
+		if err := rows.Scan(&id, &name, &org, &scopes, &created, &expires, &revoked,
+			&lastUsed); err != nil {
+			return err
+		}
+		n++
+
+		state := "active"
+		switch {
+		case revoked != nil:
+			state = "revoked"
+		case expires != nil && time.Now().After(*expires):
+			state = "expired"
+		case expires != nil:
+			state = "expires " + expires.Format("2006-01-02")
+		}
+		fmt.Printf("  %-38s %-24s %-12s %s\n", id, truncate(name, 24), truncate(org, 12), state)
+		used := "never used"
+		if lastUsed != nil {
+			used = "last used " + lastUsed.Format("2006-01-02 15:04")
+		}
+		fmt.Printf("  %-38s %s | %s\n", "", strings.Join(scopes, ","), used)
+	}
+	if n == 0 {
+		fmt.Println("\n  No admin tokens. The API is reachable only with SIGNARI_ADMIN_TOKEN,")
+		fmt.Println("  which grants everything in every organisation and cannot be revoked")
+		fmt.Println("  without restarting every node.")
+	}
+	return rows.Err()
+}
+
+func adminTokenRevoke(ctx context.Context, conn *pgx.Conn, id string) error {
+	if id == "" {
+		return fmt.Errorf("give -token-id (see `signari admin-token list`)")
+	}
+	tag, err := conn.Exec(ctx, `
+		UPDATE core.admin_tokens SET revoked_at = now()
+		WHERE id = $1::uuid AND revoked_at IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// Said plainly rather than reported as success. "Revoked" for a token that
+		// was never touched is the most dangerous possible false reassurance.
+		return fmt.Errorf("no active token with id %s; it does not exist or was already "+
+			"revoked -- nothing was changed", id)
+	}
+	fmt.Printf("revoked %s\n", id)
+	fmt.Println("It stops working on the next request. No restart is needed.")
+	return nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }

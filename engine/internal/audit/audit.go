@@ -82,6 +82,10 @@ type Event struct {
 	// code shown to the user on an error page.
 	CorrelationID string
 	Retention     string
+	// AdminTokenID names the admin API credential that caused this change, when
+	// one did. Empty for actions taken by a user, by the engine itself, or
+	// through the break-glass environment token, which has no row to point at.
+	AdminTokenID string
 	// Detail is NON-personal context: reason codes, counts, scope names. Anything
 	// identifying a person belongs in the encrypted column, not here.
 	Detail map[string]any
@@ -146,11 +150,11 @@ func Write(ctx context.Context, tx pgx.Tx, e Event) error {
 	_, err = tx.Exec(ctx, `
 		INSERT INTO core.audit_events
 			(org_id, event_type, subject_id, actor_id, client_id, correlation_id,
-			 retention_class, detail, prev_hash, entry_hash)
-		VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5, $6::uuid, $7, $8, $9, $10)`,
+			 retention_class, detail, prev_hash, entry_hash, admin_token_id)
+		VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5, $6::uuid, $7, $8, $9, $10, $11::uuid)`,
 		nullIfEmpty(e.OrgID), e.Type, nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
 		nullIfEmpty(e.ClientID), nullIfEmpty(e.CorrelationID), e.Retention,
-		detail, prev, entry)
+		detail, prev, entry, nullIfEmpty(e.AdminTokenID))
 	if err != nil {
 		return fmt.Errorf("audit: appending %s: %w", e.Type, err)
 	}
@@ -172,6 +176,29 @@ func chainHash(prev []byte, e Event, detail string) []byte {
 		h.Write([]byte(f))
 		h.Write([]byte{0})
 	}
+
+	// # Why the attribution is appended conditionally
+	//
+	// AdminTokenID must be INSIDE the hash: attribution the chain does not cover
+	// can be rewritten without breaking it, leaving a record that looks intact
+	// while naming the wrong credential -- the single thing an attacker most
+	// wants to change about an audit trail.
+	//
+	// But it is written ONLY when set. Appending an empty string plus its
+	// separator still changes the digest, so hashing it unconditionally
+	// invalidates every row written before this field existed. The chain is
+	// append-only and those rows cannot be rehashed, so the entire history would
+	// read as tampered -- indistinguishable from a real attack, which is the most
+	// useless possible failure for an integrity mechanism.
+	//
+	// Skipping it when empty means a pre-existing row hashes exactly as it did,
+	// and an attributed row commits to its token. Verified by
+	// TestExistingChainSurvivesTheAttributionField.
+	if e.AdminTokenID != "" {
+		h.Write([]byte(e.AdminTokenID))
+		h.Write([]byte{0})
+	}
+
 	h.Write([]byte(detail))
 	return h.Sum(nil)
 }
@@ -187,7 +214,8 @@ func Verify(ctx context.Context, tx pgx.Tx) (brokenAt int64, checked int, err er
 		SELECT id, event_type, COALESCE(org_id::text,''), COALESCE(subject_id::text,''),
 		       COALESCE(actor_id::text,''), COALESCE(client_id,''),
 		       COALESCE(correlation_id::text,''), retention_class,
-		       detail::text, prev_hash, entry_hash
+		       detail::text, prev_hash, entry_hash,
+		       COALESCE(admin_token_id::text,'')
 		FROM core.audit_events ORDER BY id`)
 	if err != nil {
 		return 0, 0, err
@@ -201,7 +229,8 @@ func Verify(ctx context.Context, tx pgx.Tx) (brokenAt int64, checked int, err er
 		var detail string
 		var prev, entry []byte
 		if err := rows.Scan(&id, &e.Type, &e.OrgID, &e.SubjectID, &e.ActorID,
-			&e.ClientID, &e.CorrelationID, &e.Retention, &detail, &prev, &entry); err != nil {
+			&e.ClientID, &e.CorrelationID, &e.Retention, &detail, &prev, &entry,
+			&e.AdminTokenID); err != nil {
 			return 0, checked, err
 		}
 		checked++

@@ -49,6 +49,11 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// The organisation boundary, at the point the org is chosen.
+	if err := requireOrg(r.Context(), req.OrgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
 	if req.DisplayName == "" {
 		req.DisplayName = req.ClientID
 	}
@@ -115,7 +120,7 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		return audit.Write(ctx, tx, audit.Event{
-			Type: "admin.client_created", OrgID: req.OrgID, ClientID: req.ClientID,
+			Type: "admin.client_created", AdminTokenID: TokenIDFrom(ctx), OrgID: req.OrgID, ClientID: req.ClientID,
 			Detail: map[string]any{"type": kind, "imported_secret": req.Secret != ""},
 		})
 	})
@@ -176,6 +181,11 @@ func (s *Server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
+		// Checked against the row we are about to modify, inside the same
+		// transaction that will modify it.
+		if err := requireOrg(ctx, orgID); err != nil {
+			return err
+		}
 		if kind != "confidential" {
 			// A public client has no secret to rotate, and pretending otherwise
 			// would hand an operator a value that authenticates nothing.
@@ -187,11 +197,14 @@ func (s *Server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		return audit.Write(ctx, tx, audit.Event{
-			Type: "admin.client_secret_rotated", OrgID: orgID, ClientID: clientID,
+			Type: "admin.client_secret_rotated", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID, ClientID: clientID,
 		})
 	})
 
 	switch {
+	case errors.Is(err, errCrossOrg):
+		writeCrossOrg(w, err)
+		return
 	case errors.Is(err, errNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client_not_found"})
 		return

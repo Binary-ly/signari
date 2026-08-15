@@ -69,6 +69,8 @@ type Stats struct {
 	RevocationsPurged int64
 	// RecoveriesPurged are password-reset requests dropped after expiry.
 	RecoveriesPurged int64
+	// DeviceCodesPurged are abandoned RFC 8628 device authorizations.
+	DeviceCodesPurged int64
 	// LogoutChainsSwept are SAML front-channel logouts the user abandoned.
 	LogoutChainsSwept int64
 	// FederatedLoginsSwept are external sign-ins abandoned at the provider.
@@ -119,6 +121,11 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	// expired token is refused by its exp claim regardless.
 	if st.RevocationsPurged, err = store.PurgeExpiredRevocations(ctx, tx); err != nil {
 		return st, fmt.Errorf("purging expired revocations: %w", err)
+	}
+	// Device authorizations that were never completed. Each holds two code
+	// hashes; an abandoned television login should not leave them behind.
+	if st.DeviceCodesPurged, err = store.PurgeExpiredDeviceCodes(ctx, tx); err != nil {
+		return st, fmt.Errorf("purging expired device authorizations: %w", err)
 	}
 	// Recovery requests nobody can use any more. Each row holds two token hashes
 	// for a password reset, so keeping them past their expiry stores credentials

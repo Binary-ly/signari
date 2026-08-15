@@ -34,6 +34,7 @@ type Metadata struct {
 	FrontchannelLogoutSessionSupported bool `json:"frontchannel_logout_session_supported,omitempty"`
 	// RFC 9126 §5.
 	PushedAuthorizationRequestEndpoint string `json:"pushed_authorization_request_endpoint,omitempty"`
+	DeviceAuthorizationEndpoint        string `json:"device_authorization_endpoint,omitempty"`
 	// RFC 9449 §5.1.
 	DPoPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
 	// OIDC Discovery §3.
@@ -178,6 +179,7 @@ func Build(cfg Config) (*Metadata, error) {
 			"ES256", "ES384", "ES512", "EdDSA",
 		},
 		PushedAuthorizationRequestEndpoint: at("/oauth2/par"),
+		DeviceAuthorizationEndpoint:        at("/oauth2/device_authorization"),
 		// Both logout channels are advertised because both run. Back-channel is
 		// the reliable one; the front channel reaches browser-held state the back
 		// channel cannot. Claiming either alone would overstate what a logout
@@ -205,6 +207,7 @@ func Build(cfg Config) (*Metadata, error) {
 		// enforced -- the rule this file exists to hold: nothing enters discovery
 		// before it works.
 		GrantTypesSupported: []string{"authorization_code", "refresh_token",
+			"urn:ietf:params:oauth:grant-type:device_code",
 			"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"},
 
 		SubjectTypesSupported:   []string{"public"},

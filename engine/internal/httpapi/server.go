@@ -23,10 +23,14 @@ import (
 // Server holds the public endpoints. Everything it serves is derived from a live
 // key set, so metadata cannot drift from what the server can actually do.
 type Server struct {
-	cfg      oidc.Config
-	log      *slog.Logger
-	jwks     *bucket
-	login    *bucket
+	cfg   oidc.Config
+	log   *slog.Logger
+	jwks  *bucket
+	login *bucket
+	// device throttles the RFC 8628 verification screen. A user code is short by
+	// necessity, so the endpoint is what limits guessing -- there is no per-code
+	// counter, because a wrong guess names no record to charge it to.
+	device   *bucket
 	db       *pgxpool.Pool
 	hasher   *passwords.Hasher
 	policies *policyCache
@@ -60,6 +64,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// evaluation. Rate limiting in FRONT of the hash is what keeps a flood
 		// from turning into memory exhaustion, independent of the semaphore.
 		login:     newBucket(5, 20),
+		device:    newBucket(3, 10),
 		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
 		policies:  newPolicyCache(),
 		geo:       risk.NewResolver(),
@@ -85,6 +90,11 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET "+oidc.PathAuthorize, s.handleAuthorize)
 	mux.HandleFunc("POST "+oidc.PathToken, s.handleToken)
 	mux.HandleFunc("POST /oauth2/par", s.handlePAR)
+	mux.HandleFunc("POST /oauth2/device_authorization", s.handleDeviceAuthorization)
+	// Both methods on one path: GET renders the code entry screen, POST handles
+	// entry and the approve/refuse decision.
+	mux.HandleFunc("GET /device", s.handleDeviceVerification)
+	mux.HandleFunc("POST /device", s.handleDeviceVerification)
 	mux.HandleFunc("GET "+oidc.PathUserinfo, s.handleUserinfo)
 	mux.HandleFunc("POST "+oidc.PathUserinfo, s.handleUserinfo)
 	mux.HandleFunc("GET "+oidc.PathEndSession, s.handleEndSession)

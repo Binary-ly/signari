@@ -1,0 +1,361 @@
+package httpapi
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"html/template"
+	"net/http"
+	"strings"
+	"time"
+
+	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/store"
+)
+
+// The device authorization grant, RFC 8628.
+//
+//	POST /oauth2/device_authorization   the device asks
+//	GET|POST /device                    the person approves
+//	POST /oauth2/token                  the device polls (grant_type=...device_code)
+
+const (
+	// deviceCodeLifetime is deliberately short. RFC 8628 suggests values around
+	// this; some implementations allow hours, which widens the phishing window
+	// for no benefit -- nobody legitimately takes an hour to type eight letters.
+	deviceCodeLifetime = 10 * time.Minute
+	// devicePollInterval is the starting value. It grows on slow_down.
+	devicePollInterval = 5
+)
+
+// handleDeviceAuthorization answers a device asking to be authorised.
+func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	w.Header().Set("Cache-Control", "no-store")
+
+	if err := r.ParseForm(); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "malformed form body")
+		return
+	}
+
+	clientID := r.PostForm.Get("client_id")
+	c, err := s.lookupClient(ctx, clientID)
+	if err != nil || c == nil {
+		writeError(w, http.StatusUnauthorized, "invalid_client", "unknown client")
+		return
+	}
+	// A confidential client authenticates here exactly as it would at the token
+	// endpoint. Skipping it would let anyone start a device flow in its name and
+	// phish a user code that names a trusted application.
+	if c.Type == "confidential" {
+		secret := r.PostForm.Get("client_secret")
+		if err := s.authenticateConfidentialClient(ctx, r, c, secret); err != nil {
+			s.log.Info("device authorization: client authentication failed",
+				"client_id", clientID, "err", err)
+			writeError(w, http.StatusUnauthorized, "invalid_client",
+				"client authentication failed")
+			return
+		}
+	}
+
+	scope := strings.TrimSpace(r.PostForm.Get("scope"))
+	// Never nil: a nil slice is sent as SQL NULL, and an explicit NULL overrides
+	// the column default, so the NOT NULL constraint rejects it.
+	resource := r.PostForm["resource"]
+	if resource == nil {
+		resource = []string{}
+	}
+
+	deviceCode, err := newSID()
+	if err != nil {
+		s.log.Error("generating a device code", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "")
+		return
+	}
+	userCode, err := oauth.NewUserCode()
+	if err != nil {
+		s.log.Error("generating a user code", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "")
+		return
+	}
+
+	if _, err := store.CreateDeviceAuthorization(ctx, s.db, c.OrgID, c.ClientID, scope,
+		resource, store.HashToken(deviceCode), store.HashToken(userCode),
+		devicePollInterval, deviceCodeLifetime); err != nil {
+		s.log.Error("recording a device authorization", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "")
+		return
+	}
+
+	verification := s.cfg.Issuer + "/device"
+	writeJSON(w, http.StatusOK, map[string]any{
+		"device_code": deviceCode,
+		"user_code":   oauth.FormatUserCode(userCode),
+		// Both forms. verification_uri is what a person types; the _complete
+		// variant carries the code so a QR code needs no typing at all, which is
+		// the difference between a usable television login and a hated one.
+		"verification_uri":          verification,
+		"verification_uri_complete": verification + "?user_code=" + oauth.FormatUserCode(userCode),
+		"expires_in":                int(deviceCodeLifetime.Seconds()),
+		"interval":                  devicePollInterval,
+	})
+}
+
+// handleDeviceVerification is where the person types the code.
+func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Signing in first. The approval must be attributable to somebody, and
+	// bouncing through login here is what makes that true.
+	sid, userID, orgID, ok := s.currentSession(r)
+	if !ok {
+		back := "/device"
+		if code := r.URL.Query().Get("user_code"); code != "" {
+			back += "?user_code=" + template.URLQueryEscaper(code)
+		}
+		http.Redirect(w, r, parkLogin(back), http.StatusFound)
+		return
+	}
+
+	csrf, err := s.csrfToken(w, r)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	render := func(userCode, errMsg string, d *store.DeviceAuthorization) {
+		data := map[string]any{
+			"UserCode":  userCode,
+			"Error":     errMsg,
+			"CSRF":      csrf,
+			"CSRFField": csrfFormField,
+		}
+		if d != nil {
+			data["Confirm"] = true
+			data["ClientName"] = s.clientDisplayName(ctx, d.ClientID)
+			data["Scopes"] = strings.Fields(d.Scope)
+		}
+		s.renderPage(w, devicePage, data)
+	}
+
+	if r.Method == http.MethodGet {
+		render(r.URL.Query().Get("user_code"), "", nil)
+		return
+	}
+
+	// RFC 8628 §5.1: rate limit the user interaction endpoint. A user code is
+	// short enough to type and therefore short enough to guess; this is what
+	// makes guessing expensive, since a wrong guess names no record to charge.
+	if !s.device.allow() {
+		render("", "Too many attempts just now. Wait a moment and try again.", nil)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		render("", "That form could not be read.", nil)
+		return
+	}
+	if !checkCSRF(r) {
+		render("", "That form expired. Try again.", nil)
+		return
+	}
+
+	typed := oauth.NormalizeUserCode(r.PostForm.Get("user_code"))
+	if !oauth.ValidUserCodeShape(typed) {
+		// Not a failed attempt against any record: this string cannot match one,
+		// so counting it would let an attacker exhaust somebody else's budget.
+		render(r.PostForm.Get("user_code"),
+			"That code does not look right. Check it and try again.", nil)
+		return
+	}
+
+	d, err := store.LookupUserCode(ctx, s.db, store.HashToken(typed))
+	if err != nil {
+		render(r.PostForm.Get("user_code"),
+			"That code is not valid, or it has expired. Codes last ten minutes.", nil)
+		return
+	}
+	if d.OrgID != orgID {
+		// Cross-tenant approval. Answered exactly like an unknown code so the
+		// screen cannot be used to discover which codes exist elsewhere.
+		render(r.PostForm.Get("user_code"),
+			"That code is not valid, or it has expired. Codes last ten minutes.", nil)
+		return
+	}
+
+	switch r.PostForm.Get("decision") {
+	case "approve":
+		if err := store.ApproveDeviceAuthorization(ctx, s.db, d.ID, userID, sid); err != nil {
+			render("", "That request is no longer waiting. Start again on the device.", nil)
+			return
+		}
+		s.log.Info("device authorization approved", "client_id", d.ClientID,
+			"user_id", userID, "correlation_id", correlationID(ctx))
+		s.renderPage(w, devicePage, map[string]any{"Done": true})
+	case "deny":
+		if err := store.DenyDeviceAuthorization(ctx, s.db, d.ID); err != nil {
+			s.log.Error("denying a device authorization", "err", err)
+		}
+		s.renderPage(w, devicePage, map[string]any{"Denied": true})
+	default:
+		// First POST: the code was right, so show what is being authorised and
+		// ask. The confirmation step is the only place a phished user is told
+		// what they are actually approving.
+		render(oauth.FormatUserCode(typed), "", d)
+	}
+}
+
+// handleDeviceCodeGrant is the token endpoint's device_code branch.
+func (s *Server) handleDeviceCodeGrant(w http.ResponseWriter, r *http.Request, clientID string) {
+	ctx := r.Context()
+
+	deviceCode := r.PostForm.Get("device_code")
+	if deviceCode == "" {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: "device_code is required", Status: http.StatusBadRequest})
+		return
+	}
+
+	d, err := store.PollDeviceCode(ctx, s.db, store.HashToken(deviceCode), clientID)
+	switch {
+	case errors.Is(err, store.ErrDeviceCodePending):
+		writeTokenError(w, &oauth.TokenError{Code: "authorization_pending",
+			Description: "the user has not yet approved this device",
+			Status:      http.StatusBadRequest})
+		return
+	case errors.Is(err, store.ErrDeviceCodeSlowDown):
+		writeTokenError(w, &oauth.TokenError{Code: "slow_down",
+			Description: "polling faster than the interval; wait five seconds longer",
+			Status:      http.StatusBadRequest})
+		return
+	case errors.Is(err, store.ErrDeviceCodeDenied):
+		writeTokenError(w, &oauth.TokenError{Code: "access_denied",
+			Description: "the user refused this device", Status: http.StatusBadRequest})
+		return
+	case errors.Is(err, store.ErrDeviceCodeWrongClient):
+		s.log.Info("device code presented by the wrong client", "presented_by", clientID,
+			"correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "this device code was not issued to this client",
+			Status:      http.StatusBadRequest})
+		return
+	case errors.Is(err, store.ErrDeviceCodeUnknown):
+		// Unknown, expired and already-redeemed are one answer. RFC 8628 defines
+		// expired_token, and it is used here only for codes we can still see are
+		// ours -- which, since expiry is enforced in the query, means never. One
+		// indistinguishable answer beats a taxonomy that leaks.
+		writeTokenError(w, &oauth.TokenError{Code: "expired_token",
+			Description: "this device code is not valid; start again on the device",
+			Status:      http.StatusBadRequest})
+		return
+	case err != nil:
+		s.log.Error("polling a device code", "err", err)
+		writeTokenError(w, &oauth.TokenError{Code: "server_error",
+			Status: http.StatusInternalServerError})
+		return
+	}
+
+	s.issueDeviceTokens(w, r, d)
+}
+
+var devicePage = template.Must(template.New("device").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connect a device</title><style>` + pageCSS + `</style></head>
+<body>
+{{if .Done}}
+<h1>Device connected</h1>
+<p>You can put this away and go back to the device.</p>
+{{else if .Denied}}
+<h1>Request refused</h1>
+<p>Nothing was granted. If you did not start this, somebody else may have asked
+you to enter that code &mdash; it is worth telling whoever runs your systems.</p>
+{{else if .Confirm}}
+<h1>Allow this device?</h1>
+<p><strong>{{.ClientName}}</strong> is asking to sign in as you on a device.</p>
+{{if .Scopes}}<p>It will be able to:</p><ul>{{range .Scopes}}<li>{{.}}</li>{{end}}</ul>{{end}}
+<p class="hint">Only continue if you started this yourself, on a device in front
+of you. Nobody legitimate will ask you to enter a code they sent you.</p>
+<form method="POST" action="/device">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<input type="hidden" name="user_code" value="{{.UserCode}}">
+<button type="submit" name="decision" value="approve">Allow</button>
+<button type="submit" name="decision" value="deny" class="secondary">Refuse</button>
+</form>
+{{else}}
+<h1>Connect a device</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+<p>Enter the code shown on your device.</p>
+<form method="POST" action="/device">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="uc">Code</label>
+<input id="uc" name="user_code" value="{{.UserCode}}" autocomplete="off"
+       autocapitalize="characters" spellcheck="false" autofocus required>
+<button type="submit">Continue</button>
+</form>
+{{end}}
+</body></html>`))
+
+// clientDisplayName is what the person is asked to trust. Falls back to the id,
+// never to something invented.
+func (s *Server) clientDisplayName(ctx context.Context, clientID string) string {
+	var name string
+	if err := s.db.QueryRow(ctx,
+		`SELECT display_name FROM core.clients WHERE client_id = $1`, clientID).Scan(&name); err != nil {
+		return clientID
+	}
+	if strings.TrimSpace(name) == "" {
+		return clientID
+	}
+	return fmt.Sprintf("%s (%s)", name, clientID)
+}
+
+// issueDeviceTokens mints the token set for an approved device.
+//
+// Goes through mintSet like every other grant, so a device token is subject to
+// the same DPoP binding, resource indicators, group claims and audit trail. A
+// second minting path would be a second place for those to be forgotten.
+func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
+	d *store.DeviceAuthorization) {
+
+	ctx := r.Context()
+	c, err := s.lookupClient(ctx, d.ClientID)
+	if err != nil || c == nil {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
+			Description: "unknown client", Status: http.StatusUnauthorized})
+		return
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "server_error",
+			Status: http.StatusInternalServerError})
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	scopes := splitScopes(d.Scope)
+	if len(scopes) == 0 {
+		scopes = c.Scopes
+	}
+
+	// No nonce: there was no authorization request from a browser to bind one to.
+	// An id_token here asserts the authentication the person performed at the
+	// verification screen, which mintSet reads from the session.
+	resp, _, err := s.mintSet(ctx, tx, c, d.OrgID, d.UserID, d.SID, "", scopes, d.Resource, "")
+	if err != nil {
+		s.log.Error("minting tokens for a device grant", "err", err,
+			"correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "server_error",
+			Status: http.StatusInternalServerError})
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "server_error",
+			Status: http.StatusInternalServerError})
+		return
+	}
+
+	s.log.Info("device grant redeemed", "client_id", d.ClientID, "user_id", d.UserID,
+		"correlation_id", correlationID(ctx))
+	writeJSON(w, http.StatusOK, resp)
+}

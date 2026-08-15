@@ -344,6 +344,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		s.handleTokenExchange(w, r, c)
 		return
 	}
+	if req.GrantType == oauth.GrantTypeDeviceCode {
+		s.handleDeviceCodeGrant(w, r, c.ClientID)
+		return
+	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

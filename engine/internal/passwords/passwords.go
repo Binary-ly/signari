@@ -267,6 +267,36 @@ func verifyDjangoPBKDF2(stored, password string) error {
 
 // SupportedPrefixes lists the import formats recognised today. Used by the
 // migration tooling to report, per source system, what will transfer.
+//
+// This list UNDER-REPORTED for a while: it named five prefixes while Verify
+// handled nine, so migration tooling told operators that phpass, Drupal 7,
+// Keycloak and scrypt passwords would not transfer when they would. A reporting
+// function that disagrees with the code it reports on is worse than none --
+// somebody plans a password reset for users who never needed one.
+//
+// TestSupportedPrefixesMatchesVerify keeps the two in step.
 func SupportedPrefixes() []string {
-	return []string{"$argon2id$", "$2a$", "$2b$", "$2y$", "pbkdf2_sha256$"}
+	return []string{
+		"$argon2id$",
+		"$2a$", "$2b$", "$2y$", // bcrypt
+		"pbkdf2_sha256$", // Django, and therefore authentik
+		"$P$", "$H$",     // phpass: WordPress, phpBB, Drupal 7
+		"$S$", // Drupal 7 native
+		"$keycloak$",
+		"$scrypt$",
+	}
+}
+
+// CanVerify reports whether a stored hash is one this engine can check.
+//
+// The question migration tooling actually asks, and the one an operator needs
+// answered BEFORE importing rather than after: an account imported with a hash
+// nothing can verify is an account nobody can sign in to.
+func CanVerify(stored string) bool {
+	for _, p := range SupportedPrefixes() {
+		if strings.HasPrefix(stored, p) {
+			return true
+		}
+	}
+	return false
 }

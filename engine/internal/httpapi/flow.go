@@ -926,6 +926,21 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 				WHERE user_id = $1`, userID, fresh); err != nil {
 				s.log.Error("rehashing password", "err", err)
 			}
+			// A user imported by password hash has now finished migrating: the
+			// foreign hash is gone and their credential is ours. Recording that
+			// here is what makes a cutover dashboard truthful -- CompleteMigration
+			// only runs on the DELEGATED path, so without this every
+			// hash-imported user stayed 'pending' forever however many times they
+			// signed in, and "% migrated" would read zero on a finished migration.
+			//
+			// migration_source_id stays NULL, accurately: there was no delegated
+			// source, the hash came across in an export.
+			if _, err := s.db.Exec(ctx, `
+				UPDATE core.users
+				SET migration_state = 'complete', migrated_at = now()
+				WHERE id = $1 AND migration_state = 'pending'`, userID); err != nil {
+				s.log.Error("marking a hash-imported user migrated", "err", err)
+			}
 		}
 	}
 

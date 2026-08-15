@@ -18,10 +18,6 @@ Lines : 21330
 Issues: 33      # at the time of the first real run
 ```
 
-The baseline is now **25** with `-exclude=G101` (12 open redirects, 8 operator
-file paths, 3 unhandled-error sites, 2 `template.URL`/`template.HTML`). It moves only when a new
-redirect site or file read is added, and each addition is checked by hand
-against the table below before the number is accepted.
 
 The most recent move, 22 -> 23, was **G710 at `samlslo.go`**: the `LogoutResponse`
 now leaves on the HTTP-Redirect binding when that is what the provider registered,

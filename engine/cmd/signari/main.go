@@ -76,6 +76,7 @@ commands:
   client set-keys     switch a client to private_key_jwt with its public JWKS
   janitor once        run one maintenance pass (serve runs this continuously)
   import keycloak     import users and clients from a Keycloak realm export
+  import authentik    import users and groups from an authentik dumpdata export
   keys list           show signing keys, their state and when each may advance
   keys rotate         advance the rotation one safe step (run it again later)
   proxy check         prove a forward-auth deployment actually protects the app
@@ -259,6 +260,8 @@ func run(args []string) error {
 		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr)
 	case "janitor once":
 		return janitorOnce(ctx, conn)
+	case "import authentik":
+		return importAuthentik(ctx, conn, *file, *orgID, !*apply)
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
 	case "ssf add-stream":
@@ -2537,4 +2540,68 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
 		fmt.Println("\n  No Shared Signals receivers. Register one with `signari ssf add-stream`.")
 	}
 	return rows.Err()
+}
+
+// importAuthentik migrates users and groups from an authentik deployment.
+func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID string, dryRun bool) error {
+	if path == "" || orgID == "" {
+		return fmt.Errorf("-file and -org are both required.\n\n" +
+			"Export from authentik with:\n" +
+			"  ak dumpdata authentik_core.User authentik_core.Group > authentik.json")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	exp, err := importer.ParseAuthentik(f)
+	if err != nil {
+		return err
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	res, err := importer.ImportAuthentik(ctx, tx, orgID, exp, dryRun)
+	if err != nil {
+		return err
+	}
+
+	// The hash census FIRST. "We imported 400 users" means nothing if 380 carry
+	// a format nothing here can check -- and that is the number which decides
+	// whether this migration needs a password reset or not.
+	fmt.Printf("\n  password formats found\n")
+	for format, n := range res.HashFormats {
+		fmt.Printf("    %-46s %d\n", format, n)
+	}
+
+	fmt.Printf("\n  users created : %d\n  users updated : %d\n  groups        : %d\n",
+		res.UsersCreated, res.UsersUpdated, res.GroupsCreated)
+
+	if len(res.UsersSkipped) > 0 {
+		fmt.Printf("\n  skipped (%d):\n", len(res.UsersSkipped))
+		for i, s := range res.UsersSkipped {
+			if i == 20 {
+				fmt.Printf("    ... and %d more\n", len(res.UsersSkipped)-20)
+				break
+			}
+			fmt.Printf("    %s\n", s)
+		}
+	}
+
+	if dryRun {
+		fmt.Println("\n  DRY RUN -- nothing was written. Re-run with -apply.")
+		return nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Println("\n  Imported. Everyone signs in with the password they already had:\n" +
+		"  the Django hash is verified as-is and replaced with Argon2id on first\n" +
+		"  successful sign-in. Nobody needs to reset anything.")
+	return nil
 }

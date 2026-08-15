@@ -213,3 +213,37 @@ func buildArgon(t *testing.T, pw string, m, time uint32, p uint8) string {
 		"$" + base64.RawStdEncoding.EncodeToString(salt) +
 		"$" + base64.RawStdEncoding.EncodeToString(key)
 }
+
+// TestSupportedPrefixesMatchesVerify.
+//
+// SupportedPrefixes named five formats while Verify handled nine. Migration
+// tooling reads that list to tell an operator which passwords will transfer, so
+// under-reporting means planning a password reset for users who never needed
+// one. This asserts every advertised prefix is actually recognised, and that a
+// hash Verify would handle is never reported as unsupported.
+func TestSupportedPrefixesMatchesVerify(t *testing.T) {
+	// Every prefix Verify branches on, read off the switch in passwords.go.
+	handled := []string{
+		"$argon2id$", "$2a$", "$2b$", "$2y$", "pbkdf2_sha256$",
+		"$P$", "$H$", "$S$", "$keycloak$", "$scrypt$",
+	}
+	advertised := map[string]bool{}
+	for _, p := range SupportedPrefixes() {
+		advertised[p] = true
+	}
+	for _, p := range handled {
+		if !advertised[p] {
+			t.Errorf("Verify handles %q but SupportedPrefixes does not advertise it; "+
+				"migration tooling will tell an operator those passwords cannot transfer", p)
+		}
+		if !CanVerify(p + "whatever") {
+			t.Errorf("CanVerify says no to %q, which Verify handles", p)
+		}
+	}
+	if CanVerify("$6$rounds=5000$saltsalt$hash") {
+		t.Error("CanVerify claims glibc SHA-crypt works; passwords.go says NOT HANDLED")
+	}
+	if CanVerify("") {
+		t.Error("an empty hash was reported as verifiable")
+	}
+}

@@ -18,8 +18,8 @@ Lines : 21330
 Issues: 33      # at the time of the first real run
 ```
 
-The baseline is now **24** with `-exclude=G101` (12 open redirects, 8 operator
-file paths, 3 unhandled-error sites, 1 `template.URL`). It moves only when a new
+The baseline is now **25** with `-exclude=G101` (12 open redirects, 8 operator
+file paths, 3 unhandled-error sites, 2 `template.URL`/`template.HTML`). It moves only when a new
 redirect site or file read is added, and each addition is checked by hand
 against the table below before the number is accepted.
 
@@ -153,3 +153,16 @@ signature, which is the finding that would matter.
 The 23 -> 24 move was a new `G304` in `saml add-sp`: reading the
 `-sp-encryption-cert` file an operator names on the command line, the same class
 as the other operator file paths.
+
+
+## G203 on the TOTP enrolment page
+
+Two now: `template.URL` for the `otpauth://` link, and `template.HTML` for the
+inline QR code SVG. Both turn off escaping, and both are annotated at the line.
+
+The SVG is generated entirely from integers and literals — the QR payload becomes
+a matrix of booleans and is emitted as `%d` path coordinates, so no user-supplied
+text reaches the markup. That is asserted rather than argued:
+`TestSVGContainsNothingButGeneratedMarkup` pushes `</svg><script>alert(1)</script>`
+through the encoder and requires exactly four opening and four closing brackets in
+the result. See `docs/totp-qr.md`.

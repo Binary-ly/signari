@@ -9,6 +9,7 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/mfa"
+	"signari.dev/engine/internal/qr"
 	"signari.dev/engine/internal/store"
 )
 
@@ -87,6 +88,19 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	label := s.orgLabel(ctx, orgID)
 	account := s.accountLabel(ctx, userID)
 
+	uri := mfa.ProvisioningURI(label, account, encoded, mfa.DefaultDigits, mfa.DefaultPeriod)
+
+	// The QR code is a convenience, not the credential. If it fails to build, the
+	// page still shows the key for manual entry rather than failing enrolment --
+	// losing the ability to turn on a second factor is a far worse outcome than
+	// losing the square.
+	var qrSVG string
+	if code, qerr := qr.Encode([]byte(uri)); qerr == nil {
+		qrSVG = code.SVG(4, 4)
+	} else {
+		s.log.Warn("rendering the TOTP QR code", "err", qerr)
+	}
+
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -99,8 +113,11 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 		// dead link with no error anywhere. Safe to mark: the value is built by
 		// net/url from a base32 secret and labels ProvisioningURI has already
 		// stripped colons from, so nothing user-supplied reaches it unescaped.
-		"URI": template.URL(mfa.ProvisioningURI(label, account, encoded,
-			mfa.DefaultDigits, mfa.DefaultPeriod)),
+		"URI": template.URL(uri),
+		// template.HTML because this is an SVG element we generated ourselves
+		// from a matrix of booleans -- there is no user-supplied text anywhere in
+		// it, only integers formatted into path coordinates.
+		"QR":        template.HTML(qrSVG),
 		"CSRF":      csrf,
 		"CSRFField": csrfFormField,
 	})
@@ -238,6 +255,10 @@ func (s *Server) renderPage(w http.ResponseWriter, t *template.Template, data ma
 
 const pageCSS = `body{font-family:system-ui,sans-serif;max-width:30rem;margin:3rem auto;padding:0 1rem}
 code{background:#f4f4f5;padding:.2rem .4rem;border-radius:3px}
+.qr{margin:1rem 0;max-width:220px}
+.qr svg{width:100%;height:auto;display:block}
+details{margin:1rem 0}
+summary{cursor:pointer;font-size:.9rem}
 .secret{font-size:1.1rem;letter-spacing:.1em;display:block;padding:.75rem;background:#f4f4f5;
   border-radius:4px;margin:.5rem 0;word-break:break-all}
 .err{color:#b00020}.hint{color:#666;font-size:.9rem}
@@ -253,9 +274,15 @@ var enrolPage = template.Must(template.New("enrol").Parse(`<!doctype html>
 <h1>Set up two-factor authentication</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 {{if .Secret}}
-<p>Add this key to your authenticator app:</p>
+<p>Scan this with your authenticator app:</p>
+<div class="qr">{{.QR}}</div>
+<details>
+<summary>Can&rsquo;t scan it?</summary>
+<p>Type this key into your authenticator app instead:</p>
 <code class="secret">{{.Secret}}</code>
-<p class="hint">Or open <a href="{{.URI}}">this link</a> on the device with your authenticator app.</p>
+<p class="hint">Or open <a href="{{.URI}}">this link</a> on the device with your
+authenticator app.</p>
+</details>
 {{end}}
 <form method="POST" action="/account/mfa/totp">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">

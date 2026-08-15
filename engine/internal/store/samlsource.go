@@ -145,16 +145,21 @@ func RecordSAMLAssertion(ctx context.Context, db *pgxpool.Pool, providerID,
 // Both tables are bounded by the assertion lifetime, so this is housekeeping
 // rather than a security control -- but a table that only grows is how a
 // deployment discovers its disk on a Sunday.
-func PurgeSAMLSourceState(ctx context.Context, db *pgxpool.Pool) (int64, error) {
+func PurgeSAMLSourceState(ctx context.Context, tx pgx.Tx) (int64, error) {
 	var total int64
-	tag, err := db.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM core.saml_source_requests WHERE expires_at < now() - interval '1 hour'`)
 	if err != nil {
 		return 0, err
 	}
 	total += tag.RowsAffected()
 
-	tag, err = db.Exec(ctx,
+	// The grace hour matters here and not above. An assertion record deleted the
+	// instant it expires would let a captured assertion be replayed in the gap
+	// between its own expiry check and this delete -- the check would refuse it
+	// anyway, but the two rules would then disagree about which one is load
+	// bearing, and only one of them is written down in the audit trail.
+	tag, err = tx.Exec(ctx,
 		`DELETE FROM core.saml_source_assertions WHERE expires_at < now() - interval '1 hour'`)
 	if err != nil {
 		return total, err

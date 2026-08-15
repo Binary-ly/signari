@@ -134,7 +134,32 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authzQuery := r.PostForm.Get("authz")
-	clientID := r.PostForm.Get("client_id")
+
+	// The client is read from the parked authorization query, NOT from a
+	// separate form field.
+	//
+	// Both were submitted, and two fields that must agree eventually will not.
+	// A form saying client_id=B while the authz query says client_id=A records
+	// consent for B and then resumes the flow for A: the user is shown one
+	// application's name, agrees to it, and a different application is the one
+	// that stops asking. The query is authoritative because it is the value the
+	// flow actually continues with.
+	//
+	// Found by a request that omitted the field entirely: consent was recorded
+	// for the empty string, which the foreign key refused and the handler
+	// reported as an internal error.
+	clientID := clientFromAuthz(authzQuery)
+	if clientID == "" {
+		http.Error(w, "that consent request is incomplete", http.StatusBadRequest)
+		return
+	}
+	if submitted := r.PostForm.Get("client_id"); submitted != "" && submitted != clientID {
+		s.log.Warn("consent form named a different client than the request",
+			"form", submitted, "request", clientID,
+			"correlation_id", correlationID(ctx))
+		http.Error(w, "that consent request could not be verified", http.StatusBadRequest)
+		return
+	}
 
 	if r.PostForm.Get("decision") != "allow" {
 		// RFC 6749 §4.1.2.1: a refusal is reported to the client, not swallowed.
@@ -236,3 +261,12 @@ button{flex:1;padding:.7rem 1rem;font-size:1rem}
 </div>
 </form>
 </body></html>`))
+
+// clientFromAuthz reads the client id out of a parked authorization query.
+func clientFromAuthz(authzQuery string) string {
+	q, err := url.ParseQuery(authzQuery)
+	if err != nil {
+		return ""
+	}
+	return q.Get("client_id")
+}

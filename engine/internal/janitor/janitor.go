@@ -79,7 +79,10 @@ type Stats struct {
 	DPoPProofsSwept int64
 	// PushedRequestsSwept are PAR handles nobody redeemed.
 	PushedRequestsSwept int64
-	Parked              []string
+	// SAMLSourceStateSwept are inbound SAML requests and spent assertion records
+	// past their retention.
+	SAMLSourceStateSwept int64
+	Parked               []string
 	// Skipped means another node held the lock. Not an error, and deliberately
 	// distinguished from "nothing to do" so a misconfigured cluster where every
 	// pass is skipped is visible rather than looking idle.
@@ -161,6 +164,14 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 		return st, fmt.Errorf("sweeping DPoP proof records: %w", err)
 	}
 
+	// Inbound SAML: requests nobody answered, and the record of assertions
+	// already spent. Both are bounded by the assertion lifetime, so this is
+	// housekeeping rather than a security control -- but a table that only grows
+	// is how a deployment discovers its disk on a Sunday.
+	if st.SAMLSourceStateSwept, err = store.PurgeSAMLSourceState(ctx, tx); err != nil {
+		return st, fmt.Errorf("sweeping inbound SAML state: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return st, fmt.Errorf("committing janitor pass: %w", err)
 	}
@@ -213,11 +224,32 @@ func (s Stats) Log(log *slog.Logger) {
 	if s.Skipped {
 		return
 	}
-	if s.SessionsSwept > 0 || s.CodesPurged > 0 || s.RevocationsPurged > 0 || s.RecoveriesPurged > 0 {
-		log.Info("janitor pass",
-			"sessions_swept", s.SessionsSwept, "codes_purged", s.CodesPurged,
-			"revocations_purged", s.RevocationsPurged,
-			"recoveries_purged", s.RecoveriesPurged)
+	// Every counter, not a chosen four.
+	//
+	// The first version listed the four sweeps that existed when it was written,
+	// and each sweep added afterwards -- device codes, logout chains, federated
+	// logins, DPoP proofs, PAR handles, inbound SAML state -- did its work and
+	// reported nothing. A pass that deletes ten thousand rows and logs silence
+	// is indistinguishable from a pass that is broken.
+	fields := []any{}
+	add := func(name string, n int64) {
+		if n > 0 {
+			fields = append(fields, name, n)
+		}
+	}
+	add("sessions_swept", int64(s.SessionsSwept))
+	add("codes_purged", s.CodesPurged)
+	add("revocations_purged", s.RevocationsPurged)
+	add("recoveries_purged", s.RecoveriesPurged)
+	add("device_codes_purged", s.DeviceCodesPurged)
+	add("logout_chains_swept", s.LogoutChainsSwept)
+	add("federated_logins_swept", s.FederatedLoginsSwept)
+	add("dpop_proofs_swept", s.DPoPProofsSwept)
+	add("pushed_requests_swept", s.PushedRequestsSwept)
+	add("saml_source_state_swept", s.SAMLSourceStateSwept)
+
+	if len(fields) > 0 {
+		log.Info("janitor pass", fields...)
 	}
 	// WARN, and one line per RP. Each of these is a relying party that still
 	// believes a signed-out user is signed in, which is a security fact an

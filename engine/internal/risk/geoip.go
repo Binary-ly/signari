@@ -14,6 +14,29 @@ type Resolver interface {
 	Resolve(ip string) Location
 }
 
+// Explainer is implemented by a resolver that has something to say about why it
+// cannot do its job.
+//
+// Separate from Resolver so the ordinary ones stay a single method. Callers ask
+// with a type assertion at startup; see Explain.
+type Explainer interface {
+	Why() string
+}
+
+// Explain returns a resolver's complaint, if it has one.
+//
+// This exists because the complaint had nowhere to go. SIGNARI_GEOIP_DB could
+// be set to a path that produced no reader, every impossible-travel check would
+// then report "not checked", and nothing anywhere said so -- the operator had
+// configured a security control and received silence. The message was written
+// for a startup log and never reached one.
+func Explain(r Resolver) string {
+	if e, ok := r.(Explainer); ok {
+		return e.Why()
+	}
+	return ""
+}
+
 // nullResolver knows nothing, and says so.
 //
 // The default. Without a GeoIP database every position is Unknown, so the travel

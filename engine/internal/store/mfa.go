@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -269,12 +268,6 @@ func normaliseRecoveryCode(s string) string {
 func hashRecoveryCode(code string) []byte {
 	sum := sha256.Sum256([]byte(normaliseRecoveryCode(code)))
 	return sum[:]
-}
-
-// ConstantTimeCodeEqual is exported for callers comparing codes outside a
-// database lookup, so nobody reaches for ==.
-func ConstantTimeCodeEqual(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // HasSecondFactor reports whether a user has any usable second factor.

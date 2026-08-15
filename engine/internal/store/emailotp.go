@@ -62,22 +62,6 @@ func EnrollEmailOTP(ctx context.Context, tx pgx.Tx, userID, orgID, address strin
 	return nil
 }
 
-// LoadEmailOTP returns the enrolled factor.
-func LoadEmailOTP(ctx context.Context, tx pgx.Tx, userID string) (*EmailOTPCredential, error) {
-	c := &EmailOTPCredential{}
-	err := tx.QueryRow(ctx, `
-		SELECT user_id::text, org_id::text, address
-		FROM core.email_otp_credentials WHERE user_id = $1::uuid`, userID).
-		Scan(&c.UserID, &c.OrgID, &c.Address)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNoEmailOTP
-		}
-		return nil, err
-	}
-	return c, nil
-}
-
 // IssueEmailOTP generates a code, stores its hash, and returns the plaintext for
 // sending.
 //
@@ -159,19 +143,6 @@ func VerifyEmailOTP(ctx context.Context, tx pgx.Tx, userID, submitted string) (b
 		return false, err
 	}
 	return true, nil
-}
-
-// HasEmailOTP reports enrolment, for deciding whether to offer the factor.
-func HasEmailOTP(ctx context.Context, db interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, userID string) (bool, error) {
-	var n int
-	if err := db.QueryRow(ctx,
-		`SELECT count(*) FROM core.email_otp_credentials WHERE user_id = $1::uuid`,
-		userID).Scan(&n); err != nil {
-		return false, err
-	}
-	return n > 0, nil
 }
 
 // newNumericCode returns n digits, uniformly.

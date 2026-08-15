@@ -296,7 +296,7 @@ func run(args []string) error {
 	case "client set-keys":
 		return clientSetKeys(ctx, conn, *clientID, *jwksPath)
 	case "client create":
-		return clientCreate(ctx, conn, *clientID, *redirect, *public)
+		return clientCreate(ctx, conn, *clientID, *name, *redirect, *public)
 	case "serve":
 		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr)
 	case "janitor once":
@@ -1030,9 +1030,19 @@ func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) err
 	return nil
 }
 
-func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, redirect string, public bool) error {
+func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect string,
+	public bool) error {
+
 	if clientID == "" || redirect == "" {
 		return fmt.Errorf("-client-id and -redirect are both required")
+	}
+	// The display name is what a user reads on the consent screen while deciding
+	// whether to trust an application. The first version accepted -name and
+	// inserted the client id in its place, so every client ever created asked
+	// for access under a name like "a7f3-crm-prod". Falling back to the id is
+	// right when nothing was given; ignoring what was given is not.
+	if name == "" {
+		name = clientID
 	}
 	orgID, err := firstOrg(ctx, conn)
 	if err != nil {
@@ -1058,9 +1068,9 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, redirect string
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 		                          client_secret_hash, scopes)
-		VALUES ($1, $2, $1, $3, NULLIF($4, ''),
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''),
 		        ARRAY['openid','profile','email','offline_access'])`,
-		clientID, orgID, kind, secretHash); err != nil {
+		clientID, orgID, name, kind, secretHash); err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
 	if _, err := conn.Exec(ctx,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -132,4 +133,79 @@ func GrantedScopes(ctx context.Context, db *pgxpool.Pool, userID string) (map[st
 		out[clientID] = scopes
 	}
 	return out, rows.Err()
+}
+
+// ConnectedApp is one application a user has granted access to.
+type ConnectedApp struct {
+	ClientID    string
+	DisplayName string
+	Scopes      []string
+	GrantedAt   time.Time
+	// ActiveTokens is how many refresh-token lineages are still live. The
+	// number a user actually cares about: "does this app still have access
+	// right now", as distinct from "did I agree to it once".
+	ActiveTokens int
+}
+
+// ConnectedApps lists what a user has granted, with the client's real name.
+//
+// GrantedScopes returns the raw map; this is what a person can read. A screen
+// that says client_id `a7f3-crm-prod` is a screen nobody uses to make a
+// decision.
+func ConnectedApps(ctx context.Context, db *pgxpool.Pool, userID string) ([]ConnectedApp, error) {
+	rows, err := db.Query(ctx, `
+		SELECT c.client_id, COALESCE(cl.display_name, c.client_id), c.scopes,
+		       c.granted_at,
+		       (SELECT count(*) FROM core.refresh_token_families f
+		         WHERE f.user_id = c.user_id AND f.client_id = c.client_id
+		           AND f.revoked_at IS NULL)
+		FROM core.consents c
+		LEFT JOIN core.clients cl ON cl.client_id = c.client_id
+		WHERE c.user_id = $1::uuid AND c.withdrawn_at IS NULL
+		ORDER BY c.granted_at DESC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("listing connected applications: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ConnectedApp
+	for rows.Next() {
+		var a ConnectedApp
+		if err := rows.Scan(&a.ClientID, &a.DisplayName, &a.Scopes, &a.GrantedAt,
+			&a.ActiveTokens); err != nil {
+			return nil, err
+		}
+		sort.Strings(a.Scopes)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// DisconnectApp withdraws consent AND revokes the tokens already issued.
+//
+// Both, in one transaction, because either alone is a lie the user would
+// reasonably call a bug:
+//
+//	consent alone   the app keeps working until its refresh token expires,
+//	                which is the opposite of what "revoke access" means to
+//	                anybody who clicks it
+//	tokens alone    the next sign-in silently re-grants, because the consent
+//	                record is still there and the flow does not ask again
+//
+// Access tokens already minted are NOT revoked here and cannot be: they are
+// self-contained and valid until they expire. That is why the count returned is
+// of refresh lineages, and why the page says minutes rather than immediately.
+func DisconnectApp(ctx context.Context, tx pgx.Tx, userID, clientID string) (int64, error) {
+	if err := WithdrawConsent(ctx, tx, userID, clientID); err != nil {
+		return 0, err
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE core.refresh_token_families
+		SET revoked_at = now(), revocation_reason = 'user disconnected the application'
+		WHERE user_id = $1::uuid AND client_id = $2 AND revoked_at IS NULL`,
+		userID, clientID)
+	if err != nil {
+		return 0, fmt.Errorf("revoking refresh tokens for %q: %w", clientID, err)
+	}
+	return tag.RowsAffected(), nil
 }

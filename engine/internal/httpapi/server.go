@@ -88,7 +88,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		return nil, err
 	}
 
-	return &Server{
+	srv := &Server{
 		cfg:     cfg,
 		captcha: cap,
 		log:     log,
@@ -104,7 +104,16 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		geo:       risk.NewResolver(),
 		mailer:    mailer,
 		delegator: delegated.New(),
-	}, nil
+	}
+
+	// A resolver that cannot do its job says so once, at startup, at WARN. An
+	// operator who has configured a security control and receives silence
+	// reasonably assumes it is working.
+	if why := risk.Explain(srv.geo); why != "" {
+		log.Warn("location lookup unavailable", "detail", why)
+	}
+
+	return srv, nil
 }
 
 // Routes returns the public endpoints, wrapped so every request carries a
@@ -142,6 +151,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /login/with/{slug}", s.handleFederatedStart)
 	mux.HandleFunc("GET /login/callback/{slug}", s.handleFederatedCallback)
 	mux.HandleFunc("GET /account", s.handleAccount)
+	mux.HandleFunc("GET /account/connected", s.handleConnectedApps)
+	mux.HandleFunc("POST /account/connected/revoke", s.handleConnectedRevoke)
 	mux.HandleFunc("GET /account/link/{slug}", s.handleFederatedLink)
 	mux.HandleFunc("POST /account/unlink/{slug}", s.handleAccountUnlink)
 	mux.HandleFunc("GET /saml/metadata", s.handleSAMLMetadata)

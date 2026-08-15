@@ -126,14 +126,3 @@ func RevokeFamilyByToken(ctx context.Context, tx pgx.Tx, hash []byte, reason str
 	}
 	return tag.RowsAffected(), nil
 }
-
-// FamilySize reports how many tokens a lineage has issued. A family that has
-// grown unusually long is a signal worth surfacing, not just a statistic.
-func FamilySize(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, familyID string) (int, error) {
-	var n int
-	err := q.QueryRow(ctx,
-		`SELECT count(*) FROM core.refresh_tokens WHERE family_id = $1`, familyID).Scan(&n)
-	return n, err
-}

@@ -246,3 +246,67 @@ The rules stay on. A false positive that costs an hour of live verification once
 is a better trade than switching off the rule that would have caught the real one.
 
 **Baseline: 53, all reviewed.** Verified against `signari serve`, not by reading.
+
+## A fourth sweep: exported functions nothing calls
+
+The three sweeps above catch unimported *packages*, documented-but-absent
+config, and unread *columns*. None of them catches a function.
+
+```sh
+# Strip comments FIRST -- see below.
+python3 - <<'PY'
+import os, re
+strip = lambda s: re.sub(r'^\s*//.*$', '', re.sub(r'/\*.*?\*/', '', s, flags=re.S), flags=re.M)
+defs, body = {}, []
+for root, _, files in os.walk('.'):
+    if 'testdata' in root: continue
+    for f in (f for f in files if f.endswith('.go')):
+        p = os.path.join(root, f)
+        code = strip(open(p, errors='ignore').read())
+        body.append((p, code))
+        if not f.endswith('_test.go'):
+            for m in re.finditer(r'^func (?:\([^)]*\) )?([A-Z]\w+)\(', code, re.M):
+                defs[m.group(1)] = p
+for name, deffile in sorted(defs.items()):
+    hits = sum(len(re.findall(r'\b'+name+r'\b', s)) - (p == deffile) for p, s in body)
+    if hits == 0: print(f'UNCALLED: {deffile}: {name}')
+PY
+```
+
+### The sweep's own bug
+
+The first version did not strip comments, so a function's **doc comment counted
+as a call**. Anything written in this codebase's style — a name, then a
+paragraph explaining it — was therefore invisible to the sweep by construction.
+It reported four findings. Stripping comments, the same code reported twelve.
+
+A tool that cannot fail is not evidence.
+
+### What the eight new findings were
+
+Four were `go-webauthn` interface methods, called through the interface. The
+rest were real:
+
+| | |
+|---|---|
+| `PurgeSAMLSourceState` | written the same day and never wired into the janitor |
+| `GrantedScopes`, `WithdrawConsent` | **a missing feature** — nothing let a user see or revoke an application's access |
+| `Why` (geoip) | `SIGNARI_GEOIP_DB` could be set to an unusable path, every impossible-travel check would report "not checked", and nothing said so |
+| `ConstantTimeCodeEqual`, `FamilySize`, `HasEmailOTP`, `LoadEmailOTP` | speculative helpers, deleted |
+
+The consent one is the sharpest. Its doc comment reads: *"Without this a user
+can grant access and never see it again, which is consent as a formality rather
+than a control."* It was written above a function nothing called. The comment
+described the bug and was filed as a justification.
+
+Two further bugs fell out of building the missing page, neither findable by any
+sweep:
+
+- **The consent screen showed the client id.** `client create -name` was
+  accepted and discarded — the INSERT wrote `$1` (the id) into `display_name`.
+  Every client ever created asked for a user's trust under a name like
+  `a7f3-crm-prod`.
+- **The consent POST read `client_id` from its own form field** while the
+  authoritative value sat in the parked authorization query beside it. Two
+  fields that must agree eventually do not: consent recorded for one client,
+  flow resumed for another. Now read from the query, with a mismatch refused.

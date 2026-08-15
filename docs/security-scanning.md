@@ -215,3 +215,34 @@ registration, it found one: `email_otp_credentials.enrolled_at`, sitting beside
 the same fact is a question about which is authoritative, asked of everybody who
 reads the schema afterwards. Dropped in migration 0042 the same day it was
 written.
+
+## When the baseline moves because the tool did
+
+The gosec count went from 33 to 53 in one run with no relevant code change. The
+whole jump was two new taint-analysis rules in a newer gosec: **G703** (path
+traversal, 5) and **G710** (open redirect, 12), plus three `G304` file reads in
+new code.
+
+A tool upgrade that raises the number is the moment to check the findings, not
+to update the baseline. Open redirect in an authorization endpoint is precisely
+the bug worth being wrong about, so all twelve were verified against a running
+engine rather than by reading:
+
+```
+unregistered redirect_uri + an invalid request   400, rendered here, no redirect
+registered redirect_uri + an invalid request     302 to the registered URI, with iss
+unregistered post_logout_redirect_uri            400, no redirect
+return=//evil.test  through a full sign-in       resumed on the engine's own origin
+```
+
+Every flagged redirect resolves its destination through a database allow-list
+(`core.client_redirect_uris`, `core.proxy_hosts`, the configured SAML SLO
+endpoint) or a same-origin path check. gosec's taint analysis cannot see through
+a database round trip, so it flags the query result as attacker-controlled — it
+is right that the value came from the request, and wrong that nothing checked it
+in between.
+
+The rules stay on. A false positive that costs an hour of live verification once
+is a better trade than switching off the rule that would have caught the real one.
+
+**Baseline: 53, all reviewed.** Verified against `signari serve`, not by reading.

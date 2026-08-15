@@ -162,6 +162,13 @@ func run(args []string) error {
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+	ldapURL := fs.String("ldap-url", "", "ldap:// or ldaps:// URL of the directory")
+	ldapBindDN := fs.String("ldap-bind-dn", "", "DN to bind as when reading")
+	ldapPassword := fs.String("ldap-password", "", "password for the bind DN")
+	ldapBaseDN := fs.String("ldap-base-dn", "", "base DN to search under")
+	ldapFlavour := fs.String("ldap-flavour", "openldap", "openldap, ad or freeipa")
+	ldapStartTLS := fs.Bool("ldap-start-tls", true, "upgrade a plaintext connection with StartTLS")
+	ldapCA := fs.String("ldap-ca", "", "PEM file of roots that verify the directory server")
 	dirDomain := fs.String("domain", "", "Google Workspace domain")
 	dirImpersonate := fs.String("impersonate", "", "administrator the service account acts as")
 	dirTenant := fs.String("tenant", "", "Entra tenant id (read from the credential file)")
@@ -294,7 +301,8 @@ func run(args []string) error {
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
 	case "dir add":
 		return dirAdd(ctx, conn, *orgID, *kind, *slug, *name, *file, *dirDomain,
-			*dirImpersonate, *dirTenant, *dirFilter)
+			*dirImpersonate, *dirTenant, *dirFilter, *ldapURL, *ldapBindDN,
+			*ldapPassword, *ldapBaseDN, *ldapFlavour, *ldapCA, *ldapStartTLS)
 	case "dir sync":
 		return dirSync(ctx, conn, *slug, *apply)
 	case "export audit":
@@ -2934,25 +2942,31 @@ func clientSetTLS(ctx context.Context, conn *pgx.Conn, clientID, subjectDN, sanD
 
 // dirAdd registers a directory source.
 func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPath,
-	domain, impersonate, tenant, filter string) error {
+	domain, impersonate, tenant, filter, ldapURL, ldapBindDN, ldapPassword,
+	ldapBaseDN, ldapFlavour, ldapCAPath string, ldapStartTLS bool) error {
 
 	switch {
 	case orgID == "" || slug == "":
 		return fmt.Errorf("give -org and -slug")
-	case kind != "google" && kind != "entra":
-		return fmt.Errorf("-kind must be google or entra for a directory source "+
+	case kind != "google" && kind != "entra" && kind != "ldap":
+		return fmt.Errorf("-kind must be google, entra or ldap for a directory source "+
 			"(got %q; that flag is shared with `idp add`, which uses different values)", kind)
-	case credPath == "":
+	case credPath == "" && kind != "ldap":
 		return fmt.Errorf("give -file: the service account key (google) or credential " +
 			"JSON (entra)")
 	}
 
-	raw, err := os.ReadFile(credPath)
-	if err != nil {
-		return err
+	var raw []byte
+	if credPath != "" {
+		var rerr error
+		raw, rerr = os.ReadFile(credPath)
+		if rerr != nil {
+			return rerr
+		}
 	}
 	// Parsed now rather than at first sync, so a wrong file is a message here
 	// instead of a cron job failing quietly at 3am.
+	var ldapCA string
 	switch kind {
 	case "google":
 		if _, perr := directory.ParseGoogleCredentials(raw); perr != nil {
@@ -2968,6 +2982,36 @@ func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPa
 			return perr
 		}
 		tenant = c.TenantID
+	case "ldap":
+		if ldapURL == "" || ldapBaseDN == "" {
+			return fmt.Errorf("give -ldap-url and -ldap-base-dn")
+		}
+		if ldapFlavour != "openldap" && ldapFlavour != "ad" && ldapFlavour != "freeipa" {
+			return fmt.Errorf("-ldap-flavour must be openldap, ad or freeipa: it decides "+
+				"which attribute is the immutable identifier, and reading the wrong one "+
+				"makes every rename look like a departure and an arrival (got %q)",
+				ldapFlavour)
+		}
+		if strings.HasPrefix(ldapURL, "ldap://") && !ldapStartTLS {
+			return fmt.Errorf("refusing a plaintext bind to %q: the bind password can "+
+				"usually read the whole directory. Use ldaps:// or leave StartTLS on",
+				ldapURL)
+		}
+		if ldapCAPath != "" {
+			pem, rerr := os.ReadFile(ldapCAPath)
+			if rerr != nil {
+				return rerr
+			}
+			// Parsed now rather than at the first sync, so a typo in the path or a
+			// file that is not a certificate is a configuration error rather than a
+			// sync that fails at 3am.
+			if p := x509.NewCertPool(); !p.AppendCertsFromPEM(pem) {
+				return fmt.Errorf("%s contains no certificates", ldapCAPath)
+			}
+			ldapCA = string(pem)
+		}
+		// The bind password is the credential, sealed like any other.
+		raw = []byte(ldapPassword)
 	}
 
 	root, err := rootKey()
@@ -2986,10 +3030,15 @@ func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPa
 	if err := conn.QueryRow(ctx, `
 		INSERT INTO core.directory_sources
 			(org_id, kind, slug, display_name, credentials_enc, domain, impersonate,
-			 tenant_id, user_filter)
-		VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), NULLIF($8,''), $9)
+			 tenant_id, user_filter, ldap_url, ldap_bind_dn, ldap_base_dn,
+			 ldap_flavour, ldap_start_tls, ldap_ca_pem)
+		VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), NULLIF($8,''), $9,
+		        NULLIF($10,''), NULLIF($11,''), NULLIF($12,''), NULLIF($13,''), $14,
+		        NULLIF($15,''))
 		RETURNING id::text`,
-		orgID, kind, slug, name, sealed, domain, impersonate, tenant, filter).Scan(&id); err != nil {
+		orgID, kind, slug, name, sealed, domain, impersonate, tenant, filter,
+		ldapURL, ldapBindDN, ldapBaseDN, ldapFlavour, ldapStartTLS,
+		ldapCA).Scan(&id); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return fmt.Errorf("a source with slug %q already exists in that organisation", slug)
 		}
@@ -3009,16 +3058,22 @@ func dirSync(ctx context.Context, conn *pgx.Conn, slug string, apply bool) error
 	}
 
 	var id, orgID, kind, credsEnc, domain, impersonate, tenant, filter, onMissing string
+	var lURL, lBindDN, lBaseDN, lFlavour, lCA string
+	var lStartTLS bool
 	var sealed []byte
 	var dryRun bool
 	var maxPct int
 	err := conn.QueryRow(ctx, `
 		SELECT id::text, org_id::text, kind, credentials_enc, COALESCE(domain,''),
 		       COALESCE(impersonate,''), COALESCE(tenant_id,''), user_filter,
-		       on_missing, dry_run, max_deactivate_percent
+		       on_missing, dry_run, max_deactivate_percent,
+		       COALESCE(ldap_url,''), COALESCE(ldap_bind_dn,''),
+		       COALESCE(ldap_base_dn,''), COALESCE(ldap_flavour,''), ldap_start_tls,
+		       COALESCE(ldap_ca_pem,'')
 		FROM core.directory_sources WHERE slug = $1 AND enabled`, slug).
 		Scan(&id, &orgID, &kind, &sealed, &domain, &impersonate, &tenant, &filter,
-			&onMissing, &dryRun, &maxPct)
+			&onMissing, &dryRun, &maxPct,
+			&lURL, &lBindDN, &lBaseDN, &lFlavour, &lStartTLS, &lCA)
 	if err != nil {
 		return fmt.Errorf("no enabled directory source with slug %q: %w", slug, err)
 	}
@@ -3055,6 +3110,20 @@ func dirSync(ctx context.Context, conn *pgx.Conn, slug string, apply bool) error
 			return perr
 		}
 		remote, err = (&directory.EntraSource{Creds: creds, Filter: filter}).Fetch(ctx)
+	case "ldap":
+		var pool *x509.CertPool
+		if lCA != "" {
+			pool = x509.NewCertPool()
+			if !pool.AppendCertsFromPEM([]byte(lCA)) {
+				return fmt.Errorf("the stored CA bundle for %q contains no certificates", slug)
+			}
+		}
+		remote, err = (&directory.LDAPSource{
+			CAs: pool,
+			URL: lURL, BindDN: lBindDN, Password: string(raw), BaseDN: lBaseDN,
+			Filter: filter, Flavour: directory.LDAPFlavour(lFlavour),
+			StartTLS: lStartTLS,
+		}).Fetch(ctx)
 	}
 	if err != nil {
 		directory.RecordFailure(ctx, pool, id, err)

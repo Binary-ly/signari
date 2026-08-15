@@ -1,10 +1,13 @@
-# Directory sync: Google Workspace and Microsoft Entra ID
+# Directory sync: Google Workspace, Microsoft Entra ID and LDAP
 
 ```sh
 signari dir add -org <uuid> -kind google -slug workspace \
   -file service-account.json -domain example.com -impersonate admin@example.com
 
 signari dir add -org <uuid> -kind entra -slug tenant -file entra.json
+
+# LDAP, Active Directory and FreeIPA: see docs/ldap-source.md
+signari dir add -org <uuid> -kind ldap -slug corp -ldap-url ldaps://dc01:636 ...
 
 signari dir sync -slug workspace            # preview, writes nothing
 signari dir sync -slug workspace -apply
@@ -105,7 +108,12 @@ Against the real schema and a faithful fake of each API:
 
 ## What is not verified
 
-**Neither adapter has been run against real Google or real Microsoft.** The fakes
+The **LDAP** source has been run against a real OpenLDAP server, over TLS with a
+private CA, including a rename across organisational units and a server-side size
+limit — see [LDAP as a source](ldap-source.md).
+
+**Neither the Google nor the Entra adapter has been run against real Google or
+real Microsoft.** The fakes
 match the documented response shapes, which proves pagination, error handling,
 credential exchange and the reconciler — but not that the shapes are right.
 

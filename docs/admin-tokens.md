@@ -147,3 +147,26 @@ That is not hypothetical: the first version did exactly this, and it was caught
 by the existing chain-verification tests failing on rows they had always passed.
 `TestExistingChainSurvivesTheAttributionField` now pins the rule by computing the
 pre-field formula independently, so the trap cannot be walked back into.
+
+
+## Moving the Laravel console onto a scoped token
+
+No code change is needed. The console sends whatever is in its own
+`SIGNARI_ADMIN_TOKEN`, and the engine resolves an `sgnadm_` value from the
+database rather than matching its own environment variable:
+
+```sh
+signari admin-token create -name "laravel console (prod)" -org <org-uuid> \
+  -scopes users:write,clients:write,config:read -expires-in 2160h
+# put the printed value in the console's SIGNARI_ADMIN_TOKEN, and unset the
+# engine's own if nothing else needs break-glass
+```
+
+The console reports a refusal in words rather than a status code — the engine
+names the missing scope on purpose, and burying that in a JSON dump wastes it:
+
+| engine answers | operator sees |
+| --- | --- |
+| `403 insufficient_scope` | "this token does not hold users:write" |
+| `403 outside_token_organisation` | "this token may only act on organisation …" |
+| `401` | "…may have been revoked or expired — run `signari admin-token list`" |

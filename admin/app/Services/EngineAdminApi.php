@@ -153,7 +153,19 @@ class EngineAdminApi
         }
 
         if ($response->status() === 401) {
-            throw new RuntimeException('The engine rejected the admin token.');
+            throw new RuntimeException(
+                'The engine rejected the admin token. It may have been revoked or '.
+                'expired -- run `signari admin-token list` to check.'
+            );
+        }
+        if ($response->status() === 403) {
+            // Authenticated, but this token may not do that. The engine names the
+            // missing scope or the organisation boundary on purpose, so passing
+            // its detail through is the difference between a one-line fix and an
+            // afternoon of guessing.
+            throw new RuntimeException(
+                (string) $response->json('detail', 'This admin token is not permitted to do that.')
+            );
         }
         if ($response->status() === 404) {
             throw new RuntimeException('The engine does not know that record.');

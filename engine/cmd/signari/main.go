@@ -36,6 +36,7 @@ import (
 
 	"signari.dev/engine/internal/adminapi"
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/doctor"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/httpapi"
@@ -98,6 +99,8 @@ commands:
   policy test         check a policy file (no database needed -- for CI)
   policy apply        install a policy file
   policy show         print the policy in force
+  dir add             register a Google Workspace or Entra ID directory source
+  dir sync            reconcile users from a directory (preview unless -apply)
   export audit        write the audit trail as CSV, with its chain verified
   registration enable turn on dynamic client registration (RFC 7591)
   registration token  mint an initial access token for registration
@@ -158,6 +161,11 @@ func run(args []string) error {
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+	dirKind := fs.String("kind", "", "directory source kind: google or entra")
+	dirDomain := fs.String("domain", "", "Google Workspace domain")
+	dirImpersonate := fs.String("impersonate", "", "administrator the service account acts as")
+	dirTenant := fs.String("tenant", "", "Entra tenant id (read from the credential file)")
+	dirFilter := fs.String("filter", "", "user filter: Google query or Entra OData")
 	outFile := fs.String("out", "", "write to this file instead of stdout")
 	fromDay := fs.String("from", "", "export from this date, YYYY-MM-DD (inclusive)")
 	toDay := fs.String("until", "", "export up to this date, YYYY-MM-DD (exclusive)")
@@ -205,7 +213,7 @@ func run(args []string) error {
 		cmd == "janitor" || cmd == "keys" || cmd == "import" || cmd == "proxy" ||
 		cmd == "saml" || cmd == "idp" || cmd == "scim" || cmd == "group" ||
 		cmd == "policy" || cmd == "admin-token" || cmd == "radius" || cmd == "ssf" ||
-		cmd == "registration" || cmd == "export" {
+		cmd == "registration" || cmd == "export" || cmd == "dir" {
 		if len(rest) == 0 {
 			return usage()
 		}
@@ -284,6 +292,11 @@ func run(args []string) error {
 		return importAuthentik(ctx, conn, *file, *orgID, !*apply)
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
+	case "dir add":
+		return dirAdd(ctx, conn, *orgID, *dirKind, *slug, *name, *file, *dirDomain,
+			*dirImpersonate, *dirTenant, *dirFilter)
+	case "dir sync":
+		return dirSync(ctx, conn, *slug, *apply)
 	case "export audit":
 		return exportAudit(ctx, conn, *orgID, *fromDay, *toDay, *outFile)
 	case "registration enable":
@@ -2911,5 +2924,161 @@ func clientSetTLS(ctx context.Context, conn *pgx.Conn, clientID, subjectDN, sanD
 			"  token is useless without the private key -- and every caller must now\n" +
 			"  present that certificate at the resource server too.")
 	}
+	return nil
+}
+
+// dirAdd registers a directory source.
+func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPath,
+	domain, impersonate, tenant, filter string) error {
+
+	switch {
+	case orgID == "" || slug == "":
+		return fmt.Errorf("give -org and -slug")
+	case kind != "google" && kind != "entra":
+		return fmt.Errorf("-kind must be google or entra")
+	case credPath == "":
+		return fmt.Errorf("give -file: the service account key (google) or credential " +
+			"JSON (entra)")
+	}
+
+	raw, err := os.ReadFile(credPath)
+	if err != nil {
+		return err
+	}
+	// Parsed now rather than at first sync, so a wrong file is a message here
+	// instead of a cron job failing quietly at 3am.
+	switch kind {
+	case "google":
+		if _, perr := directory.ParseGoogleCredentials(raw); perr != nil {
+			return perr
+		}
+		if impersonate == "" {
+			return fmt.Errorf("give -impersonate: a Google service account reads " +
+				"nothing without domain-wide delegation and an administrator to act as")
+		}
+	case "entra":
+		c, perr := directory.ParseEntraCredentials(raw)
+		if perr != nil {
+			return perr
+		}
+		tenant = c.TenantID
+	}
+
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	sealed, err := root.Seal(raw, "directory-credentials")
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		name = slug
+	}
+
+	var id string
+	if err := conn.QueryRow(ctx, `
+		INSERT INTO core.directory_sources
+			(org_id, kind, slug, display_name, credentials_enc, domain, impersonate,
+			 tenant_id, user_filter)
+		VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), NULLIF($8,''), $9)
+		RETURNING id::text`,
+		orgID, kind, slug, name, sealed, domain, impersonate, tenant, filter).Scan(&id); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("a source with slug %q already exists in that organisation", slug)
+		}
+		return err
+	}
+
+	fmt.Printf("registered %s (%s)\n  id: %s\n", name, kind, id)
+	fmt.Println("\n  It starts in DRY RUN and reports missing users rather than deactivating\n" +
+		"  them. Run `signari dir sync -slug " + slug + "` to see what it would do.")
+	return nil
+}
+
+// dirSync runs one reconciliation.
+func dirSync(ctx context.Context, conn *pgx.Conn, slug string, apply bool) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+
+	var id, orgID, kind, credsEnc, domain, impersonate, tenant, filter, onMissing string
+	var sealed []byte
+	var dryRun bool
+	var maxPct int
+	err := conn.QueryRow(ctx, `
+		SELECT id::text, org_id::text, kind, credentials_enc, COALESCE(domain,''),
+		       COALESCE(impersonate,''), COALESCE(tenant_id,''), user_filter,
+		       on_missing, dry_run, max_deactivate_percent
+		FROM core.directory_sources WHERE slug = $1 AND enabled`, slug).
+		Scan(&id, &orgID, &kind, &sealed, &domain, &impersonate, &tenant, &filter,
+			&onMissing, &dryRun, &maxPct)
+	if err != nil {
+		return fmt.Errorf("no enabled directory source with slug %q: %w", slug, err)
+	}
+	_ = credsEnc
+
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	raw, err := root.Open(sealed, "directory-credentials")
+	if err != nil {
+		return fmt.Errorf("unsealing the credentials: %w", err)
+	}
+
+	pool, err := pgxpool.New(ctx, conn.Config().ConnString())
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	var remote []directory.RemoteUser
+	switch kind {
+	case "google":
+		creds, perr := directory.ParseGoogleCredentials(raw)
+		if perr != nil {
+			return perr
+		}
+		remote, err = (&directory.GoogleSource{
+			Creds: creds, Impersonate: impersonate, Domain: domain, Query: filter,
+		}).Fetch(ctx)
+	case "entra":
+		creds, perr := directory.ParseEntraCredentials(raw)
+		if perr != nil {
+			return perr
+		}
+		remote, err = (&directory.EntraSource{Creds: creds, Filter: filter}).Fetch(ctx)
+	}
+	if err != nil {
+		directory.RecordFailure(ctx, pool, id, err)
+		return err
+	}
+
+	local, err := directory.LoadLocal(ctx, pool, id, orgID)
+	if err != nil {
+		return err
+	}
+
+	plan := directory.BuildPlan(remote, local, onMissing, maxPct)
+	fmt.Printf("\n  %d users upstream, %d active here\n\n", len(remote), plan.ActiveBefore)
+	fmt.Print(plan.Describe())
+
+	if !plan.Safe() {
+		// Non-zero: this is the case a cron job must notice.
+		return fmt.Errorf("sync refused")
+	}
+	if dryRun || !apply {
+		fmt.Println("\n  DRY RUN -- nothing was written. Re-run with -apply.")
+		if dryRun {
+			fmt.Println("  (this source is also configured dry_run=true in the database)")
+		}
+		return nil
+	}
+	if err := directory.Apply(ctx, pool, id, orgID, plan); err != nil {
+		directory.RecordFailure(ctx, pool, id, err)
+		return err
+	}
+	fmt.Println("\n  Applied.")
 	return nil
 }

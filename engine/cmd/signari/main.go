@@ -55,6 +55,7 @@ import (
 	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/proxycheck"
 	"signari.dev/engine/internal/radius"
+	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/ssf"
@@ -224,6 +225,9 @@ func run(args []string) error {
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
 	spEncCert := fs.String("sp-encryption-cert", "",
 		"path to the provider's ENCRYPTION certificate (PEM); assertions are encrypted to it")
+	spKeyTransport := fs.String("sp-key-transport", "rsa-oaep-mgf1p",
+		"RSA key transport for encrypted assertions: rsa-oaep-mgf1p (universal) or "+
+			"rsa-oaep-sha256 (required under FIPS; check the provider supports it)")
 	slug := fs.String("slug", "", "short name used in /login/with/<slug>")
 	kind := fs.String("kind", "oidc", "oidc, google, github or microsoft")
 	extClientID := fs.String("client-id-ext", "", "client id issued by the external provider")
@@ -380,7 +384,7 @@ func run(args []string) error {
 		return keysRotate(ctx, conn, *alg, *promoteNow)
 	case "saml add-sp":
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
-			*spCert, *wantSignedReq, *sloBinding, *spEncCert)
+			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
 	case "saml list":
 		return samlListSPs(ctx, conn)
 	case "idp add":
@@ -1470,7 +1474,8 @@ func wrap(s string, width int, indent string) string {
 // surfaces now, with a message about the registration, rather than during
 // someone else's integration as an unexplained refusal.
 func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, nameIDFormat,
-	slo, certPath string, wantSignedRequests bool, sloBinding, encCertPath string) error {
+	slo, certPath string, wantSignedRequests bool, sloBinding, encCertPath,
+	keyTransport string) error {
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this service provider belongs to")
@@ -1489,6 +1494,22 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	}
 	if name == "" {
 		name = entityID
+	}
+	switch keyTransport {
+	case "", saml.KeyTransportMGF1P:
+		keyTransport = saml.KeyTransportMGF1P
+	case saml.KeyTransportSHA256:
+		// Not the default, deliberately. Every service provider implements
+		// mgf1p; xmlenc11 rsa-oaep is widely but not universally supported, and
+		// choosing it for one that cannot read it produces assertions that
+		// decrypt nowhere.
+		if encCertPath == "" {
+			return fmt.Errorf("-sp-key-transport only affects encrypted assertions, " +
+				"and no -sp-encryption-cert was given, so nothing would be encrypted")
+		}
+	default:
+		return fmt.Errorf("unknown key transport %q: use rsa-oaep-mgf1p or "+
+			"rsa-oaep-sha256", keyTransport)
 	}
 	switch nameIDFormat {
 	case "", "persistent":
@@ -1595,10 +1616,10 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	err = tx.QueryRow(ctx, `
 		INSERT INTO core.saml_providers (org_id, entity_id, display_name, name_id_format,
 		                                 sp_signing_cert, want_authn_requests_signed,
-		                                 sp_encryption_cert)
-		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''), $6, NULLIF($7,''))
+		                                 sp_encryption_cert, sp_key_transport)
+		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''), $6, NULLIF($7,''), $8)
 		RETURNING id::text`, orgID, entityID, name, nameIDFormat, certPEM,
-		wantSignedRequests, encCertPEM).Scan(&id)
+		wantSignedRequests, encCertPEM, keyTransport).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return fmt.Errorf("a service provider with entity id %q is already registered "+

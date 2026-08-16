@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rsa"
@@ -74,7 +75,7 @@ func encryptedAssertionFor(t *testing.T, p *spKeyPair) *etree.Element {
 	if err := doc.ReadFromString(signed); err != nil {
 		t.Fatal(err)
 	}
-	ea, err := EncryptAssertion(doc.Root(), p.certPEM)
+	ea, err := EncryptAssertion(doc.Root(), p.certPEM, "")
 	if err != nil {
 		t.Fatalf("encryption failed: %v", err)
 	}
@@ -196,7 +197,7 @@ func TestWeakEncryptionKeyIsRefused(t *testing.T) {
 	if err := doc.ReadFromString(`<saml:Assertion xmlns:saml="x" ID="_a"/>`); err != nil {
 		t.Fatal(err)
 	}
-	_, err := EncryptAssertion(doc.Root(), weak.certPEM)
+	_, err := EncryptAssertion(doc.Root(), weak.certPEM, "")
 	if err == nil {
 		t.Fatal("a 1024-bit encryption certificate was accepted")
 	}
@@ -210,7 +211,7 @@ func TestNoCertificateIsAnError(t *testing.T) {
 	if err := doc.ReadFromString(`<saml:Assertion xmlns:saml="x" ID="_a"/>`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := EncryptAssertion(doc.Root(), ""); err == nil {
+	if _, err := EncryptAssertion(doc.Root(), "", ""); err == nil {
 		t.Fatal("encryption with no certificate did not fail")
 	}
 }
@@ -236,4 +237,96 @@ func TestGCMIsWhatWeAdvertise(t *testing.T) {
 	if got := kem.SelectAttrValue("Algorithm", ""); got != algRSAOAEPMGF1P {
 		t.Errorf("key transport is %q, want %q", got, algRSAOAEPMGF1P)
 	}
+}
+
+// TestSHA256KeyTransportMatchesWhatItAdvertises is the failure this setting
+// exists to avoid causing.
+//
+// The EncryptedKey carries the algorithm as metadata, and the service provider
+// unwraps using what that metadata names. If the metadata says SHA-256 and the
+// bytes were produced with SHA-1, the far end fails to unwrap with no
+// indication of which half disagreed -- and because the two paths differ by one
+// hash argument, that is exactly the mistake a refactor makes.
+//
+// So this decrypts with the algorithm the document ADVERTISES, and then checks
+// that the other algorithm does NOT work. The second half is the real test: a
+// wrapper that somehow satisfied both would mean the metadata said nothing.
+func TestSHA256KeyTransportMatchesWhatItAdvertises(t *testing.T) {
+	p := newSPKeyPair(t)
+	signed := signRequest(t, p, "_a1")
+	doc := etree.NewDocument()
+	if err := doc.ReadFromString(signed); err != nil {
+		t.Fatal(err)
+	}
+	ea, err := EncryptAssertion(doc.Root(), p.certPEM, KeyTransportSHA256)
+	if err != nil {
+		t.Fatalf("encryption failed: %v", err)
+	}
+
+	em := ea.FindElement("EncryptedData/KeyInfo/EncryptedKey/EncryptionMethod")
+	if em == nil {
+		t.Fatal("no EncryptedKey EncryptionMethod")
+	}
+	if got := em.SelectAttrValue("Algorithm", ""); got != algRSAOAEP {
+		t.Errorf("key transport is %q, want %q", got, algRSAOAEP)
+	}
+	if d := em.FindElement("DigestMethod"); d == nil ||
+		d.SelectAttrValue("Algorithm", "") != algSHA256 {
+		t.Error("the digest is not declared as SHA-256")
+	}
+	// rsa-oaep's default MGF is MGF1-SHA1, so omitting this would describe a
+	// SHA-256 digest with a SHA-1 mask -- a combination this does not produce.
+	if m := em.FindElement("MGF"); m == nil ||
+		m.SelectAttrValue("Algorithm", "") != algMGF1SHA256 {
+		t.Error("the mask generation function is not declared as MGF1-SHA256")
+	}
+
+	wrapped := unwrappedKeyBytes(t, ea)
+	if _, err := rsa.DecryptOAEP(crypto.SHA256.New(), nil, p.key, wrapped, nil); err != nil {
+		t.Fatalf("the session key did not unwrap with the advertised SHA-256: %v", err)
+	}
+	// #nosec G401 -- deliberately the wrong algorithm, to prove it is wrong.
+	if _, err := rsa.DecryptOAEP(sha1.New(), nil, p.key, wrapped, nil); err == nil {
+		t.Error("the session key ALSO unwrapped with SHA-1, so the advertised " +
+			"algorithm is not the one that was used")
+	}
+}
+
+// TestDefaultKeyTransportStaysInteroperable pins the default.
+//
+// Every service provider implements rsa-oaep-mgf1p; xmlenc11 rsa-oaep is widely
+// but not universally supported. Defaulting to the modern one would produce
+// assertions that decrypt nowhere for whoever upgraded without reading a note.
+func TestDefaultKeyTransportStaysInteroperable(t *testing.T) {
+	p := newSPKeyPair(t)
+	ea := encryptedAssertionFor(t, p) // passes "" for the key transport
+	em := ea.FindElement("EncryptedData/KeyInfo/EncryptedKey/EncryptionMethod")
+	if got := em.SelectAttrValue("Algorithm", ""); got != algRSAOAEPMGF1P {
+		t.Errorf("the default key transport is %q, want %q", got, algRSAOAEPMGF1P)
+	}
+}
+
+func TestUnknownKeyTransportIsRefused(t *testing.T) {
+	p := newSPKeyPair(t)
+	signed := signRequest(t, p, "_a1")
+	doc := etree.NewDocument()
+	if err := doc.ReadFromString(signed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EncryptAssertion(doc.Root(), p.certPEM, "rsa-oaep-sha512"); err == nil {
+		t.Error("an unknown key transport algorithm was accepted")
+	}
+}
+
+func unwrappedKeyBytes(t *testing.T, ea *etree.Element) []byte {
+	t.Helper()
+	c := ea.FindElement("EncryptedData/KeyInfo/EncryptedKey/CipherData/CipherValue")
+	if c == nil {
+		t.Fatal("no EncryptedKey CipherValue")
+	}
+	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(c.Text()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

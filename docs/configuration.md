@@ -131,6 +131,11 @@ See [CAPTCHA](captcha.md).
 |---|---|
 | `SIGNARI_DUO_BASE_URL` | Overrides Duo's API host. Testing only |
 
+## FIPS 140-3
+
+No configuration; it is a build and runtime mode. See [fips.md](fips.md) for what
+works under it and what cannot.
+
 ## Test-only
 
 Read by tests, never by a running engine. Listed so the sweep does not report

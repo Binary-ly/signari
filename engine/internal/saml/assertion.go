@@ -49,6 +49,9 @@ type ResponseInput struct {
 	Subject     Subject
 	Lifetime    time.Duration
 	Now         time.Time
+	// KeyTransport names the RSA key transport algorithm; see EncryptAssertion.
+	KeyTransport string
+
 	// EncryptionCert, when set, is the service provider's PEM encryption
 	// certificate. The assertion is signed and then encrypted to it.
 	EncryptionCert string
@@ -149,7 +152,7 @@ func BuildResponse(in ResponseInput, kid string, signer crypto.Signer, certDER [
 	// Encryption happens LAST, over the signed element. See EncryptAssertion for
 	// why that order is not interchangeable.
 	if in.EncryptionCert != "" {
-		encrypted, eerr := EncryptAssertion(signed, in.EncryptionCert)
+		encrypted, eerr := EncryptAssertion(signed, in.EncryptionCert, in.KeyTransport)
 		if eerr != nil {
 			return "", fmt.Errorf("encrypting the assertion: %w", eerr)
 		}

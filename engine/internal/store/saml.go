@@ -32,12 +32,14 @@ func LoadSAMLProvider(ctx context.Context, db *pgxpool.Pool, entityID string) (*
 		SELECT id::text, org_id::text, entity_id, display_name, name_id_format,
 		       sign_assertions, sign_responses, want_authn_requests_signed,
 		       COALESCE(sp_signing_cert,''), COALESCE(sp_encryption_cert,''),
+		       sp_key_transport,
 		       lifetime_seconds, enabled
 		FROM core.saml_providers
 		WHERE entity_id = $1`, entityID).Scan(
 		&p.ID, &p.OrgID, &p.EntityID, &p.DisplayName, &p.NameIDFormat,
 		&p.SignAssertions, &p.SignResponses, &p.WantAuthnRequestsSigned,
-		&p.SPSigningCert, &p.SPEncryptionCert, &p.LifetimeSeconds, &p.Enabled)
+		&p.SPSigningCert, &p.SPEncryptionCert, &p.SPKeyTransport,
+		&p.LifetimeSeconds, &p.Enabled)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrSAMLProviderUnknown

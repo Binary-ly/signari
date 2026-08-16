@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -24,8 +25,22 @@ const (
 	algAES256GCM = "http://www.w3.org/2009/xmlenc11#aes256-gcm"
 	// RSA-OAEP with MGF1-SHA1, the interoperable key transport algorithm.
 	algRSAOAEPMGF1P = "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p"
+	// RSA-OAEP with explicit digest and MGF parameters, so SHA-256 can be named.
+	algRSAOAEP    = "http://www.w3.org/2009/xmlenc11#rsa-oaep"
+	algMGF1SHA256 = "http://www.w3.org/2009/xmlenc11#mgf1sha256"
+	algSHA256     = "http://www.w3.org/2001/04/xmlenc#sha256"
+	algSHA1Digest = "http://www.w3.org/2000/09/xmldsig#sha1"
+)
 
-	nsXMLEnc = "http://www.w3.org/2001/04/xmlenc#"
+// Key transport choices, as stored against a service provider.
+const (
+	// KeyTransportMGF1P is rsa-oaep-mgf1p: universal, and SHA-1 inside OAEP.
+	KeyTransportMGF1P = "rsa-oaep-mgf1p"
+	// KeyTransportSHA256 is xmlenc11 rsa-oaep with SHA-256, which FIPS allows.
+	KeyTransportSHA256 = "rsa-oaep-sha256"
+
+	nsXMLEnc   = "http://www.w3.org/2001/04/xmlenc#"
+	nsXMLEnc11 = "http://www.w3.org/2009/xmlenc11#"
 	nsDS     = "http://www.w3.org/2000/09/xmldsig#"
 )
 
@@ -63,7 +78,19 @@ const (
 // documents share one signature. The two uses are unrelated, and conflating them
 // would mean refusing the one key transport algorithm every service provider
 // implements.
-func EncryptAssertion(signedAssertion *etree.Element, certPEM string) (*etree.Element, error) {
+func EncryptAssertion(signedAssertion *etree.Element, certPEM, keyTransport string) (
+	*etree.Element, error) {
+
+	switch keyTransport {
+	case "", KeyTransportMGF1P:
+		keyTransport = KeyTransportMGF1P
+	case KeyTransportSHA256:
+	default:
+		return nil, fmt.Errorf("unknown key transport algorithm %q for this service "+
+			"provider; expected %q or %q", keyTransport, KeyTransportMGF1P,
+			KeyTransportSHA256)
+	}
+
 	cert, err := parseCertPEM(certPEM)
 	if err != nil {
 		return nil, err
@@ -101,30 +128,36 @@ func EncryptAssertion(signedAssertion *etree.Element, certPEM string) (*etree.El
 	if err != nil {
 		return nil, err
 	}
-	gcm, err := cipher.NewGCM(block)
+	// XML Encryption carries the IV as a prefix of the cipher value and GCM's
+	// tag as a suffix, which is exactly the layout NewGCMWithRandomNonce
+	// produces: it generates the nonce itself and prepends it.
+	//
+	// Letting the library generate the nonce rather than doing it here is also
+	// what makes this work under FIPS 140-only mode, where GCM with a
+	// caller-supplied IV is refused outright -- a nonce reused under the same
+	// key destroys GCM completely, so the rule is that the module owns it.
+	gcm, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, err
 	}
-	iv := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return nil, fmt.Errorf("generating an IV: %w", err)
-	}
-	// XML Encryption carries the IV as a prefix of the cipher value, and GCM's
-	// tag as a suffix. Seal appends the tag, so prefixing the IV produces exactly
-	// the layout the specification describes.
-	ciphertext := append(iv, gcm.Seal(nil, iv, []byte(plaintext), nil)...)
+	ciphertext := gcm.Seal(nil, nil, []byte(plaintext), nil)
 
-	// #nosec G401 -- as above: OAEP mask generation, not a digest anyone signs.
-	wrapped, err := rsa.EncryptOAEP(sha1.New(), rand.Reader, pub, sessionKey, nil)
+	oaepHash := crypto.SHA256.New()
+	if keyTransport == KeyTransportMGF1P {
+		// #nosec G401 -- as above: OAEP mask generation, not a digest anyone signs.
+		oaepHash = sha1.New()
+	}
+	wrapped, err := rsa.EncryptOAEP(oaepHash, rand.Reader, pub, sessionKey, nil)
 	if err != nil {
 		return nil, fmt.Errorf("wrapping the session key: %w", err)
 	}
 
-	return buildEncryptedAssertion(ciphertext, wrapped, cert), nil
+	return buildEncryptedAssertion(ciphertext, wrapped, cert, keyTransport), nil
 }
 
 // buildEncryptedAssertion assembles the XML Encryption structure.
-func buildEncryptedAssertion(ciphertext, wrappedKey []byte, cert *x509.Certificate) *etree.Element {
+func buildEncryptedAssertion(ciphertext, wrappedKey []byte, cert *x509.Certificate,
+	keyTransport string) *etree.Element {
 	ea := etree.NewElement("saml:EncryptedAssertion")
 	ea.CreateAttr("xmlns:saml", nsAssertion)
 
@@ -140,9 +173,21 @@ func buildEncryptedAssertion(ciphertext, wrappedKey []byte, cert *x509.Certifica
 
 	ek := ki.CreateElement("xenc:EncryptedKey")
 	em := ek.CreateElement("xenc:EncryptionMethod")
-	em.CreateAttr("Algorithm", algRSAOAEPMGF1P)
-	em.CreateElement("ds:DigestMethod").
-		CreateAttr("Algorithm", "http://www.w3.org/2000/09/xmldsig#sha1")
+	if keyTransport == KeyTransportSHA256 {
+		// xmlenc11 rsa-oaep takes its parameters explicitly: the digest as a
+		// DigestMethod and the mask generation function as MGF. Naming the MGF is
+		// not optional here -- rsa-oaep's default MGF is MGF1-SHA1, so an
+		// EncryptedKey that names SHA-256 as the digest and omits the MGF
+		// describes a combination Go does not produce, and the far end fails to
+		// unwrap the key with no indication of which half disagreed.
+		em.CreateAttr("Algorithm", algRSAOAEP)
+		em.CreateElement("ds:DigestMethod").CreateAttr("Algorithm", algSHA256)
+		em.CreateElement("xenc11:MGF").CreateAttr("Algorithm", algMGF1SHA256)
+		em.CreateAttr("xmlns:xenc11", nsXMLEnc11)
+	} else {
+		em.CreateAttr("Algorithm", algRSAOAEPMGF1P)
+		em.CreateElement("ds:DigestMethod").CreateAttr("Algorithm", algSHA1Digest)
+	}
 
 	// Which certificate this was encrypted to. A service provider holding more
 	// than one decryption key -- which is every provider mid-rotation -- otherwise

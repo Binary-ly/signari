@@ -54,6 +54,9 @@ type Provider struct {
 	SignResponses           bool
 	WantAuthnRequestsSigned bool
 	SPSigningCert           string
+	// SPKeyTransport names the RSA key transport algorithm for encryption.
+	SPKeyTransport string
+
 	// SPEncryptionCert is the SEPARATE certificate the assertion is encrypted
 	// to. Empty means no encryption; TLS is the transport either way.
 	SPEncryptionCert string

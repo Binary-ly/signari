@@ -108,16 +108,57 @@ through. Signing in needs the database one query later anyway, so failing closed
 costs nothing that was going to work — while failing open would turn a database
 blip into an unlimited guessing window.
 
-## What this does not do yet
+## The CAPTCHA counter had the same bug
 
-- **Policy cache coherence.** Each instance caches the policy file and reloads
-  on an interval, so for that interval two instances can enforce different
-  versions. Bounded and small, and not yet coordinated.
-- **CAPTCHA counters** are still per-instance, so adaptive mode escalates later
-  than configured when spread across instances. Same class of bug as the one
-  above, smaller blast radius, same fix available.
+Adaptive mode counts failures per address and challenges after a threshold. That
+counter was a map in process memory, so with N instances an attacker needed N
+times the failures before any single one escalated — and with an even spread
+across a load balancer, **none of them ever would.** Adaptive mode silently
+stopped being adaptive.
+
+It now uses the same shared counters. `internal/captcha` gained an interface
+rather than a database dependency: it is small and pure and should stay
+testable without one, so the caller supplies an implementation backed by
+whatever every instance can see.
+
+Two properties are tested, because both can be got wrong:
+
+```
+three failures split across two instances → both instances see three
+five reads of the counter                 → still three
+```
+
+The second matters more than it looks. The count is read on **every render** of
+the sign-in page, so a counter that charged for reading would escalate its own
+challenge by being displayed, and eventually challenge everybody who looked at
+it.
+
+A database error reads as **zero**, not as "challenge everybody": the sign-in is
+about to fail for the same reason, and adding a puzzle to it helps nobody.
+
+## Policy propagation, measured
+
+Each instance caches the policy and reloads on a 30-second timer, so two
+instances can briefly enforce different versions.
+
+Measured rather than assumed. A deny rule was applied on one instance's
+database, then both were polled:
+
+```
+t+05s  A=400  B=400   ← both refusing, with the operator's own message
+```
+
+Worst case is the 30-second window; in practice both had reloaded on the first
+poll. That bound is small enough that a `LISTEN`/`NOTIFY` channel — and the
+long-lived connection it needs — is not worth its complexity for a
+configuration change. It would be worth it for an emergency revocation, and
+revocation does not go through this path: sessions and tokens are read from the
+database on use.
+
+## What this still does not do
+
 - **Outbox delivery** is not partitioned. Two instances can attempt the same
-  logout notice; delivery is idempotent at the relying party's end by `jti`,
-  but the duplicate work is real.
+  back-channel logout notice; the relying party de-duplicates by `jti`, so the
+  outcome is correct and the duplicated work is real.
 
-Each is listed because it is known, not because it is fine.
+Listed because it is known, not because it is fine.

@@ -879,9 +879,9 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// A failure here counts as a login failure too. Otherwise an attacker could
 	// hold the address's counter still by submitting a blank challenge forever,
 	// and adaptive mode would never escalate.
-	if s.captcha.Required(r.RemoteAddr) {
+	if s.captcha.Required(ctx, r.RemoteAddr) {
 		if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
-			s.captcha.RecordFailure(r.RemoteAddr)
+			s.captcha.RecordFailure(ctx, r.RemoteAddr)
 			s.log.Info("captcha refused", "err", cerr,
 				"correlation_id", correlationID(ctx))
 			s.renderLogin(w, r, authzQuery,
@@ -923,7 +923,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		})
 		// Counted like any other failure. Counting only real accounts would make
 		// the appearance of a challenge an oracle for which usernames exist.
-		s.captcha.RecordFailure(r.RemoteAddr)
+		s.captcha.RecordFailure(ctx, r.RemoteAddr)
 		s.renderLogin(w, r, authzQuery, generic)
 		return
 	}
@@ -952,7 +952,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 
 	needsRehash, verr := s.hasher.Verify(ctx, stored, password)
 	if verr != nil {
-		s.captcha.RecordFailure(r.RemoteAddr)
+		s.captcha.RecordFailure(ctx, r.RemoteAddr)
 		if err := store.RecordLoginFailure(ctx, s.db, userID); err != nil {
 			s.log.Error("recording login failure", "err", err)
 		}
@@ -972,7 +972,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// just positively identified.
 	// A correct password clears the address's pressure: the next person on that
 	// office NAT should not inherit a challenge from somebody who mistyped.
-	s.captcha.Clear(r.RemoteAddr)
+	s.captcha.Clear(ctx, r.RemoteAddr)
 	if err := store.ClearLoginThrottle(ctx, s.db, userID); err != nil {
 		s.log.Error("clearing login throttle", "err", err)
 	}

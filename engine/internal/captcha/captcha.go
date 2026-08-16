@@ -88,13 +88,50 @@ type Config struct {
 	FailClosed bool
 }
 
+// FailureCounter records how much pressure an address is under.
+//
+// An interface so this package keeps no database dependency: it is small,
+// pure, and testable without one, and it should stay that way. The caller
+// supplies an implementation backed by whatever every instance can see.
+//
+// # Why the default is not good enough
+//
+// The default counts in process memory, which is correct for exactly one
+// instance. With N instances behind a load balancer an attacker needs N times
+// the failures before any single one escalates -- and if the balancer spreads
+// them evenly, none of them ever does. The adaptive mode silently stops being
+// adaptive, and nothing about that is visible from inside any process.
+type FailureCounter interface {
+	// Record charges one failure to a key.
+	Record(ctx context.Context, key string)
+	// Count reads the failures inside the current window. It must NOT charge
+	// anything: it runs on every render of the sign-in page.
+	Count(ctx context.Context, key string) int
+	// Clear forgets a key after a success.
+	Clear(ctx context.Context, key string)
+}
+
 // Verifier checks responses and tracks pressure.
 type Verifier struct {
 	cfg    Config
 	client *http.Client
 
+	// counter is shared across instances when the caller supplies one. nil
+	// falls back to the in-memory map below, which is right for a single
+	// instance and wrong for two.
+	counter FailureCounter
+
 	mu       sync.Mutex
 	failures map[string]*counter
+}
+
+// WithCounter returns a verifier that counts where every instance can see.
+func (v *Verifier) WithCounter(c FailureCounter) *Verifier {
+	if v == nil {
+		return nil
+	}
+	v.counter = c
+	return v
 }
 
 type counter struct {
@@ -102,8 +139,13 @@ type counter struct {
 	seen time.Time
 }
 
-// failureWindow is how long a failed attempt counts toward a challenge.
-const failureWindow = 15 * time.Minute
+// FailureWindow is how long a failed attempt counts toward a challenge.
+//
+// Exported so a shared FailureCounter uses the SAME window as the in-memory
+// fallback. Two implementations with two windows would make the challenge
+// appear at different points depending on which one a deployment happened to
+// configure, and the difference would only show under load.
+const FailureWindow = 15 * time.Minute
 
 func New(cfg Config, client *http.Client) *Verifier {
 	if cfg.FailuresBeforeChallenge <= 0 {
@@ -145,7 +187,7 @@ func (v *Verifier) Provider() Provider {
 }
 
 // Required reports whether this request must carry a solved challenge.
-func (v *Verifier) Required(remoteAddr string) bool {
+func (v *Verifier) Required(ctx context.Context, remoteAddr string) bool {
 	if !v.Enabled() {
 		return false
 	}
@@ -154,6 +196,10 @@ func (v *Verifier) Required(remoteAddr string) bool {
 	}
 
 	key := addrKey(remoteAddr)
+	if v.counter != nil {
+		return v.counter.Count(ctx, key) >= v.cfg.FailuresBeforeChallenge
+	}
+
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.sweepLocked()
@@ -166,11 +212,16 @@ func (v *Verifier) Required(remoteAddr string) bool {
 // Called for EVERY failure, including ones where no such account exists.
 // Counting only real accounts would make the appearance of a CAPTCHA an oracle
 // for which usernames are worth guessing.
-func (v *Verifier) RecordFailure(remoteAddr string) {
+func (v *Verifier) RecordFailure(ctx context.Context, remoteAddr string) {
 	if !v.Enabled() || v.cfg.Mode != ModeAdaptive {
 		return
 	}
 	key := addrKey(remoteAddr)
+	if v.counter != nil {
+		v.counter.Record(ctx, key)
+		return
+	}
+
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.sweepLocked()
@@ -184,20 +235,25 @@ func (v *Verifier) RecordFailure(remoteAddr string) {
 }
 
 // Clear forgets an address after a successful sign-in.
-func (v *Verifier) Clear(remoteAddr string) {
+func (v *Verifier) Clear(ctx context.Context, remoteAddr string) {
 	if !v.Enabled() {
+		return
+	}
+	key := addrKey(remoteAddr)
+	if v.counter != nil {
+		v.counter.Clear(ctx, key)
 		return
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	delete(v.failures, addrKey(remoteAddr))
+	delete(v.failures, key)
 }
 
 // sweepLocked drops entries past the window. Called on every access rather than
 // by a timer: the map only grows while attacks are in progress, and an unbounded
 // map fed by request data is itself a way to exhaust memory.
 func (v *Verifier) sweepLocked() {
-	cutoff := time.Now().Add(-failureWindow)
+	cutoff := time.Now().Add(-FailureWindow)
 	for k, c := range v.failures {
 		if c.seen.Before(cutoff) {
 			delete(v.failures, k)

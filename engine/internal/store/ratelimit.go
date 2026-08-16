@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Rate limits shared by every instance.
@@ -87,4 +88,53 @@ func PurgeRateLimits(ctx context.Context, tx pgx.Tx) (int64, error) {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// CountRate reads a window's counter without charging anything to it.
+//
+// Separate from AllowRate because some callers ask a different question. A rate
+// limiter asks "may this proceed", which is a decision that costs a request; an
+// adaptive CAPTCHA asks "has this address been failing", which is a reading
+// taken on every page render and must not itself count as an attempt.
+//
+// Merging the two would mean the sign-in page escalated its own challenge by
+// being displayed.
+func CountRate(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, key string, window time.Duration) (int, error) {
+
+	if window <= 0 {
+		return 0, fmt.Errorf("no window given for %q", key)
+	}
+	var n int
+	err := q.QueryRow(ctx, `
+		SELECT COALESCE(count, 0) FROM core.rate_limits
+		WHERE bucket_key = $1
+		  AND window_start = to_timestamp(floor(extract(epoch FROM now()) / $2) * $2)`,
+		key, window.Seconds()).Scan(&n)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			// No row is a real answer: nothing has happened in this window.
+			return 0, nil
+		}
+		return 0, fmt.Errorf("reading the counter for %q: %w", key, err)
+	}
+	return n, nil
+}
+
+// ClearRate forgets a counter, for a caller that has a reason to.
+//
+// A successful sign-in clears the adaptive CAPTCHA pressure for that address:
+// somebody who mistyped their password four times and then got it right is not
+// an attacker, and leaving them challenged for the rest of the window teaches
+// them the challenge is noise.
+//
+// Deliberately NOT used by the rate limiter. There, "I eventually succeeded"
+// is exactly what an attacker also does.
+func ClearRate(ctx context.Context, q interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, key string) error {
+
+	_, err := q.Exec(ctx, `DELETE FROM core.rate_limits WHERE bucket_key = $1`, key)
+	return err
 }

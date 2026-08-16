@@ -7,6 +7,10 @@ import (
 	"testing"
 )
 
+// ctx is shared by these tests: none of them exercises cancellation, and
+// threading a fresh one through every call would be noise.
+var ctx = context.Background()
+
 func TestOffByDefault(t *testing.T) {
 	var v *Verifier
 	if v.Enabled() {
@@ -14,11 +18,11 @@ func TestOffByDefault(t *testing.T) {
 	}
 	// Every method must tolerate a nil receiver, so a deployment with no CAPTCHA
 	// needs no branches at the call sites.
-	if v.Required("1.2.3.4:1234") {
+	if v.Required(ctx, "1.2.3.4:1234") {
 		t.Error("a nil verifier required a challenge")
 	}
-	v.RecordFailure("1.2.3.4:1234")
-	v.Clear("1.2.3.4:1234")
+	v.RecordFailure(ctx, "1.2.3.4:1234")
+	v.Clear(ctx, "1.2.3.4:1234")
 	// These two were NOT nil-safe and panicked on the sign-in page of every
 	// deployment without a CAPTCHA. The login renderer reads them on every
 	// request, so "the caller checks first" was never going to hold.
@@ -45,35 +49,35 @@ func TestAdaptiveOnlyChallengesAfterFailures(t *testing.T) {
 		FailuresBeforeChallenge: 3}, nil)
 	const addr = "203.0.113.7:5555"
 
-	if v.Required(addr) {
+	if v.Required(ctx, addr) {
 		t.Fatal("a challenge was required before any failure")
 	}
-	v.RecordFailure(addr)
-	v.RecordFailure(addr)
-	if v.Required(addr) {
+	v.RecordFailure(ctx, addr)
+	v.RecordFailure(ctx, addr)
+	if v.Required(ctx, addr) {
 		t.Error("challenged after 2 failures with a threshold of 3")
 	}
-	v.RecordFailure(addr)
-	if !v.Required(addr) {
+	v.RecordFailure(ctx, addr)
+	if !v.Required(ctx, addr) {
 		t.Error("not challenged after reaching the threshold")
 	}
 
 	// A different address is unaffected: pressure is per source, not global.
-	if v.Required("198.51.100.9:1111") {
+	if v.Required(ctx, "198.51.100.9:1111") {
 		t.Error("one address's failures challenged a different address")
 	}
 
 	// Success clears it, so the next person on an office NAT does not inherit a
 	// challenge from somebody who mistyped.
-	v.Clear(addr)
-	if v.Required(addr) {
+	v.Clear(ctx, addr)
+	if v.Required(ctx, addr) {
 		t.Error("a challenge survived a successful sign-in")
 	}
 }
 
 func TestAlwaysChallenges(t *testing.T) {
 	v := New(Config{Mode: ModeAlways, Provider: Turnstile, Secret: "s"}, nil)
-	if !v.Required("203.0.113.7:1") {
+	if !v.Required(ctx, "203.0.113.7:1") {
 		t.Error("always mode did not require a challenge")
 	}
 }

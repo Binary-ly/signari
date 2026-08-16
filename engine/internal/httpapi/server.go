@@ -95,6 +95,10 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 	if err != nil {
 		return nil, err
 	}
+	// Counted where every instance can see. The in-memory default is correct
+	// for exactly one instance, and silently stops escalating with more than
+	// one -- the same shape of bug the sign-in rate limiter had.
+	cap = cap.WithCounter(&sharedCaptchaCounter{db: db, log: log})
 
 	srv := &Server{
 		cfg:     cfg,
@@ -412,7 +416,7 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		"Providers": s.externalProviders(r.Context()),
 		// Only when this request actually needs one. In adaptive mode a person
 		// signing in normally never sees a widget at all.
-		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.RemoteAddr),
+		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),
 		"CaptchaProvider": string(s.captcha.Provider()),
 		"CaptchaSiteKey":  s.captcha.SiteKey(),
 	})

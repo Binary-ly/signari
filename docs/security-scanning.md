@@ -310,3 +310,40 @@ sweep:
   authoritative value sat in the parked authorization query beside it. Two
   fields that must agree eventually do not: consent recorded for one client,
   flow resumed for another. Now read from the query, with a mismatch refused.
+
+
+## The sweep that could not see Duo
+
+The exported-function sweep above found `HasSecondFactor` was missing SMS. A
+companion test was written to keep it honest: ask the database which tables hold
+credentials, and fail when the gate does not consult one.
+
+It passed while Duo was an MFA bypass.
+
+The discovery query matched `%otp_credentials` and `totp_credentials`. Duo's
+table is `duo_enrollments`. The enrollment table was written, the challenge was
+wired up, `HasSecondFactor` was not updated — and the test that existed
+precisely to catch that reported success, because it never looked.
+
+A test that fails to look is not a weak test. It is a no-test that reports
+success, which is worse than no test at all: the absence of a test is visible.
+
+The rewrite classifies every credential table **explicitly** and checks the list
+against the live schema in both directions:
+
+```
+core.duo_enrollments holds second-factor credentials and HasSecondFactor does
+not consult it. A user whose only factor is in that table signs in with a
+password alone, while their account settings say MFA is on.
+
+core.webauthn_credentials is classified as NOT a second factor, but
+HasSecondFactor consults it. One of the two is wrong.
+```
+
+Broadening the discovery query immediately turned up two more tables nobody had
+decided about — `password_credentials` and `recovery_requests` — each of which
+now carries a recorded reason for being excluded. A false positive costs one
+line; a false negative is an authentication bypass.
+
+**Verified both ways**: with the fix in place the test passes; with Duo removed
+from the query it fails, naming the table.

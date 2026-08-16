@@ -884,7 +884,16 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 		// a server that trusts everybody is an authentication oracle for the whole
 		// network. Surfaced here with the command that fixes it rather than as a
 		// bare error from a package the operator has never heard of.
-		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients},
+		// EAP-TLS, when the deployment has configured a server certificate and
+		// the authorities that issue supplicant certificates. Absent, the
+		// listener answers password requests only and refuses EAP outright
+		// rather than offering something weaker.
+		eapCfg, eerr := eapTLSFromEnv(pool, radiusOrgID)
+		if eerr != nil {
+			return fmt.Errorf("configuring EAP-TLS: %w", eerr)
+		}
+
+		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg},
 			httpapi.NewRADIUSAuthenticator(pool,
 				passwords.NewHasher(passwords.MemoryBudgetMiB), radiusOrgID), log)
 		if rerr2 != nil {
@@ -897,7 +906,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 		}
 		go func() {
 			log.Info("RADIUS listening", "addr", radiusAddr, "clients", len(clients),
-				"org_id", radiusOrgID)
+				"org_id", radiusOrgID, "eap_tls", eapCfg != nil)
 			if err := radiusSrv.Serve(ctx, pc); err != nil {
 				log.Error("RADIUS stopped", "err", err)
 			}
@@ -3646,4 +3655,61 @@ func duoShow(ctx context.Context, conn *pgx.Conn) error {
 			org, clientID, host, failOpen, enabled, enrolled)
 	}
 	return rows.Err()
+}
+
+// eapTLSFromEnv builds the EAP-TLS configuration, or nil when it is not wanted.
+//
+// All three settings or none. A partial configuration is refused rather than
+// half-applied: a listener with a server certificate and no client CAs would
+// complete handshakes with anybody holding any certificate, which is worse than
+// no EAP-TLS at all because it looks like it is working.
+func eapTLSFromEnv(pool *pgxpool.Pool, orgID string) (*radius.EAPTLSConfig, error) {
+	certFile := os.Getenv("SIGNARI_EAP_TLS_CERT")
+	keyFile := os.Getenv("SIGNARI_EAP_TLS_KEY")
+	caFile := os.Getenv("SIGNARI_EAP_CLIENT_CA")
+
+	if certFile == "" && keyFile == "" && caFile == "" {
+		return nil, nil
+	}
+	switch {
+	case certFile == "" || keyFile == "":
+		return nil, fmt.Errorf("EAP-TLS needs SIGNARI_EAP_TLS_CERT and " +
+			"SIGNARI_EAP_TLS_KEY: supplicants verify this certificate, and one they " +
+			"do not trust makes every login fail with no message anybody can read")
+	case caFile == "":
+		return nil, fmt.Errorf("EAP-TLS needs SIGNARI_EAP_CLIENT_CA: without the " +
+			"authorities that issue supplicant certificates there is nothing to " +
+			"verify one against, and the handshake would admit anybody holding any " +
+			"certificate")
+	}
+
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading the EAP-TLS server certificate: %w", err)
+	}
+	// Checked now rather than at the first association: an expired certificate
+	// makes every supplicant refuse the server, and the error they show says
+	// nothing useful.
+	if leaf, perr := x509.ParseCertificate(cert.Certificate[0]); perr == nil {
+		if time.Now().After(leaf.NotAfter) {
+			return nil, fmt.Errorf("the EAP-TLS server certificate expired on %s",
+				leaf.NotAfter.Format("2006-01-02"))
+		}
+	}
+
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, err
+	}
+	pool2 := x509.NewCertPool()
+	if !pool2.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("%s contains no certificates", caFile)
+	}
+
+	return &radius.EAPTLSConfig{
+		Certificate: cert,
+		ClientCAs:   pool2,
+		Auth: httpapi.NewEAPCertAuthenticator(pool, orgID,
+			os.Getenv("SIGNARI_EAP_IDENTITY_FROM")),
+	}, nil
 }

@@ -36,6 +36,11 @@ type Config struct {
 	Clients []Client
 	// ReadTimeout bounds a single exchange.
 	ReadTimeout time.Duration
+	// EAPTLS enables certificate-based login. nil means EAP requests are
+	// refused rather than answered with something weaker: a supplicant that
+	// asks for EAP and is offered a password method has been downgraded, and
+	// the whole point of EAP-TLS is that there is no password to downgrade to.
+	EAPTLS *EAPTLSConfig
 }
 
 // Server answers Access-Requests.
@@ -43,6 +48,9 @@ type Server struct {
 	cfg  Config
 	auth Authenticator
 	log  *slog.Logger
+
+	eapTLS   *EAPTLSConfig
+	sessions *eapSessions
 }
 
 func New(cfg Config, auth Authenticator, log *slog.Logger) (*Server, error) {
@@ -59,7 +67,22 @@ func New(cfg Config, auth Authenticator, log *slog.Logger) (*Server, error) {
 	if cfg.ReadTimeout == 0 {
 		cfg.ReadTimeout = 5 * time.Second
 	}
-	return &Server{cfg: cfg, auth: auth, log: log}, nil
+	if cfg.EAPTLS != nil {
+		switch {
+		case cfg.EAPTLS.ClientCAs == nil:
+			return nil, errors.New("EAP-TLS needs client CAs: without them there is " +
+				"nothing to verify a supplicant certificate against, and the handshake " +
+				"would authenticate anybody who presents any certificate")
+		case cfg.EAPTLS.Auth == nil:
+			return nil, errors.New("EAP-TLS needs a certificate authenticator to map a " +
+				"verified certificate to a user")
+		case len(cfg.EAPTLS.Certificate.Certificate) == 0:
+			return nil, errors.New("EAP-TLS needs a server certificate; supplicants " +
+				"verify it, and one they do not trust makes every login fail")
+		}
+	}
+	return &Server{cfg: cfg, auth: auth, log: log,
+		eapTLS: cfg.EAPTLS, sessions: newEAPSessions()}, nil
 }
 
 // clientFor finds the configured device for a source address.
@@ -134,6 +157,14 @@ func (s *Server) handle(ctx context.Context, conn net.PacketConn, addr net.Addr,
 	// THE Blast-RADIUS check, before anything in the packet is believed.
 	if err := p.VerifyMessageAuthenticator(secret); err != nil {
 		s.log.Warn("RADIUS request refused", "client", client.Name, "err", err)
+		return
+	}
+
+	// EAP first. A request carrying EAP-Message is an EAP conversation and has
+	// no User-Password at all, so the password path below would reject it for
+	// the wrong reason and tell the supplicant nothing useful.
+	if eap, ok := p.EAPMessage(); ok {
+		s.handleEAP(conn, addr, p, secret, client, eap)
 		return
 	}
 

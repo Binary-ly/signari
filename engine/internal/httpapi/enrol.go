@@ -13,6 +13,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/qr"
+	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/store"
 )
 
@@ -475,3 +476,231 @@ account is recovered, so a code sent there protects you from a stolen password
 but not from a stolen mailbox.</p>
 {{end}}
 </body></html>`))
+
+// handleSMSOTPEnrol turns on a text message as a second factor.
+//
+// Two steps, and the second is not optional: a number is enrolled, a code is
+// sent to it, and the factor counts only once that code comes back. Enrolling
+// and trusting in one step means a typo puts a stranger's phone between a
+// person and their own account -- and they find out at the worst moment, when
+// they are already locked out.
+func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	_, userID, orgID, ok := s.currentSession(r)
+	if !ok {
+		http.Redirect(w, r, parkLogin("/account/mfa/sms"), http.StatusFound)
+		return
+	}
+
+	csrf, err := s.csrfToken(w, r)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	render := func(stage, number, msg string) {
+		s.renderPage(w, smsOTPPage, map[string]any{
+			"Stage": stage, "Number": number, "Error": msg,
+			"CSRF": csrf, "CSRFField": csrfFormField,
+			"Configured": s.texter != nil,
+		})
+	}
+
+	if r.Method == http.MethodGet {
+		cred, lerr := store.LoadSMSOTP(ctx, s.db, userID)
+		switch {
+		case lerr == nil && cred.Verified:
+			render("enrolled", sms.RedactNumber(cred.Number), "")
+		case lerr == nil:
+			// Enrolled but never proven. Resume where they left off rather than
+			// starting again: the number is already stored and re-typing it is
+			// another chance to mistype it.
+			render("verify", sms.RedactNumber(cred.Number), "")
+		default:
+			render("start", "", "")
+		}
+		return
+	}
+
+	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
+		render("start", "", "That form expired. Try again.")
+		return
+	}
+
+	// Refused up front when no gateway is configured. Accepting an enrolment
+	// that can never deliver a code would be building somebody a lockout.
+	if s.texter == nil {
+		render("start", "",
+			"Text messages are not available on this server. Ask an administrator, "+
+				"or use an authenticator app instead.")
+		return
+	}
+
+	switch r.PostForm.Get("step") {
+	case "verify":
+		tx, terr := s.db.Begin(ctx)
+		if terr != nil {
+			render("verify", "", "Something went wrong. Try again.")
+			return
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		okCode, verr := store.VerifySMSOTP(ctx, tx, userID,
+			strings.TrimSpace(r.PostForm.Get("code")))
+		if verr != nil {
+			s.log.Error("verifying an SMS enrolment code", "err", verr)
+			render("verify", "", "Something went wrong. Try again.")
+			return
+		}
+		if !okCode {
+			render("verify", "", "That code is not right, or it has expired.")
+			return
+		}
+		if merr := store.MarkSMSOTPVerified(ctx, tx, userID); merr != nil {
+			s.log.Error("marking the SMS factor verified", "err", merr)
+			render("verify", "", "Something went wrong. Try again.")
+			return
+		}
+		if aerr := audit.Write(ctx, tx, audit.Event{
+			Type: "mfa.sms_enrolled", OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+		}); aerr != nil {
+			s.log.Error("recording the SMS enrolment", "err", aerr)
+		}
+		if cerr := tx.Commit(ctx); cerr != nil {
+			render("verify", "", "Something went wrong. Try again.")
+			return
+		}
+		cred, _ := store.LoadSMSOTP(ctx, s.db, userID)
+		number := ""
+		if cred != nil {
+			number = sms.RedactNumber(cred.Number)
+		}
+		render("enrolled", number, "")
+
+	case "remove":
+		tx, terr := s.db.Begin(ctx)
+		if terr != nil {
+			render("start", "", "Something went wrong. Try again.")
+			return
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if rerr := store.RemoveSMSOTP(ctx, tx, userID); rerr != nil {
+			s.log.Error("removing the SMS factor", "err", rerr)
+			render("start", "", "Something went wrong. Try again.")
+			return
+		}
+		if aerr := audit.Write(ctx, tx, audit.Event{
+			Type: "mfa.sms_removed", OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+		}); aerr != nil {
+			s.log.Error("recording the SMS removal", "err", aerr)
+		}
+		if cerr := tx.Commit(ctx); cerr != nil {
+			render("start", "", "Something went wrong. Try again.")
+			return
+		}
+		render("start", "", "")
+
+	default: // "send"
+		tx, terr := s.db.Begin(ctx)
+		if terr != nil {
+			render("start", "", "Something went wrong. Try again.")
+			return
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+
+		number, nerr := store.EnrollSMSOTP(ctx, tx, userID, orgID,
+			r.PostForm.Get("number"))
+		if nerr != nil {
+			// The number errors are written for the person typing them and are
+			// shown as-is: "give the number in international form" is actionable
+			// and reveals nothing.
+			render("start", r.PostForm.Get("number"), nerr.Error())
+			return
+		}
+
+		code, to, ierr := store.IssueSMSOTP(ctx, tx, userID)
+		switch {
+		case errors.Is(ierr, store.ErrSMSOTPTooSoon):
+			// A live code is already on its way. Moving to the verify step is
+			// the right answer -- they have one.
+			render("verify", sms.RedactNumber(number), "")
+			return
+		case ierr != nil:
+			s.log.Error("issuing an SMS enrolment code", "err", ierr)
+			render("start", "", "Something went wrong. Try again.")
+			return
+		}
+		if cerr := tx.Commit(ctx); cerr != nil {
+			render("start", "", "Something went wrong. Try again.")
+			return
+		}
+
+		if serr := s.texter.Send(ctx, sms.Message{
+			To: to,
+			Body: fmt.Sprintf("%s: your verification code is %s. It expires in %d minutes.",
+				s.cfg.Issuer, code, int(store.SMSOTPLifetime.Minutes())),
+		}); serr != nil {
+			// Surfaced, unlike a sign-in send. Here the person is setting the
+			// factor up and can fix a wrong number; telling them nothing would
+			// leave them waiting for a message that is never coming.
+			s.log.Error("sending an SMS enrolment code", "err", serr,
+				"to", sms.RedactNumber(to))
+			render("start", number,
+				"That message could not be sent. Check the number and try again.")
+			return
+		}
+		render("verify", sms.RedactNumber(number), "")
+	}
+}
+
+var smsOTPPage = template.Must(template.New("smsotp").Parse(`<!doctype html>
+<meta charset="utf-8"><title>Text message codes</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>` + pageCSS + `</style>
+<h1>Text message codes</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+
+{{if eq .Stage "enrolled"}}
+  <p>Codes are sent to <strong>{{.Number}}</strong>.</p>
+  <p class="note">A text message is the weakest second factor available here:
+  moving a phone number to a new SIM needs no technical attack, only a
+  convincing phone call to a mobile operator. An authenticator app or a passkey
+  is stronger, and you can have both.</p>
+  <form method="post">
+    <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+    <input type="hidden" name="step" value="remove">
+    <button type="submit">Remove this factor</button>
+  </form>
+
+{{else if eq .Stage "verify"}}
+  <p>A code was sent to <strong>{{.Number}}</strong>. Enter it to finish.</p>
+  <p class="note">This factor is not active until the code comes back. That is
+  what proves the number is yours and not a typo.</p>
+  <form method="post">
+    <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+    <input type="hidden" name="step" value="verify">
+    <label for="code">Code</label>
+    <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code"
+           pattern="[0-9]*" autofocus required>
+    <button type="submit">Confirm</button>
+  </form>
+
+{{else}}
+  {{if .Configured}}
+  <form method="post">
+    <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+    <input type="hidden" name="step" value="send">
+    <label for="number">Mobile number, with the country code</label>
+    <input id="number" name="number" type="tel" value="{{.Number}}"
+           placeholder="+44 7700 900123" autocomplete="tel" autofocus required>
+    <button type="submit">Send a code</button>
+  </form>
+  <p class="note">Start with a + and the country code. Without it the number
+  cannot be dialled, and guessing wrong sends your codes to somebody else.</p>
+  {{else}}
+  <p class="note">Text messages are not available on this server.</p>
+  {{end}}
+{{end}}
+<p class="note"><a href="/account">Back to your account</a></p>
+`))

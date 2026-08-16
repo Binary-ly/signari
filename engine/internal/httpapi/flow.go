@@ -171,8 +171,9 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Evaluated AFTER authentication and step-up (so `mfa` reflects what actually
 	// happened) and BEFORE consent -- there is no point asking somebody to
 	// approve scopes for an application they are not permitted to reach.
+	mfa, amr := sessionFactors(ctx, s.db, sid)
 	if pd := s.checkAccessPolicy(ctx, r, c.OrgID, c.ClientID, userID,
-		req.Scope, sessionHasMFA(ctx, s.db, sid)); pd != nil {
+		req.Scope, mfa, amr); pd != nil {
 		s.log.Info("access refused by policy", "client_id", c.ClientID,
 			"rule", pd.Rule, "correlation_id", correlationID(ctx))
 		// Rendered to the person, not redirected to the client. A policy refusal

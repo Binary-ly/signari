@@ -23,6 +23,7 @@ import (
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/risk"
+	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/store"
 )
 
@@ -53,6 +54,11 @@ type Server struct {
 	// configured, so no call site has to nil-check before telling a user
 	// something important.
 	mailer mail.Sender
+	// texter is nil when no SMS gateway is configured, and every caller checks.
+	// A nil sender is more honest than a logging one here: a logging mailer
+	// still delivers nothing but at least writes the address, whereas a person
+	// waiting for a text has no inbox to check.
+	texter sms.Sender
 	// delegator verifies credentials against a provider being migrated from.
 	delegator *delegated.Verifier
 }
@@ -67,7 +73,8 @@ func (s *Server) SetClientCAs(pool *x509.CertPool) { s.clientCAs = pool }
 // SetPosture supplies how device trust is established, or nil for none.
 func (s *Server) SetPosture(p *posture.Config) { s.posture = p }
 
-func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender) (*Server, error) {
+func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender,
+	texter sms.Sender) (*Server, error) {
 	if mailer == nil {
 		// A nil mailer would mean recovery silently does nothing, which is worse
 		// than not offering it. The logging driver at least puts the link where a
@@ -103,6 +110,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		policies:  newPolicyCache(),
 		geo:       risk.NewResolver(),
 		mailer:    mailer,
+		texter:    texter,
 		delegator: delegated.New(),
 	}
 
@@ -141,6 +149,8 @@ func (s *Server) mux() *http.ServeMux {
 	// entry and the approve/refuse decision.
 	mux.HandleFunc("GET /account/mfa/email", s.handleEmailOTPEnrol)
 	mux.HandleFunc("POST /account/mfa/email", s.handleEmailOTPEnrol)
+	mux.HandleFunc("GET /account/mfa/sms", s.handleSMSOTPEnrol)
+	mux.HandleFunc("POST /account/mfa/sms", s.handleSMSOTPEnrol)
 	mux.HandleFunc("GET /device", s.handleDeviceVerification)
 	mux.HandleFunc("POST /device", s.handleDeviceVerification)
 	mux.HandleFunc("GET "+oidc.PathUserinfo, s.handleUserinfo)

@@ -278,6 +278,12 @@ func hashRecoveryCode(code string) []byte {
 // been waved straight through with a password alone, having explicitly turned
 // on a second factor. The name and the query now agree.
 //
+// EVERY factor must be listed here. This function is the single gate between a
+// correct password and a session, so a factor missing from it is a factor that
+// silently does not apply -- the user turned on MFA, sees it in their account
+// settings, and is waved through on a password alone. TestEveryFactorTableIsChecked
+// fails when a credential table exists that this query does not mention.
+//
 // Checked on the pool, not in a transaction, and deliberately cheap: it runs on
 // every password sign-in. For TOTP, `confirmed_at` is what matters -- an
 // enrolment the user never proved must not lock them out of their own account.
@@ -293,6 +299,13 @@ func HasSecondFactor(ctx context.Context, db interface {
 			WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL
 		) OR EXISTS (
 			SELECT 1 FROM core.email_otp_credentials WHERE user_id = $1::uuid
+		) OR EXISTS (
+			-- VERIFIED, not merely enrolled. An unverified number is somebody's
+			-- typo until a code sent to it comes back, and treating it as a
+			-- factor would lock the account's owner out with a phone they do
+			-- not have.
+			SELECT 1 FROM core.sms_otp_credentials
+			WHERE user_id = $1::uuid AND verified_at IS NOT NULL
 		)`, userID).Scan(&any)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

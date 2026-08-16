@@ -78,7 +78,7 @@ func newTokenFixture(t *testing.T) *tokenFixture {
 	}
 
 	srv, err := New(oidc.Config{Issuer: tokenTestIssuer, Keys: set, AllowInsecureIssuer: true},
-		pool, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+		pool, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,6 +40,16 @@ const (
 	AMRUserPresence = "user"
 	AMRPIN          = "pin"
 	AMRMFA          = "mfa"
+	// AMRSMS is reported for a code delivered by text, and is deliberately not
+	// AMROTP.
+	//
+	// RFC 8176 defines both, and the difference is the point. SIM swap defeats
+	// this factor with no technical exploit at all -- somebody persuades a
+	// mobile operator to move a number. Recording it as "otp" would make it
+	// indistinguishable from an authenticator app in every token, every audit
+	// record and every policy decision: documenting the weakness in prose and
+	// then erasing it from the one field machines actually read.
+	AMRSMS = "sms"
 )
 
 // ParseACRValues splits the space-separated acr_values parameter.
@@ -66,7 +76,15 @@ func ACRFromAMR(amr []string) string {
 		switch m {
 		case AMRPassword, AMRPIN:
 			distinct["knowledge"] = true
-		case AMROTP, AMRHardwareKey:
+		case AMROTP, AMRHardwareKey, AMRSMS:
+			// SMS IS a possession factor -- it proves control of a phone number,
+			// which is worth strictly more than a password alone. It counts
+			// towards multi-factor here for that reason.
+			//
+			// What it must not do is satisfy a request for a phishing-resistant
+			// or hardware-backed factor. That distinction lives in the policy
+			// language, where a rule can name amr values directly, rather than
+			// being collapsed away here.
 			distinct["possession"] = true
 		case AMRUserPresence:
 			// Presence alone is not a factor. A passkey that reports `user`

@@ -55,6 +55,7 @@ import (
 	"signari.dev/engine/internal/proxycheck"
 	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/scim"
+	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
 )
@@ -694,6 +695,18 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 		log.Error("loading issuer aliases", "err", err)
 	}
 
+	// The SMS gateway. A configuration error is FATAL rather than a fallback to
+	// no SMS: a deployment that named a gateway has stated an intention, and
+	// quietly ignoring a typo is how a second factor turns out to have been
+	// undeliverable for a month.
+	texter, err := sms.NewFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("configuring the SMS gateway: %w", err)
+	}
+	if texter != nil {
+		log.Info("SMS second factor available", "gateway", texter.Describe())
+	}
+
 	srv, err := httpapi.New(oidc.Config{
 		Issuer:              issuer,
 		IssuerAliases:       aliases,
@@ -701,7 +714,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 		Keys:                set,
 		Root:                root,
 		AllowInsecureIssuer: insecureIssuer,
-	}, pool, log, mailer)
+	}, pool, log, mailer, texter)
 	if err != nil {
 		return err
 	}

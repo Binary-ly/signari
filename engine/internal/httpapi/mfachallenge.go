@@ -16,6 +16,8 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/mfa"
+	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
@@ -102,6 +104,7 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 	// enrolled is not something an unauthenticated form should disclose, and the
 	// challenge page is identical either way.
 	s.sendEmailOTPIfEnrolled(r.Context(), userID)
+	s.sendSMSOTPIfEnrolled(r.Context(), userID)
 
 	s.renderMFA(w, r, authzQuery, "")
 }
@@ -278,6 +281,21 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 		return []string{"otp"}, true, nil
 	}
 
+	// SMS. The amr value is "sms", NOT "otp".
+	//
+	// RFC 8176 has both, and the difference is the point: a policy asking for a
+	// phishing-resistant or possession-strong factor must be able to tell that
+	// this one was satisfied by a text message, which SIM swap defeats without
+	// any technical exploit. Reporting it as "otp" would make it indistinguishable
+	// from an authenticator app in every record and every policy decision --
+	// documenting the weakness and then erasing it in the one field that
+	// machines read.
+	if ok, serr := store.VerifySMSOTP(ctx, tx, userID, strings.TrimSpace(code)); serr != nil {
+		return nil, false, serr
+	} else if ok {
+		return []string{oauth.AMRSMS}, true, nil
+	}
+
 	used, err := store.ConsumeRecoveryCode(ctx, tx, userID, code)
 	if err != nil {
 		return nil, false, err
@@ -345,4 +363,64 @@ func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, authzQuery, m
 		"Authz": authzQuery, "Error": msg, "CSRF": csrf,
 		"CSRFField": csrfFormField, "Reference": ref,
 	})
+}
+
+// sendSMSOTPIfEnrolled texts a code, when that factor is enrolled and verified.
+//
+// Best effort, exactly like the email equivalent: a user with an authenticator
+// app as well can still use it when the gateway is down, and blocking the
+// sign-in on a third party's availability would turn their outage into ours.
+//
+// Only a VERIFIED number is texted. An unverified one is somebody's typo, and
+// sending codes to it would be this engine spamming a stranger every time an
+// account it does not own is signed into.
+func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
+	if s.texter == nil {
+		return
+	}
+	verified, err := store.HasVerifiedSMS(ctx, s.db, userID)
+	if err != nil {
+		s.log.Error("checking the SMS factor", "err", err)
+		return
+	}
+	if !verified {
+		return
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		s.log.Error("beginning a transaction for the SMS code", "err", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	code, number, err := store.IssueSMSOTP(ctx, tx, userID)
+	switch {
+	case errors.Is(err, store.ErrNoSMSOTP):
+		return
+	case errors.Is(err, store.ErrSMSOTPTooSoon):
+		// A code was sent moments ago and is still live. The person has it.
+		return
+	case err != nil:
+		s.log.Error("issuing an SMS code", "err", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.log.Error("storing an SMS code", "err", err)
+		return
+	}
+
+	if err := s.texter.Send(ctx, sms.Message{
+		To: number,
+		// No link, and the issuer named. A code with a link in it trains people
+		// to tap links in texts, which is the delivery mechanism for the attack
+		// this factor is supposed to make harder.
+		Body: fmt.Sprintf("%s: your sign-in code is %s. It expires in %d minutes. "+
+			"If you did not request it, someone has your password.",
+			s.cfg.Issuer, code, int(store.SMSOTPLifetime.Minutes())),
+	}); err != nil {
+		// Logged with the number redacted. A log line carrying a phone number is
+		// a log line carrying the thing SIM swap targets.
+		s.log.Error("sending the SMS code", "err", err, "to", sms.RedactNumber(number))
+	}
 }

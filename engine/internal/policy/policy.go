@@ -102,6 +102,27 @@ type Conditions struct {
 	// collapsing them lets a stolen managed device satisfy a rule meant to check
 	// its state.
 	DeviceCompliant bool `yaml:"device_compliant"`
+
+	// PhishingResistant requires a factor that survives a convincing fake
+	// sign-in page: a passkey or a security key, bound to this origin by the
+	// browser.
+	//
+	// `mfa: true` is NOT this. A one-time code is multi-factor and is typed by
+	// the person into whatever page asked for it, including the attacker's --
+	// which is how every real-time phishing kit works. SMS is weaker still: SIM
+	// swap needs no phishing page at all, only a convincing phone call to a
+	// mobile operator.
+	//
+	// This condition exists because SMS exists. Offering a weak factor and then
+	// having no way to say "not for this application" would mean the weakness
+	// spreads to everything the strongest policy protects.
+	PhishingResistant bool `yaml:"phishing_resistant"`
+
+	// FactorsAnyOf names acceptable RFC 8176 amr values directly, for the cases
+	// the two booleans above do not cover -- "an authenticator app or a security
+	// key, but not a text message" is a real requirement and is not
+	// phishing-resistant.
+	FactorsAnyOf []string `yaml:"factors_any_of"`
 }
 
 // TestCase is an assertion the file makes about itself.
@@ -117,7 +138,11 @@ type Request struct {
 	Scope  string   `yaml:"scope"`
 	Groups []string `yaml:"groups"`
 	MFA    bool     `yaml:"mfa"`
-	IP     string   `yaml:"ip"`
+	// AMR is what the session ACTUALLY proved, in RFC 8176 terms. A test case
+	// sets it directly, which is how factor conditions are covered by the
+	// file's own tests without a phone.
+	AMR []string `yaml:"amr"`
+	IP  string   `yaml:"ip"`
 	// ImpossibleTravel is set by the caller from a risk check that RAN. A test
 	// case can set it directly, which is how the condition is covered by the
 	// file's own tests without a GeoIP database.
@@ -209,6 +234,7 @@ func (f *File) validate() error {
 
 func (c Conditions) isEmpty() bool {
 	return len(c.Groups) == 0 && len(c.AnyGroup) == 0 && !c.MFA &&
+		!c.PhishingResistant && len(c.FactorsAnyOf) == 0 &&
 		len(c.FromNetworks) == 0 && !c.NoImpossibleTravel &&
 		!c.DeviceManaged && !c.DeviceCompliant
 }
@@ -329,6 +355,12 @@ func (c Conditions) satisfiedBy(req Request) bool {
 			return false
 		}
 	}
+	if c.PhishingResistant && !hasPhishingResistantFactor(req.AMR) {
+		return false
+	}
+	if len(c.FactorsAnyOf) > 0 && !hasAnyFactor(req.AMR, c.FactorsAnyOf) {
+		return false
+	}
 	if c.MFA && !req.MFA {
 		return false
 	}
@@ -415,6 +447,38 @@ func (f *File) UsesDevicePosture() bool {
 	for _, r := range f.Policies {
 		if r.Require.DeviceManaged || r.Require.DeviceCompliant {
 			return true
+		}
+	}
+	return false
+}
+
+// hasPhishingResistantFactor reports whether the session proved one.
+//
+// Only a hardware-backed credential counts: RFC 8176's "hwk", which this engine
+// asserts for WebAuthn. Everything else in the list is a secret the person can
+// be persuaded to read out.
+//
+// Note what is absent: "mfa". A provider asserting the generic value has told
+// us that several factors were used and nothing about what they were, and
+// treating an unspecified claim as the strongest one is how this condition
+// would quietly stop meaning anything.
+func hasPhishingResistantFactor(amr []string) bool {
+	for _, m := range amr {
+		if m == "hwk" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAnyFactor reports whether the session used at least one of the named
+// factors.
+func hasAnyFactor(amr, want []string) bool {
+	for _, w := range want {
+		for _, m := range amr {
+			if m == w {
+				return true
+			}
 		}
 	}
 	return false

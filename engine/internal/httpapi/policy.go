@@ -100,7 +100,7 @@ func (s *Server) reloadPolicies(ctx context.Context) {
 //
 // Returns nil when access is permitted, or a message for the person refused.
 func (s *Server) checkAccessPolicy(ctx context.Context, r *http.Request,
-	orgID, clientID, userID, scope string, mfa bool) *policy.Decision {
+	orgID, clientID, userID, scope string, mfa bool, amr []string) *policy.Decision {
 
 	f := s.policyFor(ctx, orgID)
 	if f == nil {
@@ -140,7 +140,7 @@ func (s *Server) checkAccessPolicy(ctx context.Context, r *http.Request,
 	}
 
 	d := f.Evaluate(policy.Request{
-		Client: clientID, Scope: scope, Groups: groups, MFA: mfa,
+		Client: clientID, Scope: scope, Groups: groups, MFA: mfa, AMR: amr,
 		IP: clientIP(r), ImpossibleTravel: impossible,
 		DeviceManaged: device.Managed, DeviceCompliant: device.Compliant,
 	})
@@ -172,24 +172,31 @@ func clientIP(r *http.Request) string {
 // Read from the session's recorded acr/amr rather than inferred, and read at
 // decision time: a step-up that happened moments ago must count, and a policy
 // consulting a value captured at login would miss it.
-func sessionHasMFA(ctx context.Context, db interface {
+// sessionFactors reports what a session actually proved.
+//
+// Returns the amr list as well as the boolean, because a policy can now ask
+// about specific factors -- `phishing_resistant: true` and `factors_any_of`
+// exist precisely so a weak factor like SMS cannot silently satisfy a rule
+// written for a strong one. A caller given only the boolean could not tell the
+// difference, which is the state this was in when SMS was added.
+func sessionFactors(ctx context.Context, db interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, sid string) bool {
+}, sid string) (bool, []string) {
 	var acr string
 	var amr []string
 	if err := db.QueryRow(ctx,
 		`SELECT acr, amr FROM core.sessions WHERE sid = $1`, sid).Scan(&acr, &amr); err != nil {
-		// Unknown means NOT multi-factor. Guessing the other way would satisfy an
-		// MFA requirement for a session we could not read.
-		return false
+		// Unknown means NOT multi-factor, and no factors. Guessing the other way
+		// would satisfy an MFA requirement for a session we could not read.
+		return false, nil
 	}
 	for _, m := range amr {
 		switch m {
-		case oauth.AMROTP, oauth.AMRHardwareKey, oauth.AMRMFA:
-			return true
+		case oauth.AMROTP, oauth.AMRHardwareKey, oauth.AMRMFA, oauth.AMRSMS:
+			return true, amr
 		}
 	}
-	return acr == oauth.ACRMultiFactor || acr == oauth.ACRPapeMultiFactor
+	return acr == oauth.ACRMultiFactor || acr == oauth.ACRPapeMultiFactor, amr
 }
 
 // impossibleTravel reports whether this sign-in could not have followed the

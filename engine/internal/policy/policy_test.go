@@ -343,3 +343,66 @@ tests:
 		t.Fatalf("the travel policy failed its own tests: %v", err)
 	}
 }
+
+// TestFactorConditions covers the rules that exist because SMS exists.
+//
+// `mfa: true` accepts any second factor, including a text message. A rule that
+// needs more has to be able to say so, or offering a weak factor weakens
+// everything the strongest policy protects.
+func TestFactorConditions(t *testing.T) {
+	f, err := Parse([]byte(`
+version: 1
+policies:
+  - name: anything-multi-factor
+    when: {client: ordinary-app}
+    require: {mfa: true}
+  - name: finance-needs-a-security-key
+    when: {client: finance}
+    require: {phishing_resistant: true}
+    message: Finance requires a passkey or security key.
+  - name: admin-no-text-messages
+    when: {client: admin}
+    require: {factors_any_of: [otp, hwk]}
+    message: Text message codes are not accepted here.
+tests:
+  - name: a text message is multi-factor
+    given: {client: ordinary-app, mfa: true, amr: [pwd, sms]}
+    expect: allow
+  - name: a text message is not phishing-resistant
+    given: {client: finance, mfa: true, amr: [pwd, sms]}
+    expect: deny
+  - name: an authenticator app is not phishing-resistant either
+    given: {client: finance, mfa: true, amr: [pwd, otp]}
+    expect: deny
+  - name: a security key is
+    given: {client: finance, mfa: true, amr: [pwd, hwk]}
+    expect: allow
+  - name: the admin console accepts an authenticator app
+    given: {client: admin, mfa: true, amr: [pwd, otp]}
+    expect: allow
+  - name: the admin console refuses a text message
+    given: {client: admin, mfa: true, amr: [pwd, sms]}
+    expect: deny
+`))
+	if err != nil {
+		t.Fatalf("the policy did not load: %v", err)
+	}
+	// Parse runs the file's own tests; reaching here means all six passed.
+
+	// And directly, so a change to the test-runner cannot make this vacuous.
+	deny := f.Evaluate(Request{Client: "finance", MFA: true, AMR: []string{"pwd", "sms"}})
+	if deny.Allowed {
+		t.Fatal("SMS satisfied a phishing-resistant rule")
+	}
+	allow := f.Evaluate(Request{Client: "finance", MFA: true, AMR: []string{"pwd", "hwk"}})
+	if !allow.Allowed {
+		t.Fatalf("a security key was refused: %s", allow.Message)
+	}
+
+	// The generic "mfa" amr value must NOT satisfy phishing-resistance: it says
+	// several factors were used and nothing about which.
+	vague := f.Evaluate(Request{Client: "finance", MFA: true, AMR: []string{"mfa"}})
+	if vague.Allowed {
+		t.Fatal("an unspecified multi-factor claim satisfied a phishing-resistant rule")
+	}
+}

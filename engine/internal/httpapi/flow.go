@@ -882,6 +882,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	if s.captcha.Required(ctx, r.RemoteAddr) {
 		if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
 			s.captcha.RecordFailure(ctx, r.RemoteAddr)
+			s.recordSignInFailure(ctx, r)
 			s.log.Info("captcha refused", "err", cerr,
 				"correlation_id", correlationID(ctx))
 			s.renderLogin(w, r, authzQuery,
@@ -924,6 +925,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		// Counted like any other failure. Counting only real accounts would make
 		// the appearance of a challenge an oracle for which usernames exist.
 		s.captcha.RecordFailure(ctx, r.RemoteAddr)
+		s.recordSignInFailure(ctx, r)
 		s.renderLogin(w, r, authzQuery, generic)
 		return
 	}
@@ -953,6 +955,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	needsRehash, verr := s.hasher.Verify(ctx, stored, password)
 	if verr != nil {
 		s.captcha.RecordFailure(ctx, r.RemoteAddr)
+		s.recordSignInFailure(ctx, r)
 		if err := store.RecordLoginFailure(ctx, s.db, userID); err != nil {
 			s.log.Error("recording login failure", "err", err)
 		}

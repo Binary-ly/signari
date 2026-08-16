@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
@@ -269,8 +270,12 @@ func (s *Server) rateLimitedLogin(w http.ResponseWriter, r *http.Request) {
 // number of instances -- measured at 26 attempts allowed on one instance and 40
 // of 40 across two.
 const (
-	// signInPerIPLimit is tight. A person mistypes a password a few times; a
-	// source making twenty attempts in five minutes is not doing that.
+	// signInPerIPLimit bounds FAILED attempts from one address.
+	//
+	// Failures, not attempts, and that is the correction. A successful sign-in
+	// costs nothing, so the office above is unaffected however many people work
+	// there -- while an address grinding through passwords is bounded exactly as
+	// tightly as before.
 	signInPerIPLimit  = 20
 	signInPerIPWindow = 5 * time.Minute
 
@@ -299,8 +304,17 @@ func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool
 		ip = "unknown"
 	}
 
-	byIP, err := store.AllowRate(ctx, s.db, "signin:ip:"+ip,
-		signInPerIPLimit, signInPerIPWindow)
+	// Only failure budgets, READ here and charged only when the credential turns
+	// out to be wrong -- see recordSignInFailure.
+	//
+	// There is deliberately no per-address ceiling on attempts. One was written
+	// and removed: it duplicated the global bucket that already protects CPU,
+	// and no value of it is right for a large office behind one public address.
+	// A soak test showed both halves of that -- first refusing every sign-in at
+	// 20 per five minutes, then capping at exactly the generous ceiling that
+	// replaced it. The flood protection belongs where it already was, and this
+	// belongs to guessing.
+	byIP, err := store.CountRate(ctx, s.db, "signin:fail:ip:"+ip, signInPerIPWindow)
 	if err != nil {
 		// Refused, not waved through. Signing in needs the database anyway -- the
 		// credential lookup is one query later -- so failing closed here costs
@@ -310,8 +324,8 @@ func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
 		return false
 	}
-	if !byIP.Allowed {
-		s.tooManyAttempts(w, byIP.RetryAfter)
+	if byIP >= signInPerIPLimit {
+		s.tooManyAttempts(w, signInPerIPWindow)
 		return false
 	}
 
@@ -322,18 +336,44 @@ func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool
 	if identifier == "" {
 		return true
 	}
-	byAccount, err := store.AllowRate(ctx, s.db, "signin:user:"+identifier,
-		signInPerAccountLimit, signInPerAccountWindow)
+	byAccount, err := store.CountRate(ctx, s.db, "signin:fail:user:"+identifier,
+		signInPerAccountWindow)
 	if err != nil {
 		s.log.Error("checking the per-account sign-in rate limit", "err", err)
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
 		return false
 	}
-	if !byAccount.Allowed {
-		s.tooManyAttempts(w, byAccount.RetryAfter)
+	if byAccount >= signInPerAccountLimit {
+		s.tooManyAttempts(w, signInPerAccountWindow)
 		return false
 	}
 	return true
+}
+
+// recordSignInFailure charges a wrong credential to both budgets.
+//
+// Called only when the password was wrong, which is what makes an office behind
+// one address work: a successful sign-in spends nothing, so two hundred people
+// arriving at nine o'clock are indistinguishable from one, while an address
+// working through a password list is bounded exactly as before.
+func (s *Server) recordSignInFailure(ctx context.Context, r *http.Request) {
+	ip := clientIP(r)
+	if ip == "" {
+		ip = "unknown"
+	}
+	if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+ip,
+		signInPerIPLimit, signInPerIPWindow); err != nil {
+		s.log.Error("recording a sign-in failure", "err", err)
+	}
+
+	identifier := strings.ToLower(strings.TrimSpace(r.PostForm.Get("username")))
+	if identifier == "" {
+		return
+	}
+	if _, err := store.AllowRate(ctx, s.db, "signin:fail:user:"+identifier,
+		signInPerAccountLimit, signInPerAccountWindow); err != nil {
+		s.log.Error("recording a sign-in failure", "err", err)
+	}
 }
 
 // tooManyAttempts answers identically whichever limit was reached.

@@ -155,10 +155,48 @@ configuration change. It would be worth it for an emergency revocation, and
 revocation does not go through this path: sessions and tokens are read from the
 database on use.
 
+## Outbox delivery: correct, and holding a connection for four minutes
+
+The claim was already right — `FOR UPDATE SKIP LOCKED` divides the work, so two
+instances never deliver the same notice. The previous version of this page said
+otherwise; that was wrong.
+
+What was wrong in the code was the transaction boundary. The whole drain ran
+inside **one** transaction: claim, then every HTTP call with those row locks
+held and a pooled connection checked out. A batch of 25 against dead receivers
+held a database connection for up to **250 seconds**, and the pool is shared
+with everything else the engine does.
+
+Now three phases — claim, deliver, record — with no transaction open across the
+network, and delivery bounded at 8 concurrent POSTs so one hanging receiver no
+longer delays every notice queued behind it.
+
+Keeping the two instances apart after the locks are released is the other half:
+claiming pushes `next_attempt_at` forward by a lease. Without that, committing in
+order to deliver outside a transaction hands the same rows straight to the other
+instance. `attempts` is deliberately not incremented on claim — a crash between
+claiming and recording is not the relying party failing to answer, and charging
+it as one would march a perfectly reachable receiver toward being parked.
+
+Tested: two instances draining at once deliver each notice exactly once; a row
+being delivered is not locked; a slow receiver does not delay the others.
+
+## What running two instances actually found
+
+**The audit chain forked whenever two events were written at once.** Two entries
+claiming the same predecessor is indistinguishable from a deleted entry, so
+verification reported tampering on data nobody had touched.
+
+It was never specific to more than one instance — two concurrent sign-ins do the
+same thing — but two made it frequent enough to notice. See
+[the audit chain fork](audit-chain-fork.md).
+
+That is the argument for this whole exercise: the bug was in a single-instance
+code path, and only running the deployment shape we intend to support surfaced
+it.
+
 ## What this still does not do
 
-- **Outbox delivery** is not partitioned. Two instances can attempt the same
-  back-channel logout notice; the relying party de-duplicates by `jti`, so the
-  outcome is correct and the duplicated work is real.
-
-Listed because it is known, not because it is fine.
+Nothing known. The three gaps listed when this page was written — policy cache
+coherence, CAPTCHA counters, outbox partitioning — are measured, fixed, or shown
+to have been a misreading, above.

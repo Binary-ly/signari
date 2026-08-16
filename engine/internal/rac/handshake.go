@@ -178,12 +178,6 @@ func (s *Session) handshake(c Connection, timeout time.Duration) error {
 	return nil
 }
 
-// Read returns the next instruction from guacd.
-func (s *Session) Read() (Instruction, error) { return s.r.ReadInstruction() }
-
-// Write sends an instruction to guacd.
-func (s *Session) Write(i Instruction) error { return s.w.Write(i) }
-
 // Close ends the session.
 //
 // A `disconnect` is sent first so guacd tears down the remote session rather

@@ -256,8 +256,13 @@ func run(args []string) error {
 	}
 	// `policy test` needs no database either: checking a file before it is
 	// deployed is something you do in CI, where there is no database to reach.
-	if cmd == "policy test" {
+	// Both run without a database: checking a file before it is deployed, and
+	// drawing one, are things you do in CI where there is no database to reach.
+	switch cmd {
+	case "policy test":
 		return policyTest(*policyFile)
+	case "policy graph":
+		return policyGraph(*policyFile, *outFile)
 	}
 
 	// `proxy check` deliberately runs BEFORE the database is required. It is a
@@ -3712,4 +3717,44 @@ func eapTLSFromEnv(pool *pgxpool.Pool, orgID string) (*radius.EAPTLSConfig, erro
 		Auth: httpapi.NewEAPCertAuthenticator(pool, orgID,
 			os.Getenv("SIGNARI_EAP_IDENTITY_FROM")),
 	}, nil
+}
+
+func policyGraph(path, out string) error {
+	if path == "" {
+		return fmt.Errorf("give -policy-file")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	// Parsed, not just read: Parse runs the file's own tests, so a diagram is
+	// only ever drawn for a file that would actually load. Drawing a broken
+	// policy would put a picture of something that cannot deploy in front of
+	// somebody reviewing it.
+	f, err := policy.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+
+	svg := f.SVG()
+	if out == "" {
+		fmt.Println(svg)
+		return nil
+	}
+	if err := os.WriteFile(out, []byte(svg), 0o644); err != nil {
+		return err
+	}
+	create, deny := 0, 0
+	for _, r := range f.Policies {
+		if r.Deny {
+			deny++
+		} else {
+			create++
+		}
+	}
+	fmt.Printf("wrote %s\n", out)
+	fmt.Printf("  %d rule(s) -- %d restricting, %d denying\n", len(f.Policies), create, deny)
+	fmt.Printf("  %d test(s), all passing (a file whose tests fail does not load)\n",
+		len(f.Tests))
+	return nil
 }

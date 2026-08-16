@@ -63,6 +63,12 @@ type Server struct {
 	texter sms.Sender
 	// delegator verifies credentials against a provider being migrated from.
 	delegator *delegated.Verifier
+
+	// guacdAddr is where guacd listens. Empty disables remote access entirely
+	// rather than failing per connection: an operator who has not configured it
+	// has not asked for browser-based remote desktop, and an endpoint that
+	// exists but always errors is worse than one that says it is off.
+	guacdAddr string
 }
 
 // SetClientCAs supplies the authorities that may issue client certificates.
@@ -118,6 +124,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		geo:       risk.NewResolver(),
 		mailer:    mailer,
 		texter:    texter,
+		guacdAddr: os.Getenv("SIGNARI_GUACD_ADDR"),
 		delegator: delegated.New(),
 	}
 
@@ -170,6 +177,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /login/callback/{slug}", s.handleFederatedCallback)
 	mux.HandleFunc("GET /account", s.handleAccount)
 	mux.HandleFunc("GET /account/connected", s.handleConnectedApps)
+	mux.HandleFunc("GET /rac/connections", s.handleRACList)
+	mux.HandleFunc("GET /rac/connect/{slug}", s.handleRACConnect)
 	mux.HandleFunc("POST /account/connected/revoke", s.handleConnectedRevoke)
 	mux.HandleFunc("GET /account/link/{slug}", s.handleFederatedLink)
 	mux.HandleFunc("POST /account/unlink/{slug}", s.handleAccountUnlink)

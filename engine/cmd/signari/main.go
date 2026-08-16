@@ -79,7 +79,7 @@ var twoWordCommands = map[string]bool{
 	"janitor": true, "keys": true, "import": true, "proxy": true,
 	"saml": true, "idp": true, "scim": true, "scim-source": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
-	"ssf": true, "registration": true, "export": true, "dir": true, "audit": true,
+	"ssf": true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
 }
 
 func usage() error {
@@ -238,6 +238,12 @@ func run(args []string) error {
 	groupName := fs.String("group", "", "group name")
 	memberEmail := fs.String("email-member", "", "member's email or username")
 	removeMember := fs.Bool("remove", false, "remove the member instead of adding")
+	racProtocol := fs.String("protocol", "rdp", "rdp, vnc or ssh")
+	racHost := fs.String("host", "", "hostname or address of the machine")
+	racPort := fs.Int("port", 0, "port (defaults to the protocol's)")
+	racUser := fs.String("login", "", "username on the remote machine")
+	racPassword := fs.String("login-password", "", "password on the remote machine")
+	racRecording := fs.String("recording-path", "", "where guacd writes session recordings")
 	declaredBy := fs.String("by", "", "who is declaring an audit checkpoint")
 	reason := fs.String("reason", "", "why an audit checkpoint is being declared")
 	policyFile := fs.String("policy-file", "", "path to a policy file")
@@ -337,6 +343,11 @@ func run(args []string) error {
 			*ldapPassword, *ldapBaseDN, *ldapFlavour, *ldapCA, *ldapStartTLS)
 	case "dir sync":
 		return dirSync(ctx, conn, *slug, *apply)
+	case "rac add":
+		return racAdd(ctx, conn, *orgID, *slug, *name, *racProtocol, *racHost,
+			*racPort, *racUser, *racPassword, *groupName, *racRecording)
+	case "rac list":
+		return racList(ctx, conn)
 	case "audit checkpoint":
 		return auditCheckpoint(ctx, conn, *orgID, *declaredBy, *reason)
 	case "export audit":
@@ -3905,4 +3916,118 @@ func auditCheckpoint(ctx context.Context, conn *pgx.Conn, orgID, by, reason stri
 	fmt.Print("\n  Nothing was repaired, moved or removed. Every export that crosses\n")
 	fmt.Print("  this point will say so, and will carry that reason with it.\n")
 	return nil
+}
+
+// racAdd registers a machine somebody may reach through the browser.
+func racAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, protocol,
+	host string, port int, login, password, requireGroup, recording string) error {
+
+	switch {
+	case orgID == "":
+		var err error
+		if orgID, err = firstOrg(ctx, conn); err != nil {
+			return err
+		}
+	}
+	switch {
+	case slug == "":
+		return fmt.Errorf("give -slug, the short name used in the URL")
+	case host == "":
+		return fmt.Errorf("give -host, the machine to connect to")
+	case protocol != "rdp" && protocol != "vnc" && protocol != "ssh":
+		return fmt.Errorf("-protocol must be rdp, vnc or ssh (got %q)", protocol)
+	}
+	if port == 0 {
+		switch protocol {
+		case "rdp":
+			port = 3389
+		case "vnc":
+			port = 5900
+		case "ssh":
+			port = 22
+		}
+	}
+	if name == "" {
+		name = slug
+	}
+
+	// The credentials are sealed, never stored in the parameters column: a
+	// database read must not be a working login to somebody's estate.
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	secrets := map[string]string{}
+	if login != "" {
+		secrets["username"] = login
+	}
+	if password != "" {
+		secrets["password"] = password
+	}
+	sealed, err := store.SealRACSecrets(root, secrets)
+	if err != nil {
+		return err
+	}
+
+	var id string
+	if err := conn.QueryRow(ctx, `
+		INSERT INTO core.rac_connections
+			(org_id, slug, display_name, protocol, hostname, port, secrets_enc,
+			 require_group, recording_path)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, NULLIF($8,''), NULLIF($9,''))
+		RETURNING id::text`,
+		orgID, slug, name, protocol, host, port, sealed, requireGroup, recording).
+		Scan(&id); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("a connection with slug %q already exists in that "+
+				"organisation", slug)
+		}
+		return err
+	}
+
+	fmt.Printf("registered %s (%s to %s:%d)\n", name, protocol, host, port)
+	fmt.Printf("  connect URL : <issuer>/rac/connect/%s\n", slug)
+	if requireGroup == "" {
+		// Said out loud. A machine nobody restricted is a machine everybody has,
+		// and the default should not be discovered later.
+		fmt.Print("\n  WARNING: no -group was given, so ANY signed-in user in this\n")
+		fmt.Print("  organisation may reach this machine, subject only to the access\n")
+		fmt.Print("  policy. Add one with -group unless that is what you meant.\n")
+	} else {
+		fmt.Printf("  restricted to group: %s\n", requireGroup)
+	}
+	if recording == "" {
+		fmt.Print("\n  No -recording-path: sessions are not recorded.\n")
+	}
+	fmt.Print("\n  Set SIGNARI_GUACD_ADDR for the listener to accept connections.\n")
+	return nil
+}
+
+// racList shows the registered machines.
+func racList(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT slug, display_name, protocol, hostname, port,
+		       COALESCE(require_group, '(anyone)'),
+		       recording_path IS NOT NULL, enabled
+		FROM core.rac_connections ORDER BY display_name`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9s %s\n",
+		"SLUG", "NAME", "PROTO", "TARGET", "GROUP", "RECORDED", "ENABLED")
+	for rows.Next() {
+		var slug, name, protocol, host, group string
+		var port int
+		var recorded, enabled bool
+		if err := rows.Scan(&slug, &name, &protocol, &host, &port, &group,
+			&recorded, &enabled); err != nil {
+			return err
+		}
+		fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9t %t\n",
+			slug, name, protocol, fmt.Sprintf("%s:%d", host, port), group,
+			recorded, enabled)
+	}
+	return rows.Err()
 }

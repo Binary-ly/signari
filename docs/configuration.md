@@ -70,6 +70,14 @@ See [EAP-TLS](eap-tls.md).
 | `SIGNARI_EAP_CLIENT_CA` | Authorities issuing supplicant certificates. All three or none — a partial configuration is refused |
 | `SIGNARI_EAP_IDENTITY_FROM` | `cn`, `email` or `upn`. Use `upn` against Active Directory |
 
+## Remote access (RDP, VNC, SSH in the browser)
+
+See [remote-access.md](remote-access.md).
+
+| | |
+|---|---|
+| `SIGNARI_GUACD_ADDR` | guacd's TCP listener, typically `127.0.0.1:4822`. Absent, remote access answers 503 |
+
 ## LDAP (applications binding to this engine)
 
 | | |

@@ -21,6 +21,7 @@ require (
 
 require (
 	github.com/Azure/go-ntlmssp v0.1.1 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/go-webauthn/x v0.2.6 // indirect

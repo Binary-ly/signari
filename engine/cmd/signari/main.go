@@ -39,6 +39,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/doctor"
+	"signari.dev/engine/internal/duo"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/httpapi"
 	"signari.dev/engine/internal/importer"
@@ -74,7 +75,7 @@ func main() {
 // `scim-source` -- makes the command print the usage text instead of running,
 // with no hint that the dispatch is what is wrong.
 var twoWordCommands = map[string]bool{
-	"migrate": true, "instance": true, "user": true, "client": true,
+	"migrate": true, "instance": true, "user": true, "client": true, "duo": true,
 	"janitor": true, "keys": true, "import": true, "proxy": true,
 	"saml": true, "idp": true, "scim": true, "scim-source": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
@@ -178,6 +179,12 @@ func run(args []string) error {
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+	duoClientID := fs.String("duo-client-id", "", "Duo integration key (20 characters)")
+	duoSecret := fs.String("duo-secret", "", "Duo secret key (40 characters)")
+	duoAPIHost := fs.String("duo-api-host", "", "api-XXXXXXXX.duosecurity.com")
+	duoFailOpen := fs.Bool("duo-fail-open", false,
+		"sign users in WITHOUT a second factor when Duo is unreachable")
+	duoUsername := fs.String("duo-username", "", "the username this person has in Duo")
 	srcSSOURL := fs.String("sso-url", "", "upstream SAML SSO URL (idp add -kind saml)")
 	srcUnsolicited := fs.Bool("allow-unsolicited", false,
 		"accept IdP-initiated sign-in, which cannot be tied to a request this browser made")
@@ -361,6 +368,12 @@ func run(args []string) error {
 		return idpList(ctx, conn)
 	case "scim add":
 		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2)
+	case "duo set":
+		return duoSet(ctx, conn, *orgID, *duoClientID, *duoSecret, *duoAPIHost, *duoFailOpen)
+	case "duo enroll":
+		return duoEnroll(ctx, conn, *orgID, *email, *duoUsername)
+	case "duo show":
+		return duoShow(ctx, conn)
 	case "scim-source add":
 		return scimSourceAdd(ctx, conn, *orgID, *slug, *name, *onDeactivate)
 	case "scim-source list":
@@ -3486,6 +3499,151 @@ func scimSourceList(ctx context.Context, conn *pgx.Conn) error {
 		}
 		fmt.Printf("%-16s %-22s %-11s %-8t %-17s %d\n",
 			slug, name, onDelete, enabled, lastSeen, users)
+	}
+	return rows.Err()
+}
+
+// duoSet stores an organisation's Duo integration.
+//
+// The keys are checked against Duo itself before they are stored. A
+// configuration that cannot authenticate is worth finding out about now rather
+// than at somebody's next sign-in, and Duo's health check reports exactly which
+// of the three values is wrong.
+func duoSet(ctx context.Context, conn *pgx.Conn, orgID, clientID, secret, apiHost string,
+	failOpen bool) error {
+
+	if orgID == "" {
+		return fmt.Errorf("give -org, the organisation this Duo integration belongs to")
+	}
+	cfg := &duo.Config{
+		ClientID: clientID, ClientSecret: secret, APIHost: apiHost,
+		// Not used by the health check, and required by Validate, so a
+		// placeholder that is obviously a placeholder.
+		RedirectURI: "https://configured-at-runtime.invalid/login/duo/callback",
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	// The same development-only override the engine honours, gated on the same
+	// flag. Without it here, `duo set` would check the keys against real Duo
+	// while the engine used the stand-in -- two different answers to the same
+	// question.
+	if base := os.Getenv("SIGNARI_DUO_BASE_URL"); base != "" {
+		if err := cfg.SetInsecureBaseURL(base,
+			os.Getenv("SIGNARI_INSECURE_ISSUER") == "1"); err != nil {
+			return err
+		}
+		fmt.Printf("using the Duo stand-in at %s (development only)\n", base)
+	}
+
+	fmt.Print("checking these keys against Duo... ")
+	if err := cfg.HealthCheck(ctx); err != nil {
+		fmt.Println("failed")
+		return fmt.Errorf("%w\n\n  Nothing has been stored. The three values come from "+
+			"one Duo application:\n"+
+			"    -duo-client-id   the integration key\n"+
+			"    -duo-secret      the secret key\n"+
+			"    -duo-api-host    the API hostname", err)
+	}
+	fmt.Println("ok")
+
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	sealed, err := root.Seal([]byte(secret), "duo_secret")
+	if err != nil {
+		return fmt.Errorf("sealing the Duo secret: %w", err)
+	}
+
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.duo_integrations (org_id, client_id, secret_enc, api_host, fail_open)
+		VALUES ($1::uuid, $2, $3, $4, $5)
+		ON CONFLICT (org_id) DO UPDATE SET
+			client_id = EXCLUDED.client_id, secret_enc = EXCLUDED.secret_enc,
+			api_host = EXCLUDED.api_host, fail_open = EXCLUDED.fail_open,
+			enabled = true, updated_at = now()`,
+		orgID, clientID, sealed, apiHost, failOpen); err != nil {
+		return err
+	}
+
+	fmt.Printf("\nDuo configured for %s\n", apiHost)
+	fmt.Print("  redirect URI : <issuer>/login/duo/callback\n")
+	fmt.Print("     register that in the Duo admin panel, exactly as written\n")
+	fmt.Print("\n  Enrol users with `signari duo enroll -email <address> -duo-username <name>`.\n")
+	fmt.Print("  Duo identifies people by ITS username, which is often not their email.\n")
+	if failOpen {
+		fmt.Print("\n  WARNING: fail-open is on. When Duo is unreachable, users sign in\n")
+		fmt.Print("  WITHOUT a second factor. An attacker who can stop one person's\n")
+		fmt.Print("  traffic reaching Duo has removed their second factor; blocking one\n")
+		fmt.Print("  host is not a high bar. Each occurrence is audited as\n")
+		fmt.Print("  mfa.duo_unavailable with fail_open=true.\n")
+	}
+	return nil
+}
+
+// duoEnroll maps a local user to their Duo username.
+func duoEnroll(ctx context.Context, conn *pgx.Conn, orgID, email, duoUsername string) error {
+	switch {
+	case email == "":
+		return fmt.Errorf("give -email, the local account to enrol")
+	case duoUsername == "":
+		return fmt.Errorf("give -duo-username: the name this person has IN DUO, which " +
+			"is what Duo returns and what the sign-in is checked against. It is " +
+			"frequently not their email address")
+	}
+
+	var userID, foundOrg string
+	if err := conn.QueryRow(ctx,
+		`SELECT id::text, org_id::text FROM core.users WHERE lower(email) = lower($1)`,
+		email).Scan(&userID, &foundOrg); err != nil {
+		return fmt.Errorf("no user with address %q", email)
+	}
+	if orgID != "" && orgID != foundOrg {
+		return fmt.Errorf("%s belongs to a different organisation", email)
+	}
+
+	var configured bool
+	if err := conn.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM core.duo_integrations WHERE org_id = $1::uuid AND enabled)`,
+		foundOrg).Scan(&configured); err != nil {
+		return err
+	}
+	if !configured {
+		return fmt.Errorf("that organisation has no Duo integration; run `signari duo set` " +
+			"first, or the enrolment would be a factor nobody can present")
+	}
+
+	if err := store.EnrollDuo(ctx, conn, userID, foundOrg, duoUsername); err != nil {
+		return err
+	}
+	fmt.Printf("enrolled %s as %q in Duo\n", email, duoUsername)
+	fmt.Print("  Their next sign-in will require a Duo prompt after their password.\n")
+	return nil
+}
+
+// duoShow lists the configured integrations.
+func duoShow(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT i.org_id::text, i.client_id, i.api_host, i.fail_open, i.enabled,
+		       (SELECT count(*) FROM core.duo_enrollments e WHERE e.org_id = i.org_id)
+		FROM core.duo_integrations i ORDER BY i.created_at`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-38s %-22s %-36s %-10s %-8s %s\n",
+		"ORG", "CLIENT ID", "API HOST", "FAIL OPEN", "ENABLED", "ENROLLED")
+	for rows.Next() {
+		var org, clientID, host string
+		var failOpen, enabled bool
+		var enrolled int
+		if err := rows.Scan(&org, &clientID, &host, &failOpen, &enabled, &enrolled); err != nil {
+			return err
+		}
+		fmt.Printf("%-38s %-22s %-36s %-10t %-8t %d\n",
+			org, clientID, host, failOpen, enabled, enrolled)
 	}
 	return rows.Err()
 }

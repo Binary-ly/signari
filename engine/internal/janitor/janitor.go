@@ -82,7 +82,9 @@ type Stats struct {
 	// SAMLSourceStateSwept are inbound SAML requests and spent assertion records
 	// past their retention.
 	SAMLSourceStateSwept int64
-	Parked               []string
+	// DuoChallengesSwept are Duo prompts the user abandoned.
+	DuoChallengesSwept int64
+	Parked             []string
 	// Skipped means another node held the lock. Not an error, and deliberately
 	// distinguished from "nothing to do" so a misconfigured cluster where every
 	// pass is skipped is visible rather than looking idle.
@@ -162,6 +164,12 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	// DPoP proof identifiers past their replay window.
 	if st.DPoPProofsSwept, err = store.SweepExpiredDPoPProofs(ctx, tx); err != nil {
 		return st, fmt.Errorf("sweeping DPoP proof records: %w", err)
+	}
+
+	// Duo prompts nobody finished. Each row holds a live challenge state, so
+	// keeping them past expiry stores flow state for a flow nobody will finish.
+	if st.DuoChallengesSwept, err = store.PurgeExpiredDuoChallenges(ctx, tx); err != nil {
+		return st, fmt.Errorf("sweeping abandoned Duo challenges: %w", err)
 	}
 
 	// Inbound SAML: requests nobody answered, and the record of assertions
@@ -247,6 +255,7 @@ func (s Stats) Log(log *slog.Logger) {
 	add("dpop_proofs_swept", s.DPoPProofsSwept)
 	add("pushed_requests_swept", s.PushedRequestsSwept)
 	add("saml_source_state_swept", s.SAMLSourceStateSwept)
+	add("duo_challenges_swept", s.DuoChallengesSwept)
 
 	if len(fields) > 0 {
 		log.Info("janitor pass", fields...)

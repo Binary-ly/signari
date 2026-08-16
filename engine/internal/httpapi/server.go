@@ -149,6 +149,7 @@ func (s *Server) mux() *http.ServeMux {
 	// entry and the approve/refuse decision.
 	mux.HandleFunc("GET /account/mfa/email", s.handleEmailOTPEnrol)
 	mux.HandleFunc("POST /account/mfa/email", s.handleEmailOTPEnrol)
+	mux.HandleFunc("GET /login/duo/callback", s.handleDuoCallback)
 	mux.HandleFunc("GET /account/mfa/sms", s.handleSMSOTPEnrol)
 	mux.HandleFunc("POST /account/mfa/sms", s.handleSMSOTPEnrol)
 	mux.HandleFunc("GET /device", s.handleDeviceVerification)

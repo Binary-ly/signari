@@ -270,6 +270,32 @@ func hashRecoveryCode(code string) []byte {
 	return sum[:]
 }
 
+// HasFactorOtherThanDuo reports whether a user could present something else.
+//
+// Used only on the Duo fail-open path: when Duo is unreachable and the
+// deployment has chosen to fail open, somebody with an authenticator app should
+// be asked for THAT rather than waved through. Somebody with nothing else has
+// to be waved through or the fail-open setting means nothing.
+func HasFactorOtherThanDuo(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID string) (bool, error) {
+	var any bool
+	err := db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM core.totp_credentials
+			WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL
+		) OR EXISTS (
+			SELECT 1 FROM core.email_otp_credentials WHERE user_id = $1::uuid
+		) OR EXISTS (
+			SELECT 1 FROM core.sms_otp_credentials
+			WHERE user_id = $1::uuid AND verified_at IS NOT NULL
+		)`, userID).Scan(&any)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	return any, nil
+}
+
 // HasSecondFactor reports whether a user has any usable second factor.
 //
 // Was HasConfirmedTOTP, and checked only TOTP while its own comment claimed to
@@ -306,6 +332,14 @@ func HasSecondFactor(ctx context.Context, db interface {
 			-- not have.
 			SELECT 1 FROM core.sms_otp_credentials
 			WHERE user_id = $1::uuid AND verified_at IS NOT NULL
+		) OR EXISTS (
+			-- Duo, only while its integration is enabled. An enrollment whose
+			-- integration has been switched off is not a factor anybody can
+			-- present, and treating it as one would lock every enrolled user out
+			-- the moment an administrator disabled Duo.
+			SELECT 1 FROM core.duo_enrollments e
+			JOIN core.duo_integrations i ON i.org_id = e.org_id AND i.enabled
+			WHERE e.user_id = $1::uuid
 		)`, userID).Scan(&any)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

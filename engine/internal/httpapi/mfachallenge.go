@@ -97,6 +97,18 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(pendingTTL.Seconds()),
 	})
+	// Duo takes the browser away entirely, so it is offered BEFORE the code
+	// form is rendered -- a page asking for a code the person will never receive
+	// is worse than no page.
+	//
+	// startDuo reports whether it took over the response. When Duo is
+	// configured but unreachable and the deployment fails closed, it renders the
+	// refusal itself; when it is not configured, or the user is not enrolled, it
+	// returns false and the ordinary code prompt follows.
+	if s.startDuo(w, r, userID, orgID, authzQuery, amr) {
+		return
+	}
+
 	// If email is the enrolled factor, the code has to be sent now -- the person
 	// is looking at a form asking for a code that does not exist yet.
 	//

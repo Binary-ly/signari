@@ -1,6 +1,7 @@
 package rac
 
 import (
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -301,16 +302,14 @@ func TestInstructionsAfterReadyAreNotStranded(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	raw := s.Raw()
 	type result struct {
 		data string
 		err  error
 	}
 	got := make(chan result, 1)
 	go func() {
-		buf := make([]byte, 256)
-		n, err := raw.Read(buf)
-		got <- result{string(buf[:n]), err}
+		frame, err := s.ReadFrame()
+		got <- result{string(frame), err}
 	}()
 
 	select {
@@ -325,5 +324,119 @@ func TestInstructionsAfterReadyAreNotStranded(t *testing.T) {
 	case <-time.After(1500 * time.Millisecond):
 		t.Fatal("the proxy blocked: the instruction guacd sent alongside `ready` " +
 			"was consumed by the handshake's buffer and never forwarded")
+	}
+}
+
+// parseFrameStandalone parses a frame the way the browser's tunnel does: on its
+// own, holding nothing over from the frame before.
+//
+// That independence is the whole reason ReadFrame exists, so the test has to
+// model it rather than reusing a reader that would paper over a split.
+func parseFrameStandalone(t *testing.T, frame []byte) []Instruction {
+	t.Helper()
+	r := NewReader(strings.NewReader(string(frame)))
+	var out []Instruction
+	for {
+		in, err := r.ReadInstruction()
+		if err == io.EOF {
+			return out
+		}
+		if err != nil {
+			t.Fatalf("a frame did not parse on its own: %v\nframe ended: %q",
+				err, tail(frame))
+		}
+		out = append(out, in)
+	}
+}
+
+func tail(b []byte) string {
+	if len(b) > 40 {
+		return string(b[len(b)-40:])
+	}
+	return string(b)
+}
+
+// TestFramesAreWholeInstructions is the bug the browser client revealed.
+//
+// The browser's tunnel parses each WebSocket message independently and keeps no
+// state between them, so a message that ends part-way through an instruction
+// loses the remainder. A proxy forwarding whatever a Read happened to return
+// therefore corrupts the stream as soon as an instruction spans a TCP boundary
+// -- which on RDP is every screen update, because image data is the bulk of it.
+//
+// The payload below is far larger than the read buffer, so it CANNOT arrive in
+// one read. It also contains ';' and ',' inside an element value, which is why
+// scanning for a terminator instead of parsing does not work either.
+func TestFramesAreWholeInstructions(t *testing.T) {
+	big := strings.Repeat("iVBORw0KGgo;and,a comma", 12000) // ~264 KB, well over the buffer
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	const bursts = 3
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		r, w := NewReader(conn), NewWriter(conn)
+		if _, err := r.ReadInstruction(); err != nil {
+			return
+		}
+		_ = w.Write(Instruction{Opcode: "args", Args: []string{"hostname"}})
+		for {
+			in, err := r.ReadInstruction()
+			if err != nil {
+				return
+			}
+			if in.Opcode != "connect" {
+				continue
+			}
+			_ = w.Write(Instruction{Opcode: "ready", Args: []string{"$c"}})
+			for i := 0; i < bursts; i++ {
+				_ = w.Write(Instruction{Opcode: "blob", Args: []string{"1", big}})
+				_ = w.Write(Instruction{Opcode: "sync", Args: []string{"1000"}})
+			}
+			time.Sleep(2 * time.Second)
+			return
+		}
+	}()
+
+	s, err := Dial(ln.Addr().String(), Connection{
+		Protocol:   "rdp",
+		Parameters: map[string]string{"hostname": "desk.corp.test"},
+	}, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	var blobs, syncs int
+	deadline := time.Now().Add(5 * time.Second)
+	// Waits on the sync, which follows each blob -- stopping on the last blob
+	// would end the loop before its sync had been read.
+	for syncs < bursts && time.Now().Before(deadline) {
+		frame, err := s.ReadFrame()
+		if err != nil {
+			t.Fatalf("reading a frame: %v", err)
+		}
+		for _, in := range parseFrameStandalone(t, frame) {
+			switch in.Opcode {
+			case "blob":
+				if len(in.Args) != 2 || in.Args[1] != big {
+					t.Fatalf("blob %d arrived with %d bytes of payload, want %d",
+						blobs, len(in.Args[1]), len(big))
+				}
+				blobs++
+			case "sync":
+				syncs++
+			}
+		}
+	}
+	if blobs != bursts || syncs != bursts {
+		t.Fatalf("got %d blobs and %d syncs, want %d of each", blobs, syncs, bursts)
 	}
 }

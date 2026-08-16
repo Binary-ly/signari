@@ -181,6 +181,106 @@ func (r *Reader) readRunes(n int) (string, error) {
 	return b.String(), nil
 }
 
+// ReadRaw reads one complete instruction and returns its exact wire bytes.
+//
+// This exists for the proxy, which must not re-encode: an instruction carrying
+// base64 image data is the common case and rebuilding it would cost more than
+// the copy it replaces. It also must not SPLIT one, which is the reason this is
+// not simply an io.Copy -- see ReadFrame.
+//
+// Bytes are copied through verbatim rather than decoded and re-encoded, because
+// a rune that fails to decode would come back as U+FFFD and silently corrupt
+// the stream. The UTF-8 structure is validated on the way past instead.
+func (r *Reader) ReadRaw() ([]byte, error) {
+	var out []byte
+	first := true
+
+	for {
+		var digits []byte
+		for {
+			b, err := r.br.ReadByte()
+			if err != nil {
+				if err == io.EOF && first && len(digits) == 0 {
+					return nil, io.EOF
+				}
+				return nil, fmt.Errorf("reading an element length: %w", err)
+			}
+			out = append(out, b)
+			if b == '.' {
+				break
+			}
+			if b < '0' || b > '9' {
+				return nil, fmt.Errorf("expected a digit in an element length, got %q", b)
+			}
+			digits = append(digits, b)
+			if len(digits) > 8 {
+				return nil, fmt.Errorf("element length is absurd")
+			}
+		}
+		first = false
+		if len(digits) == 0 {
+			return nil, fmt.Errorf("element with no length")
+		}
+		n, err := strconv.Atoi(string(digits))
+		if err != nil {
+			return nil, err
+		}
+		if n > maxInstructionRunes {
+			return nil, fmt.Errorf("element declares %d characters, over the %d limit",
+				n, maxInstructionRunes)
+		}
+
+		// n RUNES, counted the way guacd counts them, copied as bytes.
+		for i := 0; i < n; i++ {
+			b, err := r.br.ReadByte()
+			if err != nil {
+				return nil, fmt.Errorf("reading element content: %w", err)
+			}
+			out = append(out, b)
+			var extra int
+			switch {
+			case b < 0x80:
+				extra = 0
+			case b&0xE0 == 0xC0:
+				extra = 1
+			case b&0xF0 == 0xE0:
+				extra = 2
+			case b&0xF8 == 0xF0:
+				extra = 3
+			default:
+				return nil, fmt.Errorf("invalid UTF-8 lead byte %#x in an element", b)
+			}
+			for j := 0; j < extra; j++ {
+				c, err := r.br.ReadByte()
+				if err != nil {
+					return nil, fmt.Errorf("reading element content: %w", err)
+				}
+				if c&0xC0 != 0x80 {
+					return nil, fmt.Errorf("invalid UTF-8 continuation byte %#x", c)
+				}
+				out = append(out, c)
+			}
+		}
+
+		sep, err := r.br.ReadByte()
+		if err != nil {
+			return nil, fmt.Errorf("truncated instruction: %w", err)
+		}
+		out = append(out, sep)
+		switch sep {
+		case ';':
+			return out, nil
+		case ',':
+			continue
+		default:
+			return nil, fmt.Errorf("expected ',' or ';' after an element, got %q", sep)
+		}
+	}
+}
+
+// Buffered reports how many bytes are already in hand, without reading.
+func (r *Reader) Buffered() int { return r.br.Buffered() }
+
 // Writer encodes instructions to a stream.
 type Writer struct {
 	w io.Writer

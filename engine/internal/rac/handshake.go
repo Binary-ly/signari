@@ -1,9 +1,7 @@
 package rac
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"net"
 	"sort"
 	"strings"
@@ -59,6 +57,9 @@ type Session struct {
 
 	// ID is guacd's identifier for the connection, from its `ready`.
 	ID string
+
+	// pending holds a read error deferred while a whole batch was delivered.
+	pending error
 }
 
 // Dial opens a connection to guacd and performs the handshake.
@@ -193,33 +194,64 @@ func (s *Session) Close() error {
 	return s.conn.Close()
 }
 
-// Raw exposes the connection for a proxy that copies bytes.
+// frameSoftLimit is when ReadFrame stops adding more instructions to a batch.
 //
-// Reads come from the HANDSHAKE'S BUFFER, not from the socket directly, and
-// that distinction is a bug this had.
+// Soft, because a single instruction is never split to respect it: one image
+// can exceed this on its own and must still cross in one piece.
+const frameSoftLimit = 64 << 10
+
+// ReadFrame returns one or more COMPLETE instructions from guacd.
 //
-// The handshake reads through a bufio.Reader, which fills itself from the
-// socket in blocks. guacd sends `ready` and then, immediately, the first
-// instructions of the session -- so those arrive in the same read and sit in
-// that buffer. A proxy that then copies from the bare net.Conn never sees them:
-// they are already consumed from the socket and stranded in a buffer nobody
-// reads again.
+// # Why this is not io.Copy
 //
-// The symptom was a session that connected successfully and displayed nothing,
-// which looks like a rendering problem at the far end and is not.
-func (s *Session) Raw() io.ReadWriteCloser {
-	return &bufferedConn{r: s.r.br, c: s.conn}
+// The browser's tunnel parses each WebSocket message on its own and keeps no
+// state between them: it walks the message start to end and, if a message ends
+// part-way through an instruction, the remainder is not held over to be joined
+// with the next one. It is discarded, and the tunnel reports a broken stream.
+//
+// So a proxy that forwards whatever a Read happened to return -- an arbitrary
+// TCP boundary -- works right up until an instruction is larger than the buffer
+// or a packet lands mid-instruction. On RDP that is every screen update, since
+// image data is the bulk of the traffic. The failure looks like a corrupt
+// display rather than a framing fault, which is what makes it expensive.
+//
+// Instructions are batched while they are already in hand, so a busy stream
+// costs one frame per burst rather than one per instruction, but the batch is
+// only ever cut at a boundary.
+//
+// Reading through the handshake's buffer is also load-bearing: guacd sends
+// `ready` and the session's first instructions in the same packet, so those
+// instructions are already off the socket and in that buffer by the time the
+// proxy starts. Reading the bare connection instead skips them, and the symptom
+// -- a session that connects successfully and displays nothing -- looks like a
+// rendering fault at the far end.
+func (s *Session) ReadFrame() ([]byte, error) {
+	if s.pending != nil {
+		return nil, s.pending
+	}
+	frame, err := s.r.ReadRaw()
+	if err != nil {
+		return nil, err
+	}
+	// Whatever else has already arrived, without waiting for more.
+	for len(frame) < frameSoftLimit && s.r.Buffered() > 0 {
+		next, err := s.r.ReadRaw()
+		if err != nil {
+			// The batch so far is whole and worth delivering; the error will
+			// come back on the next call, when there is nothing to lose.
+			s.pending = err
+			break
+		}
+		frame = append(frame, next...)
+	}
+	return frame, nil
 }
 
-// bufferedConn reads what the handshake buffered before touching the socket.
-type bufferedConn struct {
-	r *bufio.Reader
-	c net.Conn
-}
-
-func (b *bufferedConn) Read(p []byte) (int, error)  { return b.r.Read(p) }
-func (b *bufferedConn) Write(p []byte) (int, error) { return b.c.Write(p) }
-func (b *bufferedConn) Close() error                { return b.c.Close() }
+// WriteRaw sends bytes from the browser to guacd unchanged.
+//
+// The browser's tunnel emits one complete instruction per message, so there is
+// nothing to reframe in this direction.
+func (s *Session) WriteRaw(p []byte) (int, error) { return s.conn.Write(p) }
 
 func itoa(n int) string {
 	return fmt.Sprintf("%d", n)

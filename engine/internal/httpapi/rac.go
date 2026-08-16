@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -139,7 +138,7 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reason := s.proxy(ctx, ws, guac)
+	reason := rac.Proxy(ctx, wsPeer{ws}, guac)
 
 	if sessionID != "" {
 		if err := store.EndRACSession(context.Background(), s.db, sessionID, reason); err != nil {
@@ -154,69 +153,35 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 	_ = ws.Close(websocket.StatusNormalClosure, "")
 }
 
-// proxy copies between the browser and guacd until either stops.
+// wsPeer adapts a WebSocket to rac.Peer.
 //
-// Returns why it ended, which is recorded: "the session closed" with no reason
-// tells an operator nothing about whether the user left or the host died.
-func (s *Server) proxy(ctx context.Context, ws *websocket.Conn, guac *rac.Session) string {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+// The adapter is here rather than in the rac package so that package does not
+// depend on a WebSocket library to describe something that is not about
+// WebSockets.
+type wsPeer struct{ ws *websocket.Conn }
 
-	done := make(chan string, 2)
-
-	// Browser → guacd.
-	go func() {
-		for {
-			typ, data, err := ws.Read(ctx)
-			if err != nil {
-				done <- closeReason(err, "client disconnected")
-				return
-			}
-			if typ != websocket.MessageText {
-				// The Guacamole protocol is text. A binary frame is either a
-				// confused client or somebody probing.
-				done <- "client sent a binary frame"
-				return
-			}
-			if _, err := guac.Raw().Write(data); err != nil {
-				done <- "guacd stopped reading"
-				return
-			}
+func (p wsPeer) ReadMessage(ctx context.Context) ([]byte, error) {
+	typ, data, err := p.ws.Read(ctx)
+	if err != nil {
+		if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
+			return nil, rac.NormalClose
 		}
-	}()
-
-	// guacd → browser.
-	go func() {
-		buf := make([]byte, 16<<10)
-		for {
-			n, err := guac.Raw().Read(buf)
-			if n > 0 {
-				if werr := ws.Write(ctx, websocket.MessageText, buf[:n]); werr != nil {
-					done <- closeReason(werr, "client stopped reading")
-					return
-				}
-			}
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					done <- "remote session ended"
-					return
-				}
-				done <- "guacd disconnected"
-				return
-			}
-		}
-	}()
-
-	// The first side to finish ends the session; the other goroutine unblocks
-	// when its connection closes, which the deferred Close above guarantees.
-	return <-done
+		return nil, err
+	}
+	if typ != websocket.MessageText {
+		// The Guacamole protocol is text. A binary frame is either a confused
+		// client or somebody probing.
+		return nil, errors.New("client sent a binary frame")
+	}
+	return data, nil
 }
 
-func closeReason(err error, fallback string) string {
-	if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
-		return "closed by the user"
+func (p wsPeer) WriteMessage(ctx context.Context, data []byte) error {
+	err := p.ws.Write(ctx, websocket.MessageText, data)
+	if err != nil && websocket.CloseStatus(err) == websocket.StatusNormalClosure {
+		return rac.NormalClose
 	}
-	return fallback
+	return err
 }
 
 // handleRACList shows what a user may reach.

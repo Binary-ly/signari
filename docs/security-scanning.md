@@ -401,3 +401,38 @@ and says nothing at all beyond a year. Re-issuing is **not** automated: it has
 to be coordinated with every service provider that pinned the old fingerprint,
 which is a conversation rather than a command. What this can usefully do is turn
 a morning into a year of notice.
+
+## The sweeps that became tests
+
+Five sweeps, run by hand and remembered, had found real bugs — and being run by
+hand is their weakness. Two are now tests, which is the difference between a
+discipline and a mechanism:
+
+```
+TestEveryEnvVarIsDocumented      a setting read by the engine, described nowhere
+TestNoDocumentedSettingIsUnread  prose promising a control nothing reads
+```
+
+The first caught four immediately. `SIGNARI_SMTP_USERNAME`,
+`SIGNARI_SMTP_PASSWORD`, `SIGNARI_SMTP_PORT` and `SIGNARI_MAIL_FROM_NAME` were
+read by the code and documented nowhere, so **an authenticated mail relay could
+not be configured from the documentation** — and mail is what account recovery
+and email codes run on. `SIGNARI_DEVICE_COMPLIANT_HEADER` was missing too, while
+the policy condition it feeds, `device_compliant`, was documented: a rule could
+be written that nothing could ever satisfy.
+
+Both directions were checked by breaking them deliberately — removing a
+documented setting, then adding an invented one — because a test that cannot
+fail proves nothing.
+
+### Its own first version was wrong
+
+It scanned comments as well as code, so it reported `SIGNARI_RADIUS_CLIENTS`: a
+setting that never existed, discussed at length in two documents *because* it
+never existed — including in this test's own comment saying so. A setting named
+in a comment is not a setting the engine reads, so the scan strips comments.
+
+That is the fourth sweep here to be wrong on its first run. The pattern is
+consistent enough to write down as a rule: **write the sweep, then break the
+thing it checks and confirm it notices.** Every one of these that has been
+trusted without that step has been wrong.

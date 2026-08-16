@@ -347,3 +347,57 @@ line; a false negative is an authentication bypass.
 
 **Verified both ways**: with the fix in place the test passes; with Duo removed
 from the query it fails, naming the table.
+
+
+## A fifth sweep: expiry columns nothing compares
+
+An identity provider stores a lot of `expires_at`. A column written and never
+compared is a credential that never expires, and unlike a missing feature it
+looks finished from every angle.
+
+```sh
+# every expiry-shaped column, then: does anything compare it?
+psql -tAc "SELECT table_name||'.'||column_name FROM information_schema.columns
+           WHERE table_schema='core'
+             AND (column_name LIKE '%expires%' OR column_name LIKE '%not_after%'
+                  OR column_name LIKE '%valid_until%' OR column_name LIKE '%_until')"
+```
+
+Match each against `<`, `>`, `<=`, `>=` in the Go source. **Do the matching in
+Python, not the shell** — the first attempt put a regex containing `|` and `(`
+inside a zsh `$(...)` and every row came back "NO COMPARISON", which read as 22
+catastrophic findings and was a quoting bug. A sweep that cannot fail is not
+evidence; a sweep that fails *loudly in one direction* is worse, because the
+noise buries the signal.
+
+### The result
+
+18 of 22 compared in SQL. Three more compared in Go after being scanned into a
+`*time.Time` — false positives from a SQL-only regex, checked one by one rather
+than assumed.
+
+One was real: **`core.signing_keys.certificate_not_after`**, stored and never
+read by anything.
+
+SAML certificates here are self-signed for ten years and reused forever, and
+that is deliberate — regenerating changes the fingerprint, and every service
+provider pinning it starts rejecting assertions, which is the failure that looks
+like "SAML randomly stopped working for some users".
+
+The consequence is a cliff nobody stands near until they fall off it. Service
+providers that validate expiry begin refusing every assertion on a date chosen a
+decade earlier, and nothing had mentioned it. The column existed for exactly
+that check.
+
+`signari doctor` now reports it, at three levels:
+
+```
+[CRITICAL] the SAML certificate for key fonp6m7E… expired 5 days ago
+[warning ] the SAML certificate for key b7B5aS8Y… expires in 29 days
+[info    ] the SAML certificate for key fonp6m7E… expires in 199 days
+```
+
+and says nothing at all beyond a year. Re-issuing is **not** automated: it has
+to be coordinated with every service provider that pinned the old fingerprint,
+which is a conversation rather than a command. What this can usefully do is turn
+a morning into a year of notice.

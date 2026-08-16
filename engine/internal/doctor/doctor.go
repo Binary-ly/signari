@@ -26,6 +26,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -98,6 +99,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 		return nil, err
 	}
 	if err := checkClients(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkSAMLCertificateExpiry(ctx, conn, r); err != nil {
 		return nil, err
 	}
 	if err := checkSAML(ctx, conn, r); err != nil {
@@ -306,6 +310,73 @@ func checkSAML(ctx context.Context, conn *pgx.Conn, r *Report) error {
 				"`signari saml add-sp -sp-cert`")
 	}
 	return nil
+}
+
+// checkSAMLCertificateExpiry reports a signing certificate approaching its end.
+//
+// A SAML certificate here is self-signed for ten years and reused forever,
+// deliberately: regenerating it changes its fingerprint, and every service
+// provider pinning that fingerprint would begin rejecting assertions -- the
+// failure that looks like "SAML randomly stopped working for some users".
+//
+// The consequence is that the expiry is a cliff nobody is standing near until
+// they fall off it. Service providers that validate certificate expiry -- many
+// do -- start refusing every assertion on a date chosen a decade earlier, and
+// nothing in the system had mentioned it.
+//
+// core.signing_keys.certificate_not_after was already stored for exactly this
+// check. Nothing read it, which is how a stored value becomes a promise the
+// system does not keep.
+//
+// Re-issuing is NOT automated. It has to be coordinated with every service
+// provider that pinned the old fingerprint, which is a conversation rather than
+// a command -- so the useful thing this can do is give an operator a year of
+// notice instead of a morning.
+func checkSAMLCertificateExpiry(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	rows, err := conn.Query(ctx, `
+		SELECT kid, certificate_not_after,
+		       (certificate_not_after - now()) < interval '90 days' AS urgent
+		FROM core.signing_keys
+		WHERE certificate_not_after IS NOT NULL
+		  AND certificate_not_after < now() + interval '365 days'
+		ORDER BY certificate_not_after`)
+	if err != nil {
+		return nil // column absent in an old schema
+	}
+	defer rows.Close()
+	r.ran("SAML certificate expiry")
+
+	for rows.Next() {
+		var kid string
+		var notAfter time.Time
+		var urgent bool
+		if err := rows.Scan(&kid, &notAfter, &urgent); err != nil {
+			return err
+		}
+		days := int(time.Until(notAfter).Hours() / 24)
+
+		switch {
+		case days < 0:
+			r.add(Critical, "SAML",
+				fmt.Sprintf("the SAML certificate for key %s expired %d days ago",
+					kid, -days),
+				"Service providers that check expiry are already refusing assertions "+
+					"signed with it. Issue a new key and coordinate the new certificate "+
+					"with every service provider before switching.")
+		case urgent:
+			r.add(Warning, "SAML",
+				fmt.Sprintf("the SAML certificate for key %s expires in %d days", kid, days),
+				"Re-issuing changes the fingerprint, so every service provider "+
+					"pinning it needs the new one first. Start that conversation now.")
+		default:
+			r.add(Info, "SAML",
+				fmt.Sprintf("the SAML certificate for key %s expires in %d days", kid, days),
+				"No action yet. Re-issuing has to be coordinated with each service "+
+					"provider, so this is worth putting in a calendar rather than "+
+					"discovering on the day.")
+		}
+	}
+	return rows.Err()
 }
 
 func checkFederation(ctx context.Context, conn *pgx.Conn, r *Report) error {

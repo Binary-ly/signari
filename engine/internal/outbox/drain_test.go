@@ -181,23 +181,23 @@ func TestClaimHidesRowsFromAnotherInstance(t *testing.T) {
 	a := drainWorker(t, pool, 500)
 	b := drainWorker(t, pool, 500)
 
-	claimed, err := a.claim(context.Background())
+	claimedRows, err := a.claimTopic(context.Background(), "backchannel_logout", 500)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(claimed) != 5 {
-		t.Fatalf("claimed %d of 5", len(claimed))
+	if len(claimedRows) != 5 {
+		t.Fatalf("claimed %d of 5", len(claimedRows))
 	}
 
 	// The first claim has committed. A second instance must find nothing.
-	also, err := b.claim(context.Background())
+	also, err := b.claimTopic(context.Background(), "backchannel_logout", 500)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Compared by id: a parallel package may legitimately have queued notices
 	// of its own between the two claims, and those are not a duplication.
 	held := map[int64]bool{}
-	for _, p := range claimed {
+	for _, p := range claimedRows {
 		held[p.id] = true
 	}
 	for _, p := range also {
@@ -307,5 +307,76 @@ func TestSlowReceiverDoesNotBlockOthers(t *testing.T) {
 	// one; concurrently it is bounded by the slowest.
 	if elapsed > 4*time.Second {
 		t.Fatalf("the batch took %s. One slow receiver is delaying the others.", elapsed)
+	}
+}
+
+// TestSSFDrainHoldsNoTransaction is the twin of the logout test above.
+//
+// The SSF drain kept the bug the logout drain had, for exactly as long as it
+// had no test at this level: both had HTTP calls inside the claiming
+// transaction, the logout one was fixed, and nothing failed to say the other
+// still did.
+func TestSSFDrainHoldsNoTransaction(t *testing.T) {
+	pool := drainTestPool(t)
+	clearSSF(t, pool)
+	t.Cleanup(func() { clearSSF(t, pool) })
+
+	release := make(chan struct{})
+	arrived := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case arrived <- struct{}{}:
+		default:
+		}
+		<-release
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	payload, err := json.Marshal(map[string]string{
+		"stream_id": "stream-test", "client_id": "rp-ssf",
+		"endpoint": srv.URL, "event": "session-revoked",
+		"subject": "user-1", "sid": "sid-1", "reason": "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO core.outbox (topic, payload) VALUES ('ssf_event', $1)`, payload); err != nil {
+		t.Fatal(err)
+	}
+
+	w := drainWorker(t, pool, 500)
+	done := make(chan struct{})
+	go func() {
+		_, _ = w.DrainSSF(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the receiver was never called")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := pool.Exec(ctx,
+		`UPDATE core.outbox SET last_error = 'probe' WHERE topic = 'ssf_event'`); err != nil {
+		t.Fatalf("the ssf_event row is still locked while an HTTP call is in "+
+			"flight: %v\nSecurity events must not hold a database connection for "+
+			"the length of a receiver's timeout any more than logout notices do.", err)
+	}
+
+	release <- struct{}{}
+	<-done
+}
+
+func clearSSF(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM core.outbox WHERE topic = 'ssf_event'`); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"github.com/jackc/pgx/v5"
 	"io"
-	"math"
 	"net/http"
 	"time"
 
@@ -38,73 +37,36 @@ type ssfPending struct {
 	Reason   string `json:"reason"`
 }
 
-// DrainSSF delivers queued security events.
+// DrainSSF delivers pending security events (RFC 8935 push).
+//
+// The transaction boundaries are in drainTopic, shared with logout delivery.
+// They were NOT shared before, and the cost was immediate: when the logout
+// drain's boundary turned out to be wrong -- every HTTP call made with row
+// locks held and a database connection checked out -- the fix went into one
+// drain and its twin kept the bug. Duplicated mechanism means a correctness fix
+// has to be remembered twice, and this is what it looks like when it is not.
+//
+// What stays here is this topic's policy: how to decode an event, where to send
+// it, and what to say when it fails.
 func (w *Worker) DrainSSF(ctx context.Context) (int, error) {
-	tx, err := w.db.Begin(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	rows, err := tx.Query(ctx, `
-		SELECT id, payload, attempts
-		FROM core.outbox
-		WHERE topic = 'ssf_event'
-		  AND delivered_at IS NULL
-		  AND attempts < $1
-		  AND next_attempt_at <= now()
-		ORDER BY id
-		LIMIT $2
-		FOR UPDATE SKIP LOCKED`, MaxAttempts, w.batch)
-	if err != nil {
-		return 0, err
-	}
-	var batch []ssfPending
-	for rows.Next() {
-		var p ssfPending
-		var raw []byte
-		if err := rows.Scan(&p.id, &raw, &p.attempts); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		if err := json.Unmarshal(raw, &p); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("decoding an ssf outbox row: %w", err)
-		}
-		batch = append(batch, p)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	if len(batch) == 0 {
-		return 0, tx.Commit(ctx)
-	}
-
-	for _, p := range batch {
-		derr := w.deliverSSF(ctx, p)
-		if derr == nil {
-			if _, err := tx.Exec(ctx,
-				`UPDATE core.outbox SET delivered_at = now() WHERE id = $1`, p.id); err != nil {
-				return 0, err
+	return w.drainTopic(ctx, drainSpec{
+		topic: "ssf_event",
+		batch: w.batch,
+		deliver: func(ctx context.Context, raw []byte) error {
+			var p ssfPending
+			if err := json.Unmarshal(raw, &p); err != nil {
+				return fmt.Errorf("decoding an ssf outbox row: %w", err)
 			}
-			continue
-		}
-		// The same capped exponential backoff as logout delivery, written the same
-		// way rather than shared, because the two drains are deliberately
-		// independent and a shared helper invites one to be tuned for the other.
-		backoff := time.Duration(math.Min(math.Pow(2, float64(p.attempts)), 300)) * time.Second
-		if _, err := tx.Exec(ctx, `
-			UPDATE core.outbox
-			SET attempts = attempts + 1, next_attempt_at = now() + $2::interval,
-			    last_error = $3
-			WHERE id = $1`, p.id, backoff.String(), derr.Error()); err != nil {
-			return 0, err
-		}
-		w.log.Info("security event delivery failed", "client_id", p.ClientID,
-			"event", p.Event, "attempt", p.attempts+1, "err", derr)
-	}
-	return len(batch), tx.Commit(ctx)
+			return w.deliverSSF(ctx, p)
+		},
+		backoff: backoffFor,
+		onFailure: func(raw []byte, attempts int, err error) {
+			var p ssfPending
+			_ = json.Unmarshal(raw, &p)
+			w.log.Info("security event delivery failed", "client_id", p.ClientID,
+				"event", p.Event, "attempt", attempts+1, "err", err)
+		},
+	})
 }
 
 func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {

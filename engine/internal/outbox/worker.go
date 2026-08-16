@@ -23,7 +23,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -117,7 +116,7 @@ type pending struct {
 	attempts int
 }
 
-// claimLease is how long a claimed notice is hidden from other instances.
+// claimLease is how long a claimed row is hidden from other instances.
 //
 // Long enough that a batch in flight is never picked up twice, short enough
 // that an instance which dies mid-batch does not strand a logout for long. With
@@ -134,141 +133,38 @@ const claimLease = 60 * time.Second
 // matters here is exactly the one where somebody is down.
 const deliveryConcurrency = 8
 
-// drainOnce claims a batch, delivers it, and records what happened.
+// backoffFor is the capped exponential wait after a failed delivery.
 //
-// # Three phases, and the transaction boundaries are the point
-//
-// The first version did all of it inside ONE transaction: it selected FOR
-// UPDATE SKIP LOCKED, then made every HTTP call with those row locks held and a
-// pooled connection checked out. Claiming was correct -- two instances divided
-// the work rather than duplicating it -- but a batch of 25 against dead
-// receivers held a database connection for up to 250 seconds. Several instances
-// doing that at once is a meaningful share of the pool tied up on network I/O,
-// and the pool is shared with everything else the engine does.
-//
-// So: claim in a short transaction, deliver with none open, record results in
-// another. The cost is that a crash between claim and record leaves notices
-// hidden for claimLease before another instance retries them, which is a delay
-// rather than a loss.
-func (w *Worker) drainOnce(ctx context.Context) (int, error) {
-	batch, err := w.claim(ctx)
-	if err != nil || len(batch) == 0 {
-		return 0, err
-	}
-
-	// Delivered with NO transaction open. This is the whole reason for the
-	// three phases.
-	type result struct {
-		p   pending
-		err error
-	}
-	results := make([]result, len(batch))
-
-	sem := make(chan struct{}, deliveryConcurrency)
-	var wg sync.WaitGroup
-	for i, p := range batch {
-		wg.Add(1)
-		go func(i int, p pending) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			results[i] = result{p: p, err: w.deliver(ctx, p.notice)}
-		}(i, p)
-	}
-	wg.Wait()
-
-	delivered := 0
-	for _, r := range results {
-		if r.err == nil {
-			if _, e := w.db.Exec(ctx,
-				`UPDATE core.outbox SET delivered_at = now(), last_error = NULL WHERE id = $1`,
-				r.p.id); e != nil {
-				return delivered, e
-			}
-			delivered++
-			continue
-		}
-
-		// Exponential backoff, capped. A relying party that is down for an hour
-		// should not be retried every second for that hour.
-		backoff := time.Duration(math.Min(math.Pow(2, float64(r.p.attempts)), 300)) * time.Second
-		if _, e := w.db.Exec(ctx, `
-			UPDATE core.outbox
-			SET attempts = attempts + 1,
-			    next_attempt_at = now() + $2::interval,
-			    last_error = $3
-			WHERE id = $1`, r.p.id, backoff.String(), r.err.Error()); e != nil {
-			return delivered, e
-		}
-		w.log.Warn("back-channel logout delivery failed",
-			"client_id", r.p.notice.ClientID, "attempt", r.p.attempts+1, "err", r.err)
-	}
-
-	return delivered, nil
+// A relying party that is down for an hour should not be retried every second
+// for that hour.
+func backoffFor(attempts int) time.Duration {
+	return time.Duration(math.Min(math.Pow(2, float64(attempts)), 300)) * time.Second
 }
 
-// claim takes a batch and hides it from other instances.
+// drainOnce delivers pending back-channel logout notices.
 //
-// FOR UPDATE SKIP LOCKED divides the work between instances; pushing
-// next_attempt_at forward is what keeps it divided after this transaction
-// commits and the locks are released. Without that second half, the moment we
-// commit in order to deliver outside a transaction, another instance sees the
-// same rows as due and delivers them again.
-//
-// attempts is deliberately NOT incremented here. A crash between claiming and
-// recording is not the relying party failing to answer, and charging it as one
-// would march a perfectly reachable receiver toward MaxAttempts and park it.
-func (w *Worker) claim(ctx context.Context) ([]pending, error) {
-	tx, err := w.db.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	rows, err := tx.Query(ctx, `
-		SELECT id, payload, attempts
-		FROM core.outbox
-		WHERE topic = 'backchannel_logout'
-		  AND delivered_at IS NULL
-		  AND attempts < $1
-		  AND next_attempt_at <= now()
-		ORDER BY id
-		LIMIT $2
-		FOR UPDATE SKIP LOCKED`, MaxAttempts, w.batch)
-	if err != nil {
-		return nil, err
-	}
-
-	var batch []pending
-	var ids []int64
-	for rows.Next() {
-		var p pending
-		var raw []byte
-		if err := rows.Scan(&p.id, &raw, &p.attempts); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		if err := json.Unmarshal(raw, &p.notice); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("decoding outbox row %d: %w", p.id, err)
-		}
-		batch = append(batch, p)
-		ids = append(ids, p.id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(batch) == 0 {
-		return nil, tx.Commit(ctx)
-	}
-
-	if _, err := tx.Exec(ctx, `
-		UPDATE core.outbox SET next_attempt_at = now() + $2::interval
-		WHERE id = ANY($1)`, ids, claimLease.String()); err != nil {
-		return nil, err
-	}
-	return batch, tx.Commit(ctx)
+// The transaction boundaries are in drainTopic; what is here is this topic's
+// policy: how to decode a notice, how to send it, and what to say when it
+// fails.
+func (w *Worker) drainOnce(ctx context.Context) (int, error) {
+	return w.drainTopic(ctx, drainSpec{
+		topic: "backchannel_logout",
+		batch: w.batch,
+		deliver: func(ctx context.Context, raw []byte) error {
+			var n store.LogoutNotice
+			if err := json.Unmarshal(raw, &n); err != nil {
+				return fmt.Errorf("decoding a logout notice: %w", err)
+			}
+			return w.deliver(ctx, n)
+		},
+		backoff: backoffFor,
+		onFailure: func(raw []byte, attempts int, err error) {
+			var n store.LogoutNotice
+			_ = json.Unmarshal(raw, &n)
+			w.log.Warn("back-channel logout delivery failed",
+				"client_id", n.ClientID, "attempt", attempts+1, "err", err)
+		},
+	})
 }
 
 // deliver POSTs a signed logout token to one relying party.

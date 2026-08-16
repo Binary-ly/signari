@@ -181,6 +181,22 @@ it as one would march a perfectly reachable receiver toward being parked.
 Tested: two instances draining at once deliver each notice exactly once; a row
 being delivered is not locked; a slow receiver does not delay the others.
 
+### The twin that kept the bug
+
+There are two drains — logout notices and security events — written
+independently on purpose, with a comment saying a shared helper would invite one
+to be tuned for the other.
+
+That reasoning was sound about **policy**: how long to back off, what to log,
+which receiver to call. It was not sound about **mechanism**, and the cost
+arrived immediately: the transaction-boundary fix went into the logout drain and
+its twin kept the bug, because duplicated mechanism means a correctness fix has
+to be remembered twice.
+
+The boundaries now live in one place and the policy stays with each caller. The
+security-event drain has its own test at that level, which is what it lacked —
+and lacking it is exactly why nothing said it was still wrong.
+
 ## What running two instances actually found
 
 **The audit chain forked whenever two events were written at once.** Two entries

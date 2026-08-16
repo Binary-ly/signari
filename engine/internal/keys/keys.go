@@ -28,6 +28,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
+	"sync"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -186,8 +187,49 @@ func checkSignerMatchesAlg(alg Algorithm, signer crypto.Signer) error {
 
 // Set is the engine's live view of its keys for one instance.
 type Set struct {
+	// mu guards keys, which is REPLACED while requests are in flight.
+	//
+	// A set read once at startup and never again defeated the whole rotation
+	// design. Rotation publishes a `next` key first so relying parties cache it
+	// before anything is signed with it, then promotes it a day later. With no
+	// reload, running instances never published the new key at all -- so the
+	// waiting period protected nothing, and after a restart they would begin
+	// signing with a key no relying party had ever seen.
+	//
+	// Found by rotating against two running instances and reading their JWKS:
+	// the new kid was in the database and in neither response.
+	mu   sync.RWMutex
 	keys []Key
 	now  func() time.Time
+}
+
+// Replace swaps the keys this set serves.
+//
+// The set is shared by every request in flight, so the swap is behind a lock
+// rather than by handing out a new pointer: call sites hold the *Set itself,
+// and asking each of them to re-read an indirection is a rule that will be
+// broken exactly once.
+//
+// The replacement is VALIDATED first, by building a candidate set. A reload
+// that found two active keys for one algorithm, or a duplicate kid, must not
+// replace a good set with a bad one -- the running configuration is the one
+// thing known to work.
+func (s *Set) Replace(next ...Key) error {
+	candidate, err := NewSet(next...)
+	if err != nil {
+		return fmt.Errorf("refusing to load an unsafe key set: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keys = candidate.keys
+	return nil
+}
+
+// snapshot returns the current keys under a read lock.
+func (s *Set) snapshot() []Key {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.keys
 }
 
 // NewSet builds a key set, rejecting any arrangement that would be unsafe to
@@ -218,8 +260,12 @@ func NewSet(keys ...Key) (*Set, error) {
 // A copy, so a caller building a rotation cannot mutate the live set out from
 // under the server that is signing with it.
 func (s *Set) Keys() []Key {
-	out := make([]Key, len(s.keys))
-	copy(out, s.keys)
+	// ONE snapshot, not two. Taking it twice takes the lock twice, and a
+	// replacement landing between them would size the slice from one set and
+	// fill it from another.
+	cur := s.snapshot()
+	out := make([]Key, len(cur))
+	copy(out, cur)
 	return out
 }
 
@@ -240,7 +286,7 @@ func WithState(k Key, state State) (Key, error) {
 
 // Active returns the key currently signing for alg.
 func (s *Set) Active(alg Algorithm) (Key, error) {
-	for _, k := range s.keys {
+	for _, k := range s.snapshot() {
 		if k.Algorithm() == alg && k.State() == StateActive {
 			return k, nil
 		}
@@ -251,7 +297,7 @@ func (s *Set) Active(alg Algorithm) (Key, error) {
 // ByKID finds any published key, whatever its state. Verification must accept
 // passive keys -- that is the entire point of the passive state.
 func (s *Set) ByKID(kid string) (Key, bool) {
-	for _, k := range s.keys {
+	for _, k := range s.snapshot() {
 		if k.KID() == kid {
 			return k, true
 		}
@@ -263,8 +309,9 @@ func (s *Set) ByKID(kid string) (Key, bool) {
 // next so relying parties have it cached before it signs anything, passive so
 // tokens signed before the last rotation still verify.
 func (s *Set) JWKS() jose.JSONWebKeySet {
-	out := jose.JSONWebKeySet{Keys: make([]jose.JSONWebKey, 0, len(s.keys))}
-	for _, k := range s.keys {
+	cur := s.snapshot()
+	out := jose.JSONWebKeySet{Keys: make([]jose.JSONWebKey, 0, len(cur))}
+	for _, k := range cur {
 		out.Keys = append(out.Keys, k.PublicJWK())
 	}
 	return out
@@ -279,7 +326,7 @@ func (s *Set) JWKS() jose.JSONWebKeySet {
 func (s *Set) Algorithms() []Algorithm {
 	seen := map[Algorithm]bool{}
 	var out []Algorithm
-	for _, k := range s.keys {
+	for _, k := range s.snapshot() {
 		if k.State() == StateActive && !seen[k.Algorithm()] {
 			seen[k.Algorithm()] = true
 			out = append(out, k.Algorithm())

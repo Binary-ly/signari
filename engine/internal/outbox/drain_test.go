@@ -29,18 +29,27 @@ import (
 // These tests cover what the rewrite must not break -- exactly-once delivery
 // across instances -- and what it was meant to fix.
 //
-// # They share a table with every other package
+// # They share a table with anything else pointed at the same database
 //
-// `go test ./...` runs packages in PARALLEL, and other packages create real
-// logout notices as a side effect of ending sessions. Those rows point at
-// endpoints that do not resolve, and with a batch of 25 they crowded this
-// test's own notices out of the claim entirely -- which showed up as
-// "delivered 0 of 7", passed in isolation, and failed in a full run.
+// Two ways that bit, both worth recording because both looked like product
+// bugs:
+//
+//	`go test ./...` runs packages in PARALLEL, and other packages create real
+//	logout notices as a side effect of ending sessions. With a batch of 25
+//	those crowded this test's notices out of the claim -- "delivered 0 of 7",
+//	passing alone and failing in a full run.
+//
+//	A `signari serve` left running against the same database drains the outbox
+//	on a ticker and claims these rows first. That produced intermittent
+//	"claimed 0 of 5" and "the receiver was never called" which I first blamed
+//	on -race scheduling. It was not scheduling; it was a live engine competing
+//	for the same table, and ten consecutive race runs pass once it is stopped.
 //
 // So these tests assert on THEIR OWN receivers rather than on counts drawn
-// from a table anybody can write to, and take a batch large enough that
-// foreign rows do not push theirs out. A test whose result depends on what
-// another package happened to be doing is not measuring this code.
+// from a table anybody can write to, take a batch large enough that foreign
+// rows do not push theirs out, and retry as the product does. A test whose
+// result depends on what else happened to be running is not measuring this
+// code -- and a wrong diagnosis of why it failed is worse than the flake.
 
 func drainTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -236,13 +245,21 @@ func TestDeliveryHoldsNoTransaction(t *testing.T) {
 	w := drainWorker(t, pool, 500)
 	done := make(chan struct{})
 	go func() {
-		_, _ = w.drainOnce(context.Background())
-		close(done)
+		defer close(done)
+		// Retried, because a claim can lose a race with another drain and the
+		// point of this test is the transaction boundary, not the first attempt.
+		for round := 0; round < 10; round++ {
+			if n, err := w.drainOnce(context.Background()); err != nil || n > 0 {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}()
 
 	select {
 	case <-arrived:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
+		// A liveness bound, not a latency one.
 		t.Fatal("the receiver was never called")
 	}
 
@@ -292,13 +309,18 @@ func TestSlowReceiverDoesNotBlockOthers(t *testing.T) {
 
 	w := drainWorker(t, pool, 500)
 	start := time.Now()
-	n, err := w.drainOnce(context.Background())
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n < 7 {
-		t.Fatalf("delivered %d, expected at least this test's 7", n)
+	// Drained until this test's own receivers have been hit, as the product
+	// drains on a ticker rather than in a single pass.
+	var elapsed time.Duration
+	for round := 0; round < 10; round++ {
+		if _, err := w.drainOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		elapsed = time.Since(start)
+		if atomic.LoadInt64(&fast) >= 6 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if got := atomic.LoadInt64(&fast); got != 6 {
 		t.Fatalf("the quick receiver was called %d times, want 6", got)
@@ -350,13 +372,19 @@ func TestSSFDrainHoldsNoTransaction(t *testing.T) {
 	w := drainWorker(t, pool, 500)
 	done := make(chan struct{})
 	go func() {
-		_, _ = w.DrainSSF(context.Background())
-		close(done)
+		defer close(done)
+		for round := 0; round < 10; round++ {
+			if n, err := w.DrainSSF(context.Background()); err != nil || n > 0 {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}()
 
 	select {
 	case <-arrived:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
+		// A liveness bound, not a latency one.
 		t.Fatal("the receiver was never called")
 	}
 

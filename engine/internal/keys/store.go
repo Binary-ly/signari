@@ -247,3 +247,41 @@ func (s *Set) MarshalJWKS() ([]byte, error) {
 }
 
 var _ = jose.JSONWebKeySet{}
+
+// KeyRefreshInterval is how often a running instance re-reads its keys.
+//
+// A minute. Rotation is not urgent -- the design publishes a `next` key a full
+// day before promoting it -- but a reload interval measured in hours would make
+// an operator wonder whether the rotation worked, and wondering leads to
+// rotating again.
+const KeyRefreshInterval = time.Minute
+
+// Refresh re-reads the signing keys and replaces the live set.
+//
+// # Why this exists
+//
+// The set was loaded once at startup and never again, which defeated the
+// rotation design completely. Rotation publishes a key as `next` so relying
+// parties cache it BEFORE anything is signed with it, then promotes it a day
+// later. With no reload:
+//
+//	the new key never reached any relying party
+//	the day-long wait protected nothing
+//	after a restart, instances signed with a key nobody had seen
+//
+// Found by rotating against two running instances and reading their JWKS: the
+// new kid was in the database and in neither response.
+//
+// A failure here is logged and the previous set kept. The keys currently loaded
+// are the ones known to work, and replacing them with nothing because the
+// database was briefly unreachable would take an instance out of service for a
+// transient fault.
+func Refresh(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootKey,
+	live *Set) error {
+
+	next, err := LoadSet(ctx, conn, instanceID, root)
+	if err != nil {
+		return fmt.Errorf("reloading signing keys: %w", err)
+	}
+	return live.Replace(next.Keys()...)
+}

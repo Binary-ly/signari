@@ -675,6 +675,27 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 		return fmt.Errorf("loading signing keys: %w", err)
 	}
 
+	// Re-read them while serving. Without this the set was fixed at startup,
+	// which meant a rotation reached no relying party until every instance was
+	// restarted -- and the publish-then-promote design that makes rotation safe
+	// never actually published anything.
+	go func() {
+		t := time.NewTicker(keys.KeyRefreshInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := keys.Refresh(ctx, conn, instanceID, root, set); err != nil {
+					// Logged, and the current set kept: the keys already loaded
+					// are the ones known to work.
+					log.Error("refreshing signing keys", "err", err)
+				}
+			}
+		}
+	}()
+
 	pool, err := pgxpool.New(ctx, conn.Config().ConnString())
 	if err != nil {
 		return fmt.Errorf("creating connection pool: %w", err)

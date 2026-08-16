@@ -335,3 +335,88 @@ func TestNoClientsIsRefused(t *testing.T) {
 		t.Fatal("a server with no configured clients was accepted")
 	}
 }
+
+// TestReplaceClientsRevokesADevice covers the reload that makes revocation mean
+// something.
+//
+// The client list was read once at startup, so disabling a device did nothing
+// until a restart: the listener carried on answering an access point whose
+// access had been revoked.
+func TestReplaceClientsRevokesADevice(t *testing.T) {
+	_, netA, _ := net.ParseCIDR("10.0.0.0/8")
+	_, netB, _ := net.ParseCIDR("192.168.0.0/16")
+	srv, err := New(Config{Clients: []Client{
+		{Net: netA, Secret: "a-secret-of-sufficient-length", Name: "ap-a"},
+		{Net: netB, Secret: "another-secret-long-enough", Name: "ap-b"},
+	}}, &fakeAuth{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	from := func(ip string) (Client, bool) {
+		return srv.clientFor(&net.UDPAddr{IP: net.ParseIP(ip), Port: 5000})
+	}
+
+	if _, ok := from("10.1.2.3"); !ok {
+		t.Fatal("ap-a should be recognised to begin with")
+	}
+
+	// ap-a is revoked; ap-b stays.
+	if err := srv.ReplaceClients([]Client{
+		{Net: netB, Secret: "another-secret-long-enough", Name: "ap-b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := from("10.1.2.3"); ok {
+		t.Fatal("a revoked device is still recognised; disabling it did nothing")
+	}
+	if _, ok := from("192.168.1.5"); !ok {
+		t.Fatal("revoking one device removed another")
+	}
+}
+
+// TestReplaceClientsAcceptsEmpty is a correction to a guard that blocked the
+// feature it shipped with.
+//
+// The first version refused an empty list, reasoning that an empty result was
+// more likely a failed read than a deliberate removal. That is true of a
+// PAGINATED fetch and untrue of a single SQL query, which either succeeds or
+// errors -- so the guard rejected the reload that would have applied the
+// revocation of the last device, and revoking it did nothing.
+func TestReplaceClientsAcceptsEmpty(t *testing.T) {
+	_, netA, _ := net.ParseCIDR("10.0.0.0/8")
+	srv, err := New(Config{Clients: []Client{
+		{Net: netA, Secret: "a-secret-of-sufficient-length", Name: "ap-a"},
+	}}, &fakeAuth{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ReplaceClients(nil); err != nil {
+		t.Fatalf("disabling every device was refused: %v\n"+
+			"An operator who revokes the last access point means it.", err)
+	}
+	if _, ok := srv.clientFor(&net.UDPAddr{IP: net.ParseIP("10.1.2.3"), Port: 5000}); ok {
+		t.Fatal("a device is still recognised after every one was disabled")
+	}
+}
+
+// TestReplaceClientsRefusesAnUnusableSecret keeps the startup rule at runtime.
+func TestReplaceClientsRefusesAnUnusableSecret(t *testing.T) {
+	_, netA, _ := net.ParseCIDR("10.0.0.0/8")
+	srv, err := New(Config{Clients: []Client{
+		{Net: netA, Secret: "a-secret-of-sufficient-length", Name: "ap-a"},
+	}}, &fakeAuth{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ReplaceClients([]Client{
+		{Net: netA, Secret: "short", Name: "ap-a"},
+	}); err == nil {
+		t.Fatal("a secret too short to resist an offline grind was accepted at " +
+			"reload, though it is refused at startup")
+	}
+	// And the working list is still in force.
+	if _, ok := srv.clientFor(&net.UDPAddr{IP: net.ParseIP("10.1.2.3"), Port: 5000}); !ok {
+		t.Fatal("a refused reload lost the working configuration")
+	}
+}

@@ -211,8 +211,55 @@ That is the argument for this whole exercise: the bug was in a single-instance
 code path, and only running the deployment shape we intend to support surfaced
 it.
 
+## Configuration read once at startup
+
+The signing keys were not the only thing loaded once and never re-read. The same
+sweep over `serve()` found the RADIUS device list, with a worse consequence than
+inconvenience: **revoking an access point did nothing until a restart.** The
+listener carried on answering a device whose access had been withdrawn.
+
+Two halves of one gap, and both were missing:
+
+- there was no command to revoke a device at all — the `enabled` column existed,
+  so it could only be done by editing the database by hand
+- and doing so had no effect on anything already running
+
+```sh
+signari radius disable-client -name office-ap
+signari radius enable-client  -name office-ap
+```
+
+Devices are re-read every minute. Measured on a running listener: an access
+point authenticating normally, revoked, and refused ~70 seconds later with no
+restart.
+
+### A guard that blocked the feature it shipped with
+
+The first version of the reload refused an empty device list, on the reasoning
+that a server trusting nobody is a total outage and an empty result is more
+likely a failed read than a deliberate removal.
+
+That reasoning is borrowed from the directory sync, where an empty fetch really
+can mean a paginated read that stopped early — and **it does not transfer**. A
+single SQL query either succeeds or returns an error; there is no partial
+success to mistake for emptiness.
+
+So the guard rejected exactly the reload that would have applied the revocation
+of the last device, and revoking it did nothing. Caught by testing the feature
+end to end rather than by testing the function.
+
+An empty list is now honoured and logged at WARN, because "no devices" means
+network login is off for everybody and that should be visible without going
+looking. Startup still refuses an empty list: a listener coming up with nothing
+configured is almost certainly a misconfiguration, and saying so immediately is
+more useful than serving a port that answers no one.
+
 ## What this still does not do
 
-Nothing known. The three gaps listed when this page was written — policy cache
+Issuer aliases are still read once at startup. They exist for migration — a
+legacy issuer accepted while relying parties are moved across — and changing the
+set is part of a migration plan rather than an operational action, so a restart
+is a reasonable place to pick it up. Recorded here so it is a decision rather
+than an oversight. The three gaps listed when this page was written — policy cache
 coherence, CAPTCHA counters, outbox partitioning — are measured, fixed, or shown
 to have been a misreading, above.

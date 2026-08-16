@@ -3,9 +3,11 @@ package radius
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -49,8 +51,61 @@ type Server struct {
 	auth Authenticator
 	log  *slog.Logger
 
+	// clientsMu guards the device list, which is REPLACED while the listener is
+	// running.
+	//
+	// Read once at startup, disabling a device did nothing until a restart: the
+	// listener kept answering an access point whose access had been revoked.
+	// The same shape as the signing keys, which were also read once and made
+	// key rotation a ceremony with no effect.
+	clientsMu sync.RWMutex
+	clients   []Client
+
 	eapTLS   *EAPTLSConfig
 	sessions *eapSessions
+}
+
+// ReplaceClients swaps the devices this server answers.
+//
+// # An empty list is honoured, and that took a correction
+//
+// The first version refused it, reasoning that a server trusting nobody is a
+// total outage and that an empty result was more likely a failed read than a
+// deliberate removal. That reasoning was borrowed from the directory sync,
+// where an empty fetch really can mean a paginated read that stopped early --
+// and it does not transfer. A single SQL query either succeeds or returns an
+// error; there is no partial success to mistake for emptiness.
+//
+// So an empty list is a definite answer: every device has been disabled. The
+// guard blocked exactly the operation it was written alongside -- revoking the
+// last access point did nothing, because the reload that would have applied it
+// was refused.
+//
+// It is logged at WARN, because "no devices" means network login is off for
+// everybody and that should be visible without going looking.
+//
+// New() still refuses an empty list at STARTUP. A listener coming up with
+// nothing configured is almost certainly a misconfiguration, and saying so
+// immediately is more useful than serving a port that answers no one.
+func (s *Server) ReplaceClients(clients []Client) error {
+	for _, c := range clients {
+		if err := ValidSecret(c.Secret); err != nil {
+			return err
+		}
+		if c.Net == nil {
+			return fmt.Errorf("RADIUS client %q has no network", c.Name)
+		}
+	}
+	s.clientsMu.Lock()
+	prev := len(s.clients)
+	s.clients = clients
+	s.clientsMu.Unlock()
+
+	if len(clients) == 0 && prev > 0 {
+		s.log.Warn("every RADIUS device is now disabled; this listener will " +
+			"answer nobody")
+	}
+	return nil
 }
 
 func New(cfg Config, auth Authenticator, log *slog.Logger) (*Server, error) {
@@ -81,7 +136,7 @@ func New(cfg Config, auth Authenticator, log *slog.Logger) (*Server, error) {
 				"verify it, and one they do not trust makes every login fail")
 		}
 	}
-	return &Server{cfg: cfg, auth: auth, log: log,
+	return &Server{cfg: cfg, auth: auth, log: log, clients: cfg.Clients,
 		eapTLS: cfg.EAPTLS, sessions: newEAPSessions()}, nil
 }
 
@@ -95,7 +150,11 @@ func (s *Server) clientFor(addr net.Addr) (Client, bool) {
 	if ip == nil {
 		return Client{}, false
 	}
-	for _, c := range s.cfg.Clients {
+	s.clientsMu.RLock()
+	clients := s.clients
+	s.clientsMu.RUnlock()
+
+	for _, c := range clients {
 		if c.Net.Contains(ip) {
 			return c, true
 		}

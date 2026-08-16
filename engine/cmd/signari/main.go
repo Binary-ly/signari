@@ -347,6 +347,10 @@ func run(args []string) error {
 		return ssfListStreams(ctx, conn)
 	case "radius add-client":
 		return radiusAddClient(ctx, conn, *orgID, *name, *radiusNet, *radiusSecret)
+	case "radius disable-client":
+		return radiusSetClientEnabled(ctx, conn, *name, false)
+	case "radius enable-client":
+		return radiusSetClientEnabled(ctx, conn, *name, true)
 	case "radius list":
 		return radiusListClients(ctx, conn)
 	case "admin-token create":
@@ -925,6 +929,29 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 		if rerr2 != nil {
 			return fmt.Errorf("%w -- register one with `signari radius add-client`", rerr2)
 		}
+
+		// Re-read the devices while serving. Without this, disabling an access
+		// point did nothing until a restart: the listener kept answering a
+		// device whose access had been revoked.
+		go func() {
+			t := time.NewTicker(time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					next, lerr := loadRADIUSClients(ctx, pool, radiusOrgID, root)
+					if lerr != nil {
+						log.Error("reloading RADIUS clients", "err", lerr)
+						continue
+					}
+					if rerr := radiusSrv.ReplaceClients(next); rerr != nil {
+						log.Error("refusing a RADIUS client reload", "err", rerr)
+					}
+				}
+			}
+		}()
 
 		pc, perr := net.ListenPacket("udp", radiusAddr)
 		if perr != nil {
@@ -3777,5 +3804,44 @@ func policyGraph(path, out string) error {
 	fmt.Printf("  %d rule(s) -- %d restricting, %d denying\n", len(f.Policies), create, deny)
 	fmt.Printf("  %d test(s), all passing (a file whose tests fail does not load)\n",
 		len(f.Tests))
+	return nil
+}
+
+// radiusSetClientEnabled revokes or restores a network device's access.
+//
+// This did not exist. The column did, so an operator could revoke a device by
+// editing the database by hand -- and the running listener would carry on
+// answering it anyway, because the client list was read once at startup. Two
+// halves of the same gap: no way to say it, and no effect if you did.
+func radiusSetClientEnabled(ctx context.Context, conn *pgx.Conn, name string,
+	enabled bool) error {
+
+	if name == "" {
+		return fmt.Errorf("give -name, the device to change (see `signari radius list`)")
+	}
+	tag, err := conn.Exec(ctx, `
+		UPDATE core.radius_clients SET enabled = $2, updated_at = now()
+		WHERE name = $1`, name, enabled)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no RADIUS client named %q", name)
+	}
+
+	if enabled {
+		fmt.Printf("enabled %s\n", name)
+	} else {
+		fmt.Printf("disabled %s\n", name)
+	}
+	fmt.Print("  Running listeners pick this up within a minute; there is no need\n")
+	fmt.Print("  to restart them.\n")
+	if !enabled {
+		// Said plainly, because it is the question somebody asks next and the
+		// answer is not obvious from the command they just ran.
+		fmt.Print("\n  This stops the device authenticating. It does NOT end sessions\n")
+		fmt.Print("  already established through it -- RADIUS has no way to reach back\n")
+		fmt.Print("  into a switch and close them.\n")
+	}
 	return nil
 }

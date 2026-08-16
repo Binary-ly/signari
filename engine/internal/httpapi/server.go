@@ -177,6 +177,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /login/callback/{slug}", s.handleFederatedCallback)
 	mux.HandleFunc("GET /account", s.handleAccount)
 	mux.HandleFunc("GET /account/connected", s.handleConnectedApps)
+	mux.HandleFunc("GET /apps", s.handlePortal)
 	mux.HandleFunc("GET /rac", s.handleRACIndex)
 	mux.HandleFunc("GET /rac/view/{slug}", s.handleRACView)
 	mux.HandleFunc("GET /rac.js", s.handleRACJS)

@@ -223,6 +223,12 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	launchURL := fs.String("launch-url", "",
+		"where the application portal sends a user (the app's own login URL). "+
+			"Without it the app is listed but cannot be opened")
+	logoURL := fs.String("logo-url", "", "https URL of the application's logo, for the portal")
+	portalHidden := fs.Bool("portal-hidden", false,
+		"keep this client off the application portal")
 	spEncCert := fs.String("sp-encryption-cert", "",
 		"path to the provider's ENCRYPTION certificate (PEM); assertions are encrypted to it")
 	spKeyTransport := fs.String("sp-key-transport", "rsa-oaep-mgf1p",
@@ -332,7 +338,8 @@ func run(args []string) error {
 	case "client set-keys":
 		return clientSetKeys(ctx, conn, *clientID, *jwksPath)
 	case "client create":
-		return clientCreate(ctx, conn, *clientID, *name, *redirect, *public)
+		return clientCreate(ctx, conn, *clientID, *name, *redirect, *public,
+			*launchURL, *logoURL, *portalHidden)
 	case "serve":
 		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr)
 	case "janitor once":
@@ -1153,10 +1160,26 @@ func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) err
 }
 
 func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect string,
-	public bool) error {
+	public bool, launchURL, logoURL string, portalHidden bool) error {
 
 	if clientID == "" || redirect == "" {
 		return fmt.Errorf("-client-id and -redirect are both required")
+	}
+	// Checked here as well as by the CHECK constraint, so the message names the
+	// flag rather than the column.
+	if launchURL != "" && !strings.HasPrefix(launchURL, "https://") &&
+		!strings.HasPrefix(launchURL, "http://localhost") &&
+		!strings.HasPrefix(launchURL, "http://127.0.0.1") {
+		return fmt.Errorf("-launch-url must be https (or localhost for development): "+
+			"a portal tile is a link users are invited to trust, and %q is not", launchURL)
+	}
+	if logoURL != "" && !strings.HasPrefix(logoURL, "https://") {
+		return fmt.Errorf("-logo-url must be https: %q would make every portal "+
+			"visit a mixed-content warning", logoURL)
+	}
+	if portalHidden && launchURL != "" {
+		return fmt.Errorf("-portal-hidden and -launch-url contradict each other: " +
+			"the launch URL exists only for the portal this flag removes it from")
 	}
 	// The display name is what a user reads on the consent screen while deciding
 	// whether to trust an application. The first version accepted -name and
@@ -1189,10 +1212,13 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect 
 	// does not have to change during a migration.
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
-		                          client_secret_hash, scopes)
+		                          client_secret_hash, scopes,
+		                          initiate_login_uri, logo_uri, portal_hidden)
 		VALUES ($1, $2, $3, $4, NULLIF($5, ''),
-		        ARRAY['openid','profile','email','offline_access'])`,
-		clientID, orgID, name, kind, secretHash); err != nil {
+		        ARRAY['openid','profile','email','offline_access'],
+		        NULLIF($6,''), NULLIF($7,''), $8)`,
+		clientID, orgID, name, kind, secretHash,
+		launchURL, logoURL, portalHidden); err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
 	if _, err := conn.Exec(ctx,

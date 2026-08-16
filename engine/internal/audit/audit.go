@@ -93,6 +93,14 @@ type Event struct {
 
 // Write appends one event inside the caller's transaction.
 //
+// auditChainLock is the advisory lock key serialising appends.
+//
+// An arbitrary constant, chosen once. It only has to be distinct from every
+// other advisory lock this engine takes -- the janitor's is the other one --
+// because two subsystems sharing a key would block each other for no reason
+// and neither would be wrong about anything.
+const auditChainLock int64 = 0x51474e415249_01
+
 // The chain: entry_hash = SHA-256(prev_hash || canonical(record)). Reading the
 // previous hash and inserting happen in the same transaction, so two concurrent
 // writers cannot both chain off the same predecessor and silently fork the chain
@@ -133,14 +141,42 @@ func Write(ctx context.Context, tx pgx.Tx, e Event) error {
 		return fmt.Errorf("audit: canonicalising detail: %w", err)
 	}
 
-	// FOR UPDATE on the tail row: this is what serialises concurrent appenders.
-	// Without it two transactions read the same prev_hash and produce two
-	// entries claiming the same predecessor, which is indistinguishable from a
-	// deletion when the chain is later verified.
+	// An advisory lock on the CHAIN, not a row lock on its current tail.
+	//
+	// The first version took FOR UPDATE on the tail row, reasoning that
+	// appenders would then serialise. They do not, and the difference is a
+	// property of READ COMMITTED that is easy to miss:
+	//
+	//	T1 and T2 both find row 134 as the tail. T1 locks it.
+	//	T2 blocks.
+	//	T1 inserts 135 (prev = 134) and commits, releasing the lock.
+	//	T2 wakes, RE-READS ROW 134 -- unchanged, so it proceeds -- and inserts
+	//	136, also claiming 134 as its predecessor.
+	//
+	// The lock was held on the row the query had already chosen, and the
+	// ORDER BY was never re-evaluated. Two entries then share a predecessor,
+	// which is exactly what a deleted entry looks like when the chain is
+	// verified: the log reports tampering where there was none, and a log that
+	// cries wolf is a log nobody checks.
+	//
+	// Found by running two instances against one database and watching the
+	// audit tests fail on data nobody had touched. It was never specific to
+	// more than one instance -- two concurrent sign-ins do it on a single one --
+	// but two made it frequent enough to notice.
+	//
+	// The lock is transaction-scoped, so it is released by the commit or
+	// rollback and a process that dies mid-append cannot wedge the log. The key
+	// is a constant because the chain is global: it is verified in id order
+	// across every organisation, so a per-organisation lock would permit
+	// exactly the interleaving this prevents.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, auditChainLock); err != nil {
+		return fmt.Errorf("audit: taking the chain lock: %w", err)
+	}
+
 	var prev []byte
 	err = tx.QueryRow(ctx, `
 		SELECT entry_hash FROM core.audit_events
-		ORDER BY id DESC LIMIT 1 FOR UPDATE`).Scan(&prev)
+		ORDER BY id DESC LIMIT 1`).Scan(&prev)
 	if err != nil && err != pgx.ErrNoRows {
 		return fmt.Errorf("audit: reading chain head: %w", err)
 	}

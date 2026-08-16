@@ -79,7 +79,7 @@ var twoWordCommands = map[string]bool{
 	"janitor": true, "keys": true, "import": true, "proxy": true,
 	"saml": true, "idp": true, "scim": true, "scim-source": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
-	"ssf": true, "registration": true, "export": true, "dir": true,
+	"ssf": true, "registration": true, "export": true, "dir": true, "audit": true,
 }
 
 func usage() error {
@@ -238,6 +238,8 @@ func run(args []string) error {
 	groupName := fs.String("group", "", "group name")
 	memberEmail := fs.String("email-member", "", "member's email or username")
 	removeMember := fs.Bool("remove", false, "remove the member instead of adding")
+	declaredBy := fs.String("by", "", "who is declaring an audit checkpoint")
+	reason := fs.String("reason", "", "why an audit checkpoint is being declared")
 	policyFile := fs.String("policy-file", "", "path to a policy file")
 	jwksPath := fs.String("jwks", "", "file containing the client's PUBLIC JWKS")
 	onlyGroups := fs.String("only", "", "comma-separated groups to release (default: all)")
@@ -335,6 +337,8 @@ func run(args []string) error {
 			*ldapPassword, *ldapBaseDN, *ldapFlavour, *ldapCA, *ldapStartTLS)
 	case "dir sync":
 		return dirSync(ctx, conn, *slug, *apply)
+	case "audit checkpoint":
+		return auditCheckpoint(ctx, conn, *orgID, *declaredBy, *reason)
 	case "export audit":
 		return exportAudit(ctx, conn, *orgID, *fromDay, *toDay, *outFile)
 	case "registration enable":
@@ -2950,7 +2954,22 @@ func exportAudit(ctx context.Context, conn *pgx.Conn, orgID, from, to, out strin
 		fmt.Fprintf(os.Stderr, "  first entry hash : %s\n  last entry hash  : %s\n",
 			res.FirstHash, res.LastHash)
 	}
-	if res.ChainVerified {
+	if res.ChainVerified && res.Checkpoint != nil {
+		// Verified, but only since a declared restart point -- and that has to be
+		// stated at least as loudly as the verification itself. An operator who
+		// reads "verified" and misses "since" would be citing a document that
+		// disclaims the period they care about.
+		cp := res.Checkpoint
+		fmt.Fprintf(os.Stderr, "\n  Chain verified over %d entries SINCE A CHECKPOINT.\n",
+			res.Checked)
+		fmt.Fprintf(os.Stderr, "\n  The %d entries before it are NOT asserted by this export.\n",
+			cp.SkippedEntries)
+		fmt.Fprintf(os.Stderr, "  A checkpoint was declared on %s by %s:\n    %s\n",
+			cp.At.Format("2006-01-02"), cp.DeclaredBy, cp.Reason)
+		fmt.Fprintln(os.Stderr, "\n  A checkpoint repairs nothing. It records that the earlier chain was\n"+
+			"  already broken and that verification restarts here. If you are\n"+
+			"  submitting this somewhere that matters, submit the reason with it.")
+	} else if res.ChainVerified {
 		fmt.Fprintf(os.Stderr, "\n  Chain verified over all %d entries.\n", res.Checked)
 		fmt.Fprintln(os.Stderr, "  Every row commits to its predecessor, so this file can be checked\n"+
 			"  against the database later: a deleted or altered row breaks the chain\n"+
@@ -2961,6 +2980,14 @@ func exportAudit(ctx context.Context, conn *pgx.Conn, orgID, from, to, out strin
 		// the fact would be worse than no export at all.
 		fmt.Fprintf(os.Stderr, "\n  WARNING: the audit chain is BROKEN at entry %d "+
 			"(after checking %d).\n", res.BrokenAt, res.Checked)
+		if res.Checkpoint != nil {
+			// Said explicitly, because the operator declared that checkpoint and
+			// may otherwise assume this is the same old break they already
+			// disclaimed. It is not: this one is after it.
+			fmt.Fprintf(os.Stderr, "  This break is AFTER the checkpoint declared on %s, "+
+				"so it is\n  NOT covered by that declaration. Something has changed "+
+				"since.\n", res.Checkpoint.At.Format("2006-01-02"))
+		}
 		fmt.Fprintln(os.Stderr, "  This file is still the data as stored, but its integrity cannot be\n"+
 			"  asserted. Investigate before submitting it anywhere that matters.")
 		return fmt.Errorf("the audit chain did not verify")
@@ -3843,5 +3870,39 @@ func radiusSetClientEnabled(ctx context.Context, conn *pgx.Conn, name string,
 		fmt.Print("  already established through it -- RADIUS has no way to reach back\n")
 		fmt.Print("  into a switch and close them.\n")
 	}
+	return nil
+}
+
+// auditCheckpoint declares a restart point in a chain that is already broken.
+//
+// It repairs nothing. See internal/audit/checkpoint.go for why that is the
+// point rather than a limitation.
+func auditCheckpoint(ctx context.Context, conn *pgx.Conn, orgID, by, reason string) error {
+	if orgID == "" {
+		var err error
+		if orgID, err = firstOrg(ctx, conn); err != nil {
+			return err
+		}
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	cp, err := audit.DeclareCheckpoint(ctx, tx, orgID, by, reason)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	fmt.Printf("checkpoint declared at audit entry %d\n", cp.EntryID)
+	fmt.Printf("  %d earlier entries are no longer asserted by an export\n",
+		cp.SkippedEntries)
+	fmt.Printf("  declared by : %s\n  reason      : %s\n", cp.DeclaredBy, cp.Reason)
+	fmt.Print("\n  Nothing was repaired, moved or removed. Every export that crosses\n")
+	fmt.Print("  this point will say so, and will carry that reason with it.\n")
 	return nil
 }

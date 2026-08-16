@@ -55,6 +55,14 @@ type ExportResult struct {
 	Checked       int
 	FirstHash     string
 	LastHash      string
+
+	// Checkpoint is set when verification started from a declared restart point
+	// rather than from the beginning of the trail.
+	//
+	// A caller that reports ChainVerified without also reporting this would be
+	// making a stronger claim than the data supports: everything before the
+	// checkpoint is not asserted, and a reader has to be told so.
+	Checkpoint *Checkpoint
 }
 
 // ExportCSV writes the trail and reports whether it can be trusted.
@@ -65,12 +73,55 @@ type ExportResult struct {
 func ExportCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions) (*ExportResult, error) {
 	res := &ExportResult{}
 
+	// The whole trail first. If it verifies, nothing else is needed and no
+	// disclaimer is made.
 	brokenAt, checked, err := Verify(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("verifying the chain before export: %w", err)
 	}
 	res.BrokenAt, res.Checked = brokenAt, checked
 	res.ChainVerified = brokenAt == 0
+
+	// Only when it does not: fall back to a declared checkpoint, if an operator
+	// has recorded one.
+	//
+	// This is deliberately the second attempt rather than the first. A
+	// checkpoint narrows what is being asserted, so it must never be used while
+	// a wider claim is available -- otherwise an export would quietly assert
+	// less than it could, every time, and nobody would notice.
+	if !res.ChainVerified {
+		cp, cerr := LatestCheckpoint(ctx, tx)
+		if cerr != nil {
+			return nil, fmt.Errorf("reading the audit checkpoint: %w", cerr)
+		}
+		if cp != nil && brokenAt < cp.EntryID {
+			// The break is BEFORE the checkpoint, which is what a checkpoint is
+			// for. A break after it is a live problem and no declaration covers
+			// it.
+			fromBroken, fromChecked, verr := VerifyFrom(ctx, tx, cp.EntryID)
+			if verr != nil {
+				return nil, fmt.Errorf("verifying from the checkpoint: %w", verr)
+			}
+			if fromBroken == 0 {
+				res.ChainVerified = true
+				res.Checkpoint = cp
+				res.Checked = fromChecked
+				res.BrokenAt = 0
+			} else {
+				// A break AFTER the checkpoint. Report THAT one, not the old
+				// disclaimed break the first pass happened to reach first.
+				//
+				// The first version reported entry 136 -- a fork from a fixed bug,
+				// already written off by the declaration -- while the real problem
+				// was a row deleted at 5635. An operator who knew about 136 would
+				// have recognised it and moved on, which is precisely the wrong
+				// outcome for a report that a row has gone missing.
+				res.BrokenAt = fromBroken
+				res.Checked = fromChecked
+				res.Checkpoint = cp
+			}
+		}
+	}
 
 	cw := csv.NewWriter(w)
 	defer cw.Flush()

@@ -82,6 +82,8 @@ type Stats struct {
 	// SAMLSourceStateSwept are inbound SAML requests and spent assertion records
 	// past their retention.
 	SAMLSourceStateSwept int64
+	// RateWindowsPurged are rate-limit counters whose window has passed.
+	RateWindowsPurged int64
 	// DuoChallengesSwept are Duo prompts the user abandoned.
 	DuoChallengesSwept int64
 	Parked             []string
@@ -180,6 +182,13 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 		return st, fmt.Errorf("sweeping inbound SAML state: %w", err)
 	}
 
+	// Rate-limit windows that have passed. Housekeeping rather than a security
+	// control -- an old window cannot permit anything, since the current one is
+	// computed from the clock.
+	if st.RateWindowsPurged, err = store.PurgeRateLimits(ctx, tx); err != nil {
+		return st, fmt.Errorf("purging rate limit windows: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return st, fmt.Errorf("committing janitor pass: %w", err)
 	}
@@ -255,6 +264,7 @@ func (s Stats) Log(log *slog.Logger) {
 	add("dpop_proofs_swept", s.DPoPProofsSwept)
 	add("pushed_requests_swept", s.PushedRequestsSwept)
 	add("saml_source_state_swept", s.SAMLSourceStateSwept)
+	add("rate_windows_purged", s.RateWindowsPurged)
 	add("duo_challenges_swept", s.DuoChallengesSwept)
 
 	if len(fields) > 0 {

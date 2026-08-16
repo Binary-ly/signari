@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,7 +105,8 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// The login endpoint is the expensive one: every attempt costs an Argon2
 		// evaluation. Rate limiting in FRONT of the hash is what keeps a flood
 		// from turning into memory exhaustion, independent of the semaphore.
-		login:     newBucket(5, 20),
+		// An overload guard, not the security limit: see allowSignInAttempt.
+		login:     newBucket(50, 100),
 		device:    newBucket(3, 10),
 		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
 		policies:  newPolicyCache(),
@@ -217,9 +219,9 @@ func (s *Server) rateLimitedLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CSRF is checked BEFORE the rate limiter, not after. The limiter is a single
-	// global bucket, so charging forged cross-site posts against it would let one
-	// attacker page lock every real user out of signing in.
+	// CSRF is checked BEFORE the rate limiter, not after: charging forged
+	// cross-site posts against somebody's budget would let one attacker page
+	// spend the limit of every visitor who loads it.
 	if !checkCSRF(r) {
 		// Re-rendered rather than returned as a bare error: the common real cause
 		// is a cookie the browser dropped or a form left open across a restart,
@@ -230,12 +232,118 @@ func (s *Server) rateLimitedLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A cheap in-process guard FIRST, set high enough that it is not the
+	// security limit.
+	//
+	// Its job is protecting the database from a flood, not bounding guesses: the
+	// shared limits below cost a round trip each, and an unbounded flood of them
+	// is its own denial of service. Deliberately generous, so a real deployment
+	// never sees it and an attacker hits the keyed limits instead.
 	if !s.login.allow() {
 		w.Header().Set("Retry-After", "2")
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many sign-in attempts")
 		return
 	}
+
+	if !s.allowSignInAttempt(w, r) {
+		return
+	}
 	s.handleLoginPost(w, r)
+}
+
+// Sign-in limits, shared by every instance.
+//
+// Two keys, because one is not enough and each answers a different attack:
+//
+//	per address     stops one source grinding through many accounts
+//	per account     stops many sources grinding through ONE account
+//
+// The old design had neither. It had a single global bucket in process memory,
+// which failed in both directions at once: one attacker could exhaust it and
+// rate-limit the whole organisation, while guessing spread across accounts was
+// never counted per account at all. And being per process, it multiplied by the
+// number of instances -- measured at 26 attempts allowed on one instance and 40
+// of 40 across two.
+const (
+	// signInPerIPLimit is tight. A person mistypes a password a few times; a
+	// source making twenty attempts in five minutes is not doing that.
+	signInPerIPLimit  = 20
+	signInPerIPWindow = 5 * time.Minute
+
+	// signInPerAccountLimit is deliberately more generous, because this key is
+	// chosen by whoever submits the form.
+	//
+	// That is the tradeoff worth naming: any per-account limit is a way to
+	// degrade one named person's sign-in on purpose. It is bounded here in two
+	// ways -- the number is high enough that a real user never reaches it, and
+	// it is a RATE limit that expires by itself rather than a lockout needing an
+	// administrator. Fifteen minutes of slower sign-in is a far smaller harm
+	// than an account somebody has to be talked out of.
+	signInPerAccountLimit  = 30
+	signInPerAccountWindow = 15 * time.Minute
+)
+
+// allowSignInAttempt charges one attempt against both limits.
+func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool {
+	ctx := r.Context()
+
+	// The address comes from the socket, never from a header. X-Forwarded-For is
+	// set by whoever sends it, so honouring it here would let an attacker spend
+	// somebody else's budget and keep their own.
+	ip := clientIP(r)
+	if ip == "" {
+		ip = "unknown"
+	}
+
+	byIP, err := store.AllowRate(ctx, s.db, "signin:ip:"+ip,
+		signInPerIPLimit, signInPerIPWindow)
+	if err != nil {
+		// Refused, not waved through. Signing in needs the database anyway -- the
+		// credential lookup is one query later -- so failing closed here costs
+		// nothing that was going to work, and failing open would turn a database
+		// blip into an unlimited guessing window.
+		s.log.Error("checking the sign-in rate limit", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
+		return false
+	}
+	if !byIP.Allowed {
+		s.tooManyAttempts(w, byIP.RetryAfter)
+		return false
+	}
+
+	// The identifier is lowercased so that Alice@example.com and
+	// alice@example.com share one budget rather than giving an attacker a fresh
+	// one per spelling.
+	identifier := strings.ToLower(strings.TrimSpace(r.PostForm.Get("username")))
+	if identifier == "" {
+		return true
+	}
+	byAccount, err := store.AllowRate(ctx, s.db, "signin:user:"+identifier,
+		signInPerAccountLimit, signInPerAccountWindow)
+	if err != nil {
+		s.log.Error("checking the per-account sign-in rate limit", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
+		return false
+	}
+	if !byAccount.Allowed {
+		s.tooManyAttempts(w, byAccount.RetryAfter)
+		return false
+	}
+	return true
+}
+
+// tooManyAttempts answers identically whichever limit was reached.
+//
+// Distinguishing them would say whether the account exists: "too many attempts
+// for this account" is only reachable for an account somebody has, which makes
+// the limiter a user-enumeration oracle.
+func (s *Server) tooManyAttempts(w http.ResponseWriter, retryAfter time.Duration) {
+	secs := int(retryAfter.Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	writeError(w, http.StatusTooManyRequests, "rate_limited", "too many sign-in attempts")
 }
 
 // renderLogin shows the sign-in form, carrying the parked authorization request

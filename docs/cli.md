@@ -1,5 +1,10 @@
 # `signari` — command reference
 
+> Related: [comparison-matrix.md](comparison-matrix.md) (how we compare, with
+> evidence markers), [benchmarks.md](benchmarks.md) (measured numbers and method),
+> [roadmap-standards.md](roadmap-standards.md) (what the working groups are doing).
+
+
 Every command the binary dispatches. Kept complete by a test
 (`TestEveryCommandIsDocumented`), because the usual failure is not a page that
 rots — it is a command that ships and is never written down, which nobody finds,

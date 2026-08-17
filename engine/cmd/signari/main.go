@@ -4526,9 +4526,9 @@ func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind string
 		return fmt.Errorf("give -name, something that identifies where this outpost runs")
 	}
 	switch kind {
-	case "ldap", "radius", "proxy":
+	case "ldap", "radius", "proxy", "desktop":
 	default:
-		return fmt.Errorf("give -kind-outpost: ldap, radius or proxy. The token is "+
+		return fmt.Errorf("give -kind-outpost: ldap, radius, proxy or desktop. The token is "+
 			"bound to one protocol, so a leaked token costs that protocol rather "+
 			"than all of them (got %q)", kind)
 	}

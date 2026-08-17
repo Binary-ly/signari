@@ -151,6 +151,10 @@ Set on the OUTPOST, not the core. See [outposts.md](outposts.md).
 |---|---|
 | `SIGNARI_OUTPOST_TOKEN` | Token from `signari outpost create`. An alternative to `-outpost-token`, so it does not appear in the process list |
 
+Outpost kinds: `ldap`, `radius`, `proxy`, and `desktop` — the last for a
+credential provider or PAM module, which may verify a second factor as well as a
+password. See [desktop-login.md](desktop-login.md).
+
 ## FIPS 140-3
 
 No configuration; it is a build and runtime mode. See [fips.md](fips.md) for what

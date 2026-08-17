@@ -139,6 +139,7 @@ One gate every new password passes through — sign-up, recovery, admin, CLI. Se
 | | |
 |---|---|
 | `SIGNARI_PASSWORD_MIN_LENGTH` | Floor, counted in characters not bytes (default 8) |
+| `SIGNARI_PASSWORD_MIN_SCORE` | Guess-strength floor, 0–4 (default **3**). No network, nothing leaked, so it is on by default — a default that accepts `Password123!` ships weak passwords |
 | `SIGNARI_PASSWORD_HISTORY` | Refuse reuse of the last N passwords. 0 (default) disables it |
 | `SIGNARI_PASSWORD_BREACH_CHECK` | `1` to consult Have I Been Pwned. Off by default: a binary upgrade must not silently start making outbound calls |
 | `SIGNARI_PASSWORD_BREACH_LIST` | Path to a local SHA-1 corpus, for deployments that cannot call out at all |

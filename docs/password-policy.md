@@ -14,6 +14,39 @@ and the weak one is the one an attacker uses.
 | Reuse | Refuses the last N passwords |
 | Breach | Refuses passwords in a known breach corpus |
 
+## Guess strength
+
+`SIGNARI_PASSWORD_MIN_SCORE` (default **3**, scale 0–4) refuses passwords that
+would fall early to somebody who knows how people build them.
+
+`Password123!` is twelve characters and satisfies every composition rule ever
+written. `qwertyuiop12` is twelve characters. `aaaaaaaaaaaa` is twelve
+characters. A length check passes all three and an attacker's first thousand
+guesses contain all three.
+
+Detected: keyboard walks, sequences, repeated characters, repeated blocks,
+dates, leetspeak substitutions, a password built from your own name or address,
+and a common password with digits or symbols bolted on. The score is a **guess
+count**, because that is the unit an attacker actually spends.
+
+The default of **3** was measured, not chosen: at a floor of 2, `Password123!`,
+`Summer2026!`, `admin123` and even the four-character `gT4v` all pass — they
+score exactly 2. A floor that admits the most-guessed password shape in the world
+is not a floor.
+
+**On by default**, unlike the breach check — it makes no network call and leaks
+nothing, so there is no reason to make an operator opt in.
+
+**It runs before the network check**, so the cheap structural test happens first
+and the corpus is only consulted for passwords that already survived it.
+
+**The word list is a few hundred entries, not thirty thousand.** The first
+version shipped none at all, on the theory that the breach corpus covers common
+words. Its own test disproved that immediately: `p@ssw0rd` scored 4/4, because
+no *structural* pattern matches an English word, and the corpus is off by
+default. Structure detection and a small list catch what a corpus cannot — a
+password constructed from a cheap pattern that has never appeared in a dump.
+
 ## What is deliberately **not** checked
 
 Composition rules — "one uppercase, one digit, one symbol". NIST SP 800-63B

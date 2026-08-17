@@ -24,6 +24,21 @@ func PolicyFromEnv() Policy {
 			p.MinLength = n
 		}
 	}
+	// Strength estimation is ON by default at score 2.
+	//
+	// Unlike the breach check it makes no network call and leaks nothing, so
+	// there is no reason to make an operator opt in.
+	//
+	// 3, not 2. Measured rather than picked: at a floor of 2, `Password123!`,
+	// `Summer2026!`, `admin123` and even the four-character `gT4v` all pass --
+	// they score exactly 2. A floor that admits the single most-guessed password
+	// shape in the world is not a floor.
+	p.MinScore = 3
+	if v := os.Getenv("SIGNARI_PASSWORD_MIN_SCORE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 4 {
+			p.MinScore = n
+		}
+	}
 	if v := os.Getenv("SIGNARI_PASSWORD_HISTORY"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			p.HistoryDepth = n

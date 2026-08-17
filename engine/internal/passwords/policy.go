@@ -53,6 +53,13 @@ type Policy struct {
 	// HistoryDepth refuses reuse of this many previous passwords. 0 disables it.
 	HistoryDepth int
 
+	// MinScore refuses passwords below this guess-strength score (0..4).
+	//
+	// 0 disables it. This is the check that catches `Password123!` -- twelve
+	// characters, every composition rule satisfied, and in an attacker's first
+	// thousand guesses. Length cannot see it and composition rules encourage it.
+	MinScore int
+
 	// RecheckEvery re-consults the corpus at sign-in, at most this often per
 	// credential. 0 disables it.
 	//
@@ -75,6 +82,8 @@ type Result struct {
 	// logs this; a control that silently stopped running is worse than one that
 	// was never configured.
 	BreachCheckRan bool
+	// Score is the guess-strength estimate, when one was made.
+	Score int
 }
 
 // Check validates a candidate password.
@@ -130,6 +139,17 @@ func (p Policy) Check(ctx context.Context, candidate, identity string,
 	// A single repeated character passes any length rule and is in every corpus.
 	if repeatedRun(candidate) {
 		return res, fmt.Errorf("that password is one character repeated")
+	}
+
+	// Guess strength, BEFORE the network. It costs nothing, it runs the same
+	// everywhere, and it catches the structural weakness a corpus lookup would
+	// only catch if that exact string had already leaked.
+	if p.MinScore > 0 {
+		st := Estimate(candidate, identity)
+		res.Score = st.Score
+		if st.Score < p.MinScore {
+			return res, fmt.Errorf("%s", st.Explain())
+		}
 	}
 
 	// Reuse, before the breach check: it needs no network and a reused password

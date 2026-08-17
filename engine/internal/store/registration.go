@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/passwords"
 )
 
@@ -181,10 +182,19 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 		if serr != nil {
 			return nil, serr
 		}
-		h := passwords.NewHasher(passwords.MemoryBudgetMiB)
-		hashed, herr := h.Hash(ctx, secret)
-		if herr != nil {
-			return nil, herr
+		// 32 bytes from the system random source -- 256 bits. Hashed by its
+		// entropy rather than as though it were a password; see
+		// internal/clients. Without this a dynamically registered client pays
+		// 33 ms per token request while a CLI-created one pays under one,
+		// which is an inconsistency nobody would predict from the outside.
+		hashed, ok := clients.HashSecret(secret)
+		if !ok {
+			h := passwords.NewHasher(passwords.MemoryBudgetMiB)
+			var herr error
+			hashed, herr = h.Hash(ctx, secret)
+			if herr != nil {
+				return nil, herr
+			}
 		}
 		kind = "confidential"
 		secretHash = &hashed

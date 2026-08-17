@@ -4,6 +4,9 @@
 **in IETF Working Group Last Call**. Signari issues them.
 
 
+## How "nobody else has this" was checked
+
+
 ## The problem
 
 An access token proves who asked **at the edge**. Six services deep, the seventh

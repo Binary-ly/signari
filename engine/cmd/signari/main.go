@@ -19,6 +19,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"gopkg.in/yaml.v3"
 	"io"
 	"log/slog"
 	"net"
@@ -31,6 +32,7 @@ import (
 	"signari.dev/engine/internal/kerberos"
 	"signari.dev/engine/internal/logouttest"
 	"signari.dev/engine/internal/outpost"
+	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/provision"
 	"slices"
 	"strconv"
@@ -89,6 +91,7 @@ var twoWordCommands = map[string]bool{
 	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"invite": true, "signup": true, "outpost": true, "provision": true,
+	"prompt":   true,
 	"kerberos": true,
 	"ssf":      true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
 }
@@ -233,6 +236,7 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	promptFile := fs.String("prompt-file", "", "YAML defining a sign-in prompt")
 	configFile := fs.String("f", "", "declarative configuration file")
 	prune := fs.Bool("prune", false,
 		"delete anything the file does not mention. Off by default: a missing "+
@@ -474,6 +478,10 @@ func run(args []string) error {
 		return signupDisable(ctx, conn, *orgID)
 	case "signup show":
 		return signupShow(ctx, conn, *orgID)
+	case "prompt set":
+		return promptSet(ctx, conn, *orgID, *slug, *promptFile)
+	case "prompt list":
+		return promptList(ctx, conn, *orgID)
 	case "plan":
 		return configPlan(ctx, conn, *orgID, *configFile, *prune, false)
 	case "apply":
@@ -5053,4 +5061,119 @@ func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
 	}
 	fmt.Println("\napplied")
 	return nil
+}
+
+// promptDef is the YAML shape of a sign-in prompt.
+type promptDef struct {
+	Slug   string          `yaml:"slug"`
+	Title  string          `yaml:"title"`
+	Body   string          `yaml:"body"`
+	Once   *bool           `yaml:"once"`
+	Order  int             `yaml:"order"`
+	Fields []prompts.Field `yaml:"fields"`
+}
+
+// promptSet defines or replaces a prompt shown during sign-in.
+func promptSet(ctx context.Context, conn *pgx.Conn, orgID, slug, path string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	if path == "" {
+		return fmt.Errorf("give -prompt-file, the YAML defining the prompt")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var d promptDef
+	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+	dec.KnownFields(true)
+	if err := dec.Decode(&d); err != nil {
+		return fmt.Errorf("the prompt did not parse: %w", err)
+	}
+	if slug != "" {
+		d.Slug = slug
+	}
+
+	p := prompts.Prompt{Slug: d.Slug, Title: d.Title, Body: d.Body, Fields: d.Fields}
+	// Validated before it is stored. A prompt that cannot be answered is shown
+	// on every sign-in forever, and the person who notices is every user.
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	once := true
+	if d.Once != nil {
+		once = *d.Once
+	}
+
+	fields, err := json.Marshal(d.Fields)
+	if err != nil {
+		return err
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.prompts (org_id, slug, title, body, fields, once, position)
+		VALUES ($1::uuid, $2, $3, NULLIF($4,''), $5, $6, $7)
+		ON CONFLICT (org_id, slug) DO UPDATE SET
+			title = EXCLUDED.title, body = EXCLUDED.body, fields = EXCLUDED.fields,
+			once = EXCLUDED.once, position = EXCLUDED.position, updated_at = now()`,
+		orgID, d.Slug, d.Title, d.Body, fields, once, d.Order); err != nil {
+		return err
+	}
+
+	fmt.Printf("prompt %s\n", d.Slug)
+	fmt.Printf("  %s\n", d.Title)
+	for _, f := range d.Fields {
+		req := ""
+		if f.Required {
+			req = " (required)"
+		}
+		fmt.Printf("    %-10s %s%s\n", f.Type, f.Label, req)
+	}
+	if once {
+		fmt.Println("  asked until answered, then never again")
+	} else {
+		fmt.Println("  asked on EVERY sign-in")
+	}
+	fmt.Println("\nIt is shown between authentication and the session, on every")
+	fmt.Println("sign-in route -- password, passkey, MFA, Kerberos and federated.")
+	return nil
+}
+
+func promptList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT p.slug, p.title, p.once, p.enabled,
+		       (SELECT count(*) FROM core.prompt_responses r WHERE r.prompt_id = p.id)
+		  FROM core.prompts p WHERE p.org_id = $1::uuid
+		 ORDER BY p.position, p.slug`, orgID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var slug, title string
+		var once, enabled bool
+		var answered int
+		if err := rows.Scan(&slug, &title, &once, &enabled, &answered); err != nil {
+			return err
+		}
+		state := "enabled"
+		if !enabled {
+			state = "disabled"
+		}
+		mode := "once"
+		if !once {
+			mode = "every sign-in"
+		}
+		fmt.Printf("  %-18s %-30s %-9s %-14s %d answered\n",
+			slug, title, state, mode, answered)
+		n++
+	}
+	if n == 0 {
+		fmt.Println("  no prompts")
+	}
+	return rows.Err()
 }

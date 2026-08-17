@@ -1105,6 +1105,29 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 
 	ctx := r.Context()
 
+	// Prompts, before the session exists.
+	//
+	// The check lives HERE rather than at each of the eight places that sign
+	// somebody in, so a new authentication method cannot forget it. A terms
+	// prompt that covers five routes out of six is a notice nobody agreed to on
+	// the sixth, and that is discovered by a lawyer rather than a test.
+	//
+	// The transaction is abandoned rather than committed: the person is
+	// authenticated but does not have a session yet, and will not until they
+	// answer.
+	//
+	// Read through TX, not the pool. When this is re-entered after an answer,
+	// that answer is written in this same transaction and not yet committed --
+	// the pool cannot see it, so the prompt would come back, be answered again,
+	// and come back again. An infinite loop that locks out every user, appearing
+	// only once a prompt exists.
+	if pending, perr := store.PendingPrompts(ctx, tx, orgID, userID); perr != nil {
+		s.log.Error("reading prompts", "err", perr)
+	} else if len(pending) > 0 {
+		s.beginPrompt(w, r, userID, orgID, amr, authzQuery, pending[0])
+		return
+	}
+
 	// Two independent random values: a public sid that goes in tokens, and a
 	// secret cookie token that never leaves the browser. Deriving one from the
 	// other would collapse them back into a single value.

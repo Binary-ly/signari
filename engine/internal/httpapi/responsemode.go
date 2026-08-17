@@ -110,12 +110,11 @@ func (s *Server) deliverAuthzResponse(w http.ResponseWriter, r *http.Request,
 
 // postAuthzResponse renders the self-submitting form.
 func (s *Server) postAuthzResponse(w http.ResponseWriter, redirectURI string, p responseParams) {
-	raw := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+	nonce, err := newCSPNonce()
+	if err != nil {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	nonce := base64.RawURLEncoding.EncodeToString(raw)
 
 	type field struct{ Name, Value string }
 	var fields []field
@@ -166,3 +165,15 @@ padding:0 1rem;text-align:center}button{padding:.6rem 1rem;font-size:1rem}</styl
 </form>
 <script nonce="{{.Nonce}}">document.forms[0].submit();</script>
 </body></html>`))
+
+// newCSPNonce mints a per-response nonce for an inline script.
+//
+// Per response, never reused: a nonce that repeats is a nonce an attacker can
+// predict, which makes it exactly as useful as 'unsafe-inline'.
+func newCSPNonce() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}

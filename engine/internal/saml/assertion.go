@@ -439,3 +439,50 @@ func BuildStatusResponse(in StatusInput) (string, error) {
 	}
 	return doc.WriteToString()
 }
+
+// BuildSignedAssertion produces one signed <saml:Assertion>, standing alone.
+//
+// WS-Federation carries a bare assertion inside its RequestSecurityTokenResponse
+// rather than a SAML <Response>, so this exposes the same construction
+// BuildResponse uses without the protocol wrapper around it.
+//
+// Deliberately the same code path. A second assertion builder for WS-Federation
+// would be a second place for a subject confirmation or an audience restriction
+// to be forgotten, and the whole reason WS-Federation is safe here is that the
+// assertion inside it is the one this package already gets right.
+func BuildSignedAssertion(in ResponseInput, kid string, signer crypto.Signer,
+	certDER []byte) (*etree.Element, error) {
+
+	if in.Audience == "" {
+		return nil, fmt.Errorf("refusing to build an assertion with no Audience: it " +
+			"would be valid at every relying party that received it")
+	}
+	if in.Lifetime <= 0 {
+		return nil, fmt.Errorf("refusing to build an assertion with no lifetime")
+	}
+	if _, err := SignatureMethod(signer); err != nil {
+		return nil, err
+	}
+	now := in.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	// The same skew allowance as BuildResponse: a relying party whose clock is a
+	// little behind must not reject a fresh assertion.
+	notBefore := now.Add(-clockSkew)
+	notOnOrAfter := now.Add(in.Lifetime)
+
+	id, err := newID()
+	if err != nil {
+		return nil, err
+	}
+	assertion := buildAssertion(id, in, now, notBefore, notOnOrAfter)
+	signed, err := signElement(assertion, signer, certDER)
+	if err != nil {
+		return nil, fmt.Errorf("signing the assertion: %w", err)
+	}
+	if err := moveSignatureAfterIssuer(signed); err != nil {
+		return nil, err
+	}
+	return signed, nil
+}

@@ -177,6 +177,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /login/callback/{slug}", s.handleFederatedCallback)
 	mux.HandleFunc("GET /account", s.handleAccount)
 	mux.HandleFunc("GET /account/connected", s.handleConnectedApps)
+	mux.HandleFunc("GET /wsfed", s.handleWSFed)
+	mux.HandleFunc("POST /wsfed", s.handleWSFed)
 	mux.HandleFunc("GET /outpost/hello", s.handleOutpostHello)
 	mux.HandleFunc("POST /outpost/authenticate", s.handleOutpostAuthenticate)
 	mux.HandleFunc("POST /outpost/lookup", s.handleOutpostLookup)

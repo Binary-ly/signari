@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 
@@ -154,4 +155,75 @@ func TestEveryRLSTableGrantsTheEngine(t *testing.T) {
 		t.Fatal("no policies found in schema core; this test proves nothing")
 	}
 	t.Logf("checked %d policies", checked)
+}
+
+// TestEveryPolicyLetsTheEngineIn is the general form of a bug that has now
+// happened twice.
+//
+// Since 0018 every tenant table's policy reads `core.is_engine() OR org_id =
+// core.current_org_id()`. The engine sets no org context on its connection, so
+// a policy without the first half evaluates against NULL and returns nothing --
+// and the feature fails looking like missing data rather than a permissions
+// problem.
+//
+// It is invisible in development. A development DSN normally names a superuser,
+// superusers bypass row-level security completely, and every policy therefore
+// appears to work until the first correctly-configured deployment.
+//
+// So rather than trusting whoever adds the next table to remember, this asserts
+// it. A policy may instead be deliberately permissive -- `USING (true)`, as
+// core.revoked_jtis is, with the reasoning written in its migration -- and that
+// is accepted here precisely because it was a decision someone wrote down.
+func TestEveryPolicyLetsTheEngineIn(t *testing.T) {
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, testDSN(t))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+
+	rows, err := conn.Query(ctx, `
+		SELECT tablename, policyname, qual
+		  FROM pg_policies
+		 WHERE schemaname = 'core'
+		 ORDER BY tablename`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	var offenders []string
+	n := 0
+	for rows.Next() {
+		var table, policy string
+		var qual *string
+		if err := rows.Scan(&table, &policy, &qual); err != nil {
+			t.Fatal(err)
+		}
+		n++
+		if qual == nil {
+			continue
+		}
+		q := *qual
+		// Either the engine hatch, or an explicit unconditional permit.
+		if strings.Contains(q, "is_engine") || strings.TrimSpace(q) == "true" {
+			continue
+		}
+		offenders = append(offenders, table+"."+policy+": "+q)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if n < 20 {
+		t.Fatalf("only %d policies were found; this test is not reading pg_policies "+
+			"correctly rather than the schema having shrunk", n)
+	}
+	if len(offenders) > 0 {
+		sort.Strings(offenders)
+		t.Errorf("these row-level security policies do not admit the engine, so the "+
+			"engine will read zero rows from them in any deployment that does not "+
+			"connect as a superuser:\n  %s\n\nAdd `core.is_engine() OR ...`, or make "+
+			"the policy explicitly `USING (true)` and say why in the migration.",
+			strings.Join(offenders, "\n  "))
+	}
 }

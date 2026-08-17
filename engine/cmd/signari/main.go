@@ -81,6 +81,7 @@ var twoWordCommands = map[string]bool{
 	"janitor": true, "keys": true, "import": true, "proxy": true,
 	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
+	"invite": true, "signup": true,
 	"ssf": true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
 }
 
@@ -224,6 +225,10 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins")
+	inviteTTL := fs.Duration("expires", 7*24*time.Hour, "how long the invitation lasts")
+	signupDomains := fs.String("domains", "",
+		"comma-separated email domains permitted to self-sign-up")
 	brandName := fs.String("brand-name", "", "product name shown on sign-in pages")
 	brandLogo := fs.String("brand-logo", "", "https URL of the logo shown above the sign-in form")
 	brandSupport := fs.String("brand-support", "", "https URL offered when someone cannot get in")
@@ -407,6 +412,16 @@ func run(args []string) error {
 	case "saml add-sp":
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
+	case "invite create":
+		return inviteCreate(ctx, conn, *orgID, *email, *inviteGroups, *inviteTTL, *issuer)
+	case "invite list":
+		return inviteList(ctx, conn, *orgID)
+	case "signup enable":
+		return signupEnable(ctx, conn, *orgID, *signupDomains, *inviteGroups)
+	case "signup disable":
+		return signupDisable(ctx, conn, *orgID)
+	case "signup show":
+		return signupShow(ctx, conn, *orgID)
 	case "brand set":
 		return brandSet(ctx, conn, *issuer, *brandName, *brandLogo, *brandSupport,
 			*brandPrimary, *brandOnPrimary, *brandBackground, *brandText)
@@ -4208,5 +4223,202 @@ func brandShow(ctx context.Context, conn *pgx.Conn, issuer string) error {
 	show("on-primary", op)
 	show("background", bg)
 	show("text", tx)
+	return nil
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if out == nil {
+		return []string{}
+	}
+	return out
+}
+
+// inviteCreate mints one invitation and prints the link ONCE.
+func inviteCreate(ctx context.Context, conn *pgx.Conn, orgID, email, groups string,
+	ttl time.Duration, issuer string) error {
+
+	if orgID == "" {
+		return fmt.Errorf("give -org, the organisation the new account joins")
+	}
+	if ttl <= 0 || ttl > 90*24*time.Hour {
+		return fmt.Errorf("-expires must be between a moment and 90 days; an "+
+			"invitation that outlives the reason it was sent is a standing way in "+
+			"(got %s)", ttl)
+	}
+	wanted := splitList(groups)
+	// Checked now rather than at signup. A group named here that does not exist
+	// produces an account with fewer permissions than intended, and nobody finds
+	// out until the person cannot reach something.
+	for _, g := range wanted {
+		var exists bool
+		if err := conn.QueryRow(ctx,
+			`SELECT true FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
+			orgID, g).Scan(&exists); err != nil {
+			return fmt.Errorf("no group named %q in that organisation. Create it "+
+				"first with `signari group create`, or the invitation would produce "+
+				"an account without it and nobody would notice", g)
+		}
+	}
+
+	token, hash, err := store.NewInvitationToken()
+	if err != nil {
+		return err
+	}
+	var id string
+	if err := conn.QueryRow(ctx, `
+		INSERT INTO core.invitations
+			(org_id, token_hash, email, grant_groups, expires_at)
+		VALUES ($1::uuid, $2, NULLIF($3,''), $4, now() + $5::interval)
+		RETURNING id::text`,
+		orgID, hash, strings.ToLower(strings.TrimSpace(email)), wanted,
+		fmt.Sprintf("%d seconds", int(ttl.Seconds()))).Scan(&id); err != nil {
+		return err
+	}
+
+	base := issuer
+	if base == "" {
+		base = os.Getenv("SIGNARI_ISSUER")
+	}
+	if base == "" {
+		base = "https://<your issuer>"
+	}
+	fmt.Printf("invitation %s\n", id)
+	fmt.Printf("  %s/signup?invite=%s\n", strings.TrimRight(base, "/"), token)
+	if email != "" {
+		fmt.Printf("  only %s may accept it\n", email)
+	} else {
+		fmt.Println("  anyone holding the link may accept it -- pass -email-invite to bind it")
+	}
+	if len(wanted) > 0 {
+		fmt.Printf("  joins: %s\n", strings.Join(wanted, ", "))
+	}
+	fmt.Printf("  expires in %s\n", ttl)
+	fmt.Println("\nThe link is shown once. It is stored hashed, so it cannot be printed again.")
+	return nil
+}
+
+func inviteList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT id::text, COALESCE(email,''), grant_groups, expires_at,
+		       used_at IS NOT NULL, revoked_at IS NOT NULL, expires_at < now()
+		  FROM core.invitations WHERE org_id = $1::uuid
+		 ORDER BY created_at DESC LIMIT 50`, orgID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var id, email string
+		var groups []string
+		var expires time.Time
+		var used, revoked, expired bool
+		if err := rows.Scan(&id, &email, &groups, &expires, &used, &revoked, &expired); err != nil {
+			return err
+		}
+		state := "open"
+		switch {
+		case used:
+			state = "used"
+		case revoked:
+			state = "revoked"
+		case expired:
+			state = "expired"
+		}
+		who := email
+		if who == "" {
+			who = "(anyone with the link)"
+		}
+		fmt.Printf("  %-8s %-34s %s\n", state, who, strings.Join(groups, ","))
+		n++
+	}
+	if n == 0 {
+		fmt.Println("  no invitations")
+	}
+	return rows.Err()
+}
+
+// signupEnable turns on open self-signup for an organisation.
+func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	d := splitList(domains)
+	if len(d) == 0 {
+		return fmt.Errorf("give -domains. Open signup with no domain restriction " +
+			"lets anyone on the internet create an account in this organisation, and " +
+			"that is not something to enable by leaving a flag off. Pass " +
+			"-domains '*' if it is genuinely what you want")
+	}
+	if len(d) == 1 && d[0] == "*" {
+		d = []string{}
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.signup_rules (org_id, allowed_domains, default_groups)
+		VALUES ($1::uuid, $2, $3)
+		ON CONFLICT (org_id) DO UPDATE SET
+			allowed_domains = EXCLUDED.allowed_domains,
+			default_groups = EXCLUDED.default_groups,
+			updated_at = now()`, orgID, d, splitList(groups)); err != nil {
+		return err
+	}
+	if len(d) == 0 {
+		fmt.Println("self-signup enabled for ANY email address")
+	} else {
+		fmt.Printf("self-signup enabled for: %s\n", strings.Join(d, ", "))
+	}
+	if g := splitList(groups); len(g) > 0 {
+		fmt.Printf("  new accounts join: %s\n", strings.Join(g, ", "))
+	}
+	return nil
+}
+
+func signupDisable(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	tag, err := conn.Exec(ctx, `DELETE FROM core.signup_rules WHERE org_id = $1::uuid`, orgID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		fmt.Println("self-signup was already off")
+		return nil
+	}
+	fmt.Println("self-signup disabled; only invitations create accounts now")
+	return nil
+}
+
+func signupShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	var domains, groups []string
+	var verify bool
+	err := conn.QueryRow(ctx, `
+		SELECT allowed_domains, default_groups, require_verified_email
+		  FROM core.signup_rules WHERE org_id = $1::uuid`, orgID).
+		Scan(&domains, &groups, &verify)
+	if err != nil {
+		fmt.Println("self-signup is off; accounts are created by invitation or by an administrator")
+		return nil
+	}
+	if len(domains) == 0 {
+		fmt.Println("self-signup: ANY email address")
+	} else {
+		fmt.Printf("self-signup: %s\n", strings.Join(domains, ", "))
+	}
+	if len(groups) > 0 {
+		fmt.Printf("  new accounts join: %s\n", strings.Join(groups, ", "))
+	}
 	return nil
 }

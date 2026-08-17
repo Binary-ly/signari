@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"signari.dev/engine/internal/kerberos"
 	"signari.dev/engine/internal/logouttest"
 	"signari.dev/engine/internal/outpost"
 	"signari.dev/engine/internal/provision"
@@ -87,7 +88,8 @@ var twoWordCommands = map[string]bool{
 	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"invite": true, "signup": true, "outpost": true, "provision": true,
-	"ssf": true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
+	"kerberos": true,
+	"ssf":      true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
 }
 
 func usage() error {
@@ -230,6 +232,9 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	keytabPath := fs.String("keytab", "", "path to the service keytab")
+	krbRealm := fs.String("realm", "", "Kerberos realm, e.g. EXAMPLE.COM")
+	krbSPN := fs.String("spn", "", "service principal, e.g. HTTP/auth.example.com")
 	credsFile := fs.String("credentials", "",
 		"path to the Google service account JSON or Entra client credentials")
 	targetDomain := fs.String("target-domain", "",
@@ -321,6 +326,13 @@ func run(args []string) error {
 	// would defeat the feature entirely.
 	if cmd == "outpost run" {
 		return outpostRun(*outpostCore, *outpostToken, *outpostKind, *addr, *ldapBaseDN)
+	}
+
+	// `kerberos check` needs no database. It answers "will this keytab work",
+	// which is a question about files and clocks, and it must be runnable on the
+	// machine that will serve SPNEGO before anything else is configured.
+	if cmd == "kerberos check" {
+		return kerberosCheck(*keytabPath, *krbRealm, *krbSPN)
 	}
 
 	// `brand check` needs no database: it answers "would this palette be
@@ -4881,5 +4893,82 @@ func provisionAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind,
 	fmt.Printf("  on leave    %s\n", onDeactivate)
 	fmt.Println("\nRun `signari scim sync` to see what it would change.")
 	fmt.Println("It is a DRY RUN until you pass -apply.")
+	return nil
+}
+
+// kerberosCheck proves a keytab before a user meets it.
+//
+// Kerberos fails in ways the error never explains. A wrong service principal, a
+// keytab exported at the wrong key version, a clock forty seconds out, an
+// encryption type the KDC has disabled -- every one of them reaches the user as
+// the browser quietly falling back to a password prompt, and reaches the
+// operator as nothing at all.
+//
+// This is worth more than the authentication it checks.
+func kerberosCheck(keytabPath, realm, spn string) error {
+	if keytabPath == "" {
+		return fmt.Errorf("give -keytab, the service keytab exported from the KDC")
+	}
+	cfg := kerberos.Config{KeytabPath: keytabPath, Realm: realm, ServicePrincipal: spn}
+
+	kt, err := cfg.Keytab()
+	if err != nil {
+		return err
+	}
+	entries := kerberos.Entries(kt)
+
+	fmt.Printf("keytab %s\n", keytabPath)
+	fmt.Printf("  %d principal(s)\n\n", len(entries))
+
+	problems := 0
+	sawSPN := spn == ""
+	strong := false
+	for _, e := range entries {
+		mark := " "
+		if kerberos.Weak(e.EncType) {
+			mark = "!"
+			problems++
+		} else {
+			strong = true
+		}
+		fmt.Printf("  %s %-44s kvno %-4d %s\n", mark, e.Principal, e.KVNO,
+			kerberos.EncTypeName(e.EncType))
+		if spn != "" && strings.HasPrefix(strings.ToLower(e.Principal),
+			strings.ToLower(spn)) {
+			sawSPN = true
+		}
+	}
+
+	fmt.Println()
+	if !sawSPN {
+		fmt.Printf("  PROBLEM: no entry for %s.\n", spn)
+		fmt.Println("    The browser asks the KDC for a ticket to THIS name. A keytab")
+		fmt.Println("    without it authenticates nobody, and the browser falls back to")
+		fmt.Println("    a password prompt without saying why.")
+		problems++
+	}
+	if !strong {
+		fmt.Println("  PROBLEM: every entry uses an encryption type current KDCs disable.")
+		fmt.Println("    Re-export with AES: ktpass ... /crypto AES256-SHA1, or")
+		fmt.Println("    ipa-getkeytab without -e rc4-hmac.")
+		problems++
+	}
+	if realm != "" && realm != strings.ToUpper(realm) {
+		fmt.Printf("  NOTE: realms are upper case by convention; %q is unusual and\n", realm)
+		fmt.Println("    a mismatched case is a common cause of tickets being refused.")
+	}
+
+	// The clock. Kerberos refuses a ticket more than five minutes out, and the
+	// symptom is indistinguishable from a wrong password.
+	fmt.Println()
+	fmt.Println("  Clock skew is the other common cause and cannot be checked from here:")
+	fmt.Println("    compare `date -u` on this host against the KDC. More than five")
+	fmt.Println("    minutes apart and every ticket is refused as though the credentials")
+	fmt.Println("    were wrong.")
+
+	if problems > 0 {
+		return fmt.Errorf("%d problem(s) would stop SPNEGO working", problems)
+	}
+	fmt.Println("\n  This keytab looks usable.")
 	return nil
 }

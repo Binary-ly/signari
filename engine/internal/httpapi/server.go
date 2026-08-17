@@ -6,10 +6,12 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"github.com/jcmturner/gokrb5/v8/keytab"
 	"html/template"
 	"log/slog"
 	"net/http"
 	"os"
+	"signari.dev/engine/internal/kerberos"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,6 +71,11 @@ type Server struct {
 	// has not asked for browser-based remote desktop, and an endpoint that
 	// exists but always errors is worse than one that says it is off.
 	guacdAddr string
+
+	// Kerberos, when configured. A nil keytab means the SPNEGO route is not
+	// registered at all rather than registered and always failing.
+	krbConfig kerberos.Config
+	krbKeytab *keytab.Keytab
 }
 
 // SetClientCAs supplies the authorities that may issue client certificates.
@@ -125,6 +132,12 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		mailer:    mailer,
 		texter:    texter,
 		guacdAddr: os.Getenv("SIGNARI_GUACD_ADDR"),
+		krbConfig: kerberos.Config{
+			KeytabPath:       os.Getenv("SIGNARI_KERBEROS_KEYTAB"),
+			Realm:            os.Getenv("SIGNARI_KERBEROS_REALM"),
+			ServicePrincipal: os.Getenv("SIGNARI_KERBEROS_SPN"),
+			StripRealm:       os.Getenv("SIGNARI_KERBEROS_STRIP_REALM") == "1",
+		},
 		delegator: delegated.New(),
 	}
 
@@ -133,6 +146,25 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 	// reasonably assumes it is working.
 	if why := risk.Explain(srv.geo); why != "" {
 		log.Warn("location lookup unavailable", "detail", why)
+	}
+
+	// The keytab is loaded at startup, not on the first SPNEGO request.
+	//
+	// A keytab that cannot be read is a configuration error, and discovering it
+	// when somebody tries to sign in means the person who finds out is a user
+	// and the symptom is a browser quietly falling back to a password prompt.
+	// Refused loudly here instead, with `signari kerberos check` named as the
+	// way to see what is wrong with it.
+	if srv.krbConfig.KeytabPath != "" {
+		kt, kerr := srv.krbConfig.Keytab()
+		if kerr != nil {
+			return nil, fmt.Errorf("SIGNARI_KERBEROS_KEYTAB: %w\n"+
+				"Run `signari kerberos check -keytab %s` to see what is wrong with it",
+				kerr, srv.krbConfig.KeytabPath)
+		}
+		srv.krbKeytab = kt
+		log.Info("kerberos SPNEGO enabled", "keytab", srv.krbConfig.KeytabPath,
+			"realm", srv.krbConfig.Realm, "principals", len(kt.Entries))
 	}
 
 	return srv, nil
@@ -177,6 +209,12 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /login/callback/{slug}", s.handleFederatedCallback)
 	mux.HandleFunc("GET /account", s.handleAccount)
 	mux.HandleFunc("GET /account/connected", s.handleConnectedApps)
+	// SPNEGO is registered only when a keytab is loaded. A route that answers
+	// 401 Negotiate with no keytab behind it makes every domain browser show a
+	// credential dialog for a service that cannot check the answer.
+	if h := s.wrapKerberos(http.HandlerFunc(s.handleKerberosLogin)); h != nil {
+		mux.Handle("GET /login/kerberos", h)
+	}
 	mux.HandleFunc("GET /wsfed", s.handleWSFed)
 	mux.HandleFunc("POST /wsfed", s.handleWSFed)
 	mux.HandleFunc("GET /outpost/hello", s.handleOutpostHello)

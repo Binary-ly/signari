@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 
 	"signari.dev/engine/internal/authzen"
 	"signari.dev/engine/internal/store"
@@ -198,6 +199,15 @@ func (s *Server) decide(ctx context.Context, orgID string, req authzen.Request) 
 			return authzen.Response{}, err
 		}
 	}
+	if facts.Now.IsZero() {
+		// Even when the subject is not one of our users, the clock is ours.
+		facts.Now = time.Now()
+	}
+	// The caller-asserted half, kept separate all the way through. A policy
+	// file says which of its requirements read these, so an auditor can see
+	// which survive a compromised relying party without asking anybody.
+	facts.ResourceProps = req.Resource.Properties
+	facts.IP = ipFromContext(req.Context)
 
 	// The relation lookup uses the subject as GIVEN, so relations can be held
 	// by things that are not users in our directory -- a service account, a
@@ -478,6 +488,23 @@ func sessionFromContext(ctx map[string]any) string {
 	}
 	if v, ok := ctx["session_id"].(string); ok {
 		return v
+	}
+	return ""
+}
+
+// ipFromContext reads the address the caller says the request came from.
+//
+// Asserted, not observed: the PDP is being asked about somebody else's request,
+// so there is no connection to read it from. Policies that use it say so, under
+// `asserted:`.
+func ipFromContext(ctx map[string]any) string {
+	if ctx == nil {
+		return ""
+	}
+	for _, k := range []string{"ip", "ip_address", "remote_addr"} {
+		if v, ok := ctx[k].(string); ok && v != "" {
+			return v
+		}
 	}
 	return ""
 }

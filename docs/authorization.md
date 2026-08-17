@@ -79,6 +79,64 @@ Refused at parse time, each because it would otherwise load and be quietly wrong
 | A relation cycle | Refused rather than bounded: a bound turns a broken model into a slow one instead of a rejected one |
 | A misspelled key | `permisions:` silently dropped leaves a type granting nothing, which at a glance looks exactly like one granting everything |
 
+## Conditions, and a trust boundary you can see
+
+```yaml
+require:
+  post:
+    # Verified by Signari. A caller cannot influence any of these.
+    mfa: true
+    subject_active: true
+    email_verified: true
+    any_group: [finance]
+    max_risk: 30
+    time:
+      days: [mon, tue, wed, thu, fri]
+      from: "09:00"
+      to: "17:00"
+      zone: "Europe/London"
+
+    # Asserted by the caller. Worth exactly your trust in that caller.
+    asserted:
+      resource:
+        classification: [internal, restricted]
+      networks: ["10.0.0.0/8"]
+```
+
+
+Verified live: with the `owner` relation intact and the caller asserting
+`"subject_active": true` in the resource properties, deactivating the account in
+our directory flips the decision to deny. The forgery is ignored because the
+requirement is never read from the caller's half.
+
+The cost is that this is not a programming language. That is the trade:
+
+
+### Time windows are on our clock
+
+A time restriction an application can lie about is a comment. `zone` is
+**required** whenever `from`/`to` are set — "09:00" without one is nine o'clock
+somewhere. Windows may wrap midnight (`22:00`–`06:00` is one window, not none).
+
+A model with a time window **will not load unless its tests pin the clock** with
+`at:`. A test that passes or fails depending on when CI runs is worse than no
+test.
+
+### An omitted assertion is not a satisfied one
+
+If a policy requires `classification` and the caller simply doesn't send it, the
+decision is **deny**. Treating "the caller did not mention it" as "it is fine"
+means a caller bypasses any rule by leaving the field out, which is the easiest
+bypass there is.
+
+### Refused at parse time
+
+A zone that does not exist, a CIDR that does not parse, a day that is not a day,
+a `HH:MM` that is not one, an `asserted:` block requiring nothing, a resource
+requirement allowing no values. At evaluation time the only safe response to a
+broken condition is to refuse — and a typo that silently denies everything is
+worse than one that refuses to deploy.
+
 ## Relations, not roles
 
 ```sh

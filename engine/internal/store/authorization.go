@@ -275,6 +275,10 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 
 	var f authzen.Facts
 
+	// The clock is ours, not the caller's. A time restriction an application
+	// can lie about is a comment.
+	f.Now = time.Now()
+
 	rows, err := q.Query(ctx, `
 		SELECT COALESCE(array_agg(g.name) FILTER (WHERE g.name IS NOT NULL), '{}')
 		  FROM core.group_members m
@@ -285,6 +289,26 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 	}
 	if rows.Next() {
 		if err := rows.Scan(&f.Groups); err != nil {
+			rows.Close()
+			return f, err
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return f, err
+	}
+
+	// Account state, from our directory. A deactivated user whose relations were
+	// never cleaned up still holds them; this is what stops the tuples outliving
+	// the account.
+	rows, err = q.Query(ctx, `
+		SELECT status = 'active', email_verified_at IS NOT NULL
+		  FROM core.users WHERE id = $1::uuid AND org_id = $2::uuid`, userID, orgID)
+	if err != nil {
+		return f, err
+	}
+	if rows.Next() {
+		if err := rows.Scan(&f.Active, &f.EmailVerified); err != nil {
 			rows.Close()
 			return f, err
 		}

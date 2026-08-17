@@ -229,6 +229,9 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	appleTeam := fs.String("apple-team", "", "Apple team id (ten characters)")
+	appleKeyID := fs.String("apple-key-id", "", "id of the .p8 key")
+	appleKeyFile := fs.String("apple-key", "", "path to the .p8 private key")
 	rpURL := fs.String("rp-url", "", "the relying party's backchannel_logout_uri")
 	subject := fs.String("subject", "", "sub to name in the logout token")
 	sidFlag := fs.String("sid", "", "sid to name in the logout token")
@@ -260,7 +263,7 @@ func run(args []string) error {
 		"RSA key transport for encrypted assertions: rsa-oaep-mgf1p (universal) or "+
 			"rsa-oaep-sha256 (required under FIPS; check the provider supports it)")
 	slug := fs.String("slug", "", "short name used in /login/with/<slug>")
-	kind := fs.String("kind", "oidc", "oidc, google, github or microsoft")
+	kind := fs.String("kind", "oidc", strings.Join(kindNamesForHelp(), ", "))
 	extClientID := fs.String("client-id-ext", "", "client id issued by the external provider")
 	extSecret := fs.String("client-secret", "", "client secret issued by the external provider")
 	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
@@ -461,6 +464,8 @@ func run(args []string) error {
 			*issuer, *allowSignup, *allowLinking, *trustEmail,
 			*entityID, *srcSSOURL, *spCert, *nameIDFormat,
 			*srcUnsolicited, *srcForceAuthn, *srcSkew)
+	case "idp apple-secret":
+		return idpAppleSecret(ctx, conn, *slug, *appleTeam, *appleKeyID, *appleKeyFile)
 	case "idp list":
 		return idpList(ctx, conn)
 	case "scim add":
@@ -4700,4 +4705,68 @@ func logoutTest(ctx context.Context, conn *pgx.Conn, rpURL, clientID, issuer,
 		return fmt.Errorf("%d conformance check(s) failed", failed)
 	}
 	return nil
+}
+
+// idpAppleSecret mints Apple's client secret and stores it.
+//
+// Apple is the only provider whose client secret is a JWT this side signs, and
+// it expires within six months. Running this again before then is the whole
+// maintenance story; the alternative everyone else lives with is a calendar
+// reminder that outlives whoever set it.
+func idpAppleSecret(ctx context.Context, conn *pgx.Conn, slug, team, keyID, keyFile string) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug, the provider to update")
+	}
+	var clientID, kind string
+	if err := conn.QueryRow(ctx,
+		`SELECT client_id, kind FROM core.identity_providers WHERE slug = $1`,
+		slug).Scan(&clientID, &kind); err != nil {
+		return fmt.Errorf("no identity provider with slug %q", slug)
+	}
+	if kind != string(federation.KindApple) {
+		return fmt.Errorf("%q is a %s provider; only Apple uses a signed client secret",
+			slug, kind)
+	}
+	if keyFile == "" {
+		return fmt.Errorf("give -apple-key, the path to the .p8 file downloaded from " +
+			"the developer portal")
+	}
+	pemBytes, err := os.ReadFile(keyFile)
+	if err != nil {
+		return fmt.Errorf("reading the .p8 key: %w", err)
+	}
+
+	secret, expiry, err := federation.MintAppleSecret(federation.AppleSecretInput{
+		TeamID:        team,
+		ClientID:      clientID,
+		KeyID:         keyID,
+		PrivateKeyPEM: string(pemBytes),
+	}, time.Now())
+	if err != nil {
+		return err
+	}
+	if _, err := conn.Exec(ctx,
+		`UPDATE core.identity_providers SET client_secret = $2, updated_at = now()
+		  WHERE slug = $1`, slug, secret); err != nil {
+		return err
+	}
+
+	fmt.Printf("minted Apple client secret for %s\n", slug)
+	fmt.Printf("  services id : %s\n", clientID)
+	fmt.Printf("  expires     : %s (in %d days)\n",
+		expiry.Format("2006-01-02"), int(time.Until(expiry).Hours()/24))
+	fmt.Println("\nApple caps this at six months. Run this again before it expires;")
+	fmt.Println("an expired secret fails as invalid_client, which reads like the")
+	fmt.Println("credentials are wrong rather than out of date.")
+	return nil
+}
+
+// kindNamesForHelp keeps the flag's help text in step with the presets.
+func kindNamesForHelp() []string {
+	ks := federation.Kinds()
+	out := make([]string, 0, len(ks))
+	for _, k := range ks {
+		out = append(out, string(k))
+	}
+	return out
 }

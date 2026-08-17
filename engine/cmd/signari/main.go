@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"signari.dev/engine/internal/config"
 	"signari.dev/engine/internal/kerberos"
 	"signari.dev/engine/internal/logouttest"
 	"signari.dev/engine/internal/outpost"
@@ -232,6 +233,10 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	configFile := fs.String("f", "", "declarative configuration file")
+	prune := fs.Bool("prune", false,
+		"delete anything the file does not mention. Off by default: a missing "+
+			"line should not take down an application")
 	keytabPath := fs.String("keytab", "", "path to the service keytab")
 	krbRealm := fs.String("realm", "", "Kerberos realm, e.g. EXAMPLE.COM")
 	krbSPN := fs.String("spn", "", "service principal, e.g. HTTP/auth.example.com")
@@ -469,6 +474,10 @@ func run(args []string) error {
 		return signupDisable(ctx, conn, *orgID)
 	case "signup show":
 		return signupShow(ctx, conn, *orgID)
+	case "plan":
+		return configPlan(ctx, conn, *orgID, *configFile, *prune, false)
+	case "apply":
+		return configPlan(ctx, conn, *orgID, *configFile, *prune, true)
 	case "brand set":
 		return brandSet(ctx, conn, *issuer, *brandName, *brandLogo, *brandSupport,
 			*brandPrimary, *brandOnPrimary, *brandBackground, *brandText)
@@ -4970,5 +4979,78 @@ func kerberosCheck(keytabPath, realm, spn string) error {
 		return fmt.Errorf("%d problem(s) would stop SPNEGO working", problems)
 	}
 	fmt.Println("\n  This keytab looks usable.")
+	return nil
+}
+
+// configPlan diffs a configuration file against the deployment, and optionally
+// applies it.
+//
+// Plan and apply share this function because they must share the diff. Two code
+// paths mean the plan can describe something the apply does not do, which is
+// the one failure a plan exists to prevent.
+func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
+	prune, doApply bool) error {
+
+	if path == "" {
+		return fmt.Errorf("give -f, the configuration file")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	f, err := config.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if orgID == "" {
+		orgID = f.Org
+	}
+	if orgID == "" {
+		return fmt.Errorf("give -org, or set `org:` in the file")
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	plan, err := config.BuildPlan(ctx, tx, orgID, f, prune)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s\n\n%s", path, plan.String())
+	create, update, del := plan.Counts()
+	fmt.Printf("\n  %d to create, %d to update, %d to delete\n", create, update, del)
+
+	if d := plan.Destructive(); len(d) > 0 {
+		fmt.Println("\n  These REMOVE things:")
+		for _, c := range d {
+			fmt.Printf("    - %s %s — %s\n", c.Kind, c.Name, c.Detail)
+		}
+	}
+
+	if !doApply {
+		if plan.Empty() {
+			return nil
+		}
+		fmt.Println("\nNothing was changed. Run `signari apply` to make it so.")
+		if !prune {
+			fmt.Println("Anything not in the file was left alone; -prune would delete it.")
+		}
+		return nil
+	}
+
+	if plan.Empty() {
+		return nil
+	}
+	if err := config.Apply(ctx, tx, orgID, f, plan); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Println("\napplied")
 	return nil
 }

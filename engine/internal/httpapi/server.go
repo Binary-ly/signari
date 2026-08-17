@@ -230,6 +230,13 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /outpost/list", s.handleOutpostList)
 	mux.HandleFunc("POST /login/prompt", s.handlePromptPost)
 	mux.HandleFunc("POST /login/password-change", s.handlePasswordChangePost)
+	// OpenID AuthZEN Authorization API 1.0.
+	mux.HandleFunc("POST /access/v1/evaluation", s.handleAuthzEvaluate)
+	mux.HandleFunc("POST /access/v1/evaluations", s.handleAuthzEvaluations)
+	mux.HandleFunc("POST /access/v1/search/subject", s.handleAuthzSearchSubject)
+	mux.HandleFunc("POST /access/v1/search/resource", s.handleAuthzSearchResource)
+	mux.HandleFunc("POST /access/v1/search/action", s.handleAuthzSearchAction)
+
 	mux.HandleFunc("POST /admin/impersonate", s.handleImpersonateStart)
 	mux.HandleFunc("POST /admin/impersonate/stop", s.handleImpersonateStop)
 	mux.HandleFunc("GET /signup", s.handleSignupGet)

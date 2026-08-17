@@ -84,6 +84,14 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari ssf add-stream` / `ssf list` | Shared Signals (CAEP/RISC) streams |
 | `signari events subscribe` / `events list` | Event subscriptions — see [events.md](events.md) |
 
+## Authorization
+
+| | |
+|---|---|
+| `signari authz set-model` / `authz show-model` | The authorization model. Setting one **runs its own tests** — see [authorization.md](authorization.md) |
+| `signari authz grant` / `authz revoke` | Relations: `-principal user:alice -relation owner -object document:42` |
+| `signari authz check` | Answer a question from the command line, with the reason |
+
 ## Outposts and remote access
 
 | | |

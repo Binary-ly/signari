@@ -57,3 +57,31 @@ func TestEveryTwoWordCommandGroupIsRegistered(t *testing.T) {
 			len(missing), strings.Join(missing, "\n  "))
 	}
 }
+
+// A case label with three words can never be reached.
+//
+// Dispatch joins at most TWO argv words into a command, so `case "authz model
+// set":` is dead code -- the binary reports "no command given" and the switch
+// arm is never entered. It compiles, and every test that does not invoke the
+// CLI passes.
+//
+// Found by writing `authz model set` and watching a correctly-built binary
+// refuse to run it.
+func TestNoCommandNeedsMoreThanTwoWords(t *testing.T) {
+	root := repoRoot(t)
+	src := readSource(t, filepath.Join(root, "engine", "cmd", "signari", "main.go"))
+
+	var unreachable []string
+	for _, m := range regexp.MustCompile(`case\s+"([a-z][a-z0-9 -]*)":`).
+		FindAllStringSubmatch(src, -1) {
+		if len(strings.Fields(m[1])) > 2 {
+			unreachable = append(unreachable, m[1])
+		}
+	}
+	sort.Strings(unreachable)
+	if len(unreachable) > 0 {
+		t.Errorf("%d case label(s) have more than two words, so dispatch can never "+
+			"reach them and the command reports \"no command given\":\n  %s",
+			len(unreachable), strings.Join(unreachable, "\n  "))
+	}
+}

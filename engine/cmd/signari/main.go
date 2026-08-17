@@ -46,6 +46,7 @@ import (
 
 	"signari.dev/engine/internal/adminapi"
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/authzen"
 	"signari.dev/engine/internal/brand"
 	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/doctor"
@@ -95,6 +96,7 @@ var twoWordCommands = map[string]bool{
 	"kerberos": true,
 	"ssf":      true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
 	"events": true,
+	"authz":  true,
 }
 
 func usage() error {
@@ -263,6 +265,11 @@ func run(args []string) error {
 	outpostToken := fs.String("outpost-token", "", "outpost token from `signari outpost create`")
 	outpostKind := fs.String("kind-outpost", "", "ldap, radius or proxy")
 	subURL := fs.String("url", "", "https endpoint events are POSTed to")
+	modelFile := fs.String("model-file", "", "authorization model, YAML")
+	relSubject := fs.String("principal", "", "type:id, e.g. user:alice@example.com")
+	relRelation := fs.String("relation", "", "e.g. editor")
+	relObject := fs.String("object", "", "type:id, e.g. document:42")
+	relAction := fs.String("action", "", "e.g. write")
 	subEvents := fs.String("event-types", "", "comma-separated event types, or empty for all")
 	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins")
 	inviteTTL := fs.Duration("expires", 7*24*time.Hour, "how long the invitation lasts")
@@ -476,6 +483,16 @@ func run(args []string) error {
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
 	case "logout-test":
 		return logoutTest(ctx, conn, *rpURL, *clientID, *issuer, *subject, *sidFlag)
+	case "authz set-model":
+		return authzModelSet(ctx, conn, *orgID, *modelFile)
+	case "authz show-model":
+		return authzModelShow(ctx, conn, *orgID)
+	case "authz grant":
+		return authzGrant(ctx, conn, *orgID, *relSubject, *relRelation, *relObject)
+	case "authz revoke":
+		return authzRevoke(ctx, conn, *orgID, *relSubject, *relRelation, *relObject)
+	case "authz check":
+		return authzCheck(ctx, conn, *orgID, *relSubject, *relAction, *relObject)
 	case "events subscribe":
 		return eventsSubscribe(ctx, conn, *orgID, *name, *subURL, *subEvents)
 	case "events list":
@@ -4579,9 +4596,9 @@ func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind string
 		return fmt.Errorf("give -name, something that identifies where this outpost runs")
 	}
 	switch kind {
-	case "ldap", "radius", "proxy", "desktop":
+	case "ldap", "radius", "proxy", "desktop", "pdp":
 	default:
-		return fmt.Errorf("give -kind-outpost: ldap, radius, proxy or desktop. The token is "+
+		return fmt.Errorf("give -kind-outpost: ldap, radius, proxy, desktop or pdp. The token is "+
 			"bound to one protocol, so a leaked token costs that protocol rather "+
 			"than all of them (got %q)", kind)
 	}
@@ -5413,4 +5430,178 @@ func eventsList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		fmt.Println("no event subscriptions")
 	}
 	return rows.Err()
+}
+
+// authzModelSet parses a model, runs its own tests, and stores it.
+func authzModelSet(ctx context.Context, conn *pgx.Conn, orgID, file string) error {
+	if orgID == "" || file == "" {
+		return fmt.Errorf("-org and -file are both required")
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	// Parse RUNS the model's tests. A model whose own examples fail does not
+	// load, so it cannot be stored and discovered wrong in production.
+	m, err := authzen.ParseModel(data)
+	if err != nil {
+		return err
+	}
+	if err := store.SaveModel(ctx, conn, orgID, string(data), m, ""); err != nil {
+		return err
+	}
+	types := 0
+	actions := 0
+	for _, t := range m.Types {
+		types++
+		actions += len(t.Permissions)
+	}
+	fmt.Printf("model stored: %d type(s), %d action(s), %d test(s) passed\n",
+		types, actions, len(m.Tests))
+	return nil
+}
+
+// authzModelShow prints the model as written.
+func authzModelShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("-org is required")
+	}
+	src, err := store.ModelSource(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if src == "" {
+		fmt.Println("no authorization model; nothing is permitted")
+		return nil
+	}
+	fmt.Print(src)
+	return nil
+}
+
+// splitRef parses type:id and says which part is wrong when it will not.
+func splitRef(flag, ref string) (typ, id string, err error) {
+	typ, id, ok := authzen.ParseRef(ref)
+	if !ok {
+		return "", "", fmt.Errorf("%s must be type:id (got %q)", flag, ref)
+	}
+	return typ, id, nil
+}
+
+func authzGrant(ctx context.Context, conn *pgx.Conn, orgID, subject, relation, object string) error {
+	if orgID == "" || subject == "" || relation == "" || object == "" {
+		return fmt.Errorf("-org, -principal, -relation and -object are all required")
+	}
+	styp, sid, err := splitRef("-principal", subject)
+	if err != nil {
+		return err
+	}
+	otyp, oid, err := splitRef("-object", object)
+	if err != nil {
+		return err
+	}
+	if err := store.GrantRelation(ctx, conn, orgID, store.Relation{
+		SubjectType: styp, SubjectID: sid, Relation: relation,
+		ObjectType: otyp, ObjectID: oid,
+	}, ""); err != nil {
+		return err
+	}
+	fmt.Printf("%s is %s of %s\n", subject, relation, object)
+	return nil
+}
+
+func authzRevoke(ctx context.Context, conn *pgx.Conn, orgID, subject, relation, object string) error {
+	if orgID == "" || subject == "" || relation == "" || object == "" {
+		return fmt.Errorf("-org, -principal, -relation and -object are all required")
+	}
+	styp, sid, err := splitRef("-principal", subject)
+	if err != nil {
+		return err
+	}
+	otyp, oid, err := splitRef("-object", object)
+	if err != nil {
+		return err
+	}
+	if err := store.RevokeRelation(ctx, conn, orgID, store.Relation{
+		SubjectType: styp, SubjectID: sid, Relation: relation,
+		ObjectType: otyp, ObjectID: oid,
+	}); err != nil {
+		return err
+	}
+	fmt.Printf("%s is no longer %s of %s\n", subject, relation, object)
+	return nil
+}
+
+// authzCheck answers a question from the command line.
+//
+// The same question the API answers, so an operator debugging "why was this
+// refused" gets the reason rather than having to reproduce the HTTP call.
+func authzCheck(ctx context.Context, conn *pgx.Conn, orgID, subject, action, object string) error {
+	if orgID == "" || subject == "" || action == "" || object == "" {
+		return fmt.Errorf("-org, -principal, -action and -object are all required")
+	}
+	styp, sid, err := splitRef("-principal", subject)
+	if err != nil {
+		return err
+	}
+	otyp, oid, err := splitRef("-object", object)
+	if err != nil {
+		return err
+	}
+	m, err := store.LoadModel(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if m == nil {
+		return fmt.Errorf("this organisation has no authorization model, so nothing " +
+			"is permitted -- set one with `signari authz model set`")
+	}
+	relations, defined := m.RelationsFor(otyp, action)
+	if !defined {
+		return fmt.Errorf("the model defines no action %q on %s", action, otyp)
+	}
+
+	var groups []string
+	if userID, rerr := store.ResolveSubject(ctx, conn, orgID, sid); rerr == nil && userID != "" {
+		if f, ferr := store.SubjectFacts(ctx, conn, orgID, userID, ""); ferr == nil {
+			groups = f.Groups
+		}
+	}
+	held, err := store.HoldsAny(ctx, conn, orgID, styp, sid, relations, otyp, oid, groups)
+	if err != nil {
+		return err
+	}
+	if held == "" {
+		fmt.Printf("DENIED  %s may not %s %s\n  %s.%s is granted to: %s\n",
+			subject, action, object, otyp, action, strings.Join(relations, ", "))
+		if len(groups) > 0 {
+			fmt.Printf("  groups considered: %s\n", strings.Join(groups, ", "))
+		}
+		return nil
+	}
+	fmt.Printf("ALLOWED %s may %s %s\n  via relation: %s\n", subject, action, object, held)
+	if c, has := m.ConditionFor(otyp, action); has {
+		fmt.Printf("  NOTE: at runtime this also requires %s, which is a property of "+
+			"the session and cannot be checked from here\n", conditionSummary(c))
+	}
+	return nil
+}
+
+func conditionSummary(c authzen.Condition) string {
+	var parts []string
+	if c.MFA {
+		parts = append(parts, "a second factor")
+	}
+	if c.DeviceManaged {
+		parts = append(parts, "a managed device")
+	}
+	if c.DeviceCompliant {
+		parts = append(parts, "a compliant device")
+	}
+	if c.MaxRisk > 0 {
+		parts = append(parts, fmt.Sprintf("risk at most %d", c.MaxRisk))
+	}
+	if len(c.AnyGroup) > 0 {
+		parts = append(parts, "membership of "+strings.Join(c.AnyGroup, " or "))
+	}
+	return strings.Join(parts, " and ")
 }

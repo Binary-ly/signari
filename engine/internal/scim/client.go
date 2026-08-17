@@ -50,6 +50,17 @@ type Target struct {
 	Token        string
 	DryRun       bool
 	OnDeactivate string
+
+	// Kind is scim, google or entra. Empty means scim, for targets registered
+	// before native provisioning existed.
+	Kind string
+	// Credentials is the unsealed service account or client secret for a native
+	// target. Empty for SCIM.
+	Credentials []byte
+	// Impersonate is the administrator a Google service account acts as.
+	Impersonate string
+	// TargetDomain is the domain new accounts are created under.
+	TargetDomain string
 }
 
 // User is the subset of the SCIM user schema we send.

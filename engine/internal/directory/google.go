@@ -196,8 +196,34 @@ func (g *GoogleSource) Fetch(ctx context.Context) ([]RemoteUser, error) {
 	}
 }
 
+// ScopeDirectoryRead is what a sync needs: the ability to read the directory.
+//
+// A sync that can WRITE to somebody's Workspace directory is a far larger blast
+// radius than reading it, and the scope is where that is decided. Provisioning
+// asks for ScopeDirectoryWrite explicitly, so the two capabilities are separate
+// tokens and a compromised sync cannot create accounts.
+const (
+	ScopeDirectoryRead  = "https://www.googleapis.com/auth/admin.directory.user.readonly"
+	ScopeDirectoryWrite = "https://www.googleapis.com/auth/admin.directory.user"
+)
+
+// GoogleToken exchanges a service account assertion for a bearer token.
+//
+// Exported so provisioning can ask for the write scope without a second copy of
+// the JWT-bearer dance.
+func GoogleToken(ctx context.Context, creds *GoogleCredentials, impersonate, scope string,
+	hc *http.Client) (string, error) {
+
+	g := &GoogleSource{Creds: creds, Impersonate: impersonate, Client: hc}
+	return g.tokenForScope(ctx, scope)
+}
+
 // accessToken exchanges a signed assertion for a bearer token, RFC 7523.
 func (g *GoogleSource) accessToken(ctx context.Context) (string, error) {
+	return g.tokenForScope(ctx, ScopeDirectoryRead)
+}
+
+func (g *GoogleSource) tokenForScope(ctx context.Context, scope string) (string, error) {
 	key, err := parsePrivateKey(g.Creds.PrivateKey)
 	if err != nil {
 		return "", err
@@ -210,10 +236,7 @@ func (g *GoogleSource) accessToken(ctx context.Context) (string, error) {
 		"aud": g.Creds.TokenURI,
 		"iat": now.Unix(),
 		"exp": now.Add(time.Hour).Unix(),
-		// Read-only. A sync that can WRITE to somebody's Workspace directory is a
-		// far larger blast radius than this feature needs, and the scope is where
-		// that is decided.
-		"scope": "https://www.googleapis.com/auth/admin.directory.user.readonly",
+		"scope": scope,
 	}
 
 	assertion, err := signRS256(key, claims)

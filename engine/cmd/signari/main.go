@@ -29,6 +29,7 @@ import (
 	"os/signal"
 	"signari.dev/engine/internal/logouttest"
 	"signari.dev/engine/internal/outpost"
+	"signari.dev/engine/internal/provision"
 	"slices"
 	"strconv"
 	"strings"
@@ -85,7 +86,7 @@ var twoWordCommands = map[string]bool{
 	"janitor": true, "keys": true, "import": true, "proxy": true,
 	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
-	"invite": true, "signup": true, "outpost": true,
+	"invite": true, "signup": true, "outpost": true, "provision": true,
 	"ssf": true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
 }
 
@@ -229,6 +230,10 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	credsFile := fs.String("credentials", "",
+		"path to the Google service account JSON or Entra client credentials")
+	targetDomain := fs.String("target-domain", "",
+		"domain new accounts are created under")
 	appleTeam := fs.String("apple-team", "", "Apple team id (ten characters)")
 	appleKeyID := fs.String("apple-key-id", "", "id of the .p8 key")
 	appleKeyFile := fs.String("apple-key", "", "path to the .p8 private key")
@@ -470,6 +475,9 @@ func run(args []string) error {
 		return idpList(ctx, conn)
 	case "scim add":
 		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2)
+	case "provision add":
+		return provisionAdd(ctx, conn, *orgID, *slug, *name, *outpostKind,
+			*credsFile, *dirImpersonate, *targetDomain, *onDeactivate, *dryRun2)
 	case "duo set":
 		return duoSet(ctx, conn, *orgID, *duoClientID, *duoSecret, *duoAPIHost, *duoFailOpen)
 	case "duo enroll":
@@ -2058,8 +2066,14 @@ func scimVerify(ctx context.Context, conn *pgx.Conn, only string) error {
 		if err != nil {
 			return err
 		}
-		client := scim.NewClient(t, hc)
-		rep, err := scim.Verify(ctx, client, expected, nil)
+		// Verification is SCIM-specific: it checks a server's ServiceProviderConfig
+		// and filter behaviour, neither of which a native target has.
+		if t.Kind != "" && t.Kind != "scim" {
+			fmt.Printf("%s: %s targets are written through their own API and have "+
+				"no SCIM surface to verify\n", t.Slug, t.Kind)
+			continue
+		}
+		rep, err := scim.Verify(ctx, scim.NewClient(t, hc), expected, nil)
 		if err != nil {
 			return err
 		}
@@ -2120,7 +2134,10 @@ func scimSync(ctx context.Context, conn *pgx.Conn, only string, apply bool) erro
 		if err != nil {
 			return err
 		}
-		client := scim.NewClient(t, hc)
+		client, perr := provision.ForTarget(t, hc)
+		if perr != nil {
+			return perr
+		}
 		var created, deactivated, deleted, failed int
 
 		for _, d := range desired {
@@ -2130,15 +2147,20 @@ func scimSync(ctx context.Context, conn *pgx.Conn, only string, apply bool) erro
 					created++
 					continue
 				}
-				u := scim.NewUser(d.UserID, d.UserName, d.DisplayName, d.Email, true)
-				id, err := client.CreateUser(ctx, u)
+				id, err := client.CreateUser(ctx, provision.User{
+					ExternalID:  d.UserID,
+					UserName:    d.UserName,
+					DisplayName: d.DisplayName,
+					Email:       d.Email,
+					Active:      true,
+				})
 				if err != nil {
 					// A conflict means the account is already there; find it and
 					// record its id rather than creating a duplicate or giving up.
 					var se *scim.Error
 					if errors.As(err, &se) && se.Conflict {
 						if found, ferr := client.FindByUserName(ctx, d.UserName); ferr == nil && found != nil {
-							id = found.ID
+							id = found.RemoteID
 						}
 					}
 					if id == "" {
@@ -4769,4 +4791,95 @@ func kindNamesForHelp() []string {
 		out = append(out, string(k))
 	}
 	return out
+}
+
+// provisionAdd registers a Google Workspace or Entra provisioning target.
+//
+// These are the connectors the comparable product charges for. The
+// reconciliation above them is the same one SCIM targets use, which is why
+// adding them was a day rather than a quarter.
+func provisionAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind,
+	credsFile, impersonate, domain, onDeactivate string, dryRun bool) error {
+
+	switch {
+	case orgID == "":
+		return fmt.Errorf("give -org")
+	case slug == "":
+		return fmt.Errorf("give -slug")
+	case credsFile == "":
+		return fmt.Errorf("give -credentials, the service account JSON (Google) or " +
+			"client credentials (Entra)")
+	}
+	switch kind {
+	case "google":
+		if impersonate == "" {
+			return fmt.Errorf("give -impersonate: a Google service account with " +
+				"domain-wide delegation does nothing without an administrator to act as")
+		}
+		if domain == "" {
+			return fmt.Errorf("give -target-domain, so new accounts are created " +
+				"somewhere rather than nowhere")
+		}
+	case "entra":
+	default:
+		return fmt.Errorf("give -kind-outpost google or entra (got %q). For a SCIM "+
+			"server use `signari scim add`", kind)
+	}
+
+	raw, err := os.ReadFile(credsFile)
+	if err != nil {
+		return fmt.Errorf("reading the credentials: %w", err)
+	}
+	// Parsed now rather than at first sync, so a wrong file is a message here
+	// instead of a cron job failing quietly at 3am.
+	switch kind {
+	case "google":
+		if _, perr := directory.ParseGoogleCredentials(raw); perr != nil {
+			return perr
+		}
+	case "entra":
+		if _, perr := directory.ParseEntraCredentials(raw); perr != nil {
+			return perr
+		}
+	}
+
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	sealed, err := root.Seal(raw, "provision_credentials")
+	if err != nil {
+		return err
+	}
+	if onDeactivate == "" {
+		onDeactivate = "deactivate"
+	}
+	if name == "" {
+		name = slug
+	}
+
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.scim_targets
+			(org_id, slug, display_name, kind, credentials_enc, impersonate,
+			 target_domain, base_url, token, on_deactivate, dry_run)
+		VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), '', '', $8, $9)`,
+		orgID, slug, name, kind, sealed, impersonate, domain,
+		onDeactivate, dryRun); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("a target called %q already exists", slug)
+		}
+		return err
+	}
+
+	fmt.Printf("provisioning target %s (%s)\n", slug, kind)
+	if impersonate != "" {
+		fmt.Printf("  acting as   %s\n", impersonate)
+	}
+	if domain != "" {
+		fmt.Printf("  domain      %s\n", domain)
+	}
+	fmt.Printf("  on leave    %s\n", onDeactivate)
+	fmt.Println("\nRun `signari scim sync` to see what it would change.")
+	fmt.Println("It is a DRY RUN until you pass -apply.")
+	return nil
 }

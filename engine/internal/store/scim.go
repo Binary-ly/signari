@@ -15,7 +15,9 @@ import (
 func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, only string) ([]scim.Target, error) {
 	rows, err := conn.Query(ctx, `
 		SELECT id::text, org_id::text, slug, display_name, base_url, token,
-		       dry_run, on_deactivate
+		       dry_run, on_deactivate, kind,
+		       COALESCE(credentials_enc, ''::bytea),
+		       COALESCE(impersonate, ''), COALESCE(target_domain, '')
 		FROM core.scim_targets
 		WHERE enabled AND ($1 = '' OR slug = $1)
 		ORDER BY slug`, only)
@@ -28,15 +30,28 @@ func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, on
 	for rows.Next() {
 		var t scim.Target
 		var sealed []byte
+		var sealedCreds []byte
 		if err := rows.Scan(&t.ID, &t.OrgID, &t.Slug, &t.DisplayName, &t.BaseURL,
-			&sealed, &t.DryRun, &t.OnDeactivate); err != nil {
+			&sealed, &t.DryRun, &t.OnDeactivate, &t.Kind,
+			&sealedCreds, &t.Impersonate, &t.TargetDomain); err != nil {
 			return nil, err
 		}
-		plain, err := root.Open(sealed, "scim_token")
-		if err != nil {
-			return nil, fmt.Errorf("unsealing the token for target %q: %w", t.Slug, err)
+		// A SCIM target's secret is a bearer token; a native one's is a service
+		// account or a client secret. Both are sealed, and only the one this
+		// target actually uses is opened.
+		if t.Kind == "" || t.Kind == "scim" {
+			plain, err := root.Open(sealed, "scim_token")
+			if err != nil {
+				return nil, fmt.Errorf("unsealing the token for target %q: %w", t.Slug, err)
+			}
+			t.Token = string(plain)
+		} else if len(sealedCreds) > 0 {
+			plain, err := root.Open(sealedCreds, "provision_credentials")
+			if err != nil {
+				return nil, fmt.Errorf("unsealing credentials for target %q: %w", t.Slug, err)
+			}
+			t.Credentials = plain
 		}
-		t.Token = string(plain)
 		out = append(out, t)
 	}
 	return out, rows.Err()

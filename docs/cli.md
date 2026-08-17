@@ -83,6 +83,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari provision add` | Provisioning targets |
 | `signari ssf add-stream` / `ssf list` | Shared Signals (CAEP/RISC) streams |
 | `signari events subscribe` / `events list` | Event subscriptions — see [events.md](events.md) |
+| — | Transaction Tokens are issued at the token endpoint, not by a command — see [transaction-tokens.md](transaction-tokens.md) |
 
 ## Authorization
 

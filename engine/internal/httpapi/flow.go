@@ -23,6 +23,7 @@ import (
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
+	"signari.dev/engine/internal/txntoken"
 )
 
 const (
@@ -408,6 +409,14 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.GrantType == oauth.GrantTypeTokenExchange {
+		// A Transaction Token request is a token exchange with a different
+		// requested_token_type. Dispatched here rather than at a second
+		// endpoint, so client authentication, revocation checking and session
+		// liveness are the ones that already work.
+		if firstForm(r, "requested_token_type") == txntoken.TokenType {
+			s.handleTxnToken(w, r, c)
+			return
+		}
 		s.handleTokenExchange(w, r, c)
 		return
 	}

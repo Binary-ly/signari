@@ -51,47 +51,12 @@ func VerifyAccessToken(set *keys.Set, issuer, raw string) (*AccessTokenClaims, e
 // else. It is emphatically not "skip the issuer check": an unregistered issuer
 // is still refused, which is what keeps this from being a mix-up attack.
 func VerifyAccessTokenAny(set *keys.Set, issuers []string, raw string) (*AccessTokenClaims, error) {
-	// Only the algorithms we actually sign with. jose requires this list up
-	// front, which is exactly the right shape: it is impossible to "forget" to
-	// pin the algorithm.
-	permitted := []jose.SignatureAlgorithm{jose.RS256, jose.ES256, jose.PS256, jose.EdDSA}
-
-	tok, err := jose.ParseSigned(raw, permitted)
+	// The header and signature checks live in verifiedPayload, shared with
+	// VerifyTypedJSON. Two copies of this is one copy that eventually forgets
+	// the jku check, which is alg confusion through the back door.
+	payload, err := verifiedPayload(set, raw, TypAccessToken)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
-	}
-	if len(tok.Signatures) != 1 {
-		// Multiple signatures means ambiguity about which one was checked.
-		return nil, fmt.Errorf("%w: expected exactly one signature", ErrInvalidToken)
-	}
-	h := tok.Signatures[0].Header
-
-	if h.JSONWebKey != nil || h.ExtraHeaders[jose.HeaderKey("jku")] != nil ||
-		h.ExtraHeaders[jose.HeaderKey("x5u")] != nil {
-		return nil, fmt.Errorf("%w: token carries its own key material", ErrInvalidToken)
-	}
-	if typ, _ := h.ExtraHeaders[jose.HeaderType].(string); typ != TypAccessToken {
-		return nil, fmt.Errorf("%w: typ is %q, want %q", ErrInvalidToken, typ, TypAccessToken)
-	}
-	if h.KeyID == "" {
-		return nil, fmt.Errorf("%w: no kid", ErrInvalidToken)
-	}
-
-	key, ok := set.ByKID(h.KeyID)
-	if !ok {
-		return nil, fmt.Errorf("%w: unknown kid %q", ErrInvalidToken, h.KeyID)
-	}
-	// The key's declared algorithm must match the header. Resolving a key by kid
-	// and then trusting the header's alg would reopen algorithm confusion through
-	// the back door.
-	if string(key.Algorithm()) != h.Algorithm {
-		return nil, fmt.Errorf("%w: kid %q is %s, token claims %s",
-			ErrInvalidToken, h.KeyID, key.Algorithm(), h.Algorithm)
-	}
-
-	payload, err := tok.Verify(key.Signer().Public())
-	if err != nil {
-		return nil, fmt.Errorf("%w: signature does not verify", ErrInvalidToken)
+		return nil, err
 	}
 
 	var c AccessTokenClaims
@@ -229,6 +194,82 @@ func VerifyTyped(set *keys.Set, issuer, raw, wantTyp string) ([]byte, error) {
 	}
 	if probe.Issuer != issuer {
 		return nil, fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
+	}
+	return payload, nil
+}
+
+// VerifyTypedJSON verifies any JWT we issued and decodes it into `into`.
+//
+// # Why this shares its checks with VerifyAccessTokenAny
+//
+// The hardening below -- no embedded key material, kid required, the algorithm
+// pinned to the KEY's declared one rather than the header's, exactly one
+// signature -- is the part that is easy to write twice and get right once. A
+// second verifier that forgot the jku check would accept a token carrying its
+// own key, which is the whole of CVE-class "alg confusion" in one line.
+//
+// So the shared part lives in verifiedPayload and both callers use it. The only
+// thing this adds is that `typ` must be the one the caller named, which is what
+// stops a token minted for one purpose being presented for another.
+func VerifyTypedJSON(set *keys.Set, issuers []string, raw, wantTyp string, into any) error {
+	payload, err := verifiedPayload(set, raw, wantTyp)
+	if err != nil {
+		return err
+	}
+	if err := jsonUnmarshal(payload, into); err != nil {
+		return fmt.Errorf("%w: malformed claims", ErrInvalidToken)
+	}
+	// The issuer is checked against the decoded form, so a caller passing a
+	// struct without an `iss` field cannot skip the check by omission.
+	var envelope struct {
+		Issuer string `json:"iss"`
+	}
+	if err := jsonUnmarshal(payload, &envelope); err != nil {
+		return fmt.Errorf("%w: malformed claims", ErrInvalidToken)
+	}
+	for _, i := range issuers {
+		if i != "" && envelope.Issuer == i {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
+}
+
+// verifiedPayload does the signature and header checks common to every token we
+// verify, and returns the raw payload.
+func verifiedPayload(set *keys.Set, raw, wantTyp string) ([]byte, error) {
+	permitted := []jose.SignatureAlgorithm{jose.RS256, jose.ES256, jose.PS256, jose.EdDSA}
+
+	tok, err := jose.ParseSigned(raw, permitted)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+	}
+	if len(tok.Signatures) != 1 {
+		return nil, fmt.Errorf("%w: expected exactly one signature", ErrInvalidToken)
+	}
+	h := tok.Signatures[0].Header
+
+	if h.JSONWebKey != nil || h.ExtraHeaders[jose.HeaderKey("jku")] != nil ||
+		h.ExtraHeaders[jose.HeaderKey("x5u")] != nil {
+		return nil, fmt.Errorf("%w: token carries its own key material", ErrInvalidToken)
+	}
+	if typ, _ := h.ExtraHeaders[jose.HeaderType].(string); typ != wantTyp {
+		return nil, fmt.Errorf("%w: typ is %q, want %q", ErrInvalidToken, typ, wantTyp)
+	}
+	if h.KeyID == "" {
+		return nil, fmt.Errorf("%w: no kid", ErrInvalidToken)
+	}
+	key, ok := set.ByKID(h.KeyID)
+	if !ok {
+		return nil, fmt.Errorf("%w: unknown kid %q", ErrInvalidToken, h.KeyID)
+	}
+	if string(key.Algorithm()) != h.Algorithm {
+		return nil, fmt.Errorf("%w: kid %q is %s, token claims %s",
+			ErrInvalidToken, h.KeyID, key.Algorithm(), h.Algorithm)
+	}
+	payload, err := tok.Verify(key.Signer().Public())
+	if err != nil {
+		return nil, fmt.Errorf("%w: signature does not verify", ErrInvalidToken)
 	}
 	return payload, nil
 }

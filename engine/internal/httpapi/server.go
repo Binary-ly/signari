@@ -3,7 +3,9 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/jcmturner/gokrb5/v8/keytab"
@@ -34,10 +36,14 @@ import (
 // Server holds the public endpoints. Everything it serves is derived from a live
 // key set, so metadata cannot drift from what the server can actually do.
 type Server struct {
-	cfg   oidc.Config
-	log   *slog.Logger
-	jwks  *bucket
-	login *bucket
+	cfg  oidc.Config
+	log  *slog.Logger
+	jwks *bucket
+	// The marshalled key set, cached between rotations. See jwksBody.
+	jwksMu    sync.Mutex
+	jwksCache []byte
+	jwksETag  string
+	login     *bucket
 	// captcha is nil-safe: every method tolerates a nil receiver, so a
 	// deployment that has never configured one needs no branches elsewhere.
 	captcha *captcha.Verifier
@@ -124,7 +130,12 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		captcha: cap,
 		log:     log,
 		db:      db,
-		jwks:    newBucket(20, 40), // 20 req/s sustained, burst 40
+		// An amplification backstop, not a throttle. The body is precomputed
+		// and served from memory, so the per-request cost is a write; the limit
+		// exists only to stop an attacker with random `kid`s turning this into
+		// free bandwidth. Set far above what any real estate of relying parties
+		// produces, because throttling them breaks token verification.
+		jwks: newBucket(5000, 10000),
 		// The login endpoint is the expensive one: every attempt costs an Argon2
 		// evaluation. Rate limiting in FRONT of the hash is what keeps a flood
 		// from turning into memory exhaustion, independent of the semaphore.
@@ -630,17 +641,37 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	// A relying party that refreshes its JWKS whenever it sees an unknown `kid`
 	// is a free DoS amplifier: send tokens with random kids and it hammers this
-	// endpoint. Cheap to fix, rarely discussed, so it is fixed here.
-	if !s.jwks.allow() {
-		w.Header().Set("Retry-After", "1")
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many key set requests")
-		return
-	}
-
-	body, err := s.cfg.Keys.MarshalJWKS()
+	// endpoint.
+	//
+	// The first version answered that with a 20/second global limit, which was
+	// the wrong lever. JWKS is fetched by EVERY relying party, and they all
+	// refetch at once after a key rotation -- precisely the moment throttling
+	// must not happen, because a relying party that cannot fetch the key set
+	// cannot verify any token. A benchmark found it: 597 of 640 concurrent
+	// requests came back 429.
+	//
+	// So the cost is fixed rather than the traffic. The body only changes when
+	// the keys do, so it is marshalled once and served from memory, with an
+	// ETag so repeat fetchers get a 304 and no body at all. What remains of the
+	// limit is an amplification backstop set far above any real estate.
+	body, etag, err := s.jwksBody()
 	if err != nil {
 		s.log.Error("marshalling jwks", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "key set unavailable")
+		return
+	}
+	w.Header().Set("ETag", etag)
+	// A conditional request costs nothing and is not counted against the limit:
+	// a client asking "has it changed" is the behaviour we want to encourage.
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.Header().Set("Cache-Control",
+			fmt.Sprintf("public, max-age=%d", int(keys.JWKSMaxAge.Seconds())))
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if !s.jwks.allow() {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many key set requests")
 		return
 	}
 	// Well-behaved clients converge within max-age. Never assume they honour it:
@@ -768,4 +799,29 @@ func captchaFromEnv() (*captcha.Verifier, error) {
 		// Opt-in. See captcha.Config for why the default is to stay available.
 		FailClosed: os.Getenv("SIGNARI_CAPTCHA_FAIL_CLOSED") == "1",
 	}, nil), nil
+}
+
+// jwksBody returns the marshalled key set and its ETag, recomputing only when
+// the keys have changed.
+//
+// The key set changes on rotation and at no other time, so marshalling it per
+// request is work done thousands of times for one answer. The ETag is derived
+// from the body, so it changes exactly when the body does and never otherwise.
+func (s *Server) jwksBody() ([]byte, string, error) {
+	body, err := s.cfg.Keys.MarshalJWKS()
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(body)
+	etag := `"` + base64.RawURLEncoding.EncodeToString(sum[:16]) + `"`
+
+	s.jwksMu.Lock()
+	defer s.jwksMu.Unlock()
+	if s.jwksETag == etag {
+		// Unchanged: hand back the cached slice rather than the fresh one, so
+		// every caller shares one allocation.
+		return s.jwksCache, s.jwksETag, nil
+	}
+	s.jwksCache, s.jwksETag = body, etag
+	return body, etag, nil
 }

@@ -54,6 +54,18 @@ func asOutpostIdentity(i *ldapd.Identity) outpostIdentity {
 // as far as its token.
 const outpostCallsPerMinute = 600
 
+// pdpCallsPerMinute is the limit for a policy decision point.
+//
+// Far higher than the others, because the traffic shape is completely
+// different: an LDAP outpost binds when somebody signs in, a PDP is asked on
+// EVERY request an application serves. 600/minute is ten decisions a second,
+// which one moderately busy application exhausts on its own -- and a rate-
+// limited PDP does not degrade gracefully, it denies.
+//
+// Measured rather than guessed: a 200-request benchmark against the evaluation
+// endpoint tripped the outpost limit, which is how this was found.
+const pdpCallsPerMinute = 120_000
+
 type outpostIdentity struct {
 	Username    string   `json:"username"`
 	Email       string   `json:"email"`
@@ -88,8 +100,12 @@ func (s *Server) outpostAuth(w http.ResponseWriter, r *http.Request) (orgID, kin
 		return "", "", "", false
 	}
 
+	limit := outpostCallsPerMinute
+	if kind == "pdp" {
+		limit = pdpCallsPerMinute
+	}
 	if res, rerr := store.AllowRate(r.Context(), s.db, "outpost:"+id,
-		outpostCallsPerMinute, time.Minute); rerr == nil && !res.Allowed {
+		limit, time.Minute); rerr == nil && !res.Allowed {
 		writeError(w, http.StatusTooManyRequests, "slow_down",
 			"this outpost is asking faster than the core will answer")
 		return "", "", "", false

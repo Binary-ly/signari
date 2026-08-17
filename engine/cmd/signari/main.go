@@ -26,9 +26,12 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/signal"
+	"signari.dev/engine/internal/outpost"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -81,7 +84,7 @@ var twoWordCommands = map[string]bool{
 	"janitor": true, "keys": true, "import": true, "proxy": true,
 	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
-	"invite": true, "signup": true,
+	"invite": true, "signup": true, "outpost": true,
 	"ssf": true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
 }
 
@@ -225,6 +228,9 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	outpostCore := fs.String("core", "", "URL of the Signari engine this outpost asks")
+	outpostToken := fs.String("outpost-token", "", "outpost token from `signari outpost create`")
+	outpostKind := fs.String("kind-outpost", "", "ldap, radius or proxy")
 	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins")
 	inviteTTL := fs.Duration("expires", 7*24*time.Hour, "how long the invitation lasts")
 	signupDomains := fs.String("domains", "",
@@ -294,6 +300,13 @@ func run(args []string) error {
 		return policyTest(*policyFile)
 	case "policy graph":
 		return policyGraph(*policyFile, *outFile)
+	}
+
+	// `outpost run` is the whole point of an outpost: it holds NO database
+	// credentials. Dispatched before the DSN is required, because requiring one
+	// would defeat the feature entirely.
+	if cmd == "outpost run" {
+		return outpostRun(*outpostCore, *outpostToken, *outpostKind, *addr, *ldapBaseDN)
 	}
 
 	// `brand check` needs no database: it answers "would this palette be
@@ -412,6 +425,10 @@ func run(args []string) error {
 	case "saml add-sp":
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
+	case "outpost create":
+		return outpostCreate(ctx, conn, *orgID, *name, *outpostKind)
+	case "outpost list":
+		return outpostList(ctx, conn, *orgID)
 	case "invite create":
 		return inviteCreate(ctx, conn, *orgID, *email, *inviteGroups, *inviteTTL, *issuer)
 	case "invite list":
@@ -4421,4 +4438,148 @@ func signupShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		fmt.Printf("  new accounts join: %s\n", strings.Join(groups, ", "))
 	}
 	return nil
+}
+
+// outpostCreate issues a token for a remote protocol server.
+func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind string) error {
+	switch {
+	case orgID == "":
+		return fmt.Errorf("give -org")
+	case name == "":
+		return fmt.Errorf("give -name, something that identifies where this outpost runs")
+	}
+	switch kind {
+	case "ldap", "radius", "proxy":
+	default:
+		return fmt.Errorf("give -kind-outpost: ldap, radius or proxy. The token is "+
+			"bound to one protocol, so a leaked token costs that protocol rather "+
+			"than all of them (got %q)", kind)
+	}
+
+	token, hash, err := store.NewInvitationToken() // same 32-byte shape
+	if err != nil {
+		return err
+	}
+	var id string
+	if err := conn.QueryRow(ctx, `
+		INSERT INTO core.outposts (org_id, name, kind, token_hash)
+		VALUES ($1::uuid, $2, $3, $4) RETURNING id::text`,
+		orgID, name, kind, hash).Scan(&id); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return fmt.Errorf("an outpost called %q already exists in that organisation", name)
+		}
+		return err
+	}
+
+	fmt.Printf("outpost %s (%s)\n\n", name, kind)
+	fmt.Printf("  SIGNARI_OUTPOST_TOKEN=%s\n\n", token)
+	fmt.Println("Run it where the protocol is needed, with NO database credentials:")
+	fmt.Printf("  signari outpost run -core https://<this engine> \\\n")
+	fmt.Printf("    -outpost-token $SIGNARI_OUTPOST_TOKEN -kind-outpost %s \\\n", kind)
+	if kind == "ldap" {
+		fmt.Printf("    -addr :389 -ldap-base-dn dc=example,dc=com\n")
+	} else {
+		fmt.Printf("    -addr :1812\n")
+	}
+	fmt.Println("\nThe token is shown once. It is stored hashed.")
+	fmt.Println("It verifies passwords and nothing else: it cannot change anything,")
+	fmt.Println("mint a session, or be used for a different protocol.")
+	return nil
+}
+
+func outpostList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT name, kind, enabled, last_seen_at, COALESCE(last_seen_ip,'')
+		  FROM core.outposts WHERE org_id = $1::uuid ORDER BY name`, orgID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var name, kind, ip string
+		var enabled bool
+		var seen *time.Time
+		if err := rows.Scan(&name, &kind, &enabled, &seen, &ip); err != nil {
+			return err
+		}
+		state := "enabled"
+		if !enabled {
+			state = "DISABLED"
+		}
+		last := "never called"
+		if seen != nil {
+			last = fmt.Sprintf("last seen %s ago from %s",
+				time.Since(*seen).Round(time.Second), ip)
+		}
+		fmt.Printf("  %-20s %-7s %-9s %s\n", name, kind, state, last)
+		n++
+	}
+	if n == 0 {
+		fmt.Println("  no outposts registered")
+	}
+	return rows.Err()
+}
+
+// outpostRun serves a protocol against a remote core.
+//
+// No database handle exists in this process. That is the entire point: the
+// machine running this can sit in a DMZ, a branch office or an airgapped
+// segment, and a compromise of it does not yield the directory.
+func outpostRun(core, token, kind, addr, baseDN string) error {
+	if kind == "" {
+		return fmt.Errorf("give -kind-outpost: ldap or radius")
+	}
+	if token == "" {
+		token = os.Getenv("SIGNARI_OUTPOST_TOKEN")
+	}
+	client, err := outpost.New(core, token, 10*time.Second)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// Checked BEFORE a listener opens. An outpost that starts anyway and finds
+	// out its token is wrong when the first person tries to log in has turned a
+	// configuration error into an outage, and the one who discovers it is a user.
+	if err := client.Check(ctx); err != nil {
+		return err
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	log.Info("outpost registered with the core", "name", client.Name(), "kind", kind,
+		"core", core)
+
+	switch kind {
+	case "ldap":
+		if baseDN == "" {
+			return fmt.Errorf("give -ldap-base-dn: every bind DN sits under it and " +
+				"there is no safe default")
+		}
+		if addr == ":8080" {
+			addr = ":389"
+		}
+		srv := ldapd.New(ldapd.Config{
+			BaseDN:      baseDN,
+			UserAttr:    envOr("SIGNARI_LDAP_USER_ATTR", "uid"),
+			MaxResults:  500,
+			ReadTimeout: 30 * time.Second,
+		}, client, log)
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return err
+		}
+		log.Info("LDAP outpost listening", "addr", addr, "base_dn", baseDN)
+		return srv.Serve(ctx, ln)
+	case "radius":
+		return fmt.Errorf("the RADIUS outpost needs its shared secrets, which are " +
+			"per network device and are not carried by the outpost token. Configure " +
+			"them locally and this will start; see docs/outposts.md")
+	default:
+		return fmt.Errorf("-kind-outpost %q cannot be run yet", kind)
+	}
 }

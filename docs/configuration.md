@@ -131,6 +131,14 @@ See [CAPTCHA](captcha.md).
 |---|---|
 | `SIGNARI_DUO_BASE_URL` | Overrides Duo's API host. Testing only |
 
+## Outposts
+
+Set on the OUTPOST, not the core. See [outposts.md](outposts.md).
+
+| | |
+|---|---|
+| `SIGNARI_OUTPOST_TOKEN` | Token from `signari outpost create`. An alternative to `-outpost-token`, so it does not appear in the process list |
+
 ## FIPS 140-3
 
 No configuration; it is a build and runtime mode. See [fips.md](fips.md) for what

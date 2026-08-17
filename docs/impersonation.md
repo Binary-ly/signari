@@ -9,14 +9,16 @@ POST /admin/impersonate/stop
 
 ## The difference that matters
 
-The usual implementation of this feature issues a session indistinguishable from
-the user's own. The identity provider logs who did it; every downstream
-application sees the user and nothing else. So the audit trail that matters — the
-one in the application where the damage would be done — records the **user** as
-having taken the action, and they have no way to prove otherwise.
 
-RFC 8693 already has the claim for this. A session started this way carries the
-administrator's identity in **every token minted from it**, as `act`:
+The failure mode we are avoiding is the *unconfigured* one. A relying party that
+was never given a mapper sees a token indistinguishable from the user's own, so
+the audit trail in the application — the one where the damage would be done —
+records the **user** as having acted, and they cannot prove otherwise. An
+audit property that depends on per-client configuration is an audit property
+some client does not have.
+
+A session started here carries the administrator's identity in **every token
+minted from it**, as `act`:
 
 ```json
 { "sub": "387ba966-…", "act": { "sub": "551049cd-…" } }
@@ -30,6 +32,7 @@ own log entry naming the real actor, without having to trust our log.
 Verified against a running engine: both tokens carry `act`, and an ordinary
 sign-in by the same administrator carries none. A claim that is always present
 says nothing.
+
 
 ## The rules, each a refusal rather than a log line
 

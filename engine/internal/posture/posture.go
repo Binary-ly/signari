@@ -63,6 +63,12 @@ type Config struct {
 	// ManagedHeader and CompliantHeader are the header names to read.
 	ManagedHeader   string
 	CompliantHeader string
+
+	// Chrome verifies Chrome Enterprise device trust responses. nil means that
+	// source is off.
+	Chrome *Chrome
+	// ChromeHeader is where the browser puts its signed challenge response.
+	ChromeHeader string
 }
 
 // Evaluate establishes device posture for a request.
@@ -75,6 +81,12 @@ func (c *Config) Evaluate(r *http.Request) State {
 	}
 
 	if st := c.fromCertificate(r.TLS); st.Source != "none" {
+		return st
+	}
+	// Chrome device trust before headers, for the same reason a certificate
+	// comes before both: it is a signature over a challenge this server caused
+	// to be issued, and a header is an assertion by whatever was in the path.
+	if st, ok := c.fromChrome(r); ok {
 		return st
 	}
 	return c.fromHeaders(r)
@@ -190,4 +202,27 @@ func intermediates(state *tls.ConnectionState) *x509.CertPool {
 		pool.AddCert(c)
 	}
 	return pool
+}
+
+// fromChrome verifies a Chrome device trust response, if one was sent.
+//
+// Reports whether it produced a verdict at all. A failure to verify is NOT
+// "unmanaged": it means we could not tell, and falling through to the header
+// source is right, because a deployment may have both.
+func (c *Config) fromChrome(r *http.Request) (State, bool) {
+	if c.Chrome == nil || c.ChromeHeader == "" {
+		return State{}, false
+	}
+	resp := r.Header.Get(c.ChromeHeader)
+	if resp == "" {
+		return State{}, false
+	}
+	st, err := c.Chrome.Verify(r.Context(), resp)
+	if err != nil {
+		return State{}, false
+	}
+	if st.Source == "none" {
+		return State{}, false
+	}
+	return st, true
 }

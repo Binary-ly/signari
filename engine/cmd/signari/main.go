@@ -1254,6 +1254,12 @@ func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) err
 	}
 
 	hasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+	// The same gate the web paths use. The CLI creates the FIRST user of a
+	// deployment -- the account with the most access and the longest life -- so
+	// it is the last place a weaker rule belongs.
+	if _, perr := passwords.PolicyFromEnv().Check(ctx, password, email, nil, hasher); perr != nil {
+		return perr
+	}
 	hash, err := hasher.Hash(ctx, password)
 	if err != nil {
 		return err

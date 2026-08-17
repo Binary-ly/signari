@@ -44,6 +44,9 @@ type Server struct {
 	// expects; a hash produced elsewhere is a credential that may simply not
 	// work, and the failure looks like the user mistyping.
 	hasher *passwords.Hasher
+	// pwPolicy is the SAME policy the sign-in paths enforce. An administrator
+	// setting a password must not be able to set one a user could not.
+	pwPolicy passwords.Policy
 }
 
 func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
@@ -55,7 +58,8 @@ func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
 		return nil, fmt.Errorf("admin API token must be at least 32 characters (got %d)", len(token))
 	}
 	return &Server{db: db, log: log, token: token,
-		hasher: passwords.NewHasher(passwords.MemoryBudgetMiB)}, nil
+		hasher:   passwords.NewHasher(passwords.MemoryBudgetMiB),
+		pwPolicy: passwords.PolicyFromEnv()}, nil
 }
 
 func (s *Server) Routes() *http.ServeMux {

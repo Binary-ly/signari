@@ -273,13 +273,6 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	password := r.PostForm.Get("password")
-	if len(password) < 8 {
-		s.renderPage(w, r, resetPage, map[string]any{
-			"Ready": true, "Token": r.PostForm.Get("token"),
-			"Error": "Use at least 8 characters.",
-		})
-		return
-	}
 
 	_, hash, err := hashRecoveryToken(r.PostForm.Get("token"))
 	if err != nil {
@@ -300,6 +293,37 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		// being submitted, the difference only matters to someone probing.
 		s.renderPage(w, r, resetPage, map[string]any{"Error": "That link is not valid or has expired."})
 		return
+	}
+
+	// The full policy runs HERE rather than at the top, because reuse and
+	// context checks need to know whose password this is -- and that is only
+	// known once the token has been looked up.
+	//
+	// The cost of that ordering is that a too-short password is reported after
+	// the token is validated rather than before. That is the right way round: a
+	// message about password length must not tell somebody holding a stale link
+	// that it was otherwise valid.
+	previous, perr := store.RecentPasswordHashes(ctx, tx, req.UserID, s.pwPolicy.HistoryDepth)
+	if perr != nil {
+		s.log.Error("reading password history", "err", perr)
+	}
+	identity, _ := store.EmailForUser(ctx, tx, req.UserID)
+	if res, cerr := s.pwPolicy.Check(ctx, password, identity, previous, s.hasher); cerr != nil {
+		s.renderPage(w, r, resetPage, map[string]any{
+			"Ready": true, "Token": r.PostForm.Get("token"), "Error": cerr.Error(),
+		})
+		return
+	} else if s.pwPolicy.Breach != nil && !res.BreachCheckRan {
+		s.log.Warn("the breach check did not run for a password reset",
+			"correlation_id", correlationID(ctx))
+	}
+
+	// The outgoing hash is recorded BEFORE it is replaced. Doing it afterwards
+	// would file the new password as a previous one and refuse it next time.
+	if s.pwPolicy.HistoryDepth > 0 {
+		if err := store.RetirePassword(ctx, tx, req.UserID, req.OrgID); err != nil {
+			s.log.Error("recording the retired password", "err", err)
+		}
 	}
 
 	newHash, err := s.hasher.Hash(ctx, password)

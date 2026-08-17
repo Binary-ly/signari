@@ -131,6 +131,20 @@ See [CAPTCHA](captcha.md).
 |---|---|
 | `SIGNARI_DUO_BASE_URL` | Overrides Duo's API host. Testing only |
 
+## Password policy
+
+One gate every new password passes through — sign-up, recovery, admin, CLI. See
+[password-policy.md](password-policy.md).
+
+| | |
+|---|---|
+| `SIGNARI_PASSWORD_MIN_LENGTH` | Floor, counted in characters not bytes (default 8) |
+| `SIGNARI_PASSWORD_HISTORY` | Refuse reuse of the last N passwords. 0 (default) disables it |
+| `SIGNARI_PASSWORD_BREACH_CHECK` | `1` to consult Have I Been Pwned. Off by default: a binary upgrade must not silently start making outbound calls |
+| `SIGNARI_PASSWORD_BREACH_LIST` | Path to a local SHA-1 corpus, for deployments that cannot call out at all |
+| `SIGNARI_PASSWORD_BREACH_REQUIRED` | `1` to refuse when the corpus is unreachable. Default lets it through and logs loudly |
+| `SIGNARI_PASSWORD_BREACH_RECHECK_DAYS` | Re-consult the corpus at sign-in, at most this often per credential. A password that was clean when chosen and is breached now is flagged for change |
+
 ## Chrome Enterprise device trust
 
 A third device posture source, feeding the same `device_managed` and

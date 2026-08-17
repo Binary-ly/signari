@@ -77,11 +77,14 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// Length is checked, complexity is not. Composition rules push people toward
 	// predictable patterns; NIST 800-63B dropped them for that reason.
-	if req.Password != "" && len(req.Password) < 8 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "password_too_short", "detail": "at least 8 characters",
-		})
-		return
+	if req.Password != "" {
+		// The same gate the sign-in paths use. A password an administrator sets
+		// is a password somebody will sign in with, and holding it to a lower
+		// standard makes this endpoint the way round the policy.
+		if _, err := s.pwPolicy.Check(ctx, req.Password, req.Email, nil, s.hasher); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	var userID string
@@ -144,6 +147,10 @@ type patchUserRequest struct {
 	// mention `active` must not deactivate the account.
 	Active   *bool   `json:"active"`
 	Password *string `json:"password"`
+	// RequirePasswordChange makes the next sign-in ask for a new password
+	// before a session exists. This is what makes "set a temporary password"
+	// mean anything.
+	RequirePasswordChange *bool `json:"require_password_change"`
 }
 
 func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
@@ -155,17 +162,22 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	if req.Active == nil && req.Password == nil {
+	if req.Active == nil && req.Password == nil && req.RequirePasswordChange == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
 		return
 	}
-	if req.Password != nil && len(*req.Password) < 8 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "password_too_short", "detail": "at least 8 characters",
-		})
-		return
+	if req.Password != nil {
+		previous, perr := store.RecentPasswordHashes(ctx, s.db, userID, s.pwPolicy.HistoryDepth)
+		if perr != nil {
+			s.log.Error("reading password history", "err", perr)
+		}
+		identity, _ := store.EmailForUser(ctx, s.db, userID)
+		if _, err := s.pwPolicy.Check(ctx, *req.Password, identity, previous, s.hasher); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	var orgID string
@@ -210,6 +222,13 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.Password != nil {
+			// Recorded BEFORE it is replaced -- afterwards would file the new
+			// password as a previous one and refuse it at the next change.
+			if s.pwPolicy.HistoryDepth > 0 {
+				if rerr := store.RetirePassword(ctx, tx, userID, orgID); rerr != nil {
+					s.log.Error("recording the retired password", "err", rerr)
+				}
+			}
 			hash, herr := s.hasher.Hash(ctx, *req.Password)
 			if herr != nil {
 				return fmt.Errorf("hashing the password: %w", herr)
@@ -219,7 +238,12 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 				VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)
 				ON CONFLICT (user_id) DO UPDATE SET
 					hash = EXCLUDED.hash, algorithm = 'argon2id', is_current = true,
-					failed_attempts = 0, throttled_until = NULL, updated_at = now()`,
+					failed_attempts = 0, throttled_until = NULL, updated_at = now(),
+					-- Cleared with the password they belonged to. A stale
+					-- must_change would ask the user to replace a password an
+					-- administrator has just deliberately set for them.
+					must_change = false, must_change_reason = NULL,
+					last_breach_check = NULL`,
 				userID, orgID, hash); err != nil {
 				return err
 			}
@@ -234,12 +258,22 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 				sessionsEnded += term.Sessions
 			}
 		}
+		// AFTER the password write, which clears the flag: an administrator
+		// setting a temporary password and requiring it be changed must end up
+		// with the flag set, and the two orders give opposite answers.
+		if req.RequirePasswordChange != nil && *req.RequirePasswordChange {
+			if err := store.RequirePasswordChange(ctx, tx, userID,
+				"An administrator has asked you to choose a new password."); err != nil {
+				return fmt.Errorf("requiring a password change: %w", err)
+			}
+		}
 
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.user_updated", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID, SubjectID: userID,
 			Detail: map[string]any{
 				"active_set":     req.Active != nil,
 				"password_set":   req.Password != nil,
+				"must_change":    req.RequirePasswordChange != nil && *req.RequirePasswordChange,
 				"sessions_ended": sessionsEnded,
 			},
 		})

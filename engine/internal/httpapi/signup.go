@@ -135,9 +135,17 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 		fail("Enter the email address this account should use.")
 		return
 	}
-	if len(password) < signupMinPassword {
-		fail("Choose a password of at least 8 characters.")
+	// The shared gate: length, context, reuse and the breach corpus. Not a
+	// local length check, because a second place to decide what a password may
+	// be is a second place for it to be weaker.
+	if res, perr := s.pwPolicy.Check(ctx, password, email, nil, s.hasher); perr != nil {
+		fail(perr.Error())
 		return
+	} else if s.pwPolicy.Breach != nil && !res.BreachCheckRan {
+		// The check was configured and could not run. Logged loudly: a control
+		// that quietly stopped running is worse than one never configured.
+		s.log.Warn("the breach check did not run for a new password",
+			"correlation_id", correlationID(ctx))
 	}
 
 	var orgID string

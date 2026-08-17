@@ -159,7 +159,11 @@ func ConsumeRecovery(ctx context.Context, tx pgx.Tx, requestID, userID, newHash 
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.password_credentials
 		SET hash = $2, algorithm = 'argon2id', is_current = true, updated_at = now(),
-		    failed_attempts = 0, throttled_until = NULL, last_failure_at = NULL
+		    failed_attempts = 0, throttled_until = NULL, last_failure_at = NULL,
+		    -- A recovery reset satisfies a required change: the new password went
+		    -- through the same policy. Leaving the flag set would demand a second
+		    -- change immediately after the first.
+		    must_change = false, must_change_reason = NULL, last_breach_check = NULL
 		WHERE user_id = $1::uuid`, userID, newHash); err != nil {
 		return fmt.Errorf("setting the new password: %w", err)
 	}

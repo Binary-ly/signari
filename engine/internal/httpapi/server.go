@@ -74,6 +74,11 @@ type Server struct {
 
 	// Kerberos, when configured. A nil keytab means the SPNEGO route is not
 	// registered at all rather than registered and always failing.
+	// pwPolicy is the single gate every new password passes through. One policy
+	// rather than a check at each call site: four checks in four places means
+	// one is eventually weaker, and the weak one is the one that gets used.
+	pwPolicy passwords.Policy
+
 	krbConfig kerberos.Config
 	krbKeytab *keytab.Keytab
 }
@@ -127,6 +132,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		login:     newBucket(50, 100),
 		device:    newBucket(3, 10),
 		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
+		pwPolicy:  passwords.PolicyFromEnv(),
 		policies:  newPolicyCache(),
 		geo:       risk.NewResolver(),
 		mailer:    mailer,
@@ -223,6 +229,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /outpost/lookup", s.handleOutpostLookup)
 	mux.HandleFunc("POST /outpost/list", s.handleOutpostList)
 	mux.HandleFunc("POST /login/prompt", s.handlePromptPost)
+	mux.HandleFunc("POST /login/password-change", s.handlePasswordChangePost)
 	mux.HandleFunc("GET /signup", s.handleSignupGet)
 	mux.HandleFunc("POST /signup", s.handleSignupPost)
 	mux.HandleFunc("GET /apps", s.handlePortal)

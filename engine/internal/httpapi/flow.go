@@ -337,7 +337,6 @@ func (s *Server) mintHybridIDToken(ctx context.Context, c *clients.Client,
 	})
 }
 
-
 // handleToken implements /oauth2/token for the authorization_code grant.
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// A proof at the token endpoint accompanies no access token yet, so `ath` is
@@ -1067,6 +1066,45 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Re-check the corpus, at most once per interval per credential.
+	//
+	// This is the only moment the plaintext exists to check. Every comparable
+	// implementation checks a password once, when it is chosen, and never again
+	// -- so a password that was clean the day it was set stays "clean" forever,
+	// however many corpora it turns up in afterwards. The control expires
+	// silently on day two.
+	//
+	// Bounded so a third party is not on the critical path of every login, and
+	// done AFTER the password has been verified so an attacker cannot use this
+	// endpoint to ask whether an arbitrary string is breached.
+	//
+	// A hit flags rather than refuses: the person is at a login box with a
+	// password that works, and the useful outcome is that they leave with a
+	// different one, not that they are turned away with nowhere to go.
+	if s.pwPolicy.Breach != nil && s.pwPolicy.RecheckEvery > 0 {
+		if due, derr := store.BreachCheckDue(ctx, s.db, userID,
+			s.pwPolicy.RecheckEvery); derr == nil && due {
+			bad, berr := s.pwPolicy.Breach.Breached(ctx, password)
+			// Stamped whatever the verdict, INCLUDING when the corpus was
+			// unreachable -- otherwise an outage becomes a retry on every
+			// sign-in by every user, and their bad hour becomes ours.
+			if err := store.RecordBreachCheck(ctx, s.db, userID); err != nil {
+				s.log.Error("recording a breach check", "err", err)
+			}
+			if berr == nil && bad {
+				if ferr := store.RequirePasswordChange(ctx, s.db, userID,
+					"Your password has appeared in a known data breach since you "+
+						"chose it, so it needs to be changed before you continue."); ferr != nil {
+					s.log.Error("flagging a breached password", "err", ferr)
+				}
+				s.auditDetached(ctx, audit.Event{
+					Type: "password.breached", OrgID: orgID, SubjectID: userID,
+					CorrelationID: correlationID(ctx),
+				})
+			}
+		}
+	}
+
 	// A correct password does NOT create a session when a second factor is
 	// enrolled. It creates a pending authentication that can do nothing but
 	// present a code -- otherwise a stolen password alone has already produced
@@ -1125,6 +1163,23 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 		s.log.Error("reading prompts", "err", perr)
 	} else if len(pending) > 0 {
 		s.beginPrompt(w, r, userID, orgID, amr, authzQuery, pending[0])
+		return
+	}
+
+	// A required password change, before the session exists and beside the
+	// prompt check for the same reason: eight ways in, one place to gate them.
+	//
+	// After prompts on purpose. Terms someone has not accepted should be put to
+	// them before we ask them to do work.
+	if must, reason, mcerr := store.PasswordChangeRequired(ctx, tx, userID); mcerr != nil {
+		// Not fatal. Failing open here means a flagged user signs in this once;
+		// failing closed means a database hiccup locks out the deployment.
+		s.log.Error("checking whether a password change is required", "err", mcerr)
+	} else if must {
+		if reason == "" {
+			reason = "Your password needs to be changed before you continue."
+		}
+		s.beginPasswordChange(w, r, userID, orgID, amr, authzQuery, reason)
 		return
 	}
 
@@ -1529,6 +1584,21 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 	// Accepted by the old provider. Take a local hash NOW, in the same
 	// transaction as the session -- so this user never needs the old system
 	// again, and the migration shrinks by one.
+	//
+	// The policy is deliberately NOT enforced here. This password was already
+	// theirs and the old provider just accepted it; refusing it would lock
+	// somebody out of an account they have proved they own, in the middle of a
+	// migration, which is how a migration gets rolled back. What we do instead
+	// is check and flag: they sign in, and are asked to change it at the door.
+	migratedBreach := ""
+	if s.pwPolicy.Breach != nil {
+		if bad, berr := s.pwPolicy.Breach.Breached(ctx, password); berr == nil && bad {
+			migratedBreach = "The password you brought from your previous " +
+				"provider appears in a known data breach, so it needs to be " +
+				"changed before you continue."
+		}
+	}
+
 	hash, err := s.hasher.Hash(ctx, password)
 	if err != nil {
 		s.log.Error("hashing a migrated password", "err", err)
@@ -1543,6 +1613,12 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if migratedBreach != "" {
+		if ferr := store.RequirePasswordChange(ctx, tx, pending.UserID,
+			migratedBreach); ferr != nil {
+			s.log.Error("flagging a migrated breached password", "err", ferr)
+		}
+	}
 	if err := store.CompleteMigration(ctx, tx, pending.UserID, pending.OrgID,
 		pending.Source.ID, hash); err != nil {
 		s.log.Error("completing migration", "err", err)

@@ -1,0 +1,168 @@
+package httpapi
+
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"html/template"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+)
+
+// Delivering an authorization response by query, fragment or form_post.
+//
+// # Why form_post exists here at all
+//
+// For the code flow it buys almost nothing: an authorization code in a query
+// string is single-use, PKCE-bound and worthless to anyone who reads it out of
+// a log. This was refused for exactly that reason, and the reasoning was right
+// at the time.
+//
+// Hybrid changes it. An id_token is a signed assertion about who just signed
+// in, it is not single-use, and a query string is written to the far end's
+// access log, to every proxy in between, and to browser history. So the moment
+// `code id_token` became possible, form_post stopped being decoration.
+//
+// # The auto-submitting form
+//
+// OIDC's form_post response mode is an HTML page that posts itself. That needs
+// a script, and a script on this page needs a Content-Security-Policy that
+// permits it. A nonce is used rather than 'unsafe-inline': the page carries a
+// signed assertion, and 'unsafe-inline' would let anything injected into it run
+// as well.
+//
+// The noscript fallback is a real button rather than an apology. A browser with
+// script disabled still completes the sign-in, one click later.
+
+// responseParams is what an authorization response carries.
+type responseParams struct {
+	Code    string
+	IDToken string
+	State   string
+	Issuer  string
+}
+
+func (p responseParams) values() url.Values {
+	v := url.Values{}
+	if p.Code != "" {
+		v.Set("code", p.Code)
+	}
+	if p.IDToken != "" {
+		v.Set("id_token", p.IDToken)
+	}
+	if p.State != "" {
+		v.Set("state", p.State)
+	}
+	// RFC 9207, on every mode: tell the client which issuer answered.
+	if p.Issuer != "" {
+		v.Set("iss", p.Issuer)
+	}
+	return v
+}
+
+// deliverAuthzResponse sends the response by the mode the client asked for.
+//
+// mode may be empty, in which case the default depends on what is being
+// carried: `query` for a bare code, `fragment` for anything with an id_token,
+// which is what OIDC specifies and what keeps assertions out of server logs.
+func (s *Server) deliverAuthzResponse(w http.ResponseWriter, r *http.Request,
+	redirectURI, mode string, p responseParams) {
+
+	if mode == "" {
+		mode = "query"
+		if p.IDToken != "" {
+			mode = "fragment"
+		}
+	}
+
+	if mode == "form_post" {
+		s.postAuthzResponse(w, redirectURI, p)
+		return
+	}
+
+	u, err := url.Parse(redirectURI)
+	if err != nil {
+		http.Error(w, "bad redirect_uri", http.StatusInternalServerError)
+		return
+	}
+	switch mode {
+	case "fragment":
+		// Merged with any fragment already on the registered URI rather than
+		// replacing it, because a client that registered one put it there.
+		existing := strings.TrimPrefix(u.Fragment, "#")
+		encoded := p.values().Encode()
+		if existing != "" {
+			encoded = existing + "&" + encoded
+		}
+		u.Fragment = encoded
+	default:
+		q := u.Query()
+		for k, vs := range p.values() {
+			for _, v := range vs {
+				q.Set(k, v)
+			}
+		}
+		u.RawQuery = q.Encode()
+	}
+	http.Redirect(w, r, u.String(), http.StatusFound)
+}
+
+// postAuthzResponse renders the self-submitting form.
+func (s *Server) postAuthzResponse(w http.ResponseWriter, redirectURI string, p responseParams) {
+	raw := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	nonce := base64.RawURLEncoding.EncodeToString(raw)
+
+	type field struct{ Name, Value string }
+	var fields []field
+	for k, vs := range p.values() {
+		for _, v := range vs {
+			fields = append(fields, field{k, v})
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Never cached. The page contains a single-use code and, in a hybrid
+	// response, a signed assertion about who just signed in.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
+			"form-action "+formActionOrigin(redirectURI)+"; frame-ancestors 'none'")
+	w.Header().Set("X-Frame-Options", "DENY")
+	_ = formPostPage.Execute(w, map[string]any{
+		"Action": redirectURI, "Fields": fields, "Nonce": nonce,
+	})
+}
+
+// formActionOrigin narrows form-action to where this form actually posts.
+//
+// Without it the policy would have to allow any target, which on a page that
+// carries a code and an assertion is the one thing worth constraining.
+func formActionOrigin(redirectURI string) string {
+	u, err := url.Parse(redirectURI)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "'self'"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+var formPostPage = template.Must(template.New("formpost").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Signing you in…</title>
+<style>body{font-family:system-ui,sans-serif;max-width:22rem;margin:6rem auto;
+padding:0 1rem;text-align:center}button{padding:.6rem 1rem;font-size:1rem}</style>
+</head>
+<body>
+<form method="POST" action="{{.Action}}">
+{{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
+{{end}}<noscript>
+<p>Continue to finish signing in.</p>
+<button type="submit">Continue</button>
+</noscript>
+</form>
+<script nonce="{{.Nonce}}">document.forms[0].submit();</script>
+</body></html>`))

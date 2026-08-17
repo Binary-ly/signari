@@ -262,22 +262,81 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	u, err := url.Parse(req.RedirectURI)
-	if err != nil {
-		http.Error(w, "bad redirect_uri", http.StatusInternalServerError)
-		return
-	}
-	q := u.Query()
-	q.Set("code", code)
-	if req.State != "" {
-		q.Set("state", req.State)
-	}
-	// RFC 9207: tell the client which issuer answered, closing the mix-up attack.
-	q.Set("iss", s.cfg.Issuer)
-	u.RawQuery = q.Encode()
+	out := responseParams{Code: code, State: req.State, Issuer: s.cfg.Issuer}
 
-	http.Redirect(w, r, u.String(), http.StatusFound)
+	// Hybrid: an id_token beside the code, bound to it by c_hash.
+	//
+	// Minted after the commit, because it hashes the code that was actually
+	// issued. Doing it inside the transaction would mean hashing a code that a
+	// rollback could still take away.
+	if oauth.NormaliseResponseType(req.ResponseType) == "code id_token" {
+		idt, ierr := s.mintHybridIDToken(ctx, c, sid, code, req.Nonce, s.issuerFor(c))
+		if ierr != nil {
+			s.log.Error("minting the hybrid id_token", "err", ierr, "client", c.ClientID)
+			// The code is already issued and valid. Failing the whole response
+			// here would strand it; the client asked for an id_token though, and
+			// silently omitting one it will look for is worse than an error it
+			// can act on.
+			http.Error(w, "the id_token could not be issued", http.StatusInternalServerError)
+			return
+		}
+		out.IDToken = idt
+	}
+
+	s.deliverAuthzResponse(w, r, req.RedirectURI, req.ResponseMode, out)
 }
+
+// mintHybridIDToken issues the front-channel id_token for a hybrid response.
+//
+// It carries c_hash and NOT at_hash: no access token exists at this point, and
+// none will ever cross the front channel. Profile claims are left out for the
+// same reason -- this token travels through the browser, and the back-channel
+// one issued at the token endpoint is where an application should read a
+// person's details from.
+func (s *Server) mintHybridIDToken(ctx context.Context, c *clients.Client,
+	sid, code, nonce, issuer string) (string, error) {
+
+	alg := keys.Algorithm(c.IDTokenAlg)
+	key, err := s.cfg.Keys.Active(alg)
+	if err != nil {
+		return "", fmt.Errorf("no active key for %s: %w", alg, err)
+	}
+	chash, err := tokens.CHash(alg, code)
+	if err != nil {
+		return "", err
+	}
+
+	var authTime time.Time
+	var acr string
+	var amr []string
+	if err := s.db.QueryRow(ctx,
+		`SELECT auth_time, acr, amr FROM core.sessions WHERE sid = $1`, sid).
+		Scan(&authTime, &acr, &amr); err != nil {
+		return "", fmt.Errorf("loading session context: %w", err)
+	}
+
+	now := time.Now()
+	var userID string
+	if err := s.db.QueryRow(ctx,
+		`SELECT user_id::text FROM core.sessions WHERE sid = $1`, sid).Scan(&userID); err != nil {
+		return "", err
+	}
+	return tokens.NewSigner(key).SignIDToken(tokens.IDTokenClaims{
+		Issuer:          issuer,
+		Subject:         userID,
+		Audience:        c.ClientID,
+		Expiry:          now.Add(tokens.DefaultIDTokenTTL).Unix(),
+		IssuedAt:        now.Unix(),
+		AuthTime:        authTime.Unix(),
+		ACR:             acr,
+		AMR:             amr,
+		Nonce:           nonce,
+		SessionID:       sid,
+		AuthorizedParty: c.ClientID,
+		CodeHash:        chash,
+	})
+}
+
 
 // handleToken implements /oauth2/token for the authorization_code grant.
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {

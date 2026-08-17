@@ -228,6 +228,8 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	reviewBy := fs.String("review-by", "",
+		"YYYY-MM-DD when the hybrid exemption should be revisited")
 	outpostCore := fs.String("core", "", "URL of the Signari engine this outpost asks")
 	outpostToken := fs.String("outpost-token", "", "outpost token from `signari outpost create`")
 	outpostKind := fs.String("kind-outpost", "", "ldap, radius or proxy")
@@ -368,6 +370,8 @@ func run(args []string) error {
 	case "client set-tls":
 		return clientSetTLS(ctx, conn, *clientID, *tlsSubjectDN, *tlsSANDNS, *tlsSANURI,
 			*spCert, *tlsBound)
+	case "client set-hybrid":
+		return clientSetHybrid(ctx, conn, *clientID, *reviewBy)
 	case "client set-keys":
 		return clientSetKeys(ctx, conn, *clientID, *jwksPath)
 	case "client create":
@@ -4582,4 +4586,40 @@ func outpostRun(core, token, kind, addr, baseDN string) error {
 	default:
 		return fmt.Errorf("-kind-outpost %q cannot be run yet", kind)
 	}
+}
+
+// clientSetHybrid permits response_type "code id_token" for one client.
+func clientSetHybrid(ctx context.Context, conn *pgx.Conn, clientID, reviewBy string) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client-id")
+	}
+	if reviewBy == "" {
+		return fmt.Errorf("give -review-by, a date when this should be revisited. " +
+			"Hybrid exists here for applications being migrated in; an exemption " +
+			"with no date on it is a permanent one that nobody decided to make")
+	}
+	if _, err := time.Parse("2006-01-02", reviewBy); err != nil {
+		return fmt.Errorf("-review-by must be YYYY-MM-DD (got %q)", reviewBy)
+	}
+	// response_types is updated alongside the flag rather than left to disagree
+	// with it. Two switches for one decision means an operator turns on the one
+	// they found and gets refused by the one they did not.
+	tag, err := conn.Exec(ctx, `
+		UPDATE core.clients
+		   SET allow_hybrid = true,
+		       hybrid_review_by = $2::date,
+		       response_types = (
+		           SELECT array_agg(DISTINCT rt)
+		             FROM unnest(response_types || ARRAY['code id_token']) AS rt)
+		 WHERE client_id = $1`, clientID, reviewBy)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no client %q", clientID)
+	}
+	fmt.Printf("%s may now use response_type \"code id_token\"\n", clientID)
+	fmt.Printf("  review by %s\n", reviewBy)
+	fmt.Println("  the access token still never crosses the front channel")
+	return nil
 }

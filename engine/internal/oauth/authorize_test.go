@@ -205,7 +205,17 @@ func TestResponseTypeAndScope(t *testing.T) {
 		{"missing scope", func(r *AuthzRequest) { r.Scope = "" }, "invalid_scope"},
 		{"scope without openid", func(r *AuthzRequest) { r.Scope = "profile" }, "invalid_scope"},
 		{"unregistered scope", func(r *AuthzRequest) { r.Scope = "openid admin" }, "invalid_scope"},
-		{"bad response_mode", func(r *AuthzRequest) { r.ResponseMode = "fragment" }, "invalid_request"},
+		// fragment and form_post are supported now; an invented mode is not.
+		{"unknown response_mode", func(r *AuthzRequest) { r.ResponseMode = "web_message" }, "invalid_request"},
+		// The access token must never cross the front channel, in any combination.
+		{"code token", func(r *AuthzRequest) { r.ResponseType = "code token" }, "unsupported_response_type"},
+		{"bare token", func(r *AuthzRequest) { r.ResponseType = "token" }, "unsupported_response_type"},
+		{"id_token token", func(r *AuthzRequest) { r.ResponseType = "id_token token" }, "unsupported_response_type"},
+		// Hybrid is off unless a client is explicitly permitted it.
+		{"hybrid without permission", func(r *AuthzRequest) {
+			r.ResponseType = "code id_token"
+			r.Nonce = "n"
+		}, "unsupported_response_type"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -260,5 +270,72 @@ func TestLookupErrorIsInvalidClient(t *testing.T) {
 	err := ValidateAuthz(goodRequest(), nil, errors.New("db down"))
 	if err == nil || err.Disposition != DispositionDirect {
 		t.Fatal("a failed client lookup must fail directly, never redirect")
+	}
+}
+
+// Hybrid, for a client that IS permitted it.
+//
+// The rules that only bite once the response type is allowed: a nonce is
+// mandatory, and the response must not go back in a query string. Both are what
+// make a front-channel ID token safe to issue at all, so both are worth pinning
+// separately from the "is it allowed" check.
+func TestHybridRulesForAPermittedClient(t *testing.T) {
+	permitted := func() *clients.Client {
+		c := testClient()
+		c.AllowHybrid = true
+		c.ResponseTypes = append(c.ResponseTypes, "code id_token")
+		return c
+	}
+
+	t.Run("nonce is required", func(t *testing.T) {
+		req := goodRequest()
+		req.ResponseType = "code id_token"
+		req.Nonce = ""
+		err := ValidateAuthz(req, permitted(), nil)
+		if err == nil || err.Code != "invalid_request" {
+			t.Fatalf("a hybrid request without a nonce was accepted: %v", err)
+		}
+		if !strings.Contains(err.Description, "nonce") {
+			t.Errorf("the error does not mention the nonce: %q", err.Description)
+		}
+	})
+
+	t.Run("query cannot carry an id_token", func(t *testing.T) {
+		req := goodRequest()
+		req.ResponseType = "code id_token"
+		req.Nonce = "n"
+		req.ResponseMode = "query"
+		err := ValidateAuthz(req, permitted(), nil)
+		if err == nil || err.Code != "invalid_request" {
+			t.Fatalf("an id_token was allowed into a query string: %v", err)
+		}
+	})
+
+	for _, mode := range []string{"", "fragment", "form_post"} {
+		t.Run("accepted with response_mode "+mode, func(t *testing.T) {
+			req := goodRequest()
+			req.ResponseType = "code id_token"
+			req.Nonce = "n"
+			req.ResponseMode = mode
+			if err := ValidateAuthz(req, permitted(), nil); err != nil {
+				t.Fatalf("refused: %s — %s", err.Code, err.Description)
+			}
+		})
+	}
+}
+
+// TestResponseTypeIsASet: "id_token code" and "code id_token" are the same
+// request. A server comparing the raw string accepts one and refuses the other
+// for no reason a client can discover from the error.
+func TestResponseTypeIsASet(t *testing.T) {
+	c := testClient()
+	c.AllowHybrid = true
+	c.ResponseTypes = append(c.ResponseTypes, "code id_token")
+
+	req := goodRequest()
+	req.ResponseType = "id_token code" // the other order
+	req.Nonce = "n"
+	if err := ValidateAuthz(req, c, nil); err != nil {
+		t.Fatalf("the reversed spelling was refused: %s — %s", err.Code, err.Description)
 	}
 }

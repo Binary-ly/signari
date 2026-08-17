@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"signari.dev/engine/internal/clientauth"
+	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -51,10 +53,17 @@ type Client struct {
 	TLSSANURI      string
 	TLSThumbprint  []byte
 	TLSBoundTokens bool
-	PKCEMethods    []string
-	IDTokenAlg     string
-	RedirectURIs   []string
-	RefreshTTL     int
+
+	// AllowHybrid permits response_type "code id_token" for this client.
+	//
+	// Off unless somebody turned it on. It exists for applications being
+	// migrated in that cannot be changed as a precondition of the migration; an
+	// estate should end up with it off everywhere.
+	AllowHybrid  bool
+	PKCEMethods  []string
+	IDTokenAlg   string
+	RedirectURIs []string
+	RefreshTTL   int
 }
 
 // RefreshTokenTTLSeconds is the client's configured refresh lifetime, with a
@@ -93,14 +102,16 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       grant_types, response_types, scopes, require_pkce, pkce_methods,
 		       id_token_signed_alg, refresh_token_ttl_s, first_party, issuer_alias,
 		       may_exchange, exchange_audiences,
-		       tls_subject_dn, tls_san_dns, tls_san_uri, tls_thumbprint, tls_bound_tokens
+		       tls_subject_dn, tls_san_dns, tls_san_uri, tls_thumbprint, tls_bound_tokens,
+		       allow_hybrid
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
 			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE, &c.PKCEMethods,
 			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias,
 			&c.MayExchange, &c.ExchangeAudiences,
-			&tlsDN, &tlsDNS, &tlsURI, &c.TLSThumbprint, &c.TLSBoundTokens)
+			&tlsDN, &tlsDNS, &tlsURI, &c.TLSThumbprint, &c.TLSBoundTokens,
+			&c.AllowHybrid)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -156,7 +167,27 @@ func (c *Client) HasRedirectURI(candidate string) bool {
 }
 
 // AllowsResponseType reports whether the client may use this response_type.
-func (c *Client) AllowsResponseType(rt string) bool { return contains(c.ResponseTypes, rt) }
+// AllowsResponseType reports whether the client may use this response type.
+//
+// Both sides are normalised first. response_type is a SET: "id_token code" and
+// "code id_token" are the same request, and comparing raw strings accepts one
+// spelling and refuses the other for no reason a client can discover from the
+// error it gets back.
+func (c *Client) AllowsResponseType(rt string) bool {
+	want := normaliseSet(rt)
+	for _, have := range c.ResponseTypes {
+		if normaliseSet(have) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func normaliseSet(rt string) string {
+	parts := strings.Fields(rt)
+	sort.Strings(parts)
+	return strings.Join(parts, " ")
+}
 
 // AllowsGrantType reports whether the client may use this grant.
 func (c *Client) AllowsGrantType(gt string) bool { return contains(c.GrantTypes, gt) }

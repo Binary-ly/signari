@@ -57,6 +57,10 @@ type IDTokenClaims struct {
 
 	// at_hash binds the ID token to the access token issued alongside it.
 	AccessTokenHash string `json:"at_hash,omitempty"`
+	// CodeHash binds the ID token to the authorization code issued beside it in
+	// a hybrid response. Without it an ID token delivered through the front
+	// channel can be paired with a code from a different authorization.
+	CodeHash string `json:"c_hash,omitempty"`
 
 	Email         string `json:"email,omitempty"`
 	EmailVerified *bool  `json:"email_verified,omitempty"`
@@ -141,6 +145,17 @@ func (s *Signer) sign(payload []byte, typ string) (string, error) {
 		return "", fmt.Errorf("signing: %w", err)
 	}
 	return obj.CompactSerialize()
+}
+
+// CHash computes the c_hash claim: the same construction as at_hash, over the
+// authorization code.
+//
+// It is what makes a hybrid response safe to hand to a browser. The ID token
+// arrives through the front channel where anyone in the redirect's path can
+// substitute one; c_hash ties it to the specific code that came with it, so a
+// swapped ID token no longer matches the code the client is about to exchange.
+func CHash(alg keys.Algorithm, code string) (string, error) {
+	return AtHash(alg, code)
 }
 
 // AtHash computes the at_hash claim: the base64url of the left-most half of the

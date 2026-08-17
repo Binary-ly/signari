@@ -4,6 +4,7 @@ package oauth
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -127,14 +128,42 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 
 	// --- From here the redirect target is trusted. ---
 
-	// 5. Code flow only. Implicit and hybrid are removed by OAuth 2.1 and we do
-	// not advertise them, so anything else is invalid rather than unsupported.
+	// 5. Code flow, and hybrid `code id_token` where a client is explicitly
+	// permitted it.
+	//
+	// Never `token` in any combination. Those put an ACCESS token in the
+	// browser's address bar, where it lands in history, referrers and every log
+	// between here and there -- which is why OAuth 2.1 removes them. `code
+	// id_token` is a different proposition: the id_token asserts who signed in
+	// and is bound to the code by c_hash, and the access token still only ever
+	// crosses the back channel.
 	if req.ResponseType == "" {
 		return redirectErr("invalid_request", "response_type is required")
 	}
-	if req.ResponseType != "code" {
+	switch NormaliseResponseType(req.ResponseType) {
+	case "code":
+	case "code id_token":
+		if c == nil || !c.AllowHybrid {
+			return redirectErr("unsupported_response_type",
+				"response_type \"code id_token\" is off for this client. It exists for "+
+					"applications being migrated in that cannot be changed first; enable "+
+					"it deliberately with `signari client set-hybrid`")
+		}
+		// The nonce is what ties the id_token to this browser session. Optional
+		// for the code flow, where the token arrives over the back channel;
+		// mandatory here, because without it a front-channel id_token can be
+		// replayed into somebody else's session.
+		if req.Nonce == "" {
+			return redirectErr("invalid_request",
+				"nonce is required with response_type \"code id_token\": it is what "+
+					"stops the id_token being replayed into another session")
+		}
+	default:
 		return redirectErr("unsupported_response_type",
-			fmt.Sprintf("response_type %q is not supported; only \"code\" is", req.ResponseType))
+			fmt.Sprintf("response_type %q is not supported. \"code\" always; "+
+				"\"code id_token\" where a client is permitted it. Anything containing "+
+				"\"token\" is refused: an access token must never cross the front channel",
+				req.ResponseType))
 	}
 	if !c.AllowsResponseType(req.ResponseType) {
 		return redirectErr("unauthorized_client", "client may not use this response_type")
@@ -207,14 +236,25 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	// discovery too -- with `code` as the only response type there is nothing
 	// sensitive in the redirect that form_post would protect, so it buys the
 	// caller nothing and costs a SameSite=None cookie to implement.
+	hybrid := NormaliseResponseType(req.ResponseType) == "code id_token"
 	switch req.ResponseMode {
-	case "", "query":
-	case "form_post":
-		return redirectErr("invalid_request",
-			"response_mode form_post is not supported; the authorization code is returned in the query")
+	case "":
+		// The default differs by response type, as OIDC specifies: `query` for
+		// code, `fragment` for anything carrying a token to the browser.
+	case "query":
+		if hybrid {
+			// An id_token in a query string is written to the server's access log
+			// at the far end, to any proxy in between, and to browser history. The
+			// specification forbids it and so does this.
+			return redirectErr("invalid_request",
+				"response_mode \"query\" cannot carry an id_token; use \"fragment\" "+
+					"or \"form_post\"")
+		}
+	case "fragment", "form_post":
 	default:
 		return redirectErr("invalid_request",
-			fmt.Sprintf("response_mode %q is not supported", req.ResponseMode))
+			fmt.Sprintf("response_mode %q is not supported; use query, fragment or form_post",
+				req.ResponseMode))
 	}
 
 	return nil
@@ -318,4 +358,20 @@ func validateResources(resources []string) error {
 		}
 	}
 	return nil
+}
+
+// NormaliseResponseType sorts the space-separated values.
+//
+// response_type is a SET, not a string: "id_token code" and "code id_token" are
+// the same request, and a server that compares the raw string accepts one and
+// refuses the other for no reason a client can discover.
+func NormaliseResponseType(rt string) string {
+	parts := strings.Fields(rt)
+	if len(parts) == 0 {
+		return ""
+	}
+	sort.Strings(parts)
+	// Sorted order puts "code" before "id_token", which is also the canonical
+	// spelling, so the comparison reads naturally at the call site.
+	return strings.Join(parts, " ")
 }

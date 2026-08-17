@@ -200,7 +200,7 @@ func Build(cfg Config) (*Metadata, error) {
 		// authorize endpoint now refuses it outright, and a mode that is refused
 		// must not appear here. With `code` as the only response type there is
 		// nothing in the redirect that form_post would protect.
-		ResponseModesSupported: []string{"query"},
+		ResponseModesSupported: []string{"query", "fragment", "form_post"},
 
 		// No `password` grant: ROPC is removed in OAuth 2.1 and there is no
 		// version of it that is safe to offer.

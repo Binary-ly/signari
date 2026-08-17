@@ -15,6 +15,8 @@ signari idp add -org <uuid> -slug google -name "Google" -kind google \
 | `discord` | Consumer accounts with no domain ownership behind them |
 | `twitch` | Needs `user:read:email` *and* a claims parameter before it returns an address |
 | `linkedin` | Issuer and userinfo are on different hosts, which is unusual and correct |
+| `slack` | Scoped to the workspace the app is installed in |
+| `atlassian` | Needs `audience=api.atlassian.com` and `prompt=consent` |
 | `oidc` | Anything else with a discovery document |
 | `saml` | An upstream SAML identity provider |
 
@@ -22,6 +24,11 @@ signari idp add -org <uuid> -slug google -name "Google" -kind google \
 `/.well-known/openid-configuration`**, not from documentation or memory. A
 preset with wrong endpoints is worse than no preset: it looks configured and
 fails at the moment a user is trying to sign in.
+
+Facebook was considered and **not added** for exactly that reason: its discovery
+document omits the token endpoint. Building the preset would have meant filling
+that in from memory, which is the thing this rule exists to prevent. Use the
+generic `oidc` kind with endpoints you have checked yourself.
 
 ## Apple, and the secret that expires
 

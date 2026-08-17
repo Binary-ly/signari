@@ -28,6 +28,8 @@ const (
 	KindDiscord   Kind = "discord"
 	KindTwitch    Kind = "twitch"
 	KindLinkedIn  Kind = "linkedin"
+	KindSlack     Kind = "slack"
+	KindAtlassian Kind = "atlassian"
 	// KindSAML is an upstream SAML identity provider. It shares the linking and
 	// account-matching rules with the OAuth kinds and nothing else: there is no
 	// preset, because a SAML upstream's endpoints and certificate come from its
@@ -216,6 +218,34 @@ var presets = map[Kind]Preset{
 		TrustsEmailVerification: true,
 		Note: "The issuer and the userinfo endpoint are on different hosts, which " +
 			"is unusual and correct.",
+	},
+
+	KindSlack: {
+		AuthorizeURL: "https://slack.com/openid/connect/authorize",
+		TokenURL:     "https://slack.com/api/openid.connect.token",
+		UserinfoURL:  "https://slack.com/api/openid.connect.userInfo",
+		JWKSURL:      "https://slack.com/openid/connect/keys",
+		Issuer:       "https://slack.com",
+		Scopes:       []string{"openid", "email", "profile"},
+		OIDC:         true,
+		// Slack only issues an address for a member of the workspace the app is
+		// installed in, and that address is the one the workspace verified.
+		TrustsEmailVerification: true,
+		Note: "Sign-in is scoped to the workspace the Slack app is installed in, " +
+			"so this federates one workspace rather than all of Slack.",
+	},
+
+	KindAtlassian: {
+		AuthorizeURL:            "https://auth.atlassian.com/authorize",
+		TokenURL:                "https://auth.atlassian.com/oauth/token",
+		UserinfoURL:             "https://auth.atlassian.com/userinfo",
+		JWKSURL:                 "https://auth.atlassian.com/.well-known/jwks.json",
+		Issuer:                  "https://auth.atlassian.com",
+		Scopes:                  []string{"openid", "email", "profile"},
+		OIDC:                    true,
+		TrustsEmailVerification: true,
+		Note: "Atlassian requires `audience=api.atlassian.com` and `prompt=consent` " +
+			"on the authorize request; without them the token is unusable.",
 	},
 
 	KindMicrosoft: {

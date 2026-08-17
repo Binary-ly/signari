@@ -90,15 +90,66 @@ ticket makes every principal in the realm a user the moment they visit.
 Accounts come from the directory sync — a deliberate act by an administrator. An
 unmatched principal is refused and told to ask for one.
 
-## Syncing users from a realm
+## The three ways a realm is used
 
-Use the **LDAP source** against Active Directory or FreeIPA, which is how it
-works in practice: both publish the directory over LDAP, and Signari already
-handles their flavour-specific immutable identifiers (`objectGUID`,
-`ipaUniqueID`). See [ldap-source.md](ldap-source.md).
+| | |
+|---|---|
+| **SPNEGO** | A domain-joined browser signs in with no interaction |
+| **Password backend** | A password is verified against the KDC |
+| **Directory sync** | Accounts are created from the realm's principals |
 
-Reading principals out of a KDC with `kadmin` is a different and worse route to
-the same list.
+### Password backend
+
+There is no hash to compare — a realm does not publish password material, and
+the only way to check a password is to ask the KDC for a ticket with it. That
+also makes every check live: a password changed or an account disabled five
+seconds ago is refused, which a cached hash cannot do.
+
+Four things are refused **before** the KDC is asked, and each would be a bypass
+otherwise:
+
+- an **empty password** — some KDC configurations accept it as a pre-auth-less
+  bind, producing an authenticated session for a password nobody typed
+- an **administrative principal** (`alice/admin`)
+- a principal naming **another realm**
+- and a KDC that does not answer is reported as unreachable, never as a wrong
+  password, because the alternative sends an office to reset passwords they
+  typed correctly
+
+Needs `/etc/krb5.conf` naming the KDCs, read fresh on each verification so a
+realm whose KDCs move is fixed by editing a file rather than by a restart.
+
+### Directory sync
+
+```sh
+signari kerberos principals -realm EXAMPLE.COM \
+  -admin-principal signari/admin@EXAMPLE.COM -keytab admin.keytab
+
+signari kerberos sync -org <uuid> -realm EXAMPLE.COM \
+  -admin-principal signari/admin@EXAMPLE.COM -keytab admin.keytab -apply
+```
+
+Service and administrative principals are filtered out — `host/web01`,
+`HTTP/auth`, `alice/admin`, `krbtgt`, `kadmin` — because an account created from
+one is an account nobody can explain.
+
+Accounts are created **without a local password**: they authenticate against the
+realm, and inventing a local password would be a second way in that nobody
+chose. Nothing is ever deleted: what happens to a leaver is a policy decision,
+not something a listing should make. It is a dry run unless `-apply`.
+
+**This runs `kadmin`.** The Kerberos administration protocol is RPC over GSSAPI
+with no Go implementation, and writing one to list principals would be a large
+amount of protocol code with one consumer. `kadmin` is on every machine that
+administers a realm and is the command an administrator already uses. Its
+absence is reported plainly rather than producing an empty list that looks like
+an empty realm.
+
+**LDAP is usually the better route.** Active Directory and FreeIPA both publish
+the same principals over LDAP with far richer attributes and an immutable
+identifier this engine already understands — see
+[ldap-source.md](ldap-source.md). The kadmin path exists for a realm that has
+neither: MIT Kerberos on its own.
 
 ## `amr` is `krb`
 

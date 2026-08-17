@@ -243,6 +243,8 @@ func run(args []string) error {
 			"line should not take down an application")
 	keytabPath := fs.String("keytab", "", "path to the service keytab")
 	krbRealm := fs.String("realm", "", "Kerberos realm, e.g. EXAMPLE.COM")
+	krbAdmin := fs.String("admin-principal", "",
+		"administrative principal kadmin authenticates as, e.g. signari/admin@EXAMPLE.COM")
 	krbSPN := fs.String("spn", "", "service principal, e.g. HTTP/auth.example.com")
 	credsFile := fs.String("credentials", "",
 		"path to the Google service account JSON or Entra client credentials")
@@ -342,6 +344,13 @@ func run(args []string) error {
 	// machine that will serve SPNEGO before anything else is configured.
 	if cmd == "kerberos check" {
 		return kerberosCheck(*keytabPath, *krbRealm, *krbSPN)
+	}
+	// `kerberos principals` needs no database either: it asks the realm what it
+	// holds, which is a question worth answering before deciding to sync it.
+	if cmd == "kerberos principals" {
+		pctx, pcancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer pcancel()
+		return kerberosPrincipals(pctx, *krbRealm, *krbAdmin, *keytabPath)
 	}
 
 	// `brand check` needs no database: it answers "would this palette be
@@ -478,6 +487,8 @@ func run(args []string) error {
 		return signupDisable(ctx, conn, *orgID)
 	case "signup show":
 		return signupShow(ctx, conn, *orgID)
+	case "kerberos sync":
+		return kerberosSync(ctx, conn, *orgID, *krbRealm, *krbAdmin, *keytabPath, *apply)
 	case "prompt set":
 		return promptSet(ctx, conn, *orgID, *slug, *promptFile)
 	case "prompt list":
@@ -5176,4 +5187,77 @@ func promptList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		fmt.Println("  no prompts")
 	}
 	return rows.Err()
+}
+
+// kerberosPrincipals lists what the realm holds, without changing anything.
+func kerberosPrincipals(ctx context.Context, realm, adminPrincipal, keytabPath string) error {
+	a := kerberos.Admin{Realm: realm, Principal: adminPrincipal, KeytabPath: keytabPath}
+	names, err := a.Principals(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		fmt.Printf("  %s@%s\n", n, strings.ToUpper(realm))
+	}
+	fmt.Printf("\n  %d principal(s), service and administrative ones excluded\n", len(names))
+	return nil
+}
+
+// kerberosSync creates accounts for the people in a realm.
+//
+// A dry run unless -apply, like every other sync here. It never deletes: a
+// principal that has gone from the realm is a leaver, and what happens to a
+// leaver's account is a policy decision rather than something a listing decides.
+func kerberosSync(ctx context.Context, conn *pgx.Conn, orgID, realm,
+	adminPrincipal, keytabPath string, apply bool) error {
+
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	a := kerberos.Admin{Realm: realm, Principal: adminPrincipal, KeytabPath: keytabPath}
+	names, err := a.Principals(ctx)
+	if err != nil {
+		return err
+	}
+
+	cfg := kerberos.Config{Realm: realm}
+	created, existing := 0, 0
+	for _, n := range names {
+		email, merr := cfg.UsernameFor(n + "@" + strings.ToUpper(realm))
+		if merr != nil {
+			fmt.Printf("  skipped %s: %v\n", n, merr)
+			continue
+		}
+		var found bool
+		if err := conn.QueryRow(ctx, `
+			SELECT true FROM core.users WHERE org_id = $1::uuid AND lower(email) = lower($2)`,
+			orgID, email).Scan(&found); err == nil && found {
+			existing++
+			continue
+		}
+		created++
+		if !apply {
+			fmt.Printf("  would create %s\n", email)
+			continue
+		}
+		// No password credential. The account authenticates against the realm --
+		// by SPNEGO or by the password backend -- and inventing a local password
+		// for it would be a second way in that nobody chose.
+		if _, err := conn.Exec(ctx, `
+			INSERT INTO core.users (org_id, user_handle, email)
+			VALUES ($1::uuid, decode(repeat(md5(random()::text),4),'hex'), $2)
+			ON CONFLICT DO NOTHING`, orgID, email); err != nil {
+			return fmt.Errorf("creating %s: %w", email, err)
+		}
+		fmt.Printf("  created %s\n", email)
+	}
+
+	fmt.Printf("\n  %d already here, %d to create\n", existing, created)
+	if !apply && created > 0 {
+		fmt.Println("\nNothing was changed. Re-run with -apply.")
+	}
+	fmt.Println("\nAccounts are created without a local password: they authenticate")
+	fmt.Println("against the realm. Nothing is ever deleted here -- what happens to a")
+	fmt.Println("leaver is a policy decision, not something a listing should make.")
+	return nil
 }

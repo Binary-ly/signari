@@ -1,16 +1,19 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"signari.dev/engine/internal/mail"
 	"strings"
 	"time"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/brand"
 	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/qr"
 	"signari.dev/engine/internal/sms"
@@ -110,7 +113,7 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	s.renderPage(w, enrolPage, map[string]any{
+	s.renderPage(w, r, enrolPage, map[string]any{
 		"Secret": grouped(encoded),
 		// template.URL, because html/template's URL sanitiser only permits known
 		// schemes and silently rewrites otpauth:// to "#ZgotmplZ" -- producing a
@@ -165,7 +168,7 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		// wrong, and locking someone out of enrolment for mistyping would be a
 		// self-inflicted denial of service.
 		csrf, _ := s.csrfToken(w, r)
-		s.renderPage(w, enrolPage, map[string]any{
+		s.renderPage(w, r, enrolPage, map[string]any{
 			"Secret": "", "URI": "", "CSRF": csrf, "CSRFField": csrfFormField,
 			"Error": "That code did not match. Check your authenticator app and try again.",
 		})
@@ -206,7 +209,7 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	// Shown ONCE. Only hashes are stored, so this page cannot be reproduced --
 	// which is the point: a system that can show a user their recovery codes
 	// again can show them to whoever reads the database.
-	s.renderPage(w, recoveryPage, map[string]any{"Codes": codes})
+	s.renderPage(w, r, recoveryPage, map[string]any{"Codes": codes})
 }
 
 func (s *Server) orgLabel(ctx context.Context, orgID string) string {
@@ -248,16 +251,106 @@ func grouped(s string) string {
 	return b.String()
 }
 
-func (s *Server) renderPage(w http.ResponseWriter, t *template.Template, data map[string]any) {
+// renderPage writes one of the user-facing pages, with the instance's brand.
+//
+// The brand is injected HERE rather than by each template, so no page can be
+// missed. A sign-in page that ignores the brand while the consent page honours
+// it does not look like a missing feature -- it looks like the deployment has
+// been tampered with, which is the opposite of what branding is for.
+func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
+	t *template.Template, data map[string]any) {
+
+	b := s.brandNow(r.Context())
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	// img-src is widened ONLY when a logo is actually configured. An unbranded
+	// deployment keeps default-src 'none', so the permission exists exactly
+	// where it is used rather than everywhere in case it is needed.
 	w.Header().Set("Content-Security-Policy",
-		`default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
+		`default-src 'none'; style-src 'unsafe-inline';`+brandImgSrc(b)+
+			` form-action 'self'; frame-ancestors 'none'`)
 	w.Header().Set("X-Frame-Options", "DENY")
-	_ = t.Execute(w, data)
+
+	if b != nil {
+		if data == nil {
+			data = map[string]any{}
+		}
+		data["BrandName"] = b.ProductName
+		data["BrandLogo"] = b.LogoURL
+		data["BrandSupport"] = b.SupportURL
+	}
+
+	writeBranded(w, t, data, b)
 }
 
-const pageCSS = `body{font-family:system-ui,sans-serif;max-width:30rem;margin:3rem auto;padding:0 1rem}
+// writeBranded renders a template and injects the brand's colours.
+//
+// The colours go into the RENDERED page rather than being referenced by each
+// template, so no page can be missed. A sign-in page in the default palette
+// followed by a consent page in the customer's colours does not read as a
+// missing feature -- it reads as though one of the two pages is not really
+// ours, which is the opposite of what branding is for.
+func writeBranded(w io.Writer, t *template.Template, data map[string]any, b *brand.Brand) {
+	css := ""
+	if b != nil {
+		css = b.CSS()
+	}
+	if css == "" {
+		_ = t.Execute(w, data)
+		return
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return
+	}
+	page := buf.Bytes()
+	// Injected last in <head>, so it overrides the stylesheet above it.
+	if i := bytes.LastIndex(page, []byte("</head>")); i >= 0 {
+		out := make([]byte, 0, len(page)+len(css)+16)
+		out = append(out, page[:i]...)
+		out = append(out, "<style>"...)
+		out = append(out, css...)
+		out = append(out, "</style>"...)
+		out = append(out, page[i:]...)
+		page = out
+	}
+	_, _ = w.Write(page)
+}
+
+// brandImgSrc is the img-src a brand needs, or "" when it needs none.
+//
+// Widened only when a logo is actually configured, so an unbranded deployment
+// keeps default-src 'none' and the permission exists exactly where it is used.
+func brandImgSrc(b *brand.Brand) string {
+	if b != nil && b.LogoURL != "" {
+		return " img-src https:;"
+	}
+	return ""
+}
+
+// brandNow reads the instance's brand.
+//
+// Read per render rather than cached at startup, so `signari brand set` takes
+// effect immediately. These are sign-in pages, not a hot path, and one indexed
+// row by primary key is cheaper than the class of bug where an operator changes
+// a colour and cannot tell whether it worked.
+func (s *Server) brandNow(ctx context.Context) *brand.Brand {
+	if s.cfg.Issuer == "" {
+		return nil
+	}
+	b, err := store.LoadBrandByIssuer(ctx, s.db, s.cfg.Issuer)
+	if err != nil {
+		s.log.Error("reading the brand", "err", err)
+		return nil
+	}
+	return b
+}
+
+const pageCSS = `body{font-family:system-ui,sans-serif;max-width:30rem;margin:3rem auto;padding:0 1rem;
+  background:var(--brand-background,#fff);color:var(--brand-text,#000)}
+a{color:var(--brand-primary,#0645ad)}
+.brand{display:block;max-height:2.5rem;margin-bottom:1.5rem}
 code{background:#f4f4f5;padding:.2rem .4rem;border-radius:3px}
 .qr{margin:1rem 0;max-width:220px}
 .qr svg{width:100%;height:auto;display:block}
@@ -267,7 +360,9 @@ summary{cursor:pointer;font-size:.9rem}
   border-radius:4px;margin:.5rem 0;word-break:break-all}
 .err{color:#b00020}.hint{color:#666;font-size:.9rem}
 ol{columns:2;font-family:ui-monospace,monospace;line-height:1.9}
-button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem}
+button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;
+  background:var(--brand-primary,#efefef);color:var(--brand-on-primary,#000);
+  border:1px solid var(--brand-primary,#767676);border-radius:4px;cursor:pointer}
 input{padding:.5rem;font-size:1.25rem;letter-spacing:.2em;width:100%}`
 
 var enrolPage = template.Must(template.New("enrol").Parse(`<!doctype html>
@@ -331,7 +426,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	render := func(stage, addr, msg string) {
-		s.renderPage(w, emailOTPPage, map[string]any{
+		s.renderPage(w, r, emailOTPPage, map[string]any{
 			"Stage": stage, "Address": addr, "Error": msg,
 			"CSRF": csrf, "CSRFField": csrfFormField,
 		})
@@ -498,7 +593,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	render := func(stage, number, msg string) {
-		s.renderPage(w, smsOTPPage, map[string]any{
+		s.renderPage(w, r, smsOTPPage, map[string]any{
 			"Stage": stage, "Number": number, "Error": msg,
 			"CSRF": csrf, "CSRFField": csrfFormField,
 			"Configured": s.texter != nil,

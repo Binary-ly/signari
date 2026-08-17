@@ -135,7 +135,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 			data["ClientName"] = s.clientDisplayName(ctx, d.ClientID)
 			data["Scopes"] = strings.Fields(d.Scope)
 		}
-		s.renderPage(w, devicePage, data)
+		s.renderPage(w, r, devicePage, data)
 	}
 
 	if r.Method == http.MethodGet {
@@ -190,12 +190,12 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		}
 		s.log.Info("device authorization approved", "client_id", d.ClientID,
 			"user_id", userID, "correlation_id", correlationID(ctx))
-		s.renderPage(w, devicePage, map[string]any{"Done": true})
+		s.renderPage(w, r, devicePage, map[string]any{"Done": true})
 	case "deny":
 		if err := store.DenyDeviceAuthorization(ctx, s.db, d.ID); err != nil {
 			s.log.Error("denying a device authorization", "err", err)
 		}
-		s.renderPage(w, devicePage, map[string]any{"Denied": true})
+		s.renderPage(w, r, devicePage, map[string]any{"Denied": true})
 	default:
 		// First POST: the code was right, so show what is being authorised and
 		// ask. The confirmation step is the only place a phished user is told

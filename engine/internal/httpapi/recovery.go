@@ -34,7 +34,7 @@ func (s *Server) handleRecoverGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	s.renderPage(w, recoverPage, map[string]any{"CSRF": csrf, "CSRFField": csrfFormField})
+	s.renderPage(w, r, recoverPage, map[string]any{"CSRF": csrf, "CSRFField": csrfFormField})
 }
 
 // handleRecoverPost creates a request and notifies the account.
@@ -61,7 +61,7 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.renderPage(w, recoverSentPage, map[string]any{})
+	s.renderPage(w, r, recoverSentPage, map[string]any{})
 }
 
 // beginRecovery does the work for an identifier that may not exist.
@@ -183,7 +183,7 @@ func (s *Server) handleRecoverCancel(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	_, hash, err := hashRecoveryToken(r.URL.Query().Get("token"))
 	if err != nil {
-		s.renderPage(w, recoverCancelledPage, map[string]any{})
+		s.renderPage(w, r, recoverCancelledPage, map[string]any{})
 		return
 	}
 
@@ -216,7 +216,7 @@ func (s *Server) handleRecoverCancel(w http.ResponseWriter, r *http.Request) {
 	// twice, sometimes by a scanner that prefetches it; "already cancelled" would
 	// alarm someone who did exactly the right thing, and confirming a token was
 	// real would help someone guessing.
-	s.renderPage(w, recoverCancelledPage, map[string]any{})
+	s.renderPage(w, r, recoverCancelledPage, map[string]any{})
 }
 
 // handleResetGet shows the new-password form once the delay has elapsed.
@@ -224,7 +224,7 @@ func (s *Server) handleResetGet(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	_, hash, err := hashRecoveryToken(token)
 	if err != nil {
-		s.renderPage(w, resetPage, map[string]any{"Error": "That link is not valid."})
+		s.renderPage(w, r, resetPage, map[string]any{"Error": "That link is not valid."})
 		return
 	}
 
@@ -246,15 +246,15 @@ func (s *Server) handleResetGet(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(lerr, store.ErrRecoveryPending):
 		// Told exactly when, because "try again later" with no time is advice
 		// nobody can act on.
-		s.renderPage(w, resetPage, map[string]any{
+		s.renderPage(w, r, resetPage, map[string]any{
 			"Pending": true,
 			"When":    req.EffectiveAt.UTC().Format("15:04 MST on 2 January"),
 			"Wait":    time.Until(req.EffectiveAt).Round(time.Minute).String(),
 		})
 	case lerr != nil:
-		s.renderPage(w, resetPage, map[string]any{"Error": "That link is not valid or has expired."})
+		s.renderPage(w, r, resetPage, map[string]any{"Error": "That link is not valid or has expired."})
 	default:
-		s.renderPage(w, resetPage, map[string]any{
+		s.renderPage(w, r, resetPage, map[string]any{
 			"Ready": true, "Token": token, "CSRF": csrf, "CSRFField": csrfFormField,
 		})
 	}
@@ -274,7 +274,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 
 	password := r.PostForm.Get("password")
 	if len(password) < 8 {
-		s.renderPage(w, resetPage, map[string]any{
+		s.renderPage(w, r, resetPage, map[string]any{
 			"Ready": true, "Token": r.PostForm.Get("token"),
 			"Error": "Use at least 8 characters.",
 		})
@@ -283,7 +283,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 
 	_, hash, err := hashRecoveryToken(r.PostForm.Get("token"))
 	if err != nil {
-		s.renderPage(w, resetPage, map[string]any{"Error": "That link is not valid."})
+		s.renderPage(w, r, resetPage, map[string]any{"Error": "That link is not valid."})
 		return
 	}
 
@@ -298,7 +298,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Pending and invalid are shown the same way here. By the time a form is
 		// being submitted, the difference only matters to someone probing.
-		s.renderPage(w, resetPage, map[string]any{"Error": "That link is not valid or has expired."})
+		s.renderPage(w, r, resetPage, map[string]any{"Error": "That link is not valid or has expired."})
 		return
 	}
 
@@ -310,7 +310,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := store.ConsumeRecovery(ctx, tx, req.ID, req.UserID, newHash); err != nil {
 		s.log.Error("consuming recovery", "err", err)
-		s.renderPage(w, resetPage, map[string]any{"Error": "That link is not valid or has expired."})
+		s.renderPage(w, r, resetPage, map[string]any{"Error": "That link is not valid or has expired."})
 		return
 	}
 	if err := audit.Write(ctx, tx, audit.Event{
@@ -340,7 +340,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	s.renderPage(w, resetDonePage, map[string]any{})
+	s.renderPage(w, r, resetDonePage, map[string]any{})
 }
 
 // newRecoveryToken returns the token and its hash.

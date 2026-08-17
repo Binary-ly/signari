@@ -78,7 +78,7 @@ func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	s.renderPage(w, portalPage, map[string]any{
+	s.renderPage(w, r, portalPage, map[string]any{
 		"Open": open, "Blocked": blocked,
 		"Empty": len(open) == 0 && len(blocked) == 0,
 	})

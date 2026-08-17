@@ -447,10 +447,11 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 			connect += " " + origins
 		}
 	}
+	b := s.brandNow(r.Context())
 	w.Header().Set("Content-Security-Policy",
 		`default-src 'none'; script-src `+script+`; connect-src `+connect+`; `+
-			`frame-src `+frame+`; style-src 'unsafe-inline'; form-action 'self'; `+
-			`frame-ancestors 'none'`)
+			`frame-src `+frame+`; style-src 'unsafe-inline';`+brandImgSrc(b)+
+			` form-action 'self'; frame-ancestors 'none'`)
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.WriteHeader(status)
 	// The reference is only shown alongside an error. On a normal page it is
@@ -460,7 +461,7 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 	if msg != "" {
 		ref = shortCode(correlationID(r.Context()))
 	}
-	_ = loginPage.Execute(w, map[string]any{
+	data := map[string]any{
 		"Authz": authzQuery, "Error": msg, "CSRF": csrf, "CSRFField": csrfFormField,
 		"Reference": ref,
 		// The external providers are read per render rather than cached at
@@ -473,7 +474,13 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),
 		"CaptchaProvider": string(s.captcha.Provider()),
 		"CaptchaSiteKey":  s.captcha.SiteKey(),
-	})
+	}
+	if b != nil {
+		data["BrandName"] = b.ProductName
+		data["BrandLogo"] = b.LogoURL
+		data["BrandSupport"] = b.SupportURL
+	}
+	writeBranded(w, loginPage, data, b)
 }
 
 // loginPage is deliberately minimal and server-rendered: no JavaScript, so it
@@ -491,11 +498,19 @@ button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;width:100%}
 .ref{color:#666;font-size:.85rem;margin:.25rem 0}
 .alt{margin-top:1.25rem;border-top:1px solid #e4e4e7;padding-top:1rem}
 .ext{display:block;padding:.6rem 1rem;border:1px solid #d4d4d8;border-radius:.25rem;
-text-align:center;text-decoration:none;color:inherit}</style></head>
+text-align:center;text-decoration:none;color:inherit}
+body{background:var(--brand-background,#fff);color:var(--brand-text,#000)}
+button{background:var(--brand-primary,#efefef);color:var(--brand-on-primary,#000);
+border:1px solid var(--brand-primary,#767676);border-radius:4px;cursor:pointer}
+.brand{display:block;max-height:2.5rem;margin:0 auto 1.5rem}
+.support{margin-top:1.25rem;font-size:.85rem}
+.support a{color:var(--brand-primary,#0645ad)}</style></head>
 <body>
+{{if .BrandLogo}}<img class="brand" src="{{.BrandLogo}}" alt="{{.BrandName}}">{{end}}
 <h1>Sign in</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 {{if .Reference}}<p class="ref">Reference: <code>{{.Reference}}</code></p>{{end}}
+{{if and .Error .BrandSupport}}<p class="support"><a href="{{.BrandSupport}}">Get help signing in</a></p>{{end}}
 <form method="POST" action="/login">
 <input type="hidden" name="authz" value="{{.Authz}}">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">

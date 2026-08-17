@@ -37,6 +37,7 @@ import (
 
 	"signari.dev/engine/internal/adminapi"
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/brand"
 	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/doctor"
 	"signari.dev/engine/internal/duo"
@@ -78,7 +79,7 @@ func main() {
 var twoWordCommands = map[string]bool{
 	"migrate": true, "instance": true, "user": true, "client": true, "duo": true,
 	"janitor": true, "keys": true, "import": true, "proxy": true,
-	"saml": true, "idp": true, "scim": true, "scim-source": true,
+	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"ssf": true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
 }
@@ -223,6 +224,13 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	brandName := fs.String("brand-name", "", "product name shown on sign-in pages")
+	brandLogo := fs.String("brand-logo", "", "https URL of the logo shown above the sign-in form")
+	brandSupport := fs.String("brand-support", "", "https URL offered when someone cannot get in")
+	brandPrimary := fs.String("brand-primary", "", "button and link colour, hex")
+	brandOnPrimary := fs.String("brand-on-primary", "", "text colour ON buttons, hex")
+	brandBackground := fs.String("brand-background", "", "page background, hex")
+	brandText := fs.String("brand-text", "", "page text colour, hex")
 	launchURL := fs.String("launch-url", "",
 		"where the application portal sends a user (the app's own login URL). "+
 			"Without it the app is listed but cannot be opened")
@@ -281,6 +289,13 @@ func run(args []string) error {
 		return policyTest(*policyFile)
 	case "policy graph":
 		return policyGraph(*policyFile, *outFile)
+	}
+
+	// `brand check` needs no database: it answers "would this palette be
+	// readable", which is arithmetic, and an operator should be able to try
+	// colours before committing to them.
+	if cmd == "brand check" {
+		return brandCheck(*brandPrimary, *brandOnPrimary, *brandBackground, *brandText)
 	}
 
 	// `proxy check` deliberately runs BEFORE the database is required. It is a
@@ -392,6 +407,11 @@ func run(args []string) error {
 	case "saml add-sp":
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
+	case "brand set":
+		return brandSet(ctx, conn, *issuer, *brandName, *brandLogo, *brandSupport,
+			*brandPrimary, *brandOnPrimary, *brandBackground, *brandText)
+	case "brand show":
+		return brandShow(ctx, conn, *issuer)
 	case "saml list":
 		return samlListSPs(ctx, conn)
 	case "idp add":
@@ -4077,4 +4097,116 @@ func racList(ctx context.Context, conn *pgx.Conn) error {
 			recorded, enabled)
 	}
 	return rows.Err()
+}
+
+// brandCheck reports whether a palette is readable, without touching anything.
+//
+// Separate from `brand set` so colours can be tried against the standard before
+// they are committed. The arithmetic is the same either way; what differs is
+// that this one cannot break a running deployment.
+func brandCheck(primary, onPrimary, background, text string) error {
+	b := &brand.Brand{Primary: primary, OnPrimary: onPrimary,
+		Background: background, Text: text}
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	if primary == "" {
+		return fmt.Errorf("give the four colours: -brand-primary, -brand-on-primary, " +
+			"-brand-background and -brand-text")
+	}
+	for _, p := range []struct{ a, b, what string }{
+		{text, background, "text on the background"},
+		{onPrimary, primary, "button text on the button"},
+	} {
+		r, err := brand.Contrast(p.a, p.b)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("  %-28s %5.2f:1  %s\n", p.what, r, verdictFor(r))
+	}
+	fmt.Println("\nreadable (WCAG 2.1 AA needs 4.5:1 for body text)")
+	return nil
+}
+
+func verdictFor(r float64) string {
+	switch {
+	case r >= 7:
+		return "comfortable (AAA)"
+	case r >= 4.5:
+		return "readable (AA)"
+	default:
+		return "TOO LOW"
+	}
+}
+
+func brandSet(ctx context.Context, conn *pgx.Conn, issuer, name, logo, support,
+	primary, onPrimary, background, text string) error {
+
+	if issuer == "" {
+		return fmt.Errorf("give -issuer, the issuer URL of the instance to brand")
+	}
+	b := &brand.Brand{ProductName: name, LogoURL: logo, SupportURL: support,
+		Primary: primary, OnPrimary: onPrimary, Background: background, Text: text}
+	if err := b.Validate(); err != nil {
+		return err
+	}
+
+	var instanceID string
+	if err := conn.QueryRow(ctx,
+		`SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&instanceID); err != nil {
+		return fmt.Errorf("no instance is registered with issuer %q", issuer)
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.brands (instance_id, product_name, logo_url, support_url,
+		                         colour_primary, colour_on_primary,
+		                         colour_background, colour_text)
+		VALUES ($1::uuid, NULLIF($2,''), NULLIF($3,''), NULLIF($4,''),
+		        NULLIF($5,''), NULLIF($6,''), NULLIF($7,''), NULLIF($8,''))
+		ON CONFLICT (instance_id) DO UPDATE SET
+			product_name = EXCLUDED.product_name, logo_url = EXCLUDED.logo_url,
+			support_url = EXCLUDED.support_url,
+			colour_primary = EXCLUDED.colour_primary,
+			colour_on_primary = EXCLUDED.colour_on_primary,
+			colour_background = EXCLUDED.colour_background,
+			colour_text = EXCLUDED.colour_text, updated_at = now()`,
+		instanceID, name, logo, support, primary, onPrimary, background, text); err != nil {
+		return err
+	}
+	fmt.Printf("branded %s\n", issuer)
+	if primary != "" {
+		r, _ := brand.Contrast(text, background)
+		fmt.Printf("  text contrast %.1f:1 (%s)\n", r, verdictFor(r))
+	}
+	fmt.Println("  takes effect on the next page render; no restart needed")
+	return nil
+}
+
+func brandShow(ctx context.Context, conn *pgx.Conn, issuer string) error {
+	if issuer == "" {
+		return fmt.Errorf("give -issuer, the issuer URL of the instance")
+	}
+	var name, logo, support, p, op, bg, tx *string
+	err := conn.QueryRow(ctx, `
+		SELECT product_name, logo_url, support_url, colour_primary,
+		       colour_on_primary, colour_background, colour_text
+		FROM core.brands b JOIN core.instances i ON i.id = b.instance_id
+		WHERE i.issuer = $1`, issuer).Scan(&name, &logo, &support, &p, &op, &bg, &tx)
+	if err != nil {
+		fmt.Printf("%s has no brand set; pages use the default appearance\n", issuer)
+		return nil
+	}
+	show := func(label string, v *string) {
+		if v != nil && *v != "" {
+			fmt.Printf("  %-14s %s\n", label, *v)
+		}
+	}
+	fmt.Printf("%s\n", issuer)
+	show("name", name)
+	show("logo", logo)
+	show("support", support)
+	show("primary", p)
+	show("on-primary", op)
+	show("background", bg)
+	show("text", tx)
+	return nil
 }

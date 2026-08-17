@@ -90,7 +90,7 @@ func (s *Server) handleRACIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.renderPage(w, racIndexPage, map[string]any{
+	s.renderPage(w, r, racIndexPage, map[string]any{
 		"Connections": conns,
 		"Configured":  s.guacdAddr != "",
 	})

@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"signari.dev/engine/internal/logouttest"
 	"signari.dev/engine/internal/outpost"
 	"slices"
 	"strconv"
@@ -228,6 +229,9 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	rpURL := fs.String("rp-url", "", "the relying party's backchannel_logout_uri")
+	subject := fs.String("subject", "", "sub to name in the logout token")
+	sidFlag := fs.String("sid", "", "sid to name in the logout token")
 	reviewBy := fs.String("review-by", "",
 		"YYYY-MM-DD when the hybrid exemption should be revisited")
 	outpostCore := fs.String("core", "", "URL of the Signari engine this outpost asks")
@@ -429,6 +433,8 @@ func run(args []string) error {
 	case "saml add-sp":
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
+	case "logout-test":
+		return logoutTest(ctx, conn, *rpURL, *clientID, *issuer, *subject, *sidFlag)
 	case "outpost create":
 		return outpostCreate(ctx, conn, *orgID, *name, *outpostKind)
 	case "outpost list":
@@ -4621,5 +4627,77 @@ func clientSetHybrid(ctx context.Context, conn *pgx.Conn, clientID, reviewBy str
 	fmt.Printf("%s may now use response_type \"code id_token\"\n", clientID)
 	fmt.Printf("  review by %s\n", reviewBy)
 	fmt.Println("  the access token still never crosses the front channel")
+	return nil
+}
+
+// logoutTest checks a relying party's back-channel logout endpoint.
+func logoutTest(ctx context.Context, conn *pgx.Conn, rpURL, clientID, issuer,
+	subject, sid string) error {
+
+	if issuer == "" {
+		issuer = os.Getenv("SIGNARI_ISSUER")
+	}
+	if issuer == "" {
+		return fmt.Errorf("give -issuer, so the tokens carry the issuer the relying " +
+			"party expects")
+	}
+
+	_, set, _, err := loadInstanceKeys(ctx, conn)
+	if err != nil {
+		return err
+	}
+	// RS256 first: a logout endpoint is exactly the kind of lightly-maintained
+	// code path most likely to support only RS256, and testing with a key it
+	// cannot verify would report a failure that is ours.
+	key, err := set.Active(keys.RS256)
+	if err != nil {
+		if key, err = set.Active(keys.ES256); err != nil {
+			return fmt.Errorf("no active signing key: %w", err)
+		}
+	}
+
+	results, err := logouttest.Run(ctx, logouttest.Config{
+		Endpoint: rpURL, ClientID: clientID, Issuer: issuer,
+		Subject: subject, SID: sid,
+	}, key)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("back-channel logout: %s\n\n", rpURL)
+	passed, failed := 0, 0
+	for _, r := range results {
+		mark := "ok  "
+		switch {
+		case r.Err != "":
+			mark = "??  "
+		case r.Passed:
+			passed++
+		default:
+			mark = "FAIL"
+			failed++
+		}
+		detail := fmt.Sprintf("HTTP %d", r.Status)
+		if r.Err != "" {
+			detail = r.Err
+		}
+		fmt.Printf("  [%s] %-34s %s\n", mark, r.Name, detail)
+		if mark == "FAIL" {
+			want := "refuse it"
+			if r.WantAccepted {
+				want = "accept it"
+			}
+			fmt.Printf("         expected the endpoint to %s. %s\n", want, r.Why)
+		}
+	}
+
+	fmt.Printf("\n  %d passed, %d failed\n", passed, failed)
+	fmt.Println("\nThis proves the endpoint accepted or refused each token.")
+	fmt.Println("It CANNOT prove the session was actually destroyed -- a relying party")
+	fmt.Println("that validates correctly and then forgets to delete the session still")
+	fmt.Println("passes every check here.")
+	if failed > 0 {
+		return fmt.Errorf("%d conformance check(s) failed", failed)
+	}
 	return nil
 }

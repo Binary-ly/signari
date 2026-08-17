@@ -73,6 +73,9 @@ type Stats struct {
 	DeviceCodesPurged int64
 	// LogoutChainsSwept are SAML front-channel logouts the user abandoned.
 	LogoutChainsSwept int64
+
+	// Support-access episodes that ran out and were closed.
+	ImpersonationsExpired int
 	// FederatedLoginsSwept are external sign-ins abandoned at the provider.
 	FederatedLoginsSwept int64
 	// DPoPProofsSwept are proof identifiers past their replay window.
@@ -142,6 +145,14 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 		return st, fmt.Errorf("purging expired recovery requests: %w", err)
 	}
 	st.RecoveriesPurged = n
+
+	// Support access that ran out. Without this, expires_at is a column nobody
+	// reads and an administrator's session wearing somebody else's name lasts
+	// until they happen to sign out -- which is precisely the case the time
+	// bound exists for.
+	if st.ImpersonationsExpired, err = store.ExpireImpersonations(ctx, tx); err != nil {
+		return st, fmt.Errorf("expiring impersonations: %w", err)
+	}
 
 	// Abandoned SAML logout chains. A front-channel logout walks the browser
 	// through each service provider in turn, and a user who closes the tab
@@ -266,6 +277,7 @@ func (s Stats) Log(log *slog.Logger) {
 	add("saml_source_state_swept", s.SAMLSourceStateSwept)
 	add("rate_windows_purged", s.RateWindowsPurged)
 	add("duo_challenges_swept", s.DuoChallengesSwept)
+	add("impersonations_expired", int64(s.ImpersonationsExpired))
 
 	if len(fields) > 0 {
 		log.Info("janitor pass", fields...)

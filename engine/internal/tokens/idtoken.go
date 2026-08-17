@@ -62,6 +62,17 @@ type IDTokenClaims struct {
 	// channel can be paired with a code from a different authorization.
 	CodeHash string `json:"c_hash,omitempty"`
 
+	// Actor, RFC 8693 section 4.1. Present when this session was started by an
+	// administrator acting as the user.
+	//
+	// This is the claim that makes support access honest. Without it the token is
+	// indistinguishable from one the user obtained themselves, so the audit trail
+	// in the application -- the one where the damage would be done -- records the
+	// USER as having taken the action, and they cannot prove otherwise. With it,
+	// a relying party can refuse the request, label the record, or write its own
+	// log entry naming the real actor, without having to trust our log.
+	Actor *Actor `json:"act,omitempty"`
+
 	Email         string `json:"email,omitempty"`
 	EmailVerified *bool  `json:"email_verified,omitempty"`
 	Name          string `json:"name,omitempty"`

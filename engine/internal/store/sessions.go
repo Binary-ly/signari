@@ -23,6 +23,9 @@ const (
 	ReasonMFAReset        TerminationReason = "mfa_reset"
 	ReasonExpired         TerminationReason = "expired"
 	ReasonReuseDetected   TerminationReason = "reuse_detected"
+	// Support access ended -- by an administrator stopping it, or by it running
+	// out. Distinct from logout so an audit reader can tell the two apart.
+	ReasonImpersonationEnded TerminationReason = "impersonation_ended"
 )
 
 // LogoutNotice is one queued back-channel logout delivery.

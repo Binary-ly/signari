@@ -557,6 +557,25 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		audience = resources
 	}
 
+	// The actor behind this session, if an administrator started it.
+	//
+	// Looked up ONCE here and applied to both tokens. On the access token as
+	// well as the ID token, and regardless of scope: an API call made during
+	// support access is exactly the case where a resource server needs to know,
+	// and a token minted without `openid` would otherwise carry no trace of it.
+	var act *tokens.Actor
+	if sid != "" {
+		var impersonator *string
+		if err := tx.QueryRow(ctx,
+			`SELECT impersonator_id::text FROM core.sessions WHERE sid = $1`, sid).
+			Scan(&impersonator); err != nil {
+			return nil, nil, fmt.Errorf("loading session actor: %w", err)
+		}
+		if impersonator != nil && *impersonator != "" {
+			act = &tokens.Actor{Subject: *impersonator}
+		}
+	}
+
 	at, err := signer.SignJSON(tokens.AccessTokenClaims{
 		Issuer:    issuer,
 		Subject:   userID,
@@ -567,6 +586,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		ClientID:  c.ClientID,
 		Scope:     joinScopes(scopes),
 		SessionID: sid,
+		Act:       act,
 		Cnf:       bindingFor(jkt, certThumb),
 	}, tokens.TypAccessToken)
 	if err != nil {
@@ -612,6 +632,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			SessionID:       sid,
 			AuthorizedParty: c.ClientID,
 			AccessTokenHash: atHash,
+			Actor:           act,
 		}
 		if err := s.addProfileClaims(ctx, tx, &claims, userID, scopes); err != nil {
 			return nil, nil, err

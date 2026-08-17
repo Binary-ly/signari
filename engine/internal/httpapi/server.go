@@ -230,6 +230,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /outpost/list", s.handleOutpostList)
 	mux.HandleFunc("POST /login/prompt", s.handlePromptPost)
 	mux.HandleFunc("POST /login/password-change", s.handlePasswordChangePost)
+	mux.HandleFunc("POST /admin/impersonate", s.handleImpersonateStart)
+	mux.HandleFunc("POST /admin/impersonate/stop", s.handleImpersonateStop)
 	mux.HandleFunc("GET /signup", s.handleSignupGet)
 	mux.HandleFunc("POST /signup", s.handleSignupPost)
 	mux.HandleFunc("GET /apps", s.handlePortal)

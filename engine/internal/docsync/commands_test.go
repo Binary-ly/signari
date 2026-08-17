@@ -150,3 +150,73 @@ func TestEveryDocumentedCommandExists(t *testing.T) {
 			strings.Join(missing, "\n  "))
 	}
 }
+
+// TestEveryCommandIsDocumented is the other direction.
+//
+// The existing check catches a page that outlived its command. This catches the
+// commoner failure: a command shipped and never written down. Nobody finds
+// those, because the person who added it knows it exists and everyone else
+// cannot know to look.
+//
+// Verified by adding `events subscribe` and watching this fail before the page
+// was written.
+func TestEveryCommandIsDocumented(t *testing.T) {
+	root := repoRoot(t)
+	src := readSource(t, filepath.Join(root, "engine", "cmd", "signari", "main.go"))
+
+	dispatched := map[string]bool{}
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`case\s+"([a-z][a-z0-9 -]*)":`),
+		regexp.MustCompile(`cmd\s*==\s*"([a-z][a-z0-9 -]*)"`),
+	} {
+		for _, m := range re.FindAllStringSubmatch(src, -1) {
+			dispatched[m[1]] = true
+		}
+	}
+	if len(dispatched) < 20 {
+		t.Fatalf("only %d commands found in main.go; this test is reading it wrong",
+			len(dispatched))
+	}
+
+	// Everything the docs mention anywhere -- including inside a fenced block,
+	// which is where most invocations live. Looser than docCommand on purpose:
+	// the question here is "is it written down at all", not "is it an
+	// instruction", and being strict would demand a runbook for every command.
+	mentioned := map[string]bool{}
+	err := filepath.Walk(filepath.Join(root, "docs"),
+		func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || !strings.HasSuffix(path, ".md") {
+				return nil
+			}
+			body, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return rerr
+			}
+			text := string(body)
+			for cmd := range dispatched {
+				if strings.Contains(text, "signari "+cmd) ||
+					strings.Contains(text, "`"+cmd+"`") {
+					mentioned[cmd] = true
+				}
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("walking docs: %v", err)
+	}
+
+	var missing []string
+	for cmd := range dispatched {
+		if !mentioned[cmd] {
+			missing = append(missing, cmd)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Errorf("%d command(s) exist and appear in no documentation:\n  %s",
+			len(missing), strings.Join(missing, "\n  "))
+	}
+}

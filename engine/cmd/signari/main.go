@@ -94,6 +94,7 @@ var twoWordCommands = map[string]bool{
 	"prompt":   true,
 	"kerberos": true,
 	"ssf":      true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
+	"events": true,
 }
 
 func usage() error {
@@ -261,6 +262,8 @@ func run(args []string) error {
 	outpostCore := fs.String("core", "", "URL of the Signari engine this outpost asks")
 	outpostToken := fs.String("outpost-token", "", "outpost token from `signari outpost create`")
 	outpostKind := fs.String("kind-outpost", "", "ldap, radius or proxy")
+	subURL := fs.String("url", "", "https endpoint events are POSTed to")
+	subEvents := fs.String("event-types", "", "comma-separated event types, or empty for all")
 	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins")
 	inviteTTL := fs.Duration("expires", 7*24*time.Hour, "how long the invitation lasts")
 	signupDomains := fs.String("domains", "",
@@ -473,6 +476,10 @@ func run(args []string) error {
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
 	case "logout-test":
 		return logoutTest(ctx, conn, *rpURL, *clientID, *issuer, *subject, *sidFlag)
+	case "events subscribe":
+		return eventsSubscribe(ctx, conn, *orgID, *name, *subURL, *subEvents)
+	case "events list":
+		return eventsList(ctx, conn, *orgID)
 	case "outpost create":
 		return outpostCreate(ctx, conn, *orgID, *name, *outpostKind)
 	case "outpost list":
@@ -918,6 +925,11 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	// it, but the intent is one.
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
+	// Every audited event fans out to event subscriptions, in the transaction
+	// that wrote it. Installed once, here, so no code path can record an event
+	// without it being publishable.
+	audit.SetPublisher(store.AuditPublisher)
+
 	go outbox.New(pool, set, issuer, root, log).Run(workerCtx, 2*time.Second)
 
 	// The janitor is likewise a singleton, but it enforces that itself with an
@@ -5301,4 +5313,104 @@ func kerberosSync(ctx context.Context, conn *pgx.Conn, orgID, realm,
 	fmt.Println("against the realm. Nothing is ever deleted here -- what happens to a")
 	fmt.Println("leaver is a policy decision, not something a listing should make.")
 	return nil
+}
+
+// eventsSubscribe registers a subscriber and prints its signing secret once.
+func eventsSubscribe(ctx context.Context, conn *pgx.Conn,
+	orgID, name, url, events string) error {
+
+	if orgID == "" || name == "" || url == "" {
+		return fmt.Errorf("-org, -name and -url are all required")
+	}
+	root, err := rootKey()
+	if err != nil {
+		return fmt.Errorf("the signing secret is sealed with the root key: %w", err)
+	}
+	var types []string
+	for _, t := range strings.Split(events, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			types = append(types, t)
+		}
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	sub, err := store.CreateSubscription(ctx, tx, root, orgID, name, url, types)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	fmt.Printf("subscription %s\n  url    %s\n", sub.ID, sub.URL)
+	if len(types) == 0 {
+		fmt.Printf("  events every event in this organisation\n")
+	} else {
+		fmt.Printf("  events %s\n", strings.Join(types, ", "))
+	}
+	// Shown ONCE. Stored sealed and never printed again, so a database copy is
+	// not a licence to forge events -- an operator who loses it rotates.
+	fmt.Printf("\n  signing secret (shown once, store it now):\n    %s\n", sub.Secret)
+	fmt.Printf(`
+  Verify each delivery:  the Signari-Signature header is t=<unix>,v1=<hex>,
+  and v1 is HMAC-SHA256 over "<t>.<raw request body>" with that secret.
+  Refuse anything whose t is more than a few minutes old -- the timestamp is
+  inside the MAC precisely so that check cannot be bypassed.
+`)
+	return nil
+}
+
+// eventsList shows subscriptions and how their deliveries are going.
+func eventsList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("-org is required")
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT s.display_name, s.url, s.enabled, COALESCE(s.disabled_reason,''),
+		       COALESCE(cardinality(s.event_types),0),
+		       (SELECT count(*) FROM core.event_deliveries d
+		         WHERE d.subscription_id = s.id AND d.delivered_at IS NOT NULL),
+		       (SELECT count(*) FROM core.event_deliveries d
+		         WHERE d.subscription_id = s.id AND d.delivered_at IS NULL)
+		  FROM core.event_subscriptions s
+		 WHERE s.org_id = $1::uuid
+		 ORDER BY s.created_at`, orgID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var name, url, why string
+		var enabled bool
+		var types, delivered, outstanding int
+		if err := rows.Scan(&name, &url, &enabled, &why, &types, &delivered,
+			&outstanding); err != nil {
+			return err
+		}
+		found = true
+		state := "enabled"
+		if !enabled {
+			state = "DISABLED"
+		}
+		scope := "all events"
+		if types > 0 {
+			scope = fmt.Sprintf("%d event type(s)", types)
+		}
+		fmt.Printf("%-24s %s\n  %s, %s\n  delivered %d, outstanding %d\n",
+			name, url, state, scope, delivered, outstanding)
+		if why != "" {
+			fmt.Printf("  reason: %s\n", why)
+		}
+	}
+	if !found {
+		fmt.Println("no event subscriptions")
+	}
+	return rows.Err()
 }

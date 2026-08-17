@@ -194,8 +194,41 @@ func Write(ctx context.Context, tx pgx.Tx, e Event) error {
 	if err != nil {
 		return fmt.Errorf("audit: appending %s: %w", e.Type, err)
 	}
+
+	// Fan the event out to subscribers, in THIS transaction.
+	//
+	// Here rather than at each call site for the same reason the audit entry
+	// itself is written here: there are dozens of places that record an event,
+	// and a fan-out written at each of them is one missing from some of them --
+	// discovered by an operator whose alerting never fired for the one event
+	// type that mattered.
+	//
+	// Same transaction, which is the entire point of an outbox: the event and
+	// the intent to deliver it commit together, so there is no window where the
+	// log says something happened and nothing was ever sent.
+	if publish != nil && e.OrgID != "" {
+		if err := publish(ctx, tx, e, detail); err != nil {
+			// NOT fatal to the audit write. A subscription that cannot be
+			// enqueued must not stop the thing being audited from happening --
+			// that would make an event subscription a way to break sign-in.
+			return nil
+		}
+	}
 	return nil
 }
+
+// Publisher fans an audited event out to event subscriptions.
+//
+// A function variable rather than a direct call, because the fan-out lives in
+// the store package and the store package is where the audit tables are read
+// from -- importing it here would be a cycle. Set once at startup by whoever
+// wires the server together.
+type Publisher func(ctx context.Context, tx pgx.Tx, e Event, detail string) error
+
+var publish Publisher
+
+// SetPublisher installs the fan-out. Called once, at startup.
+func SetPublisher(p Publisher) { publish = p }
 
 // chainHash binds each entry to its predecessor.
 //

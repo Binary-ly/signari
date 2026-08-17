@@ -106,6 +106,12 @@ func (w *Worker) Run(ctx context.Context, interval time.Duration) {
 			} else if n > 0 {
 				w.log.Info("delivered security events", "count", n)
 			}
+			// Event subscriptions, on the same tick and equally independently.
+			if n, err := w.DrainWebhooks(ctx); err != nil {
+				w.log.Error("draining event subscriptions", "err", err)
+			} else if n > 0 {
+				w.log.Info("delivered events", "count", n)
+			}
 		}
 	}
 }

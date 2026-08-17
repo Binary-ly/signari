@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/clients"
 )
 
 // Client administration.
@@ -87,7 +88,11 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 			}
 			plaintext = base64.RawURLEncoding.EncodeToString(b)
 		}
-		h, err := s.hasher.Hash(ctx, plaintext)
+		h, ok := clients.HashSecret(plaintext)
+		var err error
+		if !ok {
+			h, err = s.hasher.Hash(ctx, plaintext)
+		}
 		if err != nil {
 			s.log.Error("hashing client secret", "err", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -165,7 +170,11 @@ func (s *Server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plaintext := base64.RawURLEncoding.EncodeToString(b)
-	hash, err := s.hasher.Hash(ctx, plaintext)
+	hash, ok := clients.HashSecret(plaintext)
+	var err error
+	if !ok {
+		hash, err = s.hasher.Hash(ctx, plaintext)
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return

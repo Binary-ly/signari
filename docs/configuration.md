@@ -131,6 +131,34 @@ See [CAPTCHA](captcha.md).
 |---|---|
 | `SIGNARI_DUO_BASE_URL` | Overrides Duo's API host. Testing only |
 
+## Client secrets
+
+A client secret Signari generates is 256 bits from the system random source, so
+it is hashed with **SHA-256 and compared in constant time**, not with Argon2.
+
+Argon2 exists to make brute-forcing low-entropy human-chosen passwords
+expensive. Against 256 bits there is no dictionary to run and no table to build
+— brute force means 2^256 attempts, a number that does not shrink because the
+hash is fast. Argon2 there costs a great deal and buys nothing.
+
+Measured, on the `client_credentials` grant:
+
+| | Argon2id | Entropy-appropriate |
+|---|---|---|
+| p50 | 33.49 ms | **0.84 ms** |
+| p99 | 40.25 ms | **1.97 ms** |
+| Throughput (16-way) | 174 req/s | **3402 req/s** |
+
+**19.6× the throughput**, for no loss of security — the property protecting the
+secret is its entropy, not the cost of hashing it.
+
+A secret whose entropy is *not* established — one imported verbatim from another
+provider, which could be `hunter2` — keeps Argon2. Verification dispatches on the
+stored format, so existing hashes keep working and are never weakened.
+
+User passwords keep Argon2id, unchanged. They are exactly the low-entropy case
+it was designed for.
+
 ## Password policy
 
 One gate every new password passes through — sign-up, recovery, admin, CLI. See

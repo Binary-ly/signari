@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/config"
 	"signari.dev/engine/internal/kerberos"
 	"signari.dev/engine/internal/logouttest"
@@ -1353,7 +1354,11 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect 
 		}
 		secret = base64.RawURLEncoding.EncodeToString(b)
 		hasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
-		if secretHash, err = hasher.Hash(ctx, secret); err != nil {
+		// Ours are 256 bits of random data, so entropy is the property that
+		// protects them -- not the cost of the hash. See internal/clients.
+		if fast, ok := clients.HashSecret(secret); ok {
+			secretHash = fast
+		} else if secretHash, err = hasher.Hash(ctx, secret); err != nil {
 			return err
 		}
 	}

@@ -1309,6 +1309,16 @@ func (s *Server) verifyClientSecret(ctx context.Context, c *clients.Client, pres
 	if c.SecretHash == "" || presented == "" {
 		return false, nil
 	}
+	// A client secret we generated is 256 bits of random data, so the property
+	// protecting it is entropy rather than hash cost -- see internal/clients.
+	// Argon2 here was costing 33 ms and a 512 MiB pool per request to defend
+	// against a dictionary attack on a value with no dictionary.
+	if clients.IsFastSecret(c.SecretHash) {
+		return clients.VerifyFastSecret(c.SecretHash, presented)
+	}
+	// A secret whose entropy is not established -- imported verbatim from
+	// another provider, say -- keeps the slow hash. Guessing wrong in that
+	// direction is the expensive mistake.
 	_, err := s.hasher.Verify(ctx, c.SecretHash, presented)
 	if errors.Is(err, passwords.ErrMismatch) {
 		return false, nil

@@ -3536,7 +3536,42 @@ func postureFromEnv() (*posture.Config, error) {
 		cfg.TrustedProxies = nets
 	}
 
-	if cfg.DeviceCAs == nil && len(cfg.TrustedProxies) == 0 {
+	// Chrome Enterprise device trust, when a service account is configured.
+	//
+	// Constructed HERE rather than left as a package nothing builds. A posture
+	// source that exists in the tree and is never instantiated is a feature that
+	// passes its tests and does nothing in a running deployment -- which is
+	// exactly how `internal/radius` came to be complete and unreachable.
+	if credsPath := os.Getenv("SIGNARI_CHROME_CREDENTIALS"); credsPath != "" {
+		raw, err := os.ReadFile(credsPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading SIGNARI_CHROME_CREDENTIALS: %w", err)
+		}
+		creds, err := directory.ParseGoogleCredentials(raw)
+		if err != nil {
+			return nil, fmt.Errorf("SIGNARI_CHROME_CREDENTIALS: %w", err)
+		}
+		customer := os.Getenv("SIGNARI_CHROME_CUSTOMER_ID")
+		if customer == "" {
+			// Without it, a device managed by ANY Google Workspace customer is
+			// accepted as managed, which is not a security property. Refused
+			// rather than defaulted.
+			return nil, fmt.Errorf("SIGNARI_CHROME_CUSTOMER_ID is required with " +
+				"Chrome device trust: without it a device managed by any Workspace " +
+				"customer counts as managed, which means nothing")
+		}
+		impersonate := os.Getenv("SIGNARI_CHROME_IMPERSONATE")
+		cfg.Chrome = &posture.Chrome{
+			CustomerID: customer,
+			Token: func(ctx context.Context) (string, error) {
+				return directory.GoogleToken(ctx, creds, impersonate,
+					"https://www.googleapis.com/auth/verifiedaccess", nil)
+			},
+		}
+		cfg.ChromeHeader = envOr("SIGNARI_CHROME_HEADER", "X-Verified-Access-Challenge-Response")
+	}
+
+	if cfg.DeviceCAs == nil && len(cfg.TrustedProxies) == 0 && cfg.Chrome == nil {
 		return nil, nil
 	}
 	return cfg, nil

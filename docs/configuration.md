@@ -131,6 +131,19 @@ See [CAPTCHA](captcha.md).
 |---|---|
 | `SIGNARI_DUO_BASE_URL` | Overrides Duo's API host. Testing only |
 
+## Chrome Enterprise device trust
+
+A third device posture source, feeding the same `device_managed` and
+`device_compliant` a policy already speaks. See
+[chrome-device-trust.md](chrome-device-trust.md).
+
+| | |
+|---|---|
+| `SIGNARI_CHROME_CREDENTIALS` | Google service account JSON with the Verified Access scope. Absent, this source is off |
+| `SIGNARI_CHROME_CUSTOMER_ID` | **Required.** Your Workspace customer id. Without it a device managed by *any* customer counts as managed, which means nothing |
+| `SIGNARI_CHROME_IMPERSONATE` | Administrator the service account acts as, if delegation requires one |
+| `SIGNARI_CHROME_HEADER` | Where the browser puts its signed challenge response (default `X-Verified-Access-Challenge-Response`) |
+
 ## Kerberos (SPNEGO)
 
 See [kerberos.md](kerberos.md). `signari kerberos check` proves a keytab before

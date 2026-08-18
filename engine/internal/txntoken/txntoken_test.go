@@ -210,3 +210,148 @@ func TestValidateNamesWhatIsMissing(t *testing.T) {
 		}
 	}
 }
+
+// §13.15: "MUST maintain the Call Chain of workloads that requested the
+// Txn-Token being replaced in the subsequently issued Txn-Token."
+//
+// The first implementation failed this. `req_wl` is singular and was
+// overwritten at each hop, so the chain was destroyed at the first replacement
+// -- losing exactly the audit property the format exists to provide. Found by
+// reading draft-11 rather than a summary of it.
+func TestTheCallChainSurvivesEveryHop(t *testing.T) {
+	now := time.Now()
+	cur := base(now)
+	// Deliberately nil: a token minted before this claim existed. The chain
+	// must still pick the workload up from req_wl rather than losing it.
+	cur.CallChain = nil
+
+	for _, hop := range []string{"orders", "ledger", "notifications"} {
+		next, err := Replace(Replacement{Previous: cur, Workload: hop},
+			"https://id.example", now, DefaultTTL)
+		if err != nil {
+			t.Fatalf("replacing at %s: %v", hop, err)
+		}
+		cur = next
+	}
+
+	want := []string{"gateway.trust-domain.example", "orders", "ledger", "notifications"}
+	if len(cur.CallChain) != len(want) {
+		t.Fatalf("chain = %v, want %v -- §13.15 requires the chain of workloads "+
+			"that requested the replaced token to be maintained", cur.CallChain, want)
+	}
+	for i := range want {
+		if cur.CallChain[i] != want[i] {
+			t.Fatalf("chain = %v, want %v", cur.CallChain, want)
+		}
+	}
+	// req_wl still names the CURRENT workload, per §9.2.
+	if cur.RequestingWorkload != "notifications" {
+		t.Fatalf("req_wl = %q, want the current workload", cur.RequestingWorkload)
+	}
+}
+
+// A caller must not be able to write its own history.
+func TestTheCallChainComesFromThePreviousTokenNotTheCaller(t *testing.T) {
+	now := time.Now()
+	prev := base(now)
+	// With SPARE CAPACITY on purpose. A literal slice has cap == len, so append
+	// always reallocates and an aliasing bug hides. This is the shape a chain
+	// actually has after appendChain has grown it, and it is the only shape
+	// where sharing the backing array is observable.
+	prev.CallChain = make([]string, 0, 8)
+	prev.CallChain = append(prev.CallChain, "gateway", "orders")
+
+	next, err := Replace(Replacement{Previous: prev, Workload: "ledger"},
+		"https://id.example", now, DefaultTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.CallChain) != 3 || next.CallChain[2] != "ledger" {
+		t.Fatalf("chain = %v", next.CallChain)
+	}
+	// Mutating the result must not reach back into the previous token: append
+	// can share a backing array, and two replacements from one token would
+	// then scribble over each other.
+	next.CallChain[0] = "tampered"
+	if prev.CallChain[0] != "gateway" {
+		t.Fatal("the replacement shares its backing array with the previous " +
+			"token's chain; two replacements from one token would corrupt each other")
+	}
+	// And the same token replaced twice must produce two independent chains.
+	// This is the failure the aliasing causes in practice: one transaction
+	// fanning out to two workloads, each overwriting the other's history.
+	a, err := Replace(Replacement{Previous: prev, Workload: "left"},
+		"https://id.example", now, DefaultTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Replace(Replacement{Previous: prev, Workload: "right"},
+		"https://id.example", now, DefaultTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.CallChain[len(a.CallChain)-1] != "left" {
+		t.Fatalf("the first branch's chain ends with %q, want left -- the second "+
+			"replacement overwrote it", a.CallChain[len(a.CallChain)-1])
+	}
+	if b.CallChain[len(b.CallChain)-1] != "right" {
+		t.Fatalf("the second branch's chain ends with %q, want right",
+			b.CallChain[len(b.CallChain)-1])
+	}
+}
+
+// §13.15 also says a TTS SHOULD limit how many times a token is replaced.
+func TestTheCallChainIsBounded(t *testing.T) {
+	now := time.Now()
+	cur := base(now)
+	for i := 0; i < MaxCallChain+10; i++ {
+		next, err := Replace(Replacement{Previous: cur, Workload: "w"},
+			"https://id.example", now, DefaultTTL)
+		if err != nil {
+			t.Fatalf("hop %d: %v", i, err)
+		}
+		cur = next
+	}
+	if len(cur.CallChain) > MaxCallChain {
+		t.Fatalf("chain grew to %d, above the bound of %d -- an unbounded chain "+
+			"is both a growing token and a sign something is looping",
+			len(cur.CallChain), MaxCallChain)
+	}
+}
+
+// §11.2: the type MAY be any RFC 8693 type EXCEPT refresh_token.
+//
+// The first implementation defaulted: any unrecognised type fell through to the
+// access-token path and was refused only because it failed to parse. An
+// exclusion that holds by accident stops holding when the accident changes.
+func TestSubjectTokenTypesAreEnumerated(t *testing.T) {
+	for _, ok := range []string{
+		SubjectAccessToken, SubjectIDToken, SubjectJWT, SubjectTxnToken,
+	} {
+		if err := CheckSubjectTokenType(ok); err != nil {
+			t.Errorf("%s was refused: %v", ok, err)
+		}
+	}
+	for _, c := range []struct{ typ, want string }{
+		{SubjectRefreshToken, "excludes refresh tokens"},
+		{SubjectSelfSigned, "not\nimplemented"},
+		{SubjectUnsignedJSON, "not\nimplemented"},
+		{"", "required"},
+		{"urn:example:something-invented", "not a type"},
+	} {
+		err := CheckSubjectTokenType(c.typ)
+		if err == nil {
+			t.Errorf("%q was accepted", c.typ)
+			continue
+		}
+		if !errors.Is(err, ErrSubjectTokenType) {
+			t.Errorf("%q: err = %v, want ErrSubjectTokenType", c.typ, err)
+		}
+	}
+	// The refusal must NAME refresh tokens, because that exclusion is the one
+	// with a security reason behind it (§13.3) rather than a missing feature.
+	if err := CheckSubjectTokenType(SubjectRefreshToken); err == nil ||
+		!strings.Contains(err.Error(), "refresh") {
+		t.Fatalf("refresh_token refusal = %v, want it to name refresh tokens", err)
+	}
+}

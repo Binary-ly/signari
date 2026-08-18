@@ -52,6 +52,15 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 			Description: err.Error(), Status: http.StatusBadRequest})
 		return
 	}
+	// Section 11.2, enumerated rather than defaulted. Without this, an
+	// unrecognised type fell through to the access-token path and was refused
+	// only because it failed to parse -- including refresh_token, which the
+	// specification excludes outright.
+	if err := txntoken.CheckSubjectTokenType(req.SubjectTokenType); err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: err.Error(), Status: http.StatusBadRequest})
+		return
+	}
 
 	// The trust domain must be one this client is allowed to mint for. Without
 	// this, any client with exchange permission mints tokens accepted by every
@@ -106,7 +115,9 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		}
 
 	default:
-		// AN INITIAL REQUEST, from an access token at the edge.
+		// AN INITIAL REQUEST, from an access token at the edge. The type has
+		// already been checked against section 11.2 above, so this branch is
+		// reached only for types we accept.
 		subject, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(),
 			req.SubjectToken)
 		if err != nil {
@@ -164,6 +175,12 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 			Transaction:        txn,
 			Subject:            subject.Subject,
 			RequestingWorkload: c.ClientID,
+			// Set from the FIRST token, not only from the first replacement.
+			// §13.15 only requires maintaining it across replacement, so an
+			// absent chain on hop one is conformant -- but it makes every
+			// consumer special-case the first token and fall back to req_wl.
+			// Always present and always complete is cheaper for everybody.
+			CallChain:          []string{c.ClientID},
 			Scope:              strings.Join(req.Scope, " "),
 			TransactionContext: req.RequestDetails,
 			RequestContext:     req.RequestContext,

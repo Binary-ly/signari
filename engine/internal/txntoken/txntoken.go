@@ -14,6 +14,56 @@ const GrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 // issued_token_type.
 const TokenType = "urn:ietf:params:oauth:token-type:txn_token"
 
+// Subject token types, section 11.2.
+//
+// The specification says the type MAY be any RFC 8693 type EXCEPT
+// refresh_token, or one of two URNs it defines, or a custom one agreed between
+// requester and TTS.
+const (
+	SubjectAccessToken = "urn:ietf:params:oauth:token-type:access_token"
+	SubjectIDToken     = "urn:ietf:params:oauth:token-type:id_token"
+	SubjectJWT         = "urn:ietf:params:oauth:token-type:jwt"
+	SubjectTxnToken    = TokenType
+	// SubjectRefreshToken is named so it can be REFUSED by name. Section 11.2
+	// excludes it, and section 13.3 explains why: a refresh token is a
+	// long-lived credential for obtaining access tokens, and turning one
+	// directly into a transaction token skips every check that sits between.
+	SubjectRefreshToken = "urn:ietf:params:oauth:token-type:refresh_token"
+	// Defined by the specification but not implemented here. Named so the
+	// refusal can say "not supported" rather than "invalid", which are
+	// different problems for whoever is integrating.
+	SubjectSelfSigned   = "urn:ietf:params:oauth:token-type:self_signed"
+	SubjectUnsignedJSON = "urn:ietf:params:oauth:token-type:unsigned_json"
+)
+
+// ErrSubjectTokenType means the type is one we will not or cannot accept.
+var ErrSubjectTokenType = fmt.Errorf("unsupported subject_token_type")
+
+// CheckSubjectTokenType applies section 11.2.
+//
+// Enumerated rather than defaulted. The first version treated ANY unrecognised
+// type as an access token, which meant a refresh token -- the one type the
+// specification excludes -- was refused only by accident, because it happens
+// not to parse as an access token JWT. An exclusion that holds by accident is
+// one that stops holding when the accident changes.
+func CheckSubjectTokenType(t string) error {
+	switch t {
+	case SubjectAccessToken, SubjectIDToken, SubjectJWT, SubjectTxnToken:
+		return nil
+	case SubjectRefreshToken:
+		return fmt.Errorf("%w: section 11.2 excludes refresh tokens, and 13.3 "+
+			"explains why -- a long-lived credential must not become a "+
+			"transaction token directly", ErrSubjectTokenType)
+	case SubjectSelfSigned, SubjectUnsignedJSON:
+		return fmt.Errorf("%w: %s is defined by the specification but not "+
+			"implemented here", ErrSubjectTokenType, t)
+	case "":
+		return fmt.Errorf("%w: subject_token_type is required", ErrSubjectTokenType)
+	}
+	return fmt.Errorf("%w: %q is not a type this deployment accepts",
+		ErrSubjectTokenType, t)
+}
+
 // Typ is the JWT header `typ`.
 //
 // Distinct from at+jwt on purpose. A resource server that accepts both without
@@ -59,6 +109,19 @@ type Claims struct {
 	Subject string `json:"sub"`
 	// RequestingWorkload is who asked for the token. REQUIRED.
 	RequestingWorkload string `json:"req_wl"`
+	// CallChain is every workload that has requested this transaction's
+	// tokens, oldest first, INCLUDING the current one.
+	//
+	// Section 13.15 says a TTS "MUST maintain the Call Chain of workloads that
+	// requested the Txn-Token being replaced in the subsequently issued
+	// Txn-Token", and leaves the mechanism out of scope. `req_wl` is singular
+	// and is overwritten at each hop, so on its own the chain is destroyed at
+	// the first replacement -- which is exactly the audit property this format
+	// exists to provide.
+	//
+	// So the chain is carried in an additional claim, which section 9.2
+	// explicitly permits ("A Txn-Token MAY contain additional claims").
+	CallChain []string `json:"req_wl_chain,omitempty"`
 	// Scope is the authorization intent, space-delimited. REQUIRED.
 	Scope string `json:"scope"`
 
@@ -166,7 +229,11 @@ func Replace(r Replacement, issuer string, now time.Time, ttl time.Duration) (Cl
 		Subject:     r.Previous.Subject,
 		// The one field that SHOULD change: each hop says who it is.
 		RequestingWorkload: r.Workload,
-		Scope:              strings.Join(want, " "),
+		// And the chain grows rather than being overwritten -- section 13.15's
+		// MUST. Built from the PREVIOUS token's chain, so a caller cannot
+		// supply one: the history is ours, not theirs.
+		CallChain: appendChain(r.Previous, r.Workload),
+		Scope:     strings.Join(want, " "),
 		// Transaction context is immutable too: what is being done does not
 		// change because the request moved one service to the right.
 		TransactionContext: r.Previous.TransactionContext,
@@ -214,3 +281,36 @@ func contains(hay []string, needle string) bool {
 	}
 	return false
 }
+
+// appendChain extends the call chain by one hop.
+//
+// Reads the previous token's chain and falls back to its req_wl, so a token
+// minted before this claim existed still contributes its workload rather than
+// vanishing from the history.
+//
+// Bounded. Section 13.15 also says a TTS SHOULD limit how many times a token is
+// replaced; an unbounded chain is both a growing token and a hint that
+// something is looping.
+func appendChain(prev Claims, next string) []string {
+	chain := prev.CallChain
+	if len(chain) == 0 && prev.RequestingWorkload != "" {
+		chain = []string{prev.RequestingWorkload}
+	}
+	// Copied rather than appended in place: append may share the backing array
+	// with the caller's slice, and two replacements from one token would then
+	// scribble over each other.
+	out := make([]string, 0, len(chain)+1)
+	out = append(out, chain...)
+	if len(out) >= MaxCallChain {
+		return out
+	}
+	return append(out, next)
+}
+
+// MaxCallChain bounds how long a chain may grow.
+//
+// A transaction crossing more than this many workloads is a loop or a design
+// nobody intended to have. Reaching it does not fail the request -- refusing a
+// live transaction because its history is long would be worse than truncating
+// the history -- but the chain stops growing, which is visible.
+const MaxCallChain = 32

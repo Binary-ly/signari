@@ -76,6 +76,50 @@ transaction context.
  "rctx": {"req_ip": "203.0.113.9", "authn": "pwd"}}
 ```
 
+## Conformance review against draft-11, August 2026
+
+The first implementation was written from a summary of the draft. Reading the
+**actual text of draft-11** found two defects, one of them a MUST violation:
+
+| Finding | Section | Status |
+|---|---|---|
+| **The Call Chain was destroyed at the first replacement.** `req_wl` is singular and was overwritten each hop, so the history of which workloads touched a transaction — the audit property this format exists for — was lost. §13.15 says a TTS **MUST maintain** it | §13.15 | **fixed** |
+| **`subject_token_type` was defaulted, not enumerated.** Any unrecognised value fell through to the access-token path, including `refresh_token`, which §11.2 excludes outright and §13.3 explains the reason for. It was refused only because a refresh token happens not to parse as an access-token JWT — an exclusion that holds by accident stops holding when the accident changes | §11.2, §13.3 | **fixed** |
+
+Checked and already correct: `typ` (§9.1), every required claim (§9.2), the
+`N_A` response shape with no `refresh_token` (§11.4), issuance rules (§11.3),
+expiry of the presented token (§6), the `Txn-Token` header (§12.1), and the
+replacement rules on `txn`/`sub`/`aud` immutability and scope narrowing (§13.15).
+
+Where we are **stricter than the draft**: §6 and §13.15 both permit a Txn-Token
+to outlive the token it came from, "subject to the policy of the TTS". We cap it
+instead. A chain that can extend its own life one hop at a time turns a
+five-minute token into a permanent one across enough services, and §13.15's own
+"SHOULD limit the number of times a Txn-Token is replaced" exists because of
+that risk. Capping removes the risk rather than bounding it.
+
+### The Call Chain claim
+
+`req_wl_chain`, an array of workload identifiers, oldest first, including the
+current one. §13.15 leaves the mechanism out of scope; §9.2 permits additional
+claims. Set from the **first** token rather than only from the first
+replacement, so a consumer never has to special-case hop one.
+
+Verified live across three workloads:
+
+```
+hop 1 gateway  chain=[tts-gateway]
+hop 2 orders   chain=[tts-gateway, tts-orders]
+hop 3 ledger   chain=[tts-gateway, tts-orders, tts-ledger]
+```
+
+Bounded at 32 hops. It is built from the **previous token**, never from the
+request, so a caller cannot write its own history — and it is copied rather than
+appended in place, because one token replaced twice would otherwise have the two
+branches scribble over each other. That last one needed a test with spare
+capacity in the slice to catch: with a literal slice, `append` always
+reallocates and the aliasing bug hides.
+
 ## The rules that make a chain worth anything
 
 Verified against a running engine, two hops, gateway → orders:

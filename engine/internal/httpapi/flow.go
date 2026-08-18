@@ -451,6 +451,15 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		if err := s.authenticateConfidentialClient(ctx, r, c, req.ClientSecret); err != nil {
 			s.log.Info("client authentication failed", "client_id", c.ClientID, "err", err,
 				"correlation_id", correlationID(ctx))
+			// An attestation failure gets §7.4's specific code, and a challenge
+			// failure additionally gets a fresh challenge to retry with. Collapsing
+			// everything into `invalid_client` would tell a correctly-configured
+			// client only that something was wrong, when the draft defines an
+			// error whose whole purpose is to say what to do next.
+			if isAttestationFailure(c, err) {
+				s.writeAttestationError(w, r, c, err)
+				return
+			}
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
 				Description: "client authentication failed", Status: http.StatusUnauthorized})
 			return

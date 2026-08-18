@@ -71,6 +71,10 @@ type Stats struct {
 	RecoveriesPurged int64
 	// DeviceCodesPurged are abandoned RFC 8628 device authorizations.
 	DeviceCodesPurged int64
+
+	// AttestationChallengesPurged are spent ABCA challenges. Single-use and two
+	// minutes long, so the table is almost entirely dead rows within the hour.
+	AttestationChallengesPurged int64
 	// LogoutChainsSwept are SAML front-channel logouts the user abandoned.
 	LogoutChainsSwept int64
 
@@ -125,6 +129,13 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	}
 	if st.CodesPurged, err = store.PurgeExpiredCodes(ctx, tx, codeRetention); err != nil {
 		return st, fmt.Errorf("purging expired codes: %w", err)
+	}
+	// Spent attestation challenges. They are single-use and two minutes long, so
+	// the table is almost all dead rows within the hour -- and a purge that is
+	// written but never called is the defect this file exists to prevent.
+	if st.AttestationChallengesPurged, err =
+		store.PurgeExpiredAttestationChallenges(ctx, tx); err != nil {
+		return st, fmt.Errorf("purging expired attestation challenges: %w", err)
 	}
 	// Denylist entries for access tokens that have since expired on their own.
 	// Keeping them costs a lookup on every userinfo call and proves nothing: an

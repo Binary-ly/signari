@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"signari.dev/engine/internal/abca"
 	"signari.dev/engine/internal/clientauth"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/store"
@@ -86,6 +87,13 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 			return fmt.Errorf("this client assertion has already been used")
 		}
 		return nil
+
+	case abca.MethodPoP:
+		// Attestation-Based Client Authentication, §7.5. Placed here rather than
+		// before the switch because it IS a client authentication method, chosen
+		// per client like private_key_jwt -- unlike mutual TLS above, which is a
+		// property of the connection.
+		return s.authenticateWithAttestation(ctx, r, c)
 
 	case "none":
 		// Configured to need nothing. Only reachable for a client somebody

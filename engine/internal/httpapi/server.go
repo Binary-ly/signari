@@ -262,6 +262,9 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET "+oidc.PathEndSession, s.handleEndSession)
 	mux.HandleFunc("POST "+oidc.PathEndSession, s.handleEndSession)
 	mux.HandleFunc("POST "+oidc.PathRevocation, s.handleRevoke)
+	// draft-ietf-oauth-attestation-based-client-auth-10 §6.1. Unauthenticated by
+	// necessity: a client fetches a challenge in order to authenticate.
+	mux.HandleFunc("POST "+oidc.PathAttestationChallenge, s.handleAttestationChallenge)
 	mux.HandleFunc("POST "+oidc.PathIntrospection, s.handleIntrospect)
 	mux.HandleFunc("GET /login/with/{slug}", s.handleFederatedStart)
 	mux.HandleFunc("GET /login/callback/{slug}", s.handleFederatedCallback)

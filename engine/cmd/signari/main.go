@@ -97,6 +97,7 @@ var twoWordCommands = map[string]bool{
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"invite": true, "signup": true, "outpost": true, "provision": true,
 	"prompt":   true,
+	"attester": true,
 	"kerberos": true,
 	"ssf":      true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
 	"events":     true,
@@ -214,6 +215,7 @@ func run(args []string) error {
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
 	duoClientID := fs.String("duo-client-id", "", "Duo integration key (20 characters)")
+	attesterJWKS := fs.String("attester-jwks", "", "path to a JWKS file holding the client attester's PUBLIC keys")
 	duoSecret := fs.String("duo-secret", "", "Duo secret key (40 characters)")
 	duoAPIHost := fs.String("duo-api-host", "", "api-XXXXXXXX.duosecurity.com")
 	duoFailOpen := fs.Bool("duo-fail-open", false,
@@ -628,6 +630,10 @@ func run(args []string) error {
 		return duoEnroll(ctx, conn, *orgID, *email, *duoUsername)
 	case "duo show":
 		return duoShow(ctx, conn)
+	case "attester add":
+		return attesterAdd(ctx, conn, *orgID, *name, *attesterJWKS)
+	case "attester list":
+		return attesterList(ctx, conn)
 	case "scim-source add":
 		return scimSourceAdd(ctx, conn, *orgID, *slug, *name, *onDeactivate)
 	case "scim-source list":
@@ -6368,6 +6374,85 @@ func credentialList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	if !found {
 		fmt.Println("this deployment issues no credentials")
+	}
+	return rows.Err()
+}
+
+// attesterAdd registers a trusted Client Attester,
+// draft-ietf-oauth-attestation-based-client-auth-10 §7.1 rule 4.
+//
+// Without at least one of these, no attestation can verify -- rule 4 requires
+// the signature to check out against "a known and trusted Client Attester", and
+// trust here means somebody deliberately registered the key.
+func attesterAdd(ctx context.Context, conn *pgx.Conn, orgID, name, jwksPath string) error {
+	if orgID == "" || name == "" || jwksPath == "" {
+		return fmt.Errorf("attester add needs --org, --name and --attester-jwks")
+	}
+	blob, err := os.ReadFile(jwksPath)
+	if err != nil {
+		return fmt.Errorf("reading the attester JWKS: %w", err)
+	}
+
+	// Parsed before storing, and checked for private keys.
+	//
+	// A JWKS that does not parse would be stored happily and then fail every
+	// authentication at run time, with an error pointing at the client rather
+	// than at this registration. And an attester "public" key file that actually
+	// contains private keys is a mistake worth catching at the moment somebody
+	// makes it: it would mean this server could mint attestations indistinguishable
+	// from the attester's own, which is the trust separation ABCA exists to create.
+	var set jose.JSONWebKeySet
+	if err := json.Unmarshal(blob, &set); err != nil {
+		return fmt.Errorf("the attester JWKS is not a JSON Web Key Set: %w", err)
+	}
+	if len(set.Keys) == 0 {
+		return fmt.Errorf("the attester JWKS contains no keys")
+	}
+	for i, k := range set.Keys {
+		if !k.IsPublic() {
+			return fmt.Errorf("key %d in the attester JWKS is a PRIVATE key; register "+
+				"only the attester's public keys, or this server could forge the "+
+				"attestations it is supposed to be verifying", i)
+		}
+		if !k.Valid() {
+			return fmt.Errorf("key %d in the attester JWKS is not usable", i)
+		}
+	}
+
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.client_attesters (org_id, name, jwks)
+		VALUES ($1::uuid, $2, $3)
+		ON CONFLICT (org_id, name) DO UPDATE SET jwks = EXCLUDED.jwks`,
+		orgID, name, blob); err != nil {
+		return fmt.Errorf("registering the client attester: %w", err)
+	}
+	fmt.Printf("registered client attester %q with %d key(s)\n", name, len(set.Keys))
+	return nil
+}
+
+// attesterList shows who is trusted to vouch for clients.
+func attesterList(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT org_id::text, name, jsonb_array_length(jwks->'keys'), created_at
+		FROM core.client_attesters ORDER BY org_id, name`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var org, name string
+		var keys int
+		var created time.Time
+		if err := rows.Scan(&org, &name, &keys, &created); err != nil {
+			return err
+		}
+		found = true
+		fmt.Printf("%s  %-30s %d key(s)  %s\n", org, name, keys, created.Format(time.RFC3339))
+	}
+	if !found {
+		fmt.Println("no client attesters registered; attestation-based client " +
+			"authentication cannot verify anything until one is added")
 	}
 	return rows.Err()
 }

@@ -4,6 +4,7 @@ package oidc
 import (
 	"fmt"
 	"net/url"
+	"signari.dev/engine/internal/abca"
 	"strings"
 
 	"signari.dev/engine/internal/keys"
@@ -50,8 +51,20 @@ type Metadata struct {
 
 	SubjectTypesSupported []string `json:"subject_types_supported"`
 
-	IDTokenSigningAlgValues       []string `json:"id_token_signing_alg_values_supported"`
-	TokenEndpointAuthMethods      []string `json:"token_endpoint_auth_methods_supported"`
+	IDTokenSigningAlgValues  []string `json:"id_token_signing_alg_values_supported"`
+	TokenEndpointAuthMethods []string `json:"token_endpoint_auth_methods_supported"`
+
+	// §8 makes these two a MUST once the Client Attestation PoP mechanism is
+	// offered: "The Authorization Server or Resource Server MUST include
+	// client_attestation_signing_alg_values_supported and
+	// client_attestation_pop_signing_alg_values_supported in its published
+	// metadata if the Client Attestation PoP JWT mechanism is used."
+	ClientAttestationAlgs    []string `json:"client_attestation_signing_alg_values_supported,omitempty"`
+	ClientAttestationPoPAlgs []string `json:"client_attestation_pop_signing_alg_values_supported,omitempty"`
+
+	// §6.1: "it MUST signal support for the challenge endpoint by including the
+	// metadata entry challenge_endpoint containing the URL of the endpoint".
+	ChallengeEndpoint             string   `json:"challenge_endpoint,omitempty"`
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported"`
 	ClaimsSupported               []string `json:"claims_supported"`
 
@@ -105,14 +118,16 @@ type Config struct {
 // Paths are fixed relative to the issuer so that discovery, the routes the server
 // actually registers, and the documentation cannot drift apart.
 const (
-	PathAuthorize     = "/oauth2/authorize"
-	PathToken         = "/oauth2/token"
-	PathUserinfo      = "/oauth2/userinfo"
-	PathJWKS          = "/oauth2/jwks"
-	PathEndSession    = "/oauth2/logout"
-	PathRevocation    = "/oauth2/revoke"
-	PathIntrospection = "/oauth2/introspect"
-	PathDiscovery     = "/.well-known/openid-configuration"
+	PathAuthorize  = "/oauth2/authorize"
+	PathToken      = "/oauth2/token"
+	PathUserinfo   = "/oauth2/userinfo"
+	PathJWKS       = "/oauth2/jwks"
+	PathEndSession = "/oauth2/logout"
+	PathRevocation = "/oauth2/revoke"
+	// PathAttestationChallenge is draft-ietf-oauth-attestation-based-client-auth-10 §6.1.
+	PathAttestationChallenge = "/oauth2/attestation-challenge"
+	PathIntrospection        = "/oauth2/introspect"
+	PathDiscovery            = "/.well-known/openid-configuration"
 )
 
 // Build renders the metadata document for the given configuration.
@@ -163,7 +178,13 @@ func Build(cfg Config) (*Metadata, error) {
 		JWKSURI:               at(PathJWKS),
 		EndSessionEndpoint:    at(PathEndSession),
 		RevocationEndpoint:    at(PathRevocation),
-		IntrospectionEndpoint: at(PathIntrospection),
+		// §6.1 and §8: the challenge endpoint and the two algorithm lists are
+		// advertised together with the method, because a client is told to fetch
+		// a challenge only by finding this entry.
+		ChallengeEndpoint:        at(PathAttestationChallenge),
+		ClientAttestationAlgs:    abca.SigningAlgs(),
+		ClientAttestationPoPAlgs: abca.SigningAlgs(),
+		IntrospectionEndpoint:    at(PathIntrospection),
 
 		// `groups` is advertised because it now works. Every scope and claim in
 		// this document is one the engine actually honours -- the rule this file
@@ -234,6 +255,12 @@ func Build(cfg Config) (*Metadata, error) {
 			// registration_endpoint, which needs an organisation to opt in before
 			// it answers anything at all.
 			"tls_client_auth", "self_signed_tls_client_auth", "none",
+			// draft-ietf-oauth-attestation-based-client-auth-10 §8. Only the
+			// Client Attestation PoP form is advertised; the DPoP combined mode
+			// (`attest_jwt_client_auth_dpop`) is not implemented, and advertising
+			// a method we would refuse is the exact dishonesty this file exists
+			// to prevent.
+			abca.MethodPoP,
 		},
 
 		// S256 only, and the authorize endpoint enforces it. `plain` is not

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"signari.dev/engine/internal/abca"
 	"signari.dev/engine/internal/clients"
 )
 
@@ -380,6 +381,21 @@ func RequireClientAuth(c *clients.Client, req TokenRequest) *TokenError {
 		// for mTLS that presents nothing is refused there, not waved through.
 		if c.TLSSubjectDN != "" || c.TLSSANDNS != "" || c.TLSSANURI != "" ||
 			len(c.TLSThumbprint) > 0 {
+			return nil
+		}
+		// And a client registered for attestation-based authentication
+		// authenticates with two HTTP headers, which are not in the request body
+		// either. This gate has now caught three methods the same way --
+		// private_key_jwt, mutual TLS, and this -- so the rule is worth stating
+		// plainly rather than rediscovering a fourth time: **anything that adds a
+		// client authentication method must add it here too**, because this
+		// decides whether the method is ever reached.
+		//
+		// Presence of the registration, not validity of the headers: whether the
+		// attestation verifies is decided later by code that can read the
+		// organisation's trusted attesters, and a client registered for this that
+		// sends nothing is refused there rather than waved through.
+		if c.TokenEndpointAuthMethod == abca.MethodPoP {
 			return nil
 		}
 		if req.AuthMethod == "none" || req.ClientSecret == "" {

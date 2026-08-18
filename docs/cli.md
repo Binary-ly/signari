@@ -127,6 +127,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari prompt list` / `prompt set` | Interstitial prompts — terms, notices |
 | `signari brand set` / `brand show` / `brand check` | Branding. `brand check` verifies contrast |
 | `signari duo set` / `duo enroll` / `duo show` | Duo as a second factor |
+| `signari attester add` / `attester list` | Trusted Client Attesters for attestation-based client authentication. `attester add --org <id> --name <n> --attester-jwks <file>` registers an attester's **public** keys; a file containing private keys is refused, because this server could then forge the attestations it verifies. Nothing authenticates with `attest_jwt_client_auth` until at least one attester is registered |
 
 ## Testing
 

@@ -55,6 +55,16 @@ type Client struct {
 	TLSThumbprint  []byte
 	TLSBoundTokens bool
 
+	// TokenEndpointAuthMethod is how this client is REGISTERED to authenticate,
+	// as distinct from how a given request happened to present credentials.
+	//
+	// Carried on the client because oauth.RequireClientAuth has to decide whether
+	// any method applies before one is attempted, and it cannot reach the
+	// database. Without it that gate could only see secrets in the request body,
+	// which is why it has now refused three correctly-authenticating clients in
+	// turn -- private_key_jwt, mutual TLS, and attestation-based.
+	TokenEndpointAuthMethod string
+
 	// AllowHybrid permits response_type "code id_token" for this client.
 	//
 	// Off unless somebody turned it on. It exists for applications being
@@ -104,7 +114,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       id_token_signed_alg, refresh_token_ttl_s, first_party, issuer_alias,
 		       may_exchange, exchange_audiences,
 		       tls_subject_dn, tls_san_dns, tls_san_uri, tls_thumbprint, tls_bound_tokens,
-		       allow_hybrid
+		       allow_hybrid, token_endpoint_auth_method
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -112,7 +122,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias,
 			&c.MayExchange, &c.ExchangeAudiences,
 			&tlsDN, &tlsDNS, &tlsURI, &c.TLSThumbprint, &c.TLSBoundTokens,
-			&c.AllowHybrid)
+			&c.AllowHybrid, &c.TokenEndpointAuthMethod)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

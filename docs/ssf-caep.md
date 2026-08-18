@@ -209,3 +209,89 @@ That distinction is not pedantry. A JOSE library change, or a future need for
 suite would have told us they had been decorative all along. This is the same
 failure this project has already found twice in its own comments, and finding it
 a third time in a *test* is the reason the mutation pass exists.
+
+---
+
+# MUST-by-MUST sweep, August 2026: `critical_subject_members`
+
+The method that found three unmet requirements in OID4VCI — extract every `MUST`
+from the specification text and check each one against the code — applied to
+Shared Signals Framework 1.0 (29 August 2025, the current Final).
+
+94 `MUST` sentences; 49 of them touch streams, subjects or delivery. One was
+unmet, and the receiver contained no mention of it at all.
+
+## §3.6 Receiver Subject Processing
+
+> "An SSF Receiver MUST make a best effort to process all members from a Subject
+> in an SSF event. The Transmitter Configuration Metadata (Section 7.1) defined
+> below MAY define certain members within a Complex Subject to be Critical. **An
+> SSF Receiver MUST discard any event that contains a Subject with a Critical
+> member that it is unable to process.**"
+
+and §7.1's metadata entry:
+
+> `critical_subject_members` — "An array of member names in a Complex Subject
+> which, if present in a Subject Member in an event, MUST be interpreted by a
+> Receiver."
+
+We implemented neither. The receiver reads `format`, `iss`, `sub` and `email`,
+and silently ignored everything else.
+
+## Why this is a scope defect, not an authenticity one
+
+Every other check in this receiver asks *is this event genuine* — signature,
+issuer, audience, `jti`, `iat`, allowed event types. This one asks a different
+question: **do I understand what the event is about?**
+
+A transmitter marking a `device` member Critical is saying the event concerns one
+device rather than the whole account. Ignoring that member does not fail. It
+applies the right action to the wrong set of things — a session-revocation scoped
+to one laptop gets applied to every session the user has — and nothing anywhere
+reports that the blast radius was wrong.
+
+That is the same silent-widening shape as the token-lifecycle defects found
+earlier in this codebase, arriving from a completely different direction. The
+common property is a constraint that was communicated and then not consulted.
+
+## The implementation
+
+`critical_subject_members` is stored per source, not fetched live from the
+transmitter's metadata document — the same decision as `allowed_events`, for the
+same reason: what this receiver will act on is a local decision, and letting a
+remote document widen or narrow it at request time makes the security posture
+depend on somebody else's uptime and honesty.
+
+The check runs on the **raw** subject object rather than the parsed `Subject`,
+because the entire point is to notice members we do not model, and a parsed
+struct has already discarded them.
+
+`processableSubjectMembers` sits directly beside `subjectFrom`, since §3.6 turns
+on "unable to process": a member added to the parser without being added to that
+set would make us discard events we now understand perfectly well.
+
+## Mutation results
+
+```
+CAUGHT   critical members never checked
+CAUGHT   absent critical member still discards
+CAUGHT   members we can process still discard
+SURVIVED check fires with nothing declared
+```
+
+The survivor was an early return for the empty case — and it was genuinely
+redundant, not merely hard to test: ranging over an empty slice already does
+nothing, and indexing a nil map already reports "not present". It was **deleted**
+rather than kept and labelled.
+
+That is worth distinguishing from the diagnostic-only branches elsewhere in this
+codebase, which survive mutation but earn their place by producing a better error
+message. This one produced nothing at all. A short-circuit that only restates
+what the loop does is weight without meaning.
+
+## The rest of the sweep
+
+The other 93 `MUST` sentences were checked and are met, including the ones most
+often skipped: explicit `typ` of `secevent+jwt` (§4.1.1), `iss` matching the
+stream configuration (§4.1), audience checking, and refusing a SET with no `jti`
+— without which there is no replay guard at all.

@@ -21,7 +21,8 @@ import (
 func SourceByIssuer(ctx context.Context, q Querier, issuer string) (ssf.Source, bool, error) {
 	var s ssf.Source
 	rows, err := q.Query(ctx, `
-		SELECT id::text, org_id::text, issuer, jwks_uri, audience, allowed_events
+		SELECT id::text, org_id::text, issuer, jwks_uri, audience, allowed_events,
+		       critical_subject_members
 		  FROM core.ssf_sources
 		 WHERE issuer = $1 AND enabled`, issuer)
 	if err != nil {
@@ -30,7 +31,7 @@ func SourceByIssuer(ctx context.Context, q Querier, issuer string) (ssf.Source, 
 	defer rows.Close()
 	if rows.Next() {
 		if err := rows.Scan(&s.ID, &s.OrgID, &s.Issuer, &s.JWKSURI,
-			&s.Audience, &s.AllowedEvents); err != nil {
+			&s.Audience, &s.AllowedEvents, &s.CriticalSubjectMembers); err != nil {
 			return s, false, err
 		}
 		return s, true, nil
@@ -40,20 +41,25 @@ func SourceByIssuer(ctx context.Context, q Querier, issuer string) (ssf.Source, 
 
 // AddSource registers a transmitter.
 func AddSource(ctx context.Context, e Execer, orgID, name, issuer, jwksURI,
-	audience string, events []string) error {
+	audience string, events, criticalMembers []string) error {
 
 	if events == nil {
 		events = []string{}
 	}
+	if criticalMembers == nil {
+		criticalMembers = []string{}
+	}
 	_, err := e.Exec(ctx, `
 		INSERT INTO core.ssf_sources
-			(org_id, display_name, issuer, jwks_uri, audience, allowed_events)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6)
+			(org_id, display_name, issuer, jwks_uri, audience, allowed_events,
+			 critical_subject_members)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (org_id, issuer) DO UPDATE SET
 			display_name = EXCLUDED.display_name, jwks_uri = EXCLUDED.jwks_uri,
 			audience = EXCLUDED.audience, allowed_events = EXCLUDED.allowed_events,
+			critical_subject_members = EXCLUDED.critical_subject_members,
 			enabled = true`,
-		orgID, name, issuer, jwksURI, audience, events)
+		orgID, name, issuer, jwksURI, audience, events, criticalMembers)
 	return err
 }
 

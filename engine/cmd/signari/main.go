@@ -215,6 +215,8 @@ func run(args []string) error {
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
 		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
 	duoClientID := fs.String("duo-client-id", "", "Duo integration key (20 characters)")
+	ssfCritical := fs.String("critical-subject-members", "",
+		"comma-separated subject member names this transmitter marks Critical (SSF 1.0 section 3.6)")
 	attesterJWKS := fs.String("attester-jwks", "", "path to a JWKS file holding the client attester's PUBLIC keys")
 	duoSecret := fs.String("duo-secret", "", "Duo secret key (40 characters)")
 	duoAPIHost := fs.String("duo-api-host", "", "api-XXXXXXXX.duosecurity.com")
@@ -517,7 +519,7 @@ func run(args []string) error {
 		return registrationToken(ctx, conn, *orgID, *name, *regUses, *tokenExpires)
 	case "ssf add-source":
 		return ssfAddSource(ctx, conn, *orgID, *name, *srcIssuer, *srcJWKS,
-			*srcAudience, *ssfEvents)
+			*srcAudience, *ssfEvents, *ssfCritical)
 	case "ssf received":
 		return ssfReceived(ctx, conn, *orgID)
 	case "ssf add-stream":
@@ -5716,7 +5718,7 @@ func conditionSummary(c authzen.Condition) string {
 
 // ssfAddSource registers a transmitter we will accept events from.
 func ssfAddSource(ctx context.Context, conn *pgx.Conn, orgID, name, issuer,
-	jwksURI, audience, events string) error {
+	jwksURI, audience, events, criticalMembers string) error {
 
 	switch {
 	case orgID == "" || name == "":
@@ -5746,12 +5748,24 @@ func ssfAddSource(ctx context.Context, conn *pgx.Conn, orgID, name, issuer,
 			"meant. Try -events %s", ssf.EventSessionRevoked)
 	}
 
+	var critical []string
+	for _, m := range strings.Split(criticalMembers, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			critical = append(critical, m)
+		}
+	}
 	if err := store.AddSource(ctx, conn, orgID, name, issuer, jwksURI, audience,
-		list); err != nil {
+		list, critical); err != nil {
 		return err
 	}
 	fmt.Printf("source %s\n  issuer   %s\n  jwks     %s\n  audience %s\n  events   %s\n",
 		name, issuer, jwksURI, audience, strings.Join(list, ", "))
+	if len(critical) > 0 {
+		// Worth printing, because it is the one setting here that makes this
+		// receiver DISCARD events it would otherwise act on.
+		fmt.Printf("  critical %s  (events carrying these are discarded unless understood)\n",
+			strings.Join(critical, ", "))
+	}
 	fmt.Printf("\n  Point the transmitter at:  POST <this engine>/ssf/receive\n")
 	fmt.Printf("  It needs no credential -- the signature is the credential.\n")
 	return nil

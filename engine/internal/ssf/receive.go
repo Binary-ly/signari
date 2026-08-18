@@ -44,6 +44,51 @@ type Source struct {
 	JWKSURI       string
 	Audience      string
 	AllowedEvents []string
+
+	// CriticalSubjectMembers is SSF 1.0 §7.1's `critical_subject_members`: the
+	// subject member names this transmitter has declared Critical.
+	//
+	// §3.6 makes acting on them a MUST: "An SSF Receiver MUST discard any event
+	// that contains a Subject with a Critical member that it is unable to
+	// process." Empty is the normal case and means no member is critical.
+	CriticalSubjectMembers []string
+}
+
+// processableSubjectMembers are the members subjectFrom actually reads.
+//
+// Kept beside the parser it describes, because the §3.6 rule is "a Critical
+// member that it is unable to process" -- so the list of what we CAN process is
+// half of the check, and a member added to subjectFrom without being added here
+// would make us discard events we now understand perfectly well.
+var processableSubjectMembers = map[string]bool{
+	"format": true, "iss": true, "sub": true, "email": true,
+}
+
+// unprocessableCritical returns the Critical members present in a subject that
+// this receiver cannot interpret.
+//
+// The check is on the RAW subject object, not the parsed Subject: the whole
+// point is to notice members we do not model, and a parsed struct has already
+// thrown those away.
+func (s Source) unprocessableCritical(raw map[string]any) []string {
+	// No early return for the empty cases. Ranging over an empty slice already
+	// does nothing, and indexing a nil map already reports "not present", so a
+	// guard here would be one no test could make fail -- mutation confirmed it.
+	// A short-circuit that only restates what the loop does is weight without
+	// meaning.
+	var bad []string
+	for _, name := range s.CriticalSubjectMembers {
+		if _, present := raw[name]; !present {
+			// §7.1 is conditional: critical members matter only "if present in a
+			// Subject Member in an event". A declared member the event does not
+			// carry is not a reason to discard anything.
+			continue
+		}
+		if !processableSubjectMembers[name] {
+			bad = append(bad, name)
+		}
+	}
+	return bad
 }
 
 // Allows reports whether this source may send this event type.
@@ -357,6 +402,20 @@ func Verify(ctx context.Context, f *KeyFetcher, src Source, raw string, now time
 	out.AllClaims = c.Events
 
 	out.JTI = c.JTI
+	// §3.6: discard rather than act with a scope we do not understand.
+	//
+	// This runs before the subject is used for anything. A Critical member we
+	// cannot read means the event is scoped by something we are ignoring -- a
+	// device, a tenant, a session -- and acting on it would apply the right
+	// action to the wrong set of things, silently.
+	if raw, ok := rawSubject(out.Claims); ok {
+		if bad := src.unprocessableCritical(raw); len(bad) > 0 {
+			return out, fmt.Errorf("%w: the subject carries the critical member(s) %v, "+
+				"which this receiver cannot interpret; §3.6 requires discarding the "+
+				"event rather than acting on a scope it does not understand",
+				ErrNotVerified, bad)
+		}
+	}
 	out.Subject = subjectFrom(out.Claims)
 	if t, ok := out.Claims["event_timestamp"].(float64); ok {
 		out.EventTime = time.Unix(int64(t), 0)
@@ -371,6 +430,16 @@ func Verify(ctx context.Context, f *KeyFetcher, src Source, raw string, now time
 // CAEP puts it in `subject`; some transmitters use the RFC 8417 `sub_id`. Both
 // are read, because a receiver that only understands one silently ignores half
 // the transmitters in the world.
+// rawSubject returns the subject object as sent, before parsing.
+func rawSubject(body map[string]any) (map[string]any, bool) {
+	for _, key := range []string{"subject", "sub_id"} {
+		if raw, ok := body[key].(map[string]any); ok {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+
 func subjectFrom(body map[string]any) Subject {
 	var s Subject
 	for _, key := range []string{"subject", "sub_id"} {

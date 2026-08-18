@@ -534,3 +534,87 @@ func TestAStringAudienceNamingSomebodyElseIsStillRefused(t *testing.T) {
 			"audience happened to be a string")
 	}
 }
+
+// SSF 1.0 §3.6, with §7.1's `critical_subject_members`:
+//
+//	"An SSF Receiver MUST discard any event that contains a Subject with a
+//	Critical member that it is unable to process."
+//
+// Found by extracting every MUST from the specification and checking each one —
+// the same sweep that found three unmet requirements in OID4VCI. Nothing in the
+// receiver mentioned `crit` or `critical_subject_members` at all.
+//
+// The consequence is scope, not authenticity. Every other check here asks "is
+// this event genuine"; this one asks "do I understand what it is about". A
+// transmitter marking `device` critical is saying the event concerns one device
+// rather than the whole account. Ignoring that member does not fail — it applies
+// the right action to the wrong set of things, silently, which is the same
+// shape as the token-lifecycle defects found earlier in this codebase.
+func TestAnEventWithAnUnprocessableCriticalMemberIsDiscarded(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	src := tr.source()
+	src.CriticalSubjectMembers = []string{"device"}
+
+	claims := goodClaims(now)
+	subject := claims["events"].(map[string]any)[EventSessionRevoked].(map[string]any)["subject"].(map[string]any)
+	subject["device"] = "laptop-7"
+
+	raw := tr.sign(t, TypSET, claims, nil, tr.kid)
+	if _, err := Verify(context.Background(), &KeyFetcher{}, src, raw, now); err == nil {
+		t.Fatal("an event carrying a critical member this receiver cannot read was " +
+			"accepted; the action would be applied to every session the user has, " +
+			"not the one device the transmitter scoped it to")
+	}
+}
+
+// The rule is conditional on the member being PRESENT. A transmitter that
+// declares `device` critical must not break every event that does not carry one.
+func TestADeclaredCriticalMemberThatIsAbsentChangesNothing(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	src := tr.source()
+	src.CriticalSubjectMembers = []string{"device"}
+
+	raw := tr.sign(t, TypSET, goodClaims(now), nil, tr.kid)
+	if _, err := Verify(context.Background(), &KeyFetcher{}, src, raw, now); err != nil {
+		t.Fatalf("an ordinary event was discarded because the transmitter declares "+
+			"a critical member it did not send: %v", err)
+	}
+}
+
+// A critical member we DO process is not a reason to discard. §3.6 turns on
+// "unable to process", not on the label.
+func TestACriticalMemberWeUnderstandIsAccepted(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	src := tr.source()
+	src.CriticalSubjectMembers = []string{"sub", "iss", "format"}
+
+	raw := tr.sign(t, TypSET, goodClaims(now), nil, tr.kid)
+	if _, err := Verify(context.Background(), &KeyFetcher{}, src, raw, now); err != nil {
+		t.Fatalf("an event was discarded over critical members the receiver reads "+
+			"perfectly well: %v", err)
+	}
+}
+
+// And with no critical members declared — the overwhelmingly common case — the
+// check must be invisible.
+func TestNoCriticalMembersDeclaredMeansNoNewRefusals(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	claims := goodClaims(now)
+	subject := claims["events"].(map[string]any)[EventSessionRevoked].(map[string]any)["subject"].(map[string]any)
+	subject["device"] = "laptop-7"
+	subject["tenant"] = "acme"
+
+	raw := tr.sign(t, TypSET, claims, nil, tr.kid)
+	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(), raw, now); err != nil {
+		t.Fatalf("unknown subject members were treated as critical when the "+
+			"transmitter declared none: %v", err)
+	}
+}

@@ -232,50 +232,77 @@ const (
 	TypeProvider         = "openid_provider"
 )
 
-// ErrUnappliedPolicy means the chain carries a metadata policy this
-// implementation does not apply.
+// MetadataOf resolves one Entity Type's metadata for the chain subject.
 //
-// §6.1.4: "If a policy error or another error is encountered during the metadata
-// policy resolution or its application, the Trust Chain MUST be considered
-// invalid."
+// This is §6.1.4.2 Application, and the order below is the specification's:
 //
-// Metadata policy is how a superior constrains a subordinate -- which redirect
-// URIs are permitted, which scopes, which algorithms. Resolving a chain and then
-// using the leaf's own metadata while ignoring those constraints does not
-// produce a slightly-wrong answer; it produces the answer the subordinate wanted
-// rather than the one its federation allows.
+//  1. Start from the subject's own Entity Configuration metadata.
+//  2. Apply the Immediate Superior's `metadata` claim, if any. §3.1.1: "Metadata
+//     parameters in a Subordinate Statement have precedence and override
+//     identically named parameters under the same Entity Type in the subject's
+//     Entity Configuration."
+//  3. Apply the resolved metadata policy. §3.1.1 again, on the ordering: "If both
+//     metadata and metadata_policy appear in a Subordinate Statement, then the
+//     stated metadata MUST be applied before the metadata_policy."
 //
-// So a chain carrying a policy is refused rather than partially honoured. That
-// is the same choice this codebase makes wherever a control cannot be applied:
-// fail closed and say why, rather than proceed and look like it worked.
-var ErrUnappliedPolicy = fmt.Errorf("this trust chain carries a metadata_policy, " +
-	"which constrains the subject's metadata. Applying it is not implemented, and " +
-	"section 6.1.4 makes an unapplied policy a chain validation failure -- so the " +
-	"chain is refused rather than resolved with the subject's own unconstrained " +
-	"metadata")
-
-// MetadataOf extracts one Entity Type's metadata from the chain subject.
-//
-// Refuses when any Subordinate Statement in the chain carries a
-// `metadata_policy` or `metadata_policy_crit`. See ErrUnappliedPolicy.
+// Step 2 before step 3 is not a detail. A superior that supplies a value and
+// also constrains it expects its own value to be the one the constraint judges;
+// applying the policy to the subject's published value and only then overriding
+// it would let the override escape the very policy that superior wrote.
 func MetadataOf(chain []Statement, entityType string) (map[string]any, error) {
 	if len(chain) == 0 {
 		return nil, fmt.Errorf("an empty chain has no subject")
 	}
-	// Every statement ABOVE the leaf is a Subordinate Statement and may carry a
-	// policy. The leaf's own configuration cannot constrain itself.
-	for i := 1; i < len(chain); i++ {
-		hasPolicy, err := carriesMetadataPolicy(chain[i])
-		if err != nil {
-			return nil, err
+
+	md, err := declaredMetadataOf(chain[0], entityType)
+	if err != nil {
+		return nil, err
+	}
+	if md == nil {
+		return nil, fmt.Errorf("%s declares no %s metadata, so it does not play "+
+			"that role in this federation", chain[0].Subject, entityType)
+	}
+
+	// The Immediate Superior is chain[1]: the statement about the subject.
+	//
+	// §3.1.1 limits what it can do: "When metadata is used in a Subordinate
+	// Statement, it applies only to those Entity Types that are present in the
+	// subject's Entity Configuration." A superior cannot give a subject a role it
+	// did not claim -- which is why this runs only after the block above has
+	// established the subject declares this type.
+	if len(chain) > 1 {
+		sup, serr := superiorMetadataOf(chain[1])
+		if serr != nil {
+			return nil, serr
 		}
-		if hasPolicy {
-			return nil, fmt.Errorf("%w (statement %d, issued by %s)",
-				ErrUnappliedPolicy, i, chain[i].Issuer)
+		for k, v := range sup[entityType] {
+			md[k] = v
 		}
 	}
 
-	payload, err := claimsOf(chain[0])
+	policy, perr := ResolvePolicy(chain)
+	if perr != nil {
+		return nil, perr
+	}
+	if policy == nil {
+		// §6.1.4.2: "If the process... found no Subordinate Statements in the
+		// Trust Chain with a metadata_policy Claim, the metadata of the Trust
+		// Chain subject resolves simply to the metadata found in its Entity
+		// Configuration, with any metadata parameters provided by the Immediate
+		// Superior applied to it."
+		return md, nil
+	}
+	return ApplyPolicy(entityType, md, policy[entityType])
+}
+
+// declaredMetadataOf reads one Entity Type's metadata from a statement.
+//
+// Returns nil, nil when the type is absent, which is different from an empty
+// object: §3.1.1 says an entity declares each role it plays "even if the values
+// are the empty JSON object {}", so `{}` means "plays this role, publishes
+// nothing" and absence means "does not play this role".
+func declaredMetadataOf(st Statement, entityType string) (map[string]any, error) {
+	payload, err := claimsOf(st)
 	if err != nil {
 		return nil, err
 	}
@@ -287,29 +314,13 @@ func MetadataOf(chain []Statement, entityType string) (map[string]any, error) {
 	}
 	raw, ok := claims.Metadata[entityType]
 	if !ok {
-		return nil, fmt.Errorf("%s declares no %s metadata, so it does not play "+
-			"that role in this federation", chain[0].Subject, entityType)
+		return nil, nil
 	}
-	var md map[string]any
+	md := map[string]any{}
 	if err := json.Unmarshal(raw, &md); err != nil {
 		return nil, fmt.Errorf("the %s metadata did not parse: %w", entityType, err)
 	}
 	return md, nil
-}
-
-func carriesMetadataPolicy(st Statement) (bool, error) {
-	payload, err := claimsOf(st)
-	if err != nil {
-		return false, err
-	}
-	var claims struct {
-		MetadataPolicy     json.RawMessage `json:"metadata_policy"`
-		MetadataPolicyCrit json.RawMessage `json:"metadata_policy_crit"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return false, err
-	}
-	return len(claims.MetadataPolicy) > 0 || len(claims.MetadataPolicyCrit) > 0, nil
 }
 
 func claimsOf(st Statement) ([]byte, error) {

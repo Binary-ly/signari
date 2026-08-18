@@ -286,29 +286,102 @@ that produces a client without them. An RP publishing no keys is **refused**
 rather than admitted as a client anybody could impersonate by knowing its public
 identifier.
 
-### Metadata policy: refused, not ignored
+### Metadata policy
 
-A superior can constrain a subordinate's metadata with `metadata_policy` — which
+A superior constrains a subordinate's metadata with `metadata_policy` — which
 redirect URIs are permitted, which scopes, which algorithms. §6.1.4:
 
 > If a policy error or another error is encountered during the metadata policy
 > resolution or its application, the Trust Chain MUST be considered invalid.
 
-Applying policy operators (§6.1.3) is not implemented. The tempting shortcut is
-to resolve the chain and use the leaf's own metadata anyway — which does not
-produce a slightly-wrong client, it produces **the client the RP asked for rather
-than the one its federation permits**. A superior restricting an RP to
-`https://approved.example/cb` would be silently overruled by the RP's own
-`redirect_uris`.
+This was previously **refused** — a chain carrying any policy was rejected,
+because resolving it and using the leaf's own metadata anyway does not produce a
+slightly-wrong client, it produces *the client the RP asked for rather than the
+one its federation permits*. That was the right failure while the operators were
+unimplemented, and it also meant Signari could not join any federation that uses
+policy, which is most of them.
 
-So a chain carrying `metadata_policy` or `metadata_policy_crit` on any
-Subordinate Statement is refused, with an error saying why. Fail closed, and say
-so — the same choice made everywhere in this codebase that a control cannot be
-applied.
+All seven standard operators of §6.1.3.1 are now implemented, along with §6.1.4.1
+resolution and §6.1.4.2 application.
+
+#### What the operators actually do
+
+The recurring surprise is that the names suggest checks and several of them are
+transformations:
+
+| Operator | Action | Merge of two superiors' values |
+|---|---|---|
+| `value` | Assigns. `null` **removes** the parameter | Must be **equal**, else a policy error |
+| `add` | Union into the parameter; initialises it if absent | Union |
+| `default` | Sets only when the parameter is absent | Must be **equal** |
+| `one_of` | Checks membership | **Intersection**; empty is an error |
+| `subset_of` | **Assigns the intersection** — a modifier, not only a check | Intersection; empty is *fine* |
+| `superset_of` | Checks containment | Union |
+| `essential` | Requires presence | Logical **OR** |
+
+`subset_of` being a modifier is what lets one policy serve a whole federation:
+an RP asking for more than it may have is *trimmed* rather than rejected. And
+the merge rules are §6.1.1's Hierarchy principle in arithmetic — intersection
+where a value is permitted, union where one is demanded, OR for essential — so a
+subordinate can always narrow what a superior allowed and never widen it.
+
+Two more details that are easy to get wrong and silent when you do:
+
+- **`one_of` may not be combined with `add`, `subset_of` or `superset_of`.** It
+  constrains a single value; they operate on arrays. The combination is a policy
+  error, not a no-op.
+- **`scope` is processed as an array** (§6.1.3.1.8) and re-joined with spaces.
+  Without this, a `subset_of` on scope compares the whole string
+  `"openid profile email"` against individual scope values, matches none, and
+  quietly narrows every client in the federation to no scopes at all.
+
+#### Order is load-bearing
+
+Operators run `value` → `add` → `default` → `one_of` → `subset_of` →
+`superset_of` → `essential`, which each operator's own definition fixes.
+
+Two positions carry real weight. `superset_of` runs **after** `subset_of`, so a
+policy demanding a value its own `subset_of` has just removed fails — that is the
+intended outcome for a policy describing a set nothing can satisfy. And
+`essential` runs **last**, so it judges the parameter as `default` left it rather
+than as the entity published it; moving it earlier refuses entities whose
+omission the policy was about to fix.
+
+Both were found by mutation rather than by reading: a mutant moving `essential`
+to the front passed every operator test in the file, because nothing else there
+distinguishes its position.
+
+#### Ordering against the superior's own metadata
+
+§3.1.1: *"If both `metadata` and `metadata_policy` appear in a Subordinate
+Statement, then the stated `metadata` MUST be applied before the
+`metadata_policy`."*
+
+So a superior's assigned values are judged by that same superior's policy. The
+other order also "works" on any policy the assignment happens to satisfy, which
+is why it needs a test that specifically contradicts it.
+
+#### Unknown operators
+
+§6.1.3.2 splits these two ways, and both halves matter:
+
+- An operator we do not understand is **ignored**. Refusing would make every
+  federation using any extension operator unusable, whether or not the
+  constraint was relevant.
+- Unless its name appears in `metadata_policy_crit`, in which case the chain is
+  **invalid**. Ignoring it there would admit an entity under a constraint its
+  federation believes is in force.
 
 | Mutation | Test that caught it |
 |---|---|
-| Silently ignore `metadata_policy` | `TestAChainCarryingAMetadataPolicyIsRefused` |
+| `subset_of` rejects instead of trimming | `TestSubsetOfTrimsRatherThanRejects` |
+| `essential` merges with AND | `TestOperatorMergeRules` |
+| `one_of` merges to a union | `TestOperatorMergeRules` |
+| `subset_of` merges to a union | `TestASubordinateCannotWidenWhatASuperiorForbade` |
+| `essential` no longer runs last | `TestEssentialIsJudgedAfterDefaultHasFilledTheParameter` |
+| `scope` not treated as an array | `TestScopeIsProcessedAsAnArrayAndRejoined` |
+| A critical unknown operator is ignored | `TestACriticalOperatorWeDoNotImplementInvalidatesTheChain` |
+| Superior metadata applied after the policy | `TestTheSuperiorsMetadataIsJudgedByItsOwnPolicy` |
 | Admit an RP with no published keys | `TestAnRPWithNoKeysIsRefused` |
 
 Also refused: an entity that resolves but publishes no `openid_relying_party`
@@ -316,17 +389,23 @@ metadata (being in the federation is not the same as being a relying party), an
 RP with no `redirect_uris` (inventing one builds an open redirector), and a
 `client_id` that resolves to nothing.
 
+#### One thing deliberately not claimed
+
+§6.1.4.1 calls the merge direction — most superior first — *crucial*, and it is
+implemented that way. But with only the standard operators the resolved policy is
+the **same read from either end**, because every standard merge is commutative:
+union, intersection, equality, OR. A mutation reversing the direction survives
+every test here, and that is a property of the operator set rather than a gap in
+the tests. The direction still matters for the additional operators §6.1.3.2
+permits, whose merges need not be commutative.
+
 ## Where it goes next
 
-Two things, both honestly incomplete:
-
-- **Metadata policy application** (§6.1.3's operators: `value`, `add`, `default`,
-  `one_of`, `subset_of`, `superset_of`, `essential`). Until it exists, any
-  federation using policy cannot use automatic registration here — which is the
-  correct failure, and a real limitation.
 - **The §8 endpoints** we would serve as an Intermediate or Trust Anchor: fetch,
   subordinate listing, resolve, trust mark status. Signari is a Leaf Entity and
   cannot yet vouch for anybody else.
+- **Trust marks** (§7) beyond carrying them: issuing, and the trust mark status
+  endpoint.
 
 The resolution side — publish, fetch, build, validate, register — is complete and
 tested end to end against multi-entity federations over HTTP.

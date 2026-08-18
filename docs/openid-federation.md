@@ -155,9 +155,61 @@ verifier must try every key, which turns "signed by the attested key" into
 "signed by any key in a set we were handed"), and any symmetric signing
 algorithm.
 
+## Fetching
+
+`oidfed.Fetcher` retrieves Entity Configurations (§9) and Subordinate Statements
+(§8.1).
+
+### It walks a graph an attacker partly controls
+
+This is the part worth being careful about. We fetch an entity's configuration,
+read `authority_hints` **out of it**, and fetch those — so every URL after the
+first is one the previous document chose. `authority_hints` is a list of
+addresses somebody else writes, and following it is a server-side request forgery
+primitive by construction.
+
+So the fetcher uses `safedial`, which checks at **dial** time rather than at
+parse time. A hostname that resolves publicly when validated and to
+`169.254.169.254` when connected is DNS rebinding, and no amount of URL
+inspection catches it. `TestTheDefaultFetcherRefusesPrivateAddresses` pins the
+default: loopback, link-local and RFC 1918 are refused by a `Fetcher{}` with no
+options set.
+
+The escape hatch for tests is called `AllowLoopbackForTesting`, and the length of
+that name is deliberate — a field called `Insecure` or `SkipVerify` gets set in a
+config file by somebody solving a different problem. A test asserts the name has
+not been shortened.
+
+### What it refuses beyond addresses
+
+| Refusal | Why |
+|---|---|
+| A configuration whose `iss` is not the entity we asked about | otherwise a superior hands back somebody else's configuration and we walk *their* `authority_hints` |
+| A configuration where `iss != sub` | §3.1.1 — that is not an Entity Configuration |
+| A Subordinate Statement about a different subject than we asked | how a chain gets rerouted to an entity nobody enquired about |
+| A non-https fetch endpoint or subject identifier | §9 |
+| A body over 256 KiB | bounded **before** it is read; a limit applied after buffering is not a limit |
+| `authority_hints: []` | §3.1.2 forbids the empty array, and reading it as "no superiors" silently accepts a document saying something it may not say |
+
+`MaxChainDepth` bounds the walk at 10. §6.2.1 lets a Trust Anchor impose a
+`max_path_length` on its subtree; this is the local ceiling for when nobody has,
+because a cycle of entities naming each other as superiors is otherwise walked
+forever.
+
+### ParseStatement verifies nothing, and says so
+
+Parsing and verifying are necessarily separate here: a statement's signing key is
+only known once the chain is assembled, so the fetcher cannot verify what it
+retrieves. `ParseStatement` is named to make that unmistakable, and
+`TestParseStatementVerifiesNothing` asserts that a corrupted signature still
+*parses* — so that if somebody later adds verification there, the test tells them
+callers may have started trusting its output.
+
 ## Where it goes next
 
-Fetching — retrieving a superior's Subordinate Statement from its
-`federation_fetch_endpoint` and assembling the chain over HTTP — is the remaining
-piece. The validation it feeds is now built and tested, so what is missing is
-transport rather than trust logic.
+The remaining pieces are the §8 endpoints we would serve as an Intermediate or
+Trust Anchor (fetch, subordinate listing, resolve), and automatic client
+registration (§12.1). Chain building — the loop that assembles a chain from
+`authority_hints` using the fetcher and hands it to `ValidateChain` — is a short
+step now that both halves exist, but it is not written yet and nothing pretends
+otherwise.

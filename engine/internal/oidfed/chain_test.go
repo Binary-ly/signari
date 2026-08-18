@@ -266,3 +266,28 @@ func TestAStatementWithoutAKidIsRefused(t *testing.T) {
 		t.Fatal("a statement with no kid header verified")
 	}
 }
+
+// signClaims signs an arbitrary claim set, for tests that need a shape the
+// `sign` helper does not produce — an empty authority_hints array, say.
+func signClaims(t *testing.T, e *entity, claims map[string]any) string {
+	t.Helper()
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: e.priv},
+		(&jose.SignerOptions{}).WithType(Typ).WithHeader("kid", e.kid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, err := signer.Sign(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := obj.CompactSerialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}

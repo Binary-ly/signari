@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -777,7 +778,8 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		if derr != nil {
 			return nil, nil, derr
 		}
-		familyID, err = store.NewRefreshFamily(ctx, tx, orgID, c.ClientID, userID, sid, familyDetails)
+		familyID, err = store.NewRefreshFamily(ctx, tx, orgID, c.ClientID, userID, sid,
+			familyDetails, jkt)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1079,6 +1081,44 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "refresh token was not issued to this client", Status: http.StatusBadRequest})
 		return
+	}
+
+	// RFC 9449 §5, the sentence that is easy to skip: "The binding MUST be
+	// validated when the refresh token is later presented to get new access
+	// tokens."
+	//
+	// handleToken already verified the proof itself -- that it is well formed,
+	// unexpired, unreplayed, and signed by the key it names. That is a check on
+	// the PROOF. This is the check on the BINDING, and without it the proof
+	// proves only that the presenter holds some key, which every attacker does.
+	// A stolen refresh token would mint fresh access tokens bound to the thief.
+	//
+	// Public clients only, per §5's closing paragraph: refresh tokens issued to
+	// confidential clients "are not bound to the DPoP proof public key because
+	// they are already sender-constrained" by client authentication -- and the
+	// RFC prefers that mechanism because it survives credential rotation. Binding
+	// them here as well would be stricter than the specification and would break
+	// exactly the flexibility it calls out.
+	if grant.DPoPJKT != "" && c.Type != "confidential" {
+		presented := dpopThumbprintFrom(ctx)
+		if presented == "" {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
+				Description: "this refresh token is bound to a DPoP key and must be " +
+					"presented with a proof of possession for that key",
+				Status: http.StatusBadRequest})
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(grant.DPoPJKT)) != 1 {
+			// Logged, because this is what a replayed refresh token looks like:
+			// a valid proof of the wrong key.
+			s.log.Warn("refresh token presented with a DPoP key it is not bound to",
+				"client_id", c.ClientID, "correlation_id", correlationID(ctx))
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
+				Description: "the DPoP proof is for a different key than the one " +
+					"this refresh token is bound to",
+				Status: http.StatusBadRequest})
+			return
+		}
 	}
 
 	resp, newHash, err := s.mintFromGrant(ctx, tx, c, grant)

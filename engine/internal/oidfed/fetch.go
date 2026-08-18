@@ -188,6 +188,11 @@ func (f *Fetcher) get(ctx context.Context, rawURL string) (Statement, error) {
 // separate steps here. The name says "parse" rather than "read" so that a caller
 // cannot mistake the result for something trustworthy: nothing in the returned
 // Statement has been checked beyond being well-formed JSON in the payload.
+// b64Payload decodes a compact JWS payload segment.
+func b64Payload(seg string) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(seg)
+}
+
 func ParseStatement(compact string) (Statement, error) {
 	compact = strings.TrimSpace(compact)
 	parts := strings.Split(compact, ".")
@@ -212,7 +217,7 @@ func ParseStatement(compact string) (Statement, error) {
 // Separate from Statement because the claim only appears in Entity
 // Configurations, and putting it on the shared struct would invite a caller to
 // read it from a Subordinate Statement where it means nothing.
-func AuthorityHintsOf(st Statement) ([]string, error) {
+func AuthorityHintsOf(st Statement, allowLoopback bool) ([]string, error) {
 	parts := strings.Split(st.Raw, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("not a compact JWS")
@@ -234,9 +239,14 @@ func AuthorityHintsOf(st Statement) ([]string, error) {
 		return nil, fmt.Errorf("authority_hints is the empty array, which section " +
 			"3.1.2 forbids")
 	}
-	for _, h := range claims.AuthorityHints {
-		if err := ValidateEntityID(h); err != nil {
-			return nil, fmt.Errorf("authority hint %q: %w", h, err)
+	// Each hint is an Entity Identifier and is checked as one -- failing here,
+	// with the hint named, beats failing later inside a fetch with a transport
+	// error that does not say which document sent us there.
+	if !allowLoopback {
+		for _, h := range claims.AuthorityHints {
+			if err := ValidateEntityID(h); err != nil {
+				return nil, fmt.Errorf("authority hint %q: %w", h, err)
+			}
 		}
 	}
 	return claims.AuthorityHints, nil

@@ -114,7 +114,7 @@ func TestAnEmptyAuthorityHintsArrayIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AuthorityHintsOf(st); err == nil {
+	if _, err := AuthorityHintsOf(st, false); err == nil {
 		t.Fatal("an empty authority_hints array was read as `no superiors`")
 	}
 
@@ -124,7 +124,7 @@ func TestAnEmptyAuthorityHintsArrayIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hints, err := AuthorityHintsOf(st2)
+	hints, err := AuthorityHintsOf(st2, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestAnEmptyAuthorityHintsArrayIsRefused(t *testing.T) {
 	// And a plaintext hint is refused, because a hint is an Entity Identifier.
 	claims["authority_hints"] = []string{"http://anchor.example"}
 	st3, _ := ParseStatement(signClaims(t, e, claims))
-	if _, err := AuthorityHintsOf(st3); err == nil {
+	if _, err := AuthorityHintsOf(st3, false); err == nil {
 		t.Error("a plaintext authority hint was accepted")
 	}
 }

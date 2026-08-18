@@ -205,11 +205,58 @@ retrieves. `ParseStatement` is named to make that unmistakable, and
 *parses* — so that if somebody later adds verification there, the test tells them
 callers may have started trusting its output.
 
+## Chain building
+
+`oidfed.Resolver` joins the two halves: it walks up from an entity using
+`authority_hints`, fetching each superior's Entity Configuration and its
+Subordinate Statement about the entity below, then hands the assembled chain to
+`ValidateChain`.
+
+### Why building and validating are separate passes
+
+It is tempting to verify each statement as it arrives and fail fast. That cannot
+work. §10.2 verifies ES[j] against **ES[j+1]**'s key set, so no statement can be
+checked until the one *above* it has been fetched. A resolver that validates
+incrementally is either doing it wrong, or checking each statement against its own
+keys — which is the self-signature that proves nothing.
+
+So the whole candidate chain is fetched, then validated. The cost is fetching
+statements a later failure discards; the alternative is a validator that accepts
+anybody.
+
+### What it refuses
+
+| Refusal | Why |
+|---|---|
+| No trust anchors configured | a chain that terminates nowhere trusted is not a result, it is a misconfiguration |
+| A cycle in the federation graph | reported **as a cycle**, not as exhausting the depth budget — the error should name the fault, not the symptom |
+| More than `MaxChainDepth` hops | the ceiling for when no Trust Anchor has imposed a `max_path_length` (§6.2.1) |
+| A superior publishing no `federation_fetch_endpoint` | it cannot be asked about its subordinates, and the error says so rather than surfacing a transport failure |
+
+§10.3's rule — *"prefer a shorter chain over a longer one"* — is implemented, and
+shorter is preferred for a reason worth stating: each additional Intermediate is
+another party who can vouch for something, so the shortest chain is the one with
+the fewest entities able to change the answer.
+
+### A mutation that survived, and what it revealed
+
+Inverting the shortest-chain comparison to prefer the **longest** passed every
+test in the package. The end-to-end federation has one anchor and one path, so
+there was never a choice to make and the rule was never exercised.
+
+`TestTheShortestValidChainIsPreferred` builds a topology with an actual choice: a
+leaf naming two superiors, reaching anchor A in three statements and anchor B in
+two. Both are trusted, both validate. The longer anchor is listed **first** in
+the configuration, so an implementation that takes the first match rather than
+the shortest fails.
+
+Recorded because the lesson generalises: a rule about choosing between
+alternatives cannot be tested by a fixture that offers one alternative, and a
+test suite full of passing tests said nothing about it.
+
 ## Where it goes next
 
-The remaining pieces are the §8 endpoints we would serve as an Intermediate or
-Trust Anchor (fetch, subordinate listing, resolve), and automatic client
-registration (§12.1). Chain building — the loop that assembles a chain from
-`authority_hints` using the fetcher and hands it to `ValidateChain` — is a short
-step now that both halves exist, but it is not written yet and nothing pretends
-otherwise.
+The §8 endpoints we would serve as an Intermediate or Trust Anchor (fetch,
+subordinate listing, resolve), and automatic client registration (§12.1). The
+resolution side — publish, fetch, build, validate — is now complete and tested
+end to end against a three-entity federation over HTTP.

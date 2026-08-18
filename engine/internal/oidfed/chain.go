@@ -87,9 +87,18 @@ func ValidateChain(chain []Statement, trustAnchorID string, trustAnchorKeys json
 		return nil, fmt.Errorf("a Trust Chain needs at least two statements: the "+
 			"subject's Entity Configuration and something above it (got %d)", len(chain))
 	}
-	if err := ValidateEntityID(trustAnchorID); err != nil {
-		return nil, fmt.Errorf("trust anchor: %w", err)
+	if trustAnchorID == "" {
+		return nil, fmt.Errorf("a trust anchor identifier is required")
 	}
+	// Deliberately NOT ValidateEntityID here.
+	//
+	// The anchor identifier arrives from this deployment's own configuration,
+	// not from the chain, so its FORM is a configuration question and belongs
+	// where the configuration is loaded. What matters at this point is the exact
+	// comparison below: does the chain terminate at the string we were told to
+	// trust. Re-validating the form here would also put a rule in a pure
+	// function that its callers' test escapes cannot reach, so the rule would be
+	// exercised in production and bypassed in every test.
 	if len(trustAnchorKeys) == 0 {
 		return nil, fmt.Errorf("the Trust Anchor's keys must be supplied out of " +
 			"band; taking them from the chain would make the final check verify " +

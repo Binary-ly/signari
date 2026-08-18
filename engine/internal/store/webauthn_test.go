@@ -48,10 +48,22 @@ func TestSignCountCloningRules(t *testing.T) {
 		{"counter advances normally", 5, 6, false},
 		{"counter jumps ahead", 5, 500, false},
 
-		// A stored non-zero counter followed by zero is an authenticator that
-		// stopped counting, not a clone -- and rejecting it would lock out a user
-		// whose device was replaced or firmware updated.
-		{"stopped counting", 5, 0, false},
+		// A stored non-zero counter followed by ZERO is a signal, and this case
+		// used to assert the opposite.
+		//
+		// WebAuthn L3 §7.2 step 21 enters the cloning sub-step when EITHER
+		// counter is non-zero, and then flags any value that does not advance --
+		// so stored=5, presented=0 is flagged. The old comment justified ignoring
+		// it on the grounds that flagging "would lock out a user whose device was
+		// replaced". Nothing in this system locks anybody out: the caller in
+		// internal/httpapi/passkey.go logs a warning, writes an
+		// mfa.passkey_counter_regression audit event, and completes the sign-in.
+		//
+		// So the deviation was justified by a consequence that does not exist
+		// here, which made it a false rationale rather than a considered
+		// trade-off. The one case it discarded is the one that cannot be
+		// explained by "this authenticator does not count" -- because it did.
+		{"counted before, reports zero now", 5, 0, true},
 
 		// The only real signal: a non-zero counter that failed to advance.
 		{"counter went backwards", 10, 3, true},

@@ -135,19 +135,38 @@ func CredentialByID(ctx context.Context, tx pgx.Tx, credentialID []byte) (*WebAu
 //     cannot maintain a coherent counter. A server that treats 0 as suspicious
 //     rejects the majority of real passkeys in the world.
 //
-//   - So zero is never a signal, in either position. Only a NON-ZERO counter that
-//     failed to advance means anything.
+//   - So an authenticator that has ALWAYS reported zero is never a signal. That
+//     is the stored-zero-and-presented-zero case, and it is the common one.
+//
+//   - But a counter that WAS non-zero and now reports zero is a signal, and this
+//     code used to discard it. WebAuthn Level 3, §7.2 step 21, verbatim:
+//
+//     "If authData.signCount is nonzero OR credentialRecord.signCount is
+//     nonzero, then run the following sub-step: ... less than or equal to
+//     credentialRecord.signCount: This is a signal, but not proof, that the
+//     authenticator may be cloned."
+//
+//     The condition is a disjunction. Ours was a conjunction, which meant a
+//     credential that demonstrably kept a counter and then reported zero was
+//     ignored -- the one case that cannot be explained by "this authenticator
+//     does not implement counters", because it evidently did.
 //
 //   - And even then it is evidence, not proof: a genuine authenticator with a
 //     flaky counter, or a race between two concurrent assertions, can produce it.
-//     The caller decides what to do -- typically flag and require another factor,
-//     not silently destroy the credential.
+//     The caller decides what to do.
 //
 // The counter is still written on the cloning path. Refusing to advance it would
 // let an attacker replay the same assertion indefinitely, each attempt producing
 // the same alarm and none of them closing the hole.
 func UpdateSignCount(ctx context.Context, tx pgx.Tx, credentialID []byte, stored, presented uint32) error {
-	cloned := stored != 0 && presented != 0 && presented <= stored
+	// The disjunction WebAuthn L3 §7.2 step 21 specifies, not a conjunction.
+	//
+	// stored=0, presented=0  -> skipped entirely: the authenticator does not
+	//                           count, which is most passkeys in the world.
+	// stored=0, presented=N  -> first use of a counting authenticator, fine.
+	// stored=N, presented>N  -> normal advance.
+	// stored=N, presented<=N -> a signal, INCLUDING presented=0.
+	cloned := (stored != 0 || presented != 0) && presented <= stored
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.webauthn_credentials

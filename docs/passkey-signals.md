@@ -190,3 +190,81 @@ The `userId` check is the one worth dwelling on: a wrong value there does not
 error, it silently does nothing, on every browser, for every user. Reading it
 from the same column the ceremony uses is what makes it right, and reading it
 from a second place is how it would drift.
+
+---
+
+## Third pass, August 2026: a signal we were discarding
+
+Re-read against the **W3C Candidate Recommendation Snapshot, 26 May 2026** —
+still the current version, checked rather than assumed.
+
+### The condition is a disjunction, and ours was a conjunction
+
+§7.2 step 21, verbatim:
+
+> If `authData.signCount` is nonzero **or** `credentialRecord.signCount` is
+> nonzero, then run the following sub-step:
+> - **greater than** `credentialRecord.signCount`: The signature counter is valid.
+> - **less than or equal to** `credentialRecord.signCount`: This is a signal, but
+>   not proof, that the authenticator may be cloned.
+
+Ours read:
+
+```go
+cloned := stored != 0 && presented != 0 && presented <= stored
+```
+
+An **and** where the specification has an **or**. The difference is exactly one
+case: a credential whose stored counter is non-zero that now presents **zero**.
+
+| stored | presented | Spec | Ours (before) |
+|---|---|---|---|
+| 0 | 0 | skipped | skipped |
+| 0 | N | valid | valid |
+| N | >N | valid | valid |
+| N | ≤N, non-zero | **signal** | signal |
+| **N** | **0** | **signal** | **ignored** |
+
+And that last row is the one case that *cannot* be explained by "this
+authenticator does not implement counters" — because it evidently did, right up
+until this assertion.
+
+### The rationale for the deviation described something that does not happen
+
+The deviation was deliberate. The test case carried this comment:
+
+> A stored non-zero counter followed by zero is an authenticator that stopped
+> counting, not a clone — and rejecting it would lock out a user whose device was
+> replaced or firmware updated.
+
+**Nothing in this system rejects.** `internal/httpapi/passkey.go` treats
+`ErrCredentialCloned` as a warning: it logs, writes an
+`mfa.passkey_counter_regression` audit event, and then calls `completeSignIn`.
+The sign-in succeeds. There is no lockout to weigh against the signal, so the
+trade-off the comment describes was never being made.
+
+That makes it a **false rationale** rather than a considered choice — the same
+defect class this repository has now found three times in its own text: a comment
+asserting a consequence, a control, or a check that is not there. The pattern is
+consistent enough to be worth naming: *the justification outlives the code it was
+written about.*
+
+The fix is one operator:
+
+```go
+cloned := (stored != 0 || presented != 0) && presented <= stored
+```
+
+Passkeys that always report zero — most of the ones in the world, because a
+credential synced across devices cannot keep a coherent counter — are unaffected:
+their stored value stays zero forever, so the disjunction stays false and the
+sub-step is skipped exactly as before.
+
+### Still evidence, not proof
+
+Nothing about the handling changed, and that remains the important part. A
+counter regression can be a clone, a malfunctioning authenticator, or a race
+between two concurrent assertions. It is recorded at WARN and audited so an
+operator can act on a *pattern*; it does not destroy a credential or refuse a
+sign-in, because a false positive there locks a legitimate user out of their own
+account.

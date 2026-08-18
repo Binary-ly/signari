@@ -320,15 +320,20 @@ func TestACredentialRequestWithoutAProofIsRefused(t *testing.T) {
 func TestCredentialIssuerMetadata(t *testing.T) {
 	f := newTokenFixture(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/openid-credential-issuer", nil)
-	rec := httptest.NewRecorder()
-	f.srv.Routes().ServeHTTP(rec, req)
-	if rec.Code == http.StatusOK {
-		t.Fatal("metadata was published for a deployment that issues no credentials")
+	// Asserted on THIS configuration, not on the deployment being empty.
+	//
+	// The endpoint publishes what the whole deployment issues (§12.2 metadata is
+	// per issuer, not per tenant), so an "is it 404 when empty" assertion depends
+	// on no other test or operator having defined anything — which is a property
+	// of the database, not of the code. It failed exactly that way once, on data
+	// left behind by an end-to-end run.
+	if _, before := credentialConfigNames(t, f)["IdentityCredential"]; before {
+		t.Fatal("the fixture's configuration already exists; the check below " +
+			"would prove nothing")
 	}
 
 	configureCredential(t, f)
-	rec = httptest.NewRecorder()
+	rec := httptest.NewRecorder()
 	f.srv.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
 		"/.well-known/openid-credential-issuer", nil))
 	if rec.Code != http.StatusOK {
@@ -346,6 +351,9 @@ func TestCredentialIssuerMetadata(t *testing.T) {
 	entry, ok := supported["IdentityCredential"].(map[string]any)
 	if !ok {
 		t.Fatalf("the configuration is not advertised: %v", supported)
+	}
+	if entry["format"] != "dc+sd-jwt" {
+		t.Errorf("format = %v", entry["format"])
 	}
 	if entry["proof_types_supported"] == nil {
 		t.Error("proof_types_supported is absent, which per §8.2 makes the key " +
@@ -385,6 +393,27 @@ func decodeJWTPart(t *testing.T, jwt string, i int) map[string]any {
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatal(err)
+	}
+	return out
+}
+
+// credentialConfigNames reads what the metadata endpoint currently advertises.
+func credentialConfigNames(t *testing.T, f *tokenFixture) map[string]bool {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/.well-known/openid-credential-issuer", nil))
+	out := map[string]bool{}
+	if rec.Code != http.StatusOK {
+		return out
+	}
+	var md map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &md); err != nil {
+		t.Fatal(err)
+	}
+	supported, _ := md["credential_configurations_supported"].(map[string]any)
+	for k := range supported {
+		out[k] = true
 	}
 	return out
 }

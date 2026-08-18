@@ -24,6 +24,7 @@
 package ssf
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -81,12 +82,54 @@ type Event struct {
 	InitiatingEntity string
 }
 
+// audience is a JWT `aud` claim, which is a string OR an array of strings.
+//
+// RFC 7519 §4.1.3: "In the general case, the "aud" value is an array of
+// case-sensitive strings... In the special case when the JWT has one audience,
+// the "aud" value MAY be a single case-sensitive string."
+//
+// Shared Signals §4.1.8 repeats it for SETs specifically -- "The "aud" claim can
+// be a single string or an array of strings" -- and three of the specification's
+// own example SETs use the string form.
+//
+// Parsed as []string alone, the string form does not merely fail the audience
+// check: encoding/json reports a type mismatch, the WHOLE claim set fails to
+// unmarshal, and the receiver answers "malformed claims". An operator connecting
+// a conformant transmitter is then told their token is malformed, with nothing
+// pointing at the audience, while every event is dropped.
+type audience []string
+
+func (a *audience) UnmarshalJSON(b []byte) error {
+	// Try the array form first: it is the general case, and trying the string
+	// first would mean every array paid for a failed decode.
+	var list []string
+	if err := json.Unmarshal(b, &list); err == nil {
+		*a = list
+		return nil
+	}
+	var one string
+	if err := json.Unmarshal(b, &one); err != nil {
+		return fmt.Errorf("aud is neither a string nor an array of strings")
+	}
+	*a = []string{one}
+	return nil
+}
+
+// MarshalJSON keeps the array form on the way out.
+//
+// A transmitter may emit either; we emit the general case, which every receiver
+// must accept. Emitting the string form for a single audience would be equally
+// legal and would exercise the narrower path in whoever receives it.
+func (a audience) MarshalJSON() ([]byte, error) {
+	return json.Marshal([]string(a))
+}
+
 // setClaims is the wire shape of a Security Event Token.
 type setClaims struct {
 	Issuer   string   `json:"iss"`
 	JTI      string   `json:"jti"`
 	IssuedAt int64    `json:"iat"`
-	Audience []string `json:"aud"`
+	Audience audience `json:"aud"`
 	// Expiry and Subject are both FORBIDDEN by the Shared Signals Framework
 	// profile, and are parsed here only so their PRESENCE can be refused.
 	//

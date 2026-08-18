@@ -489,3 +489,48 @@ func TestSeveralEntriesDescribingOneEventAreAccepted(t *testing.T) {
 		t.Fatal("a token with no events was accepted")
 	}
 }
+
+// §4.1.8: "The "aud" claim can be a single string or an array of strings."
+//
+// Three of the specification's own example SETs use the string form —
+// Figures 8, 9 and 10 all carry `"aud": "636C69656E745F6964"` — and RFC 7519
+// §4.1.3 permits it for every JWT. A receiver that parses `aud` only as an array
+// refuses each of them.
+//
+// The failure is worse than a refusal, because Go reports a type mismatch during
+// unmarshalling and the whole claim set is then reported as "malformed claims".
+// An operator wiring up a conformant transmitter is told their token is
+// malformed, with nothing pointing at the audience, and every event is dropped.
+func TestTheAudienceMayBeASingleString(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	c := goodClaims(now)
+	c["aud"] = "https://signari.test" // a string, not an array
+	raw := tr.sign(t, TypSET, c, nil, tr.kid)
+
+	got, err := Verify(context.Background(), &KeyFetcher{}, tr.source(), raw, now)
+	if err != nil {
+		t.Fatalf("a SET with a string audience was refused: %v\n"+
+			"§4.1.8 permits it and the specification's own examples use it", err)
+	}
+	if got.Type != EventSessionRevoked {
+		t.Fatalf("type = %q", got.Type)
+	}
+}
+
+// And the string form must still be CHECKED, not merely parsed. A receiver that
+// accepts any string audience is worse than one that refuses them all.
+func TestAStringAudienceNamingSomebodyElseIsStillRefused(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	c := goodClaims(now)
+	c["aud"] = "https://another-receiver.test"
+	raw := tr.sign(t, TypSET, c, nil, tr.kid)
+
+	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(), raw, now); err == nil {
+		t.Fatal("a SET addressed to another receiver was accepted because its " +
+			"audience happened to be a string")
+	}
+}

@@ -122,31 +122,47 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 	out := make([]authzen.Response, 0, len(batch.Evaluations))
 	for _, e := range batch.Evaluations {
 		merged := e.Merge(batch)
-		if err := merged.Validate(); err != nil {
+
+		var resp authzen.Response
+		switch err := merged.Validate(); {
+		case err != nil:
 			// One malformed entry does not fail the batch: the others are
 			// answerable, and refusing all of them hides which one was wrong.
-			out = append(out, authzen.Response{
+			resp = authzen.Response{
 				Decision: false,
 				Context:  authzen.Reasons(err.Error(), "The request could not be evaluated."),
-			})
-			continue
+			}
+		default:
+			decided, derr := s.decide(ctx, orgID, merged)
+			if derr != nil {
+				s.log.Error("evaluating a batch entry", "err", derr,
+					"correlation_id", correlationID(ctx))
+				resp = authzen.Response{
+					Decision: false,
+					Context: authzen.Reasons("the decision could not be made",
+						"The request could not be evaluated."),
+				}
+			} else {
+				resp = decided
+			}
 		}
-		resp, err := s.decide(ctx, orgID, merged)
-		if err != nil {
-			s.log.Error("evaluating a batch entry", "err", err,
-				"correlation_id", correlationID(ctx))
-			out = append(out, authzen.Response{
-				Decision: false,
-				Context: authzen.Reasons("the decision could not be made",
-					"The request could not be evaluated."),
-			})
-			continue
-		}
+
 		out = append(out, resp)
 
 		// Short-circuit AFTER appending, so the entry that decided the batch is
 		// in the response. Stopping before it would return a list whose last
 		// answer is missing -- the one the caller most needs.
+		//
+		// Reached on EVERY path, including a malformed entry and a failed
+		// decision. Section 7.1.2.1 defines deny_on_first_deny as "Deny on first
+		// denial (or failure)... with any denial (error, or `"decision": false`)
+		// short-circuiting the evaluations call".
+		//
+		// Both failure branches used to `continue`, which skipped this check. A
+		// PEP using deny_on_first_deny to express `&&` -- check A, then B, then
+		// C, stop at the first no -- had an errored A silently answered `false`
+		// and B and C evaluated anyway. The array it got back did not mean what
+		// the semantic promised.
 		if semantic == authzen.DenyOnFirstDeny && !resp.Decision {
 			break
 		}

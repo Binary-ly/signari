@@ -285,3 +285,74 @@ An organisation with no model denies everything, with an administrator reason
 naming the command to fix it. An unconfigured authorization layer that says *yes*
 is worse than no authorization layer at all, because the application believes it
 has one.
+
+
+## Re-review against Authorization API 1.0, August 2026
+
+Version checked first: **1.0, published 11 January 2026, status Final**. Not a
+draft, and the same version the implementation was written against.
+
+### The defect: a failure did not short-circuit
+
+§7.1.2.1, defining `deny_on_first_deny`:
+
+> Deny on first denial (or failure). This semantic could be desired if a PEP
+> wants to issue a few requests in a particular order, with any denial (**error**,
+> or `"decision": false`) "short-circuiting" the evaluations call and returning
+> on the first denial. This essentially works like the `&&` operator in
+> programming languages.
+
+The parenthetical is load-bearing: an **error** counts as a denial.
+
+The batch loop had two failure branches — a malformed entry, and a decision that
+errored. Both appended `"decision": false` and then `continue`d, which skipped
+the short-circuit check sitting below them.
+
+So a PEP using `deny_on_first_deny` to express `&&` — check A, then B, then C,
+stop at the first no — had an errored A answered `false` and B and C evaluated
+anyway. The array it received did not mean what the semantic promised, and the
+`&&` analogy the specification offers was wrong for exactly the case a caller is
+most likely to care about.
+
+Both branches now assign a response and fall through, so the check is reached on
+every path.
+
+### Two tests, and only one of them works
+
+`internal/authzen/semantics_test.go` models the decision rule and checks all
+eight semantic/decision combinations. It is good documentation of the rule and
+**it does not catch this bug** — it reimplements the logic rather than driving
+the handler, so it passes whether or not the `continue` is there.
+
+That is the pattern this review has repeatedly caught in other people's tests and
+in its own: an assertion that cannot fail for the reason it was written.
+
+So `internal/httpapi/authzsemantics_test.go` checks the shape of the loop
+instead: no `continue` inside it, and the short-circuit still present. Narrow and
+somewhat brittle, and it fails on the exact edit that caused the bug.
+
+Demonstrated rather than claimed — with the `continue` restored:
+
+```
+--- FAIL: TestTheBatchLoopHasNoContinuePastTheShortCircuit
+ok      signari.dev/engine/internal/authzen      (the logic test still passes)
+```
+
+Driving the real handler would need a Server with a database, a policy store and
+an org — a large fixture to prove a `break` is reached. The shape check is the
+cheaper instrument that actually detects the regression, and its own comment says
+so.
+
+### What came back clean
+
+| Requirement | Where | Result |
+|---|---|---|
+| `policy_decision_point` identical to the identifier the well-known URI was derived from | §9.2.3 | built from the configured issuer, never the `Host` header |
+| Top-level `subject`/`action`/`resource` inherited by each evaluation | §7.1.1 | field-by-field merge, so an entry setting only `resource.id` still inherits `resource.type` |
+| The three semantic values spelled exactly | §7.1.2.1 | pinned by test |
+| `execute_all` is the default | §7.1.2.1 | yes |
+
+We are only ever a PDP, never a PEP, so §9.2.3's consumer-side obligation — *"If
+these values are not identical, the data contained in the response MUST NOT be
+used"* — does not apply to us. Recorded so that it is a decision rather than an
+omission if an outbound PDP client is ever added.

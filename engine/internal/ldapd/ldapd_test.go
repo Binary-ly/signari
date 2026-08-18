@@ -99,8 +99,15 @@ func TestEmptyPasswordBindIsRefused(t *testing.T) {
 		t.Fatal("a bind with an EMPTY PASSWORD succeeded -- every application that " +
 			"checks only the bind error now has an authentication bypass")
 	}
-	if !ldapclient.IsErrorWithCode(err, ldapclient.LDAPResultInvalidCredentials) {
-		t.Errorf("error = %v, want invalidCredentials(49)", err)
+	// RFC 4513 §5.1.2 names the code: "Servers SHOULD by default fail
+	// Unauthenticated Bind requests with a resultCode of unwillingToPerform."
+	//
+	// This test asserted invalidCredentials(49), which is what the server used
+	// to send. Both refuse the bind, so the bypass was closed either way -- but
+	// 49 sends an administrator hunting for a password problem when the fault is
+	// that their client requested a mode this server does not offer.
+	if !ldapclient.IsErrorWithCode(err, ldapclient.LDAPResultUnwillingToPerform) {
+		t.Errorf("error = %v, want unwillingToPerform(53)", err)
 	}
 	// And it must not have reached the credential checker at all: the refusal is
 	// structural, not a password comparison that happened to fail.

@@ -307,11 +307,25 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 	// they are". They did not. They supplied a name.
 	//
 	// There is no option to permit it.
+	//
+	// The result code is the one §5.1.2 names: "Servers SHOULD by default fail
+	// Unauthenticated Bind requests with a resultCode of unwillingToPerform."
+	//
+	// This returned invalidCredentials(49), which is a worse answer for the
+	// person who actually hits it. An administrator whose client sends an empty
+	// password reads "invalid credentials" and goes looking for a password
+	// problem; the real fault is that the client is requesting a mode this
+	// server refuses. unwillingToPerform(53) says so.
+	//
+	// It costs nothing to be specific here. The code is returned for every empty
+	// password whether or not the DN exists, so it distinguishes nothing an
+	// attacker could use -- and "this server refuses unauthenticated binds" is
+	// something worth advertising anyway.
 	if req.Password == "" {
 		s.log.Warn("ldap unauthenticated bind refused (empty password)",
 			"dn", req.DN, "remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(appBindResponse,
-			resultInvalidCredentials, "",
+			resultUnwillingToPerform, "",
 			"a bind with an empty password authenticates nobody (RFC 4513 section 5.1.2)")))
 	}
 

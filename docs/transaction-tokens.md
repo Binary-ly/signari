@@ -182,3 +182,64 @@ open door.
 Lifetime is 5 minutes by default, 15 maximum. Short on purpose — a Txn-Token is
 minted for one transaction in flight, and if it outlives the transaction it is a
 bearer credential lying around a network where every service can read it.
+
+
+## Re-review against draft-11, August 2026
+
+The draft was re-checked at the Datatracker before re-reading the code: still
+**revision 11**, last updated 2026-08-04. The implementation is therefore current
+rather than written against a superseded text — a check worth repeating, because
+an emerging-standard implementation reviewed against draft-N is worthless once
+draft-N+1 lands, and nothing in the code says which one it was.
+
+Every MUST NOT in the draft was checked against the implementation. Three are
+worth recording.
+
+| Requirement | Where | Result |
+|---|---|---|
+| TTS MUST NOT issue if the presented token has expired | §5.1 | satisfied — `VerifyAccessTokenAny` checks `exp`, and the Txn-Token's own expiry is clamped to the subject's, which is stricter than the draft's "MAY exceed" |
+| Response MUST NOT include `refresh_token` | §6.1 | satisfied structurally — `Response` has three fields and no such member to populate |
+| **Txn-Token MUST NOT contain the presented access token** | **§13.4** | **was violable by a caller — now refused** |
+
+### The defect: a caller could make us violate §13.4
+
+> When creating Txn-Tokens, the Txn-Token MUST NOT contain the access token
+> presented to the external endpoint. If an access token is included in a
+> Txn-Token, an attacker may extract the access token from the Txn-Token, and
+> replay it to any Resource Server that can accept that access token. Txn-Token
+> expiry does not protect against this attack since the access token may remain
+> valid even after the [Txn-Token has expired].
+
+`tctx` and `rctx` are `map[string]any` taken straight from the request body
+(`request_details` and `request_context`) and copied verbatim into the signed
+token. Nothing filtered them and nothing bounded them.
+
+So a workload that puts its incoming `Authorization` header into `request_context`
+— for tracing, for debugging, because it looked like useful context — gets a
+long-lived bearer credential embedded in a short-lived token that is then
+forwarded to **every service in the transaction**. The draft names exactly that
+consequence, including the part that makes it worse: the access token outlives
+the Txn-Token carrying it.
+
+The requirement is written on the TTS because the TTS is what creates the token.
+`CheckContext` now refuses it before anything is minted.
+
+The check is a **substring** match rather than equality, because the realistic
+shape is not `{"token": "eyJ..."}` but `{"headers": {"authorization": "Bearer
+eyJ..."}}` — §13.4 is about the value being extractable, not about how it was
+framed. Nested structures are covered because the comparison is against the
+serialised JSON.
+
+A size bound came with it: 8 KiB across both maps combined, not per map. Caller
+input inside something we sign deserves a limit anyway, and this token rides an
+HTTP header on every hop, so its size is paid for repeatedly by every workload in
+the chain rather than once by whoever sent it.
+
+| Mutation | Test that caught it |
+|---|---|
+| Drop the containment check | `TestTheContextClaimsCannotCarryTheSubjectToken` |
+| Bound each map separately rather than in total | `TestTheContextClaimsAreBounded` |
+
+The second mutation matters: a per-map limit is trivially doubled by splitting
+the payload across `tctx` and `rctx`, which is the obvious way to write it and
+the wrong one.

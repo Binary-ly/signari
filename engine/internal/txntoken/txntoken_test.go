@@ -355,3 +355,85 @@ func TestSubjectTokenTypesAreEnumerated(t *testing.T) {
 		t.Fatalf("refresh_token refusal = %v, want it to name refresh tokens", err)
 	}
 }
+
+// Section 13.4, a MUST NOT written on the TTS:
+//
+//	"When creating Txn-Tokens, the Txn-Token MUST NOT contain the access token
+//	presented to the external endpoint. If an access token is included in a
+//	Txn-Token, an attacker may extract the access token from the Txn-Token, and
+//	replay it to any Resource Server that can accept that access token."
+//
+// tctx and rctx are caller-supplied maps that were copied verbatim into the
+// signed token. A workload putting its incoming Authorization header into rctx
+// is a plausible mistake, and the result is a long-lived bearer credential
+// embedded in a short-lived token forwarded to every service in the chain.
+func TestTheContextClaimsCannotCarryTheSubjectToken(t *testing.T) {
+	const subject = "eyJhbGciOiJFUzI1NiJ9.subject-token-value.sig"
+
+	t.Run("bare", func(t *testing.T) {
+		err := CheckContext(subject, map[string]any{"token": subject})
+		if err == nil {
+			t.Fatal("the subject token was accepted inside rctx; section 13.4 " +
+				"forbids the Txn-Token from carrying it")
+		}
+	})
+
+	t.Run("framed as a header value", func(t *testing.T) {
+		// The realistic shape: a workload copying its Authorization header in
+		// for tracing. Equality would miss this, which is why the check is a
+		// substring one.
+		err := CheckContext(subject, map[string]any{
+			"headers": map[string]any{"authorization": "Bearer " + subject},
+		})
+		if err == nil {
+			t.Fatal("the subject token was accepted when embedded in a larger " +
+				"string; section 13.4 is about the value being extractable, not " +
+				"about how it was framed")
+		}
+	})
+
+	t.Run("nested deep in tctx", func(t *testing.T) {
+		err := CheckContext(subject, nil, map[string]any{
+			"req": map[string]any{"upstream": map[string]any{"creds": []any{subject}}},
+		})
+		if err == nil {
+			t.Fatal("a nested subject token was accepted")
+		}
+	})
+
+	t.Run("ordinary context still works", func(t *testing.T) {
+		err := CheckContext(subject, map[string]any{
+			"ip": "198.51.100.7", "user_agent": "curl/8", "req_id": "abc123",
+		}, map[string]any{"action": "transfer", "amount": 100})
+		if err != nil {
+			t.Fatalf("ordinary context was refused: %v", err)
+		}
+	})
+
+	t.Run("no subject token to compare against", func(t *testing.T) {
+		// A first-hop mint with no presented token must not refuse everything.
+		if err := CheckContext("", map[string]any{"ip": "198.51.100.7"}); err != nil {
+			t.Fatalf("context was refused when there was no subject token: %v", err)
+		}
+	})
+}
+
+// The context claims are caller-supplied and end up in a token carried on every
+// hop of the transaction, so their size is paid for repeatedly.
+func TestTheContextClaimsAreBounded(t *testing.T) {
+	big := make([]byte, MaxContextBytes)
+	for i := range big {
+		big[i] = 'a'
+	}
+	err := CheckContext("", map[string]any{"blob": string(big)})
+	if err == nil {
+		t.Fatalf("a context of over %d bytes was accepted", MaxContextBytes)
+	}
+
+	// The limit is across BOTH maps, not per map -- otherwise it is trivially
+	// doubled by splitting the payload.
+	half := string(big[:MaxContextBytes*2/3])
+	if err := CheckContext("", map[string]any{"a": half}, map[string]any{"b": half}); err == nil {
+		t.Fatal("two contexts each under the limit summed past it and were accepted")
+	}
+}

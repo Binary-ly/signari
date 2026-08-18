@@ -1,6 +1,7 @@
 package txntoken
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -314,3 +315,63 @@ func appendChain(prev Claims, next string) []string {
 // live transaction because its history is long would be worse than truncating
 // the history -- but the chain stops growing, which is visible.
 const MaxCallChain = 32
+
+// MaxContextBytes bounds the caller-supplied context claims.
+//
+// tctx and rctx are maps taken straight from the request body and embedded in a
+// signed token. Unbounded caller input inside something we sign is worth a limit
+// on its own: the token is carried in an HTTP header on every hop of a
+// transaction, so a large one is paid for repeatedly by every workload in the
+// chain, not once by the caller who sent it.
+const MaxContextBytes = 8 << 10
+
+// CheckContext enforces section 13.4 and bounds the context claims.
+//
+// # Section 13.4, which is a MUST NOT on the TTS
+//
+//	"When creating Txn-Tokens, the Txn-Token MUST NOT contain the access token
+//	presented to the external endpoint. If an access token is included in a
+//	Txn-Token, an attacker may extract the access token from the Txn-Token, and
+//	replay it to any Resource Server that can accept that access token.
+//	Txn-Token expiry does not protect against this attack since the access token
+//	may remain valid even after the [Txn-Token has expired]."
+//
+// tctx and rctx are caller-supplied and were copied verbatim into the minted
+// token. A workload putting its incoming Authorization header into rctx -- for
+// tracing, for debugging, because it seemed like useful context -- is a
+// plausible mistake rather than an exotic one, and the result is a long-lived
+// bearer credential embedded in a short-lived token that is then forwarded to
+// every service in the transaction.
+//
+// The requirement is written on the TTS because the TTS is what creates the
+// token. So it is refused here rather than left to the caller's judgement.
+func CheckContext(subjectToken string, ctxs ...map[string]any) error {
+	total := 0
+	for _, m := range ctxs {
+		if len(m) == 0 {
+			continue
+		}
+		raw, err := json.Marshal(m)
+		if err != nil {
+			return fmt.Errorf("the context claims are not serialisable: %w", err)
+		}
+		total += len(raw)
+		if total > MaxContextBytes {
+			return fmt.Errorf("the request and transaction context total %d bytes, "+
+				"over the %d-byte limit; this token is carried on every hop of the "+
+				"transaction", total, MaxContextBytes)
+		}
+		// Substring rather than equality: the token may be embedded in a larger
+		// string ("Bearer eyJ...", a log line, a serialised header map), and
+		// section 13.4 is about the value being extractable, not about how it
+		// was framed.
+		if subjectToken != "" && strings.Contains(string(raw), subjectToken) {
+			return fmt.Errorf("the request or transaction context contains the " +
+				"presented subject token. Section 13.4 forbids a Txn-Token from " +
+				"carrying it: anyone who sees the Txn-Token could extract the " +
+				"credential and replay it, and it may outlive the Txn-Token that " +
+				"carried it")
+		}
+	}
+	return nil
+}

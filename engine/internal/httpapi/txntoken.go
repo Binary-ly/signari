@@ -56,6 +56,16 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 	// unrecognised type fell through to the access-token path and was refused
 	// only because it failed to parse -- including refresh_token, which the
 	// specification excludes outright.
+	// Section 13.4: the minted token MUST NOT carry the presented subject token.
+	// tctx and rctx come straight from the request body, so this is checked
+	// before anything is minted rather than trusted to the caller.
+	if err := txntoken.CheckContext(req.SubjectToken,
+		req.RequestContext, req.RequestDetails); err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: err.Error(), Status: http.StatusBadRequest})
+		return
+	}
+
 	if err := txntoken.CheckSubjectTokenType(req.SubjectTokenType); err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
 			Description: err.Error(), Status: http.StatusBadRequest})

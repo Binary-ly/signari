@@ -96,12 +96,25 @@ type Proof struct {
 }
 
 type proofClaims struct {
-	JTI   string `json:"jti"`
-	HTM   string `json:"htm"`
-	HTU   string `json:"htu"`
-	IAT   int64  `json:"iat"`
-	ATH   string `json:"ath"`
-	Nonce string `json:"nonce"`
+	JTI string `json:"jti"`
+	HTM string `json:"htm"`
+	HTU string `json:"htu"`
+	IAT int64  `json:"iat"`
+	ATH string `json:"ath"`
+
+	// `nonce` is deliberately absent.
+	//
+	// RFC 9449 §8 makes the check conditional on the server having supplied one:
+	// "If the server provided a nonce value to the client, the nonce claim
+	// matches the server-provided nonce value". We never send a DPoP-Nonce
+	// header, so there is nothing to compare a nonce against and ignoring it is
+	// conformant.
+	//
+	// It was previously parsed into a field that nothing read. A parsed claim
+	// reads like a checked one, and this is a file where every other field in
+	// this struct is load-bearing. If nonces are added, issuance and this check
+	// have to arrive together -- checking a nonce we never issued would refuse
+	// every honest client, and issuing one we never check would be theatre.
 }
 
 // Verify checks a DPoP proof against the request it accompanies.
@@ -215,6 +228,55 @@ func Verify(header, method, uri, accessToken string, now time.Time) (*Proof, err
 		AccessTokenHash: c.ATH,
 		PublicKey:       jwk,
 	}, nil
+}
+
+// Presentation errors, distinguished so a caller can word its challenge.
+var (
+	// ErrBoundTokenAsBearer is RFC 9449 §7.2.
+	ErrBoundTokenAsBearer = fmt.Errorf("this access token is sender-constrained " +
+		"and must be presented with the DPoP scheme")
+	// ErrDPoPSchemeUnboundToken is RFC 9449 §7.1.
+	ErrDPoPSchemeUnboundToken = fmt.Errorf("the DPoP scheme requires a " +
+		"sender-constrained access token")
+)
+
+// CheckPresentation applies RFC 9449 §7.1 and §7.2 to how a token was
+// presented, before any proof is looked at.
+//
+// Both rules are downgrade defences, and both key on the SCHEME rather than on
+// the token -- which is why checking `cnf` alone missed them:
+//
+//	§7.2  "such a protected resource MUST reject a DPoP-bound access token
+//	      received as a bearer token"
+//	§7.1  of a token sent under the DPoP scheme, the server "MUST check that a
+//	      DPoP proof was also received ... MUST NOT grant access to the resource
+//	      unless all checks are successful"
+//
+// §7.2 applies to a resource supporting BOTH schemes, which is what we are. A
+// resource that only understood Bearer would be free to accept a bound token as
+// a bearer one, and the same section says so explicitly -- but having advertised
+// DPoP, we no longer have that excuse.
+//
+// scheme is "Bearer", "DPoP", or "" when the token arrived some other way.
+func CheckPresentation(bound bool, scheme string) error {
+	switch {
+	case bound && scheme == "Bearer":
+		return ErrBoundTokenAsBearer
+	case !bound && scheme == "DPoP":
+		return ErrDPoPSchemeUnboundToken
+	}
+	return nil
+}
+
+// SupportedAlgs renders allowedAlgs for the `algs` parameter of a DPoP
+// WWW-Authenticate challenge (RFC 9449 §7.2). Built from the same list Verify
+// enforces, so the advertisement cannot drift from the policy.
+func SupportedAlgs() string {
+	names := make([]string, 0, len(allowedAlgs))
+	for _, a := range allowedAlgs {
+		names = append(names, string(a))
+	}
+	return strings.Join(names, " ")
 }
 
 // AccessTokenHash computes `ath` (RFC 9449 §4.2): base64url of the SHA-256 of

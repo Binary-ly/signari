@@ -13,9 +13,14 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
 
-	raw := bearerToken(r)
+	raw, scheme := bearerTokenAndScheme(r)
 	if raw == "" {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="signari"`)
+		// RFC 9449 §7.2: a resource supporting both schemes should advertise
+		// both, and a challenge with no authentication attempted carries no
+		// error code (RFC 6750 §3.1). `algs` tells a client which signature
+		// algorithms a proof may use before it constructs one.
+		w.Header().Set("WWW-Authenticate",
+			`Bearer realm="signari", DPoP realm="signari", algs="`+dpop.SupportedAlgs()+`"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -67,7 +72,22 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	// enough. Without this check the claim would be a decoration: relying parties
 	// reading `cnf` would believe the token was bound while a thief used it
 	// freely -- which is worse than an honest bearer token.
-	if claims.Cnf != nil && claims.Cnf.JKT != "" {
+	bound := claims.Cnf != nil && claims.Cnf.JKT != ""
+
+	// How the token was PRESENTED, before any proof is examined. Both rules key
+	// on the scheme rather than on the token, which is why checking `cnf` alone
+	// missed them. See dpop.CheckPresentation.
+	if perr := dpop.CheckPresentation(bound, scheme); perr != nil {
+		s.log.Info("a token was presented under the wrong scheme", "err", perr,
+			"correlation_id", correlationID(ctx))
+		w.Header().Set("WWW-Authenticate",
+			`DPoP realm="signari", error="invalid_token", error_description="`+
+				perr.Error()+`"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	if bound {
 		jkt, derr := s.verifyDPoPForRequest(r, raw)
 		if derr != nil || jkt == "" {
 			reason := "a DPoP proof is required for this token"
@@ -149,6 +169,29 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 // precedence: two different token values in one request is either a broken
 // client or an attempt to have the check read one and the logic use the other.
 func bearerToken(r *http.Request) string {
+	tok, _ := bearerTokenAndScheme(r)
+	return tok
+}
+
+// bearerTokenAndScheme also reports WHICH scheme carried the token.
+//
+// The scheme is not decoration. RFC 9449 §7.1 and §7.2 both attach MUST-level
+// requirements to it, and both are downgrade defences:
+//
+//   - §7.1, of a token sent with the DPoP scheme: "a resource server MUST check
+//     that a DPoP proof was also received in the DPoP header field... MUST NOT
+//     grant access to the resource unless all checks are successful." That is a
+//     property of the scheme, not of the token. A client presenting an unbound
+//     token under the DPoP scheme believes it is proving possession; granting
+//     the request tells it so while nothing was proven.
+//
+//   - §7.2, of a bound token sent with Bearer: "such a protected resource MUST
+//     reject a DPoP-bound access token received as a bearer token." Accepting
+//     it is the "downgraded usage" the section exists to prevent.
+//
+// A token in the request body is a Bearer presentation (RFC 6750 §2.2), so it
+// is reported as such and falls under the second rule.
+func bearerTokenAndScheme(r *http.Request) (token, scheme string) {
 	var header string
 	h := r.Header.Get("Authorization")
 	// Both schemes. RFC 9449 §7.1: a sender-constrained token is presented as
@@ -162,29 +205,30 @@ func bearerToken(r *http.Request) string {
 	for _, prefix := range []string{"Bearer ", "DPoP "} {
 		if len(h) > len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
 			header = strings.TrimSpace(h[len(prefix):])
+			scheme = strings.TrimSpace(prefix)
 			break
 		}
 	}
 
 	if r.Method != http.MethodPost {
-		return header
+		return header, scheme
 	}
 	// Only application/x-www-form-urlencoded, per the spec. Parsing any body
 	// type here would let a token arrive somewhere nothing else expects it.
 	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
-		return header
+		return header, scheme
 	}
 	if err := r.ParseForm(); err != nil {
-		return ""
+		return "", ""
 	}
 	body := strings.TrimSpace(r.PostForm.Get("access_token"))
 	switch {
 	case body == "":
-		return header
+		return header, scheme
 	case header == "":
-		return body
+		return body, "Bearer" // RFC 6750 §2.2 is a Bearer presentation.
 	default:
 		// Both present. Ambiguous by construction.
-		return ""
+		return "", ""
 	}
 }

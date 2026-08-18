@@ -367,3 +367,63 @@ func TestAccessTokenHashIsStable(t *testing.T) {
 		t.Error("not base64url without padding")
 	}
 }
+
+// RFC 9449 §7.1 and §7.2 attach MUST-level requirements to the authentication
+// SCHEME, not to the token. Enforcement that keys only on the token's `cnf`
+// claim -- which is what this codebase did -- satisfies neither.
+func TestPresentationRulesKeyOnTheSchemeNotTheToken(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		bound   bool
+		scheme  string
+		wantErr error
+	}{
+		{
+			// §7.2: "such a protected resource MUST reject a DPoP-bound access
+			// token received as a bearer token". Checking `cnf` alone let this
+			// through whenever a valid proof happened to accompany it.
+			"a bound token under Bearer", true, "Bearer", ErrBoundTokenAsBearer,
+		},
+		{
+			// §7.1 is unconditional on the scheme. The client is asserting
+			// proof-of-possession; serving the request confirms a proof that
+			// never happened.
+			"an unbound token under DPoP", false, "DPoP", ErrDPoPSchemeUnboundToken,
+		},
+		{"a bound token under DPoP", true, "DPoP", nil},
+		{"an unbound token under Bearer", false, "Bearer", nil},
+		// A token that arrived some other way is not a scheme violation; the
+		// binding check still applies to it downstream.
+		{"a bound token, no scheme", true, "", nil},
+		{"an unbound token, no scheme", false, "", nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := CheckPresentation(c.bound, c.scheme)
+			if err != c.wantErr {
+				t.Fatalf("CheckPresentation(%v, %q) = %v, want %v",
+					c.bound, c.scheme, err, c.wantErr)
+			}
+		})
+	}
+}
+
+// The `algs` advertised in a DPoP challenge must be the algorithms Verify will
+// actually accept. A challenge naming an algorithm we refuse sends the client
+// away to build a proof that cannot succeed.
+func TestAdvertisedAlgsAreTheOnesEnforced(t *testing.T) {
+	got := strings.Fields(SupportedAlgs())
+	if len(got) != len(allowedAlgs) {
+		t.Fatalf("advertised %d algorithms, enforce %d", len(got), len(allowedAlgs))
+	}
+	for i, a := range allowedAlgs {
+		if got[i] != string(a) {
+			t.Errorf("advertised %q at position %d, enforce %q", got[i], i, a)
+		}
+	}
+	// Neither may ever appear, whatever the list is edited to.
+	for _, forbidden := range []string{"none", "HS256"} {
+		if strings.Contains(SupportedAlgs(), forbidden) {
+			t.Errorf("the challenge advertises %q", forbidden)
+		}
+	}
+}

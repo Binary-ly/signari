@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -242,33 +241,11 @@ func (s *Server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
 // never match is a client that appears configured and fails at the worst moment
 // -- during someone else's integration, with an error that names the request
 // rather than the registration.
+// validateRedirectURI delegates to the one shared validator.
+//
+// It used to have its own copy, which was good but not identical to the CLI's
+// or to dynamic registration's -- and dynamic registration, being open to
+// anybody, had none at all.
 func validateRedirectURI(raw string) error {
-	if strings.Contains(raw, "*") {
-		return fmt.Errorf("%q contains a wildcard; redirect URIs are matched exactly, "+
-			"so register each URI in full", raw)
-	}
-	u, err := url.Parse(raw)
-	if err != nil || !u.IsAbs() {
-		return fmt.Errorf("%q must be an absolute URI", raw)
-	}
-	if u.Fragment != "" || strings.Contains(raw, "#") {
-		return fmt.Errorf("%q must not contain a fragment", raw)
-	}
-	// http is allowed only on loopback, where it is the documented native-app
-	// pattern (RFC 8252). Anywhere else it would send an authorization code
-	// across the network in the clear.
-	if u.Scheme == "http" {
-		host := u.Hostname()
-		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
-			return fmt.Errorf("%q uses http on a non-loopback host; the authorization "+
-				"code would cross the network in the clear", raw)
-		}
-	} else if u.Scheme != "https" {
-		// A custom scheme is legitimate for native apps, so it is permitted, but
-		// anything unparseable is not.
-		if u.Scheme == "" {
-			return fmt.Errorf("%q has no scheme", raw)
-		}
-	}
-	return nil
+	return clients.ValidateRedirectURI(raw)
 }

@@ -219,6 +219,12 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 	}
 
 	for _, u := range in.RedirectURIs {
+		// Dynamic registration is open to anybody who holds a registration
+		// token, which makes it the LAST place to skip validation -- and it was
+		// the only registration path with none at all.
+		if err := clients.ValidateRedirectURI(u); err != nil {
+			return nil, fmt.Errorf("redirect_uri %q: %w", u, err)
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.client_redirect_uris (client_id, redirect_uri)
 			VALUES ($1, $2)`, out.ClientID, u); err != nil {

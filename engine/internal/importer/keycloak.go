@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"signari.dev/engine/internal/clients"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -211,12 +212,17 @@ func Import(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm,
 			return nil, fmt.Errorf("importer: creating client %s: %w", c.ClientID, err)
 		}
 		for _, u := range c.RedirectURIs {
-			// Keycloak allows wildcards in redirect URIs. We do not, and importing
-			// one would create a redirect this server can never match -- so it is
-			// reported rather than silently dropped.
-			if strings.Contains(u, "*") {
+			// An import brings somebody else's registrations, and Keycloak
+			// permits shapes we do not: wildcards, and redirect URIs carrying
+			// response parameters.
+			//
+			// SKIPPED AND REPORTED rather than fatal. A migration that dies on
+			// one bad URI out of four hundred is a migration nobody finishes,
+			// and the operator needs the list of what did not come across --
+			// which is exactly what ClientsSkipped is.
+			if verr := clients.ValidateRedirectURI(u); verr != nil {
 				res.ClientsSkipped = append(res.ClientsSkipped,
-					c.ClientID+" redirect "+u+" (wildcards are not supported; register the exact URI)")
+					c.ClientID+" redirect "+u+" ("+verr.Error()+")")
 				continue
 			}
 			if _, err := tx.Exec(ctx, `

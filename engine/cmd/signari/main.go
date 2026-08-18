@@ -1324,6 +1324,12 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect 
 	if clientID == "" || redirect == "" {
 		return fmt.Errorf("-client-id and -redirect are both required")
 	}
+	// Checked before it reaches the database. A redirect URI carrying a
+	// response parameter is a trap for whichever relying party reads the first
+	// occurrence -- see internal/clients/redirect.go.
+	if err := clients.ValidateRedirectURI(redirect); err != nil {
+		return err
+	}
 	// Checked here as well as by the CHECK constraint, so the message names the
 	// flag rather than the column.
 	if launchURL != "" && !strings.HasPrefix(launchURL, "https://") &&

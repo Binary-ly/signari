@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+
+	"signari.dev/engine/internal/jsonstrict"
 )
 
 
@@ -239,6 +241,19 @@ func Verify(ctx context.Context, f *KeyFetcher, src Source, raw string, now time
 		return out, fmt.Errorf("%w: no key in %s verifies it", ErrNotVerified, src.JWKSURI)
 	}
 
+	// A signed payload that names a claim twice has no single meaning.
+	//
+	// Unlike the AuthZEN case this is not attacker-craftable: the payload is
+	// signed, so producing one needs the transmitter's key, and a transmitter we
+	// trust to revoke sessions could do worse things directly. What it would
+	// still produce is DIVERGENCE -- we act on Go's reading of a duplicated
+	// claim while a SIEM reading the same bytes records another. An audit trail
+	// that disagrees with the action it describes is the one failure this
+	// product cannot afford, so an ambiguous SET is refused rather than
+	// interpreted.
+	if err := jsonstrict.NoDuplicateKeys(payload); err != nil {
+		return out, fmt.Errorf("%w: %v", ErrNotVerified, err)
+	}
 	var c setClaims
 	if err := json.Unmarshal(payload, &c); err != nil {
 		return out, fmt.Errorf("%w: malformed claims", ErrNotVerified)

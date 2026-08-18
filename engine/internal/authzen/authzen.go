@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"signari.dev/engine/internal/jsonstrict"
 )
 
 // The OpenID AuthZEN Authorization API 1.0 wire format.
@@ -285,73 +287,14 @@ func Decode(body []byte, into any) error {
 	// authorization audit trail may not do.
 	//
 	// The same rule, for the same reason, as the duplicate-parameter check on
-	// the pushed authorization request endpoint.
-	if err := rejectDuplicateKeys(body); err != nil {
+	// the pushed authorization request endpoint. Shared with the Security Event
+	// Token receiver through internal/jsonstrict rather than copied.
+	if err := jsonstrict.NoDuplicateKeys(body); err != nil {
 		return err
 	}
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	if err := dec.Decode(into); err != nil {
 		return fmt.Errorf("the request body did not parse: %w", err)
-	}
-	return nil
-}
-
-// rejectDuplicateKeys walks the document and refuses any object that names a
-// member twice, at any depth.
-//
-// A token walk rather than a second unmarshal into map[string]any, because that
-// would collapse the duplicates before they could be seen -- which is the whole
-// difficulty.
-func rejectDuplicateKeys(body []byte) error {
-	dec := json.NewDecoder(strings.NewReader(string(body)))
-	// Numbers are not inspected, so precision does not matter; UseNumber only
-	// avoids float conversion work on the way past.
-	dec.UseNumber()
-	return walkForDuplicates(dec, nil)
-}
-
-func walkForDuplicates(dec *json.Decoder, path []string) error {
-	tok, err := dec.Token()
-	if err != nil {
-		// Malformed JSON is the decoder's error to report, not ours: returning
-		// nil here lets Decode produce the message that names the position.
-		return nil //nolint:nilerr // reported by the caller's Decode
-	}
-	delim, ok := tok.(json.Delim)
-	if !ok {
-		return nil // a scalar at the top level
-	}
-	switch delim {
-	case '{':
-		seen := map[string]bool{}
-		for dec.More() {
-			keyTok, kerr := dec.Token()
-			if kerr != nil {
-				return nil
-			}
-			key, _ := keyTok.(string)
-			if seen[key] {
-				where := "the request body"
-				if len(path) > 0 {
-					where = strings.Join(path, ".")
-				}
-				return fmt.Errorf("%s names %q more than once; which one applies "+
-					"depends on the parser, so the request has no single meaning",
-					where, key)
-			}
-			seen[key] = true
-			if verr := walkForDuplicates(dec, append(path, key)); verr != nil {
-				return verr
-			}
-		}
-		_, _ = dec.Token() // closing brace
-	case '[':
-		for dec.More() {
-			if verr := walkForDuplicates(dec, path); verr != nil {
-				return verr
-			}
-		}
-		_, _ = dec.Token() // closing bracket
 	}
 	return nil
 }

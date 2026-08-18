@@ -438,6 +438,18 @@ This is the same rule, for the same reason, as the duplicate-parameter check the
 pushed authorization request endpoint has had since it was written. The principle
 was already held in this codebase; it had simply not been applied here.
 
+**And it generalised.** The Security Event Token receiver decoded its payload
+with a plain `json.Unmarshal` too. That one is not attacker-craftable — the
+payload is signed, so producing an ambiguous SET needs the transmitter's key, and
+a transmitter trusted to revoke sessions could do worse things directly. But the
+divergence argument is unchanged: we would act on Go's reading of a duplicated
+`aud` while a SIEM reading the same bytes recorded another, and disagreeing with
+your own audit trail is the failure this product exists to prevent.
+
+The rule now lives in `internal/jsonstrict` and is called from both, rather than
+copied. A check this subtle re-implemented per package is one that drifts: one
+copy gains a depth limit or loses the array case, and nothing says so.
+
 ### What the sweep confirmed
 
 | Hostile body | Outcome |

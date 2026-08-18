@@ -10,6 +10,8 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -314,3 +316,51 @@ func hmacSHA256(key, msg []byte) []byte {
 	m.Write(msg)
 	return m.Sum(nil)
 }
+
+// A signed SET whose payload names a claim twice.
+//
+// Not attacker-craftable — producing one needs the transmitter's key. What it
+// produces is divergence: we act on Go's reading while a SIEM reading the same
+// bytes records another, and an audit trail that disagrees with the action it
+// describes is the one failure this product cannot afford.
+func TestASETWithADuplicatedClaimIsRefused(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	// Two `aud` claims: ours first, somebody else's second. Go keeps the last
+	// for a slice, a first-wins parser keeps ours, and the two disagree about
+	// whether this token was even addressed to us.
+	payload := `{"iss":"https://transmitter.test","jti":"dup-1","iat":` +
+		itoa64(now.Unix()) + `,` +
+		`"aud":["https://signari.test"],"aud":["https://elsewhere.test"],` +
+		`"events":{"` + EventSessionRevoked + `":{"subject":{"format":"iss_sub",` +
+		`"iss":"https://transmitter.test","sub":"user-42"},` +
+		`"event_timestamp":` + itoa64(now.Unix()) + `}}}`
+
+	header := b64(t, map[string]any{"alg": "ES256", "typ": TypSET, "kid": tr.kid})
+	enc := base64.RawURLEncoding.EncodeToString([]byte(payload))
+	raw := header + "." + enc + "." + ecdsaSig(t, tr.key, header, enc)
+
+	_, err := Verify(context.Background(), &KeyFetcher{}, tr.source(), raw, now)
+	if err == nil {
+		t.Fatal("a SET naming `aud` twice was accepted; which audience applies " +
+			"depends on the parser, so we and any downstream reader could disagree " +
+			"about whether it was addressed to us at all")
+	}
+	if !strings.Contains(err.Error(), "more than once") {
+		t.Errorf("refused for the wrong reason: %v", err)
+	}
+}
+
+// And a normal SET, whose entities legitimately repeat key NAMES across
+// different objects, is unaffected.
+func TestANormalSETIsNotSeenAsDuplicated(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, goodClaims(now), nil, tr.kid), now); err != nil {
+		t.Fatalf("a genuine SET was refused as duplicated: %v", err)
+	}
+}
+
+func itoa64(n int64) string { return strconv.FormatInt(n, 10) }

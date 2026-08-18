@@ -1029,7 +1029,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 			// directory to anyone who can reach the port.
 			AllowAnonymousSearch: os.Getenv("SIGNARI_LDAP_ANONYMOUS_SEARCH") == "1",
 		}, httpapi.NewLDAPAuthenticator(pool,
-			passwords.NewHasher(passwords.MemoryBudgetMiB), ldapOrgID), log)
+			passwords.NewHasher(passwords.MemoryBudgetMiB), ldapOrgID, log), log)
 
 		ln, err := net.Listen("tcp", ldapAddr)
 		if err != nil {
@@ -1104,7 +1104,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 
 		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg},
 			httpapi.NewRADIUSAuthenticator(pool,
-				passwords.NewHasher(passwords.MemoryBudgetMiB), radiusOrgID), log)
+				passwords.NewHasher(passwords.MemoryBudgetMiB), radiusOrgID, log), log)
 		if rerr2 != nil {
 			return fmt.Errorf("%w -- register one with `signari radius add-client`", rerr2)
 		}

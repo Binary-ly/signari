@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/ldapd"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/store"
@@ -20,14 +22,68 @@ import (
 // LDAP bind is throttled, audited and subject to the same lockout as any other
 // authentication. An LDAP front end with its own quiet credential path is a way
 // around every control the rest of the product has.
+//
+// That sentence used to be two-thirds true: the audit write it promised did not
+// exist. See the `audit` method below.
 type LDAPAuthenticator struct {
 	db     *pgxpool.Pool
 	hasher *passwords.Hasher
 	orgID  string
+	log    *slog.Logger
+	// via labels the audit trail with the network path the credential arrived
+	// on. RADIUS delegates to this type, so without it every Access-Accept
+	// would be recorded as an LDAP bind -- and an investigation asking "how did
+	// this account authenticate" would be told the wrong answer confidently.
+	via string
 }
 
-func NewLDAPAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID string) *LDAPAuthenticator {
-	return &LDAPAuthenticator{db: db, hasher: hasher, orgID: orgID}
+func NewLDAPAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID string,
+	log *slog.Logger) *LDAPAuthenticator {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &LDAPAuthenticator{db: db, hasher: hasher, orgID: orgID, log: log, via: "ldap"}
+}
+
+// withVia returns a copy labelling its audit events differently.
+func (a *LDAPAuthenticator) withVia(via string) *LDAPAuthenticator {
+	c := *a
+	c.via = via
+	return &c
+}
+
+// audit writes one authentication outcome to the append-only trail.
+//
+// # Why this exists
+//
+// The comment above this type claimed an LDAP bind was "throttled, audited and
+// subject to the same lockout as any other authentication". Two of those three
+// were true. Nothing on this path wrote an audit event, so every bind -- the
+// successful ones included -- was invisible to `signari export audit` and to
+// anyone asking how an account authenticated on a given day.
+//
+// It was found by an unused `userID`: the query fetched the id and nothing
+// consumed it, because the write that would have consumed it was never
+// written.
+//
+// Detached from the caller's transaction on purpose. An LDAP bind has no
+// surrounding transaction to join, and a failure to record must not turn a
+// correct authentication decision into an error -- the decision is already
+// made by the time this runs.
+func (a *LDAPAuthenticator) audit(ctx context.Context, e audit.Event) {
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		a.log.Error("auditing an LDAP bind", "event", e.Type, "err", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := audit.Write(ctx, tx, e); err != nil {
+		a.log.Error("auditing an LDAP bind", "event", e.Type, "err", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		a.log.Error("committing an LDAP bind audit", "event", e.Type, "err", err)
+	}
 }
 
 var errLDAPInvalid = errors.New("invalid credentials")
@@ -61,17 +117,36 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 		// user-enumeration oracle by stopwatch even though the error text is
 		// identical.
 		_, _ = a.hasher.Verify(ctx, dummyHash, password)
+		// No subject: there is nobody to name. The event still records that a
+		// bind was attempted against this directory, which is what makes a
+		// guessing run visible at all.
+		a.audit(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: a.orgID,
+			Detail: map[string]any{"via": a.via, "reason": "unknown_user"},
+		})
 		return nil, errLDAPInvalid
 	}
 	if _, err := a.hasher.Verify(ctx, hash, password); err != nil {
+		a.audit(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			Detail: map[string]any{"via": a.via, "reason": "bad_password"},
+		})
 		return nil, errLDAPInvalid
 	}
 
 	id, err := a.Lookup(ctx, username)
 	if err != nil || id == nil {
+		a.audit(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			Detail: map[string]any{"via": a.via, "reason": "no_identity"},
+		})
 		return nil, errLDAPInvalid
 	}
-	_ = userID
+
+	a.audit(ctx, audit.Event{
+		Type: audit.EventLoginSucceeded, OrgID: orgID, SubjectID: userID,
+		Detail: map[string]any{"via": a.via, "amr": []string{"pwd"}},
+	})
 	return id, nil
 }
 

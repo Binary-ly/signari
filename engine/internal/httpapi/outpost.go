@@ -154,7 +154,7 @@ func (s *Server) handleOutpostAuthenticate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	auth := NewLDAPAuthenticator(s.db, passwords.NewHasher(passwords.MemoryBudgetMiB), orgID)
+	auth := NewLDAPAuthenticator(s.db, passwords.NewHasher(passwords.MemoryBudgetMiB), orgID, s.log)
 	ident, err := auth.Authenticate(r.Context(), body.Username, body.Password)
 	if err != nil {
 		// One answer for every reason. An outpost sits somewhere less trusted by
@@ -187,7 +187,7 @@ func (s *Server) handleOutpostLookup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "unreadable body")
 		return
 	}
-	auth := NewLDAPAuthenticator(s.db, passwords.NewHasher(passwords.MemoryBudgetMiB), orgID)
+	auth := NewLDAPAuthenticator(s.db, passwords.NewHasher(passwords.MemoryBudgetMiB), orgID, s.log)
 	ident, err := auth.Lookup(r.Context(), body.Username)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "no such user")
@@ -212,7 +212,7 @@ func (s *Server) handleOutpostList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "unreadable body")
 		return
 	}
-	auth := NewLDAPAuthenticator(s.db, passwords.NewHasher(passwords.MemoryBudgetMiB), orgID)
+	auth := NewLDAPAuthenticator(s.db, passwords.NewHasher(passwords.MemoryBudgetMiB), orgID, s.log)
 	found, err := auth.List(r.Context(), body.Limit)
 	if err != nil {
 		s.log.Error("listing the directory for an outpost", "err", err)

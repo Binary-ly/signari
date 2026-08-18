@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -22,8 +23,14 @@ type RADIUSAuthenticator struct {
 	inner *LDAPAuthenticator
 }
 
-func NewRADIUSAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID string) *RADIUSAuthenticator {
-	return &RADIUSAuthenticator{inner: NewLDAPAuthenticator(db, hasher, orgID)}
+func NewRADIUSAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID string,
+	log *slog.Logger) *RADIUSAuthenticator {
+	// Labelled `radius` in the audit trail. The credential path is shared with
+	// LDAP on purpose; which port it arrived on is not a detail an
+	// investigation can afford to lose.
+	return &RADIUSAuthenticator{
+		inner: NewLDAPAuthenticator(db, hasher, orgID, log).withVia("radius"),
+	}
 }
 
 // Authenticate reports whether the credential is valid, and nothing else.

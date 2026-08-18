@@ -1,4 +1,4 @@
-package oauth
+package internal_test
 
 import (
 	"os"
@@ -15,6 +15,12 @@ import (
 //	dpop.proofClaims.Nonce   parsed from the proof, read by nothing
 //	oauth.subjectClientID    threaded into ValidateExchange, `_ = subjectClientID`
 //	oauth.ExchangeRequest    actor_token / actor_token_type, parsed, read by nothing
+//	httpapi samlslo.go       `_ = userID` on a value used two lines below, which
+//	                         told a reader it was deliberately unused when the
+//	                         audit event depends on it
+//
+// It ran over one package when it was written and found a fourth instance the
+// moment it was pointed at the rest of the tree.
 //
 // Each was a protocol parameter the code appeared to handle and did not. The
 // compiler is happy with all three; a reader cannot tell them from working code
@@ -30,18 +36,17 @@ func TestNoParameterIsDiscardedSilently(t *testing.T) {
 	// multi-return discard) and not `_ = fmt.Sprintf(...)` (a call).
 	discard := regexp.MustCompile(`^\s*_ = [a-z][A-Za-z0-9]*\s*$`)
 
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		src, err := os.ReadFile(filepath.Clean(name))
+	err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			t.Fatal(err)
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") ||
+			strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, rerr := os.ReadFile(filepath.Clean(path))
+		if rerr != nil {
+			return rerr
 		}
 		for i, line := range strings.Split(string(src), "\n") {
 			if discard.MatchString(line) {
@@ -51,8 +56,12 @@ func TestNoParameterIsDiscardedSilently(t *testing.T) {
 					"it tells the caller something was applied when it was not. "+
 					"If it genuinely has no meaning here, remove it rather than "+
 					"leaving something shaped like a check.",
-					name, i+1, strings.TrimSpace(line))
+					path, i+1, strings.TrimSpace(line))
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

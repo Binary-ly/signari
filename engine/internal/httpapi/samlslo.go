@@ -266,7 +266,10 @@ func (s *Server) endSAMLSession(ctx context.Context, v *saml.ValidatedLogout, p 
 	// By sid, not by user. A LogoutRequest ends the session it names, not every
 	// session that person has -- they may be signed in on another device, and
 	// one service provider's logout is not authority over all of them.
-	_ = userID
+	//
+	// (userID is not discarded here: it names the subject of the audit event
+	// below. A `_ = userID` sat at this line and did nothing, while telling a
+	// reader the value was deliberately unused.)
 	if _, err := store.TerminateSessions(ctx, tx, sid, "", store.ReasonLogout); err != nil {
 		return "", err
 	}

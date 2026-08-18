@@ -26,7 +26,7 @@ type GroupPatch struct {
 }
 
 var memberFilterPath = regexp.MustCompile(
-	`^members\[\s*value\s+eq\s+"([^"]+)"\s*\](?:\.[A-Za-z]+)?$`)
+	`(?i)^members\[\s*value\s+eq\s+"([^"]+)"\s*\](?:\.[A-Za-z]+)?$`)
 
 // ApplyGroupPatch reads a PATCH body into the changes it implies.
 func ApplyGroupPatch(req PatchRequest) (*GroupPatch, error) {

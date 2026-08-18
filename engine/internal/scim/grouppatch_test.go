@@ -201,3 +201,33 @@ func TestGroupNameDerivation(t *testing.T) {
 		t.Error("a display name with no usable characters produced a group name")
 	}
 }
+
+// The filter operator matched case-insensitively. Being strict gains nothing
+// and would turn a conformant client's removal into a 400.
+func TestTheMemberFilterOperatorIsCaseInsensitive(t *testing.T) {
+	for _, path := range []string{
+		`members[value eq "abc"]`,
+		`members[value EQ "abc"]`,
+		`Members[Value Eq "abc"]`,
+		`members[  value   eq   "abc"  ]`,
+	} {
+		p, err := parseOps(t, `{"Operations":[{"op":"remove","path":`+
+			mustJSON(t, path)+`}]}`)
+		if err != nil {
+			t.Errorf("%s: %v", path, err)
+			continue
+		}
+		if len(p.RemoveMembers) != 1 || p.RemoveMembers[0] != "abc" {
+			t.Errorf("%s: RemoveMembers = %v", path, p.RemoveMembers)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}

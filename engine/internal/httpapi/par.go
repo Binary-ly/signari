@@ -87,7 +87,21 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientID := r.PostForm.Get("client_id")
+	// Credentials resolved exactly as at the token endpoint. RFC 9126 §2: "The
+	// rules for client authentication as defined in [RFC6749] for token
+	// endpoint requests, including the applicable authentication methods, apply
+	// for the PAR endpoint as well."
+	//
+	// This read `client_secret` from the form and nothing else, so a client
+	// registered for client_secret_basic could not use PAR at all -- while
+	// discovery advertised that method, which the same section says covers this
+	// endpoint too.
+	creds, cerr := oauth.ParseClientCredentials(r.Header, r.PostForm)
+	if cerr != nil {
+		writeError(w, cerr.Status, cerr.Code, cerr.Description)
+		return
+	}
+	clientID := creds.ClientID
 	c, err := s.lookupClient(ctx, clientID)
 	if err != nil || c == nil {
 		writeError(w, http.StatusUnauthorized, "invalid_client", "unknown client")
@@ -99,7 +113,7 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	// would be worth nothing -- the parameters would still be attacker-chosen,
 	// just harder to see.
 	if c.Type == "confidential" {
-		if err := s.authenticateConfidentialClient(ctx, r, c, r.PostForm.Get("client_secret")); err != nil {
+		if err := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); err != nil {
 			s.log.Info("PAR client authentication failed", "client_id", clientID, "err", err,
 				"correlation_id", correlationID(ctx))
 			writeError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")

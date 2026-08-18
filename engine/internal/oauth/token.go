@@ -67,38 +67,87 @@ func ParseTokenRequest(header http.Header, form url.Values) (TokenRequest, *Toke
 		Resources:    form["resource"],
 	}
 
+	creds, cerr := ParseClientCredentials(header, form)
+	if cerr != nil {
+		return r, cerr
+	}
+	r.ClientID = creds.ClientID
+	r.ClientSecret = creds.ClientSecret
+	r.ClientAssertion = creds.ClientAssertion
+	r.ClientAssertionType = creds.ClientAssertionType
+	r.AuthMethod = creds.AuthMethod
+	return r, nil
+}
+
+// ClientCredentials is how a client identified itself on a direct request.
+type ClientCredentials struct {
+	ClientID            string
+	ClientSecret        string
+	ClientAssertion     string
+	ClientAssertionType string
+	// AuthMethod is one of client_secret_basic, client_secret_post,
+	// private_key_jwt, or none.
+	AuthMethod string
+}
+
+// ParseClientCredentials resolves how a client authenticated on a direct
+// request, from the Authorization header and the form body.
+//
+// ONE resolver, for every endpoint a client calls directly. That is not tidiness
+// -- it is a requirement each specification states about its own endpoint:
+//
+//	RFC 9126 §2 (PAR): "The rules for client authentication as defined in
+//	[RFC6749] for token endpoint requests, including the applicable
+//	authentication methods, apply for the PAR endpoint as well."
+//	RFC 8628 §3.1 (device authorization): a confidential client authenticates
+//	as described in RFC 6749 §3.2.1, which is the token endpoint's rule.
+//
+// This logic lived inside ParseTokenRequest, so only the token endpoint had it.
+// PAR and the device authorization endpoint each read `client_secret` from the
+// form and nothing else, which meant:
+//
+//   - A client registered for client_secret_basic -- the one method RFC 6749
+//     §2.3.1 says a server MUST support, and the most widely deployed -- could
+//     not use either endpoint at all. We advertise it in
+//     token_endpoint_auth_methods_supported, which RFC 9126 §2 says also governs
+//     PAR, so we advertised a method and then refused it.
+//   - Credentials in both the header and the body went undetected.
+//   - A body client_id naming a different client than the header went unchecked.
+func ParseClientCredentials(header http.Header, form url.Values) (ClientCredentials, *TokenError) {
+	var c ClientCredentials
+
 	basicID, basicSecret, hasBasic := parseBasic(header.Get("Authorization"))
 	bodyID, bodySecret := form.Get("client_id"), form.Get("client_secret")
-	r.ClientAssertion = form.Get("client_assertion")
-	r.ClientAssertionType = form.Get("client_assertion_type")
+	c.ClientAssertion = form.Get("client_assertion")
+	c.ClientAssertionType = form.Get("client_assertion_type")
 
 	// A client assertion and a secret are two credentials for one request, and
 	// accepting both leaves which one authenticated the caller up to whichever
 	// check happens to run first. Refused rather than resolved by precedence.
-	if r.ClientAssertion != "" && (bodySecret != "" || hasBasic) {
-		return r, tokenErr("invalid_request",
+	if c.ClientAssertion != "" && (bodySecret != "" || hasBasic) {
+		return c, tokenErr("invalid_request",
 			"present either a client assertion or a client secret, not both")
 	}
 
 	switch {
 	case hasBasic && bodySecret != "":
-		return r, tokenErr("invalid_request",
+		return c, tokenErr("invalid_request",
 			"client credentials presented both in the Authorization header and the body")
 	case hasBasic:
 		if bodyID != "" && bodyID != basicID {
-			return r, tokenErr("invalid_request",
+			return c, tokenErr("invalid_request",
 				"client_id in the body does not match the Authorization header")
 		}
-		r.ClientID, r.ClientSecret, r.AuthMethod = basicID, basicSecret, "client_secret_basic"
+		c.ClientID, c.ClientSecret, c.AuthMethod = basicID, basicSecret, "client_secret_basic"
 	case bodySecret != "":
-		r.ClientID, r.ClientSecret, r.AuthMethod = bodyID, bodySecret, "client_secret_post"
-	case r.ClientAssertion != "":
-		r.ClientID, r.AuthMethod = bodyID, "private_key_jwt"
+		c.ClientID, c.ClientSecret, c.AuthMethod = bodyID, bodySecret, "client_secret_post"
+	case c.ClientAssertion != "":
+		c.ClientID, c.AuthMethod = bodyID, "private_key_jwt"
 	default:
 		// A public client authenticates with PKCE, not a secret.
-		r.ClientID, r.AuthMethod = bodyID, "none"
+		c.ClientID, c.AuthMethod = bodyID, "none"
 	}
-	return r, nil
+	return c, nil
 }
 
 // parseBasic decodes RFC 6749 §2.3.1 client_secret_basic. The userid and password

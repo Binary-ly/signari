@@ -48,7 +48,16 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	clientID := r.PostForm.Get("client_id")
+	// Credentials resolved exactly as at the token endpoint. RFC 8628 §3.1: a
+	// confidential client authenticates as described in RFC 6749 §3.2.1, which
+	// is the token endpoint's rule -- so client_secret_basic has to work here,
+	// and it did not.
+	creds, cerr := oauth.ParseClientCredentials(r.Header, r.PostForm)
+	if cerr != nil {
+		writeError(w, cerr.Status, cerr.Code, cerr.Description)
+		return
+	}
+	clientID := creds.ClientID
 	c, err := s.lookupClient(ctx, clientID)
 	if err != nil || c == nil {
 		writeError(w, http.StatusUnauthorized, "invalid_client", "unknown client")
@@ -58,8 +67,7 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 	// endpoint. Skipping it would let anyone start a device flow in its name and
 	// phish a user code that names a trusted application.
 	if c.Type == "confidential" {
-		secret := r.PostForm.Get("client_secret")
-		if err := s.authenticateConfidentialClient(ctx, r, c, secret); err != nil {
+		if err := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); err != nil {
 			s.log.Info("device authorization: client authentication failed",
 				"client_id", clientID, "err", err)
 			writeError(w, http.StatusUnauthorized, "invalid_client",

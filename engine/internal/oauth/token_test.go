@@ -365,3 +365,110 @@ func TestPKCEIsRequiredByDefault(t *testing.T) {
 			"policy requires it")
 	}
 }
+
+// Client credentials, resolved one way for every endpoint a client calls
+// directly.
+//
+// This logic lived inside ParseTokenRequest, so only the token endpoint had it.
+// PAR (RFC 9126 §2: "The rules for client authentication as defined in
+// [RFC6749] for token endpoint requests ... apply for the PAR endpoint as
+// well") and the device authorization endpoint (RFC 8628 §3.1, pointing at RFC
+// 6749 §3.2.1) each read `client_secret` from the form and nothing else.
+func TestClientCredentialsResolveTheSameWayEverywhere(t *testing.T) {
+	basic := func(id, secret string) http.Header {
+		h := http.Header{}
+		h.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString(
+			[]byte(url.QueryEscape(id)+":"+url.QueryEscape(secret))))
+		return h
+	}
+
+	t.Run("Basic is understood", func(t *testing.T) {
+		// RFC 6749 §2.3.1 makes this the one method a server MUST support, and
+		// it is the most widely deployed. PAR and the device endpoint refused it
+		// outright while discovery advertised it.
+		got, err := ParseClientCredentials(basic("app", "s3cr3t"), url.Values{})
+		if err != nil {
+			t.Fatalf("Basic credentials were refused: %v", err)
+		}
+		if got.ClientID != "app" || got.ClientSecret != "s3cr3t" {
+			t.Fatalf("got %+v", got)
+		}
+		if got.AuthMethod != "client_secret_basic" {
+			t.Errorf("auth method = %q", got.AuthMethod)
+		}
+	})
+
+	t.Run("a secret containing + and space survives", func(t *testing.T) {
+		// The userid and password are form-urlencoded before base64. Skipping
+		// that silently corrupts any secret containing '+' or a space -- and it
+		// fails only for some secrets, so it looks like a flaky client.
+		const secret = "a+b c/d"
+		got, err := ParseClientCredentials(basic("app", secret), url.Values{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ClientSecret != secret {
+			t.Errorf("secret = %q, want %q", got.ClientSecret, secret)
+		}
+	})
+
+	t.Run("two mechanisms are refused, not ranked", func(t *testing.T) {
+		_, err := ParseClientCredentials(basic("app", "s"),
+			url.Values{"client_secret": {"other"}})
+		if err == nil {
+			t.Fatal("credentials in both the header and the body were accepted; " +
+				"whichever check runs first decides who authenticated")
+		}
+		if err.Code != "invalid_request" {
+			t.Errorf("code = %q", err.Code)
+		}
+	})
+
+	t.Run("a body client_id may not name a different client", func(t *testing.T) {
+		_, err := ParseClientCredentials(basic("app", "s"),
+			url.Values{"client_id": {"someone-else"}})
+		if err == nil {
+			t.Fatal("the body named a different client than the header and was " +
+				"accepted; that is a confusion primitive")
+		}
+	})
+
+	t.Run("an assertion and a secret are refused", func(t *testing.T) {
+		_, err := ParseClientCredentials(basic("app", "s"),
+			url.Values{"client_assertion": {"ey.."}})
+		if err == nil {
+			t.Fatal("a client assertion and a secret were both accepted")
+		}
+	})
+
+	t.Run("a public client carries no secret", func(t *testing.T) {
+		got, err := ParseClientCredentials(http.Header{},
+			url.Values{"client_id": {"spa"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.AuthMethod != "none" || got.ClientSecret != "" {
+			t.Errorf("got %+v", got)
+		}
+	})
+
+	// ParseTokenRequest must produce exactly what the shared resolver does --
+	// the refactor moved the logic, and moving it must not have changed it.
+	t.Run("the token endpoint agrees with the resolver", func(t *testing.T) {
+		h, f := basic("app", "s3cr3t"), url.Values{"grant_type": {"authorization_code"}}
+		creds, cerr := ParseClientCredentials(h, f)
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+		req, rerr := ParseTokenRequest(h, f)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		if req.ClientID != creds.ClientID || req.ClientSecret != creds.ClientSecret ||
+			req.AuthMethod != creds.AuthMethod {
+			t.Fatalf("ParseTokenRequest gave %q/%q/%q, resolver gave %q/%q/%q",
+				req.ClientID, req.ClientSecret, req.AuthMethod,
+				creds.ClientID, creds.ClientSecret, creds.AuthMethod)
+		}
+	})
+}

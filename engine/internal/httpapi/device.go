@@ -26,6 +26,16 @@ const (
 	deviceCodeLifetime = 10 * time.Minute
 	// devicePollInterval is the starting value. It grows on slow_down.
 	devicePollInterval = 5
+
+	// deviceAttemptsPerWindow bounds guesses from one address.
+	//
+	// A user code is 8 characters from a 21-letter alphabet: about 35 bits, or
+	// 3.8e10 possibilities. At 20 attempts per 10 minutes one address needs
+	// roughly 36,000 years of continuous guessing to cover a single percent of
+	// the space, and codes live for ten minutes. Generous enough that a person
+	// mistyping a code off a television never meets it.
+	deviceAttemptsPerWindow = 20
+	deviceAttemptWindow     = 10 * time.Minute
 )
 
 // handleDeviceAuthorization answers a device asking to be authorised.
@@ -146,6 +156,33 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 	// RFC 8628 §5.1: rate limit the user interaction endpoint. A user code is
 	// short enough to type and therefore short enough to guess; this is what
 	// makes guessing expensive, since a wrong guess names no record to charge.
+	//
+	// Limited per ADDRESS, not globally. This was one shared bucket of 3/s with
+	// a burst of 10 for the entire deployment, which made the defence into an
+	// attack: anybody sending four requests a second held it empty, and every
+	// legitimate person in every organisation was refused with "too many
+	// attempts" while trying to sign in a television. An unauthenticated denial
+	// of service on the whole device flow, costing the attacker nothing.
+	//
+	// Per-address is also strictly better at the job the limit exists for.
+	// Guessing comes from somewhere, so charging the source both slows the
+	// guesser and leaves everybody else unaffected.
+	if res, err := store.AllowRate(ctx, s.db, "device:ip:"+clientIP(r),
+		deviceAttemptsPerWindow, deviceAttemptWindow); err != nil {
+		// Fail CLOSED. This endpoint's whole protection against guessing an
+		// eight-character code is the limit; serving it unlimited because the
+		// database is unhappy removes the defence exactly when nobody is
+		// watching.
+		s.log.Error("device rate limit unavailable", "err", err)
+		render("", "Try again in a moment.", nil)
+		return
+	} else if !res.Allowed {
+		render("", "Too many attempts from this address. Wait a few minutes.", nil)
+		return
+	}
+
+	// The global bucket stays as a backstop against a distributed attempt, but
+	// widened so it is no longer reachable by one address on its own.
 	if !s.device.allow() {
 		render("", "Too many attempts just now. Wait a moment and try again.", nil)
 		return

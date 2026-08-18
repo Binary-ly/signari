@@ -144,7 +144,11 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// from turning into memory exhaustion, independent of the semaphore.
 		// An overload guard, not the security limit: see allowSignInAttempt.
 		login:     newBucket(50, 100),
-		device:    newBucket(3, 10),
+		// A backstop against a distributed attempt, not the primary limit --
+		// that is per-address in handleDeviceVerification. At 3/s this bucket
+		// was the primary limit by accident, and one address could hold it
+		// empty and lock out every legitimate device in the deployment.
+		device: newBucket(200, 400),
 		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
 		pwPolicy:  passwords.PolicyFromEnv(),
 		policies:  newPolicyCache(),

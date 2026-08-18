@@ -161,3 +161,48 @@ func TestAllowRateRefusesAnUnconfiguredLimit(t *testing.T) {
 			"or allow every request depending on a comparison nobody checked")
 	}
 }
+
+// One exhausted address must not refuse a different one.
+//
+// This is the property the device verification endpoint was missing. It used a
+// single process-wide token bucket of 3/s, so anybody sending four requests a
+// second held it empty and every legitimate person in every organisation was
+// refused while trying to sign in a television -- an unauthenticated denial of
+// service that cost the attacker nothing.
+//
+// RFC 8628 §5.1 asks for the user interaction endpoint to be rate limited
+// because an eight-character code is guessable. A limit that punishes everyone
+// for one guesser satisfies the letter and inverts the intent.
+func TestOneExhaustedKeyDoesNotRefuseAnother(t *testing.T) {
+	pool := rateTestPool(t)
+	ctx := context.Background()
+	stamp := time.Now().UnixNano()
+	attacker := fmt.Sprintf("device:ip:198.51.100.7:%d", stamp)
+	victim := fmt.Sprintf("device:ip:203.0.113.9:%d", stamp)
+
+	const limit = 5
+	for i := 0; i < limit*3; i++ {
+		if _, err := AllowRate(ctx, pool, attacker, limit, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The attacker is now well past their budget.
+	r, err := AllowRate(ctx, pool, attacker, limit, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Allowed {
+		t.Fatal("an address was still allowed after 15 attempts against a limit of 5")
+	}
+
+	// Somebody else, unaffected.
+	r, err = AllowRate(ctx, pool, victim, limit, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Allowed {
+		t.Fatal("a second address was refused because a FIRST address had " +
+			"exhausted its budget; the limit is shared, which turns the " +
+			"defence into a denial of service")
+	}
+}

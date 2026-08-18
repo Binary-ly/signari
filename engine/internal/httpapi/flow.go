@@ -682,6 +682,26 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		}
 	}
 
+	// The refresh family is established BEFORE the access token is signed, so the
+	// token can name the grant it belongs to. It used to be created further down,
+	// after signing, which is why access tokens carried no grant identity and
+	// revoking a refresh token could not reach them.
+	if familyID == "" && containsScope(scopes, "offline_access") {
+		// Details go on the FAMILY, not the token: they belong to the
+		// authorization, and every rotation in the lineage inherits the same
+		// grant. Storing them per-token would let two live tokens from one
+		// authorization carry different permissions.
+		familyDetails, derr := store.MarshalDetails(details)
+		if derr != nil {
+			return nil, nil, derr
+		}
+		familyID, err = store.NewRefreshFamily(ctx, tx, orgID, c.ClientID, userID, sid,
+			familyDetails, jkt, certThumb)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
 	// §9: the RS is the party that has to ENFORCE these, and it never sees the
 	// token response §7 sends to the client. Filtered per §9.1 so one resource
 	// server does not learn what was granted for another.
@@ -708,6 +728,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		Cnf:       bindingFor(jkt, certThumb),
 
 		AuthorizationDetails: detailClaim,
+		GrantID:              familyID,
 	}, tokens.TypAccessToken)
 	if err != nil {
 		return nil, nil, err
@@ -769,21 +790,6 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		return resp, nil, nil
 	}
 
-	if familyID == "" {
-		// Details go on the FAMILY, not the token: they belong to the
-		// authorization, and every rotation in the lineage inherits the same
-		// grant. Storing them per-token would let two live tokens from one
-		// authorization carry different permissions.
-		familyDetails, derr := store.MarshalDetails(details)
-		if derr != nil {
-			return nil, nil, derr
-		}
-		familyID, err = store.NewRefreshFamily(ctx, tx, orgID, c.ClientID, userID, sid,
-			familyDetails, jkt, certThumb)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
 	rt, err := newSID()
 	if err != nil {
 		return nil, nil, err
@@ -2078,6 +2084,12 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	// A revoked or signed-out token must not be exchangeable. Otherwise
 	// exchange becomes a way to launder a dead credential into a live one --
 	// the token the user revoked yesterday still produces working tokens today.
+	if gone, gerr := store.GrantRevoked(ctx, s.db, subject.GrantID); gerr != nil || gone {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "the authorization behind the subject token has been revoked",
+			Status:      http.StatusBadRequest})
+		return
+	}
 	if revoked, rerr := store.JTIRevoked(ctx, s.db, subject.JTI); rerr != nil || revoked {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "the subject token has been revoked", Status: http.StatusBadRequest})

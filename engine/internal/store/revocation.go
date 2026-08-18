@@ -160,3 +160,36 @@ func SessionLive(ctx context.Context, db *pgxpool.Pool, sid string) (bool, error
 		return live, nil
 	}
 }
+
+// GrantRevoked reports whether the refresh token family an access token was
+// minted from has been revoked.
+//
+// RFC 7009 §2.1's cascade: revoking a refresh token SHOULD invalidate "all
+// access tokens based on the same authorization grant". Revocation is otherwise
+// recorded per-jti, and nothing links a minted access token back to its grant,
+// so the cascade had nowhere to land -- the access tokens simply ran to
+// expiry.
+//
+// Fails CLOSED on a database error, like JTIRevoked beside it: a checkpoint that
+// cannot determine whether a grant is live must not answer that it is.
+func GrantRevoked(ctx context.Context, db *pgxpool.Pool, grantID string) (bool, error) {
+	if grantID == "" {
+		// No grant to check. Tokens from an authorization with no refresh token
+		// carry no gid, and there is no refresh token whose revocation could
+		// cascade to them.
+		return false, nil
+	}
+	var revoked bool
+	err := db.QueryRow(ctx,
+		`SELECT revoked_at IS NOT NULL FROM core.refresh_token_families WHERE id = $1::uuid`,
+		grantID).Scan(&revoked)
+	switch {
+	case err == pgx.ErrNoRows:
+		// The family is gone. Treat as revoked: a token naming a grant this
+		// server cannot find is not one to honour.
+		return true, nil
+	case err != nil:
+		return true, fmt.Errorf("checking grant revocation: %w", err)
+	}
+	return revoked, nil
+}

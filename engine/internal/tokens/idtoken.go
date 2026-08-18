@@ -283,6 +283,26 @@ type AccessTokenClaims struct {
 	// the allowable values "are determined by the API being protected": this
 	// server carries the structure it validated and does not re-encode it.
 	AuthorizationDetails json.RawMessage `json:"authorization_details,omitempty"`
+
+	// GrantID names the refresh token family this token was minted from, when
+	// there is one.
+	//
+	// RFC 7009 §2.1: "If the particular token is a refresh token and the
+	// authorization server supports the revocation of access tokens, then the
+	// authorization server SHOULD also invalidate all access tokens based on the
+	// same authorization grant."
+	//
+	// Revocation is otherwise per-jti, and an access token minted from a grant
+	// carries no trace of that grant -- so revoking the refresh token left its
+	// access tokens working until they expired. A client that revokes and is
+	// answered 200 reasonably believes access has stopped; §2 even instructs
+	// clients not to use the token afterwards, which only means anything if the
+	// server actually stopped it.
+	//
+	// Absent when the grant has no refresh token: there is then nothing to
+	// revoke that this could cascade from, and emitting an empty one would put a
+	// meaningless claim in every token this server issues.
+	GrantID string `json:"gid,omitempty"`
 }
 
 // Actor identifies a party acting for someone else. Nested, so A-acting-for-B

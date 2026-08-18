@@ -151,6 +151,12 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		// Txn-Token. Otherwise exchange laundered a dead credential into one
 		// that every internal service will honour for the next five minutes --
 		// and the internal services have no way to check.
+		if gone, gerr := store.GrantRevoked(ctx, s.db, subject.GrantID); gerr != nil || gone {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the authorization behind the subject token has been revoked",
+				Status:      http.StatusBadRequest})
+			return
+		}
 		if revoked, rerr := store.JTIRevoked(ctx, s.db, subject.JTI); rerr != nil || revoked {
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 				Description: "the subject token has been revoked",

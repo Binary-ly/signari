@@ -65,6 +65,18 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	// An explicitly revoked token must stop working here immediately. This is the
 	// endpoint where /revoke earns its 200: we are the resource server, so there
 	// is no excuse for honouring a token the client told us to drop.
+	if revoked, err := store.GrantRevoked(ctx, s.db, claims.GrantID); err != nil || revoked {
+		// RFC 7009 §2.1: revoking the refresh token invalidates the access tokens
+		// from the same grant. Checked alongside the per-jti denylist because a
+		// client revokes the refresh token far more often than each access token.
+		if err != nil {
+			s.log.Error("userinfo grant revocation check failed", "err", err)
+		}
+		w.Header().Set("WWW-Authenticate",
+			`Bearer realm="signari", error="invalid_token", error_description="The authorization behind this token has been revoked"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	if revoked, err := store.JTIRevoked(ctx, s.db, claims.JTI); err != nil || revoked {
 		if err != nil {
 			s.log.Error("userinfo revocation check failed", "err", err)

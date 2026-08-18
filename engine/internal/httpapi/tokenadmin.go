@@ -224,6 +224,15 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 	if time.Now().After(time.Unix(claims.Expiry, 0)) {
 		return inactive
 	}
+	// RFC 7009 §2.1's cascade, checked before the per-jti denylist: revoking the
+	// refresh token invalidates every access token from the same grant, and a
+	// client revokes the refresh token far more often than each access token.
+	if grantRevoked, gerr := store.GrantRevoked(ctx, s.db, claims.GrantID); gerr != nil || grantRevoked {
+		if gerr != nil {
+			s.log.Error("introspection grant revocation check failed", "err", gerr)
+		}
+		return inactive
+	}
 	revoked, err := store.JTIRevoked(ctx, s.db, claims.JTI)
 	if err != nil {
 		// JTIRevoked fails closed and says why. Report inactive rather than

@@ -109,7 +109,11 @@ func TestRedemptionFailures(t *testing.T) {
 	}{
 		{"expired code", nil, func(g *GrantRecord) { g.ExpiresAt = now.Add(-time.Second) }, nil, "invalid_grant"},
 		{"missing code", func(r *TokenRequest) { r.Code = "" }, nil, nil, "invalid_request"},
-		{"missing redirect_uri", func(r *TokenRequest) { r.RedirectURI = "" }, nil, nil, "invalid_request"},
+		// A missing redirect_uri is NOT a failure -- OAuth 2.1 section 10.2
+		// removed the parameter from this request. See
+		// TestAnOAuth21ClientNeedNotSendRedirectURI, and
+		// TestACodeIsNeverRedeemableWithNeitherDefence for when it is still
+		// mandatory.
 		{"missing verifier", func(r *TokenRequest) { r.CodeVerifier = "" }, nil, nil, "invalid_request"},
 		{"wrong verifier", func(r *TokenRequest) { r.CodeVerifier = "0000000000000000000000000000000000000000000" }, nil, nil, "invalid_grant"},
 		{"disabled client", nil, nil, func(c *clients.Client) { c.Enabled = false }, "invalid_client"},
@@ -117,7 +121,11 @@ func TestRedemptionFailures(t *testing.T) {
 		{
 			// The authorization endpoint should never have issued this. If it did,
 			// the token endpoint must not paper over it.
+			// The client sends no verifier either -- with one, this is instead
+			// the downgrade case of section 3.2.4 and the answer is
+			// invalid_request. See TestAVerifierAgainstACodeWithNoChallengeIsRefused.
 			name:  "PKCE-required client with a challenge-less grant",
+			req:   func(r *TokenRequest) { r.CodeVerifier = "" },
 			grant: func(g *GrantRecord) { g.CodeChallenge = "" },
 			want:  "invalid_grant",
 		},
@@ -233,4 +241,127 @@ func TestParseClientCredentials(t *testing.T) {
 			t.Errorf("auth method = %q secret = %q", r.AuthMethod, r.ClientSecret)
 		}
 	})
+}
+
+// OAuth 2.1 section 4.1.3: the server must "verify that the code_verifier
+// parameter is present if and only if a code_challenge parameter was present in
+// the authorization request".
+//
+// Both halves of a biconditional are failures. We enforced one and ignored the
+// other for as long as this function has existed.
+
+// An OAuth 2.1 client does not send redirect_uri. Section 10.2 removed it
+// because PKCE now does the job it was there for, and warns that a server
+// expecting it is incompatible with such a client. We were that server.
+func TestAnOAuth21ClientNeedNotSendRedirectURI(t *testing.T) {
+	now := time.Now()
+	req := tokenReq()
+	req.RedirectURI = "" // exactly what a conformant OAuth 2.1 client sends
+
+	if _, err := ValidateCodeRedemption(req, testClient(), grant(now), now); err != nil {
+		t.Fatalf("a conformant OAuth 2.1 redemption was rejected: %v", err)
+	}
+}
+
+// Removed from the request is not the same as unchecked. Section 10.2: a server
+// supporting both revisions "MUST allow clients to send the redirect_uri
+// parameter in the token request, and MUST enforce the parameter as described
+// in [RFC6749]".
+func TestARedirectURIThatIsSentIsStillEnforced(t *testing.T) {
+	now := time.Now()
+	req := tokenReq()
+	req.RedirectURI = "https://app.example.com/other"
+
+	_, err := ValidateCodeRedemption(req, testClient(), grant(now), now)
+	if err == nil {
+		t.Fatal("a code was redeemed through a callback it was not issued for")
+	}
+	if err.Code != "invalid_grant" {
+		t.Errorf("error = %q, want invalid_grant", err.Code)
+	}
+}
+
+// The invariant the two rules above combine into: a code is never redeemable
+// with neither injection defence present. Dropping the redirect_uri requirement
+// is only safe because PKCE is mandatory; for a client that has opted out of
+// PKCE, the older defence becomes mandatory again.
+func TestACodeIsNeverRedeemableWithNeitherDefence(t *testing.T) {
+	now := time.Now()
+
+	g := grant(now)
+	g.CodeChallenge, g.CodeChallengeMethod = "", "" // legacy code, no PKCE
+
+	c := testClient()
+	c.RequirePKCE = false // the deliberate per-client OAuth 2.0 fallback
+
+	req := tokenReq()
+	req.CodeVerifier = ""
+	req.RedirectURI = "" // ...and now neither defence is in play
+
+	_, err := ValidateCodeRedemption(req, c, g, now)
+	if err == nil {
+		t.Fatal("a code with no PKCE challenge was redeemed without a " +
+			"redirect_uri: nothing at all bound that code to the client that " +
+			"started the flow")
+	}
+	if err.Code != "invalid_request" {
+		t.Errorf("error = %q, want invalid_request", err.Code)
+	}
+
+	// The same client sending redirect_uri is fine -- that is RFC 6749.
+	req.RedirectURI = "https://app.example.com/cb"
+	if _, err := ValidateCodeRedemption(req, c, g, now); err != nil {
+		t.Fatalf("a legacy OAuth 2.0 redemption was rejected: %v", err)
+	}
+}
+
+// The half we ignored: a verifier arriving against a code that has no
+// challenge. Section 3.2.4 names this case in the definition of
+// invalid_request -- a request that "contains a code_verifier although no
+// code_challenge was sent in the authorization request".
+//
+// The client believes it is using PKCE. If its challenge was stripped before
+// the authorization endpoint, accepting the verifier tells it everything
+// worked while the binding it relied on is gone.
+func TestAVerifierAgainstACodeWithNoChallengeIsRefused(t *testing.T) {
+	now := time.Now()
+
+	g := grant(now)
+	g.CodeChallenge, g.CodeChallengeMethod = "", "" // the challenge never arrived
+
+	c := testClient()
+	c.RequirePKCE = false // so only the biconditional can reject this
+
+	req := tokenReq() // still carrying the verifier the client computed
+
+	_, err := ValidateCodeRedemption(req, c, g, now)
+	if err == nil {
+		t.Fatal("a code_verifier was accepted against a code carrying no " +
+			"challenge; a downgraded request was served as a successful one")
+	}
+	if err.Code != "invalid_request" {
+		t.Errorf("error = %q, want invalid_request (section 3.2.4 names this "+
+			"exact case)", err.Code)
+	}
+}
+
+// Section 4.1.3, unconditionally: "If there was no code_challenge in the
+// authorization request associated with the authorization code in the token
+// request, the authorization server MUST reject the token request."
+//
+// RequirePKCE defaults to true in the schema, so this is the default path.
+func TestPKCEIsRequiredByDefault(t *testing.T) {
+	now := time.Now()
+
+	g := grant(now)
+	g.CodeChallenge, g.CodeChallengeMethod = "", ""
+
+	req := tokenReq()
+	req.CodeVerifier = ""
+
+	// testClient has RequirePKCE true, matching the column default.
+	if _, err := ValidateCodeRedemption(req, testClient(), g, now); err == nil {
+		t.Fatal("a code issued without PKCE was redeemed by a client whose " +
+			"policy requires it")
+	}
 }

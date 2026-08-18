@@ -188,18 +188,39 @@ func ValidateCodeRedemption(req TokenRequest, c *clients.Client, g *GrantRecord,
 		return false, tokenErr("invalid_grant", "authorization code has expired")
 	}
 
-	// 2. Exactly the URI used at authorization. Not "any registered URI" -- that
-	// weaker check lets a code obtained via one callback be redeemed through
-	// another, which is the classic code-injection setup.
-	if req.RedirectURI == "" {
-		return false, tokenErr("invalid_request", "redirect_uri is required")
-	}
-	if req.RedirectURI != g.RedirectURI {
-		return false, tokenErr("invalid_grant",
-			"redirect_uri does not match the one used in the authorization request")
+	// 2. Code injection defence, of which there are two and at least one must be
+	// present.
+	//
+	// OAuth 2.1 REMOVED redirect_uri from the token request. Section 10.2: "In
+	// OAuth 2.1, authorization code injection is prevented by the code_challenge
+	// and code_verifier parameters, making the inclusion of the redirect_uri
+	// parameter serve no purpose in the token request. As such, it has been
+	// removed." It then warns, in a sentence that described this function until
+	// today: "A client following only the OAuth 2.1 recommendations will not
+	// send the redirect_uri in the token request, and therefore will not be
+	// compatible with an authorization server that expects the parameter."
+	//
+	// We demanded it, so a correctly written OAuth 2.1 client could not redeem a
+	// code here at all. Now: enforced when sent -- section 10.2 makes that a MUST
+	// for any server supporting both revisions -- and required only when PKCE is
+	// absent, so no code is ever redeemable with neither defence in place.
+	if req.RedirectURI != "" {
+		// Exactly the URI used at authorization. Not "any registered URI" -- that
+		// weaker check lets a code obtained via one callback be redeemed through
+		// another, which is the classic code-injection setup.
+		if req.RedirectURI != g.RedirectURI {
+			return false, tokenErr("invalid_grant",
+				"redirect_uri does not match the one used in the authorization request")
+		}
+	} else if g.CodeChallenge == "" {
+		return false, tokenErr("invalid_request",
+			"redirect_uri is required for an authorization code issued without PKCE")
 	}
 
-	// 4. PKCE.
+	// 3. PKCE. Section 4.1.3 requires the server to "verify that the
+	// code_verifier parameter is present if and only if a code_challenge
+	// parameter was present in the authorization request" -- a biconditional,
+	// so both halves are failures.
 	if g.CodeChallenge != "" {
 		if req.CodeVerifier == "" {
 			return false, tokenErr("invalid_request", "code_verifier is required")
@@ -207,9 +228,32 @@ func ValidateCodeRedemption(req TokenRequest, c *clients.Client, g *GrantRecord,
 		if err := VerifyPKCE(g.CodeChallengeMethod, g.CodeChallenge, req.CodeVerifier); err != nil {
 			return false, tokenErr("invalid_grant", "code_verifier is invalid")
 		}
-	} else if c.RequirePKCE {
-		// A stored grant with no challenge for a PKCE-required client means the
-		// authorization endpoint let something through it should not have.
+		return false, nil
+	}
+
+	// The other half of the biconditional. Section 3.2.4 names this case in the
+	// definition of invalid_request: a request that "contains a code_verifier
+	// although no code_challenge was sent in the authorization request".
+	//
+	// Ignoring it -- which we did -- hides a downgrade: a client that believes it
+	// is using PKCE, whose challenge was stripped somewhere between the browser
+	// and the authorization endpoint, gets a token and no indication that its
+	// binding was silently discarded.
+	if req.CodeVerifier != "" {
+		return false, tokenErr("invalid_request",
+			"code_verifier was sent but the authorization request carried no "+
+				"code_challenge; the request may have been downgraded")
+	}
+	if c.RequirePKCE {
+		// Section 4.1.3, unconditionally: "If there was no code_challenge in the
+		// authorization request associated with the authorization code in the
+		// token request, the authorization server MUST reject the token request."
+		//
+		// RequirePKCE defaults to true in the schema, so this is the default path
+		// and we are OAuth 2.1 conformant out of the box. Clearing the flag is a
+		// deliberate per-client fallback to RFC 6749 behaviour for a legacy
+		// application -- and the branch above then makes redirect_uri mandatory
+		// for it, which is the defence OAuth 2.0 relied on.
 		return false, tokenErr("invalid_grant", "authorization code was issued without PKCE")
 	}
 

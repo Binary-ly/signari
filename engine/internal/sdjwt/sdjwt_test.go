@@ -306,3 +306,94 @@ func TestDecoysHaveNoDisclosure(t *testing.T) {
 	}
 	t.Logf("%d decoy digests alongside %d real claims", decoys, len(ds))
 }
+
+// §4.1: "The same digest value MUST NOT appear more than once in the SD-JWT."
+//
+// Real digests cannot collide — unique salts, SHA-256 — so this is about the
+// decoys, which are random and compared against nothing. Negligible probability,
+// unconditional requirement.
+func TestNoDigestAppearsTwice(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		payload, _, err := Payload(nil, map[string]any{"a": 1, "b": 2, "c": 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[string]bool{}
+		for _, d := range payload["_sd"].([]string) {
+			if seen[d] {
+				t.Fatalf("digest %q appears twice", d)
+			}
+			seen[d] = true
+		}
+	}
+}
+
+// §4.1: "The payload MUST NOT contain the claims _sd or ... except for the
+// purpose of conveying digests."
+//
+// An always-visible claim by either name would be overwritten by the digest
+// array, so the credential would quietly not say what was configured.
+func TestReservedNamesCannotBeAlwaysVisibleClaims(t *testing.T) {
+	for _, name := range []string{"_sd", "..."} {
+		if _, _, err := Payload(map[string]any{name: "value"}, nil); err == nil {
+			t.Errorf("%q was accepted as an always-visible claim", name)
+		}
+	}
+}
+
+// The duplicate-digest guard, forced.
+//
+// §4.1 forbids a digest appearing twice, and SHA-256 will not oblige by chance —
+// so the guard was unprovable and a mutation removing it broke nothing. Swapping
+// the decoy source for one that always returns the same value makes the case
+// reachable, and now the rule is demonstrated rather than asserted.
+func TestDuplicateDigestsAreDroppedWhenTheSourceRepeats(t *testing.T) {
+	original := decoySource
+	t.Cleanup(func() { decoySource = original })
+	decoySource = func() (string, error) { return "AAAArepeatedDecoyDigestAAAA", nil }
+
+	for i := 0; i < 20; i++ {
+		payload, _, err := Payload(nil, map[string]any{"a": 1, "b": 2, "c": 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[string]bool{}
+		for _, d := range payload["_sd"].([]string) {
+			if seen[d] {
+				t.Fatalf("digest %q appears twice even though the guard should have "+
+					"dropped the repeat", d)
+			}
+			seen[d] = true
+		}
+	}
+}
+
+// And a decoy that collides with a REAL digest must not be added either — that
+// would make one digest ambiguous between a disclosure and nothing.
+func TestADecoyCollidingWithARealDigestIsDropped(t *testing.T) {
+	// Build once to learn a real digest.
+	_, ds, err := Payload(nil, map[string]any{"a": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	realDigest := ds[0].Digest()
+
+	original := decoySource
+	t.Cleanup(func() { decoySource = original })
+	decoySource = func() (string, error) { return realDigest, nil }
+
+	payload, ds2, err := Payload(nil, map[string]any{"a": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, d := range payload["_sd"].([]string) {
+		if d == ds2[0].Digest() {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("the real digest appears %d times; a decoy colliding with it "+
+			"would make that digest ambiguous", count)
+	}
+}

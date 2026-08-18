@@ -44,6 +44,20 @@ type CredentialRequest struct {
 	CredentialIdentifier string `json:"credential_identifier,omitempty"`
 	// Proofs carries key proofs, keyed by proof type (§8.2).
 	Proofs map[string][]json.RawMessage `json:"proofs,omitempty"`
+	// ResponseEncryption is §8.2's `credential_response_encryption`.
+	//
+	// Parsed only so it can be REFUSED. §8.3: "If the Client requested an
+	// encrypted response by including the credential_response_encryption object
+	// in the request, the Credential Issuer MUST encode the information in the
+	// Credential Response as specified by Section 10... Note that this is done
+	// regardless of the content."
+	//
+	// Ignoring it — which is what happens when a field is simply absent from the
+	// struct — returns the credential in the clear to a wallet that asked for it
+	// encrypted, with a 200 and nothing to indicate otherwise. A wallet asks
+	// because it does not trust something about the path the response takes, so
+	// answering in plaintext defeats exactly the precaution it was taking.
+	ResponseEncryption json.RawMessage `json:"credential_response_encryption,omitempty"`
 }
 
 // CredentialResponse is §8.3's response body.
@@ -90,6 +104,21 @@ func (r CredentialRequest) Validate() ([]string, error) {
 	}
 	if strings.TrimSpace(r.ConfigurationID) == "" {
 		return nil, fmt.Errorf("credential_configuration_id is required")
+	}
+
+	// §8.3 makes encrypting the response mandatory once the client asks. We do
+	// not implement §10 encryption, so the request is refused rather than
+	// answered in the clear.
+	//
+	// This is not advertised in our issuer metadata either, so a conformant
+	// client has no reason to ask — but "no reason to" is not the same as
+	// "cannot", and the failure of the alternative is silent.
+	if len(r.ResponseEncryption) > 0 && string(r.ResponseEncryption) != "null" {
+		return nil, fmt.Errorf("this issuer does not implement credential response " +
+			"encryption (section 10), and section 8.3 requires the response to be " +
+			"encrypted once credential_response_encryption is present. Refusing " +
+			"rather than returning the credential in the clear to a client that " +
+			"asked for it encrypted")
 	}
 
 	// §8.2: "The proofs parameter contains exactly one parameter named as the

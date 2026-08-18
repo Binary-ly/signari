@@ -145,6 +145,14 @@ func newSalt() (string, error) {
 func Payload(always map[string]any, selective map[string]any) (map[string]any, []Disclosure, error) {
 	out := make(map[string]any, len(always)+2)
 	for k, v := range always {
+		// §4.1: "The payload MUST NOT contain the claims _sd or ... except for
+		// the purpose of conveying digests." An always-visible claim by either
+		// name would be silently overwritten by the digest array below, so the
+		// credential would quietly not say what the configuration asked for.
+		if k == "_sd" || k == "..." {
+			return nil, nil, fmt.Errorf("%q cannot be an always-visible claim: the "+
+				"name is reserved for conveying digests", k)
+		}
 		out[k] = v
 	}
 
@@ -186,11 +194,25 @@ func Payload(always map[string]any, selective map[string]any) (map[string]any, [
 	// cryptographically secure random number", which is what newDecoy does. No
 	// disclosure is sent for them, so the holder simply sees digests they cannot
 	// open — as the specification says they will.
+	// §4.1: "The same digest value MUST NOT appear more than once in the SD-JWT."
+	//
+	// Real digests cannot collide in practice — the salts are unique and the
+	// hash is SHA-256 — so this guards the decoys, which are random and checked
+	// against nothing. The probability is negligible and the requirement is
+	// unconditional; a set costs nothing and removes the question.
+	seen := make(map[string]bool, len(digests))
+	for _, d := range digests {
+		seen[d] = true
+	}
 	for i := 0; i < decoyCount(len(digests)); i++ {
-		d, err := newDecoy()
+		d, err := decoySource()
 		if err != nil {
 			return nil, nil, err
 		}
+		if seen[d] {
+			continue
+		}
+		seen[d] = true
 		digests = append(digests, d)
 	}
 
@@ -225,6 +247,12 @@ func decoyCount(real int) int {
 	}
 	return int(n.Int64())
 }
+
+// decoySource produces decoy digests. A package variable so a test can force
+// the collision §4.1 forbids — SHA-256 will not produce one by chance, so a
+// guard against it is otherwise unprovable, and an unprovable guard is one
+// nobody can tell has stopped working.
+var decoySource = newDecoy
 
 // newDecoy returns a digest that opens to nothing.
 func newDecoy() (string, error) {

@@ -89,3 +89,45 @@ func TestTheNumberOfProofsIsBounded(t *testing.T) {
 		t.Fatalf("exactly the limit was refused: %v", err)
 	}
 }
+
+// §8.3: once the client includes `credential_response_encryption`, encrypting
+// the response is a MUST — "regardless of the content".
+//
+// We do not implement §10 encryption. The dangerous outcome is not refusing; it
+// is the field being absent from the request struct, where `json.Decode` drops
+// it silently and the credential goes back in the clear to a wallet that asked
+// for it encrypted. A wallet asks because it distrusts something about the path
+// the response takes, so plaintext defeats the precaution it was taking.
+func TestARequestForAnEncryptedResponseIsRefusedNotIgnored(t *testing.T) {
+	body := `{"credential_configuration_id":"Identity",
+	          "credential_response_encryption":{"jwk":{"kty":"EC"},"enc":"A128GCM"},
+	          "proofs":{"jwt":["a.b.c"]}}`
+	var req CredentialRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatal(err)
+	}
+	if len(req.ResponseEncryption) == 0 {
+		t.Fatal("the parameter was dropped during decoding, which is how the " +
+			"credential ends up in the clear")
+	}
+	_, err := req.Validate()
+	if err == nil {
+		t.Fatal("a request asking for an encrypted response was accepted; the " +
+			"credential would have been returned unencrypted")
+	}
+	if !strings.Contains(err.Error(), "in the clear") {
+		t.Errorf("the error does not explain the consequence: %v", err)
+	}
+}
+
+// And a request that does NOT ask for encryption is unaffected.
+func TestAbsentResponseEncryptionIsFine(t *testing.T) {
+	var req CredentialRequest
+	if err := json.Unmarshal([]byte(
+		`{"credential_configuration_id":"Identity","proofs":{"jwt":["a.b.c"]}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := req.Validate(); err != nil {
+		t.Fatalf("an ordinary request was refused: %v", err)
+	}
+}

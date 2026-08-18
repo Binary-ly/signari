@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,7 +37,7 @@ func tokenReq() TokenRequest {
 
 func TestValidRedemption(t *testing.T) {
 	now := time.Now()
-	reused, err := ValidateCodeRedemption(tokenReq(), testClient(), grant(now), now)
+	reused, err := ValidateCodeRedemption(tokenReq(), testClient(), grant(now), "", now)
 	if err != nil {
 		t.Fatalf("valid redemption rejected: %v", err)
 	}
@@ -54,7 +55,7 @@ func TestCodeIsBoundToItsClient(t *testing.T) {
 	other := testClient()
 	other.ClientID = "other"
 
-	_, err := ValidateCodeRedemption(req, other, grant(now), now)
+	_, err := ValidateCodeRedemption(req, other, grant(now), "", now)
 	if err == nil {
 		t.Fatal("a code issued to `app` was redeemed by `other`")
 	}
@@ -70,7 +71,7 @@ func TestCodeReuseIsReportedForRevocation(t *testing.T) {
 	consumed := now.Add(-time.Second)
 	g.ConsumedAt = &consumed
 
-	reused, err := ValidateCodeRedemption(tokenReq(), testClient(), g, now)
+	reused, err := ValidateCodeRedemption(tokenReq(), testClient(), g, "", now)
 	if err == nil {
 		t.Fatal("a consumed code was accepted")
 	}
@@ -89,7 +90,7 @@ func TestRedirectURIMustMatchTheAuthorizationRequest(t *testing.T) {
 	req := tokenReq()
 	req.RedirectURI = "https://app.example.com/other" // registered, but not the one used
 
-	_, err := ValidateCodeRedemption(req, c, grant(now), now)
+	_, err := ValidateCodeRedemption(req, c, grant(now), "", now)
 	if err == nil {
 		t.Fatal("redemption succeeded through a different registered redirect_uri")
 	}
@@ -143,7 +144,7 @@ func TestRedemptionFailures(t *testing.T) {
 			if tc.client != nil {
 				tc.client(c)
 			}
-			_, err := ValidateCodeRedemption(req, c, g, now)
+			_, err := ValidateCodeRedemption(req, c, g, "", now)
 			if err == nil {
 				t.Fatal("expected an error")
 			}
@@ -155,7 +156,7 @@ func TestRedemptionFailures(t *testing.T) {
 }
 
 func TestUnknownCodeIsInvalidGrant(t *testing.T) {
-	_, err := ValidateCodeRedemption(tokenReq(), testClient(), nil, time.Now())
+	_, err := ValidateCodeRedemption(tokenReq(), testClient(), nil, "", time.Now())
 	if err == nil || err.Code != "invalid_grant" {
 		t.Fatalf("err = %v, want invalid_grant", err)
 	}
@@ -258,7 +259,7 @@ func TestAnOAuth21ClientNeedNotSendRedirectURI(t *testing.T) {
 	req := tokenReq()
 	req.RedirectURI = "" // exactly what a conformant OAuth 2.1 client sends
 
-	if _, err := ValidateCodeRedemption(req, testClient(), grant(now), now); err != nil {
+	if _, err := ValidateCodeRedemption(req, testClient(), grant(now), "", now); err != nil {
 		t.Fatalf("a conformant OAuth 2.1 redemption was rejected: %v", err)
 	}
 }
@@ -272,7 +273,7 @@ func TestARedirectURIThatIsSentIsStillEnforced(t *testing.T) {
 	req := tokenReq()
 	req.RedirectURI = "https://app.example.com/other"
 
-	_, err := ValidateCodeRedemption(req, testClient(), grant(now), now)
+	_, err := ValidateCodeRedemption(req, testClient(), grant(now), "", now)
 	if err == nil {
 		t.Fatal("a code was redeemed through a callback it was not issued for")
 	}
@@ -298,7 +299,7 @@ func TestACodeIsNeverRedeemableWithNeitherDefence(t *testing.T) {
 	req.CodeVerifier = ""
 	req.RedirectURI = "" // ...and now neither defence is in play
 
-	_, err := ValidateCodeRedemption(req, c, g, now)
+	_, err := ValidateCodeRedemption(req, c, g, "", now)
 	if err == nil {
 		t.Fatal("a code with no PKCE challenge was redeemed without a " +
 			"redirect_uri: nothing at all bound that code to the client that " +
@@ -310,7 +311,7 @@ func TestACodeIsNeverRedeemableWithNeitherDefence(t *testing.T) {
 
 	// The same client sending redirect_uri is fine -- that is RFC 6749.
 	req.RedirectURI = "https://app.example.com/cb"
-	if _, err := ValidateCodeRedemption(req, c, g, now); err != nil {
+	if _, err := ValidateCodeRedemption(req, c, g, "", now); err != nil {
 		t.Fatalf("a legacy OAuth 2.0 redemption was rejected: %v", err)
 	}
 }
@@ -334,7 +335,7 @@ func TestAVerifierAgainstACodeWithNoChallengeIsRefused(t *testing.T) {
 
 	req := tokenReq() // still carrying the verifier the client computed
 
-	_, err := ValidateCodeRedemption(req, c, g, now)
+	_, err := ValidateCodeRedemption(req, c, g, "", now)
 	if err == nil {
 		t.Fatal("a code_verifier was accepted against a code carrying no " +
 			"challenge; a downgraded request was served as a successful one")
@@ -360,7 +361,7 @@ func TestPKCEIsRequiredByDefault(t *testing.T) {
 	req.CodeVerifier = ""
 
 	// testClient has RequirePKCE true, matching the column default.
-	if _, err := ValidateCodeRedemption(req, testClient(), g, now); err == nil {
+	if _, err := ValidateCodeRedemption(req, testClient(), g, "", now); err == nil {
 		t.Fatal("a code issued without PKCE was redeemed by a client whose " +
 			"policy requires it")
 	}
@@ -471,4 +472,88 @@ func TestClientCredentialsResolveTheSameWayEverywhere(t *testing.T) {
 				creds.ClientID, creds.ClientSecret, creds.AuthMethod)
 		}
 	})
+}
+
+// RFC 9449 §10, a MUST at the token endpoint:
+//
+//	"When a token request is received, the authorization server computes the JWK
+//	Thumbprint of the proof-of-possession public key in the DPoP proof and
+//	verifies that it matches the dpop_jkt parameter value in the authorization
+//	request. If they do not match, it MUST reject the request."
+//
+// This is the binding PKCE does not provide. PKCE ties the code to a secret the
+// client generated; dpop_jkt ties it to the KEY the resulting token will carry,
+// so a code intercepted in the front channel cannot be redeemed by an attacker's
+// own DPoP key even if they can produce a perfectly valid proof for it.
+func TestACodeBoundToADPoPKeyIsOnlyRedeemableWithThatKey(t *testing.T) {
+	const bound = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
+	const other = "0000000000000000000000000000000000000000000"
+
+	withJKT := func() *GrantRecord {
+		g := grant(time.Now())
+		g.DPoPJKT = bound
+		return g
+	}
+
+	t.Run("the same key redeems it", func(t *testing.T) {
+		if _, err := ValidateCodeRedemption(tokenReq(), testClient(), withJKT(),
+			bound, time.Now()); err != nil {
+			t.Fatalf("the bound key was refused: %v", err)
+		}
+	})
+
+	t.Run("a different key does not", func(t *testing.T) {
+		_, err := ValidateCodeRedemption(tokenReq(), testClient(), withJKT(),
+			other, time.Now())
+		if err == nil {
+			t.Fatal("a code bound to one DPoP key was redeemed with another. " +
+				"An intercepted code is then redeemable by anybody who can make " +
+				"a proof, which is what dpop_jkt exists to stop.")
+		}
+		if err.Code != "invalid_dpop_proof" {
+			t.Errorf("code = %q, want invalid_dpop_proof", err.Code)
+		}
+	})
+
+	t.Run("no proof at all does not", func(t *testing.T) {
+		_, err := ValidateCodeRedemption(tokenReq(), testClient(), withJKT(),
+			"", time.Now())
+		if err == nil {
+			t.Fatal("a code bound to a DPoP key was redeemed with no proof")
+		}
+	})
+
+	t.Run("an unbound code is unaffected", func(t *testing.T) {
+		// dpop_jkt is OPTIONAL (§10). A code issued without one keeps the
+		// behaviour that existed before, including for a client that happens to
+		// present a proof anyway.
+		if _, err := ValidateCodeRedemption(tokenReq(), testClient(), grant(time.Now()),
+			bound, time.Now()); err != nil {
+			t.Fatalf("an unbound code was refused because a proof was present: %v", err)
+		}
+	})
+}
+
+// The parameter is a SHA-256 JWK Thumbprint, so its shape is fixed. A malformed
+// one can never match a real thumbprint, and finding that out at the token
+// endpoint means the person has already signed in and been redirected.
+func TestAMalformedDPoPJKTIsRefusedAtAuthorization(t *testing.T) {
+	c := testClient()
+	for _, bad := range []string{
+		"too-short",
+		strings.Repeat("a", 44), // one too long
+		"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", // 43 chars, not base64url
+	} {
+		req := goodRequest()
+		req.DPoPJKT = bad
+		if err := ValidateAuthz(req, c, nil); err == nil {
+			t.Errorf("dpop_jkt %q was accepted", bad)
+		}
+	}
+	// The real shape passes.
+	req := goodRequest()
+	req.DPoPJKT = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
+	if err := ValidateAuthz(req, c, nil); err != nil {
+		t.Errorf("a well-formed dpop_jkt was refused: %v", err)
+	}
 }

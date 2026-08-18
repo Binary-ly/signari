@@ -144,6 +144,34 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RFC 9449 §10.1, and it is a MUST for us specifically:
+	//
+	//	"Both mechanisms MUST be supported by an authorization server that
+	//	supports PAR and DPoP."
+	//
+	// The two mechanisms are `dpop_jkt` in the POST body, and a DPoP header on
+	// the PAR request itself -- in which case the server "MUST further behave as
+	// if the contained public key's thumbprint was provided using dpop_jkt".
+	//
+	// Supporting only the parameter would make a client that attaches its DPoP
+	// header to every authorization-server request -- which §10.1 explicitly
+	// exists to accommodate -- silently lose the binding.
+	jkt := r.PostForm.Get("dpop_jkt")
+	if proofJKT, derr := s.verifyDPoPForRequest(r, ""); derr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_dpop_proof", derr.Error())
+		return
+	} else if proofJKT != "" {
+		// "If both mechanisms are used at the same time, the authorization
+		// server MUST reject the request if the JWK Thumbprint in dpop_jkt does
+		// not match the public key in the DPoP header."
+		if jkt != "" && jkt != proofJKT {
+			writeError(w, http.StatusBadRequest, "invalid_request",
+				"dpop_jkt does not match the key in the DPoP proof on this request")
+			return
+		}
+		jkt = proofJKT
+	}
+
 	// Everything the client sent, kept verbatim.
 	params := map[string]string{}
 	for k, v := range r.PostForm {
@@ -171,9 +199,10 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	}
 	sum := sha256.Sum256([]byte(handle))
 	if _, err := s.db.Exec(ctx, `
-		INSERT INTO core.pushed_requests (uri_hash, org_id, client_id, params, expires_at)
-		VALUES ($1, $2::uuid, $3, $4, now() + $5::interval)`,
-		sum[:], c.OrgID, clientID, blob, parLifetime.String()); err != nil {
+		INSERT INTO core.pushed_requests
+			(uri_hash, org_id, client_id, params, expires_at, dpop_jkt)
+		VALUES ($1, $2::uuid, $3, $4, now() + $5::interval, NULLIF($6,''))`,
+		sum[:], c.OrgID, clientID, blob, parLifetime.String(), jkt); err != nil {
 		s.log.Error("storing a pushed request", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
@@ -198,11 +227,12 @@ func (s *Server) consumePushedRequest(ctx context.Context, requestURI, clientID 
 
 	var blob []byte
 	var storedClient string
+	var storedJKT *string
 	err := s.db.QueryRow(ctx, `
 		UPDATE core.pushed_requests
 		SET used_at = now()
 		WHERE uri_hash = $1 AND used_at IS NULL AND expires_at > now()
-		RETURNING params, client_id`, sum[:]).Scan(&blob, &storedClient)
+		RETURNING params, client_id, dpop_jkt`, sum[:]).Scan(&blob, &storedClient, &storedJKT)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("this request_uri has already been used, or has expired")
@@ -222,7 +252,21 @@ func (s *Server) consumePushedRequest(ctx context.Context, requestURI, clientID 
 		return nil, err
 	}
 	out := url.Values{}
+	// The thumbprint from the column wins over any in the stored parameters.
+	//
+	// Both mechanisms of RFC 9449 §10.1 converge here: `dpop_jkt` sent in the
+	// POST body lands in `params`, and a DPoP header on the push lands in the
+	// column. The push already refused the case where both were present and
+	// disagreed, so by this point they cannot conflict -- and reading the column
+	// means a header-only client gets the binding it asked for rather than
+	// silently losing it between the push and the authorization request.
+	if storedJKT != nil && *storedJKT != "" {
+		out.Set("dpop_jkt", *storedJKT)
+	}
 	for k, v := range params {
+		if k == "dpop_jkt" && out.Get("dpop_jkt") != "" {
+			continue
+		}
 		out.Set(k, v)
 	}
 	return out, nil

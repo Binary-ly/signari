@@ -63,13 +63,14 @@ func IssueCode(ctx context.Context, tx pgx.Tx, orgID, clientID, sid, userID stri
 	_, err := tx.Exec(ctx, `
 		INSERT INTO core.authorization_codes
 			(code_hash, org_id, client_id, sid, user_id, redirect_uri, scopes,
-			 code_challenge, code_challenge_method, nonce, resources, expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+			 code_challenge, code_challenge_method, nonce, resources, expires_at,
+			 dpop_jkt)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		hash, orgID, clientID, sid, userID, g.RedirectURI, g.Scopes,
 		// NULL, not "", when the client did not use PKCE. The database enforces
 		// that the challenge and its method are both present or both absent.
 		nullIfEmpty(g.CodeChallenge), nullIfEmpty(g.CodeChallengeMethod),
-		nullIfEmpty(g.Nonce), resources, g.ExpiresAt)
+		nullIfEmpty(g.Nonce), resources, g.ExpiresAt, nullIfEmpty(g.DPoPJKT))
 	if err != nil {
 		return fmt.Errorf("issuing authorization code: %w", err)
 	}
@@ -99,15 +100,16 @@ type ConsumedCode struct {
 // must be distinguished: the second case requires revoking the token family.
 func ConsumeCode(ctx context.Context, tx pgx.Tx, hash []byte) (*ConsumedCode, error) {
 	var c ConsumedCode
-	var challenge, method, nonce *string
+	var challenge, method, nonce, jkt *string
 	err := tx.QueryRow(ctx, `
 		UPDATE core.authorization_codes
 		SET consumed_at = now()
 		WHERE code_hash = $1 AND consumed_at IS NULL
 		RETURNING org_id::text, client_id, sid, user_id::text, redirect_uri, scopes,
-		          code_challenge, code_challenge_method, nonce, resources, expires_at`, hash).
+		          code_challenge, code_challenge_method, nonce, resources, expires_at,
+		          dpop_jkt`, hash).
 		Scan(&c.OrgID, &c.ClientID, &c.SessionID, &c.UserID, &c.RedirectURI, &c.Scopes,
-			&challenge, &method, &nonce, &c.Resources, &c.ExpiresAt)
+			&challenge, &method, &nonce, &c.Resources, &c.ExpiresAt, &jkt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Distinguish "never existed" from "already spent". Only the latter is a
@@ -131,6 +133,9 @@ func ConsumeCode(ctx context.Context, tx pgx.Tx, hash []byte) (*ConsumedCode, er
 	}
 	if nonce != nil {
 		c.Nonce = *nonce
+	}
+	if jkt != nil {
+		c.DPoPJKT = *jkt
 	}
 	return &c, nil
 }

@@ -176,6 +176,9 @@ func parseBasic(h string) (id, secret string, ok bool) {
 
 // GrantRecord is the stored authorization code, as read back at redemption.
 type GrantRecord struct {
+	// DPoPJKT is the thumbprint the authorization request bound this code to,
+	// empty when `dpop_jkt` was not used. See ValidateCodeRedemption.
+	DPoPJKT             string
 	ClientID            string
 	RedirectURI         string
 	CodeChallenge       string
@@ -204,7 +207,8 @@ type GrantRecord struct {
 //
 // `alreadyConsumed` is returned separately from the error so the caller knows it
 // must revoke the token family, not merely reject the request.
-func ValidateCodeRedemption(req TokenRequest, c *clients.Client, g *GrantRecord, now time.Time) (alreadyConsumed bool, e *TokenError) {
+func ValidateCodeRedemption(req TokenRequest, c *clients.Client, g *GrantRecord,
+	presentedJKT string, now time.Time) (alreadyConsumed bool, e *TokenError) {
 	if c == nil {
 		return false, tokenErr("invalid_client", "unknown client")
 	}
@@ -264,6 +268,42 @@ func ValidateCodeRedemption(req TokenRequest, c *clients.Client, g *GrantRecord,
 	} else if g.CodeChallenge == "" {
 		return false, tokenErr("invalid_request",
 			"redirect_uri is required for an authorization code issued without PKCE")
+	}
+
+	// RFC 9449 §10, and it is a MUST:
+	//
+	//	"When a token request is received, the authorization server computes the
+	//	JWK Thumbprint of the proof-of-possession public key in the DPoP proof and
+	//	verifies that it matches the dpop_jkt parameter value in the authorization
+	//	request. If they do not match, it MUST reject the request."
+	//
+	// This is what makes the binding end to end. PKCE binds the code to a secret
+	// the client generated; dpop_jkt binds it to the KEY the resulting token
+	// will carry, so a code intercepted in the front channel cannot be redeemed
+	// by an attacker's own DPoP key even if they can produce a valid proof for
+	// it.
+	//
+	// Checked BEFORE the PKCE block, not after.
+	//
+	// That block returns early when a challenge is present, so a dpop_jkt check
+	// placed after it never ran for any code that used PKCE -- which is every
+	// code by default. The test caught it immediately; reading the function did
+	// not, because the early return is four lines below where the eye stops.
+	//
+	// The two are independent countermeasures and §10 notes they are
+	// complementary, so ordering them this way is also the honest arrangement:
+	// neither is a special case of the other.
+	if g.DPoPJKT != "" {
+		if presentedJKT == "" {
+			return false, tokenErr("invalid_dpop_proof",
+				"this authorization code is bound to a DPoP key (dpop_jkt) and the "+
+					"token request carried no DPoP proof")
+		}
+		if presentedJKT != g.DPoPJKT {
+			return false, tokenErr("invalid_dpop_proof",
+				"the DPoP proof is for a different key than the authorization "+
+					"request bound this code to")
+		}
 	}
 
 	// 3. PKCE. Section 4.1.3 requires the server to "verify that the

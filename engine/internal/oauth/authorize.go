@@ -2,6 +2,7 @@
 package oauth
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"sort"
@@ -26,6 +27,18 @@ type AuthzRequest struct {
 	ACRValues           string
 	MaxAge              *int
 	Resources           []string // RFC 8707 `resource`, repeatable
+
+	// DPoPJKT is RFC 9449 §10's `dpop_jkt`: the JWK Thumbprint of the key the
+	// issued code may be redeemed with.
+	//
+	// It closes the flow end to end in a way PKCE does not. PKCE binds the code
+	// to a secret the client generated; this binds it to the KEY the resulting
+	// token will be bound to, so a code intercepted in the front channel cannot
+	// be redeemed by an attacker's own DPoP key.
+	//
+	// OPTIONAL per §10. A code issued without one is redeemable by any
+	// correctly-proofed key, which is the behaviour that existed before.
+	DPoPJKT string
 }
 
 // ParseAuthz reads the query parameters. It does no validation: parsing and
@@ -40,6 +53,7 @@ func ParseAuthz(q url.Values) AuthzRequest {
 		State:               q.Get("state"),
 		Nonce:               q.Get("nonce"),
 		CodeChallenge:       q.Get("code_challenge"),
+		DPoPJKT:             q.Get("dpop_jkt"),
 		CodeChallengeMethod: q.Get("code_challenge_method"),
 		ResponseMode:        q.Get("response_mode"),
 		Prompt:              q.Get("prompt"),
@@ -197,6 +211,17 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 			return redirectErr("invalid_request",
 				"code_challenge must be 43-128 characters of base64url without padding")
 		}
+	}
+
+	// dpop_jkt is a SHA-256 JWK Thumbprint (RFC 7638), so base64url of 32 bytes
+	// -- 43 characters, unpadded. Checked here rather than at redemption
+	// because a malformed value can never match any real thumbprint, and
+	// discovering that at the token endpoint means the person has already
+	// signed in and been redirected before anything says the request was wrong.
+	if req.DPoPJKT != "" && !validThumbprint(req.DPoPJKT) {
+		return redirectErr("invalid_request",
+			"dpop_jkt must be the base64url SHA-256 JWK Thumbprint of the "+
+				"proof-of-possession key: 43 characters, unpadded")
 	}
 
 	// 7. Scope.
@@ -374,4 +399,17 @@ func NormaliseResponseType(rt string) string {
 	// Sorted order puts "code" before "id_token", which is also the canonical
 	// spelling, so the comparison reads naturally at the call site.
 	return strings.Join(parts, " ")
+}
+
+// validThumbprint reports whether s could be a SHA-256 JWK Thumbprint.
+//
+// RFC 7638 thumbprints with SHA-256 are 32 bytes, which is 43 base64url
+// characters without padding -- the same shape as a PKCE S256 challenge, and
+// checked the same way.
+func validThumbprint(s string) bool {
+	if len(s) != 43 {
+		return false
+	}
+	_, err := base64.RawURLEncoding.DecodeString(s)
+	return err == nil
 }

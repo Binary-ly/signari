@@ -470,7 +470,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, verr := oauth.ValidateCodeRedemption(req, c, &consumed.GrantRecord, time.Now()); verr != nil {
+	// The thumbprint of the DPoP proof on THIS request, verified above and
+	// carried in the context. RFC 9449 §10 compares it against the `dpop_jkt`
+	// the authorization request bound the code to.
+	if _, verr := oauth.ValidateCodeRedemption(req, c, &consumed.GrantRecord,
+		dpopThumbprintFrom(ctx), time.Now()); verr != nil {
 		// The code is already consumed by this point, which is correct: a failed
 		// redemption must not leave a reusable code behind.
 		if err := tx.Commit(ctx); err != nil {

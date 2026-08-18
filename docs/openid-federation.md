@@ -92,10 +92,72 @@ fetched and its signature checked against the key in its own `jwks`:
 And the separation held: the OIDC JWKS served two kids, neither of them the
 federation key's.
 
+## Trust Chain validation
+
+`oidfed.ValidateChain` implements §10.2's nine steps. A chain is an ordered list
+of Entity Statements from the subject up to a Trust Anchor; validating it is what
+turns "this server published a statement about itself" into "an authority I
+already trust vouches for this server".
+
+### The step that is easy to get backwards
+
+§10.2 verifies ES[0] — the subject's own Entity Configuration — **twice**, and
+the two checks do entirely different work:
+
+> For ES[0] ... verify that its signature validates with a public key in
+> ES[0]["jwks"].
+
+> For each j = 0,...,i-1, verify that the signature of ES[j] validates with a
+> public key in ES[j+1]["jwks"].
+
+The first is a **self-signature**. It proves internal consistency and proves
+nothing about trust, because anybody can sign a statement with a key they also
+published inside it. An implementation that does only this has built a validator
+that accepts every entity.
+
+The second is where trust actually flows. ES[1] is the Subordinate Statement
+issued by the superior *about* this entity, and its `jwks` is the key set the
+superior attests the subordinate has. So checking ES[0]'s signature against
+ES[1]'s `jwks` asks the only question that matters: **does the key this entity
+signed with match the key its superior says it has?**
+
+`TestALeafSignedWithAKeyItsSuperiorDoesNotAttestIsRefused` is that scenario
+directly — a leaf rotates to a key its intermediate has never seen and re-signs
+its own configuration. Self-consistent, unvouched-for, and refused.
+
+### Two things the caller must supply out of band
+
+`ValidateChain(chain, trustAnchorID, trustAnchorKeys, now)` takes the anchor's
+identifier *and* its keys from the caller, never from the chain. §10.2's last two
+steps are "verify that the issuer matches the Entity Identifier of the Trust
+Anchor" and "verify that its signature validates with a public key of the Trust
+Anchor" — and reading either from the chain makes the step verify the chain
+against itself. A chain that names its own anchor validates for anybody.
+
+### Chain expiry
+
+§10.4: "The expiration time of the whole Trust Chain is the minimum (exp) value
+within the Trust Chain." Taking the last statement's, or the subject's, would let
+one long-lived member extend the life of a chain whose weakest link has already
+gone stale.
+
+### Mutation-tested
+
+| Mutation | Test that caught it |
+|---|---|
+| Drop step 7 — verify only the self-signature | `TestALeafSignedWithAKeyItsSuperiorDoesNotAttestIsRefused` |
+| Take the anchor's keys from the chain | `TestAValidChainValidates` |
+| Chain expiry from the last member rather than the minimum | `TestTheChainExpiresWhenItsEarliestMemberDoes` |
+
+Also refused: a broken link (`ES[j].iss != ES[j+1].sub`), an expired member, a
+chain of one, a statement with no `kid` header (§3 makes it a MUST — without it a
+verifier must try every key, which turns "signed by the attested key" into
+"signed by any key in a set we were handed"), and any symmetric signing
+algorithm.
+
 ## Where it goes next
 
-Trust-chain resolution — fetching a superior's Subordinate Statement about us,
-and validating a chain from a leaf up to a Trust Anchor — is the next piece, and
-it is what turns a published configuration into actual federated trust. The
-`oidfed` package's `ValidateEntityID` and `ConfigurationURL` are already the
-pieces a fetcher needs.
+Fetching — retrieving a superior's Subordinate Statement from its
+`federation_fetch_endpoint` and assembling the chain over HTTP — is the remaining
+piece. The validation it feeds is now built and tested, so what is missing is
+transport rather than trust logic.

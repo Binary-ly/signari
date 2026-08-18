@@ -157,7 +157,7 @@ func (f *tokenFixture) issueCode(t *testing.T, verifier string) string {
 		Nonce: "nonce-1", Scopes: []string{"openid", "offline_access"},
 		ExpiresAt: time.Now().Add(time.Minute),
 	}
-	if err := store.IssueCode(ctx, tx, f.orgID, f.clientID, f.sid, f.userID, grant, hash, nil); err != nil {
+	if err := store.IssueCode(ctx, tx, f.orgID, f.clientID, f.sid, f.userID, grant, hash, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.TouchSessionClient(ctx, tx, f.sid, f.clientID); err != nil {

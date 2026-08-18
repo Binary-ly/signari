@@ -21,6 +21,7 @@ import (
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/rar"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 	"signari.dev/engine/internal/txntoken"
@@ -73,6 +74,23 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if authzErr := oauth.ValidateAuthz(req, c, lookupErr); authzErr != nil {
 		s.writeAuthzError(w, r, req, authzErr)
 		return
+	}
+
+	// RFC 9396: validated here, after the client is known, because §5's
+	// unknown-field rule is enforced against the types this CLIENT may request.
+	//
+	// Refused as a redirected error, not a rendered page: by this point the
+	// redirect_uri is validated, and §5 names an error code
+	// (`invalid_authorization_details`) that only reaches the client through the
+	// redirect. A client that asked for a permission it may not have needs to be
+	// told which one, in the place it is listening.
+	if c != nil && req.RawAuthorizationDetails != "" {
+		details, aerr := s.parseAuthorizationDetails(ctx, c, req.RawAuthorizationDetails)
+		if aerr != nil {
+			s.writeAuthzError(w, r, req, aerr)
+			return
+		}
+		req.AuthorizationDetails = details
 	}
 
 	// A client marked as requiring PAR must not be able to start an ordinary
@@ -247,7 +265,18 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		Scopes:              splitScopes(req.Scope),
 		ExpiresAt:           time.Now().Add(codeTTL),
 	}
-	if err := store.IssueCode(ctx, tx, orgID, c.ClientID, sid, userID, grant, hash, req.Resources); err != nil {
+	// RFC 9396 §7 requires the token response to return the details "as granted
+	// by the resource owner", so they are carried on the code rather than
+	// re-derived at the token endpoint from a parameter the client resends. A
+	// client that could resend them is a client that could change them.
+	details, derr := store.MarshalDetails(req.AuthorizationDetails)
+	if derr != nil {
+		s.log.Error("encoding authorization_details", "err", derr)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := store.IssueCode(ctx, tx, orgID, c.ClientID, sid, userID, grant, hash,
+		req.Resources, details); err != nil {
 		s.log.Error("issuing code", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -543,6 +572,13 @@ type tokenResponse struct {
 	IDToken      string `json:"id_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	Scope        string `json:"scope,omitempty"`
+	// RFC 9396 §7: "the AS MUST also return the authorization_details as granted
+	// by the resource owner and assigned to the respective access token."
+	//
+	// Omitted entirely when none were granted, rather than sent as an empty
+	// array: a client that never asked should not have to distinguish "you got
+	// nothing" from "this server does not do that".
+	AuthorizationDetails []rar.Detail `json:"authorization_details,omitempty"`
 }
 
 // mintSet issues the access token, ID token, and -- when offline_access was
@@ -721,7 +757,18 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 
 func (s *Server) mintTokens(ctx context.Context, tx pgx.Tx, c *clients.Client, g *store.ConsumedCode) (*tokenResponse, error) {
 	resp, _, err := s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, g.Nonce, g.Scopes, g.Resources, "")
-	return resp, err
+	if err != nil {
+		return resp, err
+	}
+	// §7: returned "as granted by the resource owner" -- read back from the code,
+	// never from a parameter the client resends at the token endpoint. A client
+	// that could resend them is a client that could change them.
+	granted, derr := store.UnmarshalDetails(g.Details)
+	if derr != nil {
+		return nil, derr
+	}
+	resp.AuthorizationDetails = granted
+	return resp, nil
 }
 
 func (s *Server) mintFromGrant(ctx context.Context, tx pgx.Tx, c *clients.Client, g *store.RefreshGrant) (*tokenResponse, []byte, error) {

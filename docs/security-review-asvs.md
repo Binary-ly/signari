@@ -55,7 +55,7 @@ Our userinfo and introspection endpoints are the resource server.
 | | Requirement | Verdict |
 |---|---|---|
 | V10.3.1 | Accept only tokens whose audience is this service | ✅ |
-| V10.3.2 | Enforce `sub`, `scope`, `authorization_details` in the decision | ⚠️ `sub` and `scope` yes; **`authorization_details` is not implemented at all** — see "still behind" below |
+| V10.3.2 | Enforce `sub`, `scope`, `authorization_details` in the decision | ✅ all three — `authorization_details` implemented since this review (RFC 9396) |
 | V10.3.3 | Identify the user by a non-reassignable claim | ✅ `sub` is a uuid, never an email |
 | V10.3.4 | Enforce `acr`, `amr`, `auth_time` when required | ✅ and re-evaluated per authorization request rather than frozen at sign-in |
 | V10.3.5 (L3) | Sender-constrained tokens | ✅ DPoP (RFC 9449) and mTLS (RFC 8705) both |
@@ -144,10 +144,9 @@ would reintroduce the attack through the parameter meant to prevent it.
 
 ## What this sweep leaves open
 
-- **`authorization_details` (RFC 9396)** is not implemented, which makes V10.3.2
-  partial and V10.4.15 not applicable. It is also the mechanism OID4VCI §6.2
-  prefers for naming credential configurations, so it is one piece of work that
-  closes two gaps.
+- ~~**`authorization_details` (RFC 9396)** is not implemented~~ — **done**, which
+  closed V10.3.2 and V10.4.15. See
+  [rich-authorization-requests.md](rich-authorization-requests.md).
 - **V10.4.13 and V10.4.14** are L3 requirements met as capabilities rather than
   as mandates. Making PAR and sender-constrained tokens compulsory for every
   client is a deployment decision, not a code change, and forcing it would break

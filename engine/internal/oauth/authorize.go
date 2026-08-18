@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/url"
+	"signari.dev/engine/internal/rar"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,12 @@ type AuthzRequest struct {
 	ACRValues           string
 	MaxAge              *int
 	Resources           []string // RFC 8707 `resource`, repeatable
+	// RawAuthorizationDetails is RFC 9396 `authorization_details` as sent.
+	RawAuthorizationDetails string
+	// AuthorizationDetails is the same thing parsed and validated against the
+	// registered types. Carried on the request rather than re-parsed downstream,
+	// so exactly one place decides what was asked for.
+	AuthorizationDetails []rar.Detail
 
 	// DPoPJKT is RFC 9449 §10's `dpop_jkt`: the JWK Thumbprint of the key the
 	// issued code may be redeemed with.
@@ -63,6 +70,11 @@ func ParseAuthz(q url.Values) AuthzRequest {
 		// "authenticate right now".
 		MaxAge:    parseMaxAge(q.Get("max_age")),
 		Resources: q["resource"],
+		// The RAW parameter. Parsing it needs the registered types, which are a
+		// database read, so it happens in the handler -- and this field keeps the
+		// unparsed text so nothing downstream has to fetch it from the query
+		// again and risk reading a different value than the one validated.
+		RawAuthorizationDetails: q.Get(rar.Param),
 	}
 }
 

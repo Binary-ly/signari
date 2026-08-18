@@ -694,6 +694,16 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		md.RegistrationEndpoint = s.cfg.Issuer + "/oauth2/register"
 	}
 
+	// RFC 9396 §10: advertise the registered authorization details types, and
+	// only those. The same rule this file already applies to
+	// registration_endpoint -- a type named here that no client may request is a
+	// capability advertised before it works.
+	if types, terr := store.AllAuthorizationDetailTypes(r.Context(), s.db); terr != nil {
+		s.log.Error("listing authorization detail types", "err", terr)
+	} else if len(types) > 0 {
+		md.AuthorizationDetailsTypesSupported = types
+	}
+
 	// Discovery is public, stable, and polled. Let it be cached, but not so long
 	// that adding a signing algorithm takes a day to become visible.
 	w.Header().Set("Cache-Control", "public, max-age=300")

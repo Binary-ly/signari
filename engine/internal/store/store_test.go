@@ -105,7 +105,7 @@ func TestConsumeCodeIsAtomicUnderConcurrency(t *testing.T) {
 		CodeChallenge:       oauth.Challenge("v"),
 		CodeChallengeMethod: "S256",
 		ExpiresAt:           time.Now().Add(time.Minute),
-	}, hash, nil))
+	}, hash, nil, nil))
 	must(t, tx.Commit(ctx))
 
 	const racers = 8

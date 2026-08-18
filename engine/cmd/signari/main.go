@@ -103,6 +103,7 @@ var twoWordCommands = map[string]bool{
 	"authz":      true,
 	"federation": true,
 	"credential": true,
+	"rar":        true,
 }
 
 func usage() error {
@@ -157,6 +158,9 @@ commands:
   federation show     print the Entity Configuration this instance publishes
   client set-grants   set which grant types a client may use
   credential offer    mint an OID4VCI Credential Offer a wallet can redeem
+  rar register        register an RFC 9396 authorization details type
+  rar allow           let a client request a registered type
+  rar list            show registered types and which clients may use them
   doctor              inspect this deployment and report what is wrong with it
   serve               serve the OIDC endpoints
 
@@ -341,6 +345,13 @@ func run(args []string) error {
 	grantTypes := fs.String("grant-types", "",
 		"comma-separated grant types this client may use, replacing what it has: "+
 			strings.Join(knownGrantTypes, ", "))
+	rarType := fs.String("type", "", "authorization details type identifier (rar)")
+	rarFields := fs.String("fields", "",
+		"comma-separated common data fields this type uses: "+
+			"locations, actions, datatypes, identifier, privileges")
+	rarRequired := fs.String("required", "",
+		"comma-separated subset of -fields that must be present")
+	rarDesc := fs.String("describe", "", "what this type authorises, for operators")
 	credConfigs := fs.String("credential-configuration", "",
 		"comma-separated credential_configuration_id values, as they appear in the "+
 			"Credential Issuer's metadata (credential offer)")
@@ -527,6 +538,12 @@ func run(args []string) error {
 		return logoutTest(ctx, conn, *rpURL, *clientID, *issuer, *subject, *sidFlag)
 	case "federation enable":
 		return federationEnable(ctx, conn, *authorityHints, *orgName, *homepageURI)
+	case "rar register":
+		return rarRegister(ctx, conn, *orgID, *rarType, *rarFields, *rarRequired, *rarDesc)
+	case "rar allow":
+		return rarAllow(ctx, conn, *clientID, *rarType)
+	case "rar list":
+		return rarList(ctx, conn)
 	case "credential offer":
 		return credentialOffer(ctx, conn, *orgID, *email, *clientID, *credConfigs,
 			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL)
@@ -6087,4 +6104,145 @@ func clientSetGrants(ctx context.Context, conn *pgx.Conn, clientID, grants strin
 	}
 	fmt.Printf("client %s\n  grant types: %s\n", clientID, strings.Join(wanted, ", "))
 	return nil
+}
+
+// rarCommonFields are §2.2's common data fields, the only ones a type may
+// declare. A field outside this set could never be validated, and a registration
+// that cannot be validated is one that accepts anything.
+var rarCommonFields = []string{"locations", "actions", "datatypes", "identifier", "privileges"}
+
+// rarRegister records an RFC 9396 authorization details type.
+//
+// §10 says "The registration of authorization details types with the AS is
+// outside the scope of this specification", so this command is our answer to a
+// question the RFC deliberately leaves open. It registers FIELDS, not value
+// schemas: §2.2 says the allowable values "are determined by the API being
+// protected", which this server cannot check, and a validator that pretended to
+// would look stricter than it is.
+func rarRegister(ctx context.Context, conn *pgx.Conn, orgID, typ, fields, required, desc string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	if strings.TrimSpace(typ) == "" {
+		return fmt.Errorf("give -type, the identifier clients will send in " +
+			"authorization_details")
+	}
+	f := splitList(fields)
+	if len(f) == 0 {
+		return fmt.Errorf("give -fields: which of %s this type uses. A type with no "+
+			"fields carries no permission and could only ever authorise nothing",
+			strings.Join(rarCommonFields, ", "))
+	}
+	req := splitList(required)
+	for _, name := range append(append([]string{}, f...), req...) {
+		if !slices.Contains(rarCommonFields, name) {
+			return fmt.Errorf("%q is not one of RFC 9396 section 2.2's common data "+
+				"fields (%s). A field outside that set cannot be validated, and this "+
+				"server refuses any field it cannot validate",
+				name, strings.Join(rarCommonFields, ", "))
+		}
+	}
+	for _, name := range req {
+		if !slices.Contains(f, name) {
+			return fmt.Errorf("-required lists %q, which is not in -fields: a type "+
+				"that requires a field it does not permit can never be satisfied", name)
+		}
+	}
+
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.authorization_detail_types (org_id, type, fields, required, description)
+		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''))
+		ON CONFLICT (org_id, type) DO UPDATE
+		SET fields = EXCLUDED.fields, required = EXCLUDED.required,
+		    description = EXCLUDED.description`,
+		orgID, typ, f, req, desc); err != nil {
+		return fmt.Errorf("registering the type: %w", err)
+	}
+
+	fmt.Printf("authorization details type %s\n", typ)
+	fmt.Printf("  fields   : %s\n", strings.Join(f, ", "))
+	if len(req) > 0 {
+		fmt.Printf("  required : %s\n", strings.Join(req, ", "))
+	}
+	fmt.Printf("\nNo client may request it yet. Allow one with:\n")
+	fmt.Printf("  signari rar allow -client-id <id> -type %s\n", typ)
+	return nil
+}
+
+// rarAllow lets one client request one registered type.
+//
+// An allow-list rather than "any registered type", for the same reason group
+// release is one: a client that can request every permission a deployment has
+// ever defined is a client whose consent screen can say anything.
+func rarAllow(ctx context.Context, conn *pgx.Conn, clientID, typ string) error {
+	if clientID == "" || typ == "" {
+		return fmt.Errorf("give -client-id and -type")
+	}
+	var orgID string
+	if err := conn.QueryRow(ctx,
+		`SELECT org_id::text FROM core.authorization_detail_types
+		 WHERE type = $1 LIMIT 1`, typ).Scan(&orgID); err != nil {
+		return fmt.Errorf("no authorization details type %q is registered; run "+
+			"`signari rar register` first", typ)
+	}
+	var clientOrg string
+	if err := conn.QueryRow(ctx,
+		`SELECT org_id::text FROM core.clients WHERE client_id = $1`,
+		clientID).Scan(&clientOrg); err != nil {
+		return fmt.Errorf("no client %q", clientID)
+	}
+	if clientOrg != orgID {
+		return fmt.Errorf("client %q belongs to a different organisation than the "+
+			"type %q was registered in", clientID, typ)
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.client_authorization_detail_types (client_id, org_id, type)
+		VALUES ($1, $2::uuid, $3) ON CONFLICT DO NOTHING`,
+		clientID, orgID, typ); err != nil {
+		return err
+	}
+	fmt.Printf("client %s may now request authorization_details of type %s\n", clientID, typ)
+	return nil
+}
+
+// rarList shows what is registered and who may ask for it.
+func rarList(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT t.type, t.fields, t.required, COALESCE(t.description,''),
+		       COALESCE(array_agg(c.client_id) FILTER (WHERE c.client_id IS NOT NULL), '{}')
+		FROM core.authorization_detail_types t
+		LEFT JOIN core.client_authorization_detail_types c ON c.type = t.type
+		GROUP BY t.type, t.fields, t.required, t.description
+		ORDER BY t.type`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var typ, desc string
+		var fields, required, clients []string
+		if err := rows.Scan(&typ, &fields, &required, &desc, &clients); err != nil {
+			return err
+		}
+		found = true
+		fmt.Printf("%s\n", typ)
+		if desc != "" {
+			fmt.Printf("  %s\n", desc)
+		}
+		fmt.Printf("  fields   : %s\n", strings.Join(fields, ", "))
+		if len(required) > 0 {
+			fmt.Printf("  required : %s\n", strings.Join(required, ", "))
+		}
+		if len(clients) == 0 {
+			fmt.Printf("  clients  : none -- no client can request this yet\n")
+		} else {
+			fmt.Printf("  clients  : %s\n", strings.Join(clients, ", "))
+		}
+	}
+	if !found {
+		fmt.Println("no authorization details types are registered")
+	}
+	return rows.Err()
 }

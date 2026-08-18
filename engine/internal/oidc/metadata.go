@@ -43,7 +43,12 @@ type Metadata struct {
 	ResponseTypesSupported                     []string `json:"response_types_supported"`
 	ResponseModesSupported                     []string `json:"response_modes_supported"`
 	GrantTypesSupported                        []string `json:"grant_types_supported"`
-	SubjectTypesSupported                      []string `json:"subject_types_supported"`
+	// RFC 9396 §10. Populated per deployment at request time, because the
+	// registered types are a deployment's own list -- so this is empty in the
+	// static document and filled in by the discovery handler.
+	AuthorizationDetailsTypesSupported []string `json:"authorization_details_types_supported,omitempty"`
+
+	SubjectTypesSupported []string `json:"subject_types_supported"`
 
 	IDTokenSigningAlgValues       []string `json:"id_token_signing_alg_values_supported"`
 	TokenEndpointAuthMethods      []string `json:"token_endpoint_auth_methods_supported"`

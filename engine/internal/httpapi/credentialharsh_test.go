@@ -223,7 +223,7 @@ func TestATokenForAnotherResourceIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp, _, err := f.srv.mintSet(ctx, tx, c, f.orgID, f.userID, "", "",
-		[]string{}, []string{"https://billing.example/api"}, "")
+		[]string{}, []string{"https://billing.example/api"}, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

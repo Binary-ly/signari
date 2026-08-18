@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -215,15 +216,31 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		// gets an error it can act on rather than a screen it cannot show.
 		if req.Prompt == "none" {
 			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "consent_required",
-				Description: "the user has not consented to the requested scopes",
+				Description: consentRequiredReason(req),
 				Disposition: oauth.DispositionRedirect})
 			return
 		}
-		s.renderConsent(w, r, c, decision, r.URL.RawQuery)
+		s.renderConsent(w, r, c, decision, req.AuthorizationDetails, r.URL.RawQuery)
 		return
 	}
 
 	s.issueCodeAndRedirect(w, r, req, c, sid)
+}
+
+// consentRequiredReason says WHICH unapproved thing blocked a prompt=none request.
+//
+// A client that sent authorization_details and gets back "the user has not
+// consented to the requested scopes" will go looking at its scope list, which is
+// fine. Details never carry prior consent (see needsConsent), so for a RAR
+// request this is not a missing approval to hunt for -- it is a permanent
+// property of the request, and saying so stops the client retrying prompt=none
+// forever waiting for a grant that will never be stored.
+func consentRequiredReason(req oauth.AuthzRequest) string {
+	if len(req.AuthorizationDetails) > 0 {
+		return "authorization_details always require explicit approval and cannot " +
+			"be satisfied by prior consent; retry without prompt=none"
+	}
+	return "the user has not consented to the requested scopes"
 }
 
 // issueCodeAndRedirect mints an authorization code for a live session.
@@ -589,7 +606,8 @@ type tokenResponse struct {
 // family on every refresh would make reuse detection impossible: there would be
 // nothing to revoke.
 func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
-	orgID, userID, sid, nonce string, scopes, resources []string, familyID string) (*tokenResponse, []byte, error) {
+	orgID, userID, sid, nonce string, scopes, resources []string,
+	details []rar.Detail, familyID string) (*tokenResponse, []byte, error) {
 
 	// The DPoP thumbprint for this request, if the caller proved possession of a
 	// key at the token endpoint. Carried on the context rather than as another
@@ -663,6 +681,18 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		}
 	}
 
+	// §9: the RS is the party that has to ENFORCE these, and it never sees the
+	// token response §7 sends to the client. Filtered per §9.1 so one resource
+	// server does not learn what was granted for another.
+	var detailClaim json.RawMessage
+	if forAudience := rar.FilterByAudience(details, audience); len(forAudience) > 0 {
+		encoded, derr := json.Marshal(forAudience)
+		if derr != nil {
+			return nil, nil, fmt.Errorf("encoding authorization_details for the access token: %w", derr)
+		}
+		detailClaim = encoded
+	}
+
 	at, err := signer.SignJSON(tokens.AccessTokenClaims{
 		Issuer:    issuer,
 		Subject:   userID,
@@ -675,6 +705,8 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		SessionID: sid,
 		Act:       act,
 		Cnf:       bindingFor(jkt, certThumb),
+
+		AuthorizationDetails: detailClaim,
 	}, tokens.TypAccessToken)
 	if err != nil {
 		return nil, nil, err
@@ -737,7 +769,15 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	}
 
 	if familyID == "" {
-		familyID, err = store.NewRefreshFamily(ctx, tx, orgID, c.ClientID, userID, sid)
+		// Details go on the FAMILY, not the token: they belong to the
+		// authorization, and every rotation in the lineage inherits the same
+		// grant. Storing them per-token would let two live tokens from one
+		// authorization carry different permissions.
+		familyDetails, derr := store.MarshalDetails(details)
+		if derr != nil {
+			return nil, nil, derr
+		}
+		familyID, err = store.NewRefreshFamily(ctx, tx, orgID, c.ClientID, userID, sid, familyDetails)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -756,16 +796,17 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 }
 
 func (s *Server) mintTokens(ctx context.Context, tx pgx.Tx, c *clients.Client, g *store.ConsumedCode) (*tokenResponse, error) {
-	resp, _, err := s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, g.Nonce, g.Scopes, g.Resources, "")
-	if err != nil {
-		return resp, err
-	}
 	// §7: returned "as granted by the resource owner" -- read back from the code,
 	// never from a parameter the client resends at the token endpoint. A client
 	// that could resend them is a client that could change them.
 	granted, derr := store.UnmarshalDetails(g.Details)
 	if derr != nil {
 		return nil, derr
+	}
+	resp, _, err := s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, g.Nonce,
+		g.Scopes, g.Resources, granted, "")
+	if err != nil {
+		return resp, err
 	}
 	resp.AuthorizationDetails = granted
 	return resp, nil
@@ -775,7 +816,25 @@ func (s *Server) mintFromGrant(ctx context.Context, tx pgx.Tx, c *clients.Client
 	// No nonce on refresh: the claim belongs to the original authorization
 	// request, and re-emitting a stale one would assert a binding that no longer
 	// corresponds to any live client request.
-	return s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, "", g.Scopes, g.Resources, g.FamilyID)
+	//
+	// The granted details come from the FAMILY and are re-applied on every
+	// rotation. Dropping them here was the defect this file used to have: the
+	// first access token carried the constraint and every refreshed one did not,
+	// so a permission narrowed at authorization silently widened back to plain
+	// `scope` at the first refresh -- and nothing failed, which is why it
+	// survived. Migration 0080 had already added the column for exactly this
+	// reason; no code had ever written or read it.
+	granted, derr := store.UnmarshalDetails(g.Details)
+	if derr != nil {
+		return nil, nil, derr
+	}
+	resp, rtHash, err := s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, "",
+		g.Scopes, g.Resources, granted, g.FamilyID)
+	if err != nil {
+		return resp, rtHash, err
+	}
+	resp.AuthorizationDetails = granted
+	return resp, rtHash, nil
 }
 
 func containsScope(scopes []string, want string) bool {

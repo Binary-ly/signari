@@ -262,6 +262,27 @@ type AccessTokenClaims struct {
 	// absent cnf means an ordinary bearer token, and emitting an empty one would
 	// make every token look constrained while constraining nothing.
 	Cnf *Confirmation `json:"cnf,omitempty"`
+
+	// AuthorizationDetails is the RFC 9396 §9.1 claim.
+	//
+	// §9 is a MUST and it is about the RESOURCE SERVER, not the client:
+	//
+	//	"In order to enable the RS to enforce the authorization details as
+	//	approved in the authorization process, the AS MUST make this data
+	//	available to the RS."
+	//
+	// §7 already returns the granted details to the client in the token
+	// response, and it is easy to think that discharges the requirement. It does
+	// not. The client is the party being CONSTRAINED; the resource server is the
+	// party that has to do the constraining, and it never sees the token
+	// response. Without this claim an RS has only `scope` to go on -- which is
+	// precisely the coarse grant RAR exists to replace. A detail saying "move
+	// EUR 123.50 to this IBAN" would be enforced as "may initiate payments".
+	//
+	// Typed as json.RawMessage rather than a concrete struct because §2.2 says
+	// the allowable values "are determined by the API being protected": this
+	// server carries the structure it validated and does not re-encode it.
+	AuthorizationDetails json.RawMessage `json:"authorization_details,omitempty"`
 }
 
 // Actor identifies a party acting for someone else. Nested, so A-acting-for-B

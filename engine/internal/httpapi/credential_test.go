@@ -96,7 +96,7 @@ func (f *tokenFixture) mintAccessToken(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, _, err := f.srv.mintSet(ctx, tx, c, f.orgID, f.userID, "", "", []string{}, nil, "")
+	resp, _, err := f.srv.mintSet(ctx, tx, c, f.orgID, f.userID, "", "", []string{}, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

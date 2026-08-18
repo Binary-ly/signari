@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -150,6 +151,19 @@ type introspectionResponse struct {
 	Issuer    string `json:"iss,omitempty"`
 	JTI       string `json:"jti,omitempty"`
 	SessionID string `json:"sid,omitempty"`
+
+	// AuthorizationDetails is RFC 9396 §9.2:
+	//
+	//	"If the AS includes authorization detail information for the token in
+	//	its response, the information MUST be conveyed with
+	//	authorization_details as a top-level member of the introspection
+	//	response JSON object."
+	//
+	// Top-level and under that exact name, not nested inside anything -- an RS
+	// looks for it there and nowhere else. Carried verbatim from the token so
+	// introspection and the JWT claim cannot disagree about what was granted;
+	// two independently-built answers to one question is how they drift.
+	AuthorizationDetails json.RawMessage `json:"authorization_details,omitempty"`
 }
 
 // handleIntrospect implements RFC 7662.
@@ -247,6 +261,8 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 		Issuer:    s.cfg.Issuer,
 		JTI:       claims.JTI,
 		SessionID: claims.SessionID,
+
+		AuthorizationDetails: claims.AuthorizationDetails,
 	}
 }
 

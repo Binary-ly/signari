@@ -26,13 +26,19 @@ type RefreshGrant struct {
 	OrgID     string
 	Scopes    []string
 	Resources []string
+	// Details is the RFC 9396 grant carried by the whole lineage. On the family
+	// rather than the token, because it describes the AUTHORIZATION -- every
+	// rotation must inherit the same permission or the grant changes shape as it
+	// ages.
+	Details []byte
 }
 
 // NewRefreshFamily starts a lineage for one (client, user, session).
 //
 // The family is the unit of revocation. Revoking only the replayed token would
 // leave the thief's successor working, which is the whole reason rotation exists.
-func NewRefreshFamily(ctx context.Context, tx pgx.Tx, orgID, clientID, userID, sid string) (string, error) {
+func NewRefreshFamily(ctx context.Context, tx pgx.Tx, orgID, clientID, userID, sid string,
+	details []byte) (string, error) {
 	// A family with no session has no absolute expiration, so it is refused.
 	//
 	// OWASP ASVS 5.0 V10.4.8: "Verify that refresh tokens have an absolute
@@ -59,8 +65,10 @@ func NewRefreshFamily(ctx context.Context, tx pgx.Tx, orgID, clientID, userID, s
 	}
 	var id string
 	err := tx.QueryRow(ctx, `
-		INSERT INTO core.refresh_token_families (org_id, client_id, user_id, sid)
-		VALUES ($1,$2,$3,$4) RETURNING id::text`, orgID, clientID, userID, sid).Scan(&id)
+		INSERT INTO core.refresh_token_families (org_id, client_id, user_id, sid,
+		                                         authorization_details)
+		VALUES ($1,$2,$3,$4,$5) RETURNING id::text`,
+		orgID, clientID, userID, sid, details).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("creating refresh family: %w", err)
 	}
@@ -107,8 +115,10 @@ func RotateRefreshToken(ctx context.Context, tx pgx.Tx, hash []byte) (*RefreshGr
 		  AND u.status = 'active'
 		  AND (s.sid IS NULL OR (s.revoked_at IS NULL AND s.not_after > now()))
 		RETURNING f.id::text, f.client_id, f.user_id::text,
-		          COALESCE(f.sid, ''), f.org_id::text, rt.scopes, rt.resources`, hash).
-		Scan(&g.FamilyID, &g.ClientID, &g.UserID, &g.SessionID, &g.OrgID, &g.Scopes, &g.Resources)
+		          COALESCE(f.sid, ''), f.org_id::text, rt.scopes, rt.resources,
+		          f.authorization_details`, hash).
+		Scan(&g.FamilyID, &g.ClientID, &g.UserID, &g.SessionID, &g.OrgID, &g.Scopes,
+			&g.Resources, &g.Details)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Distinguish "already rotated" from every other failure. Only reuse

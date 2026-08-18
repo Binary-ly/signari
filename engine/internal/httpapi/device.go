@@ -401,7 +401,11 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 	// No nonce: there was no authorization request from a browser to bind one to.
 	// An id_token here asserts the authentication the person performed at the
 	// verification screen, which mintSet reads from the session.
-	resp, _, err := s.mintSet(ctx, tx, c, d.OrgID, d.UserID, d.SID, "", scopes, d.Resource, "")
+	resp, _, err := s.mintSet(ctx, tx, c, d.OrgID, d.UserID, d.SID, "", scopes, d.Resource,
+		// The device authorization endpoint does not accept authorization_details
+		// today, so there are none to carry. nil rather than an empty slice: the
+		// grant has no rich permissions, it does not have zero of them.
+		nil, "")
 	if err != nil {
 		s.log.Error("minting tokens for a device grant", "err", err,
 			"correlation_id", correlationID(ctx))

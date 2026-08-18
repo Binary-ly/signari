@@ -196,7 +196,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	resp, _, merr := s.mintSet(ctx, tx, c, stored.OrgID, stored.UserID, "", "",
-		scopes, nil, "")
+		scopes, nil, nil, "")
 	if merr != nil {
 		s.log.Error("minting tokens for a pre-authorized code grant", "err", merr,
 			"correlation_id", correlationID(ctx))

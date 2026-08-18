@@ -385,3 +385,50 @@ func subset(want, have []string) bool {
 	}
 	return true
 }
+
+// FilterByAudience implements §9.1's "filtered to the specific audience".
+//
+// §2.2 defines `locations` as "the location of the resource server", so it is
+// the only field that can answer "does this permission concern the RS this
+// token is for?" without knowing the API.
+//
+// Two rules, and the second is the one that matters:
+//
+//  1. A detail whose `locations` names one of the audiences is included.
+//  2. A detail with NO `locations` is included for every audience.
+//
+// Rule 2 is not a convenience. §2.2 makes `locations` OPTIONAL, so its absence
+// means "unspecified", not "applies nowhere". Treating an absent location as an
+// empty one would silently drop the constraint from the token — and an RS that
+// receives no details where it expected some has no way to tell "this grant was
+// unconstrained" from "the constraint was filtered out on the way here". The
+// failure would look like a widened permission and read like a missing field.
+//
+// Filtering is RECOMMENDED rather than required, and it exists to stop one
+// resource server learning the details of a permission granted for another.
+func FilterByAudience(details []Detail, audience []string) []Detail {
+	if len(details) == 0 {
+		return nil
+	}
+	aud := make(map[string]bool, len(audience))
+	for _, a := range audience {
+		aud[a] = true
+	}
+	out := make([]Detail, 0, len(details))
+	for _, d := range details {
+		if len(d.Locations) == 0 {
+			out = append(out, d)
+			continue
+		}
+		for _, loc := range d.Locations {
+			if aud[loc] {
+				out = append(out, d)
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}

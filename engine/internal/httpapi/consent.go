@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"strings"
+
 	"html/template"
 	"net/http"
 	"net/url"
+	"signari.dev/engine/internal/rar"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/clients"
@@ -49,6 +52,48 @@ func describeScope(s string) string {
 
 type scopeItem struct{ Name, Description string }
 
+// detailItem is one RFC 9396 authorization detail, rendered for a person.
+type detailItem struct {
+	Type string
+	Rows []detailRow
+}
+
+type detailRow struct{ Label, Value string }
+
+// describeDetails turns authorization details into something a user can weigh.
+//
+// §3.1: "When gathering user consent, the AS MUST present the merged set of
+// requirements represented by the authorization request." Merged means scopes
+// AND details -- showing one and not the other describes a different request
+// from the one being authorized.
+//
+// The values are shown verbatim, not summarised. §2.2 says the allowable values
+// "are determined by the API being protected", so this server does not know that
+// `instructedAmount` is money or that `creditorAccount` is where it goes. What it
+// can do is show every field it was given and let the person read it; a screen
+// that paraphrased a payment it did not understand would be worse than one that
+// did not try.
+func describeDetails(details []rar.Detail) []detailItem {
+	out := make([]detailItem, 0, len(details))
+	for _, d := range details {
+		item := detailItem{Type: d.Type}
+		add := func(label string, vals []string) {
+			if len(vals) > 0 {
+				item.Rows = append(item.Rows, detailRow{label, strings.Join(vals, ", ")})
+			}
+		}
+		add("Actions", d.Actions)
+		add("Resources", d.Locations)
+		add("Data", d.Datatypes)
+		add("Privileges", d.Privileges)
+		if d.Identifier != "" {
+			item.Rows = append(item.Rows, detailRow{"Identifier", d.Identifier})
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 // needsConsent decides whether to interrupt the flow.
 func (s *Server) needsConsent(r *http.Request, c *clients.Client, userID string,
 	req oauth.AuthzRequest) (store.ConsentDecision, bool, error) {
@@ -74,6 +119,27 @@ func (s *Server) needsConsent(r *http.Request, c *clients.Client, userID string,
 		return d, len(d.Missing) > 0, nil
 	}
 
+	// Rich authorization details ALWAYS prompt, and they are checked before the
+	// first-party exemption on purpose.
+	//
+	// Stored consent is keyed on scope names. An authorization detail is not a
+	// scope: it carries the particulars of one transaction -- this amount, this
+	// account, this document. A user who once approved the scope `payments` has
+	// approved a capability, never a payment, so letting a stored grant satisfy a
+	// detail would auto-approve every later transfer to any account, silently and
+	// with no screen. The first-party exemption has the same hole: it says the
+	// relationship is trusted, which cannot be true of a transaction that did not
+	// exist when the relationship was established.
+	//
+	// So details are the one thing here that no prior decision can pre-approve.
+	if len(req.AuthorizationDetails) > 0 {
+		d, err := store.CheckConsent(r.Context(), s.db, userID, c.ClientID, requested)
+		if err != nil {
+			return d, false, err
+		}
+		return d, true, nil
+	}
+
 	if c.FirstParty {
 		return store.ConsentDecision{Granted: true}, false, nil
 	}
@@ -84,7 +150,7 @@ func (s *Server) needsConsent(r *http.Request, c *clients.Client, userID string,
 
 // renderConsent shows what is being asked for.
 func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request,
-	c *clients.Client, d store.ConsentDecision, authzQuery string) {
+	c *clients.Client, d store.ConsentDecision, details []rar.Detail, authzQuery string) {
 
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
@@ -109,7 +175,7 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request,
 
 	_ = consentPage.Execute(w, map[string]any{
 		"Client": c.DisplayName, "ClientID": c.ClientID,
-		"Scopes": items, "Authz": authzQuery,
+		"Scopes": items, "Details": describeDetails(details), "Authz": authzQuery,
 		"CSRF": csrf, "CSRFField": csrfFormField,
 	})
 }
@@ -240,16 +306,30 @@ var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 h1{font-size:1.3rem}ul{list-style:none;padding:0}
 li{padding:.6rem .75rem;background:#f4f4f5;border-radius:4px;margin:.4rem 0}
 .scope{color:#666;font-size:.8rem;display:block}
+.detail{background:#fff;border:1px solid #d4d4d8;border-radius:4px;padding:.7rem .75rem;margin:.4rem 0}
+.dtype{font-size:.8rem;color:#666;display:block;margin-bottom:.35rem}
+.drow{display:flex;gap:.5rem;font-size:.9rem;padding:.1rem 0}
+.dlabel{color:#666;min-width:6.5rem}
+.dval{font-weight:500;word-break:break-word}
 .row{display:flex;gap:.75rem;margin-top:1.5rem}
 button{flex:1;padding:.7rem 1rem;font-size:1rem}
 .allow{background:#18181b;color:#fff;border:0;border-radius:4px}
 .deny{background:#fff;border:1px solid #d4d4d8;border-radius:4px}</style></head>
 <body>
 <h1><strong>{{.Client}}</strong> wants access to your account</h1>
+{{if .Scopes}}
 <p>It is asking to:</p>
 <ul>
 {{range .Scopes}}<li>{{.Description}}<span class="scope">{{.Name}}</span></li>{{end}}
 </ul>
+{{end}}
+{{if .Details}}
+<p>And to perform this specific operation:</p>
+{{range .Details}}<div class="detail">
+<span class="dtype">{{.Type}}</span>
+{{range .Rows}}<div class="drow"><span class="dlabel">{{.Label}}</span><span class="dval">{{.Value}}</span></div>{{end}}
+</div>{{end}}
+{{end}}
 <form method="POST" action="/consent">
 <input type="hidden" name="authz" value="{{.Authz}}">
 <input type="hidden" name="client_id" value="{{.ClientID}}">

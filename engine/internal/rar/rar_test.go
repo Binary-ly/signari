@@ -215,3 +215,36 @@ func TestRegisteredTypesAreSorted(t *testing.T) {
 		t.Fatalf("Types() = %v, want sorted", got)
 	}
 }
+
+// §9.1's "filtered to the specific audience".
+//
+// The dangerous case is the third one. `locations` is OPTIONAL per §2.2, so an
+// absent value means "unspecified" and not "applies nowhere" -- filtering such a
+// detail out would drop the constraint from the token, and an RS receiving no
+// details cannot tell an unconstrained grant from one whose constraint went
+// missing in transit. The failure would read like an absent field and behave
+// like a widened permission.
+func TestFilterByAudience(t *testing.T) {
+	mine := Detail{Type: "payment", Locations: []string{"https://a.example/api"}}
+	theirs := Detail{Type: "payment", Locations: []string{"https://b.example/api"}}
+	unscoped := Detail{Type: "profile"}
+
+	for _, tc := range []struct {
+		name     string
+		in       []Detail
+		audience []string
+		want     int
+	}{
+		{"a matching location is kept", []Detail{mine}, []string{"https://a.example/api"}, 1},
+		{"another server's detail is not disclosed", []Detail{theirs}, []string{"https://a.example/api"}, 0},
+		{"a detail with no locations applies everywhere", []Detail{unscoped}, []string{"https://a.example/api"}, 1},
+		{"mixed: only the relevant ones", []Detail{mine, theirs, unscoped}, []string{"https://a.example/api"}, 2},
+		{"nothing in, nothing out", nil, []string{"https://a.example/api"}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FilterByAudience(tc.in, tc.audience); len(got) != tc.want {
+				t.Fatalf("kept %d details, want %d: %+v", len(got), tc.want, got)
+			}
+		})
+	}
+}

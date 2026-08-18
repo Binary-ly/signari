@@ -135,3 +135,94 @@ document is one a client will try to use.
   that the AS "MUST present the merged set of requirements" when scope and
   authorization_details are combined is met by showing both, not by merging them
   into one sentence.
+
+---
+
+# Second pass: the lifecycle, not the endpoint
+
+The first pass built RFC 9396 and reviewed it endpoint by endpoint. Every
+endpoint was correct. The feature was still broken, and the reason is worth
+recording because it generalises: **a per-endpoint review cannot see a defect
+that lives between two endpoints.**
+
+Method: extract every normative requirement from RFC 9396 and follow the granted
+details through the whole lifecycle — authorize → consent → token → refresh →
+resource server — rather than checking each handler in isolation.
+
+## The defect: the constraint expired at the first refresh
+
+The authorization stored the granted details. The token response returned them.
+The *refresh* dropped them: `mintFromGrant` never read them back, so the second
+access token carried none.
+
+Nothing failed. No error was logged, no test broke, and the client kept working —
+because a resource server that sees no `authorization_details` cannot distinguish
+*"this grant was never constrained"* from *"the constraint was lost on the way
+here"*. The natural fallback is `scope`, which is exactly the coarse permission
+RAR exists to replace. A grant for **one payment of a specific amount to a
+specific account** silently became **may initiate payments** after one rotation,
+with no moment at which anything looked wrong.
+
+Migration 0080 had already added `authorization_details` to
+`core.refresh_token_families`, with a comment stating the details
+
+> "have to survive a refresh, or the second token silently carries different
+> permissions from the first."
+
+No code ever wrote or read that column. The schema was right, the justification
+was right, and the implementation was absent — the inverse of the pattern this
+codebase has hit before, where a justification outlived the code it described.
+Here the justification arrived before the code and nothing ever checked that the
+code caught up. A comment asserting a property is not a test of it.
+
+## Three more requirements, all unmet
+
+**§9 (MUST): "the AS MUST make this data available to the RS."** Neither the
+access token nor introspection carried the details. §7's token-response field
+goes to the *client* — the party being constrained — while the resource server
+that has to do the constraining never sees a token response. Easy to believe §7
+discharges §9; it does not. Now a top-level `authorization_details` JWT claim
+(§9.1), filtered by `locations` so one RS does not learn what was granted for
+another, and a top-level member of the introspection response (§9.2).
+
+**§3.1 (MUST): "the AS MUST present the merged set of requirements."** The
+consent screen listed scopes only. A user approving a specific transfer saw
+`openid profile` — the single thing RAR exists to make explicit was the one thing
+not shown.
+
+**Consent could be pre-approved, which is worse than not showing it.** Consent is
+recorded per scope name. A detail carries the particulars of *one transaction*,
+so a user who once approved the scope `payments` approved a capability and never
+a payment. A stored grant satisfying a detail would auto-approve every later
+transfer — any amount, any account — with no screen at all. Details now always
+prompt, checked *before* the first-party exemption, since a trusted relationship
+cannot vouch for a transaction that did not exist when it was established.
+
+## Mutation results
+
+Every fix was reverted in turn to check the new tests can actually fail:
+
+```
+CAUGHT   RS never receives the granted details
+CAUGHT   details dropped at refresh (the original defect)
+CAUGHT   refresh family never persists the grant
+CAUGHT   consent screen hides the transaction
+CAUGHT   details satisfied by prior scope consent
+CAUGHT   introspection omits the details
+CAUGHT   conveyed under the wrong member name
+CAUGHT   unlocated detail silently dropped
+CAUGHT   another RS's details disclosed
+```
+
+The last is the one most likely to have been written wrong. `locations` is
+OPTIONAL under §2.2, so an absent value means *unspecified*, not *applies
+nowhere*; filtering those out would have reintroduced the original bug through
+the door built to fix it.
+
+## What this says about the earlier reviews
+
+The eleven protocol reviews before this one were endpoint-shaped. This defect was
+invisible to that shape — every handler was individually correct, and the grant
+degraded between them over time. Reviews that follow one grant through its whole
+life, including the parts that happen an hour later, find a class of defect that
+reading handlers cannot.

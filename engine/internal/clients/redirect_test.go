@@ -99,3 +99,70 @@ func TestHasRedirectURIIsExact(t *testing.T) {
 		}
 	}
 }
+
+// The one exception to exact matching, and it is a MUST in two specifications.
+//
+// RFC 9700 §4.1.3: "The only exception is native apps using a localhost URI: In
+// this case, the authorization server MUST allow variable port numbers as
+// described in Section 7.3 of [RFC8252]."
+//
+// RFC 8252 §7.3: "The authorization server MUST allow any port to be specified
+// at the time of the request for loopback IP redirect URIs, to accommodate
+// clients that obtain an available ephemeral port from the operating system at
+// the time of the request."
+//
+// Pure string equality refused this, which does not make a native app's flow
+// stricter -- it makes it impossible. A desktop app cannot know its port before
+// asking the operating system for one.
+func TestALoopbackRedirectMayUseAnyPort(t *testing.T) {
+	c := &Client{RedirectURIs: []string{"http://127.0.0.1:1234/cb"}}
+
+	for _, ok := range []string{
+		"http://127.0.0.1:51004/cb", // the ephemeral port RFC 8252 gives as its example shape
+		"http://127.0.0.1:1234/cb",  // the registered one still matches
+		"http://127.0.0.1:65535/cb",
+	} {
+		if !c.HasRedirectURI(ok) {
+			t.Errorf("%q was refused; RFC 8252 §7.3 requires any port to be allowed", ok)
+		}
+	}
+
+	// The port is the ONLY thing that may vary.
+	for _, bad := range []string{
+		"http://127.0.0.1:51004/other",  // different path
+		"http://127.0.0.1:51004/cb?x=1", // added query
+		"http://127.0.0.1:51004/cb#f",   // added fragment
+		"https://127.0.0.1:51004/cb",    // different scheme
+		"http://[::1]:51004/cb",         // a DIFFERENT loopback address
+		"http://localhost:51004/cb",     // also a different host
+		"http://127.0.0.2:51004/cb",     // not loopback at all
+		"http://evil.example:51004/cb",  // certainly not
+	} {
+		if c.HasRedirectURI(bad) {
+			t.Errorf("%q matched a loopback registration it differs from by more "+
+				"than the port", bad)
+		}
+	}
+}
+
+// The exception must not leak into non-loopback registrations. A client
+// registered for a public host gets exact matching and nothing else.
+func TestThePortExceptionIsOnlyForLoopback(t *testing.T) {
+	c := &Client{RedirectURIs: []string{"https://app.example/cb"}}
+	for _, bad := range []string{
+		"https://app.example:8443/cb",
+		"http://app.example:80/cb",
+		"http://127.0.0.1:9000/cb", // a loopback CANDIDATE against a public registration
+	} {
+		if c.HasRedirectURI(bad) {
+			t.Errorf("%q matched a non-loopback registration on a port variation; "+
+				"the exception is for native apps, not a general relaxation", bad)
+		}
+	}
+
+	// And the reverse: a loopback registration must not authorise a public host.
+	loop := &Client{RedirectURIs: []string{"http://127.0.0.1:1234/cb"}}
+	if loop.HasRedirectURI("http://evil.example:1234/cb") {
+		t.Error("a loopback registration authorised a public host")
+	}
+}

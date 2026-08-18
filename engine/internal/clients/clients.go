@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"signari.dev/engine/internal/clientauth"
 	"sort"
 	"strings"
@@ -151,19 +152,91 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 }
 
 // HasRedirectURI reports whether the candidate is registered, by exact string
-// equality.
+// equality -- with the one exception both RFC 9700 and RFC 8252 require.
 //
 // Deliberately not url.Parse-and-compare: two URLs that parse equal can differ
 // as strings (percent-encoding case, default ports, an empty query marker), and
 // a relying party echoes back the literal string it was configured with. Compare
 // what was sent against what was registered, byte for byte.
+//
+// # The loopback exception
+//
+// RFC 9700 §4.1.3, having just mandated exact matching: "The only exception is
+// native apps using a localhost URI: In this case, the authorization server MUST
+// allow variable port numbers as described in Section 7.3 of [RFC8252]."
+//
+// RFC 8252 §7.3 says why: "The authorization server MUST allow any port to be
+// specified at the time of the request for loopback IP redirect URIs, to
+// accommodate clients that obtain an available ephemeral port from the operating
+// system at the time of the request."
+//
+// A desktop app cannot know its port before it asks the operating system for
+// one. Registering `http://127.0.0.1:1234/cb` and then listening on 51004 is the
+// documented, normal behaviour -- and pure string equality refuses it, which
+// makes native apps impossible rather than strict.
 func (c *Client) HasRedirectURI(candidate string) bool {
 	for _, u := range c.RedirectURIs {
 		if u == candidate {
 			return true
 		}
+		if loopbackPortMatch(u, candidate) {
+			return true
+		}
 	}
 	return false
+}
+
+// loopbackPortMatch reports whether two URIs are identical apart from the port,
+// and are both http loopback redirects.
+//
+// Every other component must match exactly.
+//
+// The load-bearing check is `a.Hostname() != b.Hostname()`: it is what stops a
+// client registered for `https://app.example/cb` matching
+// `http://127.0.0.1:1/cb`, and a loopback client matching anywhere else. Given
+// that equality, testing BOTH sides for loopback is redundant -- if the hosts
+// are equal and one is loopback, so is the other. It is kept as a guard for a
+// future edit that relaxes the host comparison, and is stated as redundant here
+// rather than left to look load-bearing: a mutation test confirmed removing it
+// changes no behaviour.
+//
+// The scheme must be http, because that is the only scheme the exception is
+// written for -- RFC 8252 §7.3 constructs these URIs as
+// "http://127.0.0.1:{port}/{path}". A https loopback URI is not the native-app
+// pattern and gets no latitude.
+func loopbackPortMatch(registered, candidate string) bool {
+	a, err1 := url.Parse(registered)
+	b, err2 := url.Parse(candidate)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	if a.Scheme != "http" || b.Scheme != "http" {
+		return false
+	}
+	if !isLoopbackHost(a.Hostname()) || !isLoopbackHost(b.Hostname()) {
+		return false
+	}
+	// The host must be the SAME loopback host. 127.0.0.1 and ::1 are different
+	// addresses, and a client that registered one has not asked for the other.
+	if a.Hostname() != b.Hostname() {
+		return false
+	}
+	// Everything except the port, compared exactly. Query and fragment included:
+	// the exception is about the port and nothing else.
+	return a.Path == b.Path && a.RawQuery == b.RawQuery && a.Fragment == b.Fragment
+}
+
+// isLoopbackHost reports whether a hostname is a loopback destination.
+//
+// RFC 8252 §7.3 scopes its MUST to the loopback IP literals. `localhost` is
+// included here for interoperability -- §8.3 calls it "NOT RECOMMENDED" but
+// notes it "function[s] similarly", and refusing variable ports there would
+// break a large number of real desktop clients while adding no protection: the
+// concerns §8.3 raises about localhost (binding to a non-loopback interface,
+// host name resolution) are properties of the CLIENT's socket and are unchanged
+// by what the authorization server is willing to match.
+func isLoopbackHost(h string) bool {
+	return h == "127.0.0.1" || h == "::1" || h == "localhost"
 }
 
 // AllowsResponseType reports whether the client may use this response_type.

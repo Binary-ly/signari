@@ -273,3 +273,49 @@ func verifiedPayload(set *keys.Set, raw, wantTyp string) ([]byte, error) {
 	}
 	return payload, nil
 }
+
+// AudienceAccepted reports whether an access token was meant for this recipient.
+//
+// RFC 9700 §2.3 is direct about whose job this is: "every resource server is
+// obliged to verify, for every request, whether the access token sent with that
+// request was meant to be used for that particular resource server. If it was
+// not, the resource server MUST refuse to serve the respective request."
+//
+// We are a resource server for our own endpoints -- /userinfo above all -- so
+// this is our obligation, not somebody else's.
+//
+// # Why this was missing and why it matters
+//
+// Verification checked signature, typ, iss, sub, exp, iat and jti, and never
+// looked at aud. Meanwhile the mint path sets the audience to the RFC 8707
+// `resource` values whenever a client sends them. So a client could ask for a
+// token for `https://api.example`, receive one whose audience says exactly
+// that, and then spend it at our /userinfo to read the subject's profile.
+//
+// That is the "Compromised Resource Server" case in RFC 9700 §4.9.2: whoever
+// holds a token meant for one API should not be able to turn it on a different
+// one. Audience restriction is the countermeasure, and a countermeasure the
+// issuer declines to enforce against itself is decoration.
+//
+// # What is accepted
+//
+// Either the client the token was issued to (the default audience, so an
+// ordinary OIDC flow is unaffected), or this issuer named explicitly as a
+// resource. A client that wants one token for both a downstream API and the
+// userinfo endpoint asks for both, which is what RFC 8707 §2 means by allowing
+// multiple `resource` parameters -- rather than getting the second for free
+// because nobody checked.
+func AudienceAccepted(c *AccessTokenClaims, issuer string) bool {
+	// No audience at all is not a pass. A token that names no recipient cannot
+	// be shown to have been meant for this one, and RFC 9068 §4 requires the
+	// claim, so its absence is a malformed token rather than a wildcard.
+	if len(c.Audience) == 0 {
+		return false
+	}
+	for _, a := range c.Audience {
+		if a == c.ClientID || a == issuer {
+			return true
+		}
+	}
+	return false
+}

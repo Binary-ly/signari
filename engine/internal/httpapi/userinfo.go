@@ -35,6 +35,20 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RFC 9700 §2.3: a resource server "MUST refuse to serve the respective
+	// request" when the access token was not meant for it. We are the resource
+	// server here, and the mint path honours RFC 8707 `resource`, so a token
+	// audience-restricted to a downstream API must not also open this endpoint.
+	if !tokens.AudienceAccepted(claims, s.cfg.Issuer) {
+		s.log.Info("userinfo refused a token audienced elsewhere",
+			"aud", claims.Audience, "correlation_id", correlationID(ctx))
+		w.Header().Set("WWW-Authenticate",
+			`Bearer realm="signari", error="invalid_token", error_description="`+
+				`The access token was issued for a different resource"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
 	if !tokens.HasScope(claims.Scope, "openid") {
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="insufficient_scope", scope="openid"`)

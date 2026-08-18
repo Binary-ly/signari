@@ -306,3 +306,68 @@ func TestMalformedInputDoesNotPanic(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9700 §2.3: "every resource server is obliged to verify, for every
+// request, whether the access token sent with that request was meant to be used
+// for that particular resource server. If it was not, the resource server MUST
+// refuse to serve the respective request."
+//
+// We are a resource server for our own /userinfo, and we honour RFC 8707
+// `resource` when minting -- so a token a client asked us to scope to a
+// downstream API must not also open our own endpoint. Verification checked
+// signature, typ, iss, sub, exp, iat and jti, and never looked at aud.
+func TestAudienceRestrictionIsEnforcedAgainstOurselves(t *testing.T) {
+	const issuer = "https://id.example"
+
+	t.Run("the ordinary case still works", func(t *testing.T) {
+		// Default mint: audience is the client the token was issued to.
+		c := &AccessTokenClaims{ClientID: "app", Audience: []string{"app"}}
+		if !AudienceAccepted(c, issuer) {
+			t.Fatal("an ordinary OIDC access token was refused at userinfo")
+		}
+	})
+
+	t.Run("the issuer named as a resource works", func(t *testing.T) {
+		c := &AccessTokenClaims{ClientID: "app", Audience: []string{issuer}}
+		if !AudienceAccepted(c, issuer) {
+			t.Fatal("a token explicitly audienced to this issuer was refused")
+		}
+	})
+
+	t.Run("a token for a downstream API is refused", func(t *testing.T) {
+		// What RFC 8707 produces when the client sends
+		// resource=https://api.example.
+		c := &AccessTokenClaims{ClientID: "app", Audience: []string{"https://api.example"}}
+		if AudienceAccepted(c, issuer) {
+			t.Fatal("a token the client asked us to restrict to https://api.example " +
+				"was accepted at our own resource endpoint. Whoever holds that " +
+				"token -- including a compromised api.example -- could read the " +
+				"subject's profile, which is exactly what audience restriction " +
+				"exists to prevent (RFC 9700 §4.9.2)")
+		}
+	})
+
+	t.Run("asking for both works", func(t *testing.T) {
+		// RFC 8707 §2 allows multiple resource parameters. A client that wants
+		// one token for both asks for both, rather than getting the second
+		// because nobody checked.
+		c := &AccessTokenClaims{ClientID: "app",
+			Audience: []string{"https://api.example", issuer}}
+		if !AudienceAccepted(c, issuer) {
+			t.Fatal("a token audienced to both the API and this issuer was refused")
+		}
+	})
+
+	t.Run("no audience is not a wildcard", func(t *testing.T) {
+		// RFC 9068 §4 requires aud. A token naming no recipient cannot be shown
+		// to have been meant for this one.
+		c := &AccessTokenClaims{ClientID: "app"}
+		if AudienceAccepted(c, issuer) {
+			t.Fatal("a token with no audience was treated as audienced to everyone")
+		}
+		c.Audience = []string{}
+		if AudienceAccepted(c, issuer) {
+			t.Fatal("an empty audience was treated as audienced to everyone")
+		}
+	})
+}

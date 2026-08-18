@@ -134,3 +134,49 @@ func TestARefusedAssertionNamesTheCredential(t *testing.T) {
 			"to forget one")
 	}
 }
+
+// signalUnknownCredential tells an authenticator to DELETE a credential, so it
+// must only be sent for a credential we genuinely do not hold.
+//
+// WebAuthn L3 §5.1.10.2 exists for one case: a passkey the server has deleted,
+// which the authenticator keeps offering. The cure is destructive, and the
+// failure it cures is indistinguishable at the top of an assertion handler from
+// every other failure -- a user-verification timeout, a sign-count regression, a
+// corrupted signature.
+//
+// The credential id used to be captured unconditionally, before the user was
+// resolved and before any signature was checked, so ANY failed assertion came
+// back with a deletion instruction. For somebody whose only passkey it was, that
+// is a self-inflicted lockout produced by the feature meant to prevent one.
+//
+// The fix is a `held` flag set while the user's credential list is in hand. This
+// test pins the shape, because the alternative -- driving a full WebAuthn
+// assertion failure against a real authenticator -- is a fixture this package
+// does not have, and the bug was a missing condition rather than a wrong
+// computation.
+func TestAKnownCredentialIsNeverSignalledAsUnknown(t *testing.T) {
+	src := readSource(t, "passkey.go")
+
+	// The list must actually be consulted.
+	if !strings.Contains(src, "u.WebAuthnCredentials()") {
+		t.Error("the assertion handler never inspects the user's credential " +
+			"list, so it cannot tell a credential we no longer hold from one " +
+			"that simply failed to verify")
+	}
+	if !strings.Contains(src, "held = true") {
+		t.Error("nothing records that the presented credential is one we hold")
+	}
+	// And the refusal must branch on it.
+	if !strings.Contains(src, "if held {") {
+		t.Fatal("the refusal path does not check whether the credential is held, " +
+			"so a bad signature against a VALID passkey answers with " +
+			"signal_unknown_credential and the authenticator deletes it")
+	}
+
+	// The guard has to sit before the signal, not after.
+	heldAt := strings.Index(src, "if held {")
+	signalAt := strings.Index(src, "s.refuseWithUnknownCredential(w, rp.RPID(), presentedID)")
+	if heldAt < 0 || signalAt < 0 || heldAt > signalAt {
+		t.Error("the `held` check does not precede the unknown-credential signal")
+	}
+}

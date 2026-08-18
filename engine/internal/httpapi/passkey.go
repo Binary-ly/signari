@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -401,12 +402,33 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 	// only place the id is available -- and it is exactly what a browser needs
 	// in order to call signalUnknownCredential and stop the authenticator
 	// offering a passkey we no longer hold.
+	//
+	// `held` is the other half, and it is what makes the signal safe to send.
+	//
+	// signalUnknownCredential tells the authenticator to DELETE a credential.
+	// Sending it whenever an assertion fails would delete a perfectly good
+	// passkey on any transient failure -- a user-verification timeout, a
+	// sign-count regression, a corrupted signature. For somebody whose only
+	// passkey it was, that is a self-inflicted lockout caused by the feature
+	// meant to prevent one.
+	//
+	// So the id alone is not enough to justify the signal: we also have to know
+	// the credential is genuinely not ours. That is decided here, where the
+	// user's credential list is in hand, rather than inferred later from an
+	// error the library does not distinguish.
 	var presentedID []byte
+	var held bool
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
 		presentedID = append([]byte(nil), rawID...)
 		u, userID, orgID, err := s.userByHandle(ctx, userHandle)
 		if err != nil {
 			return nil, err
+		}
+		for _, c := range u.WebAuthnCredentials() {
+			if bytes.Equal(c.ID, rawID) {
+				held = true
+				break
+			}
 		}
 		resolvedUser, resolvedOrg = userID, orgID
 		return u, nil
@@ -431,6 +453,15 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 		// It leaks nothing: the caller just presented this credential id, so
 		// returning it tells them something they already had. §14.6.3's concern
 		// is about disclosing ids to somebody who did NOT have them.
+		//
+		// Only when we do NOT hold it. A failure against a credential we still
+		// have is a bad assertion, not a stale one, and answering it with a
+		// deletion instruction would remove a working passkey.
+		if held {
+			writeError(w, http.StatusUnauthorized, "invalid_grant",
+				"the passkey was not accepted")
+			return
+		}
 		s.refuseWithUnknownCredential(w, rp.RPID(), presentedID)
 		return
 	}

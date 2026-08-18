@@ -117,3 +117,76 @@ Every call is individually guarded. The methods reached browsers at different
 times, so a browser without one is ordinary rather than an error — and a page
 that throws on an older browser has made a working sign-in worse in order to tidy
 a stale entry.
+
+
+## Re-review against WebAuthn Level 3, August 2026
+
+Version checked first: **W3C Candidate Recommendation Snapshot, 26 May 2026** —
+current, and the version implemented against.
+
+### The defect: a valid passkey could be deleted by a transient failure
+
+`signalUnknownCredential` tells an authenticator to **delete** a credential. It
+exists for exactly one case (§5.1.10.2): a passkey the server has removed, which
+the authenticator keeps offering — and which the user cannot clear any other way,
+because `signalAllAcceptedCredentials` needs a session and the credential that
+would earn them one is the broken one.
+
+The cure is destructive, and at the top of an assertion handler the case it cures
+is indistinguishable from every other failure.
+
+The credential id was captured unconditionally, at the first line of the
+resolution closure, **before the user was resolved and before any signature was
+verified**:
+
+```go
+handler := func(rawID, userHandle []byte) (webauthn.User, error) {
+    presentedID = append([]byte(nil), rawID...)
+    ...
+```
+
+So *any* failed assertion came back carrying `signal_unknown_credential` — a
+user-verification timeout, a sign-count regression, a corrupted signature, a
+transient authenticator fault. The browser is then told to forget a credential
+the server still holds and would happily accept.
+
+For a user whose only passkey it was, that is a **self-inflicted lockout produced
+by the feature meant to prevent one**.
+
+The refusal helper's own comment already stated the correct rule — *"A rejection
+for some other reason -- a bad signature from a credential we DO still hold --
+must not tell the browser to forget a credential that is perfectly valid"* — but
+its guard was `rpID != "" && len(presentedID) > 0`, which tests whether we can
+*name* the credential, not whether it is *unknown*. The two are not the same, and
+the comment made the gap read as a decision.
+
+Fixed with a `held` flag set while the user's credential list is in hand, which
+is the only point where the question can actually be answered. The library does
+not distinguish these failures in its error, so inferring it afterwards was never
+going to work.
+
+| Mutation | Test that caught it |
+|---|---|
+| Remove the `held` guard | `TestAKnownCredentialIsNeverSignalledAsUnknown` |
+
+The first attempt at that mutation deleted the guard outright and produced a
+*build* failure — the compiler noticing an unused variable, not the test doing
+its job. Redone as `if false && held` so it compiles, the test fails with the
+message naming the consequence. Worth recording: a mutation that fails to compile
+proves nothing about the test.
+
+### What came back clean
+
+| Requirement | Where | Result |
+|---|---|---|
+| `AllAcceptedCredentialsOptions` / `CurrentUserDetailsOptions` field names and required-ness | §5.1.10.3–4 | exact, pinned by test |
+| `userId` is a `Base64URLString` of the user handle | dictionaries | `base64.RawURLEncoding` of `core.users.user_handle`, the same value the ceremony uses |
+| Unpadded encoding | `Base64URLString` | `RawURLEncoding` |
+| Credential ids not disclosed to an unauthenticated caller | §14.6.3 | `/account/passkeys/signal` answers 401 without a session |
+| `signalUnknownCredential` discloses nothing new | §14.6.3 | echoes back only the id the caller just presented |
+| Empty credential list serialises as `[]`, not `null` | §5.1.10.3 | pinned by test — "forget everything" is a real instruction |
+
+The `userId` check is the one worth dwelling on: a wrong value there does not
+error, it silently does nothing, on every browser, for every user. Reading it
+from the same column the ceremony uses is what makes it right, and reading it
+from a second place is how it would drift.

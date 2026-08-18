@@ -2008,6 +2008,22 @@ func (s *Server) acceptedIssuers() []string {
 	return append([]string{s.cfg.Issuer}, s.cfg.IssuerAliases...)
 }
 
+// decodeDetailClaim reads the RFC 9396 §9.1 claim back off a verified token.
+//
+// An absent claim is not an error and yields nothing: most tokens carry no rich
+// permissions, and treating that as a decode failure would make every ordinary
+// exchange fail.
+func decodeDetailClaim(raw json.RawMessage) ([]rar.Detail, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var out []rar.Detail
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // handleTokenExchange implements RFC 8693.
 //
 // The validation rules live in internal/oauth (scope ceiling, audience
@@ -2076,6 +2092,52 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	// three delegations deep still names every party, in order.
 	act := &tokens.Actor{Subject: c.ClientID, Act: subject.Act}
 
+	// The subject token's rich permissions come WITH it.
+	//
+	// Scope is narrowed above and authorization_details were simply dropped,
+	// which quietly made exchange the widest hole in the product: a token
+	// constrained to "move EUR 123.50 to this account" exchanged into one
+	// carrying `scope=payments` and no details at all. A resource server reading
+	// no details has nothing left to enforce but the scope, so the exchange
+	// laundered a single-transaction grant into a standing capability -- and
+	// exchange exists precisely to hand that token to somebody else.
+	//
+	// Carried, then narrowed if the caller asked for less. Never widened: Narrow
+	// refuses anything the subject token did not already authorize, which is the
+	// same rule §6 applies at the token endpoint.
+	subjectDetails, derr := decodeDetailClaim(subject.AuthorizationDetails)
+	if derr != nil {
+		s.log.Error("token exchange: decoding the subject token's details", "err", derr)
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+	exchangedDetails := subjectDetails
+	if raw := r.PostForm.Get(rar.Param); raw != "" {
+		requested, _, perr := rar.Parse(raw)
+		if perr != nil {
+			writeTokenError(w, &oauth.TokenError{Code: rar.ErrorCode,
+				Description: perr.Error(), Status: http.StatusBadRequest})
+			return
+		}
+		narrowed, nerr := rar.Narrow(subjectDetails, requested)
+		if nerr != nil {
+			writeTokenError(w, &oauth.TokenError{Code: rar.ErrorCode,
+				Description: nerr.Error(), Status: http.StatusBadRequest})
+			return
+		}
+		exchangedDetails = narrowed
+	}
+	var exchangedDetailClaim json.RawMessage
+	if forAudience := rar.FilterByAudience(exchangedDetails, audience); len(forAudience) > 0 {
+		encoded, merr := json.Marshal(forAudience)
+		if merr != nil {
+			s.log.Error("token exchange: encoding authorization_details", "err", merr)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		exchangedDetailClaim = encoded
+	}
+
 	now := time.Now()
 	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
@@ -2090,6 +2152,8 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		// die when the user signs out, exactly like the token it came from.
 		SessionID: subject.SessionID,
 		Act:       act,
+
+		AuthorizationDetails: exchangedDetailClaim,
 	}, tokens.TypAccessToken)
 	if err != nil {
 		s.log.Error("token exchange: signing", "err", err)

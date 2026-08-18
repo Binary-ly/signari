@@ -30,6 +30,46 @@ tell an authenticator that a credential is no longer known.
 ## Who else implements it
 
 
+## Conformance review against WebAuthn L3, August 2026
+
+Reviewed against the spec text. The dictionaries match field for field
+(`AllAcceptedCredentialsOptions`, `CurrentUserDetailsOptions`), ids are
+`Base64URLString` unpadded, and the script ignores results — §5.1.10 is explicit
+that "signal methods do not indicate whether the operation succeeded", so a page
+that branched on the outcome would be reading noise.
+
+Requiring a session before returning the credential-id list turns out to be what
+**§14.6.3 itself recommends**: *"Perform a separate authentication step ... before
+initiating the WebAuthn authentication ceremony and exposing the user's
+credential IDs."*
+
+**One gap found: `signalUnknownCredential` was not implemented.**
+
+§5.1.10.3 says to prefer `signalAllAcceptedCredentials` *"when the user is
+authenticated"* — and that is what we had. But a failed sign-in is precisely when
+they are **not**, and a user whose **only** passkey was deleted can never reach
+the authenticated path: the single credential they hold is the one that cannot
+sign them in. They are stuck being offered it forever.
+
+So a refused assertion now names the credential it refused:
+
+```json
+{ "error": "invalid_grant",
+  "error_description": "the passkey was not accepted",
+  "signal_unknown_credential": { "rpId": "example.com", "credentialId": "AQIDBA" } }
+```
+
+The id is captured in the credential-resolution closure, because the library
+returns a nil credential on failure and that closure is the only place it exists.
+
+**It discloses nothing.** The caller just presented that id, so returning it
+tells them something they already had — §14.6.3's concern is about exposing ids
+to somebody who did *not* have them.
+
+And it is **omitted when we cannot name the credential**. A rejection for some
+other reason — a bad signature from a credential we still hold — must not tell
+the browser to forget a perfectly valid one.
+
 ## The payload
 
 ```json

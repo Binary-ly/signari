@@ -395,7 +395,15 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 	// Resolution is by USER HANDLE, not by anything the caller supplies: the
 	// handle came back inside the signed assertion, so it cannot be chosen.
 	var resolvedUser, resolvedOrg string
+	// The presented credential id, captured before validation.
+	//
+	// On failure the library returns a nil credential, so this closure is the
+	// only place the id is available -- and it is exactly what a browser needs
+	// in order to call signalUnknownCredential and stop the authenticator
+	// offering a passkey we no longer hold.
+	var presentedID []byte
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
+		presentedID = append([]byte(nil), rawID...)
 		u, userID, orgID, err := s.userByHandle(ctx, userHandle)
 		if err != nil {
 			return nil, err
@@ -411,7 +419,19 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 			Type: audit.EventLoginFailed, CorrelationID: correlationID(ctx),
 			Detail: map[string]any{"reason": "passkey_assertion_rejected"},
 		})
-		writeError(w, http.StatusUnauthorized, "invalid_grant", "the passkey was not accepted")
+		// Tell the browser WHICH credential we did not accept, so it can call
+		// signalUnknownCredential and the authenticator can stop offering it.
+		//
+		// Without this, the only cure for a deleted passkey is
+		// signalAllAcceptedCredentials, which needs a session -- so a user whose
+		// only passkey was deleted is stuck being offered it forever, because
+		// the one credential they have is the one that cannot sign them in.
+		// This is the exact case WebAuthn L3 §5.1.10.2 exists for.
+		//
+		// It leaks nothing: the caller just presented this credential id, so
+		// returning it tells them something they already had. §14.6.3's concern
+		// is about disclosing ids to somebody who did NOT have them.
+		s.refuseWithUnknownCredential(w, rp.RPID(), presentedID)
 		return
 	}
 

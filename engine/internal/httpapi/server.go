@@ -231,6 +231,7 @@ func (s *Server) mux() *http.ServeMux {
 	// WebAuthn Level 3 signal methods. See internal/httpapi/passkeysignal.go.
 	mux.HandleFunc("GET /account/passkeys/signal", s.handlePasskeySignal)
 	mux.HandleFunc("GET /static/passkey-signal.js", s.handlePasskeySignalJS)
+	mux.HandleFunc("GET /static/passkey-unknown.js", s.handleUnknownCredentialJS)
 	mux.HandleFunc("GET /account", s.handleAccount)
 	mux.HandleFunc("GET /account/connected", s.handleConnectedApps)
 	// SPNEGO is registered only when a keytab is loaded. A route that answers

@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -88,5 +90,47 @@ func TestTheScriptGuardsEveryCallAndEveryFailure(t *testing.T) {
 	// version that only works with 'unsafe-inline' would push us to weaken it.
 	if strings.Contains(passkeySignalJS, "<script") {
 		t.Error("the script contains markup; it is served as a file, not inlined")
+	}
+}
+
+// §5.1.10.2: a refused assertion must name the credential, so the browser can
+// signal it and the authenticator stops offering it.
+//
+// This is the half `signalAllAcceptedCredentials` cannot cover: that method
+// needs a session, and a user whose ONLY passkey was deleted can never get one
+// -- the single credential they hold is the one that cannot sign them in.
+func TestARefusedAssertionNamesTheCredential(t *testing.T) {
+	w := httptest.NewRecorder()
+	(&Server{}).refuseWithUnknownCredential(w, "example.com", []byte{1, 2, 3, 4})
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	sig, ok := body["signal_unknown_credential"].(map[string]any)
+	if !ok {
+		t.Fatalf("no signal_unknown_credential in %v", body)
+	}
+	// The dictionary's field names, exactly. §5.1.10.2's UnknownCredentialOptions.
+	if sig["rpId"] != "example.com" {
+		t.Errorf("rpId = %v", sig["rpId"])
+	}
+	// Base64URLString, unpadded.
+	if sig["credentialId"] != "AQIDBA" {
+		t.Errorf("credentialId = %v, want base64url of the presented bytes", sig["credentialId"])
+	}
+
+	// With nothing to name, the signal must be ABSENT -- telling a browser to
+	// forget a credential we could not identify would forget the wrong one.
+	w = httptest.NewRecorder()
+	(&Server{}).refuseWithUnknownCredential(w, "example.com", nil)
+	body = nil
+	_ = json.NewDecoder(w.Body).Decode(&body)
+	if _, present := body["signal_unknown_credential"]; present {
+		t.Fatal("a refusal with no identified credential still told the browser " +
+			"to forget one")
 	}
 }

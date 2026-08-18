@@ -190,3 +190,62 @@ func (s *Server) handlePasskeySignalJS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	_, _ = w.Write([]byte(passkeySignalJS))
 }
+
+// refuseWithUnknownCredential rejects an assertion and names the credential.
+//
+// WebAuthn L3 §5.1.10.2. `signalAllAcceptedCredentials` is the method the
+// specification says to prefer "when the user is authenticated" -- but a failed
+// sign-in is precisely when they are not, and a user whose ONLY passkey was
+// deleted can never reach the authenticated path: the one credential they have
+// is the one that cannot sign them in. This is the other half.
+//
+// It discloses nothing. The caller just presented this credential id, so
+// returning it tells them something they already had; §14.6.3's concern is
+// about exposing ids to somebody who did not have them.
+func (s *Server) refuseWithUnknownCredential(w http.ResponseWriter, rpID string,
+	presentedID []byte) {
+
+	body := map[string]any{
+		"error":             "invalid_grant",
+		"error_description": "the passkey was not accepted",
+	}
+	// Only when we can name it. A rejection for some other reason -- a bad
+	// signature from a credential we DO still hold -- must not tell the browser
+	// to forget a credential that is perfectly valid.
+	if rpID != "" && len(presentedID) > 0 {
+		body["signal_unknown_credential"] = map[string]string{
+			"rpId":         rpID,
+			"credentialId": base64.RawURLEncoding.EncodeToString(presentedID),
+		}
+	}
+	writeJSONResponse(w, http.StatusUnauthorized, body)
+}
+
+// unknownCredentialJS is the login page's half of §5.1.10.2.
+//
+// The sign-in endpoint returns `signal_unknown_credential` when it refuses a
+// credential it does not hold. Calling the signal there is the only cure
+// available to a user whose only passkey was deleted -- they cannot sign in, so
+// they can never reach the page that calls signalAllAcceptedCredentials.
+const unknownCredentialJS = `//	WebAuthn Level 3, signalUnknownCredential.
+//
+//	Called when sign-in refuses a credential we no longer hold, so the
+//	authenticator stops offering it.
+window.signariSignalUnknown = async function (signal) {
+  if (!signal || !window.PublicKeyCredential) return;
+  if (!PublicKeyCredential.signalUnknownCredential) return;
+  try {
+    await PublicKeyCredential.signalUnknownCredential({
+      rpId: signal.rpId,
+      credentialId: signal.credentialId,
+    });
+  } catch (e) { /* an authenticator that declines is not our problem */ }
+};
+`
+
+// handleUnknownCredentialJS serves it.
+func (s *Server) handleUnknownCredentialJS(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	_, _ = w.Write([]byte(unknownCredentialJS))
+}

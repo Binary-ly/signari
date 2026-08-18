@@ -111,6 +111,7 @@ type Asserted struct {
 	// Resource matches on resource.properties from the request. Each key must
 	// be present and its value must be one of the listed ones.
 	Resource map[string][]string `yaml:"resource" json:"resource,omitempty"`
+	Context map[string][]string `yaml:"context" json:"context,omitempty"`
 	// Networks requires context.ip to fall in one of these CIDR blocks.
 	Networks []string `yaml:"networks" json:"networks,omitempty"`
 }
@@ -488,6 +489,8 @@ type Facts struct {
 	// model's own tests can pin it -- a time window whose tests only pass
 	// between nine and five is a test nobody can run.
 	Now time.Time
+	// Context is the request's `context` object as the caller sent it.
+	Context map[string]any
 	// ResourceProps and IP are what the CALLER sent. Named so that reading the
 	// evaluator makes obvious which side of the trust boundary each value is on.
 	ResourceProps map[string]any
@@ -541,6 +544,18 @@ func (c Condition) SatisfiedBy(f Facts) bool {
 				// An absent property does NOT satisfy the requirement. Treating
 				// "the caller did not mention it" as "it is fine" means a caller
 				// bypasses the rule by omitting the field.
+				return false
+			}
+			if !matchesAny(v, allowed) {
+				return false
+			}
+		}
+		for key, allowed := range c.Asserted.Context {
+			v, present := f.Context[key]
+			if !present {
+				// Absent does not satisfy, for the same reason as above: a caller
+				// that omits the field would otherwise bypass the rule by saying
+				// less rather than by qualifying.
 				return false
 			}
 			if !matchesAny(v, allowed) {
@@ -690,6 +705,15 @@ func (c Condition) Unmet(f Facts) string {
 			if !matchesAny(v, allowed) {
 				return "the resource's " + key + " to be " +
 					strings.Join(allowed, " or ")
+			}
+		}
+		for key, allowed := range c.Asserted.Context {
+			v, present := f.Context[key]
+			if !present {
+				return "the caller to state " + key + " in the request context"
+			}
+			if !matchesAny(v, allowed) {
+				return key + " to be " + strings.Join(allowed, " or ")
 			}
 		}
 		if len(c.Asserted.Networks) > 0 && !inAnyNetwork(f.IP, c.Asserted.Networks) {

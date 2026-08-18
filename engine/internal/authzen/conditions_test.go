@@ -233,3 +233,56 @@ func TestTheCallerCannotSatisfyAVerifiedRequirement(t *testing.T) {
 		t.Fatal("the verified facts did not satisfy it")
 	}
 }
+
+func TestAContextConditionIsMatched(t *testing.T) {
+	c := Condition{Asserted: &Asserted{
+		Context: map[string][]string{"client_id": {"payroll", "hr-portal"}},
+	}}
+
+	if !c.SatisfiedBy(Facts{Context: map[string]any{"client_id": "payroll"}}) {
+		t.Error("a permitted client was refused")
+	}
+	if !c.SatisfiedBy(Facts{Context: map[string]any{"client_id": "hr-portal"}}) {
+		t.Error("the second permitted client was refused")
+	}
+	if c.SatisfiedBy(Facts{Context: map[string]any{"client_id": "some-other-app"}}) {
+		t.Error("a client outside the list was allowed")
+	}
+}
+
+// THE case that decides whether the condition is a control or a decoration: a
+// caller that simply omits the field must not pass.
+//
+// Treating "not mentioned" as "fine" means the rule is bypassed by saying less
+// rather than by qualifying — and the caller has every incentive to say less.
+func TestAnAbsentContextValueDoesNotSatisfyTheCondition(t *testing.T) {
+	c := Condition{Asserted: &Asserted{
+		Context: map[string][]string{"client_id": {"payroll"}},
+	}}
+
+	if c.SatisfiedBy(Facts{Context: map[string]any{}}) {
+		t.Fatal("an empty context satisfied a condition on client_id")
+	}
+	if c.SatisfiedBy(Facts{}) {
+		t.Fatal("a nil context satisfied a condition on client_id")
+	}
+	if c.SatisfiedBy(Facts{Context: map[string]any{"something_else": "payroll"}}) {
+		t.Fatal("a context naming a different key satisfied the condition")
+	}
+}
+
+// The refusal has to name what was missing, or an operator debugging a denied
+// request has nothing to go on.
+func TestTheContextRefusalSaysWhatWasWanted(t *testing.T) {
+	c := Condition{Asserted: &Asserted{
+		Context: map[string][]string{"client_id": {"payroll"}},
+	}}
+
+	if got := c.Unmet(Facts{Context: map[string]any{}}); got == "" {
+		t.Fatal("no reason given for an absent context value")
+	}
+	got := c.Unmet(Facts{Context: map[string]any{"client_id": "wrong"}})
+	if got == "" || !strings.Contains(got, "payroll") {
+		t.Errorf("Unmet = %q; it should name the permitted value", got)
+	}
+}

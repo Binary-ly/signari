@@ -226,6 +226,7 @@ func (s *Server) decide(ctx context.Context, orgID string, req authzen.Request) 
 	// file says which of its requirements read these, so an auditor can see
 	// which survive a compromised relying party without asking anybody.
 	facts.ResourceProps = req.Resource.Properties
+	facts.Context = req.Context
 	facts.IP = ipFromContext(req.Context)
 
 	// The relation lookup uses the subject as GIVEN, so relations can be held

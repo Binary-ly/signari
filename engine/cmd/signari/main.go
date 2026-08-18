@@ -61,6 +61,7 @@ import (
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/migrate"
 	"signari.dev/engine/internal/oidc"
+	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/outbox"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/policy"
@@ -96,8 +97,9 @@ var twoWordCommands = map[string]bool{
 	"prompt":   true,
 	"kerberos": true,
 	"ssf":      true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
-	"events": true,
-	"authz":  true,
+	"events":     true,
+	"authz":      true,
+	"federation": true,
 }
 
 func usage() error {
@@ -147,6 +149,9 @@ commands:
   admin-token create  mint a scoped, revocable admin API token
   admin-token list    show admin tokens, their scopes and when each was last used
   admin-token revoke  revoke one immediately, with no restart
+  federation enable   join an OpenID Federation: generate an Entity Statement key
+                      and publish /.well-known/openid-federation
+  federation show     print the Entity Configuration this instance publishes
   doctor              inspect this deployment and report what is wrong with it
   serve               serve the OIDC endpoints
 
@@ -270,6 +275,11 @@ func run(args []string) error {
 	srcJWKS := fs.String("source-jwks", "", "the transmitter's JWKS URI (https)")
 	srcAudience := fs.String("source-audience", "", "what the transmitter puts in aud for us")
 	modelFile := fs.String("model-file", "", "authorization model, YAML")
+	authorityHints := fs.String("authority-hints", "",
+		"comma-separated Entity Identifiers of this entity's Immediate Superiors "+
+			"(federation enable). Leave empty only for a Trust Anchor with no superiors")
+	orgName := fs.String("organization-name", "", "organisation name published in the Entity Configuration")
+	homepageURI := fs.String("homepage-uri", "", "homepage published in the Entity Configuration")
 	relSubject := fs.String("principal", "", "type:id, e.g. user:alice@example.com")
 	relRelation := fs.String("relation", "", "e.g. editor")
 	relObject := fs.String("object", "", "type:id, e.g. document:42")
@@ -492,6 +502,10 @@ func run(args []string) error {
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
 	case "logout-test":
 		return logoutTest(ctx, conn, *rpURL, *clientID, *issuer, *subject, *sidFlag)
+	case "federation enable":
+		return federationEnable(ctx, conn, *authorityHints, *orgName, *homepageURI)
+	case "federation show":
+		return federationShow(ctx, conn)
 	case "authz set-model":
 		return authzModelSet(ctx, conn, *orgID, *modelFile)
 	case "authz show-model":
@@ -939,6 +953,18 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	// here because this is where TLS is configured; nil is a valid answer and
 	// means tls_client_auth is refused.
 	srv.SetClientCAs(clientCAPool())
+	srv.SetInstance(instanceID)
+
+	// OpenID Federation keys, loaded only if this instance has any.
+	//
+	// A deployment that is not in a federation has none, and that is the
+	// ordinary case: SetFederationKeys(nil) leaves the configuration endpoint
+	// unregistered rather than serving an Entity Configuration nobody asked for.
+	if fedSet, ferr := keys.LoadSetFor(ctx, conn, instanceID, keys.PurposeFederation, root); ferr == nil &&
+		len(fedSet.JWKS().Keys) > 0 {
+		srv.SetFederationKeys(fedSet)
+		log.Info("openid federation enabled", "keys", len(fedSet.JWKS().Keys))
+	}
 	pst, perr := postureFromEnv()
 	if perr != nil {
 		return perr
@@ -5688,6 +5714,148 @@ func ssfReceived(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		}
 		fmt.Printf("%s  %-18s %-20s %s\n",
 			r.ReceivedAt.Format("2006-01-02 15:04:05"), short, r.Action, r.Detail)
+	}
+	return nil
+}
+
+// federationEnable joins this instance to an OpenID Federation.
+//
+// Two things happen, and neither is reversible by accident: an Entity Statement
+// signing key is generated, and a federation_config row is written. From then on
+// /.well-known/openid-federation serves a signed statement about this entity.
+//
+// The key is generated here rather than reusing the protocol keys, because
+// OpenID Federation 1.0 §3.1.1 says "These Federation Entity Keys SHOULD NOT be
+// used in other protocols". Reusing them would tie two independent trust
+// decisions together: a relying party trusting our OIDC key to say who a user
+// is, and a federation trusting our federation key to say what this entity is.
+func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homepage string) error {
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	instanceID, issuer, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	if err := oidfed.ValidateEntityID(issuer); err != nil {
+		return fmt.Errorf("this instance cannot be a federation entity: %w", err)
+	}
+
+	// §3.1.2: authority_hints "MUST NOT be the empty array". Absent means "Trust
+	// Anchor with no superiors", which is a real and different thing -- so an
+	// empty flag is passed through as nil rather than as [].
+	var hintList []string
+	for _, h := range strings.Split(hints, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			if err := oidfed.ValidateEntityID(h); err != nil {
+				return fmt.Errorf("authority hint %q: %w", h, err)
+			}
+			hintList = append(hintList, h)
+		}
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// One key, ES256, active immediately. Rotation uses the same machinery as
+	// the protocol keys because it is the same table.
+	var existing int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM core.signing_keys
+		WHERE instance_id = $1::uuid AND purpose = 'federation' AND state = 'active'`,
+		instanceID).Scan(&existing); err != nil {
+		return err
+	}
+	if existing == 0 {
+		k, err := keys.Generate(keys.NewKID(), keys.ES256)
+		if err != nil {
+			return fmt.Errorf("generating the federation key: %w", err)
+		}
+		// Active immediately, not `next`.
+		//
+		// A protocol key is published as `next` first so relying parties can
+		// fetch it before it signs anything -- that staging is what makes an OIDC
+		// rotation safe. A federation entity has no such audience yet: the very
+		// first Entity Configuration is signed by this key, and a `next` key
+		// signs nothing, so staging it would publish an endpoint that answers 500.
+		//
+		// (It did, in the first version of this command. The key was saved in
+		// whatever state Generate leaves, the endpoint asked for an ACTIVE one,
+		// and the two never met.)
+		active, err := keys.WithState(k, keys.StateActive)
+		if err != nil {
+			return err
+		}
+		if err := keys.SaveFor(ctx, tx, instanceID, keys.PurposeFederation, active, root); err != nil {
+			return err
+		}
+		k = active
+		fmt.Printf("generated federation key %s (ES256)\n", k.KID())
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.federation_config
+			(instance_id, authority_hints, organization_name, homepage_uri)
+		VALUES ($1::uuid, $2, NULLIF($3,''), NULLIF($4,''))
+		ON CONFLICT (instance_id) DO UPDATE SET
+			authority_hints   = EXCLUDED.authority_hints,
+			organization_name = EXCLUDED.organization_name,
+			homepage_uri      = EXCLUDED.homepage_uri,
+			updated_at        = now()`,
+		instanceID, hintList, orgName, homepage); err != nil {
+		return fmt.Errorf("saving the federation configuration: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	url, _ := oidfed.ConfigurationURL(issuer)
+	fmt.Printf("federation enabled\n  entity id : %s\n  published : %s\n", issuer, url)
+	if len(hintList) == 0 {
+		fmt.Println("  no authority_hints: this entity is published as a Trust Anchor " +
+			"with no superiors. If it has one, re-run with -authority-hints.")
+	} else {
+		fmt.Printf("  superiors : %s\n", strings.Join(hintList, ", "))
+	}
+	fmt.Println("  restart `signari serve` to register the endpoint")
+	return nil
+}
+
+// federationShow prints what this instance publishes.
+func federationShow(ctx context.Context, conn *pgx.Conn) error {
+	instanceID, issuer, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	var hints []string
+	var orgName, homepage *string
+	var lifetime int
+	if err := conn.QueryRow(ctx, `
+		SELECT authority_hints, organization_name, homepage_uri, lifetime_seconds
+		FROM core.federation_config WHERE instance_id = $1::uuid`, instanceID).
+		Scan(&hints, &orgName, &homepage, &lifetime); err != nil {
+		return fmt.Errorf("this instance is not part of a federation -- " +
+			"run `signari federation enable`")
+	}
+	var nkeys int
+	_ = conn.QueryRow(ctx, `
+		SELECT count(*) FROM core.signing_keys
+		WHERE instance_id = $1::uuid AND purpose = 'federation' AND state IN ('active','next')`,
+		instanceID).Scan(&nkeys)
+
+	url, _ := oidfed.ConfigurationURL(issuer)
+	fmt.Printf("entity id       %s\n", issuer)
+	fmt.Printf("published at    %s\n", url)
+	fmt.Printf("federation keys %d\n", nkeys)
+	fmt.Printf("lifetime        %ds\n", lifetime)
+	if len(hints) == 0 {
+		fmt.Println("authority_hints (none -- published as a Trust Anchor)")
+	} else {
+		fmt.Printf("authority_hints %s\n", strings.Join(hints, ", "))
 	}
 	return nil
 }

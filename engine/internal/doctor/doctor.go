@@ -197,7 +197,7 @@ func checkSigningKeys(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	rows, err := conn.Query(ctx, `
 		SELECT algorithm, count(*) FILTER (WHERE state = 'active'),
 		       count(*) FILTER (WHERE state = 'next')
-		FROM core.signing_keys GROUP BY algorithm`)
+		FROM core.signing_keys WHERE purpose = 'oidc' GROUP BY algorithm`)
 	if err != nil {
 		return err
 	}

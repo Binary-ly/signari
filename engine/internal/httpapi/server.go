@@ -26,6 +26,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/oidc"
+	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/risk"
@@ -61,6 +62,12 @@ type Server struct {
 	// the binding constraint, which let one address lock out every device in
 	// the deployment.
 	device *bucket
+	// instanceID identifies this deployment's instance row.
+	instanceID string
+	// fedKeys are the OpenID Federation Entity Statement signing keys, kept
+	// apart from cfg.Keys because §3.1.1 says federation keys "SHOULD NOT be
+	// used in other protocols". nil when this instance is not federated.
+	fedKeys *keys.Set
 	// originsCache is the set of web origins from registered redirect URIs,
 	// used to answer CORS preflights. See cors.go.
 	originsMu     sync.Mutex
@@ -112,6 +119,16 @@ func (s *Server) SetClientCAs(pool *x509.CertPool) { s.clientCAs = pool }
 
 // SetPosture supplies how device trust is established, or nil for none.
 func (s *Server) SetPosture(p *posture.Config) { s.posture = p }
+
+// SetInstance supplies the instance row's id.
+func (s *Server) SetInstance(id string) { s.instanceID = id }
+
+// SetFederationKeys supplies the OpenID Federation Entity Statement keys.
+//
+// Separate from cfg.Keys on purpose (§3.1.1: federation keys "SHOULD NOT be used
+// in other protocols"). Passing nil -- the ordinary case -- leaves the
+// configuration endpoint unregistered rather than serving something empty.
+func (s *Server) SetFederationKeys(set *keys.Set) { s.fedKeys = set }
 
 func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender,
 	texter sms.Sender) (*Server, error) {
@@ -272,6 +289,13 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /ssf/receive", s.handleSSFReceive)
 
 	mux.HandleFunc("GET /.well-known/authzen-configuration", s.handleAuthzMetadata)
+	// OpenID Federation 1.0 §9. Registered only when this instance has a
+	// federation key set loaded: a path that answers with an improvised or
+	// unsigned Entity Configuration would put a statement into a federation
+	// that nobody decided to make.
+	if s.fedKeys != nil {
+		mux.HandleFunc("GET "+oidfed.WellKnownPath, s.handleEntityConfiguration)
+	}
 	mux.HandleFunc("POST /access/v1/evaluation", s.handleAuthzEvaluate)
 	mux.HandleFunc("POST /access/v1/evaluations", s.handleAuthzEvaluations)
 	mux.HandleFunc("POST /access/v1/search/subject", s.handleAuthzSearchSubject)

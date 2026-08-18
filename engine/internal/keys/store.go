@@ -80,7 +80,25 @@ func (r *RootKey) open(sealed []byte) ([]byte, error) {
 // the root key. A key whose private half lives in an HSM or KMS is stored with
 // key_ref set and wrapped_private NULL -- the schema's CHECK constraint requires
 // exactly one of the two.
+// PurposeOIDC and PurposeFederation separate protocol signing keys from
+// OpenID Federation Entity Statement keys.
+//
+// §3.1.1 of OpenID Federation 1.0: "These Federation Entity Keys SHOULD NOT be
+// used in other protocols." The two answer different questions -- one asserts
+// who a user is, the other asserts what this entity is and who vouches for it --
+// so rotating or compromising one must not affect the other.
+const (
+	PurposeOIDC       = "oidc"
+	PurposeFederation = "federation"
+)
+
+// Save persists an OIDC protocol key.
 func Save(ctx context.Context, tx pgx.Tx, instanceID string, k Key, root *RootKey) error {
+	return SaveFor(ctx, tx, instanceID, PurposeOIDC, k, root)
+}
+
+// SaveFor persists a key for a named purpose.
+func SaveFor(ctx context.Context, tx pgx.Tx, instanceID, purpose string, k Key, root *RootKey) error {
 	jwkBytes, err := json.Marshal(k.PublicJWK())
 	if err != nil {
 		return fmt.Errorf("marshalling public jwk: %w", err)
@@ -101,8 +119,9 @@ func Save(ctx context.Context, tx pgx.Tx, instanceID string, k Key, root *RootKe
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO core.signing_keys
-			(kid, instance_id, algorithm, state, public_jwk, wrapped_private, key_ref, published_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			(kid, instance_id, algorithm, state, public_jwk, wrapped_private, key_ref,
+			 published_at, purpose)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (kid) DO UPDATE SET
 			state = EXCLUDED.state,
 			activated_at = CASE WHEN EXCLUDED.state = 'active'
@@ -112,7 +131,7 @@ func Save(ctx context.Context, tx pgx.Tx, instanceID string, k Key, root *RootKe
 			                    AND core.signing_keys.state <> 'passive'
 			                   THEN now() ELSE core.signing_keys.demoted_at END`,
 		k.KID(), instanceID, string(k.Algorithm()), string(k.State()),
-		jwkBytes, wrapped, root.Ref(), k.PublishedAt(),
+		jwkBytes, wrapped, root.Ref(), k.PublishedAt(), purpose,
 	)
 	if err != nil {
 		return fmt.Errorf("saving key %s: %w", k.KID(), err)
@@ -126,11 +145,24 @@ func Save(ctx context.Context, tx pgx.Tx, instanceID string, k Key, root *RootKe
 // before it signs, and `passive` so tokens issued before the last rotation still
 // verify. Loading only the active key is how rotation breaks verification.
 func LoadSet(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootKey) (*Set, error) {
+	return LoadSetFor(ctx, conn, instanceID, PurposeOIDC, root)
+}
+
+// LoadSetFor reads the keys for one purpose.
+func LoadSetFor(ctx context.Context, conn *pgx.Conn, instanceID, purpose string, root *RootKey) (*Set, error) {
+	// OIDC keys only.
+	//
+	// `purpose` was added for OpenID Federation, whose §3.1.1 says "These
+	// Federation Entity Keys SHOULD NOT be used in other protocols". Without
+	// this filter a federation key would be loaded into the protocol key set and
+	// published at /oauth2/jwks the moment one was generated -- the exact
+	// conflation the separation exists to prevent, arriving silently rather than
+	// as a decision anybody made.
 	rows, err := conn.Query(ctx, `
 		SELECT kid, algorithm, state, public_jwk, wrapped_private, key_ref, published_at
 		FROM core.signing_keys
-		WHERE instance_id = $1
-		ORDER BY published_at`, instanceID)
+		WHERE instance_id = $1 AND purpose = $2
+		ORDER BY published_at`, instanceID, purpose)
 	if err != nil {
 		return nil, fmt.Errorf("querying signing keys: %w", err)
 	}
@@ -200,7 +232,8 @@ func Ensure(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootKe
 		var n int
 		if err := tx.QueryRow(ctx, `
 			SELECT count(*) FROM core.signing_keys
-			WHERE instance_id = $1 AND algorithm = $2 AND state = 'active'`,
+			WHERE instance_id = $1 AND algorithm = $2 AND state = 'active'
+			  AND purpose = 'oidc'`,
 			instanceID, string(alg)).Scan(&n); err != nil {
 			return nil, err
 		}

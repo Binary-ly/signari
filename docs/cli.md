@@ -95,6 +95,7 @@ a class of failure that shows up as data corruption rather than an error.
 | | |
 |---|---|
 | `signari authz set-model` / `authz show-model` | The authorization model. Setting one **runs its own tests** — see [authorization.md](authorization.md) |
+| `signari federation enable` / `federation show` | Join an OpenID Federation. Generates a **separate** Entity Statement signing key and publishes `/.well-known/openid-federation` — see [openid-federation.md](openid-federation.md) |
 | `signari authz grant` / `authz revoke` | Relations: `-principal user:alice -relation owner -object document:42` |
 | `signari authz check` | Answer a question from the command line, with the reason |
 

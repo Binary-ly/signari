@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"context"
+
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"signari.dev/engine/internal/clients"
 	"strings"
 	"testing"
 	"time"
@@ -223,4 +226,79 @@ func TestTheBoundKeyStillRefreshesSuccessfully(t *testing.T) {
 		t.Fatal("the successor token accepted a different key: the binding held " +
 			"for one rotation and was lost at the next")
 	}
+}
+
+// RFC 9449 §5: "A token_type of DPoP MUST be included in the access token
+// response to signal to the client that the access token was bound to its DPoP
+// key and can be used as described in Section 7.1."
+//
+// The client_credentials path bound the token -- `cnf.jkt` was there -- and then
+// announced `token_type: Bearer`. A client reading that sends
+// `Authorization: Bearer ...` with no proof, and every resource request is
+// refused: a token unusable from the moment it was issued. The helper that gets
+// this right, bearerOrDPoP, lives three functions away and this path never
+// called it.
+func TestAClientCredentialsTokenBoundToAKeyIsAnnouncedAsDPoP(t *testing.T) {
+	f := newTokenFixture(t)
+	// A 256-bit random secret hashed the way the product hashes them; a made-up
+	// string would not verify.
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	secret := base64.RawURLEncoding.EncodeToString(raw)
+	hash, ok := clients.HashSecret(secret)
+	if !ok {
+		t.Skip("the fast secret hash is unavailable in this build")
+	}
+	if _, err := f.pool.Exec(context.Background(),
+		`UPDATE core.clients SET grant_types = ARRAY['client_credentials'],
+		 client_type = 'confidential', client_secret_hash = $2,
+		 scopes = ARRAY['api'] WHERE client_id = $1`,
+		f.clientID, hash); err != nil {
+		t.Fatal(err)
+	}
+	key := newProofKey(t)
+
+	status, body := f.postDPoP(t, url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {f.clientID},
+		"client_secret": {secret},
+		"scope":         {"api"},
+	}, key.proof(t, "jti-cc-0001"))
+	if status != http.StatusOK {
+		t.Fatalf("client_credentials gave %d: %v", status, body)
+	}
+
+	bound := confirmationIn(t, body["access_token"].(string))
+	if bound == "" {
+		t.Skip("this build does not bind client_credentials tokens; nothing to announce")
+	}
+	if got := body["token_type"]; got != "DPoP" {
+		t.Fatalf("the token carries cnf.jkt=%s but is announced as %v; the client "+
+			"will send no proof and every request it makes will be refused",
+			bound, got)
+	}
+}
+
+// confirmationIn reads cnf.jkt from a signed token.
+func confirmationIn(t *testing.T, at string) string {
+	t.Helper()
+	parts := strings.Split(at, ".")
+	if len(parts) != 3 {
+		t.Fatalf("not a JWS: %q", at)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims struct {
+		Cnf struct {
+			JKT string `json:"jkt"`
+		} `json:"cnf"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		t.Fatal(err)
+	}
+	return claims.Cnf.JKT
 }

@@ -143,3 +143,70 @@ func TestExchangeAllowsNarrowingTheDetails(t *testing.T) {
 		t.Fatalf("the narrowed token carries %+v, want only the status action", got)
 	}
 }
+
+// Exchange dropped the sender-constraint as well as the details.
+//
+// handleToken verifies the DPoP proof before dispatching the grant, so the
+// caller's thumbprint was already on the context; this path just never read it.
+// RFC 9449 §5 permits an AS to elect not to bind ("An authorization server MAY
+// elect to issue access tokens that are not DPoP bound"), so the old behaviour
+// was allowed rather than wrong — but it meant a client using DPoP everywhere
+// else silently received an ordinary bearer token from the one endpoint whose
+// entire purpose is handing a credential to another party.
+func TestAnExchangedTokenIsBoundToTheCallersDPoPKey(t *testing.T) {
+	f := newTokenFixture(t)
+	f.enableExchange(t)
+
+	subject := f.subjectTokenWithDetails(t,
+		"verifier-exchange-dpop-aaaaaaaaaaaaaaaaaaaaa", nil)
+	key := newProofKey(t)
+
+	status, body := f.postDPoP(t, url.Values{
+		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"subject_token":      {subject},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		"audience":           {exchangeAudience},
+		"client_id":          {f.clientID},
+	}, key.proof(t, "jti-exchange-0001"))
+	if status != http.StatusOK {
+		t.Fatalf("exchange under DPoP gave %d: %v", status, body)
+	}
+
+	bound := confirmationIn(t, body["access_token"].(string))
+	if bound != key.thumbprint(t) {
+		t.Fatalf("the exchanged token is bound to %q, want the caller's key %q: a "+
+			"client that proved possession received an unconstrained bearer token "+
+			"from the endpoint that hands credentials to someone else",
+			bound, key.thumbprint(t))
+	}
+	if got := body["token_type"]; got != "DPoP" {
+		t.Fatalf("token_type is %v while the token carries cnf.jkt; the client "+
+			"will send no proof and every request will be refused", got)
+	}
+}
+
+// A caller that presents no proof still gets a plain bearer token -- binding must
+// not become mandatory as a side effect.
+func TestAnExchangeWithoutAProofIsStillBearer(t *testing.T) {
+	f := newTokenFixture(t)
+	f.enableExchange(t)
+	subject := f.subjectTokenWithDetails(t,
+		"verifier-exchange-dpop-bbbbbbbbbbbbbbbbbbbbb", nil)
+
+	status, body := f.post(t, url.Values{
+		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"subject_token":      {subject},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		"audience":           {exchangeAudience},
+		"client_id":          {f.clientID},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("plain exchange gave %d: %v", status, body)
+	}
+	if got := body["token_type"]; got != "Bearer" {
+		t.Fatalf("token_type is %v for a caller that sent no proof", got)
+	}
+	if bound := confirmationIn(t, body["access_token"].(string)); bound != "" {
+		t.Fatalf("the token is bound to %q though nothing was proved", bound)
+	}
+}

@@ -1004,6 +1004,20 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 		certThumb = certThumbprintFrom(r.Context())
 	}
 
+	// Named once and reused, because the binding and the announcement of the
+	// binding must agree. They did not: the token below carried `cnf.jkt` while
+	// the response said `token_type: Bearer`, so a DPoP client was handed a
+	// sender-constrained token and told it was an ordinary bearer one. It would
+	// then send `Authorization: Bearer ...` with no proof, and every resource
+	// request would be refused -- the token unusable from the moment it was
+	// issued.
+	//
+	// RFC 9449 §5: "A token_type of DPoP MUST be included in the access token
+	// response to signal to the client that the access token was bound to its
+	// DPoP key". bearerOrDPoP three functions above already spelled out the
+	// consequence; this path simply never called it.
+	ccJKT := dpopThumbprintFrom(r.Context())
+
 	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
 		Issuer:   s.cfg.Issuer,
 		Subject:  c.ClientID,
@@ -1011,7 +1025,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
 		IssuedAt: now.Unix(),
 		JTI:      jti,
-		Cnf:      bindingFor(dpopThumbprintFrom(r.Context()), certThumb),
+		Cnf:      bindingFor(ccJKT, certThumb),
 		ClientID: c.ClientID,
 		Scope:    joinScopes(scopes),
 		// No SessionID: nothing to tie this to, and inventing one would make
@@ -1025,7 +1039,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 
 	writeJSON(w, http.StatusOK, &tokenResponse{
 		AccessToken: at,
-		TokenType:   "Bearer",
+		TokenType:   bearerOrDPoP(ccJKT),
 		ExpiresIn:   int(tokens.DefaultAccessTokenTTL.Seconds()),
 		Scope:       joinScopes(scopes),
 	})
@@ -2138,6 +2152,8 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		exchangedDetailClaim = encoded
 	}
 
+	exchangeJKT := dpopThumbprintFrom(ctx)
+
 	now := time.Now()
 	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
@@ -2152,6 +2168,19 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		// die when the user signs out, exactly like the token it came from.
 		SessionID: subject.SessionID,
 		Act:       act,
+
+		// Sender-constrained when the caller proved possession of a key on THIS
+		// request. handleToken already verified the proof before dispatching the
+		// grant, so the thumbprint was sitting on the context and this path simply
+		// did not read it -- every other mint site does.
+		//
+		// Bound to the CALLER's key, not the subject token's: exchange delegates
+		// to a different party, and that party is the one who will present the new
+		// token. RFC 9449 §5 lets an AS elect not to bind at all, so the previous
+		// behaviour was permitted rather than wrong -- but it meant a client using
+		// DPoP everywhere else silently received an ordinary bearer token from the
+		// one endpoint whose purpose is handing credentials to someone else.
+		Cnf: bindingFor(exchangeJKT, ""),
 
 		AuthorizationDetails: exchangedDetailClaim,
 	}, tokens.TypAccessToken)
@@ -2171,10 +2200,12 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": at,
-		// RFC 8693 §2.2.1 requires issued_token_type, and token_type must be
-		// "Bearer" spelled exactly so.
+		// RFC 8693 §2.2.1 requires issued_token_type. token_type follows the
+		// binding: RFC 9449 §5 makes "DPoP" a MUST once the token is bound to a
+		// key, because a client told "Bearer" sends no proof and every request it
+		// makes with the token is refused.
 		"issued_token_type": oauth.TokenTypeAccess,
-		"token_type":        "Bearer",
+		"token_type":        bearerOrDPoP(exchangeJKT),
 		"expires_in":        int(tokens.DefaultAccessTokenTTL.Seconds()),
 		"scope":             joinScopes(granted),
 	})

@@ -24,6 +24,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"golang.org/x/text/unicode/norm"
 	"io"
 	"runtime"
 	"strconv"
@@ -103,7 +104,31 @@ func (h *Hasher) acquire(ctx context.Context) error {
 func (h *Hasher) release() { <-h.sem }
 
 // Hash produces a PHC-format Argon2id string.
+
+// Normalize applies NFC to a password before it becomes bytes.
+//
+// NIST SP 800-63B-4 §3.1.1.2: "the verifier SHOULD apply the normalization
+// process for stabilized strings using the Normalization Form Canonical
+// Composition (NFC) normalization... **This process is applied before hashing
+// the byte string that represents the password.**"
+//
+// # Why it lives in the Hasher and not in the Policy
+//
+// It was first written inside Policy.Check, which takes the candidate BY VALUE:
+// the local copy was normalised, the caller went on to hash the original, and
+// the normalisation affected nothing that mattered. It looked like the SHOULD
+// was implemented. That is the exact shape of defect this codebase keeps
+// finding elsewhere, produced here by the fix for a different one.
+//
+// Hash and Verify are the only two places a password becomes bytes, so
+// normalising here cannot be bypassed by a caller that does not know to.
+//
+// ASCII is unaffected -- NFC is the identity on it -- so existing hashes of
+// ASCII passwords, which is nearly all of them, verify exactly as before.
+func Normalize(password string) string { return norm.NFC.String(password) }
+
 func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
+	password = Normalize(password)
 	if err := h.acquire(ctx); err != nil {
 		return "", err
 	}
@@ -128,6 +153,7 @@ func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 // the SAME transaction as the login, so a successful sign-in silently upgrades
 // the credential.
 func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsRehash bool, err error) {
+	password = Normalize(password)
 	if err := h.acquire(ctx); err != nil {
 		return false, err
 	}

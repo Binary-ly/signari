@@ -30,8 +30,25 @@ import (
 
 // Policy is a deployment's password rules.
 type Policy struct {
-	// MinLength is the floor. NIST SP 800-63B sets 8 as the minimum acceptable;
-	// longer is better and this is a floor rather than a recommendation.
+	// MinLength is the floor, and the number changed under us.
+	//
+	// NIST SP 800-63B **revision 4** §3.1.1.2:
+	//
+	//	"Verifiers and CSPs SHALL require passwords that are used as a
+	//	single-factor authentication mechanism to be a minimum of 15 characters
+	//	in length. Verifiers and CSPs MAY allow passwords that are only used as
+	//	part of multi-factor authentication processes to be shorter but SHALL
+	//	require them to be a minimum of eight characters in length."
+	//
+	// This said 8, citing SP 800-63B -- which was correct for revision 3 and is
+	// the more dangerous kind of stale: an accurate citation of a superseded
+	// document reads like diligence, so nobody re-checks it.
+	//
+	// 15 is the default because this policy does not know whether a second
+	// factor will be present. A deployment that enforces MFA for every account
+	// may lower it to 8; one that does not, may not. Getting that wrong in the
+	// permissive direction is a single-factor password below the floor, so the
+	// default is the number that is safe without knowing.
 	MinLength int
 	// MaxLength guards the hasher rather than the password. Argon2 over a
 	// megabyte of input is a denial of service with a text box in front of it.
@@ -71,9 +88,16 @@ type Policy struct {
 	RecheckEvery time.Duration
 }
 
+// MinLengthSingleFactor and MinLengthWithMFA are SP 800-63B-4 §3.1.1.2's two
+// floors. The second applies ONLY to a password that is never used on its own.
+const (
+	MinLengthSingleFactor = 15
+	MinLengthWithMFA      = 8
+)
+
 // DefaultPolicy is what a deployment gets without configuring anything.
 func DefaultPolicy() Policy {
-	return Policy{MinLength: 8, MaxLength: 1024}
+	return Policy{MinLength: MinLengthSingleFactor, MaxLength: 1024}
 }
 
 // Result explains an outcome to the caller as well as to the user.
@@ -97,16 +121,44 @@ func (p Policy) Check(ctx context.Context, candidate, identity string,
 
 	min := p.MinLength
 	if min <= 0 {
-		min = 8
+		min = MinLengthSingleFactor
 	}
 	max := p.MaxLength
 	if max <= 0 {
 		max = 1024
 	}
 
+	// Normalised to NFC before anything looks at it.
+	//
+	// SP 800-63B-4 §3.1.1.2: "If Unicode characters are accepted in passwords,
+	// the verifier SHOULD apply the normalization process for stabilized strings
+	// using the Normalization Form Canonical Composition (NFC) normalization...
+	// This process is applied before hashing the byte string that represents the
+	// password."
+	//
+	// The failure it prevents is not theoretical. "é" can be one code point or
+	// two, and which one a keyboard produces depends on the platform. Without
+	// this, a password set on a Mac and typed on Windows is a different byte
+	// string and simply does not verify -- intermittently, for a minority of
+	// users, with no error anyone can act on.
+	//
+	// ASCII is unaffected: NFC is the identity function on it, so the
+	// overwhelming majority of passwords hash to exactly what they did before.
+	//
+	// The hashing itself normalises too, in Hasher.Hash and Hasher.Verify --
+	// that is where the SHOULD is actually satisfied, because those are the only
+	// two places a password becomes bytes. This call is so that the LENGTH check
+	// below measures the same string that will be hashed: a decomposed "é" is
+	// two code points before normalisation and one after, so checking the length
+	// of the un-normalised form would measure a different password.
+	candidate = Normalize(candidate)
+
 	// Counted in RUNES. len() on a Go string is bytes, so a passphrase in a
 	// non-Latin script would be measured as several times its real length and a
 	// short one would pass a check it should fail.
+	//
+	// §3.1.1.2 makes this explicit: "Each Unicode code point SHALL be counted as
+	// a single character when evaluating password length."
 	n := len([]rune(candidate))
 	switch {
 	case n < min:

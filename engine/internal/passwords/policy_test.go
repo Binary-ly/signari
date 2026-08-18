@@ -5,6 +5,7 @@ import (
 	"crypto/sha1" //nolint:gosec // the HIBP corpus is indexed by SHA-1
 	"encoding/hex"
 	"fmt"
+	"golang.org/x/text/unicode/norm"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,11 +54,14 @@ func TestTheRangeAPINeverSeesThePassword(t *testing.T) {
 }
 
 func TestABreachedPasswordIsRefused(t *testing.T) {
-	endpoint := hibpServing(t, "password123", "12345")
+	// 15+ characters, so the LENGTH check is not what refuses it -- otherwise
+	// this test passes without the breach check ever running, which is what it
+	// exists to exercise. (It did, the moment the floor moved to 15.)
+	endpoint := hibpServing(t, "correct-horse-battery", "12345")
 	p := DefaultPolicy()
 	p.Breach = &BreachChecker{Endpoint: endpoint, Online: true}
 
-	res, err := p.Check(context.Background(), "password123", "", nil, nil)
+	res, err := p.Check(context.Background(), "correct-horse-battery", "", nil, nil)
 	if err == nil {
 		t.Fatal("a breached password was accepted")
 	}
@@ -173,5 +177,81 @@ func TestReuseIsRefused(t *testing.T) {
 	}
 	if _, err := p.Check(ctx, "a-genuinely-different-one", "", []string{old}, h); err != nil {
 		t.Errorf("a new password was refused: %v", err)
+	}
+}
+
+// NIST SP 800-63B **revision 4** §3.1.1.2:
+//
+//	"Verifiers and CSPs SHALL require passwords that are used as a single-factor
+//	authentication mechanism to be a minimum of 15 characters in length."
+//
+// The policy said 8, citing SP 800-63B — accurate for revision 3, and the more
+// dangerous kind of stale: a correct citation of a superseded document reads
+// like diligence, so nobody re-checks it.
+func TestTheDefaultFloorIsFifteenCharacters(t *testing.T) {
+	p := DefaultPolicy()
+	if p.MinLength != MinLengthSingleFactor {
+		t.Fatalf("MinLength = %d, want %d (SP 800-63B-4 §3.1.1.2)",
+			p.MinLength, MinLengthSingleFactor)
+	}
+	if MinLengthSingleFactor != 15 {
+		t.Fatalf("MinLengthSingleFactor = %d, want 15", MinLengthSingleFactor)
+	}
+
+	// Fourteen is refused, fifteen is not — the boundary, not just a long and a
+	// short example either side of it.
+	if _, err := p.Check(context.Background(), strings.Repeat("aB3-", 3)+"xy", "", nil, nil); err == nil {
+		t.Error("a 14-character password was accepted")
+	}
+	if _, err := p.Check(context.Background(), "correct-horse-battery-staple", "", nil, nil); err != nil {
+		t.Errorf("a 28-character passphrase was refused: %v", err)
+	}
+
+	// The MFA carve-out exists but is not the default: §3.1.1.2 permits 8 only
+	// for a password "only used as part of multi-factor authentication".
+	if MinLengthWithMFA != 8 {
+		t.Errorf("MinLengthWithMFA = %d, want 8", MinLengthWithMFA)
+	}
+	if p.MinLength == MinLengthWithMFA {
+		t.Error("the default floor is the MFA one; a deployment without MFA " +
+			"would silently accept single-factor passwords below the SHALL")
+	}
+}
+
+// §3.1.1.2: "the verifier SHOULD apply the normalization process for stabilized
+// strings using the Normalization Form Canonical Composition (NFC)... This
+// process is applied before hashing the byte string that represents the
+// password."
+//
+// The failure this prevents is a real one: "é" is one code point or two
+// depending on the keyboard, so a password set on one platform and typed on
+// another is a different byte string and does not verify — intermittently, for a
+// minority of users, with no actionable error.
+func TestPasswordsAreNormalisedToNFC(t *testing.T) {
+	// The same passphrase, composed and decomposed. 15+ characters either way.
+	composed := "café-passphrase-ok"    // é as U+00E9
+	decomposed := "café-passphrase-ok" // e + U+0301
+
+	if composed == decomposed {
+		t.Fatal("the fixtures are identical; the test proves nothing")
+	}
+
+	p := DefaultPolicy()
+	// Both must be accepted, and both must produce the same normalised form —
+	// which is what makes them hash identically.
+	for _, s := range []string{composed, decomposed} {
+		if _, err := p.Check(context.Background(), s, "", nil, nil); err != nil {
+			t.Fatalf("%q was refused: %v", s, err)
+		}
+	}
+	if norm.NFC.String(composed) != norm.NFC.String(decomposed) {
+		t.Fatal("the two forms do not normalise alike; the fixture is wrong")
+	}
+
+	// And the rune count is of the NORMALISED string: decomposed is longer by
+	// one code point before normalisation, so a length check applied first would
+	// measure a different password than the one that gets hashed.
+	if len([]rune(decomposed)) == len([]rune(norm.NFC.String(decomposed))) {
+		t.Skip("this platform's fixture did not decompose; nothing to compare")
 	}
 }

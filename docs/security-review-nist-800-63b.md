@@ -1,0 +1,106 @@
+# Security review: NIST SP 800-63B revision 4
+
+RFC 9700 governs OAuth; **NIST SP 800-63B, Digital Identity Guidelines —
+Authentication and Authenticator Management** governs the authentication itself.
+This is the second half of the security-standard review.
+
+Revision checked: **4**, the current one. That matters more than usual here,
+because revision 4 changed the single number most implementations copied from
+revision 3.
+
+## The defect: a floor from the previous revision
+
+`Policy.MinLength` was 8, with this comment:
+
+> MinLength is the floor. NIST SP 800-63B sets 8 as the minimum acceptable
+
+That was **correct for revision 3**. Revision 4 §3.1.1.2:
+
+> Verifiers and CSPs SHALL require passwords that are used as a single-factor
+> authentication mechanism to be a minimum of **15 characters** in length.
+> Verifiers and CSPs MAY allow passwords that are only used as part of
+> multi-factor authentication processes to be shorter but SHALL require them to
+> be a minimum of eight characters in length.
+
+This is the more dangerous kind of stale citation: it names a real document, the
+number was right when written, and reading it feels like verification. Nobody
+re-checks an accurate-looking reference.
+
+The default is now 15, because the policy does not know whether a second factor
+will be present. A deployment that enforces MFA on every account may lower it to
+`MinLengthWithMFA`; one that does not, may not. Getting that wrong in the
+permissive direction means single-factor passwords below a SHALL, so the default
+is the number that is safe without knowing.
+
+## The second defect, which I introduced while fixing the first
+
+§3.1.1.2 also says:
+
+> If Unicode characters are accepted in passwords, the verifier SHOULD apply the
+> normalization process for stabilized strings using the Normalization Form
+> Canonical Composition (NFC) normalization... **This process is applied before
+> hashing the byte string that represents the password.**
+
+The failure it prevents is concrete: "é" is one code point or two depending on
+the keyboard, so a password set on one platform and typed on another is a
+different byte string and simply does not verify — intermittently, for a minority
+of users, with no error anybody can act on.
+
+I implemented it inside `Policy.Check`, which takes the candidate **by value**.
+The local copy was normalised, every check inside `Check` saw the right string,
+and the caller then hashed the original. The SHOULD appeared to be implemented
+and affected nothing.
+
+That is precisely the defect class this review has been finding all session — a
+control that looks present and is not — produced here by the fix for a different
+one. It is recorded rather than quietly corrected because the lesson is that the
+pattern is easy to write, not that other people write it.
+
+Normalisation now lives in `Hasher.Hash` and `Hasher.Verify`, the only two places
+a password becomes bytes, where no caller can bypass it.
+
+`TestAHashOfOneUnicodeFormVerifiesTheOther` is the test that distinguishes the
+two implementations: "both forms are accepted by the policy" passes either way;
+"a hash of one verifies the other" only passes if the normalisation reached the
+hasher. Removing it from the Hasher fails that test with the message naming the
+cause.
+
+Its fixtures are built from `\u00e9` and `e\u0301` escapes rather than literal
+characters — the first version used two "café" literals that arrived
+byte-identical, because something between the keyboard and the file normalised
+them. The test compared a string with itself and tripped its own guard.
+
+## Everything else in §3.1.1.2
+
+| Requirement | Level | Signari |
+|---|---|---|
+| Minimum 15 for single-factor | SHALL | **was 8 — now 15** |
+| Maximum at least 64 | SHOULD | 1024 |
+| Accept all printing ASCII and space | SHOULD | yes |
+| Accept Unicode | SHOULD | yes |
+| Each code point counted as one character | SHALL | yes — counted in runes, not bytes |
+| No other composition rules | **SHALL NOT** | none. The only mention of symbols is an error message explaining why they are not required |
+| No periodic forced change | **SHALL NOT** | none |
+| Force a change on evidence of compromise | SHALL | **yes** — `RecheckEvery` re-consults the breach corpus at sign-in |
+| No password hints | SHALL NOT | none stored |
+| No knowledge-based authentication | SHALL NOT | none |
+| Verify the password in full, no truncation | SHALL | over-length is **refused**, never truncated |
+| NFC before hashing | SHOULD | **now yes**, in the Hasher |
+| Blocklist including breach corpora, dictionary words, and context-specific words such as the username | SHALL | yes — breach corpus, a common-word list, and a username/identity check |
+
+The compromise-detection row is worth dwelling on, because it is the one where
+the specification and the usual implementation diverge. §3.1.1.2 forbids periodic
+rotation *and* requires a forced change on evidence of compromise. Most
+implementations do the first and not the second — they rotate on a timer, which
+the standard prohibits, and never re-check a password that was clean when chosen
+and appeared in a breach corpus a month later.
+
+`RecheckEvery` is the second: sign-in is the only moment the plaintext exists to
+check again, and the corpus only grows.
+
+## Verdict
+
+One MUST-level defect from a stale revision, one SHOULD implemented and then
+implemented properly, and eleven requirements that were already right — including
+the two SHALL NOTs (composition rules, periodic rotation) that most password
+policies violate by default.

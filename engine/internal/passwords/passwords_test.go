@@ -247,3 +247,58 @@ func TestSupportedPrefixesMatchesVerify(t *testing.T) {
 		t.Error("an empty hash was reported as verifiable")
 	}
 }
+
+// A password set in one Unicode form must verify when typed in the other.
+//
+// SP 800-63B-4 §3.1.1.2 puts the normalisation "before hashing the byte string
+// that represents the password", and this is the test that checks it actually
+// is. The first attempt normalised inside Policy.Check — which takes the
+// candidate by value, so the local copy was normalised and the caller hashed the
+// original. Every length check saw the right string and every hash saw the wrong
+// one.
+//
+// The distinguishing property is not "both forms are accepted by the policy".
+// It is "a hash of one verifies the other", which only holds if the
+// normalisation reached the hasher.
+func TestAHashOfOneUnicodeFormVerifiesTheOther(t *testing.T) {
+	h := NewHasher(64)
+	ctx := context.Background()
+
+	// Built from explicit code points, not from literal characters.
+	//
+	// The first version used two "cafe" literals with different Unicode forms
+	// and they arrived byte-identical: something between the keyboard and the
+	// file normalised them, so the test compared a string with itself and
+	// failed its own guard. Escapes cannot be normalised in transit.
+	composed := "caf\u00e9-passphrase-ok"    // e-acute as one code point
+	decomposed := "cafe\u0301-passphrase-ok" // e + combining acute
+	if composed == decomposed {
+		t.Fatal("the fixtures are identical; this test would prove nothing")
+	}
+
+	stored, err := h.Hash(ctx, composed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Verify(ctx, stored, decomposed); err != nil {
+		t.Fatalf("a password hashed in composed form did not verify when typed "+
+			"in decomposed form: %v\nThat is the cross-platform failure NFC "+
+			"normalisation exists to prevent, and it means the normalisation is "+
+			"not reaching the hasher.", err)
+	}
+
+	// And the reverse, so this cannot pass by normalising in only one direction.
+	stored2, err := h.Hash(ctx, decomposed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Verify(ctx, stored2, composed); err != nil {
+		t.Fatalf("decomposed-then-composed failed: %v", err)
+	}
+
+	// A genuinely different password must still be refused — otherwise the
+	// normalisation could be doing something far too aggressive.
+	if _, err := h.Verify(ctx, stored, "cafe-passphrase-ok"); err == nil {
+		t.Fatal("a password differing by more than normalisation was accepted")
+	}
+}

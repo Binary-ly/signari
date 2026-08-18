@@ -58,19 +58,90 @@ A deactivated account with a live session is still a signed-in person. Every
 path that deactivates — PATCH, DELETE — revokes sessions in the same
 transaction.
 
+## Groups
+
+`/Groups` is the half an enterprise actually connects SCIM for. Users would
+arrive on first sign-in anyway; **membership would not** — and membership is what
+every authorization rule reads.
+
+```
+GET    /scim/v2/Groups?filter=displayName eq "Engineering"
+POST   /scim/v2/Groups
+GET    /scim/v2/Groups/{id}
+PUT    /scim/v2/Groups/{id}
+PATCH  /scim/v2/Groups/{id}
+DELETE /scim/v2/Groups/{id}
+```
+
+### The failure this is shaped around
+
+Almost nothing creates a group and leaves it alone. What arrives, continuously,
+is membership churn — one PATCH per person joining or leaving. And a `remove`
+whose dialect the server does not understand, treated as an unsupported path,
+returns **200**.
+
+The upstream records the removal as done and never sends it again. The person
+keeps the group and everything it grants, permanently, while the upstream's own
+console shows them as removed. Nothing anywhere is in a state that looks wrong.
+
+So a member operation that cannot be read is a **400**. A refused PATCH is
+retried; a misread one is not.
+
+### The dialects
+
+All of these mean "remove this member", and all were handled:
+
+
+Two more distinctions that are silent when wrong:
+
+- **`replace` on `members` is not `add`.** It sets the list, so everybody absent
+  is removed. Read as an add, a departed employee stays in the group while the
+  upstream reports the sync complete.
+- **`PUT` with no `members` means no members**, unlike `PATCH`, where an absent
+  field means "leave it alone". That is what distinguishes the two verbs, and
+  treating them alike makes a group impossible to empty.
+
+### displayName versus the name in a token
+
+`core.groups.name` is constrained to `^[a-zA-Z0-9._-]{1,64}$`, because it travels
+through JSON arrays, SAML attribute values and LDAP filters, where a space or a
+quote means something else. Upstream display names routinely contain both —
+"Engineering Team", "Finance & Legal".
+
+
+Matching is on `externalId` alone. Matching on `displayName` would make a rename
+look like the deletion of one group and the creation of another, revoking
+everything the first one granted.
+
+### Two deliberate asymmetries with /Users
+
+| | Users | Groups |
+|---|---|---|
+| `DELETE` | **deactivates** | **deletes** |
+| a member/user we do not know | — | **400 with the reason** |
+
+Deleting a person destroys the audit trail of everything they did, which is the
+thing you most need about somebody who has just left. A group holds no history of
+its own — who was added and when lives in the audit events — and a deprovisioned
+group that lingers keeps granting whatever it grants.
+
+A member naming a user this source never provisioned is a 400 rather than a 500,
+because an upstream retries a 500 unchanged forever and acts on a 400.
+
 ## What is not implemented, and therefore not advertised
 
 | | |
 |---|---|
-| `/Groups` | absent from the code **and** from `/ResourceTypes` |
 | bulk | `ServiceProviderConfig` says `supported: false` |
 | sort, etag, changePassword | same |
 
-An upstream that reads Groups in `/ResourceTypes` will attempt group sync and
-report failures the operator cannot fix. Advertising a capability that 404s is
-the failure this project sweeps for.
+Advertising a capability that 404s is the failure this project sweeps for —
+which is why `/Groups` entered `/ResourceTypes` only when it was implemented,
+and why `ResourceTypes` now counts its own list rather than carrying a number
+beside it that can drift.
 
-Filtering supports exactly `userName eq "..."`, which is what both upstreams
+Filtering supports exactly `userName eq "..."` on `/Users` and
+`displayName eq "..."` on `/Groups`, which is what both upstreams
 send before every create. Anything else is a **400**, not an ignored parameter:
 ignoring an unrecognised filter returns the whole directory, and a caller
 reading the first result would then match the wrong person.

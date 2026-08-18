@@ -337,6 +337,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /scim/v2/ResourceTypes", s.handleSCIMResourceTypes)
 	mux.HandleFunc("/scim/v2/Users", s.handleSCIMUsers)
 	mux.HandleFunc("/scim/v2/Users/{id}", s.handleSCIMUser)
+	mux.HandleFunc("/scim/v2/Groups", s.handleSCIMGroups)
+	mux.HandleFunc("/scim/v2/Groups/{id}", s.handleSCIMGroup)
 	mux.HandleFunc("GET /proxy/verify", s.handleProxyVerify)
 	mux.HandleFunc("GET /proxy/start", s.handleProxyStart)
 	mux.HandleFunc("GET /passkey.js", s.handlePasskeyJS)

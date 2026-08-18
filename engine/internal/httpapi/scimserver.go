@@ -91,25 +91,39 @@ func (s *Server) handleSCIMServiceProviderConfig(w http.ResponseWriter, r *http.
 
 // handleSCIMResourceTypes lists what can be provisioned.
 //
-// Users only. Groups are absent from this list because they are absent from the
-// implementation, and an upstream that reads Groups here will try to sync them.
+// Groups entered this list only when /Groups was implemented, per the rule this
+// project holds everywhere: an upstream that reads a resource type here will try
+// to sync it, so advertising one that 404s produces failures the operator cannot
+// act on.
 func (s *Server) handleSCIMResourceTypes(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.scimAuth(r); err != nil {
 		writeSCIMError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
+	// Built as a slice and counted, rather than a count written beside it. The
+	// two drifting apart is a real failure mode -- an upstream that reads
+	// totalResults 1 and receives two resources syncs one of them -- and it is
+	// the kind of drift no test notices, because both halves look right on their
+	// own.
+	types := []map[string]any{{
+		"schemas":  []string{"urn:ietf:params:scim:schemas:core:2.0:ResourceType"},
+		"id":       "User",
+		"name":     "User",
+		"endpoint": "/Users",
+		"schema":   "urn:ietf:params:scim:schemas:core:2.0:User",
+	}, {
+		"schemas":  []string{"urn:ietf:params:scim:schemas:core:2.0:ResourceType"},
+		"id":       "Group",
+		"name":     "Group",
+		"endpoint": "/Groups",
+		"schema":   "urn:ietf:params:scim:schemas:core:2.0:Group",
+	}}
 	writeSCIM(w, http.StatusOK, map[string]any{
 		"schemas":      []string{"urn:ietf:params:scim:api:messages:2.0:ListResponse"},
-		"totalResults": 1,
-		"itemsPerPage": 1,
+		"totalResults": len(types),
+		"itemsPerPage": len(types),
 		"startIndex":   1,
-		"Resources": []map[string]any{{
-			"schemas":  []string{"urn:ietf:params:scim:schemas:core:2.0:ResourceType"},
-			"id":       "User",
-			"name":     "User",
-			"endpoint": "/Users",
-			"schema":   "urn:ietf:params:scim:schemas:core:2.0:User",
-		}},
+		"Resources":    types,
 	})
 }
 

@@ -43,7 +43,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
 	// Rate limited whether or not it is open: this endpoint writes rows.
-	if !s.device.allow() {
+	//
+	// Its OWN bucket. This shared the device flow's limiter, which meant the two
+	// endpoints could not be tuned apart -- and when the device limit was
+	// widened to stop one address locking out every television in the
+	// deployment, dynamic registration would have silently been widened with
+	// it. Sharing a limiter couples two unrelated decisions and the coupling is
+	// invisible at both call sites.
+	if !s.register.allow() {
 		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable",
 			"too many registrations just now")
 		return

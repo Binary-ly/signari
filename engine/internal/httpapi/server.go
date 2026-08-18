@@ -55,10 +55,16 @@ type Server struct {
 	// clientCAs verifies mutual-TLS client certificates. nil means no authority
 	// is configured, which refuses tls_client_auth rather than relaxing it.
 	clientCAs *x509.CertPool
-	// device throttles the RFC 8628 verification screen. A user code is short by
-	// necessity, so the endpoint is what limits guessing -- there is no per-code
-	// counter, because a wrong guess names no record to charge it to.
-	device   *bucket
+	// device is a BACKSTOP on the RFC 8628 verification screen against a
+	// distributed attempt. The primary limit is per-address, in
+	// handleDeviceVerification -- a shared bucket here was small enough to be
+	// the binding constraint, which let one address lock out every device in
+	// the deployment.
+	device *bucket
+	// register throttles dynamic client registration, which is open to anybody
+	// and writes rows. Its own bucket: it shared `device` until widening the
+	// device backstop would have silently widened this too.
+	register *bucket
 	db       *pgxpool.Pool
 	hasher   *passwords.Hasher
 	policies *policyCache
@@ -149,6 +155,8 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// was the primary limit by accident, and one address could hold it
 		// empty and lock out every legitimate device in the deployment.
 		device: newBucket(200, 400),
+		// Registration keeps the original tight rate.
+		register: newBucket(3, 10),
 		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
 		pwPolicy:  passwords.PolicyFromEnv(),
 		policies:  newPolicyCache(),

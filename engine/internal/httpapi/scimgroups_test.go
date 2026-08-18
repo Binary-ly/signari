@@ -19,6 +19,7 @@ import (
 
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidc"
+	"signari.dev/engine/internal/store"
 )
 
 
@@ -420,4 +421,66 @@ func pathFilterRemoveMember(t *testing.T, resourceID string) string {
 		t.Fatal(err)
 	}
 	return string(body)
+}
+
+func TestSCIMGroupMembershipReachesATokenAndIsRevokedByRemoval(t *testing.T) {
+	f := newSCIMFixture(t)
+	ctx := context.Background()
+
+	gid := f.createGroup(t, "Engineering Team", f.userA)
+
+	// A client, and the release policy that permits it to see groups at all.
+	// Release is an allow-list: a client with no row gets nothing, so without
+	// this the test would pass for the wrong reason.
+	clientID := "scim-grp-" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
+		                          client_secret_hash, grant_types, scopes, require_pkce)
+		VALUES ($1,$2::uuid,'T','public','', ARRAY['authorization_code'],
+		        ARRAY['openid','groups'], true)`, clientID, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = f.pool.Exec(c, `DELETE FROM core.clients WHERE client_id = $1`, clientID)
+	})
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO core.client_group_release (client_id, org_id, only_groups)
+		VALUES ($1, $2::uuid, ARRAY[]::text[])`, clientID, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The local user id behind the SCIM resource id, which is what the token
+	// path is keyed on.
+	var localUserID string
+	if err := f.pool.QueryRow(ctx, `
+		SELECT user_id::text FROM core.scim_source_links
+		WHERE source_id = $1::uuid AND resource_id::text = $2`,
+		f.srcID, f.userA).Scan(&localUserID); err != nil {
+		t.Fatal(err)
+	}
+
+	groups, err := store.GroupsForUser(ctx, f.pool, localUserID, clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0] != "Engineering-Team" {
+		t.Fatalf("groups in a token = %v, want [Engineering-Team]: SCIM provisioned "+
+			"the membership and the token path does not see it", groups)
+	}
+
+	status, _ := f.do(t, http.MethodPatch, "/scim/v2/Groups/"+gid, pathFilterRemoveMember(t, f.userA))
+	if status != http.StatusOK {
+		t.Fatalf("removal gave %d", status)
+	}
+	groups, err = store.GroupsForUser(ctx, f.pool, localUserID, clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 0 {
+		t.Fatalf("groups in a token = %v after the upstream removed the member; "+
+			"the person keeps whatever the group grants and a provisioning client shows them as "+
+			"removed", groups)
+	}
 }

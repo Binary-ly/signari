@@ -10,6 +10,14 @@ import (
 // GrantTypeDeviceCode is RFC 8628's grant type.
 const GrantTypeDeviceCode = "urn:ietf:params:oauth:grant-type:device_code"
 
+// GrantTypePreAuthorizedCode is OID4VCI 1.0 §3.5's grant.
+//
+// Declared here rather than imported from internal/oid4vci so this package keeps
+// no dependency on it. The allow-list decides which grants the token endpoint
+// will consider at all, and that question should not require knowing how any of
+// them work.
+const GrantTypePreAuthorizedCode = "urn:ietf:params:oauth:grant-type:pre-authorized_code"
+
 // DeviceCodeAlphabet is what a user code is drawn from.
 //
 // Twenty-one letters: A-Z without B, I, O, S, Z. Digits are excluded entirely.

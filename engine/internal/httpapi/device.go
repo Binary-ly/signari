@@ -76,6 +76,21 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	// Registered for THIS grant, not merely registered.
+	//
+	// RFC 6749 §5.2's `unauthorized_client` exists for this, and the check
+	// belongs here as well as at the token endpoint: without it a client that may
+	// not complete a device flow can still start one, which means it can still
+	// display a user code to a person and ask them to approve it. The phishing
+	// value of a device flow is in the verification screen, not in the token.
+	if !c.AllowsGrantType(oauth.GrantTypeDeviceCode) {
+		s.log.Info("device authorization refused: client is not registered for the grant",
+			"client_id", clientID, "correlation_id", correlationID(ctx))
+		writeError(w, http.StatusBadRequest, "unauthorized_client",
+			"this client is not registered for the device grant")
+		return
+	}
+
 	scope := strings.TrimSpace(r.PostForm.Get("scope"))
 	// Never nil: a nil slice is sent as SQL NULL, and an explicit NULL overrides
 	// the column default, so the NOT NULL constraint rejects it.

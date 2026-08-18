@@ -207,9 +207,15 @@ func Build(cfg Config) (*Metadata, error) {
 		// token-exchange is listed only now that the grant is reachable and
 		// enforced -- the rule this file exists to hold: nothing enters discovery
 		// before it works.
+		//
+		// The OID4VCI pre-authorized code grant is here for the same reason: the
+		// token endpoint dispatches it, a wallet can redeem an offer without
+		// sending client_id at all, and `signari credential offer` mints one. It
+		// was deliberately absent while only the rules existed.
 		GrantTypesSupported: []string{"authorization_code", "refresh_token",
 			"urn:ietf:params:oauth:grant-type:device_code",
-			"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"},
+			"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange",
+			"urn:ietf:params:oauth:grant-type:pre-authorized_code"},
 
 		SubjectTypesSupported:   []string{"public"},
 		IDTokenSigningAlgValues: algNames,

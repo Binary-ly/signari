@@ -92,6 +92,38 @@ would apply the rule only to the boring case.
 `slow_down` adds five seconds to the stored interval and persists it, per §3.5 —
 so the requirement is real rather than a suggestion the client may ignore.
 
+## The client must be registered for the grant
+
+Found while wiring OID4VCI, which needed the same check: **the device grant was
+gated nowhere.**
+
+RFC 6749 §5.2 names the error for it — `unauthorized_client` is *"The
+authenticated client is not authorized to use this authorization grant type"* —
+and three grants were gated individually (`authorization_code` inside
+`oauth.ValidateCodeRedemption`, `client_credentials` and `refresh_token` in their
+handlers). The device grant was gated in none of them, so any registered client
+could run a device flow whatever it was registered for. The column default,
+`{authorization_code,refresh_token}`, does not include it, so this was not a case
+of the registration being permissive: it was not consulted.
+
+Gating each grant inside the handler that happens to serve it is how one gets
+missed, so the check now lives in one place that every grant passes through, plus
+the device **authorization** endpoint. Both are needed. The token-endpoint check
+alone would let a client that may not finish a device flow still start one — and
+therefore still display a user code to a person and ask them to approve it, which
+is where a device flow's phishing value actually is.
+
+Token exchange is excluded from the shared check on purpose: it is authorised by
+its own `may_exchange` column together with the audiences the client may exchange
+*for*, which a grant-type list cannot express.
+
+Register the grant with:
+
+```sh
+signari client set-grants -client-id <id> \
+  -grant-types authorization_code,urn:ietf:params:oauth:grant-type:device_code
+```
+
 ## Verified end to end
 
 Against the running server:

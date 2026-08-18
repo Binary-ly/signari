@@ -84,7 +84,7 @@ offer. Five attempts, then the offer is spent.
 
 ## Storage
 
-`core.preauthorized_codes` (migration 0077). The code is stored **hashed**, for
+`core.preauthorized_codes` (migrations 0077 and 0078). The code is stored **hashed**, for
 the same reason authorization codes are: read access to the table must not be
 read access to live credentials, and this code is a bearer credential by design.
 The transaction code is hashed too.
@@ -92,6 +92,92 @@ The transaction code is hashed too.
 `tx_code_input_mode`, `tx_code_length` and `tx_code_description` are stored so the
 offer can be reconstructed, and the column being NULL is what records "this offer
 had no `tx_code` object" as distinct from "it had an empty one".
+
+## Wiring: who the token is for
+
+§6.1 again, and this is the sentence that decides the design:
+
+> For the Pre-Authorized Code Grant Type, authentication of the Client is
+> OPTIONAL... and, as a consequence, the `client_id` parameter is **only needed
+> when a form of Client Authentication that relies on this parameter is used**.
+
+So a conformant wallet redeems with `grant_type` and `pre-authorized_code` and
+nothing else. Our token endpoint resolved a client before it dispatched on the
+grant type, which would have refused every such request as `invalid_client` —
+refusing the ordinary case while appearing to support the grant.
+
+There is still a client, because a token needs an audience, scopes and a
+lifetime. It is chosen when the **offer** is minted, by the operator who knows
+which credential issuer the offer is for, and read back from the code at
+redemption (`client_id` on `core.preauthorized_codes`, migration 0078).
+
+That is also the stronger position. If the wallet named the client, the wallet
+would be choosing which client's scopes its own token carries. A wallet that
+*does* send `client_id` must send the one the offer was issued to — the parameter
+is unnecessary, not free.
+
+## Minting an offer
+
+```sh
+signari credential offer \
+  -org <uuid> \
+  -email holder@example.com \
+  -client-id wallet \
+  -credential-configuration UniversityDegree_JWT \
+  -credential-issuer https://credentials.example.com \
+  -tx-code
+```
+
+Prints the offer JSON, the `openid-credential-offer://` deep link from §G.7.1,
+and — separately, with the reason attached — the transaction code.
+
+The separation is not presentation. §3.5 requires the transaction code to travel
+by a different channel than the offer, because the whole mechanism assumes the
+offer may have been photographed. Printing both into one message that somebody
+copies to the holder defeats it entirely, so the output says so.
+
+`-offer-expires` defaults to five minutes and is capped at an hour: §3.5 says the
+code MUST be short lived, and it is redeemed within seconds of being scanned.
+
+## Registering the grant
+
+A client may only use grants it is registered for — RFC 6749 §5.2's
+`unauthorized_client` is "The authenticated client is not authorized to use this
+authorization grant type":
+
+```sh
+signari client set-grants -client-id wallet \
+  -grant-types urn:ietf:params:oauth:grant-type:pre-authorized_code
+```
+
+Checked when the offer is **minted**, not only when it is redeemed. The person
+who finds out at redemption is the holder, standing wherever they scanned the QR
+code, with nothing they can do about it.
+
+Reviewing this turned up that the **device grant was gated nowhere** — any
+registered client could run a device flow whatever it was registered for, and the
+default value of `grant_types` does not include it. Both endpoints now check, and
+the check for every grant the token endpoint dispatches lives in one place rather
+than being repeated per handler, which is how the device one got missed. See
+`device-flow.md`.
+
+## Order of operations at redemption
+
+The sequence is **read, check the transaction code, then claim** — not the
+authorization code path's claim-as-you-read.
+
+A wrong transaction code charges an attempt and does **not** spend the offer. If
+it did, one wrong guess would destroy the holder's credential, which turns a
+shoulder-surfing defence into a denial of service anybody who photographed the QR
+code can perform. Five wrong guesses end the offer; the sixth attempt fails even
+with the right code.
+
+Every refusal is `invalid_grant`, whatever the reason — unknown code, spent code,
+expired code, missing transaction code, too many guesses. The `description` says
+which, because a wallet has to render something to a person who is standing there
+wondering why their credential did not arrive; the error `code` does not vary, so
+nothing parsing the response programmatically can tell a code that never existed
+from one already spent.
 
 ## What is not built
 
@@ -101,9 +187,3 @@ had no `tx_code` object" as distinct from "it had an empty one".
   it were also the Credential Issuer, which it is not.
 - The **authorization code flow** variant of OID4VCI (`issuer_state`), the nonce
   endpoint, and deferred issuance.
-- HTTP wiring of the grant into the token endpoint. The rules are implemented and
-  tested as a unit; connecting them to `/oauth2/token` and to a CLI that mints
-  offers is the next step and is not done.
-
-That last one is worth being plain about: this is a correct, tested protocol
-layer, not a feature an operator can use yet.

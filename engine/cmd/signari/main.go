@@ -32,6 +32,8 @@ import (
 	"signari.dev/engine/internal/config"
 	"signari.dev/engine/internal/kerberos"
 	"signari.dev/engine/internal/logouttest"
+	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/oid4vci"
 	"signari.dev/engine/internal/outpost"
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/provision"
@@ -100,6 +102,7 @@ var twoWordCommands = map[string]bool{
 	"events":     true,
 	"authz":      true,
 	"federation": true,
+	"credential": true,
 }
 
 func usage() error {
@@ -152,6 +155,8 @@ commands:
   federation enable   join an OpenID Federation: generate an Entity Statement key
                       and publish /.well-known/openid-federation
   federation show     print the Entity Configuration this instance publishes
+  client set-grants   set which grant types a client may use
+  credential offer    mint an OID4VCI Credential Offer a wallet can redeem
   doctor              inspect this deployment and report what is wrong with it
   serve               serve the OIDC endpoints
 
@@ -333,6 +338,22 @@ func run(args []string) error {
 	jwksPath := fs.String("jwks", "", "file containing the client's PUBLIC JWKS")
 	onlyGroups := fs.String("only", "", "comma-separated groups to release (default: all)")
 	apply := fs.Bool("apply", false, "actually make changes (scim sync defaults to a preview)")
+	grantTypes := fs.String("grant-types", "",
+		"comma-separated grant types this client may use, replacing what it has: "+
+			strings.Join(knownGrantTypes, ", "))
+	credConfigs := fs.String("credential-configuration", "",
+		"comma-separated credential_configuration_id values, as they appear in the "+
+			"Credential Issuer's metadata (credential offer)")
+	credIssuer := fs.String("credential-issuer", "",
+		"the Credential Issuer identifier the wallet fetches metadata from. "+
+			"Defaults to -issuer, which is right only when this deployment is both")
+	credTxCode := fs.Bool("tx-code", false,
+		"require a Transaction Code, delivered to the holder by another channel. "+
+			"Defends against somebody photographing the QR code over their shoulder")
+	credTxLength := fs.Int("tx-code-length", 6, "digits in the generated transaction code")
+	credTTL := fs.Duration("offer-expires", 5*time.Minute,
+		"how long the pre-authorized code lasts. Short by design: section 3.5 says "+
+			"it MUST be short lived, and it is redeemed within seconds of being scanned")
 
 	cmd := args[0]
 	rest := args[1:]
@@ -440,6 +461,8 @@ func run(args []string) error {
 		return clientSetHybrid(ctx, conn, *clientID, *reviewBy)
 	case "client set-keys":
 		return clientSetKeys(ctx, conn, *clientID, *jwksPath)
+	case "client set-grants":
+		return clientSetGrants(ctx, conn, *clientID, *grantTypes)
 	case "client create":
 		return clientCreate(ctx, conn, *clientID, *name, *redirect, *public,
 			*launchURL, *logoURL, *portalHidden)
@@ -504,6 +527,9 @@ func run(args []string) error {
 		return logoutTest(ctx, conn, *rpURL, *clientID, *issuer, *subject, *sidFlag)
 	case "federation enable":
 		return federationEnable(ctx, conn, *authorityHints, *orgName, *homepageURI)
+	case "credential offer":
+		return credentialOffer(ctx, conn, *orgID, *email, *clientID, *credConfigs,
+			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL)
 	case "federation show":
 		return federationShow(ctx, conn)
 	case "authz set-model":
@@ -5857,5 +5883,208 @@ func federationShow(ctx context.Context, conn *pgx.Conn) error {
 	} else {
 		fmt.Printf("authority_hints %s\n", strings.Join(hints, ", "))
 	}
+	return nil
+}
+
+// credentialOffer mints an OID4VCI Credential Offer.
+//
+// The operator's half of the pre-authorized code grant. §3.4 puts the offer in a
+// QR code or a deep link; §6.1 lets the wallet redeem it at /oauth2/token
+// sending nothing but the code, so everything that decides what the resulting
+// token can do is decided HERE.
+func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID,
+	configs, credIssuer, issuer string, wantTxCode bool, txLength int,
+	ttl time.Duration) error {
+
+	if orgID == "" {
+		return fmt.Errorf("give -org, the organisation the holder belongs to")
+	}
+	if email == "" {
+		return fmt.Errorf("give -email, the person this credential is about")
+	}
+	if clientID == "" {
+		return fmt.Errorf("give -client-id, the wallet client whose scopes and " +
+			"token lifetimes the redemption uses. OID4VCI section 6.1 lets the " +
+			"wallet omit client_id when it redeems, so this is the only chance to " +
+			"decide it")
+	}
+	ids := splitList(configs)
+	if len(ids) == 0 {
+		return fmt.Errorf("give -credential-configuration: at least one " +
+			"credential_configuration_id, as it appears in the Credential Issuer's " +
+			"metadata. An offer of nothing is not an offer")
+	}
+	if ttl <= 0 || ttl > time.Hour {
+		return fmt.Errorf("-offer-expires must be between a moment and an hour; "+
+			"section 3.5 says a pre-authorized code MUST be short lived, and it is "+
+			"redeemed within seconds of being scanned (got %s)", ttl)
+	}
+
+	// The Credential Issuer identifier the wallet will fetch metadata from.
+	//
+	// Defaulted to this deployment's issuer, which is right only when Signari is
+	// both the authorization server and the credential issuer. §12.2.3 makes the
+	// two identifiers a mix-up defence, so a deployment where they differ has to
+	// say so rather than have one silently stand in for the other.
+	ci := credIssuer
+	if ci == "" {
+		ci = issuer
+	}
+	if ci == "" {
+		ci = os.Getenv("SIGNARI_ISSUER")
+	}
+	if err := oid4vci.ValidateIssuer(ci); err != nil {
+		return fmt.Errorf("%w. Give -credential-issuer, or -issuer if this "+
+			"deployment is also the credential issuer", err)
+	}
+
+	// The client must exist, and must belong to this organisation. Checked now
+	// rather than at redemption, where the wallet holder would be the one to
+	// discover it — standing at a counter, with nothing to do about it.
+	var clientOrg string
+	var clientGrants []string
+	if err := conn.QueryRow(ctx,
+		`SELECT org_id::text, grant_types FROM core.clients WHERE client_id = $1`,
+		clientID).Scan(&clientOrg, &clientGrants); err != nil {
+		return fmt.Errorf("no client %q is registered; the offer would redeem into "+
+			"a token with no audience", clientID)
+	}
+	if clientOrg != orgID {
+		return fmt.Errorf("client %q belongs to a different organisation than the "+
+			"holder; a token minted for it would cross a tenant boundary", clientID)
+	}
+	// Checked at MINT time, not only at redemption. The person who finds out
+	// otherwise is the holder, standing wherever they scanned the QR code, with
+	// nothing they can do about it.
+	if !slices.Contains(clientGrants, oid4vci.GrantType) {
+		return fmt.Errorf("client %q is not registered for the pre-authorized code "+
+			"grant, so this offer could not be redeemed. Add it with:\n"+
+			"  signari client set-grants -client-id %s -grant-types %s",
+			clientID, clientID, oid4vci.GrantType)
+	}
+
+	var userID string
+	if err := conn.QueryRow(ctx, `
+		SELECT id::text FROM core.users
+		WHERE org_id = $1::uuid AND lower(email) = lower($2)`,
+		orgID, strings.TrimSpace(email)).Scan(&userID); err != nil {
+		return fmt.Errorf("no user %q in that organisation", email)
+	}
+
+	code, codeHash, err := store.NewPreAuthCode()
+	if err != nil {
+		return err
+	}
+
+	var tx *oid4vci.TxCode
+	var txPlain string
+	var txHash []byte
+	if wantTxCode {
+		txPlain, txHash, err = store.NewTxCode(txLength)
+		if err != nil {
+			return err
+		}
+		tx = &oid4vci.TxCode{
+			InputMode: oid4vci.InputNumeric,
+			Length:    txLength,
+			Description: fmt.Sprintf("Enter the %d-digit code from the issuer",
+				txLength),
+		}
+	}
+
+	offer, err := oid4vci.BuildOffer(ci, ids, code, tx)
+	if err != nil {
+		return err
+	}
+	if err := store.NewPreAuthorizedCode(ctx, conn, orgID, userID, clientID,
+		codeHash, ids, tx, txHash, ttl); err != nil {
+		return err
+	}
+
+	blob, err := json.Marshal(offer)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("credential offer for %s\n", email)
+	fmt.Printf("  issuer    : %s\n", ci)
+	fmt.Printf("  credential: %s\n", strings.Join(ids, ", "))
+	fmt.Printf("  expires   : %s from now\n", ttl)
+	fmt.Printf("\n%s\n", blob)
+	// §G.7.1: the wallet is invoked with the offer by value in a query
+	// parameter. Printed rather than rendered as a QR code, because whatever
+	// puts this on a screen is the operator's own front desk software, and a
+	// terminal is not where a holder scans anything.
+	fmt.Printf("\n%s://?credential_offer=%s\n",
+		oid4vci.CredentialOfferURIScheme, url.QueryEscape(string(blob)))
+	if txPlain != "" {
+		// Deliberately separate from everything above. §3.5: the transaction code
+		// "MUST be sent via a different channel than the Credential Offer" —
+		// printing it next to the offer for somebody to copy into the same
+		// message would defeat the entire mechanism.
+		fmt.Printf("\ntransaction code: %s\n", txPlain)
+		fmt.Printf("  Send this to the holder by a DIFFERENT channel than the offer.\n")
+		fmt.Printf("  It exists to stop somebody who photographed the QR code from\n")
+		fmt.Printf("  redeeming it, so delivering both together protects nothing.\n")
+		fmt.Printf("  %d wrong attempts end the offer.\n", oid4vci.MaxTxCodeAttempts)
+	}
+	return nil
+}
+
+// knownGrantTypes are the grants the token endpoint dispatches.
+//
+// Listed so `client set-grants` can refuse a typo. A grant type recorded on a
+// client but never dispatched is a registration that looks like it did
+// something, and the operator finds out at the first token request.
+var knownGrantTypes = []string{
+	"authorization_code",
+	"refresh_token",
+	"client_credentials",
+	oauth.GrantTypeDeviceCode,
+	oauth.GrantTypeTokenExchange,
+	oid4vci.GrantType,
+}
+
+// clientSetGrants replaces the grant types a client may use.
+//
+// RFC 6749 §5.2: `unauthorized_client` is "The authenticated client is not
+// authorized to use this authorization grant type" -- so which grants a client
+// may use is registration data, and there was no way to set it. Every client
+// carried the column default, which is why the device grant appeared to work
+// for clients that were never registered for it: nothing checked.
+func clientSetGrants(ctx context.Context, conn *pgx.Conn, clientID, grants string) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client-id")
+	}
+	wanted := splitList(grants)
+	if len(wanted) == 0 {
+		return fmt.Errorf("give -grant-types, comma separated. A client with no "+
+			"grant types can obtain no tokens at all; if that is what you mean, "+
+			"disable the client instead.\n  known: %s",
+			strings.Join(knownGrantTypes, ", "))
+	}
+	for _, g := range wanted {
+		if !slices.Contains(knownGrantTypes, g) {
+			return fmt.Errorf("%q is not a grant type this server dispatches. "+
+				"Recording it would look like a registration and do nothing.\n"+
+				"  known: %s", g, strings.Join(knownGrantTypes, ", "))
+		}
+	}
+	// Token exchange is authorised by its own column, because the grant type
+	// alone cannot say which audiences a client may exchange for.
+	if slices.Contains(wanted, oauth.GrantTypeTokenExchange) {
+		fmt.Printf("note: token exchange is additionally gated by may_exchange and\n" +
+			"      the client's permitted audiences; this flag does not set those.\n")
+	}
+	tag, err := conn.Exec(ctx,
+		`UPDATE core.clients SET grant_types = $2 WHERE client_id = $1`,
+		clientID, wanted)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no client %q", clientID)
+	}
+	fmt.Printf("client %s\n  grant types: %s\n", clientID, strings.Join(wanted, ", "))
 	return nil
 }

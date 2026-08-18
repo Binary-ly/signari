@@ -380,6 +380,16 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeTokenError(w, gerr)
 		return
 	}
+	// Dispatched BEFORE the client is resolved, because OID4VCI §6.1 permits a
+	// wallet to send no client_id at all. Everything below this line assumes one
+	// was sent, so a conformant wallet would have been refused as invalid_client
+	// before the grant it named was ever considered. The handler resolves the
+	// client from the offer instead, and authenticates it there.
+	if req.GrantType == oauth.GrantTypePreAuthorizedCode {
+		s.handlePreAuthorizedCodeGrant(w, r, req)
+		return
+	}
+
 	c, lookupErr := s.lookupClient(ctx, req.ClientID)
 	if lookupErr != nil || c == nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
@@ -398,6 +408,34 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 				Description: "client authentication failed", Status: http.StatusUnauthorized})
 			return
 		}
+	}
+
+	// The client must be registered for the grant it is asking for.
+	//
+	// RFC 6749 §5.2 names the error for exactly this: `unauthorized_client` is
+	// "The authenticated client is not authorized to use this authorization
+	// grant type." OAuth 2.1 §5.2 keeps it unchanged.
+	//
+	// Three grants were gated individually -- authorization_code in
+	// oauth.ValidateCodeRedemption, client_credentials and refresh_token below --
+	// and the DEVICE grant was gated nowhere. So any registered client could run
+	// a device flow, whatever it was registered for, and the default value of
+	// `grant_types` does not include it. Gating each grant where it happens to be
+	// handled is how one gets missed; this is the one place every grant passes
+	// through.
+	//
+	// Token exchange is excluded deliberately: its authorisation is the dedicated
+	// `may_exchange` column, checked in oauth.ValidateExchange along with the
+	// audiences the client may exchange FOR, which a grant-type list cannot
+	// express.
+	if req.GrantType != oauth.GrantTypeTokenExchange && !c.AllowsGrantType(req.GrantType) {
+		s.log.Info("client is not registered for the grant it requested",
+			"client_id", c.ClientID, "grant_type", req.GrantType,
+			"correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
+			Description: "this client is not registered for the " + req.GrantType +
+				" grant", Status: http.StatusBadRequest})
+		return
 	}
 
 	if req.GrantType == "refresh_token" {

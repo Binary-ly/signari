@@ -222,20 +222,60 @@ func TestASignedSignalEndsRealSessions(t *testing.T) {
 		t.Fatalf("the replayed token was recorded %d times, want 1", n)
 	}
 
-	// An event type this source was not granted.
+	// RFC 8935 §2.3: "When the SET Recipient detects an error parsing,
+	// validating, or authenticating a SET ... SHALL respond with an HTTP
+	// Response Status Code of 400 (Bad Request)." Not 401 -- an earlier version
+	// of this test asserted 401 and was asserting a conformance bug.
 	if c := post(tx.mint(t, issuer, audience, fmt.Sprintf("jti-c-%d", suffix),
-		ssf.EventTokenClaimsChange, external)); c != http.StatusUnauthorized {
-		t.Fatalf("an ungranted event type returned %d, want 401", c)
+		ssf.EventTokenClaimsChange, external)); c != http.StatusBadRequest {
+		t.Fatalf("an ungranted event type returned %d, want 400 per RFC 8935 §2.3", c)
 	}
-
-	// An issuer we have no source for.
 	if c := post(tx.mint(t, "https://impostor.test", audience, fmt.Sprintf("jti-d-%d", suffix),
-		ssf.EventSessionRevoked, external)); c != http.StatusUnauthorized {
-		t.Fatalf("an unknown issuer returned %d, want 401", c)
+		ssf.EventSessionRevoked, external)); c != http.StatusBadRequest {
+		t.Fatalf("an unknown issuer returned %d, want 400 per RFC 8935 §2.3", c)
 	}
 
 	// Garbage.
 	if c := post("not.a.token"); c != http.StatusBadRequest {
 		t.Fatalf("garbage returned %d, want 400", c)
 	}
+}
+
+// RFC 8935 §2.3 requires a specific error shape, and §2.4 a registered code.
+func TestTheErrorResponseMatchesRFC8935(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/ssf/receive",
+		strings.NewReader("not.a.token"))
+	w := httptest.NewRecorder()
+	(&Server{}).writeSSFErrorForTest(w)
+
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json (§2.3)", got)
+	}
+	// MUST be present. A transmitter is entitled to know what language it is
+	// being told off in, and the first version omitted it.
+	if got := w.Header().Get("Content-Language"); got == "" {
+		t.Error("no Content-Language header; §2.3 says the response MUST include one")
+	}
+	var body map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("body is not JSON: %v", err)
+	}
+	if body["err"] == "" {
+		t.Error("no err field; §2.3 requires one")
+	}
+	// Registered names only, from the §2.4 table.
+	registered := map[string]bool{
+		"invalid_request": true, "invalid_key": true, "invalid_issuer": true,
+		"invalid_audience": true, "authentication_failed": true, "access_denied": true,
+	}
+	if !registered[body["err"]] {
+		t.Errorf("err = %q, which is not in the IANA registry (§2.4). A "+
+			"transmitter matching on the code cannot know what it means", body["err"])
+	}
+	_ = r
+}
+
+// writeSSFErrorForTest exercises the error writer directly.
+func (s *Server) writeSSFErrorForTest(w http.ResponseWriter) {
+	writeSSFError(w, http.StatusBadRequest, errInvalidRequest, "for the test")
 }

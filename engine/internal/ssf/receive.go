@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,8 +20,14 @@ var ErrNotVerified = fmt.Errorf("the security event token did not verify")
 
 // ReceivedEvent is a verified event, ready to act on.
 type ReceivedEvent struct {
-	JTI       string
-	Type      string
+	JTI string
+	// Type and Claims are the FIRST event, for callers handling one.
+	Type string
+	// Types are every event type in the token, sorted. RFC 8417 permits several
+	// entries describing one logical event.
+	Types []string
+	// AllClaims is every entry, keyed by type.
+	AllClaims map[string]map[string]any
 	Subject   Subject
 	EventTime time.Time
 	// Claims is the event body as sent, for the fields CAEP defines per type.
@@ -261,20 +268,48 @@ func Verify(ctx context.Context, f *KeyFetcher, src Source, raw string, now time
 	if time.Unix(c.IssuedAt, 0).After(now.Add(5 * time.Minute)) {
 		return out, fmt.Errorf("%w: issued in the future", ErrNotVerified)
 	}
-	if len(c.Events) != 1 {
-		// One event per token. The specification permits several; accepting
-		// them would mean partially applying a token, and "we did three of
-		// these five things" is not a state worth having.
-		return out, fmt.Errorf("%w: expected exactly one event, got %d",
-			ErrNotVerified, len(c.Events))
+	// `exp` in a SET is NOT RECOMMENDED (RFC 8417 §2.2) because an event is
+	// historical. But when present it means "MUST NOT be accepted for
+	// processing" after that time, and the first version of this ignored it
+	// entirely -- so a transmitter that deliberately time-boxed an event found
+	// us acting on it afterwards.
+	if c.Expiry > 0 && now.After(time.Unix(c.Expiry, 0)) {
+		return out, fmt.Errorf("%w: the token expired at %s",
+			ErrNotVerified, time.Unix(c.Expiry, 0).UTC().Format(time.RFC3339))
 	}
 
-	for typ, body := range c.Events {
-		out.Type, out.Claims = typ, body
+	if len(c.Events) == 0 {
+		return out, fmt.Errorf("%w: no events", ErrNotVerified)
 	}
-	if !src.Allows(out.Type) {
-		return out, fmt.Errorf("%w: this source may not send %s", ErrNotVerified, out.Type)
+	// SEVERAL entries are allowed. RFC 8417 §2.2 forbids using `events` to
+	// "express multiple INDEPENDENT logical events" -- it does not forbid
+	// several entries describing ONE event from different angles, which is how
+	// CAEP profiles convey detail.
+	//
+	// The first version refused any token with more than one entry, on the
+	// reasoning that partially applying a token is a state nobody can reason
+	// about. That reasoning was right and the remedy was wrong: it made us
+	// reject conforming transmitters. Every entry is returned instead, and the
+	// caller applies them in ONE transaction -- which is what makes partial
+	// application impossible.
+	out.Types = make([]string, 0, len(c.Events))
+	for typ := range c.Events {
+		out.Types = append(out.Types, typ)
 	}
+	sort.Strings(out.Types) // deterministic, so logs and tests do not vary
+	// Type and Claims name the FIRST entry, so callers handling a single event
+	// need not know about the list.
+	out.Type = out.Types[0]
+	out.Claims = c.Events[out.Type]
+
+	// Every entry must be permitted. A source allowed to report one thing must
+	// not smuggle another alongside it.
+	for _, typ := range out.Types {
+		if !src.Allows(typ) {
+			return out, fmt.Errorf("%w: this source may not send %s", ErrNotVerified, typ)
+		}
+	}
+	out.AllClaims = c.Events
 
 	out.JTI = c.JTI
 	out.Subject = subjectFrom(out.Claims)

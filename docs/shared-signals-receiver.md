@@ -23,6 +23,40 @@ revoked here, tell the relying parties". That is the easy half and the one that
 demos well.
 
 
+## Conformance review against RFC 8417 and RFC 8935, August 2026
+
+Reviewed against the **RFC texts**, not summaries. Four defects, two of them MUSTs:
+
+| Finding | Where | Status |
+|---|---|---|
+| **Errors answered `401`.** RFC 8935 §2.3: *"When the SET Recipient detects an error parsing, validating, or authenticating a SET ... SHALL respond with an HTTP Response Status Code of 400"* | 8935 §2.3 | **fixed** |
+| **No `Content-Language` header.** §2.3 says the error response **MUST** include one | 8935 §2.3 | **fixed** |
+| **`exp` was ignored.** RFC 8417 §2.2: it is *"the time after which the JWT MUST NOT be accepted for processing"*. NOT RECOMMENDED in a SET, but not advisory when present — a deliberately time-boxed event was being acted on afterwards | 8417 §2.2 | **fixed** |
+| **Multiple event entries were refused outright.** §2.2 forbids expressing multiple *independent* logical events; it permits several entries describing **one** event, which is how CAEP profiles convey detail. We were rejecting conforming transmitters | 8417 §2.2 | **fixed** |
+| Unregistered error code `internal_error` | 8935 §2.4 | **fixed** |
+
+### On the error-code decision
+
+The `401`-with-a-uniform-body choice was deliberate: it avoided telling an
+unauthenticated caller which issuers we are configured for. The RFC prescribes
+`400` with **registered codes** that distinguish `invalid_issuer` from
+`invalid_audience` from `invalid_key`.
+
+We now follow the RFC. A partner whose transmitter is misconfigured has to be
+able to tell *which* thing we rejected, and the residual disclosure — "this
+deployment has a source for issuer X" — requires guessing an exact issuer URL to
+learn. Interop and debuggability win that trade; the reasoning is recorded here
+so the decision can be revisited rather than rediscovered.
+
+### On multiple entries
+
+The original concern — "partially applying a token leaves a state nobody can
+reason about" — was right, and the remedy was wrong. Refusing rejected
+conforming transmitters. Every entry is now applied **inside the one
+transaction**, which is what actually makes partial application impossible.
+Every entry must also be permitted: a source allowed to report one thing must
+not smuggle another alongside it.
+
 ## The endpoint is unauthenticated, and that is correct
 
 A transmitter pushes without credentials; **the signature is the credential**.

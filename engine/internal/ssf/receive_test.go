@@ -218,17 +218,19 @@ func TestVerificationRefusesEveryForgery(t *testing.T) {
 			why:  "an unfinished configuration must not read as permission for everything",
 		},
 		{
-			name: "several events in one token",
+			// RFC 8417 §2.2 forbids expressing multiple INDEPENDENT logical
+			// events, but a receiver cannot tell "independent" from "related"
+			// by inspection -- that constraint binds the transmitter. What a
+			// receiver CAN enforce is that every entry is permitted, which is
+			// covered by TestSeveralEntriesDescribingOneEventAreAccepted.
+			name: "no events at all",
 			build: func() (string, Source) {
 				c := goodClaims(now)
-				c["events"] = map[string]any{
-					EventSessionRevoked:   map[string]any{"subject": map[string]any{"sub": "a"}},
-					EventCredentialChange: map[string]any{"subject": map[string]any{"sub": "b"}},
-				}
+				c["events"] = map[string]any{}
 				return tr.sign(t, TypSET, c, nil, tr.kid), tr.source()
 			},
-			want: "exactly one event",
-			why:  "partially applying a token leaves a state nobody can reason about",
+			want: "no events",
+			why:  "a token asserting nothing is malformed, not a no-op",
 		},
 		{
 			name:  "not a token at all",
@@ -333,5 +335,103 @@ func TestAnEmptyEventListAllowsNothing(t *testing.T) {
 	}
 	if s.Allows(EventCredentialChange) {
 		t.Fatal("an unconfigured event was allowed")
+	}
+}
+
+// RFC 8417 §2.2: `exp` is "the time after which the JWT MUST NOT be accepted
+// for processing". NOT RECOMMENDED in a SET, because an event is historical --
+// but when a transmitter sends one it is not advisory.
+//
+// The first version had no `exp` field at all, so a deliberately time-boxed
+// event was acted on afterwards.
+func TestAnExpiredSETIsRefused(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	c := goodClaims(now)
+	c["exp"] = now.Add(-time.Minute).Unix()
+	raw := tr.sign(t, TypSET, c, nil, tr.kid)
+	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(), raw, now); err == nil {
+		t.Fatal("an expired SET was accepted; §2.2 says MUST NOT be accepted " +
+			"for processing after exp")
+	}
+
+	// A future exp is fine, and a SET with no exp at all is the ordinary case.
+	c["exp"] = now.Add(time.Hour).Unix()
+	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, c, nil, tr.kid), now); err != nil {
+		t.Fatalf("a SET expiring in an hour was refused: %v", err)
+	}
+	delete(c, "exp")
+	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, c, nil, tr.kid), now); err != nil {
+		t.Fatalf("a SET with no exp was refused, but omitting it is what the "+
+			"RFC recommends: %v", err)
+	}
+}
+
+// RFC 8417 §2.2 forbids using `events` to express multiple INDEPENDENT logical
+// events. It does not forbid several entries describing ONE event, which is how
+// CAEP profiles convey detail.
+//
+// The first version refused any token with more than one entry, which rejected
+// conforming transmitters. The concern behind it -- partial application -- is
+// answered by applying every entry in one transaction, not by refusing.
+func TestSeveralEntriesDescribingOneEventAreAccepted(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+	subject := map[string]any{
+		"format": "iss_sub", "iss": "https://transmitter.test", "sub": "user-42",
+	}
+
+	c := goodClaims(now)
+	c["events"] = map[string]any{
+		EventSessionRevoked:   map[string]any{"subject": subject},
+		EventCredentialChange: map[string]any{"subject": subject},
+	}
+	got, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, c, nil, tr.kid), now)
+	if err != nil {
+		t.Fatalf("a token with two entries was refused: %v", err)
+	}
+	if len(got.Types) != 2 {
+		t.Fatalf("Types = %v, want both entries", got.Types)
+	}
+	// Sorted, so logs and tests do not vary between runs.
+	if got.Types[0] > got.Types[1] {
+		t.Fatalf("Types = %v, want them sorted", got.Types)
+	}
+	if got.Type != got.Types[0] {
+		t.Fatalf("Type = %q, want the first of %v", got.Type, got.Types)
+	}
+	if len(got.AllClaims) != 2 {
+		t.Fatalf("AllClaims has %d entries, want 2", len(got.AllClaims))
+	}
+
+	// EVERY entry must be permitted -- a source allowed to report one thing
+	// must not smuggle another alongside it.
+	//
+	// Checked with the disallowed entry in BOTH positions. The first version of
+	// this test allowed only session-revoked, and because the types sort
+	// alphabetically the disallowed one landed first -- so a mutation that
+	// checked only Types[0] passed. Position-dependent coverage is no coverage.
+	for _, allowed := range [][]string{
+		{EventSessionRevoked},   // credential-change sorts first: disallowed at [0]
+		{EventCredentialChange}, // session-revoked sorts second: disallowed at [1]
+	} {
+		src := tr.source()
+		src.AllowedEvents = allowed
+		if _, err := Verify(context.Background(), &KeyFetcher{}, src,
+			tr.sign(t, TypSET, c, nil, tr.kid), now); err == nil {
+			t.Fatalf("with only %v permitted, a token carrying both was "+
+				"accepted; the unpermitted entry rode along", allowed)
+		}
+	}
+
+	// And a token with no events at all is malformed.
+	c["events"] = map[string]any{}
+	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, c, nil, tr.kid), now); err == nil {
+		t.Fatal("a token with no events was accepted")
 	}
 }

@@ -83,11 +83,17 @@ type Event struct {
 
 // setClaims is the wire shape of a Security Event Token.
 type setClaims struct {
-	Issuer   string                    `json:"iss"`
-	JTI      string                    `json:"jti"`
-	IssuedAt int64                     `json:"iat"`
-	Audience []string                  `json:"aud"`
-	Events   map[string]map[string]any `json:"events"`
+	Issuer   string   `json:"iss"`
+	JTI      string   `json:"jti"`
+	IssuedAt int64    `json:"iat"`
+	Audience []string `json:"aud"`
+	// Expiry is NOT RECOMMENDED in a SET (RFC 8417 §2.2): a security event has
+	// already happened and is historical, so an expiry rarely makes sense. But
+	// when a transmitter does send one, the claim means "the time after which
+	// the JWT MUST NOT be accepted for processing", and honouring it is not
+	// optional. Omitted by us when minting; enforced when receiving.
+	Expiry int64                     `json:"exp,omitempty"`
+	Events map[string]map[string]any `json:"events"`
 }
 
 // Signer mints SETs.

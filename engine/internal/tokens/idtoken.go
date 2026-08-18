@@ -144,6 +144,16 @@ func (s *Signer) SignIDToken(c IDTokenClaims) (string, error) {
 // SignJSON mints an arbitrary signed payload with an explicit `typ`. Used for
 // access tokens and logout tokens, which share the signing path but must never
 // share a type.
+// SignRaw signs an already-marshalled payload with an explicit typ.
+//
+// SignJSON marshals for you, which is right for a claims struct. A credential's
+// payload is built as a map and must be signed byte-for-byte as constructed --
+// re-marshalling it could reorder members, and the SD-JWT digests were computed
+// over the bytes.
+func (s *Signer) SignRaw(payload []byte, typ string) (string, error) {
+	return s.sign(payload, typ)
+}
+
 func (s *Signer) SignJSON(payload any, typ string) (string, error) {
 	b, err := json.Marshal(payload)
 	if err != nil {

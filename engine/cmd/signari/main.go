@@ -158,6 +158,8 @@ commands:
   federation show     print the Entity Configuration this instance publishes
   client set-grants   set which grant types a client may use
   credential offer    mint an OID4VCI Credential Offer a wallet can redeem
+  credential define   define a credential this issuer can mint (SD-JWT VC)
+  credential list     show the credential configurations this issuer publishes
   rar register        register an RFC 9396 authorization details type
   rar allow           let a client request a registered type
   rar list            show registered types and which clients may use them
@@ -345,6 +347,13 @@ func run(args []string) error {
 	grantTypes := fs.String("grant-types", "",
 		"comma-separated grant types this client may use, replacing what it has: "+
 			strings.Join(knownGrantTypes, ", "))
+	credVCT := fs.String("vct", "", "SD-JWT VC type identifier, a collision-resistant name (credential define)")
+	credAlways := fs.String("always", "",
+		"comma-separated claims every verifier sees, whatever the holder chooses")
+	credSelective := fs.String("selective", "",
+		"comma-separated claims the holder reveals one at a time")
+	credLifetime := fs.Duration("valid-for", 0,
+		"how long an issued credential is valid (0 = no exp claim)")
 	rarType := fs.String("type", "", "authorization details type identifier (rar)")
 	rarFields := fs.String("fields", "",
 		"comma-separated common data fields this type uses: "+
@@ -544,6 +553,11 @@ func run(args []string) error {
 		return rarAllow(ctx, conn, *clientID, *rarType)
 	case "rar list":
 		return rarList(ctx, conn)
+	case "credential define":
+		return credentialDefine(ctx, conn, *orgID, *credConfigs, *credVCT,
+			*credAlways, *credSelective, *credLifetime, *brandName)
+	case "credential list":
+		return credentialList(ctx, conn)
 	case "credential offer":
 		return credentialOffer(ctx, conn, *orgID, *email, *clientID, *credConfigs,
 			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL)
@@ -6243,6 +6257,117 @@ func rarList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	if !found {
 		fmt.Println("no authorization details types are registered")
+	}
+	return rows.Err()
+}
+
+// credentialClaims are the claim names a credential may carry.
+//
+// A fixed list, not "any column": every value here ends up inside a credential
+// the holder can present to anybody, so what may appear is a decision rather
+// than a projection of whatever the users table happens to hold.
+var credentialClaims = []string{"sub", "email", "email_verified", "preferred_username"}
+
+// credentialDefine registers a credential this issuer can mint.
+//
+// OID4VCI §12.2: the entry becomes one key of
+// `credential_configurations_supported`, which is what a wallet reads to learn
+// what it may ask for.
+func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
+	always, selective string, lifetime time.Duration, displayName string) error {
+
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	if strings.TrimSpace(configID) == "" {
+		return fmt.Errorf("give -credential-configuration, the identifier a wallet " +
+			"sends as credential_configuration_id")
+	}
+	if strings.TrimSpace(vct) == "" {
+		return fmt.Errorf("give -vct, the credential type identifier. SD-JWT VC " +
+			"section 3.2.2.1 requires a collision-resistant name, so use a URL you " +
+			"control, e.g. https://example.com/identity_credential")
+	}
+	a, sel := splitList(always), splitList(selective)
+	if len(a)+len(sel) == 0 {
+		return fmt.Errorf("give -always and/or -selective: a credential carrying "+
+			"no claims asserts nothing. Available: %s",
+			strings.Join(credentialClaims, ", "))
+	}
+	for _, name := range append(append([]string{}, a...), sel...) {
+		if !slices.Contains(credentialClaims, name) {
+			return fmt.Errorf("%q is not a claim this issuer can put in a "+
+				"credential. Available: %s", name, strings.Join(credentialClaims, ", "))
+		}
+	}
+	for _, name := range a {
+		if slices.Contains(sel, name) {
+			return fmt.Errorf("%q is listed as both always-visible and selective; "+
+				"revealing it would put the claim in the credential twice", name)
+		}
+	}
+
+	var interval any
+	if lifetime > 0 {
+		interval = fmt.Sprintf("%d seconds", int(lifetime.Seconds()))
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.credential_configurations
+			(org_id, config_id, vct, always_claims, selective_claims, lifetime, display_name)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6::interval, NULLIF($7,''))
+		ON CONFLICT (org_id, config_id) DO UPDATE
+		SET vct = EXCLUDED.vct, always_claims = EXCLUDED.always_claims,
+		    selective_claims = EXCLUDED.selective_claims,
+		    lifetime = EXCLUDED.lifetime, display_name = EXCLUDED.display_name`,
+		orgID, configID, vct, a, sel, interval, displayName); err != nil {
+		return fmt.Errorf("defining the credential: %w", err)
+	}
+
+	fmt.Printf("credential configuration %s\n", configID)
+	fmt.Printf("  vct       : %s\n", vct)
+	if len(a) > 0 {
+		fmt.Printf("  always    : %s\n", strings.Join(a, ", "))
+	}
+	if len(sel) > 0 {
+		fmt.Printf("  selective : %s\n", strings.Join(sel, ", "))
+	}
+	if lifetime > 0 {
+		fmt.Printf("  valid for : %s\n", lifetime)
+	}
+	fmt.Printf("\nThe claims under `always` are visible to EVERY verifier the holder\n")
+	fmt.Printf("presents to. Only the `selective` ones can be withheld.\n")
+	return nil
+}
+
+// credentialList shows what this issuer publishes.
+func credentialList(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT config_id, format, vct, always_claims, selective_claims,
+		       COALESCE(display_name,'')
+		FROM core.credential_configurations ORDER BY config_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var id, format, vct, display string
+		var a, sel []string
+		if err := rows.Scan(&id, &format, &vct, &a, &sel, &display); err != nil {
+			return err
+		}
+		found = true
+		fmt.Printf("%s (%s)\n", id, format)
+		if display != "" {
+			fmt.Printf("  %s\n", display)
+		}
+		fmt.Printf("  vct       : %s\n", vct)
+		fmt.Printf("  always    : %s\n", strings.Join(a, ", "))
+		fmt.Printf("  selective : %s\n", strings.Join(sel, ", "))
+	}
+	if !found {
+		fmt.Println("this deployment issues no credentials")
 	}
 	return rows.Err()
 }

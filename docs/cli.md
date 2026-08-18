@@ -63,6 +63,8 @@ a class of failure that shows up as data corruption rather than an error.
 
 | | |
 |---|---|
+| `signari credential define` | Define a credential this issuer mints (SD-JWT VC) |
+| `signari credential list` | Show the credential configurations published |
 | `signari credential offer` | Mint an OID4VCI Credential Offer. See [oid4vci.md](oid4vci.md) |
 
 ## Keys and audit

@@ -179,11 +179,161 @@ wondering why their credential did not arrive; the error `code` does not vary, s
 nothing parsing the response programmatically can tell a code that never existed
 from one already spent.
 
-## What is not built
+## The Credential Issuer half
 
-- The **credential endpoint** and any credential format. That is the Credential
-  Issuer's role, not the Authorization Server's.
-- The **Credential Issuer Metadata** document. Signari would only publish it if
-  it were also the Credential Issuer, which it is not.
-- The **authorization code flow** variant of OID4VCI (`issuer_state`), the nonce
-  endpoint, and deferred issuance.
+Everything above is the authorization server. This is the other role: Signari now
+**mints the credential**.
+
+```
+POST /oid4vci/nonce                          §7  — unauthenticated
+POST /oid4vci/credential                     §8  — bearer or DPoP
+GET  /.well-known/openid-credential-issuer   §12.2
+```
+
+Format: **SD-JWT VC**, `draft-ietf-oauth-sd-jwt-vc-18` (10 August 2026).
+
+### Why SD-JWT rather than a plain signed credential
+
+An ordinary credential is all-or-nothing. To prove you are over 18, you hand over
+a document carrying your name, address and date of birth — the verifier learns
+everything, because the signature covers everything and removing a field breaks
+it.
+
+SD-JWT signs **digests** of individual claims. The holder gets the signed JWT
+plus one *disclosure* per claim, and presents only the ones they choose. The
+signature still verifies, because it was never over the values.
+
+An issued credential looks like:
+
+```
+<jwt>~<disclosure>~<disclosure>~<disclosure>~
+```
+
+### The detail that decides whether any verifier accepts it
+
+§4.2.3 of the SD-JWT specification, emphatically:
+
+> The digest MUST be taken over the US-ASCII bytes of the **base64url-encoded**
+> value that is the Disclosure… The input to the hash function MUST be the
+> base64url-encoded Disclosure, **not** the bytes encoded by the base64url string.
+
+Hashing the decoded JSON is the obvious reading, produces a plausible digest, and
+yields a credential nothing on earth will accept. The specification publishes a
+test vector precisely because of this, and
+`TestTheSpecificationsOwnDigestVector` uses it:
+
+| | |
+|---|---|
+| Disclosure | `WyJfMjZiYzRMVC1hYzZxMktJNmNCVzVlcyIsICJmYW1pbHlfbmFtZSIsICJNw7ZiaXVzIl0` |
+| Digest | `X9yH0Ajrdm1Oij4tWso9UzzKJvPoDxwmuEcO3XAdRC0` |
+
+Two related details, both found by mutation rather than by reading:
+
+- **`Disclosure.Digest()` and `DigestOf()` were two implementations of that one
+  rule.** The specification's vector exercised the second; issuance called the
+  first. Breaking the issuance path exactly as §4.2.3 warns broke no test. They
+  are now one function.
+- **`typ` is `dc+sd-jwt`.** draft-18 renamed it from `vc+sd-jwt` "to avoid
+  conflict with the vc media type name". The test asserting it originally
+  compared the header against our own constant — a tautology that passed when the
+  constant was changed to the deprecated value. It compares a literal now.
+
+### Key binding, which is the point of the proof
+
+§8.2 requires a key proof, and the credential carries `cnf` naming the key it was
+bound to. Without that, a credential is a bearer token: whoever copied it could
+present it.
+
+Appendix F.1's rules, each enforced and each tested:
+
+| Rule | Why refusing matters |
+|---|---|
+| `typ` is `openid4vci-proof+jwt` | an ID token is also signed JSON with `aud` and `iat` |
+| `alg` is asymmetric, never `none` | a MAC would make the verification key the forgery key |
+| exactly one of `kid`/`jwk`/`x5c` | two key sources means the key *verified* and the key *bound* can differ |
+| signed by the key it carries | otherwise anybody binds a credential to somebody else's public key |
+| `aud` is the Credential Issuer | a proof for another issuer would be replayable here |
+| `iat` present and recent | an undated proof never ages out |
+| carries this issuer's `c_nonce` | a captured proof would otherwise be replayable forever |
+
+And one rule worth its own line. §F.1 on `iss`:
+
+> This claim MUST be omitted if the access token authorizing the issuance call
+> was obtained from a Pre-Authorized Code Flow through **anonymous** access to
+> the token endpoint.
+
+That is exactly our flow — §6.1 lets the wallet send no `client_id`, and we
+honour it. So `ProofContext` carries `Anonymous` separately from an empty
+`ClientID`: *"we do not know the client"* and *"there deliberately was no
+client"* are different states, and only the second forbids the claim.
+
+### `c_nonce` is single use
+
+§7 requires a Nonce Endpoint when proofs must carry a nonce, and §8.2 has the
+nonce establish freshness. A nonce that can be presented twice establishes it
+once, so it is spent in the statement that reads it.
+
+The endpoint is **unauthenticated**, which §7.1 states outright and which is
+worth not second-guessing: a wallet needs the nonce *before* it can build the
+proof that the token-bearing request depends on.
+
+The nonce is also **not organisation-scoped**. Migration 0081 scoped it and 0082
+took that back, because it forced an unauthenticated endpoint to guess a tenant.
+A `c_nonce` proves freshness and identifies nobody; which organisation a
+credential is issued for comes from the access token's subject, at an endpoint
+where there genuinely is one.
+
+### Defining what this issuer mints
+
+```sh
+signari credential define -org <uuid> \
+  -credential-configuration IdentityCredential \
+  -vct https://example.com/identity \
+  -always sub \
+  -selective email,preferred_username,email_verified \
+  -valid-for 720h
+```
+
+The `always`/`selective` split is the whole feature, so it is two flags rather
+than one list with a flag per claim: a claim under `always` is visible to **every
+verifier the holder ever presents to**, and putting the more dangerous option
+behind the easier typo would be a poor trade.
+
+Claim names come from a fixed list (`sub`, `email`, `email_verified`,
+`preferred_username`). Every value ends up inside a credential the holder can
+show anybody, so what may appear is a decision rather than a projection of
+whatever the users table happens to hold.
+
+### Verified end to end
+
+A wallet script — one EC key, `openssl`, no libraries — run against a live
+server:
+
+```
+c_nonce: ZvzT7BS1g4bu4dbY...
+typ        : dc+sd-jwt
+vct        : https://vci-e2e.test/identity
+cnf bound  : True
+_sd_alg    : sha-256
+in payload : ['cnf', 'exp', 'iat', 'iss', 'sub', 'vct']
+
+disclosures the holder may reveal:
+  email              = 'holder@vci-e2e.test'  digest in _sd: True
+  email_verified     = False                  digest in _sd: True
+  preferred_username = 'holder@vci-e2e.test'  digest in _sd: True
+```
+
+The access token was obtained by redeeming a pre-authorized code **with no
+`client_id`**, which is the ordinary wallet case §6.1 describes.
+
+## What is still not built
+
+- **ISO mdoc** (`mso_mdoc`). The `format` column has a CHECK constraint listing
+  only SD-JWT VC, so adding it is a migration rather than a rewrite.
+- **Deferred issuance** (§9) and the **notification endpoint** (§11).
+- **Credential response encryption** (§10) and encrypted requests.
+- The **authorization code flow** variant (`issuer_state`).
+- **Key attestation** (Appendix D) and the `kid`/`x5c` proof forms — a proof must
+  carry its key inline as `jwk`. `kid` names a key we would have to resolve and
+  `x5c` a chain we would have to trust; accepting either without doing that work
+  would be accepting a proof we did not verify.

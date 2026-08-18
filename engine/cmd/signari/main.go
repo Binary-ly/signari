@@ -266,6 +266,9 @@ func run(args []string) error {
 	outpostToken := fs.String("outpost-token", "", "outpost token from `signari outpost create`")
 	outpostKind := fs.String("kind-outpost", "", "ldap, radius or proxy")
 	subURL := fs.String("url", "", "https endpoint events are POSTed to")
+	srcIssuer := fs.String("source-issuer", "", "the transmitter's issuer")
+	srcJWKS := fs.String("source-jwks", "", "the transmitter's JWKS URI (https)")
+	srcAudience := fs.String("source-audience", "", "what the transmitter puts in aud for us")
 	modelFile := fs.String("model-file", "", "authorization model, YAML")
 	relSubject := fs.String("principal", "", "type:id, e.g. user:alice@example.com")
 	relRelation := fs.String("relation", "", "e.g. editor")
@@ -457,6 +460,11 @@ func run(args []string) error {
 		return registrationEnable(ctx, conn, *orgID, *regOpen, *regMax, *tokenScopes)
 	case "registration token":
 		return registrationToken(ctx, conn, *orgID, *name, *regUses, *tokenExpires)
+	case "ssf add-source":
+		return ssfAddSource(ctx, conn, *orgID, *name, *srcIssuer, *srcJWKS,
+			*srcAudience, *ssfEvents)
+	case "ssf received":
+		return ssfReceived(ctx, conn, *orgID)
 	case "ssf add-stream":
 		return ssfAddStream(ctx, conn, *orgID, *clientID, *ssfEndpoint, *ssfToken, *ssfEvents)
 	case "ssf list":
@@ -5609,4 +5617,71 @@ func conditionSummary(c authzen.Condition) string {
 		parts = append(parts, "membership of "+strings.Join(c.AnyGroup, " or "))
 	}
 	return strings.Join(parts, " and ")
+}
+
+// ssfAddSource registers a transmitter we will accept events from.
+func ssfAddSource(ctx context.Context, conn *pgx.Conn, orgID, name, issuer,
+	jwksURI, audience, events string) error {
+
+	switch {
+	case orgID == "" || name == "":
+		return fmt.Errorf("-org and -name are required")
+	case issuer == "":
+		return fmt.Errorf("-source-issuer is required: every event must carry " +
+			"exactly this in `iss`, and it is what selects the keys to verify against")
+	case jwksURI == "":
+		return fmt.Errorf("-source-jwks is required: keys come from there, never " +
+			"from the token")
+	case !strings.HasPrefix(jwksURI, "https://"):
+		return fmt.Errorf("-source-jwks must be https")
+	case audience == "":
+		return fmt.Errorf("-source-audience is required: a token addressed to " +
+			"somebody else is not ours to act on, however valid its signature")
+	}
+
+	var list []string
+	for _, e := range strings.Split(events, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			list = append(list, e)
+		}
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("-events is required: a source permitted to send nothing "+
+			"is not useful, and one permitted to send everything is not what you "+
+			"meant. Try -events %s", ssf.EventSessionRevoked)
+	}
+
+	if err := store.AddSource(ctx, conn, orgID, name, issuer, jwksURI, audience,
+		list); err != nil {
+		return err
+	}
+	fmt.Printf("source %s\n  issuer   %s\n  jwks     %s\n  audience %s\n  events   %s\n",
+		name, issuer, jwksURI, audience, strings.Join(list, ", "))
+	fmt.Printf("\n  Point the transmitter at:  POST <this engine>/ssf/receive\n")
+	fmt.Printf("  It needs no credential -- the signature is the credential.\n")
+	return nil
+}
+
+// ssfReceived shows what sources have sent, and what was done about it.
+func ssfReceived(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("-org is required")
+	}
+	rows, err := store.RecentReceived(ctx, conn, orgID, 50)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		fmt.Println("no events received")
+		return nil
+	}
+	for _, r := range rows {
+		short := r.EventType
+		if i := strings.LastIndex(short, "/"); i >= 0 {
+			short = short[i+1:]
+		}
+		fmt.Printf("%s  %-18s %-20s %s\n",
+			r.ReceivedAt.Format("2006-01-02 15:04:05"), short, r.Action, r.Detail)
+	}
+	return nil
 }

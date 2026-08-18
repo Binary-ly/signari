@@ -26,6 +26,7 @@ const (
 	// Support access ended -- by an administrator stopping it, or by it running
 	// out. Distinct from logout so an audit reader can tell the two apart.
 	ReasonImpersonationEnded TerminationReason = "impersonation_ended"
+	ReasonSharedSignal TerminationReason = "shared_signal"
 )
 
 // LogoutNotice is one queued back-channel logout delivery.

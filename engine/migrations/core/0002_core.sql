@@ -254,7 +254,7 @@ CREATE TABLE sessions (
     revocation_reason text      CHECK (revocation_reason IN
                           ('logout','admin_revoke','user_deleted','user_deactivated',
                            'password_change','mfa_reset','expired','reuse_detected',
-                           'impersonation_ended')),
+                           'impersonation_ended','shared_signal')),
     not_after       timestamptz NOT NULL,
 
     user_agent      text,

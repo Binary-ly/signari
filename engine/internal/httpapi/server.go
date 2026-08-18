@@ -30,6 +30,7 @@ import (
 	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/risk"
 	"signari.dev/engine/internal/sms"
+	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
 )
 
@@ -39,6 +40,8 @@ type Server struct {
 	cfg  oidc.Config
 	log  *slog.Logger
 	jwks *bucket
+	// ssfKeys caches transmitters' signing keys.
+	ssfKeys *ssf.KeyFetcher
 	// The marshalled key set, cached between rotations. See jwksBody.
 	jwksMu    sync.Mutex
 	jwksCache []byte
@@ -145,6 +148,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
 		pwPolicy:  passwords.PolicyFromEnv(),
 		policies:  newPolicyCache(),
+		ssfKeys:   &ssf.KeyFetcher{},
 		geo:       risk.NewResolver(),
 		mailer:    mailer,
 		texter:    texter,
@@ -245,6 +249,10 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /login/prompt", s.handlePromptPost)
 	mux.HandleFunc("POST /login/password-change", s.handlePasswordChangePost)
 	// OpenID AuthZEN Authorization API 1.0.
+	// Shared Signals, inbound (RFC 8935 push). Unauthenticated by design: the
+	// signature is the credential. See internal/httpapi/ssfreceive.go.
+	mux.HandleFunc("POST /ssf/receive", s.handleSSFReceive)
+
 	mux.HandleFunc("POST /access/v1/evaluation", s.handleAuthzEvaluate)
 	mux.HandleFunc("POST /access/v1/evaluations", s.handleAuthzEvaluations)
 	mux.HandleFunc("POST /access/v1/search/subject", s.handleAuthzSearchSubject)

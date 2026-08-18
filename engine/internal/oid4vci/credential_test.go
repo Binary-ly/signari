@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -57,5 +58,34 @@ func TestAnUnimplementedFormatIsRefused(t *testing.T) {
 		AlwaysClaims: []string{"sub"}}
 	if _, err := i.Issue(cfg, map[string]any{"sub": "u"}, testKey(t), time.Now()); err == nil {
 		t.Fatal("an unimplemented credential format was issued as SD-JWT VC")
+	}
+}
+
+// §8.3 lets the issuer cap how many credentials one request mints, and the cap
+// is load-bearing rather than tidy.
+//
+// Every proof costs a database round trip to spend its c_nonce, a signature
+// verification, a subject read and a signature. The body is capped at a
+// megabyte, which at roughly four hundred bytes per proof still admits a couple
+// of thousand — so an unbounded array is one HTTP request that becomes thousands
+// of database round trips.
+func TestTheNumberOfProofsIsBounded(t *testing.T) {
+	proofs := make([]json.RawMessage, MaxProofsPerRequest+1)
+	for i := range proofs {
+		proofs[i] = json.RawMessage(`"header.payload.signature"`)
+	}
+	req := CredentialRequest{
+		ConfigurationID: "Identity",
+		Proofs:          map[string][]json.RawMessage{ProofTypeJWT: proofs},
+	}
+	if _, err := req.Validate(); err == nil {
+		t.Fatalf("%d proofs were accepted; one request would mint that many "+
+			"credentials and spend that many nonces", len(proofs))
+	}
+
+	// And the limit itself is usable: a wallet batching keys must not be refused.
+	req.Proofs[ProofTypeJWT] = proofs[:MaxProofsPerRequest]
+	if _, err := req.Validate(); err != nil {
+		t.Fatalf("exactly the limit was refused: %v", err)
 	}
 }

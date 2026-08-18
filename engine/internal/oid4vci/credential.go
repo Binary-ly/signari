@@ -20,6 +20,22 @@ import (
 // FormatSDJWTVC is the only credential format implemented.
 const FormatSDJWTVC = "dc+sd-jwt"
 
+// MaxProofsPerRequest bounds how many credentials one request may mint.
+//
+// §8.3 anticipates an issuer limit outright: the credentials array "matches the
+// number of keys that the Wallet has provided via the proofs parameter, unless
+// the Issuer decides to issue fewer Credentials."
+//
+// The bound is not cosmetic. Every proof costs a database round trip to spend
+// its c_nonce, a signature verification, a subject read and a signature — so an
+// unbounded array turns one HTTP request into thousands of database round trips.
+// The request body is capped at a megabyte, which at roughly four hundred bytes
+// per proof still leaves room for a couple of thousand.
+//
+// Thirty-two is generous for the legitimate case. A wallet batches keys for
+// unlinkability — a handful per device — and nothing needs hundreds.
+const MaxProofsPerRequest = 32
+
 // CredentialRequest is §8.2's request body.
 type CredentialRequest struct {
 	// ConfigurationID names an entry in credential_configurations_supported.
@@ -100,6 +116,12 @@ func (r CredentialRequest) Validate() ([]string, error) {
 	}
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("the jwt proofs array is empty")
+	}
+	if len(raw) > MaxProofsPerRequest {
+		return nil, fmt.Errorf("this request carries %d key proofs and the limit "+
+			"is %d: each one costs a nonce redemption, a signature verification "+
+			"and a signature, so an unbounded array is one request that becomes "+
+			"thousands of database round trips", len(raw), MaxProofsPerRequest)
 	}
 
 	out := make([]string, 0, len(raw))

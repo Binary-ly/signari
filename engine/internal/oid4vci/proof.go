@@ -135,7 +135,15 @@ func ValidateJWTProof(raw string, ctx ProofContext, now time.Time) (*ProofKey, e
 			"inline as `jwk`; %s identifies a key it would have to resolve and "+
 			"trust separately, which it does not do", which)
 	}
-	if h.JSONWebKey.IsPublic() != true {
+	// Defence in depth, and honestly labelled: go-jose refuses an embedded
+	// private JWK inside ParseSigned ("invalid embedded jwk, must be public
+	// key"), so this line does not fire today and removing it fails no test.
+	//
+	// It is kept because the property matters more than which layer enforces it
+	// — a wallet that sent its private key would have handed the issuer a secret
+	// it must never hold — and because a JOSE library change would otherwise make
+	// this the only thing standing, with nothing to say it had stopped working.
+	if !h.JSONWebKey.IsPublic() {
 		return nil, fmt.Errorf("the key proof's jwk contains private key material")
 	}
 

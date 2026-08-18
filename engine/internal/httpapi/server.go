@@ -253,6 +253,7 @@ func (s *Server) mux() *http.ServeMux {
 	// signature is the credential. See internal/httpapi/ssfreceive.go.
 	mux.HandleFunc("POST /ssf/receive", s.handleSSFReceive)
 
+	mux.HandleFunc("GET /.well-known/authzen-configuration", s.handleAuthzMetadata)
 	mux.HandleFunc("POST /access/v1/evaluation", s.handleAuthzEvaluate)
 	mux.HandleFunc("POST /access/v1/evaluations", s.handleAuthzEvaluations)
 	mux.HandleFunc("POST /access/v1/search/subject", s.handleAuthzSearchSubject)

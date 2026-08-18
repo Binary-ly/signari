@@ -79,6 +79,58 @@ Refused at parse time, each because it would otherwise load and be quietly wrong
 | A relation cycle | Refused rather than bounded: a bound turns a broken model into a slow one instead of a rejected one |
 | A misspelled key | `permisions:` silently dropped leaves a type granting nothing, which at a glance looks exactly like one granting everything |
 
+## Conformance review against the Final spec, August 2026
+
+Reviewed against the **full text** of Authorization API 1.0, not a summary. Two
+defects found:
+
+| Finding | Section | Status |
+|---|---|---|
+| **Search results were silently truncated.** Capped at 1000 with no `next_token`. §8.2.2: *"if a response does not contain the entire result set, it MUST include this object"*. A caller with 1001 accessible documents was told about 1000 and had no way to know — for an authorization search that is worse than an error, because a truncated answer looks complete | §8.2.2 | **fixed** |
+| **No Policy Decision Point metadata.** §9 defines `/.well-known/authzen-configuration`, whose `policy_decision_point` identifier exists *"to prevent Policy Decision Point mix-up attacks"* | §9 | **added** |
+
+Checked and already correct: the information model (§5), evaluation request and
+response (§6), batch defaults and semantics (§7), transitive search through
+groups (§8.1 RECOMMENDED — we expand group grants to members), the `type`/`id`
+vs `name` item shapes (§8.4–8.6), `X-Request-ID` (§10.1.3), and error status
+codes (§10.1.2).
+
+### Pagination
+
+Keyset, not `OFFSET`. `OFFSET` re-reads and re-sorts everything skipped, so the
+last page of a large set costs the most and a row inserted mid-walk shifts every
+later page. The token is the last id of the previous page, base64url so it is
+**opaque** as §8.2 requires — a caller who could construct one by hand could
+start walking somebody else's result set from the middle.
+
+One row more than asked for is fetched, which is how "is there another page"
+is *known* rather than guessed. Guessing wrong gives either an empty final page
+or, far worse, a silent truncation.
+
+Verified live:
+
+```
+page 1: doc-1,doc-2,doc-3   next_token=ZG9jLTM…
+page 2: doc-4,doc-5,doc-6   next_token=ZG9jLTY…
+page 3: doc-7              next_token='' (end)
+total 7 across 3 pages
+```
+
+### PDP metadata
+
+```
+GET /.well-known/authzen-configuration
+```
+
+Lists the five endpoints — their presence *is* the capability declaration, since
+the spec says "the absence of any of these parameters is sufficient for the PEP
+to determine that the PDP is not capable".
+
+`policy_decision_point` is built from the configured issuer, **never from the
+request's Host header**. §9.2.3 requires it to match the identifier the
+well-known URI was derived from, and a Host an attacker controls is exactly how
+a mix-up attack starts.
+
 ## Conditions, and a trust boundary you can see
 
 ```yaml

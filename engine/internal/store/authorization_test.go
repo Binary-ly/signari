@@ -223,7 +223,7 @@ func TestSubjectSearchExpandsGroupsToTheirMembers(t *testing.T) {
 		t.Fatalf("granting: %v", err)
 	}
 
-	subjects, err := SubjectsWith(ctx, conn, orgID, []string{"viewer"}, "document", doc, 0)
+	subjects, _, err := SubjectsWith(ctx, conn, orgID, []string{"viewer"}, "document", doc, 0, "")
 	if err != nil {
 		t.Fatalf("searching: %v", err)
 	}
@@ -299,4 +299,87 @@ types:
 	if loaded != nil {
 		t.Fatal("an organisation with no model returned one")
 	}
+}
+
+// AuthZEN §8.2.2: "if a response does not contain the entire result set, it
+// MUST include this object [page]" with a next_token.
+//
+// The first implementation capped at 1000 and returned no token at all. A
+// caller with 1001 accessible documents was told about 1000 and had no way to
+// know -- which for an authorization search is worse than an error, because a
+// truncated answer looks like a complete one.
+func TestSearchPagesRatherThanTruncating(t *testing.T) {
+	ctx := context.Background()
+	conn := connect(t)
+	orgID, userID, _, _ := fixture(t, conn)
+	prefix := "pg" + itoa(time.Now().UnixNano())
+
+	const total = 25
+	for i := 0; i < total; i++ {
+		// Zero-padded so lexical order matches creation order, which is what
+		// keyset pagination walks.
+		id := prefix + "-" + pad(i)
+		if err := GrantRelation(ctx, conn, orgID, Relation{
+			SubjectType: "user", SubjectID: userID, Relation: "owner",
+			ObjectType: "pgdoc", ObjectID: id,
+		}, ""); err != nil {
+			t.Fatalf("granting %s: %v", id, err)
+		}
+	}
+
+	// Walk it in pages of 10 and reassemble.
+	seen := map[string]bool{}
+	after := ""
+	pages := 0
+	for {
+		ids, more, err := ObjectsWith(ctx, conn, orgID, "user", userID,
+			[]string{"owner"}, "pgdoc", nil, 10, after)
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		pages++
+		for _, id := range ids {
+			if seen[id] {
+				t.Fatalf("%s appeared on two pages", id)
+			}
+			seen[id] = true
+		}
+		if !more {
+			break
+		}
+		if len(ids) == 0 {
+			t.Fatal("more results were promised but none returned; this loops forever")
+		}
+		after = ids[len(ids)-1]
+		if pages > 10 {
+			t.Fatal("pagination did not terminate")
+		}
+	}
+
+	if len(seen) != total {
+		t.Fatalf("walked %d objects across %d pages, want %d -- results were "+
+			"lost or duplicated between pages", len(seen), pages, total)
+	}
+	if pages != 3 {
+		t.Fatalf("took %d pages for %d results at 10 per page, want 3", pages, total)
+	}
+
+	// The last page must say there is no more. Without that signal a caller
+	// cannot tell "this is the end" from "the token was lost".
+	_, more, err := ObjectsWith(ctx, conn, orgID, "user", userID,
+		[]string{"owner"}, "pgdoc", nil, 10, prefix+"-"+pad(total-1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if more {
+		t.Fatal("the page after the last one still reported more results")
+	}
+}
+
+func pad(n int) string {
+	s := itoa(int64(n))
+	for len(s) < 4 {
+		s = "0" + s
+	}
+	return s
 }

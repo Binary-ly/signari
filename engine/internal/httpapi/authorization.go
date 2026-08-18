@@ -2,13 +2,16 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
 
 	"signari.dev/engine/internal/authzen"
 	"signari.dev/engine/internal/store"
+	"strings"
 )
 
 // The OpenID AuthZEN Authorization API 1.0 endpoints.
@@ -296,25 +299,28 @@ func (s *Server) handleAuthzSearchResource(w http.ResponseWriter, r *http.Reques
 	}
 
 	facts := s.factsFor(ctx, orgID, req.Subject.ID, req.Context)
-	limit := 0
-	if req.Page != nil {
-		limit = req.Page.Limit
+	limit, after, perr := pageOf(req)
+	if perr != nil {
+		authzError(w, http.StatusBadRequest, perr.Error())
+		return
 	}
-	ids, err := store.ObjectsWith(ctx, s.db, orgID, req.Subject.Type, req.Subject.ID,
-		relations, req.Resource.Type, facts.Groups, limit)
+	ids, more, err := store.ObjectsWith(ctx, s.db, orgID, req.Subject.Type,
+		req.Subject.ID, relations, req.Resource.Type, facts.Groups, limit, after)
 	if err != nil {
 		s.log.Error("searching resources", "err", err)
 		authzError(w, http.StatusInternalServerError, "the search could not be run")
 		return
 	}
 	items := make([]authzen.Item, 0, len(ids))
+	last := ""
 	for _, id := range ids {
 		items = append(items, authzen.Item{Type: req.Resource.Type, ID: id})
+		last = id
 	}
 	echoRequestID(w, r)
 	writeJSONResponse(w, http.StatusOK, authzen.SearchResponse{
 		Results: items,
-		Page:    &authzen.PageResponse{Count: len(items)},
+		Page:    pageResponse(items, more, last),
 	})
 }
 
@@ -347,25 +353,28 @@ func (s *Server) handleAuthzSearchSubject(w http.ResponseWriter, r *http.Request
 		writeJSONResponse(w, http.StatusOK, authzen.SearchResponse{Results: []authzen.Item{}})
 		return
 	}
-	limit := 0
-	if req.Page != nil {
-		limit = req.Page.Limit
+	limit, after, perr := pageOf(req)
+	if perr != nil {
+		authzError(w, http.StatusBadRequest, perr.Error())
+		return
 	}
-	ids, err := store.SubjectsWith(ctx, s.db, orgID, relations,
-		req.Resource.Type, req.Resource.ID, limit)
+	ids, more, err := store.SubjectsWith(ctx, s.db, orgID, relations,
+		req.Resource.Type, req.Resource.ID, limit, after)
 	if err != nil {
 		s.log.Error("searching subjects", "err", err)
 		authzError(w, http.StatusInternalServerError, "the search could not be run")
 		return
 	}
 	items := make([]authzen.Item, 0, len(ids))
+	last := ""
 	for _, id := range ids {
 		items = append(items, authzen.Item{Type: "user", ID: id})
+		last = id
 	}
 	echoRequestID(w, r)
 	writeJSONResponse(w, http.StatusOK, authzen.SearchResponse{
 		Results: items,
-		Page:    &authzen.PageResponse{Count: len(items)},
+		Page:    pageResponse(items, more, last),
 	})
 }
 
@@ -431,6 +440,48 @@ func (s *Server) handleAuthzSearchAction(w http.ResponseWriter, r *http.Request)
 		Results: items,
 		Page:    &authzen.PageResponse{Count: len(items)},
 	})
+}
+
+// pageOf reads the request's page object.
+//
+// The token IS the last id of the previous page, base64url so it is opaque to
+// the caller as §8.2 requires ("an opaque string value"). Opaque matters: a
+// caller that can construct a token by hand can walk somebody else's result set
+// from the middle.
+func pageOf(req authzen.SearchRequest) (limit int, after string, err error) {
+	if req.Page == nil {
+		return 0, "", nil
+	}
+	limit = req.Page.Limit
+	if limit < 0 {
+		return 0, "", fmt.Errorf("page.limit must not be negative")
+	}
+	if req.Page.Token == "" {
+		return limit, "", nil
+	}
+	raw, derr := base64.RawURLEncoding.DecodeString(req.Page.Token)
+	if derr != nil {
+		return 0, "", fmt.Errorf("page.token is not a token this PDP issued")
+	}
+	return limit, string(raw), nil
+}
+
+// pageResponse builds the page object the specification requires.
+//
+// §8.2.2: "Any Search API Response MAY include a page object, but if a response
+// does not contain the entire result set, it MUST include this object", and
+// next_token is REQUIRED within it, empty when there are no more results.
+//
+// The first version returned only a count and truncated silently at 1000. A
+// caller with 1001 accessible documents was told about 1000 and had no way to
+// know -- which for an authorization search is worse than an error, because the
+// answer looks complete.
+func pageResponse(items []authzen.Item, more bool, lastID string) *authzen.PageResponse {
+	p := &authzen.PageResponse{Count: len(items)}
+	if more && lastID != "" {
+		p.NextToken = base64.RawURLEncoding.EncodeToString([]byte(lastID))
+	}
+	return p
 }
 
 // factsFor is the shared subject lookup for the search endpoints.
@@ -582,4 +633,41 @@ func (s *Server) authzCaller(w http.ResponseWriter, r *http.Request) (string, bo
 		return "", false
 	}
 	return orgID, true
+}
+
+// handleAuthzMetadata publishes the Policy Decision Point metadata document.
+//
+//	GET /.well-known/authzen-configuration
+//
+// Section 9. RECOMMENDED rather than required, but it is how a policy
+// enforcement point discovers which of the five APIs this PDP actually answers
+// -- and the specification is explicit that "the absence of any of these
+// parameters is sufficient for the PEP to determine that the PDP is not
+// capable". Without the document a PEP has to try each endpoint and infer
+// capability from a 404, which is guessing.
+//
+// `policy_decision_point` is REQUIRED and exists to prevent **PDP mix-up
+// attacks**: a PEP that fetched metadata from one place and sent decisions to
+// another would be asking the wrong system whether to permit an action. The
+// value returned MUST be identical to the identifier the well-known URI was
+// derived from (§9.2.3), which is why it is built from the configured issuer
+// rather than from the request's Host header -- a Host an attacker controls is
+// exactly how a mix-up starts.
+func (s *Server) handleAuthzMetadata(w http.ResponseWriter, r *http.Request) {
+	base := strings.TrimRight(s.cfg.Issuer, "/")
+	w.Header().Set("Content-Type", "application/json")
+	// Cacheable: it changes when the deployment is reconfigured, not per
+	// request, and a PEP re-fetching it on every decision would put us on its
+	// critical path twice.
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"policy_decision_point":      base,
+		"access_evaluation_endpoint": base + "/access/v1/evaluation",
+		// The rest are OPTIONAL, and their presence is the capability
+		// declaration. We answer all of them, so all of them are listed.
+		"access_evaluations_endpoint": base + "/access/v1/evaluations",
+		"search_subject_endpoint":     base + "/access/v1/search/subject",
+		"search_action_endpoint":      base + "/access/v1/search/action",
+		"search_resource_endpoint":    base + "/access/v1/search/resource",
+	})
 }

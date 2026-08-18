@@ -106,11 +106,11 @@ func HoldsAny(ctx context.Context, q Querier, orgID, subjectType, subjectID stri
 // ObjectsWith returns the objects of a type on which the subject holds any of
 // these relations. For the resource-search endpoint.
 func ObjectsWith(ctx context.Context, q Querier, orgID, subjectType, subjectID string,
-	relations []string, objectType string, viaGroups []string, limit int) (
-	[]string, error) {
+	relations []string, objectType string, viaGroups []string, limit int,
+	after string) ([]string, bool, error) {
 
 	if len(relations) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
@@ -122,6 +122,15 @@ func ObjectsWith(ctx context.Context, q Querier, orgID, subjectType, subjectID s
 		ids = append(ids, g)
 	}
 
+	// One MORE than asked for. That extra row is how we know whether a further
+	// page exists -- without it we would have to guess, and guessing wrong
+	// means either a `next_token` that leads to an empty page or, far worse, a
+	// silently truncated result the caller believes is complete.
+	//
+	// `after` is the last id of the previous page. Keyset pagination rather
+	// than OFFSET: OFFSET re-reads and re-sorts everything skipped, so the last
+	// page of a large set costs the most, and a row inserted mid-walk shifts
+	// every subsequent page.
 	rows, err := q.Query(ctx, `
 		SELECT DISTINCT r.object_id
 		  FROM core.relations r
@@ -130,21 +139,28 @@ func ObjectsWith(ctx context.Context, q Querier, orgID, subjectType, subjectID s
 		 WHERE r.org_id = $1::uuid AND r.relation = ANY ($4::text[])
 		   AND r.object_type = $5
 		   AND (r.expires_at IS NULL OR r.expires_at > now())
+		   AND ($7 = '' OR r.object_id > $7)
 		 ORDER BY r.object_id
-		 LIMIT $6`, orgID, types, ids, relations, objectType, limit)
+		 LIMIT $6`, orgID, types, ids, relations, objectType, limit+1, after)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, id)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(out) > limit {
+		return out[:limit], true, nil
+	}
+	return out, false, nil
 }
 
 // SubjectsWith returns the subjects holding any of these relations on an
@@ -153,10 +169,10 @@ func ObjectsWith(ctx context.Context, q Querier, orgID, subjectType, subjectID s
 // Groups are expanded to their members, because "who can edit this document" is
 // asked about people. Answering `group:finance` would be true and useless.
 func SubjectsWith(ctx context.Context, q Querier, orgID string, relations []string,
-	objectType, objectID string, limit int) ([]string, error) {
+	objectType, objectID string, limit int, after string) ([]string, bool, error) {
 
 	if len(relations) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
@@ -178,20 +194,28 @@ func SubjectsWith(ctx context.Context, q Querier, orgID string, relations []stri
 			  JOIN core.group_members m ON m.group_id = g.id
 			 WHERE d.subject_type = 'group'
 		) all_subjects
-		 ORDER BY sid LIMIT $5`, orgID, relations, objectType, objectID, limit)
+		 WHERE ($6 = '' OR sid > $6)
+		 ORDER BY sid LIMIT $5`,
+		orgID, relations, objectType, objectID, limit+1, after)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, id)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(out) > limit {
+		return out[:limit], true, nil
+	}
+	return out, false, nil
 }
 
 // SaveModel stores and compiles an organisation's authorization model.

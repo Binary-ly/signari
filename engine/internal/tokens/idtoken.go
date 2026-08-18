@@ -18,8 +18,22 @@ import (
 //
 // Asserting `typ` on every inbound token is what stops one token class being
 // accepted where another is expected -- a logout token presented as an access
-// token, for instance. RFC 9068 mandates at+jwt for JWT access tokens, and the
-// back-channel logout spec mandates logout+jwt.
+// token, for instance.
+//
+// The two specifications differ in how hard they insist, and the difference is
+// worth keeping straight rather than flattening into "both mandate it":
+//
+//	RFC 9068 §2.1  "JWT access tokens MUST include this media type in the `typ`
+//	               header parameter" -- a MUST, and the reason resource servers
+//	               may reject anything else.
+//	OpenID Connect Back-Channel Logout 1.0 §2.4  "It is RECOMMENDED that Logout
+//	               Tokens be explicitly typed... with a value of logout+jwt" --
+//	               only a RECOMMENDED.
+//
+// We set it on both, because being stricter about what we EMIT costs nothing.
+// The distinction matters for what we would ACCEPT: a conformant OP may send a
+// logout token with no `typ` at all, so anything validating an inbound one must
+// not treat its absence as a protocol violation.
 const (
 	TypIDToken     = "JWT"
 	TypAccessToken = "at+jwt"

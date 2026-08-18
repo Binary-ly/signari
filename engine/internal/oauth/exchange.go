@@ -70,8 +70,28 @@ func splitScope(s string) []string {
 // `subjectScopes` and `subjectAudience` come from the VERIFIED subject token --
 // never from the request. Taking them from the request would let a caller
 // describe its own token as anything it liked, which is the whole attack.
+// ValidateExchange applies the exchange rules.
+//
+// It does NOT take the subject token's own client. That was a parameter here,
+// threaded through from the call site and assigned to the blank identifier --
+// which reads like a check that exists. It does not, and the omission is
+// deliberate: RFC 8693's canonical flow is a resource server exchanging a token
+// it was legitimately given, so the subject token having been issued to someone
+// else is the normal case rather than a red flag.
+//
+// What bounds the exchange instead is stated in RFC 8693 §5: "The use of the
+// `scope` claim (in addition to other typical constraints such as a limited
+// token lifetime) is suggested to mitigate potential for such abuse." That is
+// the scope ceiling below, plus the per-client audience allow-list.
+//
+// The specification's own mechanism for "who may act for whom" is the `may_act`
+// claim (§4.4), which is a MAY: "can be used by the authorization server to
+// determine whether the client ... is authorized to engage in the requested
+// delegation". We gate per client rather than per subject token, which is
+// coarser and always on. If may_act is implemented later it belongs beside the
+// actor-token branch, not here.
 func ValidateExchange(req ExchangeRequest, mayExchange bool, allowedAudiences []string,
-	subjectClientID, callerClientID string, subjectScopes []string) (granted []string, aud []string, e *TokenError) {
+	callerClientID string, subjectScopes []string) (granted []string, aud []string, e *TokenError) {
 
 	if !mayExchange {
 		// Off by default. A client that was never granted exchange must not be
@@ -97,6 +117,42 @@ func ValidateExchange(req ExchangeRequest, mayExchange bool, allowedAudiences []
 		req.RequestedTokenType != TokenTypeAccess && req.RequestedTokenType != TokenTypeJWT {
 		return nil, nil, tokenErr("invalid_request",
 			fmt.Sprintf("requested_token_type %q is not supported", req.RequestedTokenType))
+	}
+
+	// The actor token, refused rather than ignored.
+	//
+	// RFC 8693 §2.1 is a MUST on the server: "In processing the request, the
+	// authorization server MUST perform the appropriate validation procedures
+	// for the indicated token type and, if the actor token is present, also
+	// perform the appropriate validation procedures for its indicated token
+	// type."
+	//
+	// These two parameters were parsed into ExchangeRequest and then read by
+	// nothing. A client sending an actor_token is asserting "this specific party
+	// is doing the acting" -- and received a token whose `act` chain named only
+	// the calling client, with a 200 and no indication that the assertion was
+	// dropped. Same shape as the PKCE downgrade: the caller believes a binding
+	// is in force, the server never applies it, and the response says nothing.
+	//
+	// Not supporting delegated actors is a legitimate position; proceeding as
+	// though the parameter had not been sent is not. When it is implemented,
+	// this branch is where the validation goes.
+	if req.ActorToken != "" {
+		if req.ActorTokenType == "" {
+			// §2.1: actor_token_type "is REQUIRED when the actor_token parameter
+			// is present in the request".
+			return nil, nil, tokenErr("invalid_request",
+				"actor_token_type is required when actor_token is present")
+		}
+		return nil, nil, tokenErr("invalid_request",
+			"actor_token is not supported by this authorization server; the "+
+				"exchanged token records the calling client as the actor, so "+
+				"sending one would assert a delegation that is not applied")
+	}
+	if req.ActorTokenType != "" {
+		// §2.1: actor_token_type "MUST NOT be included otherwise".
+		return nil, nil, tokenErr("invalid_request",
+			"actor_token_type must not be sent without actor_token")
 	}
 
 	// THE SCOPE CEILING.
@@ -150,6 +206,5 @@ func ValidateExchange(req ExchangeRequest, mayExchange bool, allowedAudiences []
 		}
 	}
 
-	_ = subjectClientID
 	return granted, aud, nil
 }

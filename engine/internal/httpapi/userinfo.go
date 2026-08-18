@@ -19,8 +19,13 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		// both, and a challenge with no authentication attempted carries no
 		// error code (RFC 6750 §3.1). `algs` tells a client which signature
 		// algorithms a proof may use before it constructs one.
+		// RFC 9728 §5.1: the 401 names where to find this resource's metadata,
+		// which is how a client that was never configured for us discovers
+		// which authorization server to use. It is the first step of MCP's
+		// discovery flow.
 		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="signari", DPoP realm="signari", algs="`+dpop.SupportedAlgs()+`"`)
+			`Bearer realm="signari", `+s.resourceMetadataChallenge()+
+				`, DPoP realm="signari", algs="`+dpop.SupportedAlgs()+`"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -30,7 +35,8 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		// Logged with the reason, returned without it.
 		s.log.Info("userinfo token rejected", "err", err)
 		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="signari", error="invalid_token", error_description="The access token is invalid"`)
+			`Bearer realm="signari", `+s.resourceMetadataChallenge()+
+				`, error="invalid_token", error_description="The access token is invalid"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

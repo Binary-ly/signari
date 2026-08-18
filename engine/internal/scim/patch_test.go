@@ -139,17 +139,78 @@ func TestUnmentionedAttributesStayUnmentioned(t *testing.T) {
 	}
 }
 
-// TestFilteredPathIsReportedNotDropped keeps a path we cannot honour visible.
-func TestFilteredPathIsReportedNotDropped(t *testing.T) {
+func TestAFilteredEmailPathIsApplied(t *testing.T) {
 	var req PatchRequest
 	_ = json.Unmarshal([]byte(
 		`{"Operations":[{"op":"replace","path":"emails[type eq \"work\"].value","value":"w@x.test"}]}`), &req)
 	got, err := ApplyUserPatch(req)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("a filtered email path was refused: %v", err)
+	}
+	if got.Email == nil || *got.Email != "w@x.test" {
+		t.Fatalf("Email = %v; the change was not applied", got.Email)
+	}
+	if len(got.Unsupported) != 0 {
+		t.Errorf("still recorded as unsupported: %v", got.Unsupported)
+	}
+}
+
+// `primary eq true` selects the address we store just as `type eq "work"` does,
+// and so does the conjunction of the two. The filter is evaluated against the
+// record we would store rather than pattern-matched, which is why combinations
+// work without being enumerated.
+func TestTheFilterIsEvaluatedNotPatternMatched(t *testing.T) {
+	for _, path := range []string{
+		`emails[primary eq true].value`,
+		`emails[type eq "work" and primary eq true].value`,
+		`emails[type eq "WORK"].value`,
+		`emails[type sw "wor"].value`,
+		`emails[primary pr].value`,
+	} {
+		var req PatchRequest
+		body := `{"Operations":[{"op":"replace","path":` + mustJSON(t, path) +
+			`,"value":"w@x.test"}]}`
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ApplyUserPatch(req)
+		if err != nil {
+			t.Errorf("%s: %v", path, err)
+			continue
+		}
+		if got.Email == nil {
+			t.Errorf("%s: not applied", path)
+		}
+	}
+}
+
+// A filter selecting an address we do not keep is REFUSED, not recorded.
+//
+// Applying it would overwrite the primary with a home address; recording it
+// would drop a change the upstream believes it made. Refusing is the only one of
+// the three that gets retried.
+func TestAFilterSelectingAnAddressWeDoNotStoreIsRefused(t *testing.T) {
+	var req PatchRequest
+	_ = json.Unmarshal([]byte(
+		`{"Operations":[{"op":"replace","path":"emails[type eq \"home\"].value","value":"h@x.test"}]}`), &req)
+	if _, err := ApplyUserPatch(req); err == nil {
+		t.Fatal("a home address was accepted; it would have overwritten the primary")
+	}
+}
+
+// A path for an attribute this server does not store at all stays reported
+// rather than refused: the same operation may have changed something we DID
+// apply, and failing the request would block the sync over an unused attribute.
+func TestAnAttributeWeDoNotStoreIsStillReported(t *testing.T) {
+	var req PatchRequest
+	_ = json.Unmarshal([]byte(
+		`{"Operations":[{"op":"replace","path":"phoneNumbers[type eq \"work\"].value","value":"+1"}]}`), &req)
+	got, err := ApplyUserPatch(req)
+	if err != nil {
+		t.Fatalf("refused an attribute we simply do not keep: %v", err)
 	}
 	if len(got.Unsupported) == 0 {
-		t.Fatal("a path we do not act on was dropped without a word")
+		t.Fatal("dropped without a word")
 	}
 }
 

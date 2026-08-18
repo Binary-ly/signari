@@ -3,7 +3,6 @@ package scim
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 )
 
@@ -25,8 +24,47 @@ type GroupPatch struct {
 	Unsupported []string
 }
 
-var memberFilterPath = regexp.MustCompile(
-	`(?i)^members\[\s*value\s+eq\s+"([^"]+)"\s*\](?:\.[A-Za-z]+)?$`)
+func memberIDFromPath(path string) (string, error) {
+	p, err := ParsePath(path)
+	if err != nil {
+		return "", err
+	}
+	if p.Attr != "members" || p.Filter == nil {
+		return "", nil
+	}
+	if p.Sub != "" && p.Sub != "value" {
+		return "", fmt.Errorf("a member filter may only be followed by .value, got %q", p.Sub)
+	}
+	// The filter is a predicate, so it is asked about a candidate rather than
+	// pattern-matched. A member element carries `value`, and a filter that
+	// selects on anything else identifies nobody this server can look up.
+	id := memberValueSelectedBy(p.Filter)
+	if id == "" {
+		return "", fmt.Errorf("cannot tell which member %q names; only a filter on "+
+			"`value` identifies one", path)
+	}
+	return id, nil
+}
+
+// memberValueSelectedBy extracts the id an equality filter on `value` selects.
+//
+// Only `value eq "…"` identifies a member. Anything else — a filter on
+// `display`, a range, a negation — describes a set this server cannot enumerate,
+// and guessing would remove the wrong person.
+func memberValueSelectedBy(f *Filter) string {
+	if f == nil || f.Op != "eq" || f.Attr != "value" {
+		if f != nil && f.Op == "and" {
+			// `value eq "x" and type eq "User"` is a conjunction Entra sends.
+			if id := memberValueSelectedBy(f.Left); id != "" {
+				return id
+			}
+			return memberValueSelectedBy(f.Right)
+		}
+		return ""
+	}
+	s, _ := f.Value.(string)
+	return s
+}
 
 // ApplyGroupPatch reads a PATCH body into the changes it implies.
 func ApplyGroupPatch(req PatchRequest) (*GroupPatch, error) {
@@ -99,8 +137,10 @@ func groupAssign(out *GroupPatch, verb, path string, raw json.RawMessage) error 
 
 	// A filtered member path on add/replace. Rare, but Entra emits
 	// `replace` with `members[value eq "x"]` when re-asserting one membership.
-	if m := memberFilterPath.FindStringSubmatch(path); m != nil {
-		out.AddMembers = append(out.AddMembers, m[1])
+	if id, perr := memberIDFromPath(path); perr != nil {
+		return perr
+	} else if id != "" {
+		out.AddMembers = append(out.AddMembers, id)
 		return nil
 	}
 
@@ -113,8 +153,12 @@ func groupRemove(out *GroupPatch, path string, raw json.RawMessage) error {
 		return fmt.Errorf("remove with no path: there is nothing to remove")
 	}
 
-	if m := memberFilterPath.FindStringSubmatch(path); m != nil {
-		out.RemoveMembers = append(out.RemoveMembers, m[1])
+	id, perr := memberIDFromPath(path)
+	if perr != nil {
+		return perr
+	}
+	if id != "" {
+		out.RemoveMembers = append(out.RemoveMembers, id)
 		return nil
 	}
 

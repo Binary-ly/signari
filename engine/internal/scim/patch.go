@@ -152,11 +152,60 @@ func assignOne(out *UserPatch, path string, raw json.RawMessage) error {
 		out.Email = &s
 
 	default:
-		// A filtered path such as emails[type eq "work"].value. Recognised as a
-		// path, not acted on, and reported rather than dropped.
-		out.Unsupported = append(out.Unsupported, path)
+		return assignFiltered(out, path, raw)
 	}
 	return nil
+}
+
+func assignFiltered(out *UserPatch, path string, raw json.RawMessage) error {
+	p, err := ParsePath(path)
+	if err != nil {
+		// An unparseable path is NOT recorded as unsupported. We cannot say what
+		// it asked for, so we cannot say it was irrelevant either.
+		return fmt.Errorf("path %q: %w", path, err)
+	}
+	if p.Filter == nil || p.Attr != "emails" {
+		// A path we simply do not store — `phoneNumbers`, `addresses`, an
+		// extension attribute. Recorded rather than refused: the same operation
+		// may have changed something we DID apply, and failing the whole request
+		// would block a sync over an attribute nobody here uses.
+		out.Unsupported = append(out.Unsupported, path)
+		return nil
+	}
+
+	// One email is stored, and it is the primary one. A filter selecting the
+	// primary or work address is therefore addressing the value we keep.
+	if p.Sub != "" && p.Sub != "value" {
+		out.Unsupported = append(out.Unsupported, path)
+		return nil
+	}
+	if !selectsStoredEmail(p.Filter) {
+		// The filter names an address we do not keep — `type eq "home"` when the
+		// stored value is the primary. Refused rather than recorded, because
+		// applying it would overwrite the primary with a home address and
+		// recording it would drop a change the upstream believes it made.
+		// Neither is silent; this one at least gets retried.
+		return fmt.Errorf("path %q selects an email address this server does not "+
+			"store separately: only the primary address is kept, so a change to "+
+			"another one cannot be represented", path)
+	}
+	s, err := parseEmailValue(raw)
+	if err != nil {
+		return err
+	}
+	out.Email = &s
+	return nil
+}
+
+// selectsStoredEmail reports whether a filter picks the address we keep.
+//
+// Evaluated by running the filter against the record we would store, rather than
+// by pattern-matching the filter's text. A filter is a predicate; asking it
+// about the actual value is what it is for, and it makes `primary eq true and
+// type eq "work"` work without enumerating the combinations.
+func selectsStoredEmail(f *Filter) bool {
+	stored := map[string]any{"primary": true, "type": "work"}
+	return f.Matches(stored)
 }
 
 func applyRemove(out *UserPatch, op PatchOp) error {

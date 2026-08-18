@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"sort"
 	"strings"
 )
@@ -61,6 +62,11 @@ const TypSDJWTVC = "dc+sd-jwt"
 // indistinguishable until somebody changes the algorithm.
 const AlgSHA256 = "sha-256"
 
+var RedList = map[string]bool{
+	"iss": true, "iat": true, "nbf": true, "exp": true,
+	"cnf": true, "vct": true, "status": true,
+}
+
 // Disclosure is one selectively disclosable claim.
 type Disclosure struct {
 	// Salt is base64url of 128 bits of random data, unique per claim (§4.2.1).
@@ -85,6 +91,11 @@ func (d Disclosure) Digest() string { return DigestOf(d.Encoded) }
 
 // NewDisclosure builds a disclosure for one object property.
 func NewDisclosure(name string, value any) (Disclosure, error) {
+	if RedList[name] {
+		return Disclosure{}, fmt.Errorf("%q cannot be selectively disclosed: "+
+			"section 3.2.2.2 requires it in the SD-JWT itself, because a verifier "+
+			"that cannot see it cannot evaluate the credential at all", name)
+	}
 	if name == "_sd" || name == "..." {
 		// §4.2.1: the claim name "MUST NOT be _sd, ..., or a claim name existing
 		// in the object as a permanently disclosed claim". The first two are
@@ -165,6 +176,24 @@ func Payload(always map[string]any, selective map[string]any) (map[string]any, [
 		digests = append(digests, d.Digest())
 	}
 
+	// §4.2.5: decoy digests, "to make it more difficult for an adversarial
+	// Verifier to see the original number of claims". Without them, len(_sd) is
+	// exactly how many claims the holder is withholding — so a verifier presented
+	// with two disclosures out of five learns that three were held back, and can
+	// press for them.
+	//
+	// "It is RECOMMENDED to create the decoy digests by hashing over a
+	// cryptographically secure random number", which is what newDecoy does. No
+	// disclosure is sent for them, so the holder simply sees digests they cannot
+	// open — as the specification says they will.
+	for i := 0; i < decoyCount(len(digests)); i++ {
+		d, err := newDecoy()
+		if err != nil {
+			return nil, nil, err
+		}
+		digests = append(digests, d)
+	}
+
 	if len(digests) > 0 {
 		// §4.2.4.1: "The Issuer MUST hide the original order of the claims in the
 		// array." Sorting the DIGESTS does that -- they are hashes, so their order
@@ -174,6 +203,37 @@ func Payload(always map[string]any, selective map[string]any) (map[string]any, [
 		out["_sd_alg"] = AlgSHA256
 	}
 	return out, ds, nil
+}
+
+// decoyCount decides how many decoys to add for a given number of real claims.
+//
+// A random count in a band that scales with the real one. A FIXED number would
+// be worse than none: a verifier who knows the issuer always adds three simply
+// subtracts three. The count varying per credential is what makes the total
+// uninformative.
+func decoyCount(real int) int {
+	if real == 0 {
+		return 0
+	}
+	max := real/2 + 2
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max+1)))
+	if err != nil {
+		// Falling back to a fixed count rather than failing issuance: a
+		// credential with predictable padding is still better than no credential,
+		// and this only happens if the system entropy source is broken.
+		return 1
+	}
+	return int(n.Int64())
+}
+
+// newDecoy returns a digest that opens to nothing.
+func newDecoy() (string, error) {
+	b := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return "", fmt.Errorf("generating a decoy digest: %w", err)
+	}
+	sum := sha256.Sum256(b)
+	return base64.RawURLEncoding.EncodeToString(sum[:]), nil
 }
 
 // Combine assembles the issuance serialisation: JWT ~ disclosure ~ ... ~

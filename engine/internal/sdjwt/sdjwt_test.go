@@ -57,8 +57,10 @@ func TestDisclosureDigestsMatchThePayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	sd, ok := payload["_sd"].([]string)
-	if !ok || len(sd) != 3 {
-		t.Fatalf("_sd = %v, want three digests", payload["_sd"])
+	// At LEAST three: §4.2.5 decoy digests pad the array, and asserting an exact
+	// length here would make the privacy feature look like a bug.
+	if !ok || len(sd) < 3 {
+		t.Fatalf("_sd = %v, want at least the three real digests", payload["_sd"])
 	}
 	if payload["_sd_alg"] != AlgSHA256 {
 		t.Errorf("_sd_alg = %v", payload["_sd_alg"])
@@ -226,4 +228,81 @@ func TestIssuanceAndVerificationAgreeOnTheDigest(t *testing.T) {
 	if d.Digest() != DigestOf(encoded) {
 		t.Fatal("the issuance path and the verifier helper disagree")
 	}
+}
+
+func TestFrameClaimsCannotBeSelectivelyDisclosed(t *testing.T) {
+	for _, name := range []string{"iss", "iat", "nbf", "exp", "cnf", "vct", "status"} {
+		if _, err := NewDisclosure(name, "x"); err == nil {
+			t.Errorf("%q was accepted as selectively disclosable", name)
+		}
+		if _, _, err := Payload(nil, map[string]any{name: "x"}); err == nil {
+			t.Errorf("Payload accepted %q as selectively disclosable", name)
+		}
+	}
+}
+
+// §4.2.5: decoy digests hide how many claims are being withheld.
+//
+// Without them `len(_sd)` is exactly the number of claims in the credential, so
+// a verifier holding two disclosures out of five learns three were held back and
+// can press for them. The count must also VARY: a fixed number of decoys is
+// worse than none, because a verifier who knows the issuer always adds three
+// simply subtracts three.
+func TestDecoyDigestsPadAndVary(t *testing.T) {
+	const claims = 4
+	sel := map[string]any{"a": 1, "b": 2, "c": 3, "d": 4}
+
+	seen := map[int]bool{}
+	for i := 0; i < 40; i++ {
+		payload, ds, err := Payload(nil, sel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ds) != claims {
+			t.Fatalf("got %d disclosures, want %d — decoys must not become "+
+				"disclosures, or the holder could open them", len(ds), claims)
+		}
+		sd := payload["_sd"].([]string)
+		if len(sd) < claims {
+			t.Fatalf("_sd has %d digests for %d claims", len(sd), claims)
+		}
+		seen[len(sd)] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("_sd length was always %v across 40 credentials; a fixed amount "+
+			"of padding is subtracted as easily as none", seen)
+	}
+}
+
+// A decoy must not be openable: no disclosure corresponds to it, which is what
+// §4.2.5 says the holder will see.
+func TestDecoysHaveNoDisclosure(t *testing.T) {
+	payload, ds, err := Payload(nil, map[string]any{"a": 1, "b": 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := map[string]bool{}
+	for _, d := range ds {
+		real[d.Digest()] = true
+	}
+	decoys := 0
+	for _, digest := range payload["_sd"].([]string) {
+		if !real[digest] {
+			decoys++
+		}
+	}
+	// Every real disclosure must still be present; the extras are the decoys.
+	for _, d := range ds {
+		found := false
+		for _, digest := range payload["_sd"].([]string) {
+			if digest == d.Digest() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("the disclosure for %q is not in _sd", d.Name)
+		}
+	}
+	t.Logf("%d decoy digests alongside %d real claims", decoys, len(ds))
 }

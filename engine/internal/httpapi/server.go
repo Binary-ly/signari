@@ -61,6 +61,11 @@ type Server struct {
 	// the binding constraint, which let one address lock out every device in
 	// the deployment.
 	device *bucket
+	// originsCache is the set of web origins from registered redirect URIs,
+	// used to answer CORS preflights. See cors.go.
+	originsMu     sync.Mutex
+	originsCache  []string
+	originsExpire time.Time
 	// register throttles dynamic client registration, which is open to anybody
 	// and writes rows. Its own bucket: it shared `device` until widening the
 	// device backstop would have silently widened this too.
@@ -149,14 +154,14 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// evaluation. Rate limiting in FRONT of the hash is what keeps a flood
 		// from turning into memory exhaustion, independent of the semaphore.
 		// An overload guard, not the security limit: see allowSignInAttempt.
-		login:     newBucket(50, 100),
+		login: newBucket(50, 100),
 		// A backstop against a distributed attempt, not the primary limit --
 		// that is per-address in handleDeviceVerification. At 3/s this bucket
 		// was the primary limit by accident, and one address could hold it
 		// empty and lock out every legitimate device in the deployment.
 		device: newBucket(200, 400),
 		// Registration keeps the original tight rate.
-		register: newBucket(3, 10),
+		register:  newBucket(3, 10),
 		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
 		pwPolicy:  passwords.PolicyFromEnv(),
 		policies:  newPolicyCache(),
@@ -208,7 +213,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 // wrapper is not optional -- a route reachable without an id would be the one
 // nobody can trace.
 func (s *Server) Routes() http.Handler {
-	return s.withCorrelation(s.mux())
+	return s.withCorrelation(s.withCORS(s.mux()))
 }
 
 func (s *Server) mux() *http.ServeMux {

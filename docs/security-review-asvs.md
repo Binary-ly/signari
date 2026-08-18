@@ -154,3 +154,27 @@ would reintroduce the attack through the parameter meant to prevent it.
 
 Neither is a defect. Both are recorded because "not met at L3" and "not met" read
 identically in a table that does not say which.
+
+
+---
+
+# Currency check, August 2026
+
+ASVS 5.0.0 (30 May 2025) is still the **current stable release**. Verified rather
+than assumed: the OWASP/ASVS repository carries a release tagged `latest`
+published **28 July 2026**, which is newer than 5.0.0 and easy to mistake for a
+successor. It is not one — it is an automatically regenerated *bleeding edge*
+build from `master`, and its own release notes say so:
+
+> "This bleeding-edge version represents the most current state of the ASVS
+> documentation and should be used for testing and preview purposes only. For
+> production use, please refer to the stable releases (The latest stable release
+> is v5.0.0)."
+
+Downloading its CSV and diffing against the 5.0.0 CSV this review was written
+against gives **zero differing lines**. V10 "OAuth and OIDC" still has exactly 36
+requirements, unchanged.
+
+So this review is current, and the check cost one download. Worth repeating
+before trusting it again — the failure mode being guarded against is a review
+that was accurate when written and quietly stops being so.

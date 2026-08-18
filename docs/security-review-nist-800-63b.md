@@ -104,3 +104,14 @@ One MUST-level defect from a stale revision, one SHOULD implemented and then
 implemented properly, and eleven requirements that were already right — including
 the two SHALL NOTs (composition rules, periodic rotation) that most password
 policies violate by default.
+
+
+---
+
+
+**Revision 4 is final** and remains the current revision — `pages.nist.gov/800-63-4`
+describes it as "the final version of SP 800-63, Revision 4". This review is
+against the right document.
+
+
+Full evidence, including the commands, is in `security-review-defaults.md`.

@@ -257,7 +257,30 @@ type ListResponse struct {
 // userName can change, and deleting whatever currently answers to a name is how
 // the wrong account gets removed.
 func (c *Client) FindByUserName(ctx context.Context, userName string) (*User, error) {
-	filter := url.Values{"filter": {fmt.Sprintf("userName eq %q", userName)}}
+	// The comparison value is a JSON string, not a Go one.
+	//
+	// RFC 7644 §3.4.2.2, of the filter grammar: "the `compValue` (comparison
+	// value) rule is built on JSON Data Interchange format ABNF rules as
+	// specified in [RFC7159]".
+	//
+	// This was fmt.Sprintf("userName eq %q", userName). Go's %q agrees with JSON
+	// on the cases that matter for injection -- a quote becomes \" and a
+	// backslash \\ either way, so a crafted userName could never break out of
+	// the literal -- but it diverges on control characters, emitting Go escapes
+	// that JSON does not define:
+	//
+	//	input          %q            JSON
+	//	"bell\aname"    "bell\aname"   "bell\u0007name"
+	//	"ctrl\x01name"  "ctrl\x01name" "ctrl\u0001name"
+	//
+	// A userName carrying one of those produced a filter the target is right to
+	// reject, and the failure would look like the target misbehaving. Marshalling
+	// the string is both shorter and exactly what the grammar asks for.
+	quoted, err := json.Marshal(userName)
+	if err != nil {
+		return nil, fmt.Errorf("encoding the userName filter: %w", err)
+	}
+	filter := url.Values{"filter": {"userName eq " + string(quoted)}}
 	var list ListResponse
 	if err := c.do(ctx, http.MethodGet, "/Users?"+filter.Encode(), nil, &list); err != nil {
 		return nil, err

@@ -254,9 +254,79 @@ Recorded because the lesson generalises: a rule about choosing between
 alternatives cannot be tested by a fixture that offers one alternative, and a
 test suite full of passing tests said nothing about it.
 
+## Automatic Registration (§12.1)
+
+`oidfed.Register` turns a resolved chain into a usable client. An RP in the same
+federation uses this OP with **no prior registration step**: its Entity
+Identifier is its `client_id`, and everything the OP needs — redirect URIs, keys,
+scopes — comes from metadata resolved through a Trust Chain rather than from a
+registration request.
+
+This is the feature that makes the rest of the federation work pay off for an
+OpenID Provider.
+
+### The chain is not the whole story
+
+A resolved chain establishes **who** an entity is. It does not establish that the
+party sending this particular request **is** that entity — anybody can read a
+public Entity Configuration and put its identifier in a `client_id`.
+
+§12.1 is explicit about the missing half:
+
+> Since there is no registration step prior to the Authentication Request,
+> asymmetric cryptography MUST be used to authenticate requests... the OP neither
+> assigns a Client Secret to the RP nor returns it.
+
+> Authentication requests MUST demonstrate that the requesting Entity controls
+> the Entity's RP keys... Attempted authentication requests that do not do so
+> MUST be rejected.
+
+So `RegisteredClient` carries the RP's published `jwks` out, and there is no path
+that produces a client without them. An RP publishing no keys is **refused**
+rather than admitted as a client anybody could impersonate by knowing its public
+identifier.
+
+### Metadata policy: refused, not ignored
+
+A superior can constrain a subordinate's metadata with `metadata_policy` — which
+redirect URIs are permitted, which scopes, which algorithms. §6.1.4:
+
+> If a policy error or another error is encountered during the metadata policy
+> resolution or its application, the Trust Chain MUST be considered invalid.
+
+Applying policy operators (§6.1.3) is not implemented. The tempting shortcut is
+to resolve the chain and use the leaf's own metadata anyway — which does not
+produce a slightly-wrong client, it produces **the client the RP asked for rather
+than the one its federation permits**. A superior restricting an RP to
+`https://approved.example/cb` would be silently overruled by the RP's own
+`redirect_uris`.
+
+So a chain carrying `metadata_policy` or `metadata_policy_crit` on any
+Subordinate Statement is refused, with an error saying why. Fail closed, and say
+so — the same choice made everywhere in this codebase that a control cannot be
+applied.
+
+| Mutation | Test that caught it |
+|---|---|
+| Silently ignore `metadata_policy` | `TestAChainCarryingAMetadataPolicyIsRefused` |
+| Admit an RP with no published keys | `TestAnRPWithNoKeysIsRefused` |
+
+Also refused: an entity that resolves but publishes no `openid_relying_party`
+metadata (being in the federation is not the same as being a relying party), an
+RP with no `redirect_uris` (inventing one builds an open redirector), and a
+`client_id` that resolves to nothing.
+
 ## Where it goes next
 
-The §8 endpoints we would serve as an Intermediate or Trust Anchor (fetch,
-subordinate listing, resolve), and automatic client registration (§12.1). The
-resolution side — publish, fetch, build, validate — is now complete and tested
-end to end against a three-entity federation over HTTP.
+Two things, both honestly incomplete:
+
+- **Metadata policy application** (§6.1.3's operators: `value`, `add`, `default`,
+  `one_of`, `subset_of`, `superset_of`, `essential`). Until it exists, any
+  federation using policy cannot use automatic registration here — which is the
+  correct failure, and a real limitation.
+- **The §8 endpoints** we would serve as an Intermediate or Trust Anchor: fetch,
+  subordinate listing, resolve, trust mark status. Signari is a Leaf Entity and
+  cannot yet vouch for anybody else.
+
+The resolution side — publish, fetch, build, validate, register — is complete and
+tested end to end against multi-entity federations over HTTP.

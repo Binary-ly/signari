@@ -65,9 +65,21 @@ func (r *Resolver) maxDepth() int {
 // can vouch for something, so the shortest chain is the one with the fewest
 // entities able to change the answer.
 func (r *Resolver) Resolve(ctx context.Context, entityID string, now time.Time) (*ChainResult, error) {
+	res, _, err := r.resolveWithChain(ctx, entityID, now)
+	return res, err
+}
+
+// resolveWithChain is Resolve, also returning the statements.
+//
+// Metadata resolution needs the whole chain, not just the verdict -- a
+// Subordinate Statement's metadata_policy is a property of the chain that the
+// ChainResult deliberately does not carry, because a result summarising "valid"
+// should not also be the thing callers read policy from.
+func (r *Resolver) resolveWithChain(ctx context.Context, entityID string,
+	now time.Time) (*ChainResult, []Statement, error) {
 	if len(r.Anchors) == 0 {
-		return nil, fmt.Errorf("no trust anchors are configured, so no chain can " +
-			"terminate anywhere trusted")
+		return nil, nil, fmt.Errorf("no trust anchors are configured, so no chain " +
+			"can terminate anywhere trusted")
 	}
 	// Entity identifiers are validated by the Fetcher, which is where the
 	// transport policy lives. Re-checking here would be a second copy of the
@@ -76,10 +88,11 @@ func (r *Resolver) Resolve(ctx context.Context, entityID string, now time.Time) 
 	// only being exercised in one of the two.
 	leaf, err := r.Fetcher.EntityConfigurationOf(ctx, entityID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var best *ChainResult
+	var bestChain []Statement
 	var firstErr error
 	for _, anchor := range r.Anchors {
 		chain, berr := r.buildTo(ctx, leaf, anchor.EntityID, now)
@@ -97,18 +110,18 @@ func (r *Resolver) Resolve(ctx context.Context, entityID string, now time.Time) 
 			continue
 		}
 		if best == nil || res.Length < best.Length {
-			best = res
+			best, bestChain = res, chain
 		}
 	}
 	if best == nil {
 		if firstErr != nil {
-			return nil, fmt.Errorf("no valid trust chain from %s to any configured "+
-				"anchor: %w", entityID, firstErr)
+			return nil, nil, fmt.Errorf("no valid trust chain from %s to any "+
+				"configured anchor: %w", entityID, firstErr)
 		}
-		return nil, fmt.Errorf("no valid trust chain from %s to any configured anchor",
-			entityID)
+		return nil, nil, fmt.Errorf("no valid trust chain from %s to any configured "+
+			"anchor", entityID)
 	}
-	return best, nil
+	return best, bestChain, nil
 }
 
 // buildTo walks upward from a leaf towards one named anchor.
@@ -210,4 +223,99 @@ func FetchEndpointOf(st Statement) (string, error) {
 			"statement about a subordinate can be retrieved from it")
 	}
 	return ep, nil
+}
+
+// Entity Type Identifiers, §5.1.
+const (
+	TypeFederationEntity = "federation_entity"
+	TypeRelyingParty     = "openid_relying_party"
+	TypeProvider         = "openid_provider"
+)
+
+// ErrUnappliedPolicy means the chain carries a metadata policy this
+// implementation does not apply.
+//
+// §6.1.4: "If a policy error or another error is encountered during the metadata
+// policy resolution or its application, the Trust Chain MUST be considered
+// invalid."
+//
+// Metadata policy is how a superior constrains a subordinate -- which redirect
+// URIs are permitted, which scopes, which algorithms. Resolving a chain and then
+// using the leaf's own metadata while ignoring those constraints does not
+// produce a slightly-wrong answer; it produces the answer the subordinate wanted
+// rather than the one its federation allows.
+//
+// So a chain carrying a policy is refused rather than partially honoured. That
+// is the same choice this codebase makes wherever a control cannot be applied:
+// fail closed and say why, rather than proceed and look like it worked.
+var ErrUnappliedPolicy = fmt.Errorf("this trust chain carries a metadata_policy, " +
+	"which constrains the subject's metadata. Applying it is not implemented, and " +
+	"section 6.1.4 makes an unapplied policy a chain validation failure -- so the " +
+	"chain is refused rather than resolved with the subject's own unconstrained " +
+	"metadata")
+
+// MetadataOf extracts one Entity Type's metadata from the chain subject.
+//
+// Refuses when any Subordinate Statement in the chain carries a
+// `metadata_policy` or `metadata_policy_crit`. See ErrUnappliedPolicy.
+func MetadataOf(chain []Statement, entityType string) (map[string]any, error) {
+	if len(chain) == 0 {
+		return nil, fmt.Errorf("an empty chain has no subject")
+	}
+	// Every statement ABOVE the leaf is a Subordinate Statement and may carry a
+	// policy. The leaf's own configuration cannot constrain itself.
+	for i := 1; i < len(chain); i++ {
+		hasPolicy, err := carriesMetadataPolicy(chain[i])
+		if err != nil {
+			return nil, err
+		}
+		if hasPolicy {
+			return nil, fmt.Errorf("%w (statement %d, issued by %s)",
+				ErrUnappliedPolicy, i, chain[i].Issuer)
+		}
+	}
+
+	payload, err := claimsOf(chain[0])
+	if err != nil {
+		return nil, err
+	}
+	var claims struct {
+		Metadata map[string]json.RawMessage `json:"metadata"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, err
+	}
+	raw, ok := claims.Metadata[entityType]
+	if !ok {
+		return nil, fmt.Errorf("%s declares no %s metadata, so it does not play "+
+			"that role in this federation", chain[0].Subject, entityType)
+	}
+	var md map[string]any
+	if err := json.Unmarshal(raw, &md); err != nil {
+		return nil, fmt.Errorf("the %s metadata did not parse: %w", entityType, err)
+	}
+	return md, nil
+}
+
+func carriesMetadataPolicy(st Statement) (bool, error) {
+	payload, err := claimsOf(st)
+	if err != nil {
+		return false, err
+	}
+	var claims struct {
+		MetadataPolicy     json.RawMessage `json:"metadata_policy"`
+		MetadataPolicyCrit json.RawMessage `json:"metadata_policy_crit"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return false, err
+	}
+	return len(claims.MetadataPolicy) > 0 || len(claims.MetadataPolicyCrit) > 0, nil
+}
+
+func claimsOf(st Statement) ([]byte, error) {
+	parts := strings.Split(st.Raw, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("not a compact JWS")
+	}
+	return b64Payload(parts[1])
 }

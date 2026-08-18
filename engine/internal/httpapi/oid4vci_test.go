@@ -396,3 +396,46 @@ func asString(v any) string {
 	s, _ := v.(string)
 	return s
 }
+
+func TestADeviceFlowCannotRequestScopesTheClientIsNotRegisteredFor(t *testing.T) {
+	f := newTokenFixture(t)
+	ctx := context.Background()
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE core.clients SET grant_types = grant_types || ARRAY['urn:ietf:params:oauth:grant-type:device_code'],
+		 scopes = ARRAY['openid'] WHERE client_id = $1`, f.clientID); err != nil {
+		t.Fatal(err)
+	}
+
+	post := func(scope string) (int, map[string]any) {
+		form := url.Values{"client_id": {f.clientID}, "scope": {scope}}
+		req := httptest.NewRequest(http.MethodPost, "/oauth2/device_authorization",
+			strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(rec, req)
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body
+	}
+
+	status, body := post("openid admin")
+	if status == http.StatusOK {
+		t.Fatalf("a device authorization was issued for the scope `admin`, which "+
+			"this client is not registered for; the verification page would then "+
+			"invite a user to approve it: %v", body)
+	}
+	if body["error"] != "invalid_scope" {
+		t.Errorf("error is %v, want invalid_scope: %v", body["error"], body)
+	}
+	// Nothing handed out — a refusal that still mints a user code leaves a code
+	// somebody can be talked into approving.
+	if body["user_code"] != nil || body["device_code"] != nil {
+		t.Errorf("the refusal still issued a code: %v", body)
+	}
+
+	// A registered scope still works, or the check above would pass by refusing
+	// everything.
+	if status, body := post("openid"); status != http.StatusOK {
+		t.Fatalf("a registered scope was refused: %d %v", status, body)
+	}
+}

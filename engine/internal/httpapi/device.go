@@ -92,6 +92,17 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 	}
 
 	scope := strings.TrimSpace(r.PostForm.Get("scope"))
+
+	if scope != "" {
+		if unknown := c.UnknownScopes(splitScopes(scope)); len(unknown) > 0 {
+			s.log.Info("device authorization requested an unregistered scope",
+				"client_id", clientID, "scope", unknown[0],
+				"correlation_id", correlationID(ctx))
+			writeError(w, http.StatusBadRequest, "invalid_scope",
+				"client is not registered for scope "+unknown[0])
+			return
+		}
+	}
 	// Never nil: a nil slice is sent as SQL NULL, and an explicit NULL overrides
 	// the column default, so the NOT NULL constraint rejects it.
 	resource := r.PostForm["resource"]

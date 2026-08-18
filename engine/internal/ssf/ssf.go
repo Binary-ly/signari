@@ -87,13 +87,24 @@ type setClaims struct {
 	JTI      string   `json:"jti"`
 	IssuedAt int64    `json:"iat"`
 	Audience []string `json:"aud"`
-	// Expiry is NOT RECOMMENDED in a SET (RFC 8417 §2.2): a security event has
-	// already happened and is historical, so an expiry rarely makes sense. But
-	// when a transmitter does send one, the claim means "the time after which
-	// the JWT MUST NOT be accepted for processing", and honouring it is not
-	// optional. Omitted by us when minting; enforced when receiving.
-	Expiry int64                     `json:"exp,omitempty"`
-	Events map[string]map[string]any `json:"events"`
+	// Expiry and Subject are both FORBIDDEN by the Shared Signals Framework
+	// profile, and are parsed here only so their PRESENCE can be refused.
+	//
+	//	§4.1.7  "The "exp" claim MUST NOT be used in SETs. The purpose is
+	//	        defense in depth against confusion with other JWTs."
+	//	§4.1.2  "The JWT "sub" claim MUST NOT be present in any SET containing an
+	//	        SSF event."
+	//
+	// RFC 8417 §2.2 alone only makes `exp` NOT RECOMMENDED, and this struct used
+	// to say so and honour the claim when present. The profile is stricter, and
+	// its reason is cross-JWT confusion: a token carrying `sub` and `exp` is
+	// shaped like an ID token.
+	//
+	// A pointer for Subject so "absent" and "present but empty" are
+	// distinguishable -- `"sub": ""` is still a `sub` claim.
+	Expiry  int64                     `json:"exp,omitempty"`
+	Subject *string                   `json:"sub,omitempty"`
+	Events  map[string]map[string]any `json:"events"`
 }
 
 // Signer mints SETs.

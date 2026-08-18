@@ -108,3 +108,66 @@ Filtering is per subscription. `-events` empty means every event in the
 organisation, which is a choice an operator makes rather than a default they
 inherit. Matching is exact: subscribing to `login` does not quietly subscribe you
 to `login.failed`.
+
+
+## Re-review against the Shared Signals Framework, August 2026
+
+Version checked first: **Shared Signals Framework Specification 1.0, published 29
+August 2025**. Current, and the version implemented against.
+
+### Two defects, both the same mistake
+
+The receiver was written against **RFC 8417 alone**. The Shared Signals Framework
+is a *profile* of RFC 8417, and it is stricter in two places our code did not
+know about.
+
+**§4.1.7 — `exp` is forbidden, not merely discouraged.**
+
+> The "exp" claim MUST NOT be used in SETs. The purpose is defense in depth
+> against confusion with other JWTs, as described in Sections 4.5 and 4.6 of
+> [RFC8417].
+
+RFC 8417 §2.2 on its own only makes `exp` NOT RECOMMENDED, and our code cited
+exactly that — then honoured the claim when present, refusing a SET whose expiry
+had passed. That was a deliberate earlier fix, and the comment recorded why: a
+transmitter that deliberately time-boxed an event had found us acting on it
+afterwards.
+
+Reasonable, and aimed at the wrong thing. **`exp` is not there to time-box an
+event. It is forbidden so that a SET cannot be shaped like an ID token.** Once
+that is the reason, honouring the claim is not enough — a SET with a comfortable
+future expiry is exactly as confusable as an expired one, and ours accepted it.
+
+**§4.1.2 — a top-level `sub` is forbidden, and we never checked.**
+
+> The JWT "sub" claim MUST NOT be present in any SET containing an SSF event.
+
+It sits under §4.1.3, *"Distinguishing SETs from other Kinds of JWTs — Of
+particular concern is the possibility that SETs are confused for other kinds of
+JWTs."* An SSF event names its subject in `sub_id`; a top-level `sub` is the
+shape of an ID token.
+
+We check `typ: secevent+jwt`, which is the primary confusion defence and which
+would already refuse an actual ID token. The profile adds these two because typ
+checking is not universal — defence in depth is its stated purpose, and we had
+implemented one layer of it and not the other two.
+
+Both are now refused outright. `Subject` is parsed as a `*string` so that
+`"sub": ""` is distinguishable from an absent claim: an empty string is still a
+`sub` claim.
+
+| Mutation | Test that caught it |
+|---|---|
+| Honour `exp` instead of refusing it | `TestASETCarryingExpIsRefused` |
+| Allow a top-level `sub` | `TestASETCarryingATopLevelSubIsRefused` |
+
+### The lesson worth keeping
+
+The previous review of this code checked it against RFC 8417 and RFC 8935 and
+found five defects. It did not check it against the **profile** that governs it,
+and the profile is where both of these live.
+
+An implementation of a profiled specification has two documents to satisfy, and
+the profile is the one that adds restrictions the base RFC calls optional. Citing
+the base RFC in a comment — as ours did, accurately — is what made the gap look
+like diligence.

@@ -268,14 +268,44 @@ func Verify(ctx context.Context, f *KeyFetcher, src Source, raw string, now time
 	if time.Unix(c.IssuedAt, 0).After(now.Add(5 * time.Minute)) {
 		return out, fmt.Errorf("%w: issued in the future", ErrNotVerified)
 	}
-	// `exp` in a SET is NOT RECOMMENDED (RFC 8417 §2.2) because an event is
-	// historical. But when present it means "MUST NOT be accepted for
-	// processing" after that time, and the first version of this ignored it
-	// entirely -- so a transmitter that deliberately time-boxed an event found
-	// us acting on it afterwards.
-	if c.Expiry > 0 && now.After(time.Unix(c.Expiry, 0)) {
-		return out, fmt.Errorf("%w: the token expired at %s",
-			ErrNotVerified, time.Unix(c.Expiry, 0).UTC().Format(time.RFC3339))
+	// `exp` and a top-level `sub` are both FORBIDDEN in an SSF SET, and both for
+	// the same reason.
+	//
+	// RFC 8417 §2.2 only makes `exp` "NOT RECOMMENDED", and an earlier version
+	// of this code cited that and honoured the claim when present -- refusing a
+	// SET whose expiry had passed. The Shared Signals Framework profile is
+	// stricter, and says why:
+	//
+	//	§4.1.7  "The "exp" claim MUST NOT be used in SETs. The purpose is
+	//	        defense in depth against confusion with other JWTs, as described
+	//	        in Sections 4.5 and 4.6 of [RFC8417]."
+	//	§4.1.2  "The JWT "sub" claim MUST NOT be present in any SET containing an
+	//	        SSF event."
+	//
+	// The second sits under §4.1.3, "Distinguishing SETs from other Kinds of
+	// JWTs -- Of particular concern is the possibility that SETs are confused
+	// for other kinds of JWTs."
+	//
+	// So these are not stylistic. A JWT carrying `sub` and `exp` is
+	// structurally an ID token or an access token, and the profile forbids
+	// those claims so that a SET can never be mistaken for one -- or one for a
+	// SET. We already check `typ: secevent+jwt`, which is the primary defence;
+	// the profile adds these because typ checking is not universal, and defence
+	// in depth is the stated purpose.
+	//
+	// Refused rather than tolerated. A conformant transmitter does not send
+	// them, and accepting a non-conformant SET is how the confusion the profile
+	// prevents gets in.
+	if c.Expiry != 0 {
+		return out, fmt.Errorf("%w: the SET carries an `exp` claim, which the "+
+			"Shared Signals Framework forbids (section 4.1.7) as defence in "+
+			"depth against confusion with other kinds of JWT", ErrNotVerified)
+	}
+	if c.Subject != nil {
+		return out, fmt.Errorf("%w: the SET carries a top-level `sub` claim, "+
+			"which the Shared Signals Framework forbids (section 4.1.2). An SSF "+
+			"event names its subject in `sub_id`; a JWT with a top-level `sub` "+
+			"is shaped like an ID token", ErrNotVerified)
 	}
 
 	if len(c.Events) == 0 {

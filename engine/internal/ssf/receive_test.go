@@ -338,35 +338,89 @@ func TestAnEmptyEventListAllowsNothing(t *testing.T) {
 	}
 }
 
-// RFC 8417 §2.2: `exp` is "the time after which the JWT MUST NOT be accepted
-// for processing". NOT RECOMMENDED in a SET, because an event is historical --
-// but when a transmitter sends one it is not advisory.
+// A SET carrying `exp` at all is refused, whether or not it has passed.
 //
-// The first version had no `exp` field at all, so a deliberately time-boxed
-// event was acted on afterwards.
-func TestAnExpiredSETIsRefused(t *testing.T) {
+// This test used to assert the weaker rule: expired refused, future accepted.
+// That followed RFC 8417 §2.2 alone, which only makes `exp` NOT RECOMMENDED.
+// The Shared Signals Framework profile is stricter, §4.1.7:
+//
+//	"The "exp" claim MUST NOT be used in SETs. The purpose is defense in depth
+//	against confusion with other JWTs, as described in Sections 4.5 and 4.6 of
+//	[RFC8417]."
+//
+// The reason is what changes the rule. If `exp` existed to time-box an event,
+// honouring it would be enough. It exists to keep a SET from being shaped like
+// an ID token -- so its PRESENCE is the problem, and a SET with a comfortable
+// future expiry is exactly as confusable as an expired one.
+func TestASETCarryingExpIsRefused(t *testing.T) {
 	tr := newTransmitter(t)
 	now := time.Now()
 
-	c := goodClaims(now)
-	c["exp"] = now.Add(-time.Minute).Unix()
-	raw := tr.sign(t, TypSET, c, nil, tr.kid)
-	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(), raw, now); err == nil {
-		t.Fatal("an expired SET was accepted; §2.2 says MUST NOT be accepted " +
-			"for processing after exp")
+	for _, exp := range []struct {
+		name string
+		at   int64
+	}{
+		{"already passed", now.Add(-time.Minute).Unix()},
+		{"an hour away", now.Add(time.Hour).Unix()},
+		{"far in the future", now.Add(24 * 365 * time.Hour).Unix()},
+	} {
+		t.Run(exp.name, func(t *testing.T) {
+			c := goodClaims(now)
+			c["exp"] = exp.at
+			_, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+				tr.sign(t, TypSET, c, nil, tr.kid), now)
+			if err == nil {
+				t.Fatal("a SET carrying `exp` was accepted; §4.1.7 forbids the " +
+					"claim outright as a cross-JWT confusion defence")
+			}
+			if !strings.Contains(err.Error(), "4.1.7") {
+				t.Errorf("refused for the wrong reason: %v", err)
+			}
+		})
 	}
 
-	// A future exp is fine, and a SET with no exp at all is the ordinary case.
-	c["exp"] = now.Add(time.Hour).Unix()
-	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
-		tr.sign(t, TypSET, c, nil, tr.kid), now); err != nil {
-		t.Fatalf("a SET expiring in an hour was refused: %v", err)
-	}
+	// No exp at all is the ordinary, conformant case.
+	c := goodClaims(now)
 	delete(c, "exp")
 	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
 		tr.sign(t, TypSET, c, nil, tr.kid), now); err != nil {
-		t.Fatalf("a SET with no exp was refused, but omitting it is what the "+
-			"RFC recommends: %v", err)
+		t.Fatalf("a SET with no exp was refused, but that is what the profile "+
+			"requires: %v", err)
+	}
+}
+
+// §4.1.2: "The JWT "sub" claim MUST NOT be present in any SET containing an SSF
+// event."
+//
+// It sits under §4.1.3, "Distinguishing SETs from other Kinds of JWTs -- Of
+// particular concern is the possibility that SETs are confused for other kinds
+// of JWTs." An SSF event names its subject in `sub_id`; a top-level `sub` is the
+// shape of an ID token.
+func TestASETCarryingATopLevelSubIsRefused(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	for _, sub := range []string{"alice@example.com", ""} {
+		c := goodClaims(now)
+		c["sub"] = sub
+		_, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+			tr.sign(t, TypSET, c, nil, tr.kid), now)
+		if err == nil {
+			t.Fatalf("a SET carrying a top-level `sub` of %q was accepted", sub)
+		}
+		if !strings.Contains(err.Error(), "4.1.2") {
+			t.Errorf("refused for the wrong reason: %v", err)
+		}
+	}
+
+	// An empty string is still a `sub` claim, which is why the field is a
+	// pointer: "absent" and "present but empty" are different, and only the
+	// first is conformant.
+	c := goodClaims(now)
+	delete(c, "sub")
+	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, c, nil, tr.kid), now); err != nil {
+		t.Fatalf("a SET with no top-level sub was refused: %v", err)
 	}
 }
 

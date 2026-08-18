@@ -33,6 +33,30 @@ type RefreshGrant struct {
 // The family is the unit of revocation. Revoking only the replayed token would
 // leave the thief's successor working, which is the whole reason rotation exists.
 func NewRefreshFamily(ctx context.Context, tx pgx.Tx, orgID, clientID, userID, sid string) (string, error) {
+	// A family with no session has no absolute expiration, so it is refused.
+	//
+	// OWASP ASVS 5.0 V10.4.8: "Verify that refresh tokens have an absolute
+	// expiration, including if sliding refresh token expiration is applied."
+	//
+	// Ours is satisfied indirectly and the chain is worth stating, because every
+	// link is load-bearing: RotateRefreshToken requires the family's session to
+	// be live, `sessions.not_after` is fixed when the session is created and is
+	// never updated anywhere, and rotation issues a new token but cannot move
+	// that deadline. So a lineage cannot outlive the authorization that started
+	// it, however many times it rotates -- which is a stronger bound than a cap
+	// on the credential, because it expires the AUTHORIZATION rather than the
+	// token that represents it.
+	//
+	// The one way that chain breaks is a family with no `sid`: the rotation
+	// query's `s.sid IS NULL OR ...` branch is then vacuously true and the
+	// lineage never expires at all. No caller does that today. This makes it
+	// impossible rather than merely untrue, because "no caller does that" is a
+	// property of the code as it stands and not of the code as it will be.
+	if sid == "" {
+		return "", fmt.Errorf("a refresh token family must name the session that " +
+			"authorized it: the session's fixed not_after is what gives the lineage " +
+			"an absolute expiration, and a family without one would rotate forever")
+	}
 	var id string
 	err := tx.QueryRow(ctx, `
 		INSERT INTO core.refresh_token_families (org_id, client_id, user_id, sid)

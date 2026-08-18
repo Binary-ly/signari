@@ -257,7 +257,10 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /device", s.handleDeviceVerification)
 	mux.HandleFunc("GET "+oidc.PathUserinfo, s.handleUserinfo)
 	mux.HandleFunc("POST "+oidc.PathUserinfo, s.handleUserinfo)
+	// Both methods. GET is what a relying party redirects to; POST is what the
+	// confirmation form submits when no valid id_token_hint was supplied.
 	mux.HandleFunc("GET "+oidc.PathEndSession, s.handleEndSession)
+	mux.HandleFunc("POST "+oidc.PathEndSession, s.handleEndSession)
 	mux.HandleFunc("POST "+oidc.PathRevocation, s.handleRevoke)
 	mux.HandleFunc("POST "+oidc.PathIntrospection, s.handleIntrospect)
 	mux.HandleFunc("GET /login/with/{slug}", s.handleFederatedStart)

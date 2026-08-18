@@ -1462,6 +1462,27 @@ var errorPage = template.Must(template.New("err").Parse(`<!doctype html>
 
 func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// Confirmed, hinted, or nothing to do -- otherwise ask first.
+	//
+	// OWASP ASVS 5.0 V10.6.2: "Verify that the OpenID Provider mitigates denial
+	// of service through forced logout. By obtaining explicit confirmation from
+	// the end-user or, if present, validating parameters in the logout request
+	// ... such as the id_token_hint."
+	//
+	// OIDC RP-Initiated Logout 1.0 §2 says the same thing from the other side:
+	// the OP "SHOULD ask the End-User whether to log out" unless the request
+	// carries a valid id_token_hint.
+	//
+	// Without this, `<img src="https://id.example.com/oauth2/logout">` on any
+	// page signs out every visitor who has a session here, repeatedly, from
+	// anywhere. It is not a credential compromise -- it is a denial of service
+	// that costs an attacker one HTML tag, and the user cannot tell it from a
+	// broken product.
+	if !s.logoutConfirmed(w, r) {
+		return
+	}
+
 	q := r.URL.Query()
 
 	// Terminate FIRST, and let the failure be visible. The previous shape logged
@@ -1609,6 +1630,75 @@ func (s *Server) clientFromIDTokenHint(hint string) string {
 	}
 	return claims
 }
+
+// logoutConfirmed reports whether this logout may proceed without asking.
+//
+// Returns false having already written a response -- either the confirmation
+// page or an error.
+func (s *Server) logoutConfirmed(w http.ResponseWriter, r *http.Request) bool {
+	// A POST carrying a valid CSRF token IS the confirmation: it can only have
+	// come from the form this server rendered into this browser.
+	if r.Method == http.MethodPost {
+		if checkCSRF(r) {
+			return true
+		}
+		writeError(w, http.StatusForbidden, "invalid_request",
+			"the sign-out form has expired; open the sign-out link again")
+		return false
+	}
+
+	// A verified id_token_hint identifies the relying party that asked, and is
+	// what the specification accepts in place of asking the person. Verified,
+	// not merely present: an unverified hint is a string the attacker chose.
+	if hint := r.URL.Query().Get("id_token_hint"); hint != "" {
+		if s.clientFromIDTokenHint(hint) != "" {
+			return true
+		}
+	}
+
+	// No session to end means nothing to confirm, and rendering a page that
+	// says "sign out?" to somebody who is not signed in is worse than useless.
+	if sessionCookie(r) == "" {
+		return true
+	}
+
+	s.renderLogoutConfirmation(w, r)
+	return false
+}
+
+// renderLogoutConfirmation asks the person whether they meant to sign out.
+//
+// The form POSTs back to the same URL, so every query parameter the relying
+// party sent -- post_logout_redirect_uri, state, client_id -- survives the
+// round trip untouched and is validated exactly as before.
+func (s *Server) renderLogoutConfirmation(w http.ResponseWriter, r *http.Request) {
+	tok, err := s.csrfToken(w, r)
+	if err != nil {
+		s.log.Error("issuing a CSRF token for the sign-out confirmation", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	// The action is the current URL including its query, so the parameters are
+	// resubmitted rather than re-derived.
+	_ = logoutConfirmPage.Execute(w, map[string]string{
+		"Action": r.URL.RequestURI(),
+		"CSRF":   tok,
+		"Field":  csrfFormField,
+	})
+}
+
+var logoutConfirmPage = template.Must(template.New("logout").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sign out?</title></head>
+<body>
+<h1>Sign out?</h1>
+<p>An application asked to sign you out. Confirm that this is what you want.</p>
+<form method="post" action="{{.Action}}">
+<input type="hidden" name="{{.Field}}" value="{{.CSRF}}">
+<button type="submit">Sign out</button>
+</form>
+</body></html>`))
 
 // stepUpErrorCode maps a step-up reason to the OIDC error a client can act on.
 //

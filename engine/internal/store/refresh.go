@@ -35,6 +35,9 @@ type RefreshGrant struct {
 	// family was established without a DPoP proof. RFC 9449 §5 requires the
 	// binding to be VALIDATED at every rotation, not merely recorded at issuance.
 	DPoPJKT string
+	// CertThumbprint is the RFC 8705 §4 equivalent: the client certificate this
+	// lineage is bound to, empty when it was not established over one.
+	CertThumbprint string
 }
 
 // NewRefreshFamily starts a lineage for one (client, user, session).
@@ -42,7 +45,7 @@ type RefreshGrant struct {
 // The family is the unit of revocation. Revoking only the replayed token would
 // leave the thief's successor working, which is the whole reason rotation exists.
 func NewRefreshFamily(ctx context.Context, tx pgx.Tx, orgID, clientID, userID, sid string,
-	details []byte, dpopJKT string) (string, error) {
+	details []byte, dpopJKT, certThumb string) (string, error) {
 	// A family with no session has no absolute expiration, so it is refused.
 	//
 	// OWASP ASVS 5.0 V10.4.8: "Verify that refresh tokens have an absolute
@@ -70,9 +73,10 @@ func NewRefreshFamily(ctx context.Context, tx pgx.Tx, orgID, clientID, userID, s
 	var id string
 	err := tx.QueryRow(ctx, `
 		INSERT INTO core.refresh_token_families (org_id, client_id, user_id, sid,
-		                                         authorization_details, dpop_jkt)
-		VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')) RETURNING id::text`,
-		orgID, clientID, userID, sid, details, dpopJKT).Scan(&id)
+		                                         authorization_details, dpop_jkt,
+		                                         cert_thumbprint)
+		VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,'')) RETURNING id::text`,
+		orgID, clientID, userID, sid, details, dpopJKT, certThumb).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("creating refresh family: %w", err)
 	}
@@ -120,9 +124,10 @@ func RotateRefreshToken(ctx context.Context, tx pgx.Tx, hash []byte) (*RefreshGr
 		  AND (s.sid IS NULL OR (s.revoked_at IS NULL AND s.not_after > now()))
 		RETURNING f.id::text, f.client_id, f.user_id::text,
 		          COALESCE(f.sid, ''), f.org_id::text, rt.scopes, rt.resources,
-		          f.authorization_details, COALESCE(f.dpop_jkt, '')`, hash).
+		          f.authorization_details, COALESCE(f.dpop_jkt, ''),
+		          COALESCE(f.cert_thumbprint, '')`, hash).
 		Scan(&g.FamilyID, &g.ClientID, &g.UserID, &g.SessionID, &g.OrgID, &g.Scopes,
-			&g.Resources, &g.Details, &g.DPoPJKT)
+			&g.Resources, &g.Details, &g.DPoPJKT, &g.CertThumbprint)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Distinguish "already rotated" from every other failure. Only reuse

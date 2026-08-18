@@ -779,7 +779,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			return nil, nil, derr
 		}
 		familyID, err = store.NewRefreshFamily(ctx, tx, orgID, c.ClientID, userID, sid,
-			familyDetails, jkt)
+			familyDetails, jkt, certThumb)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1116,6 +1116,31 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
 				Description: "the DPoP proof is for a different key than the one " +
 					"this refresh token is bound to",
+				Status: http.StatusBadRequest})
+			return
+		}
+	}
+
+	// RFC 8705 §4, the mutual-TLS twin of the check above. §7.1 exempts
+	// confidential clients for the same reason §5 of RFC 9449 does: a client
+	// using `tls_client_auth` is already "indirectly certificate-bound by way of
+	// the client ID and the associated requirement for ... authentication".
+	if grant.CertThumbprint != "" && c.Type != "confidential" {
+		presented := certThumbprintFrom(ctx)
+		if presented == "" {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "this refresh token is bound to a client certificate " +
+					"and must be presented over a mutually authenticated connection " +
+					"using that certificate",
+				Status: http.StatusBadRequest})
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(grant.CertThumbprint)) != 1 {
+			s.log.Warn("refresh token presented with a certificate it is not bound to",
+				"client_id", c.ClientID, "correlation_id", correlationID(ctx))
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the client certificate on this connection is not the " +
+					"one this refresh token is bound to",
 				Status: http.StatusBadRequest})
 			return
 		}

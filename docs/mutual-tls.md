@@ -113,3 +113,72 @@ property of a connection it may not know is mutually authenticated.
 Both members are `omitempty`, so an unbound token carries no `cnf` at all rather
 than an empty object — a resource server checking for the claim must not be told
 "yes, and it is blank".
+
+---
+
+# Lifecycle pass: the refresh token was not certificate-bound either
+
+Found by running the same review over mutual TLS that had just found the DPoP
+defect — follow one grant through every refresh instead of checking each handler.
+The gap was the same one, in the other half of the product.
+
+## RFC 8705 §4
+
+> "When the authorization server issues a refresh token to such a client, it
+> SHOULD also bind the refresh token to the respective certificate and **check the
+> binding when the refresh token is presented** to get new access tokens."
+
+"Such a client" is §4's public client: one presenting a certificate to obtain
+certificate-*bound* tokens without using that certificate to authenticate. §7.1
+exempts confidential clients, whose refresh tokens are already "indirectly
+certificate-bound by way of the client ID and the associated requirement for
+(certificate-based) authentication" — so the enforcement here is for public
+clients only, exactly as with DPoP.
+
+This is a SHOULD, not a MUST. Implemented anyway: the alternative is minting a
+certificate-bound access token — one whose `cnf.x5t#S256` tells every resource
+server it may only be used by the holder of a particular certificate — from a
+refresh token that anybody could present. The access token advertises a
+constraint the grant behind it does not keep.
+
+Migration 0084, on the family rather than the token, for the same reason as 0083:
+§4's check happens "when the refresh token is presented", every time, not once.
+
+## Two things the tests got wrong first, both worth recording
+
+**The client must be registered for bound tokens.** `tls_bound_tokens` is off by
+default and rightly so — turning binding on breaks every caller not yet
+presenting its certificate at the resource server, which is a cutover rather than
+a side effect of enabling mTLS. The first version of the test never set it,
+received plain tokens, and would have passed vacuously against a completely
+unimplemented binding.
+
+**A certificate-bound token is still `token_type: Bearer`.** Unlike DPoP, RFC 8705
+signals the binding with the `cnf.x5t#S256` claim and not the token type. The
+first guard asserted `token_type != "Bearer"` and failed against correct code.
+Asserting on `cnf` is both correct and the thing that actually matters.
+
+Both mistakes share a shape: a test that checks a *proxy* for the property rather
+than the property. The proxy was wrong in one direction (never set) and wrong in
+the other (never true), and only one of those announces itself.
+
+## Mutation results
+
+```
+CAUGHT   cert binding never validated at rotation
+CAUGHT   cert binding: no-certificate bypass
+CAUGHT   cert binding lost after one rotation
+CAUGHT   cert binding never recorded at issuance
+```
+
+## Three protocols, one seam
+
+| | RFC 9396 | RFC 9449 | RFC 8705 |
+|---|---|---|---|
+| Endpoint in isolation | correct | correct | correct |
+| Missing at refresh | granted details | DPoP key binding | certificate binding |
+| Symptom | constraint widened to `scope` | sender-constraint became bearer | bound token from an unbound credential |
+
+Every one of these was invisible to a review organised by endpoint, because at
+every endpoint the code was right. What they have in common is a property
+established at authorization and consulted — or not — an hour later.

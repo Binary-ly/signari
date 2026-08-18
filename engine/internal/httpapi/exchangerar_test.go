@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"signari.dev/engine/internal/oauth"
@@ -208,5 +209,133 @@ func TestAnExchangeWithoutAProofIsStillBearer(t *testing.T) {
 	}
 	if bound := confirmationIn(t, body["access_token"].(string)); bound != "" {
 		t.Fatalf("the token is bound to %q though nothing was proved", bound)
+	}
+}
+
+// A sender-constrained subject token may only be exchanged by whoever holds its
+// key.
+//
+// No specification demands this — RFC 8693 §1 puts proof-of-possession handling
+// out of scope as "policy decisions made with respect to the specific needs of
+// individual deployments" — so it is a choice, and these tests are what make the
+// choice checkable.
+//
+// The reasoning: `cnf.jkt` means "holding this is not enough". userinfo and the
+// credential endpoint both enforce that. The token endpoint did not, so a stolen
+// bound token could be traded there for a working one by someone who never held
+// the key — leaving exactly one door where possession alone suffices, and an
+// attacker only ever needs the weakest door.
+func TestABoundSubjectTokenCannotBeExchangedByAnotherKey(t *testing.T) {
+	f := newTokenFixture(t)
+	f.enableExchange(t)
+
+	victim := newProofKey(t)
+	thief := newProofKey(t)
+
+	// A subject token genuinely bound to the victim's key.
+	code := f.issueCodeWithDetailsAndScopes(t,
+		"verifier-exchange-bound-aaaaaaaaaaaaaaaaaaaa", nil, []string{"openid"})
+	status, body := f.postDPoP(t, url.Values{
+		"grant_type": {"authorization_code"}, "code": {code},
+		"client_id": {f.clientID}, "redirect_uri": {"https://rp.test/cb"},
+		"code_verifier": {"verifier-exchange-bound-aaaaaaaaaaaaaaaaaaaa"},
+	}, victim.proof(t, "jti-bound-issue-1"))
+	if status != http.StatusOK {
+		t.Fatalf("redemption gave %d: %v", status, body)
+	}
+	subject := body["access_token"].(string)
+	if confirmationIn(t, subject) != victim.thumbprint(t) {
+		t.Fatal("the subject token is not bound, so the test proves nothing")
+	}
+
+	status, body = f.postDPoP(t, url.Values{
+		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"subject_token":      {subject},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		"audience":           {exchangeAudience},
+		"client_id":          {f.clientID},
+	}, thief.proof(t, "jti-bound-thief-1"))
+
+	if status == http.StatusOK {
+		t.Fatalf("a bound subject token was exchanged by a party that cannot prove "+
+			"its key: the token endpoint becomes the one place where possession "+
+			"alone is sufficient: %v", body)
+	}
+
+	// And with no proof at all.
+	status, body = f.post(t, url.Values{
+		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"subject_token":      {subject},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		"audience":           {exchangeAudience},
+		"client_id":          {f.clientID},
+	})
+	if status == http.StatusOK {
+		t.Fatal("dropping the proof entirely escaped the subject token's binding")
+	}
+
+	// The message must distinguish "send a proof" from "wrong key".
+	//
+	// Security does not rest on the separate branch: with no proof the presented
+	// thumbprint is empty and a constant-time compare against a real one fails on
+	// length alone, which mutation confirmed. The branch earns its place on
+	// diagnostics -- a caller told its key is wrong will go looking for a
+	// mismatch that does not exist. Asserted so the branch has a reason that can
+	// fail, exactly as for the refresh binding in dpoprefresh_test.go.
+	desc, _ := body["error_description"].(string)
+	if !strings.Contains(desc, "present a proof") {
+		t.Fatalf("the refusal says %q; a caller that sent no proof needs to be "+
+			"told to send one, not that its key does not match", desc)
+	}
+}
+
+// The holder still gets through -- a rule that refuses everyone is an outage.
+func TestTheHolderOfABoundSubjectTokenCanStillExchangeIt(t *testing.T) {
+	f := newTokenFixture(t)
+	f.enableExchange(t)
+	holder := newProofKey(t)
+
+	code := f.issueCodeWithDetailsAndScopes(t,
+		"verifier-exchange-bound-bbbbbbbbbbbbbbbbbbbb", nil, []string{"openid"})
+	status, body := f.postDPoP(t, url.Values{
+		"grant_type": {"authorization_code"}, "code": {code},
+		"client_id": {f.clientID}, "redirect_uri": {"https://rp.test/cb"},
+		"code_verifier": {"verifier-exchange-bound-bbbbbbbbbbbbbbbbbbbb"},
+	}, holder.proof(t, "jti-bound-issue-2"))
+	if status != http.StatusOK {
+		t.Fatalf("redemption gave %d: %v", status, body)
+	}
+	subject := body["access_token"].(string)
+
+	status, body = f.postDPoP(t, url.Values{
+		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"subject_token":      {subject},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		"audience":           {exchangeAudience},
+		"client_id":          {f.clientID},
+	}, holder.proof(t, "jti-bound-holder-2"))
+
+	if status != http.StatusOK {
+		t.Fatalf("the key holder was refused its own subject token: %d %v", status, body)
+	}
+}
+
+// An ordinary bearer subject token is unaffected: the check must not quietly
+// make DPoP mandatory for everyone.
+func TestAnUnboundSubjectTokenStillExchangesWithoutAProof(t *testing.T) {
+	f := newTokenFixture(t)
+	f.enableExchange(t)
+	subject := f.subjectTokenWithDetails(t,
+		"verifier-exchange-unbound-aaaaaaaaaaaaaaaaaa", nil)
+
+	status, body := f.post(t, url.Values{
+		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"subject_token":      {subject},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		"audience":           {exchangeAudience},
+		"client_id":          {f.clientID},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("an unbound subject token was refused: %d %v", status, body)
 	}
 }

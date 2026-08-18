@@ -2064,6 +2064,17 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		return
 	}
 
+	// A bound subject token may only be exchanged by whoever holds its key.
+	// Without this the token endpoint is the one door where possession alone
+	// suffices, and an attacker only needs the weakest door.
+	if berr := s.requireSubjectTokenBinding(r, subject); berr != nil {
+		s.log.Info("token exchange: subject token binding not proved", "err", berr,
+			"caller", c.ClientID, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
+			Description: berr.Error(), Status: http.StatusBadRequest})
+		return
+	}
+
 	// A revoked or signed-out token must not be exchangeable. Otherwise
 	// exchange becomes a way to launder a dead credential into a live one --
 	// the token the user revoked yesterday still produces working tokens today.

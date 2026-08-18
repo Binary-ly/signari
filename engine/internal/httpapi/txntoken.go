@@ -137,6 +137,16 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 				Description: "the subject token is not valid", Status: http.StatusBadRequest})
 			return
 		}
+		// Same rule as the exchange endpoint: a sender-constrained subject token
+		// is only exchangeable by the party that can prove the key.
+		if berr := s.requireSubjectTokenBinding(r, subject); berr != nil {
+			s.log.Info("txn-token: subject token binding not proved", "err", berr,
+				"caller", c.ClientID, "correlation_id", correlationID(ctx))
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
+				Description: berr.Error(), Status: http.StatusBadRequest})
+			return
+		}
+
 		// A revoked token, or one whose session has ended, must not become a
 		// Txn-Token. Otherwise exchange laundered a dead credential into one
 		// that every internal service will honour for the next five minutes --

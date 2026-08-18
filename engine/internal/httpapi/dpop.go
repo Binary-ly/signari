@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"net/http"
 	"time"
@@ -132,4 +133,47 @@ func withCertThumbprint(ctx context.Context, thumb string) context.Context {
 func certThumbprintFrom(ctx context.Context) string {
 	t, _ := ctx.Value(certThumbKey{}).(string)
 	return t
+}
+
+// requireSubjectTokenBinding refuses a sender-constrained subject token whose
+// key the presenter cannot prove possession of.
+//
+// # Why this exists when no specification demands it
+//
+// RFC 8693 §1 puts it explicitly out of scope: "whether ... proof-of-possession-
+// style tokens will be required or issued ... will often be policy decisions made
+// with respect to the specific needs of individual deployments". So this is a
+// choice, not a rule, and it is recorded as one.
+//
+// The choice: a token carrying `cnf.jkt` means "holding this is not enough".
+// Every place we honour that -- userinfo, the credential endpoint -- checks it.
+// The token endpoint did not, so a stolen bound token could be handed to the
+// exchange and traded for a working token by someone who never held the key.
+// That leaves one endpoint where possession alone IS sufficient, which is the
+// exact property DPoP was added to remove, and an attacker only needs the
+// weakest door.
+//
+// It breaks nothing legitimate: a client that genuinely holds the token holds the
+// key, so it can produce the proof. A client that cannot is, by construction, not
+// the party the token was issued to.
+//
+// Returns nil when the subject token is not bound -- an ordinary bearer token is
+// exchanged on the strength of client authentication, as before.
+func (s *Server) requireSubjectTokenBinding(r *http.Request, subject *tokens.AccessTokenClaims) error {
+	if subject.Cnf == nil || subject.Cnf.JKT == "" {
+		return nil
+	}
+	// The proof was already verified by handleToken, which put its thumbprint on
+	// the context. Reading it again here rather than re-verifying: a second call
+	// would consume the proof's jti a second time and be refused as a replay.
+	presented := dpopThumbprintFrom(r.Context())
+	if presented == "" {
+		return errors.New("the subject token is bound to a DPoP key; present a " +
+			"proof of possession for that key alongside it")
+	}
+	if subtle.ConstantTimeCompare([]byte(presented), []byte(subject.Cnf.JKT)) != 1 {
+		return errors.New("the DPoP proof on this request is for a different key " +
+			"than the subject token is bound to")
+	}
+	return nil
 }

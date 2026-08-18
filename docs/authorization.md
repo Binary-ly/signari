@@ -356,3 +356,109 @@ We are only ever a PDP, never a PEP, so §9.2.3's consumer-side obligation — *
 these values are not identical, the data contained in the response MUST NOT be
 used"* — does not apply to us. Recorded so that it is a decision rather than an
 omission if an outbound PDP client is ever added.
+
+---
+
+## Adversarial re-review against AuthZEN 1.0 Final, August 2026
+
+Fourth emerging standard put through the same treatment as Shared Signals and
+WebAuthn: the published text re-read for every normative MUST, then hostile input
+rather than one-field-wrong variations.
+
+Two defects, both conformance rather than compromise, and one of them with a real
+integrity consequence.
+
+### 1. We refused the forward compatibility the specification requires
+
+§10.1.1, verbatim:
+
+> To ensure forward compatibility, receivers **MUST ignore unknown fields**
+> present in request or response bodies.
+
+And §4:
+
+> Any updates to this API through subsequent revisions … MAY augment this API …
+> Augmentation MAY include additional API methods or **additional parameters to
+> existing API methods**.
+
+So the specification both anticipates new parameters and requires receivers to
+tolerate them. `Decode` called `json.Decoder.DisallowUnknownFields()` — the exact
+inverse. Any PEP speaking a later revision, or sending a vendor extension, had
+its request rejected with **400**, so the caller could not even learn whether it
+would have been allowed.
+
+**The rationale was sound and the mechanism was wrong.** The comment said a
+caller sending `subjects` instead of `subject` "must be told, rather than
+receiving a confident denial about a subject we never saw". True — but refusing
+the whole body is not what tells them. With the stray field ignored, `subject` is
+simply absent, and `Validate` answers with the error §10.1.1 requires for exactly
+that case:
+
+> If a required attribute in the information model is omitted, the server MUST
+> return a "Bad Request" error
+
+…which names the attribute that is **missing** rather than the one that was
+misspelled, and is the more useful of the two messages.
+
+What is given up: a typo in an *optional* field is now silent. That is the trade
+the specification makes deliberately.
+
+### 2. Duplicate JSON members — the decision and its audit record could disagree
+
+Found by sweeping hostile bodies for a single invariant: *nothing that fails to
+decode or validate may reach policy evaluation as though it were a well-formed
+question.* One body got through.
+
+```json
+{"subject":{"type":"user","id":"alice"},"subject":{}, …}
+```
+
+Go's decoder **merges** a repeated object into the value it already decoded, so
+the first occurrence's populated fields survive and this evaluates as `alice`. A
+proxy, WAF or audit shipper that takes the **last** occurrence sees an empty
+subject.
+
+The PDP is the authority, so this is not a privilege escalation. It is worse in a
+different way for this product: the decision and the record of the decision would
+describe **different requests**, and proving what was authorised is the property
+this system is organised around.
+
+§10.1.1 supplies the principle:
+
+> Implementations **MUST NOT** assume a particular ordering of JSON object
+> members.
+
+A body whose meaning depends on that ordering has no reading this server is
+entitled to pick, which makes refusing the only correct answer. Duplicates are
+now refused at **any depth** — top level, inside an entity, inside `context`,
+inside an array element — by a token walk, because a second unmarshal into
+`map[string]any` would collapse the duplicates before they could be seen.
+
+This is the same rule, for the same reason, as the duplicate-parameter check the
+pushed authorization request endpoint has had since it was written. The principle
+was already held in this codebase; it had simply not been applied here.
+
+### What the sweep confirmed
+
+| Hostile body | Outcome |
+|---|---|
+| Empty, truncated, `[]`, `null`, a bare string or number | refused |
+| Entities as scalars or arrays rather than objects | refused |
+| Any required attribute missing or empty | 400, **not** a denial |
+| Unknown fields, top level and nested | **ignored** (§10.1.1) |
+| Duplicate members at any depth | refused |
+
+"400, not a denial" is deliberate and worth keeping visible: *no* and *that
+question was malformed* are different answers, and a PDP that returns `false` for
+both teaches callers that a denial might just mean they sent the wrong shape.
+
+### Fail-closed, verified rather than asserted
+
+Every path through `decide` that is not an explicit grant returns
+`Decision: false`, and every error returns no decision at all — the handler turns
+it into a 500. A condition that cannot be evaluated because no live session was
+named is refused rather than assumed satisfied: *a rule demanding a second factor
+must not be satisfied by the absence of evidence.*
+
+Four mutations were run against the two fixes and the required-attribute check.
+All four were caught.

@@ -237,16 +237,121 @@ func (r Request) Merge(d Evaluations) Request {
 	return r
 }
 
-// Decode reads a request body, refusing anything unexpected.
+// Decode reads a request body, tolerating fields it does not know.
 //
-// Unknown fields are an ERROR. A caller who sends `subjects` instead of
-// `subject` must be told, rather than receiving a confident denial about a
-// subject we never saw.
+// §10.1.1 makes that a requirement rather than a courtesy:
+//
+//	"To ensure forward compatibility, receivers MUST ignore unknown fields
+//	present in request or response bodies."
+//
+// And §4 says a later revision "MAY augment this API... Augmentation MAY include
+// additional API methods or additional parameters to existing API methods." So
+// the specification both anticipates new parameters and requires a receiver to
+// tolerate them.
+//
+// This used to call DisallowUnknownFields, which is the exact inverse. The
+// reasoning was sound and the mechanism was not: a caller sending `subjects`
+// instead of `subject` should be told rather than handed "a confident denial
+// about a subject we never saw". But refusing the whole body is not what tells
+// them. With the stray field ignored, `subject` is simply absent, and Validate
+// answers with the error §10.1.1 requires for exactly that case --
+//
+//	"If a required attribute in the information model is omitted, the server
+//	MUST return a "Bad Request" error"
+//
+// -- which names the attribute that is MISSING rather than the one that was
+// misspelled, and is the more useful of the two messages.
+//
+// What is given up: a typo in an OPTIONAL field is now silent. That is the
+// trade the specification makes on purpose, because the alternative refuses
+// every PEP speaking a later revision of the API -- and refuses it with a 400,
+// so the caller cannot even learn whether they would have been allowed.
 func Decode(body []byte, into any) error {
+	// Duplicate members are refused before anything reads the body.
+	//
+	// §10.1.1: "Implementations MUST NOT assume a particular ordering of JSON
+	// object members." A body carrying `subject` twice has a meaning that
+	// depends on exactly that ordering, so there is no reading of it this server
+	// is entitled to pick -- which makes refusing the only correct answer.
+	//
+	// It is also the concrete attack. Go's decoder MERGES a repeated object into
+	// the value already decoded, so
+	//
+	//	{"subject":{"type":"user","id":"alice"},"subject":{}}
+	//
+	// evaluates as alice, while a proxy, WAF or audit shipper that takes the
+	// LAST occurrence sees an empty subject. The decision and the record of the
+	// decision then describe different requests, which is the one thing an
+	// authorization audit trail may not do.
+	//
+	// The same rule, for the same reason, as the duplicate-parameter check on
+	// the pushed authorization request endpoint.
+	if err := rejectDuplicateKeys(body); err != nil {
+		return err
+	}
 	dec := json.NewDecoder(strings.NewReader(string(body)))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(into); err != nil {
 		return fmt.Errorf("the request body did not parse: %w", err)
+	}
+	return nil
+}
+
+// rejectDuplicateKeys walks the document and refuses any object that names a
+// member twice, at any depth.
+//
+// A token walk rather than a second unmarshal into map[string]any, because that
+// would collapse the duplicates before they could be seen -- which is the whole
+// difficulty.
+func rejectDuplicateKeys(body []byte) error {
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+	// Numbers are not inspected, so precision does not matter; UseNumber only
+	// avoids float conversion work on the way past.
+	dec.UseNumber()
+	return walkForDuplicates(dec, nil)
+}
+
+func walkForDuplicates(dec *json.Decoder, path []string) error {
+	tok, err := dec.Token()
+	if err != nil {
+		// Malformed JSON is the decoder's error to report, not ours: returning
+		// nil here lets Decode produce the message that names the position.
+		return nil //nolint:nilerr // reported by the caller's Decode
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return nil // a scalar at the top level
+	}
+	switch delim {
+	case '{':
+		seen := map[string]bool{}
+		for dec.More() {
+			keyTok, kerr := dec.Token()
+			if kerr != nil {
+				return nil
+			}
+			key, _ := keyTok.(string)
+			if seen[key] {
+				where := "the request body"
+				if len(path) > 0 {
+					where = strings.Join(path, ".")
+				}
+				return fmt.Errorf("%s names %q more than once; which one applies "+
+					"depends on the parser, so the request has no single meaning",
+					where, key)
+			}
+			seen[key] = true
+			if verr := walkForDuplicates(dec, append(path, key)); verr != nil {
+				return verr
+			}
+		}
+		_, _ = dec.Token() // closing brace
+	case '[':
+		for dec.More() {
+			if verr := walkForDuplicates(dec, path); verr != nil {
+				return verr
+			}
+		}
+		_, _ = dec.Token() // closing bracket
 	}
 	return nil
 }

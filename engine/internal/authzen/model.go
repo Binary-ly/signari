@@ -41,6 +41,7 @@ import (
 // Model is a parsed authorization model.
 type Model struct {
 	Types map[string]Type `yaml:"types" json:"types"`
+	Policies map[string]Condition `yaml:"policies" json:"policies,omitempty"`
 	// Tests are run at parse time and are not optional.
 	Tests []ModelTest `yaml:"tests" json:"tests,omitempty"`
 }
@@ -89,7 +90,26 @@ type Condition struct {
 	// Asserted holds requirements the CALLER supplies. Separated on purpose --
 	// see the type comment.
 	Asserted *Asserted `yaml:"asserted" json:"asserted,omitempty"`
+
+	// Policies names entries from the model's `policies` block, combined by
+	// Strategy. Everything else on this Condition still applies, and applies
+	// AND-wise alongside the combined result -- an inline requirement is not
+	// quietly outvoted by a consensus of named ones.
+	Policies []string `yaml:"policies" json:"policies,omitempty"`
+	// Strategy is how the named policies combine: unanimous (the default),
+	// affirmative, or consensus.
+	Strategy string `yaml:"strategy" json:"strategy,omitempty"`
 }
+
+const (
+	// StrategyUnanimous requires every named policy. The default, because it is
+	// the only one where adding a policy cannot make a request MORE permitted --
+	// under affirmative and consensus, adding one can flip a denial to a grant.
+	StrategyUnanimous = "unanimous"
+	// StrategyAffirmative requires at least one.
+	StrategyAffirmative = "affirmative"
+	StrategyConsensus = "consensus"
+)
 
 // TimeWindow restricts an action to certain days and hours.
 type TimeWindow struct {
@@ -119,7 +139,41 @@ type Asserted struct {
 func (c Condition) isEmpty() bool {
 	return !c.MFA && !c.DeviceManaged && !c.DeviceCompliant &&
 		len(c.AnyGroup) == 0 && c.MaxRisk == 0 && !c.SubjectActive &&
-		!c.EmailVerified && c.Time == nil && c.Asserted == nil
+		!c.EmailVerified && c.Time == nil && c.Asserted == nil &&
+		len(c.Policies) == 0
+}
+
+// resolved is a Condition with its named policies attached.
+//
+// The named policies travel WITH the condition rather than being looked up
+// during evaluation, so SatisfiedBy stays a pure function of a condition and
+// some facts. A predicate that needs the whole model to answer is one that
+// cannot be tested on its own, and every test in this package would have to
+// build a model to ask a question about one rule.
+type resolved struct {
+	Condition
+	named []Condition
+}
+
+// combine applies the decision strategy to the named policies.
+func (r resolved) combine(f Facts) bool {
+	if len(r.named) == 0 {
+		return true
+	}
+	grants := 0
+	for _, p := range r.named {
+		if p.SatisfiedBy(f) {
+			grants++
+		}
+	}
+	switch r.Strategy {
+	case StrategyAffirmative:
+		return grants > 0
+	case StrategyConsensus:
+		return grants > len(r.named)-grants
+	default:
+		return grants == len(r.named)
+	}
 }
 
 // ModelTest is an example the model must satisfy.
@@ -171,6 +225,26 @@ func ParseModel(data []byte) (*Model, error) {
 }
 
 func (m *Model) validate() error {
+	// Named policies first: every rule below may reference them, and a rule
+	// naming a policy that does not exist must be a parse failure rather than a
+	// silently-skipped requirement. A typo in a policy name is otherwise a
+	// permission quietly granted -- the rule still parses, the clause simply
+	// never fires.
+	for name, c := range m.Policies {
+		if !plainName(name) {
+			return fmt.Errorf("policy %q: names must be lowercase letters, digits, "+
+				"_ or -", name)
+		}
+		if c.isEmpty() {
+			return fmt.Errorf("policy %q requires nothing, so every rule naming it "+
+				"is weaker than it looks", name)
+		}
+		if len(c.Policies) > 0 {
+			return fmt.Errorf("policy %q names other policies; composition is one "+
+				"level deep, so compose them at the rule instead", name)
+		}
+	}
+
 	for name, t := range m.Types {
 		if !plainName(name) {
 			return fmt.Errorf("type %q: names must be lowercase letters, digits, "+
@@ -186,6 +260,11 @@ func (m *Model) validate() error {
 					return fmt.Errorf("%s.%s is implied by %q, which is not a "+
 						"relation on %s", name, rel, from, name)
 				}
+			}
+		}
+		for act, c := range t.Require {
+			if err := m.validateRule(name, act, c); err != nil {
+				return err
 			}
 		}
 		for act, grants := range t.Permissions {
@@ -395,16 +474,94 @@ func (m *Model) RelationsFor(objectType, action string) ([]string, bool) {
 }
 
 // ConditionFor returns the extra requirement on an action, if any.
-func (m *Model) ConditionFor(objectType, action string) (Condition, bool) {
+func (m *Model) ConditionFor(objectType, action string) (Rule, bool) {
 	t, ok := m.Types[objectType]
 	if !ok {
-		return Condition{}, false
+		return Rule{}, false
 	}
 	c, ok := t.Require[action]
 	if !ok || c.isEmpty() {
-		return Condition{}, false
+		return Rule{}, false
 	}
-	return c, true
+	r := Rule{resolved: resolved{Condition: c}}
+	for _, name := range c.Policies {
+		// Validation guarantees the name exists; a missing one here would be a
+		// model that never parsed.
+		r.named = append(r.named, m.Policies[name])
+	}
+	return r, true
+}
+
+// Rule is a condition together with the named policies it composes.
+type Rule struct{ resolved }
+
+// SatisfiedBy reports whether the facts meet the rule.
+//
+// The inline requirements and the combined named policies are ANDed. An inline
+// requirement is not outvoted by a consensus of named ones: if a rule says
+// `mfa: true` alongside three policies under `affirmative`, the second factor is
+// still required. Anything else would make adding a policy able to REMOVE a
+// requirement written beside it.
+func (r Rule) SatisfiedBy(f Facts) bool {
+	return r.Condition.SatisfiedBy(f) && r.combine(f)
+}
+
+// Unmet explains the first unsatisfied requirement.
+func (r Rule) Unmet(f Facts) string {
+	if why := r.Condition.Unmet(f); why != "" {
+		return why
+	}
+	if r.combine(f) {
+		return ""
+	}
+	// Name the policies that failed, not just the strategy: "consensus not
+	// reached" tells an operator nothing about which rule to look at.
+	var failed []string
+	for i, p := range r.named {
+		if !p.SatisfiedBy(f) {
+			name := "policy"
+			if i < len(r.Policies) {
+				name = r.Policies[i]
+			}
+			failed = append(failed, name)
+		}
+	}
+	strategy := r.Strategy
+	if strategy == "" {
+		strategy = StrategyUnanimous
+	}
+	return "the " + strategy + " policies to be satisfied (" +
+		strings.Join(failed, ", ") + " " + wereOrWas(len(failed)) + " not)"
+}
+
+func wereOrWas(n int) string {
+	if n == 1 {
+		return "was"
+	}
+	return "were"
+}
+
+// validateRule checks one action's requirement.
+func (m *Model) validateRule(typeName, action string, c Condition) error {
+	for _, ref := range c.Policies {
+		if _, ok := m.Policies[ref]; !ok {
+			return fmt.Errorf("%s.%s names the policy %q, which is not defined; a "+
+				"rule referring to a policy that does not exist would evaluate as "+
+				"though the requirement were not there", typeName, action, ref)
+		}
+	}
+	switch c.Strategy {
+	case "", StrategyUnanimous, StrategyAffirmative, StrategyConsensus:
+	default:
+		return fmt.Errorf("%s.%s has strategy %q; it must be one of %s, %s or %s",
+			typeName, action, c.Strategy,
+			StrategyUnanimous, StrategyAffirmative, StrategyConsensus)
+	}
+	if c.Strategy != "" && len(c.Policies) == 0 {
+		return fmt.Errorf("%s.%s sets a decision strategy but names no policies, "+
+			"so the strategy decides nothing", typeName, action)
+	}
+	return nil
 }
 
 // RunTests checks the model's own examples.

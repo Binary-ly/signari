@@ -5669,7 +5669,7 @@ func authzCheck(ctx context.Context, conn *pgx.Conn, orgID, subject, action, obj
 	fmt.Printf("ALLOWED %s may %s %s\n  via relation: %s\n", subject, action, object, held)
 	if c, has := m.ConditionFor(otyp, action); has {
 		fmt.Printf("  NOTE: at runtime this also requires %s, which is a property of "+
-			"the session and cannot be checked from here\n", conditionSummary(c))
+			"the session and cannot be checked from here\n", conditionSummary(c.Condition))
 	}
 	return nil
 }

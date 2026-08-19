@@ -1,0 +1,116 @@
+# The flows a deployment gets when it has not written its own.
+#
+# These reproduce, exactly, the journey the server ran when it was a fixed
+# sequence of Go. That is the point: turning the sequence into a file must not
+# change anybody's sign-in, so this file is the old behaviour written down. An
+# operator diffs their version against it.
+#
+# It is embedded, parsed by Parse like any other flow file, and covered by the
+# same safety analysis. A change here that made the default unsafe would fail
+# the package's tests rather than ship.
+
+version: 1
+
+flows:
+  # ---------------------------------------------------------------------------
+  - name: default-sign-in
+    on: authentication
+    stages:
+      # Before the credential lookup, so a solved challenge is a precondition
+      # for spending an Argon2 evaluation rather than a second opinion after it.
+      - {stage: captcha, when: captcha_required}
+
+      # One stage, because it is one form: the identifier and the password are
+      # submitted together. There is no separate `identify` step to place it
+      # after.
+      #
+      # The fallback to the identity provider being migrated away from lives
+      # inside this stage rather than beside it. It is not a different question
+      # being asked of the person -- the same password is checked somewhere
+      # else -- so making it a step would put a decision in the file that has no
+      # corresponding moment in the journey.
+      - password
+
+      # A correct password does not create a session when a second factor is
+      # enrolled.
+      - {stage: mfa, when: user_has_second_factor}
+
+      # Prompts before the password change, deliberately: terms somebody has not
+      # accepted should be put to them before they are asked to do work.
+      - {stage: prompt, when: prompts_pending}
+      - {stage: password_change, when: password_change_required}
+
+      - session
+
+    tests:
+      - name: password only
+        given: {}
+        expect: [password, session]
+
+      - name: a challenge is showing
+        given: {captcha_required: true}
+        expect: [captcha, password, session]
+
+      - name: a second factor is enrolled
+        given: {user_has_second_factor: true}
+        expect: [password, mfa, session]
+
+      - name: terms are outstanding
+        given: {prompts_pending: true}
+        expect: [password, prompt, session]
+
+      - name: the password is flagged
+        given: {password_change_required: true}
+        expect: [password, password_change, session]
+
+      # The order of the last two is a decision, so it is a case rather than a
+      # comment: a reordering would pass every test above and fail this one.
+      - name: terms outstanding and the password flagged
+        given: {prompts_pending: true, password_change_required: true}
+        expect: [password, prompt, password_change, session]
+
+      - name: everything at once
+        given:
+          captcha_required: true
+          user_has_second_factor: true
+          prompts_pending: true
+          password_change_required: true
+        expect: [captcha, password, mfa, prompt, password_change, session]
+
+  # ---------------------------------------------------------------------------
+  - name: default-recovery
+    on: recovery
+    stages:
+      - identify
+      # A code to the address on file. The password cannot be what proves this,
+      # because the password is what is being recovered -- the analysis enforces
+      # that, and it is worth saying here too.
+      - email_otp
+      - password_change
+      - session
+
+    tests:
+      - name: recovers by email
+        given: {}
+        expect: [identify, email_otp, password_change, session]
+
+  # ---------------------------------------------------------------------------
+  - name: default-sign-up
+    on: enrolment
+    stages:
+      - {stage: captcha, when: captcha_required}
+      - prompt
+      - create_user
+      # Not `session`: enrolment decides who exists, and an authentication flow
+      # decides who is signed in. The analysis refuses an enrolment flow that
+      # reaches a session, so this is not a stylistic choice.
+      - done
+
+    tests:
+      - name: signs up
+        given: {}
+        expect: [prompt, create_user, done]
+
+      - name: signs up behind a challenge
+        given: {captcha_required: true}
+        expect: [captcha, prompt, create_user, done]

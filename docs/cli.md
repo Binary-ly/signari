@@ -124,6 +124,7 @@ a class of failure that shows up as data corruption rather than an error.
 | | |
 |---|---|
 | `signari policy show` / `policy apply` / `policy test` / `policy graph` | Access policy. `policy test` answers "would this have been allowed" |
+| `signari flow test` / `flow paths` / `flow show` | Sign-in flows. `flow test` refuses a file whose journeys could issue a session without proving the subject; `flow paths` lists every journey a flow admits; `flow show` prints the built-in flows as a file to start from. See [flows.md](flows.md) |
 | `signari prompt list` / `prompt set` | Interstitial prompts — terms, notices |
 | `signari brand set` / `brand show` / `brand check` | Branding. `brand check` verifies contrast |
 | `signari duo set` / `duo enroll` / `duo show` | Duo as a second factor |

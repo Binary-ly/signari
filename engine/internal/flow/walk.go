@@ -1,5 +1,10 @@
 package flow
 
+import (
+	"fmt"
+	"strings"
+)
+
 
 // Plan returns the stages that run under a fixed state.
 //
@@ -87,4 +92,86 @@ func (c *Cursor) Next(st State) (StageName, bool) {
 		}
 	}
 	return "", false
+}
+
+// Path is one journey a flow admits, and a set of conditions that produces it.
+type Path struct {
+	Stages []StageName
+	// Given is the assignment that produced this path. Only the conditions the
+	// flow actually mentions appear, and only those that must be true -- so it
+	// reads as the situation a person would be in, rather than as a bit pattern.
+	Given State
+}
+
+// Conditions lists the conditions a flow branches on, in the order they first
+// appear. A flow with none has exactly one path.
+func (fl *Flow) Conditions() []string {
+	var out []string
+	seen := map[string]bool{}
+	note := func(expr string) {
+		name := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(expr), "not "))
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	for _, st := range fl.Stages {
+		note(st.When)
+		for _, b := range st.OneOf {
+			note(b.When)
+		}
+	}
+	return out
+}
+
+func (fl *Flow) Paths() ([]Path, error) {
+	conds := fl.Conditions()
+	if len(conds) > maxEnumeratedConditions {
+		return nil, fmt.Errorf("this flow branches on %d conditions, so it admits up to %d "+
+			"journeys; that is more than can be enumerated, and more than can be reviewed",
+			len(conds), 1<<len(conds))
+	}
+
+	var out []Path
+	seen := map[string]bool{}
+	for mask := 0; mask < 1<<len(conds); mask++ {
+		st := State{}
+		for i, c := range conds {
+			st[c] = mask&(1<<i) != 0
+		}
+		stages := fl.Plan(st)
+		key := joinStages(stages)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		// Only the conditions that are TRUE, so the printed situation is the
+		// short one: "with a second factor" rather than a list of everything that
+		// is not the case.
+		given := State{}
+		for _, c := range conds {
+			if st[c] {
+				given[c] = true
+			}
+		}
+		out = append(out, Path{Stages: stages, Given: given})
+	}
+	return out, nil
+}
+
+// maxEnumeratedConditions bounds Paths. 2^20 is a million journeys; a flow near
+// that is unreviewable whatever this number is.
+const maxEnumeratedConditions = 20
+
+// Summary describes a file in one line, for a CLI that has just loaded it.
+func (f *File) Summary() string {
+	if len(f.Flows) == 1 {
+		fl := f.Flows[0]
+		return fmt.Sprintf("1 flow (%s, %d steps)", fl.On, len(fl.Stages))
+	}
+	kinds := make([]string, 0, len(f.Flows))
+	for _, fl := range f.Flows {
+		kinds = append(kinds, string(fl.On))
+	}
+	return fmt.Sprintf("%d flows (%s)", len(f.Flows), strings.Join(kinds, ", "))
 }

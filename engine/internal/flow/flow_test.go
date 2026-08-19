@@ -589,3 +589,99 @@ flows:
 func TestAnEmptyFileIsRefused(t *testing.T) {
 	parseErr(t, "version: 1\nflows: []\n", "defines no flows")
 }
+
+// TestTheDefaultFlowsLoad holds the built-in file to exactly the rules an
+// operator's file is held to.
+//
+// Without this the default is trusted because it shipped, which is the same
+// reason every insecure default in this field was trusted.
+func TestTheDefaultFlowsLoad(t *testing.T) {
+	f, err := Default()
+	if err != nil {
+		t.Fatalf("the built-in flows do not load: %v", err)
+	}
+	for _, d := range []Designation{Authentication, Recovery, Enrolment} {
+		if _, ok := f.For(d); !ok {
+			t.Fatalf("no built-in flow for %s", d)
+		}
+	}
+}
+
+// TestTheDefaultSignInReproducesTheOldSequence is the compatibility claim,
+// checked rather than asserted in a commit message.
+//
+// The journey the server ran as fixed Go was: a challenge if the adaptive
+// counter had escalated, then the password, then a second factor if one was
+// enrolled, then any outstanding prompt, then a required password change, then
+// the session. Turning that into a file must not have changed it.
+func TestTheDefaultSignInReproducesTheOldSequence(t *testing.T) {
+	f, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fl, _ := f.For(Authentication)
+
+	for _, c := range []struct {
+		name  string
+		given State
+		want  string
+	}{
+		{"password only", State{}, "password -> session"},
+		{"second factor enrolled", State{string(CondHasSecondFactor): true},
+			"password -> mfa -> session"},
+		{"everything", State{
+			string(CondCaptchaRequired):        true,
+			string(CondHasSecondFactor):        true,
+			string(CondPromptsPending):         true,
+			string(CondPasswordChangeRequired): true,
+		}, "captcha -> password -> mfa -> prompt -> password_change -> session"},
+	} {
+		if got := joinStages(fl.Plan(c.given)); got != c.want {
+			t.Errorf("%s:\n  want %s\n  got  %s", c.name, c.want, got)
+		}
+	}
+}
+
+// TestEveryDefaultJourneyProvesTheSubject walks the enumerated paths rather than
+// trusting the analysis that admitted them -- the same independent check the
+// property tests apply to random flows, applied to the one file that ships.
+func TestEveryDefaultJourneyProvesTheSubject(t *testing.T) {
+	f, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range f.Flows {
+		fl := &f.Flows[i]
+		if p, bad := unsafePath(fl, fl.On); bad {
+			t.Errorf("built-in flow %q admits a journey that issues a session having proved "+
+				"nothing: %s", fl.Name, joinStages(p))
+		}
+		if p, bad := disorderedPath(fl, fl.On); bad {
+			t.Errorf("built-in flow %q admits a journey that changes a credential before "+
+				"proving anyone: %s", fl.Name, joinStages(p))
+		}
+	}
+}
+
+// TestPathsEnumeratesEveryJourney covers the command an operator uses to review
+// a flow. A reviewer acting on this list needs it to be the whole list.
+func TestPathsEnumeratesEveryJourney(t *testing.T) {
+	f := mustParse(t, goodFlow)
+	fl, _ := f.Flow("sign-in")
+	ps, err := fl.Paths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Three independent conditions, so eight assignments -- but captcha, mfa and
+	// prompt are independent stages, so all eight produce distinct journeys.
+	if len(ps) != 8 {
+		t.Fatalf("expected 8 distinct journeys, got %d", len(ps))
+	}
+	// Every one of them must end in a terminal, or the enumeration is showing
+	// journeys that stop nowhere.
+	for _, p := range ps {
+		if len(p.Stages) == 0 || !p.Stages[len(p.Stages)-1].terminal() {
+			t.Errorf("a journey does not end in a terminal stage: %s", joinStages(p.Stages))
+		}
+	}
+}

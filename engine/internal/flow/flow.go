@@ -277,8 +277,8 @@ func (fl *Flow) validate() error {
 	for _, name := range last.stageNames() {
 		if !name.terminal() {
 			return fmt.Errorf("ends with %s, which is not a terminal stage; a flow must "+
-				"end in %s or %s so that every path has a stated outcome",
-				name, StageSession, StageDeny)
+				"end in %s, %s or %s so that every path has a stated outcome",
+				name, StageSession, StageDone, StageDeny)
 		}
 	}
 

@@ -80,8 +80,16 @@ const (
 	// StageSession issues the session. Terminal.
 	StageSession StageName = "session"
 
-	// StageDeny refuses. Terminal, and the only other way a flow can end.
+	// StageDeny refuses. Terminal.
 	StageDeny StageName = "deny"
+
+	// StageDone ends a flow that succeeded without issuing a session.
+	//
+	// Distinct from deny, and the distinction is not pedantry: an enrolment flow
+	// may not reach a session (safety.go), so without this its successful ending
+	// would have to be spelled `deny` -- a file that says the opposite of what
+	// happened, in the one place an operator looks to find out what happened.
+	StageDone StageName = "done"
 )
 
 // allStages is the inventory, in the order a reader should meet them.
@@ -90,7 +98,7 @@ var allStages = []StageName{
 	StagePassword, StagePasskey, StageMFA, StageEmailOTP, StageSMSOTP,
 	StageCertificate, StageKerberos, StageFederated, StageDelegated,
 	StageConsent, StagePrompt, StagePasswordChange, StageEnrolMFA, StageCreateUser,
-	StageSession, StageDeny,
+	StageSession, StageDeny, StageDone,
 }
 
 // provingStages establish an authenticated subject.
@@ -142,7 +150,9 @@ func (s StageName) known() bool {
 	return false
 }
 
-func (s StageName) terminal() bool { return s == StageSession || s == StageDeny }
+func (s StageName) terminal() bool {
+	return s == StageSession || s == StageDeny || s == StageDone
+}
 
 // proves reports whether this stage establishes a subject for a given flow.
 func (s StageName) proves(d Designation) bool {

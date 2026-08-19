@@ -66,6 +66,7 @@ import (
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/outbox"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/proxycheck"
@@ -98,6 +99,7 @@ var twoWordCommands = map[string]bool{
 	"invite": true, "signup": true, "outpost": true, "provision": true,
 	"prompt":   true,
 	"attester": true,
+	"flow":     true,
 	"kerberos": true,
 	"ssf":      true, "registration": true, "export": true, "dir": true, "audit": true, "rac": true,
 	"events":     true,
@@ -142,6 +144,9 @@ commands:
   policy test         check a policy file (no database needed -- for CI)
   policy apply        install a policy file
   policy show         print the policy in force
+  flow test           check a sign-in flow file (no database needed -- for CI)
+  flow paths          list every journey a flow admits, and what produces each
+  flow show           print the built-in flows, as a file to start from
   dir add             register a Google Workspace or Entra ID directory source
   dir sync            reconcile users from a directory (preview unless -apply)
   export audit        write the audit trail as CSV, with its chain verified
@@ -345,6 +350,8 @@ func run(args []string) error {
 	declaredBy := fs.String("by", "", "who is declaring an audit checkpoint")
 	reason := fs.String("reason", "", "why an audit checkpoint is being declared")
 	policyFile := fs.String("policy-file", "", "path to a policy file")
+	flowFile := fs.String("flow-file", "", "path to a sign-in flow file")
+	flowName := fs.String("flow", "", "which flow in the file (default: every one)")
 	jwksPath := fs.String("jwks", "", "file containing the client's PUBLIC JWKS")
 	onlyGroups := fs.String("only", "", "comma-separated groups to release (default: all)")
 	apply := fs.Bool("apply", false, "actually make changes (scim sync defaults to a preview)")
@@ -399,6 +406,14 @@ func run(args []string) error {
 		return policyTest(*policyFile)
 	case "policy graph":
 		return policyGraph(*policyFile, *outFile)
+	// The flow commands read a file and nothing else, for the same reason: a
+	// flow that would not load must fail in CI, not on the next restart.
+	case "flow test":
+		return flowTest(*flowFile)
+	case "flow paths":
+		return flowPaths(*flowFile, *flowName)
+	case "flow show":
+		return flowShow()
 	}
 
 	// `outpost run` is the whole point of an outpost: it holds NO database
@@ -2634,6 +2649,119 @@ func policyTest(path string) error {
 		fmt.Printf("    ok   %s\n", tc.Name)
 	}
 	fmt.Println("\n  This file will load. Its rules do what its tests say.")
+	return nil
+}
+
+// flowTest checks a sign-in flow file without deploying it.
+//
+// The same load path the engine uses, so "it passes here" and "it will load"
+// are the same statement. Passing means three things, and the output says all
+// three because an operator who only reads "ok" learns the least useful one:
+// the file parses, its own test cases hold, and the static safety analysis
+// found no journey that issues a session without proving the subject.
+func flowTest(path string) error {
+	if path == "" {
+		return fmt.Errorf("give -flow-file, the flow file to check")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	f, err := flow.Parse(data)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\n  %s: %s\n", path, f.Summary())
+	for i := range f.Flows {
+		fl := &f.Flows[i]
+		fmt.Printf("\n  %s (%s)\n", fl.Name, fl.On)
+		for _, tc := range fl.Tests {
+			fmt.Printf("    ok   %s\n", tc.Name)
+		}
+		paths, perr := fl.Paths()
+		if perr != nil {
+			fmt.Printf("    --   %v\n", perr)
+			continue
+		}
+		fmt.Printf("    %d distinct journeys, every one of them proving the subject\n",
+			len(paths))
+	}
+	fmt.Println("\n  This file will load. Its flows do what its tests say, and none of")
+	fmt.Println("  them can issue a session without proving who the subject is.")
+	return nil
+}
+
+// flowPaths lists every journey a flow admits.
+//
+// The point of the command: a flow file is read one step at a time and lived
+// one journey at a time, and the gap between those two readings is where a
+// misconfiguration hides. Enumerating removes the gap -- there is nothing left
+// to infer.
+func flowPaths(path, only string) error {
+	var f *flow.File
+	var err error
+	if path == "" {
+		// No file given: show the built-in flows, which is what a deployment is
+		// running if nobody has written their own.
+		if f, err = flow.Default(); err != nil {
+			return err
+		}
+		fmt.Printf("\n  the built-in flows (no -flow-file given)\n")
+	} else {
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return fmt.Errorf("reading %s: %w", path, rerr)
+		}
+		if f, err = flow.Parse(data); err != nil {
+			return err
+		}
+		fmt.Printf("\n  %s\n", path)
+	}
+
+	shown := 0
+	for i := range f.Flows {
+		fl := &f.Flows[i]
+		if only != "" && fl.Name != only {
+			continue
+		}
+		shown++
+		fmt.Printf("\n  %s (%s)\n", fl.Name, fl.On)
+		paths, perr := fl.Paths()
+		if perr != nil {
+			return perr
+		}
+		for _, p := range paths {
+			var when []string
+			for _, c := range fl.Conditions() {
+				if p.Given[c] {
+					when = append(when, c)
+				}
+			}
+			situation := "nothing in particular"
+			if len(when) > 0 {
+				situation = strings.Join(when, ", ")
+			}
+			var names []string
+			for _, st := range p.Stages {
+				names = append(names, string(st))
+			}
+			fmt.Printf("    %-58s  %s\n", strings.Join(names, " -> "), situation)
+		}
+	}
+	if shown == 0 {
+		return fmt.Errorf("no flow named %q in that file", only)
+	}
+	return nil
+}
+
+// flowShow prints the built-in flows verbatim, as a file to start from.
+func flowShow() error {
+	// Parsed before it is printed, so the command cannot hand somebody a file
+	// that would not load if they saved it.
+	if _, err := flow.Default(); err != nil {
+		return err
+	}
+	fmt.Print(string(flow.DefaultDocument()))
 	return nil
 }
 

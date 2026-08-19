@@ -134,6 +134,21 @@ makes a typo an error rather than a stage that silently never runs. It is also
 what makes the analysis possible: these are the only things a flow can branch on,
 so "every path" is a set that can be walked.
 
+**Not all of them are wired in yet**, and the difference matters — a condition
+the engine cannot answer is false, so the stage it guards never runs, and a
+control that never runs is not a control.
+
+| condition | today |
+|---|---|
+| `user_has_second_factor`, `prompts_pending`, `password_change_required`, `client_requires_mfa` | **evaluated** |
+| `captcha_required` | decided at the sign-in form, before the flow is walked |
+| the rest | not yet evaluated — treated as false |
+
+Applying a flow that branches on one of "the rest" logs a warning naming the
+condition and the flow, once per document. It is not refused: writing a flow
+against a signal before the signal is wired in is reasonable, being surprised by
+it later is not.
+
 ### `one_of`
 
 ```yaml

@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/url"
 	"strings"
@@ -34,6 +36,10 @@ type flowCache struct {
 	// hundred concurrent sign-ins produce one query rather than a hundred.
 	refreshing sync.Mutex
 	inFlight   bool
+	// reported remembers which documents have already had their inert conditions
+	// reported, so a thirty-second reload does not repeat the message forever.
+	reportedMu sync.Mutex
+	reported   map[string]bool
 }
 
 func newFlowCache() *flowCache { return &flowCache{byOrg: map[string]*flow.File{}} }
@@ -154,6 +160,7 @@ func (s *Server) reloadFlows(ctx context.Context) {
 			s.flows.mu.RUnlock()
 			continue
 		}
+		s.reportInertConditions(orgID, doc, f)
 		loaded[orgID] = f
 	}
 
@@ -227,12 +234,19 @@ func (f *signInFacts) state(fl *flow.Flow, clientWantsMFA bool) flow.State {
 		case flow.CondClientRequiresMFA:
 			st[c] = clientWantsMFA
 		default:
-			// A condition the language defines and this server cannot yet answer
-			// -- device posture, risk, network. Left false, which skips the stage
-			// it guards. Logged once per evaluation rather than silently, because
-			// an operator who wrote it believes it does something.
-			f.s.log.Warn("this flow branches on a condition the sign-in path does not "+
-				"yet evaluate; it is treated as false", "condition", c)
+			// A condition this path does not answer: either it is decided earlier
+			// (captcha, at the form) or the signal is not wired into sign-in yet
+			// (device posture, risk, network). False, which skips the stage it
+			// guards.
+			//
+			// NOT logged here. This runs on every sign-in, and the built-in flow
+			// itself mentions captcha_required -- so a warning here fired on every
+			// successful login of every deployment, about the default
+			// configuration. A warning that is always present is one operators
+			// learn to scroll past, which costs more than it buys.
+			//
+			// The same information is reported once, when a flow is loaded, by
+			// reportInertConditions.
 			st[c] = false
 		}
 	}
@@ -477,4 +491,64 @@ func hasSecondFactorAMR(amr []string) bool {
 		}
 	}
 	return false
+}
+
+// evaluatedConditions are the conditions the sign-in path actually answers.
+//
+// The language defines more than this. That is deliberate -- a flow can be
+// written against a signal before the signal is wired in -- but the gap has to be
+// visible, or an operator configures a control that silently does nothing, which
+// is the failure this codebase keeps finding in other systems.
+var evaluatedConditions = map[flow.Condition]bool{
+	flow.CondHasSecondFactor:        true,
+	flow.CondPromptsPending:         true,
+	flow.CondPasswordChangeRequired: true,
+	flow.CondClientRequiresMFA:      true,
+}
+
+// conditionsDecidedElsewhere are answered before the flow is consulted, so
+// reporting them as inert would be wrong -- the stage they guard did run, just
+// not under the sequencer.
+var conditionsDecidedElsewhere = map[flow.Condition]string{
+	flow.CondCaptchaRequired: "decided at the sign-in form, before the flow is walked",
+}
+
+// reportInertConditions says once, at load, which parts of a flow do nothing.
+//
+// Once per distinct document, not once per reload: the cache refreshes every
+// thirty seconds, and a message repeated twice a minute forever is noise rather
+// than information.
+func (s *Server) reportInertConditions(orgID, doc string, f *flow.File) {
+	sum := sha256.Sum256([]byte(doc))
+	key := orgID + ":" + hex.EncodeToString(sum[:8])
+
+	s.flows.reportedMu.Lock()
+	if s.flows.reported == nil {
+		s.flows.reported = map[string]bool{}
+	}
+	already := s.flows.reported[key]
+	s.flows.reported[key] = true
+	s.flows.reportedMu.Unlock()
+	if already {
+		return
+	}
+
+	for i := range f.Flows {
+		fl := &f.Flows[i]
+		for _, c := range fl.Conditions() {
+			cond := flow.Condition(c)
+			if evaluatedConditions[cond] {
+				continue
+			}
+			if why, ok := conditionsDecidedElsewhere[cond]; ok {
+				s.log.Debug("flow condition is settled before the flow runs",
+					"org_id", orgID, "flow", fl.Name, "condition", c, "reason", why)
+				continue
+			}
+			s.log.Warn("this flow branches on a condition the sign-in path does not "+
+				"evaluate; the stage it guards will never run. Remove it, or the "+
+				"control it looks like is not one",
+				"org_id", orgID, "flow", fl.Name, "condition", c)
+		}
+	}
 }

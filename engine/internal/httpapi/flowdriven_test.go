@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -436,5 +439,76 @@ func TestThePromptListIsReadOnce(t *testing.T) {
 	if counter.queries != after {
 		t.Errorf("the prompt list was read again on the second call (%d -> %d queries)",
 			after, counter.queries)
+	}
+}
+
+// TestTheBuiltInFlowLogsNothingOnAnOrdinarySignIn.
+//
+// A warning that is always present is one operators learn to scroll past. The
+// first version of the lazy evaluator warned about a condition the BUILT-IN flow
+// mentions -- captcha_required -- so every successful login of every deployment
+// emitted a warning about the default configuration. Found by asserting on the
+// log rather than by reading the code.
+func TestTheBuiltInFlowLogsNothingOnAnOrdinarySignIn(t *testing.T) {
+	f := newSignInFixture(t)
+	var buf bytes.Buffer
+	f.srv.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	def, err := flow.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fl, _ := def.For(flow.Authentication)
+
+	facts := &signInFacts{
+		s: f.srv, ctx: context.Background(), db: f.pool, orgID: f.orgID, userID: f.userID,
+	}
+	facts.state(fl, false)
+
+	if buf.Len() > 0 {
+		t.Errorf("an ordinary sign-in under the built-in flow logged at info or above:\n%s",
+			buf.String())
+	}
+}
+
+// TestAConditionTheEngineCannotAnswerIsReportedOnce.
+//
+// The gap has to be visible somewhere, or an operator configures a control that
+// silently does nothing. Reported at load, once per document -- not per sign-in,
+// and not per thirty-second cache refresh.
+func TestAConditionTheEngineCannotAnswerIsReportedOnce(t *testing.T) {
+	f := newSignInFixture(t)
+	var buf bytes.Buffer
+	f.srv.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	const doc = `
+version: 1
+flows:
+  - name: uses-a-signal-we-do-not-wire
+    on: authentication
+    stages:
+      - password
+      - {stage: mfa, when: risk_elevated}
+      - session
+    tests:
+      - {name: x, given: {}, expect: [password, session]}
+`
+	parsed, err := flow.Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("the test's own document does not load: %v", err)
+	}
+
+	f.srv.reportInertConditions(f.orgID, doc, parsed)
+	first := buf.String()
+	if !strings.Contains(first, "risk_elevated") {
+		t.Fatalf("a condition the sign-in path does not evaluate was not reported:\n%s", first)
+	}
+
+	// Reloading the same document must not say it again.
+	buf.Reset()
+	f.srv.reportInertConditions(f.orgID, doc, parsed)
+	if buf.Len() > 0 {
+		t.Errorf("the same document was reported twice; the cache reloads every %s, so "+
+			"this would repeat forever:\n%s", flowRefresh, buf.String())
 	}
 }

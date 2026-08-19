@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/flow"
 )
 
@@ -327,5 +329,112 @@ func TestAStaleFlowCacheDoesNotStarveTheConnectionPool(t *testing.T) {
 			t.Fatalf("only %d of %d flow lookups completed; the rest are waiting for a "+
 				"pool connection held by a transaction that is itself waiting", i, workers)
 		}
+	}
+}
+
+// countingReader records how many queries a sign-in makes.
+type countingReader struct {
+	inner   signInReader
+	queries int
+}
+
+func (c *countingReader) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	c.queries++
+	return c.inner.Query(ctx, sql, args...)
+}
+
+func (c *countingReader) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	c.queries++
+	return c.inner.QueryRow(ctx, sql, args...)
+}
+
+// TestAFlowPaysOnlyForTheConditionsItMentions.
+//
+// The straightforward implementation evaluates every condition up front: three
+// queries on a path that previously ran one, on every sign-in in the product,
+// most of them for facts the flow never consults. This asserts the queries are
+// driven by the file instead.
+//
+// Worth a test rather than a comment because the lazy version and the eager one
+// are behaviourally identical -- every other test in this package passes under
+// both, so nothing else would notice the regression.
+func TestAFlowPaysOnlyForTheConditionsItMentions(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+
+	for _, c := range []struct {
+		name      string
+		doc       string
+		wantMax   int
+		rationale string
+	}{
+		{
+			name: "no conditions at all",
+			doc: `
+version: 1
+flows:
+  - name: straight
+    on: authentication
+    stages: [password, session]
+    tests: [{name: x, given: {}, expect: [password, session]}]
+`,
+			wantMax:   0,
+			rationale: "a flow that branches on nothing has nothing to look up",
+		},
+		{
+			name: "one condition",
+			doc: `
+version: 1
+flows:
+  - name: one
+    on: authentication
+    stages:
+      - password
+      - {stage: mfa, when: user_has_second_factor}
+      - session
+    tests:
+      - {name: x, given: {}, expect: [password, session]}
+`,
+			wantMax:   1,
+			rationale: "one condition is one lookup",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			parsed, err := flow.Parse([]byte(c.doc))
+			if err != nil {
+				t.Fatalf("the test's own document does not load: %v", err)
+			}
+			fl, _ := parsed.For(flow.Authentication)
+
+			counter := &countingReader{inner: f.pool}
+			facts := &signInFacts{
+				s: f.srv, ctx: ctx, db: counter, orgID: f.orgID, userID: f.userID,
+			}
+			facts.state(fl, false)
+
+			if counter.queries > c.wantMax {
+				t.Errorf("%s: made %d queries, expected at most %d (%s)",
+					c.name, counter.queries, c.wantMax, c.rationale)
+			}
+		})
+	}
+}
+
+// TestThePromptListIsReadOnce -- the condition and the stage both want it, and
+// reading it twice inside one sign-in is a query nobody asked for.
+func TestThePromptListIsReadOnce(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+
+	counter := &countingReader{inner: f.pool}
+	facts := &signInFacts{
+		s: f.srv, ctx: ctx, db: counter, orgID: f.orgID, userID: f.userID,
+	}
+	facts.pendingPrompts()
+	after := counter.queries
+	facts.pendingPrompts()
+	if counter.queries != after {
+		t.Errorf("the prompt list was read again on the second call (%d -> %d queries)",
+			after, counter.queries)
 	}
 }

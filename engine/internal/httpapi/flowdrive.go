@@ -164,48 +164,95 @@ func (s *Server) reloadFlows(ctx context.Context) {
 	s.flows.mu.Unlock()
 }
 
-// signInState reads the conditions a flow can branch on.
+// signInFacts answers the conditions a flow can branch on, reading the database
+// only for the ones a given flow actually mentions.
 //
-// Read through the caller's handle -- which during completeSignIn is the open
-// TRANSACTION, not the pool. That is not a detail: an answered prompt is written
-// in that transaction and not yet committed, so reading the pool would report it
-// still pending, ask it again, and loop forever. The fixed sequence had the same
-// requirement and the same comment; moving the reads here moves the trap with
-// them, so it is restated rather than assumed.
+// # Why this is lazy
 //
-// A read that fails yields false rather than an error. Every condition here
-// gates an ADDITIONAL step, so false is the value that lets somebody sign in --
-// and a database hiccup that locks out a deployment is worse than one that skips
-// a prompt. The two conditions where that reasoning does not hold, because false
-// would weaken rather than shorten the journey, are handled at their stage: see
-// the mfa case in nextSignInStage.
-func (s *Server) signInState(ctx context.Context, db signInReader,
-	orgID, userID string, clientWantsMFA bool) (flow.State, []prompts.Prompt) {
+// The obvious version evaluates every condition up front and hands back a map.
+// It is three queries, and the code it replaced ran one -- so every sign-in in
+// the product would have paid for two lookups that most flows never consult. The
+// built-in flow does branch on all three, but a flow of `password -> session`
+// branches on none, and it should cost nothing to have asked.
+//
+// flow.Conditions() reports exactly what a file mentions, so the queries can be
+// driven from the file rather than from the list of things that are knowable.
+//
+// # Read through the caller's handle
+//
+// Which during completeSignIn is the open TRANSACTION, not the pool. That is not
+// a detail: an answered prompt is written in that transaction and not yet
+// committed, so reading the pool would report it still pending, ask it again, and
+// come back again -- an infinite loop that locks out every user, appearing only
+// once a prompt exists. The fixed sequence carried the same requirement and the
+// same comment; moving the reads here moves the trap with them.
+//
+// # A failed read yields false
+//
+// Every condition here gates an ADDITIONAL step, so false is the value that lets
+// somebody sign in, and a database hiccup that locks out a deployment is worse
+// than one that skips a prompt. The one place that reasoning does not hold --
+// where false would weaken the journey rather than shorten it -- is the mfa
+// stage, and it is handled at the stage rather than here.
+type signInFacts struct {
+	s      *Server
+	ctx    context.Context
+	db     signInReader
+	orgID  string
+	userID string
 
+	promptsOnce bool
+	prompts     []prompts.Prompt
+}
+
+// state evaluates just the conditions this flow mentions.
+func (f *signInFacts) state(fl *flow.Flow, clientWantsMFA bool) flow.State {
 	st := flow.State{}
-	var pending []prompts.Prompt
-
-	if enrolled, err := store.HasSecondFactor(ctx, db, userID); err != nil {
-		s.log.Error("checking second factor", "err", err)
-	} else {
-		st[string(flow.CondHasSecondFactor)] = enrolled
+	for _, c := range fl.Conditions() {
+		switch flow.Condition(c) {
+		case flow.CondHasSecondFactor:
+			enrolled, err := store.HasSecondFactor(f.ctx, f.db, f.userID)
+			if err != nil {
+				f.s.log.Error("checking second factor", "err", err)
+			}
+			st[c] = enrolled
+		case flow.CondPromptsPending:
+			st[c] = len(f.pendingPrompts()) > 0
+		case flow.CondPasswordChangeRequired:
+			must, _, err := store.PasswordChangeRequired(f.ctx, f.db, f.userID)
+			if err != nil {
+				f.s.log.Error("checking whether a password change is required", "err", err)
+			}
+			st[c] = must
+		case flow.CondClientRequiresMFA:
+			st[c] = clientWantsMFA
+		default:
+			// A condition the language defines and this server cannot yet answer
+			// -- device posture, risk, network. Left false, which skips the stage
+			// it guards. Logged once per evaluation rather than silently, because
+			// an operator who wrote it believes it does something.
+			f.s.log.Warn("this flow branches on a condition the sign-in path does not "+
+				"yet evaluate; it is treated as false", "condition", c)
+			st[c] = false
+		}
 	}
+	return st
+}
 
-	if ps, err := store.PendingPrompts(ctx, db, orgID, userID); err != nil {
-		s.log.Error("reading prompts", "err", err)
-	} else {
-		pending = ps
-		st[string(flow.CondPromptsPending)] = len(ps) > 0
+// pendingPrompts reads once and remembers, because the condition and the stage
+// both need it.
+func (f *signInFacts) pendingPrompts() []prompts.Prompt {
+	if f.promptsOnce {
+		return f.prompts
 	}
-
-	if must, _, err := store.PasswordChangeRequired(ctx, db, userID); err != nil {
-		s.log.Error("checking whether a password change is required", "err", err)
-	} else {
-		st[string(flow.CondPasswordChangeRequired)] = must
+	f.promptsOnce = true
+	ps, err := store.PendingPrompts(f.ctx, f.db, f.orgID, f.userID)
+	if err != nil {
+		f.s.log.Error("reading prompts", "err", err)
+		return nil
 	}
-
-	st[string(flow.CondClientRequiresMFA)] = clientWantsMFA
-	return st, pending
+	f.prompts = ps
+	return ps
 }
 
 // signInReader is what signInState reads through: the open transaction during
@@ -277,7 +324,8 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 		return decisionSession
 	}
 
-	st, pending := s.signInState(ctx, tx, orgID, userID, clientRequiresMFA(authzQuery))
+	facts := &signInFacts{s: s, ctx: ctx, db: tx, orgID: orgID, userID: userID}
+	st := facts.state(fl, clientRequiresMFA(authzQuery))
 
 	c := fl.Cursor()
 	for {
@@ -307,6 +355,7 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			return decisionDone
 
 		case flow.StagePrompt:
+			pending := facts.pendingPrompts()
 			if len(pending) == 0 {
 				// The stage is unconditional in this file but nothing is
 				// outstanding. Skipping is right: a prompt with no question is not
@@ -378,8 +427,21 @@ func (s *Server) FlowDemandsMFA(ctx context.Context, db signInReader,
 	if fl == nil {
 		return false, false
 	}
-	st, _ := s.signInState(ctx, db, orgID, userID, clientRequiresMFA(authzQuery))
-	enrolled = st[string(flow.CondHasSecondFactor)]
+	facts := &signInFacts{s: s, ctx: ctx, db: db, orgID: orgID, userID: userID}
+	st := facts.state(fl, clientRequiresMFA(authzQuery))
+
+	// Asked directly rather than read out of st: a flow that never mentions
+	// user_has_second_factor -- `- mfa` unconditionally, say -- has no entry for
+	// it, and the caller needs the answer to tell "challenge them" from "they
+	// have nothing to be challenged with".
+	if _, ok := st[string(flow.CondHasSecondFactor)]; ok {
+		enrolled = st[string(flow.CondHasSecondFactor)]
+	} else {
+		var err error
+		if enrolled, err = store.HasSecondFactor(ctx, db, userID); err != nil {
+			s.log.Error("checking second factor", "err", err)
+		}
+	}
 
 	if hasSecondFactorAMR(amr) {
 		return false, enrolled

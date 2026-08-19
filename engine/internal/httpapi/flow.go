@@ -1463,6 +1463,11 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 		// yet, and will not until they answer.
 		return
 	case decisionDeny:
+		// The half-authenticated cookie is cleared, not left to expire. Every
+		// path that could spend it funnels back through here and would be denied
+		// again, so this is not closing a hole -- it is not leaving a live
+		// credential in a browser we have just refused.
+		s.clearPending(w)
 		s.renderLogin(w, r, authzQuery,
 			"You cannot sign in at the moment. Please contact your administrator.")
 		return

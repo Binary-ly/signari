@@ -66,7 +66,7 @@ func (fl *Flow) Resume(i int) *Cursor {
 //
 // Reports false when the flow is finished. Skipped stages are consumed, so a
 // caller that stores At() after each call resumes past them.
-func (c *Cursor) Next(st State) (StageName, bool) {
+func (c *Cursor) Next(ev Evaluator) (StageName, bool) {
 	for c.i < len(c.fl.Stages) {
 		step := c.fl.Stages[c.i]
 		c.i++
@@ -76,7 +76,7 @@ func (c *Cursor) Next(st State) (StageName, bool) {
 			// condition -- validateGroup insists -- so this always selects one,
 			// which is the property safety.go relies on.
 			for _, b := range step.OneOf {
-				if st.holds(b.When) {
+				if holds(ev, b.When) {
 					return b.Stage, true
 				}
 			}
@@ -87,7 +87,7 @@ func (c *Cursor) Next(st State) (StageName, bool) {
 			continue
 		}
 
-		if st.holds(step.When) {
+		if holds(ev, step.When) {
 			return step.Stage, true
 		}
 	}
@@ -174,4 +174,56 @@ func (f *File) Summary() string {
 		kinds = append(kinds, string(fl.On))
 	}
 	return fmt.Sprintf("%d flows (%s)", len(f.Flows), strings.Join(kinds, ", "))
+}
+
+// WillRun reports whether a given stage runs on the journey this evaluator
+// describes.
+//
+// Cheaper than walking, and the difference is not micro-optimisation. Walking to
+// answer "is an mfa stage on this path" evaluates the condition of every stage it
+// passes, including the ones guarding steps the question has nothing to do with
+// -- on the sign-in path each of those is a database round trip, paid on every
+// login, to answer something already known.
+//
+// It is exact because stages are a list: a plain stage runs iff its own `when`
+// holds, independently of anything before it. A one_of runs the first branch
+// whose condition holds, so only that group's branches are consulted, and only
+// up to the one that matches.
+//
+// Returns false for a stage the flow does not mention, having evaluated nothing.
+func (fl *Flow) WillRun(name StageName, ev Evaluator) bool {
+	for _, step := range fl.Stages {
+		if len(step.OneOf) > 0 {
+			if !stepMentions(step, name) {
+				// Nothing in this group is the stage being asked about, so which
+				// branch would be taken does not matter and is not evaluated.
+				continue
+			}
+			for _, b := range step.OneOf {
+				if holds(ev, b.When) {
+					if b.Stage == name {
+						return true
+					}
+					break
+				}
+			}
+			continue
+		}
+		if step.Stage != name {
+			continue
+		}
+		if holds(ev, step.When) {
+			return true
+		}
+	}
+	return false
+}
+
+func stepMentions(s Step, name StageName) bool {
+	for _, n := range s.stageNames() {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }

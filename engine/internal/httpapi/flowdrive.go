@@ -210,47 +210,75 @@ type signInFacts struct {
 
 	promptsOnce bool
 	prompts     []prompts.Prompt
+
+	// known memoises every answer, and carries the ones the caller decided
+	// before the walk began.
+	known map[string]bool
+
+	// changeReason is the message the password-change stage shows, captured on
+	// the way past so the stage does not repeat the query that produced it.
+	changeKnown  bool
+	changeReason string
 }
 
-// state evaluates just the conditions this flow mentions.
-func (f *signInFacts) state(fl *flow.Flow, clientWantsMFA bool) flow.State {
-	st := flow.State{}
-	for _, c := range fl.Conditions() {
-		switch flow.Condition(c) {
-		case flow.CondHasSecondFactor:
-			enrolled, err := store.HasSecondFactor(f.ctx, f.db, f.userID)
-			if err != nil {
-				f.s.log.Error("checking second factor", "err", err)
-			}
-			st[c] = enrolled
-		case flow.CondPromptsPending:
-			st[c] = len(f.pendingPrompts()) > 0
-		case flow.CondPasswordChangeRequired:
-			must, _, err := store.PasswordChangeRequired(f.ctx, f.db, f.userID)
-			if err != nil {
-				f.s.log.Error("checking whether a password change is required", "err", err)
-			}
-			st[c] = must
-		case flow.CondClientRequiresMFA:
-			st[c] = clientWantsMFA
-		default:
-			// A condition this path does not answer: either it is decided earlier
-			// (captcha, at the form) or the signal is not wired into sign-in yet
-			// (device posture, risk, network). False, which skips the stage it
-			// guards.
-			//
-			// NOT logged here. This runs on every sign-in, and the built-in flow
-			// itself mentions captcha_required -- so a warning here fired on every
-			// successful login of every deployment, about the default
-			// configuration. A warning that is always present is one operators
-			// learn to scroll past, which costs more than it buys.
-			//
-			// The same information is reported once, when a flow is loaded, by
-			// reportInertConditions.
-			st[c] = false
-		}
+// Holds answers one condition, querying only if asked and only once.
+//
+// This is the whole reason signInFacts is an Evaluator rather than a map. The
+// eager version evaluated every condition the FILE mentioned; the built-in file
+// mentions four, so a plain password sign-in that reaches none of the branches
+// still paid three round trips -- and it paid them twice, once for the mfa
+// decision and once inside the transaction. Six queries where the fixed sequence
+// it replaced ran three.
+//
+// Asked on demand, the walker only ever enquires about conditions guarding
+// stages it actually reaches, and memoisation makes the second walk free.
+func (f *signInFacts) Holds(name string) bool {
+	if v, ok := f.known[name]; ok {
+		return v
 	}
-	return st
+	var v bool
+	switch flow.Condition(name) {
+	case flow.CondHasSecondFactor:
+		enrolled, err := store.HasSecondFactor(f.ctx, f.db, f.userID)
+		if err != nil {
+			f.s.log.Error("checking second factor", "err", err)
+		}
+		v = enrolled
+	case flow.CondPromptsPending:
+		v = len(f.pendingPrompts()) > 0
+	case flow.CondPasswordChangeRequired:
+		must, reason, err := store.PasswordChangeRequired(f.ctx, f.db, f.userID)
+		if err != nil {
+			f.s.log.Error("checking whether a password change is required", "err", err)
+		}
+		v, f.changeReason = must, reason
+		f.changeKnown = true
+	default:
+		// A condition this path does not answer: either it is decided earlier
+		// (captcha, at the form) or the signal is not wired into sign-in yet
+		// (device posture, risk, network). False, so the stage it guards is
+		// skipped.
+		//
+		// NOT logged here. This runs on every sign-in, and the built-in file
+		// itself mentions captcha_required -- so a warning here fired on every
+		// successful login of every deployment, about the default configuration.
+		// The same information is reported once at load, by
+		// reportInertConditions.
+		v = false
+	}
+	if f.known == nil {
+		f.known = map[string]bool{}
+	}
+	f.known[name] = v
+	return v
+}
+
+// setKnown records a condition the caller has already decided.
+func (f *signInFacts) setKnown(c flow.Condition, v bool) {
+	if f.known == nil {
+		f.known = map[string]bool{}
+	}
+	f.known[string(c)] = v
 }
 
 // pendingPrompts reads once and remembers, because the condition and the stage
@@ -339,11 +367,14 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 	}
 
 	facts := &signInFacts{s: s, ctx: ctx, db: tx, orgID: orgID, userID: userID}
-	st := facts.state(fl, clientRequiresMFA(authzQuery))
+	facts.setKnown(flow.CondClientRequiresMFA, clientRequiresMFA(authzQuery))
+	// Settled at the sign-in form, before the flow is walked. Recording it as
+	// known keeps the walker from treating it as an unanswerable condition.
+	facts.setKnown(flow.CondCaptchaRequired, false)
 
 	c := fl.Cursor()
 	for {
-		stage, ok := c.Next(st)
+		stage, ok := c.Next(facts)
 		if !ok {
 			// The flow ran out of stages without reaching a terminal. Parse refuses
 			// such a file, so this needs a file that bypassed it -- refuse rather
@@ -380,14 +411,17 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			return decisionHandled
 
 		case flow.StagePasswordChange:
-			must, reason, err := store.PasswordChangeRequired(ctx, tx, userID)
-			if err != nil {
-				s.log.Error("checking whether a password change is required", "err", err)
+			// Reuses the answer from the condition if the walker already asked --
+			// which it did whenever the stage carries `when:
+			// password_change_required`, as the built-in flow does. Only an
+			// UNCONDITIONAL password_change stage pays for a query here.
+			if !facts.changeKnown {
+				facts.Holds(string(flow.CondPasswordChangeRequired))
+			}
+			if !facts.known[string(flow.CondPasswordChangeRequired)] {
 				continue
 			}
-			if !must {
-				continue
-			}
+			reason := facts.changeReason
 			if reason == "" {
 				reason = "Your password needs to be changed before you continue."
 			}
@@ -442,38 +476,23 @@ func (s *Server) FlowDemandsMFA(ctx context.Context, db signInReader,
 		return false, false
 	}
 	facts := &signInFacts{s: s, ctx: ctx, db: db, orgID: orgID, userID: userID}
-	st := facts.state(fl, clientRequiresMFA(authzQuery))
-
-	// Asked directly rather than read out of st: a flow that never mentions
-	// user_has_second_factor -- `- mfa` unconditionally, say -- has no entry for
-	// it, and the caller needs the answer to tell "challenge them" from "they
-	// have nothing to be challenged with".
-	if _, ok := st[string(flow.CondHasSecondFactor)]; ok {
-		enrolled = st[string(flow.CondHasSecondFactor)]
-	} else {
-		var err error
-		if enrolled, err = store.HasSecondFactor(ctx, db, userID); err != nil {
-			s.log.Error("checking second factor", "err", err)
-		}
-	}
+	facts.setKnown(flow.CondClientRequiresMFA, clientRequiresMFA(authzQuery))
+	facts.setKnown(flow.CondCaptchaRequired, false)
 
 	if hasSecondFactorAMR(amr) {
-		return false, enrolled
+		// Already satisfied, so no lookup is needed to answer the question asked.
+		return false, true
 	}
-	c := fl.Cursor()
-	for {
-		stage, ok := c.Next(st)
-		if !ok {
-			return false, enrolled
-		}
-		switch stage {
-		case flow.StageMFA:
-			return true, enrolled
-		case flow.StageSession, flow.StageDeny, flow.StageDone:
-			// Reached the end of the journey without an mfa stage.
-			return false, enrolled
-		}
+
+	// WillRun rather than a walk: it evaluates the conditions of the mfa stages
+	// and nothing else. Walking instead cost three queries on the built-in flow
+	// -- the mfa condition, then the prompt and password-change conditions the
+	// walker passed on its way to the end after the mfa stage was skipped -- to
+	// answer a question neither of those bears on.
+	if !fl.WillRun(flow.StageMFA, facts) {
+		return false, facts.known[string(flow.CondHasSecondFactor)]
 	}
+	return true, facts.Holds(string(flow.CondHasSecondFactor))
 }
 
 // hasSecondFactorAMR reports whether the factors already proved include one that

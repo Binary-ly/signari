@@ -401,19 +401,36 @@ flows:
 			wantMax:   1,
 			rationale: "one condition is one lookup",
 		},
+		{
+			name:      "the built-in flow",
+			doc:       string(flow.DefaultDocument()),
+			wantMax:   3,
+			rationale: "second factor, prompts, password change -- captcha is settled at the form",
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			parsed, err := flow.Parse([]byte(c.doc))
 			if err != nil {
 				t.Fatalf("the test's own document does not load: %v", err)
 			}
-			fl, _ := parsed.For(flow.Authentication)
+			fl, ok := parsed.For(flow.Authentication)
+			if !ok {
+				t.Fatalf("%s: no authentication flow in the document", c.name)
+			}
 
 			counter := &countingReader{inner: f.pool}
 			facts := &signInFacts{
 				s: f.srv, ctx: ctx, db: counter, orgID: f.orgID, userID: f.userID,
 			}
-			facts.state(fl, false)
+			// Walked, not evaluated in bulk. The cost that matters is what one
+			// journey through this flow actually asks for.
+			facts.setKnown(flow.CondCaptchaRequired, false)
+			cur := fl.Cursor()
+			for {
+				if _, ok := cur.Next(facts); !ok {
+					break
+				}
+			}
 
 			if counter.queries > c.wantMax {
 				t.Errorf("%s: made %d queries, expected at most %d (%s)",
@@ -463,7 +480,13 @@ func TestTheBuiltInFlowLogsNothingOnAnOrdinarySignIn(t *testing.T) {
 	facts := &signInFacts{
 		s: f.srv, ctx: context.Background(), db: f.pool, orgID: f.orgID, userID: f.userID,
 	}
-	facts.state(fl, false)
+	facts.setKnown(flow.CondCaptchaRequired, false)
+	cur := fl.Cursor()
+	for {
+		if _, ok := cur.Next(facts); !ok {
+			break
+		}
+	}
 
 	if buf.Len() > 0 {
 		t.Errorf("an ordinary sign-in under the built-in flow logged at info or above:\n%s",
@@ -510,5 +533,50 @@ flows:
 	if buf.Len() > 0 {
 		t.Errorf("the same document was reported twice; the cache reloads every %s, so "+
 			"this would repeat forever:\n%s", flowRefresh, buf.String())
+	}
+}
+
+// TestTheSecondFactorDecisionCostsOneQuery.
+//
+// FlowDemandsMFA runs on every password sign-in, before the transaction opens.
+// The sequence it replaced ran exactly one query there -- HasSecondFactor -- and
+// this pins that it still does. An earlier version evaluated every condition the
+// file mentioned and cost three.
+func TestTheSecondFactorDecisionCostsOneQuery(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+
+	counter := &countingReader{inner: f.pool}
+	f.srv.FlowDemandsMFA(ctx, counter, f.orgID, f.userID, "", []string{"pwd"})
+
+	if counter.queries > 1 {
+		t.Errorf("the second-factor decision made %d queries; the fixed sequence it "+
+			"replaced made 1", counter.queries)
+	}
+}
+
+// TestAFlowWithNoSecondFactorStageAsksNothing -- if the file never demands a
+// factor, the server should not look one up to find that out.
+func TestAFlowWithNoSecondFactorStageAsksNothing(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+
+	f.applyFlow(t, `
+version: 1
+flows:
+  - name: password-only
+    on: authentication
+    stages: [password, session]
+    tests: [{name: x, given: {}, expect: [password, session]}]
+`)
+
+	counter := &countingReader{inner: f.pool}
+	demanded, _ := f.srv.FlowDemandsMFA(ctx, counter, f.orgID, f.userID, "", []string{"pwd"})
+	if demanded {
+		t.Fatal("a flow with no mfa stage demanded a second factor")
+	}
+	if counter.queries != 0 {
+		t.Errorf("a flow that never mentions a second factor still made %d query(ies) "+
+			"to decide it did not need one", counter.queries)
 	}
 }

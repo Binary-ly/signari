@@ -271,19 +271,43 @@ func checkCondition(expr string) error {
 	return nil
 }
 
+// Evaluator answers whether a named condition holds.
+//
+// An interface rather than a map, because the server answers these by querying
+// the database and the walker only ever asks about conditions on the path it is
+// actually taking. Handing it a fully-populated map means evaluating every
+// condition the file mentions, including the ones guarding stages the journey
+// never reaches -- which on the sign-in path is measured in round trips per
+// login.
+//
+// State is the map implementation, used by the file's own test cases and by
+// Plan, where a fixed situation is exactly what is being described.
+type Evaluator interface {
+	// Holds reports whether the named condition is true. A condition the
+	// implementation cannot answer must return false: every condition in this
+	// language guards an ADDITIONAL stage, so false never invents a stage that
+	// did not run, and safety.go never counts a conditional stage as proving
+	// anything.
+	Holds(name string) bool
+}
+
 // State is the set of conditions that hold. A condition absent from the map is
 // false, so a caller that cannot evaluate something gets the conservative
 // answer rather than a panic.
 type State map[string]bool
 
-// holds evaluates a `when` against a state. An empty expression always holds.
-func (st State) holds(expr string) bool {
+// Holds makes a State an Evaluator.
+func (st State) Holds(name string) bool { return st[name] }
+
+// holds evaluates a `when` against an evaluator. An empty expression always
+// holds, which is what makes an unconditional stage cost no evaluation at all.
+func holds(ev Evaluator, expr string) bool {
 	if expr == "" {
 		return true
 	}
 	name := strings.TrimSpace(expr)
 	if rest, ok := strings.CutPrefix(name, "not "); ok {
-		return !st[strings.TrimSpace(rest)]
+		return !ev.Holds(strings.TrimSpace(rest))
 	}
-	return st[name]
+	return ev.Holds(name)
 }

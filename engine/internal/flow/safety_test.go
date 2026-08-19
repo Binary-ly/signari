@@ -592,3 +592,55 @@ func show(fl *Flow) string {
 	}
 	return b.String()
 }
+
+// TestWillRunAgreesWithTheWalker.
+//
+// WillRun is a shortcut: it answers "does this stage run" without walking, by
+// evaluating only the conditions that bear on that stage. The server uses it on
+// every password sign-in, where the difference is database round trips.
+//
+// A shortcut is only worth having if it is exact, and "exact" here means it
+// agrees with the walker on every stage, in every flow, under every condition
+// assignment. That is a checkable statement rather than an argument, so it is
+// checked rather than argued.
+func TestWillRunAgreesWithTheWalker(t *testing.T) {
+	rng := rand.New(rand.NewSource(8192026))
+
+	checked := 0
+	for n := 0; n < 5000; n++ {
+		fl := randomFlow(rng)
+		conds := condNames(fl)
+		if len(conds) > 12 {
+			continue
+		}
+		for mask := 0; mask < 1<<len(conds); mask++ {
+			st := State{}
+			for i, c := range conds {
+				st[c] = mask&(1<<i) != 0
+			}
+			ran := map[StageName]bool{}
+			for _, s := range fl.Plan(st) {
+				ran[s] = true
+			}
+			for _, name := range allStages {
+				got := fl.WillRun(name, st)
+				if got != ran[name] {
+					t.Fatalf("WillRun(%s) = %v but the walker %s it.\nflow: %s\nstate: %v",
+						name, got, map[bool]string{true: "ran", false: "did not run"}[ran[name]],
+						show(fl), st)
+				}
+				checked++
+			}
+		}
+	}
+	if checked < 10000 {
+		t.Fatalf("only %d comparisons were made; this test is barely exercising anything",
+			checked)
+	}
+	t.Logf("%d stage/assignment comparisons", checked)
+}
+
+// condNames lists the conditions a flow mentions, for the enumeration above.
+func condNames(fl *Flow) []string {
+	return fl.Conditions()
+}

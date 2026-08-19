@@ -20,9 +20,9 @@ meet the stated attacker model".
 | Not use refresh token rotation | **no** — we rotate; see below |
 | Authorization codes with a maximum lifetime of 60 seconds | **yes, exactly 60** |
 | If using DPoP, support Authorization Code Binding to DPoP Key | **was missing — now implemented** |
-| Accept JWT `iat`/`nbf` 0–10s in the future, reject >60s | partial |
+| Accept JWT `iat`/`nbf` 0–10s in the future, reject >60s | **was wrong in both directions — now implemented** |
 
-Two rows are deliberate differences rather than gaps, and one was a real defect.
+Two rows are deliberate differences rather than gaps. Two were real defects.
 
 ## The defect: no authorization code binding to a DPoP key
 
@@ -75,6 +75,54 @@ the check back to the wrong place is now part of the suite:
 | Drop the thumbprint comparison | `TestACodeBoundToADPoPKeyIsOnlyRedeemableWithThatKey` |
 | Move the check after the PKCE early return | same test |
 
+## The second defect: clock skew, wrong in both directions (August 2026)
+
+Re-checked because the row above said "partial" and nothing in the document said
+what the partial part was. An unexplained partial is a gap nobody has looked at.
+
+The requirement is one sentence carrying two opposed obligations:
+
+> "shall accept JWTs with `iat` or `nbf` timestamp between 0 and 10 seconds in
+> the future but shall reject greater than 60 seconds"
+
+Both were wrong, in opposite directions:
+
+- **`nbf`** — *any* future value was refused: `now.Before(time.Unix(nbf, 0))`. A
+  client whose clock ran two seconds fast could not authenticate at all, and the
+  message it got named the assertion rather than the clock. An interoperability
+  failure that presents as a signature problem.
+- **`iat`** — parsed into the claims struct and **never read**. An assertion
+  claiming to be issued an hour in the future was accepted, because the only
+  bound on time was `MaxAssertionLifetime`, which measures `exp` against now and
+  says nothing about where the window sits. Future-dating does not lengthen the
+  window; it moves it.
+
+A third problem fell out of fixing the second: `MaxAssertionLifetime` only bounds
+the window *forwards*, so an assertion minted an hour ago with `exp` two minutes
+out satisfied it completely — having been a usable credential for that hour.
+
+
+`JsonWebToken.isActive()` carries the comment:
+
+> "This assumes a default clock-skew for the 'is not before' of 10 seconds which
+> is in line FAPI 2.0."
+
+
+Ten seconds of tolerance rather than sixty. The 10–60 second band is left to the
+implementation — "reject greater than 60" does not require accepting 59 — and
+every second of tolerance is a second an assertion is usable before its own
+client says it should be.
+
+### One of the three fixes was not yet doing anything
+
+Removing the stale-`iat` bound broke no test, while the other two each had one.
+A check that cannot be made to fail is not yet known to work, so it got the test
+it was missing (`TestAnAssertionIssuedLongAgoIsRefused`) before this was recorded
+as done.
+
+`iat` stays OPTIONAL, as RFC 7523 §3 says. Every check is conditional on its
+presence, and `TestAnAssertionWithNoIssuedAtStillWorks` pins that.
+
 ## The two deliberate differences
 
 **Client assertion audience.** FAPI: "shall only accept its issuer identifier
@@ -94,9 +142,16 @@ FAPI mandates sender-constraining, which removes the need — but the two standa
 point opposite ways for a server supporting both worlds, and ours follows RFC
 9700 by default.
 
+## Currency
+
+Re-verified August 2026 against
+<https://openid.net/specs/fapi-security-profile-2_0-final.html>: still **Final,
+22 February 2025**, no errata, and §5.3.2.1 still carries the same fourteen
+requirements. The profile has not moved; this review's version reference holds.
+
 ## Verdict
 
-One MUST-level defect, which was also an RFC 9449 §10.1 MUST that had gone
+Two MUST-level defects. The first was also an RFC 9449 §10.1 MUST that had gone
 unnoticed through an earlier DPoP review — because that review checked the proof
 and the binding at the resource, and never asked what binds the *code*.
 

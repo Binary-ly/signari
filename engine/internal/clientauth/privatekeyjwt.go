@@ -44,6 +44,8 @@ const AssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 // valid for a day -- which is the shared secret this mechanism exists to remove.
 const MaxAssertionLifetime = 5 * time.Minute
 
+const MaxClockSkew = 10 * time.Second
+
 // maxAssertionBytes bounds the parameter before any parsing.
 const maxAssertionBytes = 16 << 10
 
@@ -172,8 +174,37 @@ func VerifyPrivateKeyJWT(assertion, clientID, jwksJSON string, audiences []strin
 		return nil, fmt.Errorf("the assertion is valid for %s, over the %s limit",
 			exp.Sub(now).Round(time.Second), MaxAssertionLifetime)
 	}
-	if c.NotBefore != 0 && now.Before(time.Unix(c.NotBefore, 0)) {
-		return nil, fmt.Errorf("the assertion is not valid yet")
+	if c.NotBefore != 0 && time.Unix(c.NotBefore, 0).After(now.Add(MaxClockSkew)) {
+		return nil, fmt.Errorf("the assertion is not valid until %s, more than %s from now",
+			time.Unix(c.NotBefore, 0).UTC().Format(time.RFC3339), MaxClockSkew)
+	}
+
+	// iat was parsed into the claims and never read -- a field that looked
+	// validated and was not. An assertion issued an hour in the future was
+	// accepted, because the only bound on time was MaxAssertionLifetime, which
+	// measures `exp` against now and says nothing about where the window sits.
+	//
+	// Future-dating does not lengthen the window; it MOVES it. Combined with a
+	// replay cache that forgets a jti once its assertion has expired, an
+	// assertion whose window has not opened yet is a credential the server has
+	// agreed to honour later, which is not what anybody reviewing this thought
+	// they were agreeing to.
+	if c.IssuedAt != 0 {
+		iat := time.Unix(c.IssuedAt, 0)
+		if iat.After(now.Add(MaxClockSkew)) {
+			return nil, fmt.Errorf("the assertion says it was issued at %s, which is in "+
+				"the future by more than %s", iat.UTC().Format(time.RFC3339), MaxClockSkew)
+		}
+		// And the other end. MaxAssertionLifetime is meant to stop an assertion
+		// being a long-lived bearer credential, and it only measures forwards --
+		// so one minted an hour ago with `exp` two minutes out slipped past it,
+		// having been usable for that whole hour.
+		if now.Sub(iat) > MaxAssertionLifetime {
+			return nil, fmt.Errorf("the assertion was issued %s ago, over the %s limit; "+
+				"a client mints one per request and holds the key, so there is no "+
+				"reason for an old one",
+				now.Sub(iat).Round(time.Second), MaxAssertionLifetime)
+		}
 	}
 
 	return &Assertion{ClientID: clientID, JTI: c.JTI, Expiry: exp}, nil

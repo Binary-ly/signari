@@ -146,6 +146,7 @@ commands:
   policy show         print the policy in force
   flow test           check a sign-in flow file (no database needed -- for CI)
   flow paths          list every journey a flow admits, and what produces each
+  flow apply          install a sign-in flow file
   flow show           print the built-in flows, as a file to start from
   dir add             register a Google Workspace or Entra ID directory source
   dir sync            reconcile users from a directory (preview unless -apply)
@@ -671,6 +672,8 @@ func run(args []string) error {
 		return groupList(ctx, conn)
 	case "policy apply":
 		return policyApply(ctx, conn, *orgID, *policyFile)
+	case "flow apply":
+		return flowApply(ctx, conn, *orgID, *flowFile)
 	case "policy show":
 		return policyShow(ctx, conn, *orgID)
 	default:
@@ -2750,6 +2753,54 @@ func flowPaths(path, only string) error {
 	}
 	if shown == 0 {
 		return fmt.Errorf("no flow named %q in that file", only)
+	}
+	return nil
+}
+
+// flowApply installs a sign-in flow file.
+func flowApply(ctx context.Context, conn *pgx.Conn, orgID, path string) error {
+	if orgID == "" || path == "" {
+		return fmt.Errorf("give -org and -flow-file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	// Parsed BEFORE storing, which here means more than it does for a policy: a
+	// document that reaches the table has had its own test cases run AND has been
+	// proved unable to issue a session without authenticating somebody. Storing
+	// first and validating at load would put a document the engine will refuse
+	// into a table an operator already believes is deployed.
+	f, err := flow.Parse(data)
+	if err != nil {
+		return err
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.sign_in_flows (org_id, document)
+		VALUES ($1::uuid, $2)
+		ON CONFLICT (org_id) DO UPDATE
+			SET document = EXCLUDED.document, applied_at = now()`,
+		orgID, string(data)); err != nil {
+		return err
+	}
+	fmt.Printf("applied %s (%s)\n", path, f.Summary())
+	// The journeys, not just the count. An operator has just changed how every
+	// person in this organisation signs in, and this is the moment to show them
+	// what they changed it to.
+	for i := range f.Flows {
+		fl := &f.Flows[i]
+		paths, perr := fl.Paths()
+		if perr != nil {
+			continue
+		}
+		fmt.Printf("\n  %s (%s) -- %d journeys\n", fl.Name, fl.On, len(paths))
+		for _, pth := range paths {
+			var names []string
+			for _, st := range pth.Stages {
+				names = append(names, string(st))
+			}
+			fmt.Printf("    %s\n", strings.Join(names, " -> "))
+		}
 	}
 	return nil
 }

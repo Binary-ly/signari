@@ -26,9 +26,10 @@ flows:
 ```
 
 ```
-signari flow test  -flow-file flows.yaml
-signari flow paths -flow-file flows.yaml
-signari flow show                          # the built-in flows, to start from
+signari flow test  -flow-file flows.yaml              # in CI: no database needed
+signari flow paths -flow-file flows.yaml              # every journey it admits
+signari flow apply -org <uuid> -flow-file flows.yaml  # install it
+signari flow show                                     # the built-in flows
 ```
 
 ## What is different here
@@ -208,6 +209,34 @@ captcha (if required) -> password -> mfa (if enrolled)
 same `Parse`, so the safety analysis and its own test cases run against it in CI:
 the default journey is held to exactly the rules an operator's file is held to,
 rather than being trusted because it shipped.
+
+## What the flow controls today
+
+Applied with `flow apply`, the file drives the live sign-in:
+
+- **whether a second factor is demanded** — `when: user_has_second_factor`
+  reproduces the old behaviour; unconditional demands one of everybody; `when:
+  client_requires_mfa` demands one only when a relying party sends
+  `acr_values=2`
+- **which of the post-authentication stages run, and in what order** — the
+  prompt and the forced password change
+- **refusing outright**, with `deny`
+
+It does **not** control the password check, the credential lookup, the login
+throttle, or the rate limiter. Those are not sequencing decisions, and putting
+them in a file would mean an operator could turn them off.
+
+One honest limitation. `completeSignIn` has ten callers — password, passkey,
+Kerberos, Duo, and the federated sources among them — and exactly one of them,
+the password path, gates on a second factor today. The `mfa` stage is decided on
+that path only. Routing the other nine through it would start demanding a code
+from, say, a Kerberos user who happens to have TOTP enrolled: arguably an
+improvement, and not one that should arrive as a side effect of moving the
+sequence into a file. Whether those paths should gate on a second factor is a
+separate decision.
+
+An organisation with no flow applied runs the built-in file, so nothing changes
+until somebody applies one.
 
 ## Not a graph
 

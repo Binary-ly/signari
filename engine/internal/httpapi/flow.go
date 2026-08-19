@@ -1381,13 +1381,27 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// enrolled. It creates a pending authentication that can do nothing but
 	// present a code -- otherwise a stolen password alone has already produced
 	// something usable, which is the whole thing MFA exists to prevent.
-	enrolled, err := store.HasSecondFactor(ctx, s.db, userID)
-	if err != nil {
-		s.log.Error("checking second factor", "err", err)
-		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
+	// Which is now the flow's decision rather than a hardcoded `if enrolled`.
+	// The built-in flow writes `when: user_has_second_factor`, so a deployment
+	// that has not written a flow file gets exactly this behaviour.
+	demanded, enrolled := s.FlowDemandsMFA(ctx, s.db, orgID, userID, authzQuery,
+		[]string{oauth.AMRPassword})
+	if demanded && !enrolled {
+		// The flow requires a second factor of everybody and this account has
+		// none. Refused rather than waved through: silently skipping would mean
+		// the requirement holds for every account except the ones it was written
+		// to catch.
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": "mfa_required_but_not_enrolled"},
+		})
+		s.renderLogin(w, r, authzQuery,
+			"This account needs a second factor before it can be used to sign in. "+
+				"Please contact your administrator.")
 		return
 	}
-	if enrolled {
+	if demanded {
 		s.beginMFAChallenge(w, r, userID, orgID, authzQuery, []string{oauth.AMRPassword})
 		return
 	}
@@ -1431,28 +1445,37 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	// the pool cannot see it, so the prompt would come back, be answered again,
 	// and come back again. An infinite loop that locks out every user, appearing
 	// only once a prompt exists.
-	if pending, perr := store.PendingPrompts(ctx, tx, orgID, userID); perr != nil {
-		s.log.Error("reading prompts", "err", perr)
-	} else if len(pending) > 0 {
-		s.beginPrompt(w, r, userID, orgID, amr, authzQuery, pending[0])
-		return
-	}
-
-	// A required password change, before the session exists and beside the
-	// prompt check for the same reason: eight ways in, one place to gate them.
+	// Which of these run, and in what order, is now the flow file's decision --
+	// but the shape is unchanged, and so is the reason it works. Each stage
+	// records its completion in the database the conditions are read from, so
+	// re-entering here after one is answered walks past it and stops at the next.
+	// See internal/httpapi/flowdrive.go.
 	//
-	// After prompts on purpose. Terms someone has not accepted should be put to
-	// them before we ask them to do work.
-	if must, reason, mcerr := store.PasswordChangeRequired(ctx, tx, userID); mcerr != nil {
-		// Not fatal. Failing open here means a flagged user signs in this once;
-		// failing closed means a database hiccup locks out the deployment.
-		s.log.Error("checking whether a password change is required", "err", mcerr)
-	} else if must {
-		if reason == "" {
-			reason = "Your password needs to be changed before you continue."
-		}
-		s.beginPasswordChange(w, r, userID, orgID, amr, authzQuery, reason)
+	// The reads still go through TX, not the pool. Same trap as before: an answer
+	// written in this transaction and not yet committed is invisible to the pool,
+	// so the prompt would come back, be answered again, and come back again --
+	// an infinite loop that locks out every user, appearing only once a prompt
+	// exists.
+	switch s.advanceSignIn(w, r, tx, userID, orgID, amr, authzQuery) {
+	case decisionHandled:
+		// A stage took over the response. The transaction is abandoned rather
+		// than committed: the person is authenticated but does not have a session
+		// yet, and will not until they answer.
 		return
+	case decisionDeny:
+		s.renderLogin(w, r, authzQuery,
+			"You cannot sign in at the moment. Please contact your administrator.")
+		return
+	case decisionDone:
+		// The flow finished deliberately without issuing a session.
+		if err := tx.Commit(ctx); err != nil {
+			s.log.Error("committing a flow that issued no session", "err", err)
+		}
+		s.clearPending(w)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "done"})
+		return
+	case decisionSession:
+		// Fall through.
 	}
 
 	// Two independent random values: a public sid that goes in tokens, and a

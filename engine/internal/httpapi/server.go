@@ -80,6 +80,10 @@ type Server struct {
 	db       *pgxpool.Pool
 	hasher   *passwords.Hasher
 	policies *policyCache
+	// flows holds the sign-in journey per organisation. Same shape and same
+	// refusal rule as policies: only a document that parsed, passed its own
+	// tests and cleared the static safety analysis is ever cached.
+	flows *flowCache
 	geo      risk.Resolver
 	// mailer is never nil: New substitutes a logging driver when no SMTP is
 	// configured, so no call site has to nil-check before telling a user
@@ -182,6 +186,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
 		pwPolicy:  passwords.PolicyFromEnv(),
 		policies:  newPolicyCache(),
+		flows:     newFlowCache(),
 		ssfKeys:   &ssf.KeyFetcher{},
 		geo:       risk.NewResolver(),
 		mailer:    mailer,

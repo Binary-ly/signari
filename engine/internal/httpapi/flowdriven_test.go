@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/flow"
+	"signari.dev/engine/internal/oauth"
 )
 
 // The flow file actually driving the sign-in journey.
@@ -578,5 +580,154 @@ flows:
 	if counter.queries != 0 {
 		t.Errorf("a flow that never mentions a second factor still made %d query(ies) "+
 			"to decide it did not need one", counter.queries)
+	}
+}
+
+// TestAFlowEndingInDenyIssuesNoSession.
+//
+// `deny` is how an operator closes a journey — a maintenance window, an
+// organisation being wound down, a designation they have not finished building.
+// It has to actually refuse, and it has to leave nothing behind: reaching it
+// means the subject WAS authenticated, so a half-authenticated cookie left in
+// the browser is a live credential we have just declined to honour.
+func TestAFlowEndingInDenyIssuesNoSession(t *testing.T) {
+	f := newSignInFixture(t)
+
+	f.applyFlow(t, `
+version: 1
+flows:
+  - name: closed-for-maintenance
+    on: authentication
+    stages:
+      - password
+      - deny
+    tests:
+      - name: nobody gets in
+        given: {}
+        expect: [password, deny]
+`)
+
+	got := f.attempt(t, f.email, signInTestPassword)
+	if got.signedIn() {
+		t.Fatal("a flow ending in deny issued a session")
+	}
+	if n := f.sessionRows(t); n != 0 {
+		t.Fatalf("a denying flow created %d session row(s)", n)
+	}
+	if got.pendingCookie != "" {
+		t.Error("a denied sign-in left a live half-authenticated cookie in the browser")
+	}
+}
+
+// TestAFlowEndingInDoneIssuesNoSessionAndDoesNotRefuse.
+//
+// `done` is a journey that succeeded without issuing a session. It must be
+// distinguishable from `deny` at the boundary, or the two words mean the same
+// thing and one of them is a lie in whichever direction it is read.
+func TestAFlowEndingInDoneIssuesNoSessionAndDoesNotRefuse(t *testing.T) {
+	f := newSignInFixture(t)
+
+	f.applyFlow(t, `
+version: 1
+flows:
+  - name: verify-only
+    on: authentication
+    stages:
+      - password
+      - done
+    tests:
+      - name: proves who they are and stops there
+        given: {}
+        expect: [password, done]
+`)
+
+	got := f.attempt(t, f.email, signInTestPassword)
+	if got.signedIn() {
+		t.Fatal("a flow ending in done issued a session")
+	}
+	if n := f.sessionRows(t); n != 0 {
+		t.Fatalf("a flow ending in done created %d session row(s)", n)
+	}
+	if got.status != 200 {
+		t.Errorf("a flow that finished successfully answered %d; done is not a refusal",
+			got.status)
+	}
+}
+
+// TestClientRequiresMFAReadsAcrValues.
+//
+// This function is the entire implementation of the `client_requires_mfa`
+// condition. If it silently answered false, a flow written to demand a second
+// factor when a relying party asks for one would never demand anything -- and
+// every behavioural test would still pass, because no test asserts on a
+// condition nothing sets.
+func TestClientRequiresMFAReadsAcrValues(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		authz string
+		want  bool
+	}{
+		{"no parked request", "", false},
+		{"a request asking for nothing in particular",
+			"?client_id=a&scope=openid", false},
+		{"acr_values=2", "?client_id=a&acr_values=2", true},
+		{"acr_values with a leading question mark omitted",
+			"client_id=a&acr_values=2", true},
+		{"the PAPE URN, which OIDC treats as a synonym for 2",
+			"?acr_values=" + url.QueryEscape(
+				"http://schemas.openid.net/pape/policies/2007/06/multi-factor"), true},
+		{"space-separated, multi-factor second — the parameter is a preference " +
+			"list, so it counts wherever it appears",
+			"?acr_values=" + url.QueryEscape("1 2"), true},
+		{"single-factor only", "?acr_values=1", false},
+		{"an acr nobody defines", "?acr_values=gold", false},
+		// A malformed query must not be read as a demand for MFA, and must not
+		// panic: this string comes off a URL somebody else controls.
+		{"malformed", "?%zz", false},
+	} {
+		if got := clientRequiresMFA(c.authz); got != c.want {
+			t.Errorf("%s: clientRequiresMFA(%q) = %v, want %v", c.name, c.authz, got, c.want)
+		}
+	}
+}
+
+// TestHasSecondFactorAMRRecognisesEveryFactorThatSatisfiesMFA.
+//
+// The amr is the record of what actually happened, and this function decides
+// whether an mfa stage has already been satisfied by it. A factor missing from
+// here means somebody who has just proved a second factor is asked for another
+// one; a factor wrongly present means an mfa stage is skipped for a journey that
+// never had one, which is the direction that matters.
+func TestHasSecondFactorAMRRecognisesEveryFactorThatSatisfiesMFA(t *testing.T) {
+	for _, c := range []struct {
+		amr  []string
+		want bool
+	}{
+		{nil, false},
+		{[]string{oauth.AMRPassword}, false},
+		{[]string{"krb"}, false},
+		{[]string{oauth.AMRPassword, oauth.AMROTP}, true},
+		{[]string{oauth.AMRPassword, oauth.AMRHardwareKey}, true},
+		{[]string{oauth.AMRPassword, oauth.AMRSMS}, true},
+		{[]string{oauth.AMRMFA}, true},
+		// A PIN is a knowledge factor, like the password. Counting it would let
+		// password-then-PIN satisfy a stage that exists to demand a second KIND
+		// of evidence.
+		{[]string{oauth.AMRPassword, oauth.AMRPIN}, false},
+
+		// The passkey cases, which the hand-written version of this function got
+		// wrong. amrForPasskey reports "user" plus a key type, and adds "mfa"
+		// ONLY when the authenticator verified the user. Without that
+		// verification it is one possession factor, however many amr values it
+		// produces.
+		{[]string{oauth.AMRUserPresence, oauth.AMRHardwareKey}, false},
+		{[]string{oauth.AMRUserPresence, "swk"}, false},
+		{[]string{oauth.AMRUserPresence, oauth.AMRHardwareKey, oauth.AMRMFA}, true},
+		// Presence entirely alone proves somebody touched something.
+		{[]string{oauth.AMRUserPresence}, false},
+	} {
+		if got := hasSecondFactorAMR(c.amr); got != c.want {
+			t.Errorf("hasSecondFactorAMR(%v) = %v, want %v", c.amr, got, c.want)
+		}
 	}
 }

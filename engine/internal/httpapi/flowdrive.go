@@ -495,21 +495,28 @@ func (s *Server) FlowDemandsMFA(ctx context.Context, db signInReader,
 	return true, facts.Holds(string(flow.CondHasSecondFactor))
 }
 
-// hasSecondFactorAMR reports whether the factors already proved include one that
-// satisfies an mfa stage.
+// hasSecondFactorAMR reports whether the factors already proved satisfy an mfa
+// stage.
 //
-// Read from the amr rather than from a flag, for the same reason acr is derived
-// from it: the amr is the record of what actually happened, and anything else is
-// a second opinion that can disagree with it.
+// Delegated to oauth.ACRFromAMR rather than deciding here, and that is not
+// tidiness. ACRFromAMR is what the SESSION's acr claim is computed from, so
+// answering this any other way lets the sequencer and the session disagree about
+// whether a sign-in was multi-factor -- one skipping a stage the other does not
+// claim to have run.
+//
+// The hand-written version this replaces got a real case wrong. It counted
+// AMRUserPresence, and a passkey used WITHOUT user verification reports
+// ["user", "hwk"] (see amrForPasskey) -- so a single possession factor would
+// have satisfied a stage that exists to demand a second one. ACRFromAMR already
+// says why that is wrong, in a comment predating this package: "Presence alone
+// is not a factor. A passkey that reports `user` without a hardware key or PIN
+// proves someone touched a device, not which someone."
+//
+// Currently reachable only with amr=["pwd"], because the password path is the
+// one caller. It was still wrong, and the moment another path is routed through
+// the sequencer it would have become reachable and quiet.
 func hasSecondFactorAMR(amr []string) bool {
-	for _, m := range amr {
-		switch m {
-		case oauth.AMROTP, oauth.AMRMFA, oauth.AMRHardwareKey,
-			oauth.AMRSMS, oauth.AMRUserPresence:
-			return true
-		}
-	}
-	return false
+	return oauth.ACRFromAMR(amr) == oauth.ACRMultiFactor
 }
 
 // evaluatedConditions are the conditions the sign-in path actually answers.

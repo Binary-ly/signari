@@ -159,6 +159,40 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 					Disposition: oauth.DispositionRedirect})
 				return
 			}
+
+			// The other unsatisfiable case, and the one that used to loop.
+			//
+			// A client asks for acr_values=2. The subject has no second factor
+			// enrolled. Rendering the sign-in form sends them to a password box,
+			// a correct password produces a password-only session -- acr 1, which
+			// is the honest answer -- and the redirect lands back here, where the
+			// session is found insufficient and the form is rendered again. The
+			// person is bounced between two pages forever with nothing explaining
+			// why, and no interaction they can perform will ever end it.
+			//
+			// Only StepUpNeedStronger. A max_age or prompt=login step-up IS
+			// satisfiable by signing in again, so those must still show the form.
+			if reason == oauth.StepUpNeedStronger {
+				var subject string
+				if err := s.db.QueryRow(ctx,
+					`SELECT user_id::text FROM core.sessions WHERE sid = $1`, sid).
+					Scan(&subject); err != nil {
+					s.log.Error("loading the session subject for a step-up check", "err", err)
+				} else if enrolled, ferr := store.HasSecondFactor(ctx, s.db, subject); ferr != nil {
+					// Failing open here shows the form, which is the previous
+					// behaviour: a database error must not turn into a refusal.
+					s.log.Error("checking second factor for a step-up", "err", ferr)
+				} else if !enrolled {
+					s.log.Info("step-up is unsatisfiable: no second factor is enrolled",
+						"sid", sid, "correlation_id", correlationID(ctx))
+					s.writeAuthzError(w, r, req, &oauth.AuthzError{
+						Code: "unmet_authentication_requirements",
+						Description: "this account has no second factor enrolled, so the " +
+							"requested authentication context cannot be reached",
+						Disposition: oauth.DispositionRedirect})
+					return
+				}
+			}
 		}
 	}
 

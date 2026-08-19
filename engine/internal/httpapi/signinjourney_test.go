@@ -49,6 +49,9 @@ type signInFixture struct {
 	orgID  string
 	userID string
 	email  string
+	// clientID is a relying party in the same organisation, for the tests that
+	// need an authorization request rather than a bare sign-in.
+	clientID string
 }
 
 const signInTestPassword = "correct-horse-battery-staple-2026"
@@ -122,10 +125,25 @@ func newSignInFixture(t *testing.T) *signInFixture {
 		t.Fatalf("fixture credential: %v", err)
 	}
 
+	f.clientID = "si-" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
+		                          client_secret_hash, grant_types, scopes, require_pkce)
+		VALUES ($1,$2,'T','public','', ARRAY['authorization_code'],
+		        ARRAY['openid'], false)`, f.clientID, f.orgID); err != nil {
+		t.Fatalf("fixture client: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO core.client_redirect_uris (client_id, redirect_uri) VALUES ($1,$2)`,
+		f.clientID, "https://rp.test/cb"); err != nil {
+		t.Fatalf("fixture redirect: %v", err)
+	}
+
 	t.Cleanup(func() {
 		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_, _ = pool.Exec(c, `DELETE FROM core.sessions WHERE user_id = $1::uuid`, f.userID)
+		_, _ = pool.Exec(c, `DELETE FROM core.clients WHERE client_id = $1`, f.clientID)
 	})
 	return f
 }

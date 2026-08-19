@@ -150,3 +150,38 @@ One MUST NOT is satisfied only because the corresponding feature is unbuilt
 
 Every fix in this document is mutation-tested: the guard was removed or inverted
 and the naming test observed to fail.
+
+
+## A step-up requirement nothing could satisfy (August 2026)
+
+Found by tracing the authorization journey end to end rather than by any test
+failing.
+
+A client sends `acr_values=2`. The subject has no second factor enrolled. The
+authorize endpoint finds the session insufficient and renders the sign-in form;
+a correct password produces a password-only session, which honestly reports
+`acr=1`; the redirect lands back at authorize, which finds it insufficient and
+renders the form again.
+
+Nothing errored. Every component was individually correct — `acr` is derived
+from `amr` rather than asserted, the step-up check was right to refuse, and a
+sign-in form is the reasonable response to "authentication is needed". The
+person saw two pages alternating indefinitely, with no explanation and no action
+available to them that would end it.
+
+A loop is not an error condition, so nothing was watching for one.
+
+**Fixed** at the authorize endpoint: when the required context is
+`StepUpNeedStronger` and the subject has no second factor enrolled, the request
+is refused with `unmet_authentication_requirements` — the error OIDC defines for
+exactly this — delivered to the client's `redirect_uri` rather than to a form.
+
+Deliberately narrow. A `max_age` or `prompt=login` step-up **is** satisfiable by
+signing in again, so those still render the form; and a failure to read the
+subject's factors fails open to the form, because a database error must not
+become a refusal. Both directions are covered by tests
+(`internal/httpapi/stepuploop_test.go`), and the fix was verified by removing it
+and watching the loop test fail.
+
+This predates the flow engine — the hardcoded `if enrolled` it replaced behaved
+identically.

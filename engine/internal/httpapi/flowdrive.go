@@ -26,6 +26,14 @@ type flowCache struct {
 	mu       sync.RWMutex
 	byOrg    map[string]*flow.File
 	loadedAt time.Time
+	// everLoaded distinguishes "no organisation has a flow" from "nothing has
+	// been read yet". Without it an empty map is ambiguous and the first sign-in
+	// after a restart cannot tell whether to block on a read.
+	everLoaded bool
+	// refreshing is held by the one goroutine doing a background refresh, so a
+	// hundred concurrent sign-ins produce one query rather than a hundred.
+	refreshing sync.Mutex
+	inFlight   bool
 }
 
 func newFlowCache() *flowCache { return &flowCache{byOrg: map[string]*flow.File{}} }
@@ -35,16 +43,39 @@ func newFlowCache() *flowCache { return &flowCache{byOrg: map[string]*flow.File{
 // Falls back to the built-in flow, which reproduces the journey the server ran
 // when the sequence was fixed Go. A deployment that has never heard of flow
 // files gets exactly what it had before.
+// # Why a stale read is served rather than a fresh one
+//
+// This is called from completeSignIn, which holds an OPEN TRANSACTION. A
+// synchronous reload there takes a second pool connection while the first is
+// still held -- and because loadedAt is shared, every concurrent sign-in sees the
+// cache expire in the same instant. Under load that is every in-flight
+// transaction simultaneously waiting for a connection that only another
+// in-flight transaction can release: a deadlock, arriving on a thirty-second
+// cycle, only under concurrency.
+//
+// So: block only when nothing has ever been read, which happens once per
+// process. After that a stale entry is returned immediately and ONE goroutine
+// refreshes in the background. The window is already thirty seconds wide by
+// design; making it thirty seconds and a bit, rather than deadlocking, is not a
+// trade worth agonising over.
 func (s *Server) flowFor(ctx context.Context, orgID string, on flow.Designation) *flow.Flow {
 	s.flows.mu.RLock()
 	fresh := time.Since(s.flows.loadedAt) < flowRefresh
+	everLoaded := s.flows.everLoaded
 	f := s.flows.byOrg[orgID]
 	s.flows.mu.RUnlock()
-	if !fresh {
+
+	switch {
+	case !everLoaded:
+		// Once per process. Serving the built-in flow here instead would mean the
+		// first sign-ins after a restart silently ran a different journey than the
+		// operator applied.
 		s.reloadFlows(ctx)
 		s.flows.mu.RLock()
 		f = s.flows.byOrg[orgID]
 		s.flows.mu.RUnlock()
+	case !fresh:
+		s.refreshFlowsInBackground()
 	}
 	if f != nil {
 		if fl, ok := f.For(on); ok {
@@ -65,6 +96,33 @@ func (s *Server) flowFor(ctx context.Context, orgID string, on flow.Designation)
 		return nil
 	}
 	return fl
+}
+
+// refreshFlowsInBackground reloads at most once at a time, detached from the
+// caller's request.
+//
+// context.Background, not the request's: the request is about to finish, and a
+// refresh cancelled by its completion would leave the cache stale forever while
+// appearing to have been scheduled.
+func (s *Server) refreshFlowsInBackground() {
+	s.flows.refreshing.Lock()
+	if s.flows.inFlight {
+		s.flows.refreshing.Unlock()
+		return
+	}
+	s.flows.inFlight = true
+	s.flows.refreshing.Unlock()
+
+	go func() {
+		defer func() {
+			s.flows.refreshing.Lock()
+			s.flows.inFlight = false
+			s.flows.refreshing.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		s.reloadFlows(ctx)
+	}()
 }
 
 func (s *Server) reloadFlows(ctx context.Context) {
@@ -102,6 +160,7 @@ func (s *Server) reloadFlows(ctx context.Context) {
 	s.flows.mu.Lock()
 	s.flows.byOrg = loaded
 	s.flows.loadedAt = time.Now()
+	s.flows.everLoaded = true
 	s.flows.mu.Unlock()
 }
 

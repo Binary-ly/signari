@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"testing"
+	"time"
 
 	"signari.dev/engine/internal/flow"
 )
@@ -39,10 +40,10 @@ func (f *signInFixture) applyFlow(t *testing.T, doc string) {
 		f.orgID, doc); err != nil {
 		t.Fatalf("applying the flow: %v", err)
 	}
-	// The cache refreshes on a timer, and a test must not wait 30 seconds for it.
-	f.srv.flows.mu.Lock()
-	f.srv.flows.loadedAt = f.srv.flows.loadedAt.Add(-flowRefresh * 2)
-	f.srv.flows.mu.Unlock()
+	// Reloaded synchronously. Poking loadedAt instead would only mark the cache
+	// stale, and a stale cache is refreshed in the BACKGROUND -- so the test would
+	// read the previous document and fail, or not, depending on scheduling.
+	f.srv.reloadFlows(ctx)
 
 	t.Cleanup(func() {
 		c := context.Background()
@@ -223,9 +224,7 @@ flows:
 `); err != nil {
 		t.Fatal(err)
 	}
-	f.srv.flows.mu.Lock()
-	f.srv.flows.loadedAt = f.srv.flows.loadedAt.Add(-flowRefresh * 2)
-	f.srv.flows.mu.Unlock()
+	f.srv.reloadFlows(context.Background())
 
 	// The previous flow is still in force, so this still signs in without a
 	// challenge. What must NOT happen is the unsafe document taking effect, or
@@ -268,5 +267,65 @@ flows:
 	fl := f.srv.flowFor(context.Background(), f.orgID, flow.Authentication)
 	if fl == nil || fl.Name != "something-else-entirely" {
 		t.Fatalf("the applied flow is not what the server resolved: %v", fl)
+	}
+}
+
+// TestAStaleFlowCacheDoesNotStarveTheConnectionPool is a regression test for a
+// deadlock this wiring introduced and very nearly shipped.
+//
+// flowFor is called from completeSignIn, which holds an open transaction. The
+// first version reloaded synchronously when the cache went stale -- taking a
+// SECOND pool connection while the first was still held. Because loadedAt is
+// shared, every concurrent sign-in sees the cache expire in the same instant, so
+// under load every in-flight transaction would wait for a connection that only
+// another in-flight transaction could release. Nothing would progress, and it
+// would happen on a thirty-second cycle, only under concurrency, which is the
+// worst combination of properties a bug can have.
+//
+// The fix serves the stale entry and refreshes in the background. This test runs
+// more concurrent flow lookups-inside-a-transaction than the pool has
+// connections, with the cache stale, and requires them all to finish.
+func TestAStaleFlowCacheDoesNotStarveTheConnectionPool(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+
+	// Warm it, so everLoaded is set and the stale path is what gets exercised.
+	f.srv.reloadFlows(ctx)
+	f.srv.flows.mu.Lock()
+	f.srv.flows.loadedAt = f.srv.flows.loadedAt.Add(-flowRefresh * 2)
+	f.srv.flows.mu.Unlock()
+
+	// More workers than the pool has connections, each holding a transaction
+	// across the lookup exactly as completeSignIn does.
+	workers := int(f.pool.Config().MaxConns) + 4
+	done := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			tx, err := f.pool.Begin(ctx)
+			if err != nil {
+				done <- err
+				return
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+			// The lookup that used to want a second connection.
+			if fl := f.srv.flowFor(ctx, f.orgID, flow.Authentication); fl == nil {
+				done <- context.Canceled
+				return
+			}
+			done <- nil
+		}()
+	}
+
+	deadline := time.After(20 * time.Second)
+	for i := 0; i < workers; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("worker failed: %v", err)
+			}
+		case <-deadline:
+			t.Fatalf("only %d of %d flow lookups completed; the rest are waiting for a "+
+				"pool connection held by a transaction that is itself waiting", i, workers)
+		}
 	}
 }

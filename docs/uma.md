@@ -80,6 +80,11 @@ Two consequences implemented deliberately:
    successful presentation — otherwise a client can grind one ticket against
    policy while claims change underneath it.
 
+Tickets are stored as SHA-256, like every other credential here. A ticket is a
+bearer credential from the moment the resource server receives it until the
+client spends it, travelling through a 401 header and back through a token
+request, so it passes any number of proxies and logs.
+
 
 What is here is the grant and the ticket, backed by a policy engine that already
 existed. Whether the rest is worth building depends on whether anyone asks for

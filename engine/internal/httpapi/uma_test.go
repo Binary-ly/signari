@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -316,4 +317,45 @@ func TestAnExpiredTicketIsRefused(t *testing.T) {
 		t.Errorf("an expired ticket answered %v, want invalid_grant", b["error"])
 	}
 	_ = time.Now
+}
+
+func TestAPermissionTicketSurvivesConcurrentRedemption(t *testing.T) {
+	f := newCIBAFixture(t)
+	f.allowClientOn(t, "document", "42", "viewer")
+
+	const racers = 8
+	for round := 0; round < 5; round++ {
+		_, body := f.permission(t, f.clientID, f.secret, onePermission)
+		ticket, _ := body["ticket"].(string)
+		if ticket == "" {
+			t.Fatalf("round %d: no ticket in %v", round, body)
+		}
+
+		var wg sync.WaitGroup
+		codes := make([]int, racers)
+		start := make(chan struct{})
+		for i := 0; i < racers; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start // release them together
+				codes[i], _ = f.exchange(t, f.clientID, ticket, nil)
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		won := 0
+		for _, c := range codes {
+			if c == http.StatusOK {
+				won++
+			}
+		}
+		if won != 1 {
+			t.Fatalf("round %d: %d of %d concurrent presentations of one ticket "+
+				"received an RPT; exactly one may. §3.3.1 makes single use a MUST "+
+				"because a reusable ticket is a session fixation primitive",
+				round, won, racers)
+		}
+	}
 }

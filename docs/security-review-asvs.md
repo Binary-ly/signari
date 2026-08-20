@@ -59,7 +59,7 @@ Our userinfo and introspection endpoints are the resource server.
 | | Requirement | Verdict |
 |---|---|---|
 | V10.3.1 | Accept only tokens whose audience is this service | ✅ |
-| V10.3.2 | Enforce `sub`, `scope`, `authorization_details` in the decision | ✅ all three — `authorization_details` implemented since this review (RFC 9396) |
+| V10.3.2 | Enforce `sub`, `scope`, `authorization_details` in the decision | ✅ all three. The **scope** half is now tested at `/oauth2/userinfo`, and it needed to be: the handler gates `email`, `profile` and `groups` individually, and no test varied the scope — so nothing established that a claim is actually **withheld**. A test asking for everything and receiving everything passes identically against a handler that ignores scope; only asking for less proves the difference. Releasing `email` unconditionally now fails `TestUserinfoWithholdsClaimsTheScopeDidNotGrant` |
 | V10.3.3 | Identify the user by a non-reassignable claim | ✅ `sub` is a uuid, never an email |
 | V10.3.4 | Enforce `acr`, `amr`, `auth_time` when required | ✅ `ACRFromAMR` derives the context from the factors **actually used**, and `FlowDemandsMFA` is consulted per authorization request rather than frozen at sign-in — a live password-only session is stepped up when `acr_values` demands it |
 | V10.3.5 (L3) | Sender-constrained tokens | ✅ DPoP (RFC 9449) and mTLS (RFC 8705) both |

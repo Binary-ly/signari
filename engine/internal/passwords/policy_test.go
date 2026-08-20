@@ -255,3 +255,42 @@ func TestPasswordsAreNormalisedToNFC(t *testing.T) {
 		t.Skip("this platform's fixture did not decompose; nothing to compare")
 	}
 }
+
+// SP 800-63B-4 §3.1.1.2's two SHALL NOTs, which revision 4 raised from
+// revision 3's SHOULD NOTs:
+//
+//	"Verifiers and CSPs SHALL NOT impose other composition rules (e.g.,
+//	 requiring mixtures of different character types) for passwords."
+//	"Verifiers and CSPs SHALL NOT require users to change passwords
+//	 periodically."
+//
+// Compliance here is compliance by ABSENCE — there is no composition check and
+// no expiry column — and absence is the hardest thing to keep. Nobody reviewing
+// a diff that adds "must contain a digit" is reminded that a standard forbids
+// it; it reads like tightening security. This test is the reminder.
+//
+// The strength estimate is deliberately not a composition rule: it scores how
+// many guesses a password would take, so a long lowercase passphrase passes and
+// `Password1!` does not, which is the opposite of what a composition rule does.
+func TestNoCompositionRulesAreImposed(t *testing.T) {
+	p := DefaultPolicy()
+	ctx := context.Background()
+
+	// Every one of these would fail a conventional composition rule, and every
+	// one is a perfectly good passphrase.
+	// Deliberately not famous examples: `correct horse battery staple` is in
+	// every breach corpus by now, and refusing it would be the breach check
+	// working rather than a composition rule.
+	for _, pw := range []string{
+		"marmalade lantern quietly drifting",
+		"seventeen wooden ladders by the shore",
+		"thebargeleftharbourbeforedaylight",
+	} {
+		if _, err := p.Check(ctx, pw, "", nil, nil); err != nil {
+			t.Errorf("the passphrase %q was refused (%v). It has no uppercase, no "+
+				"digit and no symbol — which §3.1.1.2 says SHALL NOT be required. "+
+				"A rule that pushes people to `Password1!` and away from length is "+
+				"the failure the standard forbids", pw, err)
+		}
+	}
+}

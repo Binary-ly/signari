@@ -19,10 +19,24 @@ import (
 //
 // # What is deliberately NOT here
 //
-// Composition rules — "one uppercase, one digit, one symbol". NIST SP 800-63B
-// advises against them: they push people towards `Password1!`, which is in every
-// breach corpus, and away from long passphrases, which are not. Length and a
-// breach check do the work those rules pretend to do.
+// Composition rules — "one uppercase, one digit, one symbol". SP 800-63B-4
+// §3.1.1.2 does not merely advise against them, which is what an earlier version
+// of this comment said:
+//
+//	"Verifiers and CSPs SHALL NOT impose other composition rules (e.g.,
+//	 requiring mixtures of different character types) for passwords."
+//
+// Revision 3 said SHOULD NOT; revision 4 raised it to SHALL NOT, alongside the
+// same elevation for periodic password expiry. Describing a SHALL NOT as advice
+// is the same stale-citation shape this policy's MinLength already had once, so
+// it is quoted here rather than paraphrased.
+//
+// The reason has not changed: composition rules push people towards
+// `Password1!`, which is in every breach corpus, and away from long passphrases,
+// which are not. Length and a breach check do the work those rules pretend to
+// do. TestNoCompositionRulesAreImposed keeps the absence deliberate, because
+// nobody reviewing a diff that adds "must contain a digit" is reminded that a
+// standard forbids it.
 //
 // What IS checked besides length is context: a password containing the person's
 // own email address is guessable by anyone who knows who they are, and no

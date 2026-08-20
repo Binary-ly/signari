@@ -115,3 +115,34 @@ against the right document.
 
 
 Full evidence, including the commands, is in `security-review-defaults.md`.
+
+## The two SHALL NOTs this review had not covered (August 2026)
+
+§3.1.1.2 carries two prohibitions as well as the length floor, and revision 4
+raised **both** from revision 3's SHOULD NOT to **SHALL NOT**:
+
+> "Verifiers and CSPs SHALL NOT impose other composition rules (e.g., requiring
+> mixtures of different character types) for passwords."
+
+> "Verifiers and CSPs SHALL NOT require users to change passwords periodically."
+
+We comply with both, and did before this pass — there is no composition check
+anywhere in `internal/passwords`, and no password-expiry column in any migration.
+Two things were nonetheless wrong:
+
+1. **The code described a SHALL NOT as advice.** `policy.go` said NIST "advises
+   against" composition rules. That is revision 3's strength, quoted at revision
+   4's number — precisely the stale-citation shape this document was written to
+   record for `MinLength`. Corrected, and the requirement is now quoted rather
+   than paraphrased.
+
+2. **Compliance by absence had nothing holding it down.** Both requirements are
+   satisfied by code that does not exist, which is the hardest kind to keep: a
+   diff adding "must contain a digit" reads like tightening security, and nobody
+   reviewing it is reminded that a standard forbids it.
+   `TestNoCompositionRulesAreImposed` now accepts three passphrases with no
+   uppercase, digit or symbol, so adding such a rule fails a test that says why.
+
+The strength estimator is not a composition rule and the distinction matters: it
+scores how many guesses a password would take, so a long lowercase passphrase
+passes and `Password1!` does not — the opposite of what a composition rule does.

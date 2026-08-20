@@ -1,5 +1,13 @@
 // Package ssf implements the Shared Signals Framework and CAEP events.
 //
+// OpenID Shared Signals Framework Specification 1.0, Standards Track (Final),
+// 29 August 2025, carrying Security Event Tokens (RFC 8417).
+//
+// The version is recorded because it was not: this package named neither the
+// specification's version nor its date, which is how a Final text can supersede
+// the draft an implementation was written against with nothing in the tree
+// noticing. AuthZEN had the same gap and it took a currency sweep to find it.
+//
 // # The argument
 //
 // An access token is valid until it expires. That is the whole security model of

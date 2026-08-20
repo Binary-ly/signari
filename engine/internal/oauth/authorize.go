@@ -236,6 +236,15 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 				"proof-of-possession key: 43 characters, unpadded")
 	}
 
+	// §3.1.2.1's prompt exclusivity. Checked here, with the other request
+	// parameters, because it is a property of the request rather than of the
+	// session -- a client asking for "none login" has a bug whether or not
+	// anybody is signed in, and discovering that only when a session happens to
+	// be missing would make the error intermittent.
+	if err := ValidatePrompt(req.Prompt); err != nil {
+		return redirectErr("invalid_request", err.Error())
+	}
+
 	// 7. Scope.
 	scopes := strings.Fields(req.Scope)
 	if len(scopes) == 0 {

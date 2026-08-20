@@ -152,7 +152,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 			// prompt=none plus an unmet requirement is unsatisfiable by
 			// definition: the client forbade interaction and we need some.
-			if req.Prompt == "none" {
+			if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
 				s.writeAuthzError(w, r, req, &oauth.AuthzError{
 					Code:        stepUpErrorCode(reason),
 					Description: detail,
@@ -199,7 +199,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if !live {
 		// prompt=none means "do not interact". A client asking for silent
 		// authentication must get an error it can handle, not a login page.
-		if req.Prompt == "none" {
+		if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
 			s.writeAuthzError(w, r, req,
 				&oauth.AuthzError{Code: "login_required",
 					Description: "no active session and prompt=none was requested",
@@ -249,7 +249,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if ask {
 		// prompt=none forbade interaction, and consent is interaction. The client
 		// gets an error it can act on rather than a screen it cannot show.
-		if req.Prompt == "none" {
+		if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
 			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "consent_required",
 				Description: consentRequiredReason(req),
 				Disposition: oauth.DispositionRedirect})

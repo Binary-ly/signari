@@ -144,7 +144,7 @@ const (
 func SessionSufficient(sessionAMR []string, authTime time.Time, now time.Time,
 	acrValues string, maxAge *int, prompt string) (StepUpReason, string) {
 
-	if prompt == "login" || prompt == "select_account" {
+	if HasPrompt(prompt, PromptLogin) || HasPrompt(prompt, PromptSelectAccount) {
 		return StepUpForced, "the client requested re-authentication"
 	}
 

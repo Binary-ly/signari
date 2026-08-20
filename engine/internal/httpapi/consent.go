@@ -103,7 +103,7 @@ func (s *Server) needsConsent(r *http.Request, c *clients.Client, userID string,
 	// prompt=consent is checked FIRST, before the first-party exemption: a client
 	// explicitly asking to re-confirm must get the screen even if it normally
 	// skips it, because the request is about this action, not this client.
-	if req.Prompt == "consent" {
+	if oauth.HasPrompt(req.Prompt, oauth.PromptConsent) {
 		d, err := store.CheckConsent(r.Context(), s.db, userID, c.ClientID, requested)
 		if err != nil {
 			return d, false, err

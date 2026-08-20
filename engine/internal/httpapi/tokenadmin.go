@@ -119,7 +119,43 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				revoked = true
+			} else if claims.ClientID != "" && claims.ClientID != c.ClientID {
+				// §2.1: "verifies whether the token was issued to the client
+				// making the revocation request. If this validation fails, the
+				// request is refused and the client is informed of the error."
+				//
+				// Distinct from §2.2's unknown-token case, which MUST be 200.
+				// This token is real and this caller may not revoke it, and
+				// answering 200 would tell them it had been revoked when it had
+				// not -- the same silent-success failure this endpoint's review
+				// criticises elsewhere.
+				s.log.Info("revocation refused: token belongs to another client",
+					"presented_by", c.ClientID, "correlation_id", correlationID(ctx))
+				writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+					Description: "this token was issued to a different client",
+					Status:      http.StatusBadRequest})
+				return
 			}
+		}
+	}
+
+	if !revoked {
+		// The same §2.1 check for refresh tokens, which RevokeRefreshToken
+		// cannot report on its own: it returns false for unknown, foreign and
+		// already-revoked alike, and only the middle one is an error.
+		owner, oerr := store.RefreshTokenOwner(ctx, tx, store.HashToken(raw))
+		if oerr != nil {
+			s.log.Error("looking up refresh token owner", "err", oerr)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		if owner != "" && owner != c.ClientID {
+			s.log.Info("revocation refused: refresh token belongs to another client",
+				"presented_by", c.ClientID, "correlation_id", correlationID(ctx))
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "this token was issued to a different client",
+				Status:      http.StatusBadRequest})
+			return
 		}
 	}
 

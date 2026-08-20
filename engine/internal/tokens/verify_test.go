@@ -582,3 +582,51 @@ func TestAtHashAndCHashAgainstIndependentlyComputedVectors(t *testing.T) {
 			"fails validation everywhere", got, err)
 	}
 }
+
+// OIDC Core 1.0 §2: iss, sub, aud, exp and iat are REQUIRED in an ID Token.
+//
+// Enforced at the point of MINTING, which is the only place it can be enforced
+// -- we are the issuer, so nothing downstream will catch a malformed one before
+// a relying party does. Both guards survived mutation against the whole test
+// suite: SignIDToken would emit a token with no `sub`, or no `exp`, and no test
+// anywhere noticed.
+//
+// A regression here does not fail loudly on our side. It ships tokens that every
+// conformant relying party rejects, and the report comes back as "login stopped
+// working" from somebody else's logs.
+func TestAnIDTokenCannotBeMintedWithoutItsRequiredClaims(t *testing.T) {
+	_, k := testSet(t)
+	now := time.Now()
+
+	full := func() IDTokenClaims {
+		return IDTokenClaims{
+			Issuer:   "https://idp.example",
+			Subject:  "user-1",
+			Audience: "client-1",
+			Expiry:   now.Add(time.Hour).Unix(),
+			IssuedAt: now.Unix(),
+		}
+	}
+
+	// The positive case first: the fixture must actually be mintable, or every
+	// assertion below would pass for the wrong reason.
+	if _, err := NewSigner(k).SignIDToken(full()); err != nil {
+		t.Fatalf("a complete ID token was refused, so this test proves nothing: %v", err)
+	}
+
+	for name, break_ := range map[string]func(*IDTokenClaims){
+		"no iss": func(c *IDTokenClaims) { c.Issuer = "" },
+		"no sub": func(c *IDTokenClaims) { c.Subject = "" },
+		"no aud": func(c *IDTokenClaims) { c.Audience = "" },
+		"no exp": func(c *IDTokenClaims) { c.Expiry = 0 },
+		"no iat": func(c *IDTokenClaims) { c.IssuedAt = 0 },
+	} {
+		c := full()
+		break_(&c)
+		if _, err := NewSigner(k).SignIDToken(c); err == nil {
+			t.Errorf("%s: an ID token was minted without a claim OIDC Core §2 makes "+
+				"REQUIRED; conformant relying parties will reject it and the failure "+
+				"will surface in their logs, not ours", name)
+		}
+	}
+}

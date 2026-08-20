@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -192,4 +193,29 @@ func GrantRevoked(ctx context.Context, db *pgxpool.Pool, grantID string) (bool, 
 		return true, fmt.Errorf("checking grant revocation: %w", err)
 	}
 	return revoked, nil
+}
+
+// RefreshTokenOwner returns the client a refresh token was issued to, or "" if
+// this server issued no such token.
+//
+// RFC 7009 §2.1 requires the server to verify "whether the token was issued to
+// the client making the revocation request", and to refuse and inform the client
+// when it was not. RevokeRefreshToken cannot answer that: it returns false for
+// an unknown token, a token belonging to somebody else, and one already revoked
+// alike, and those three need different answers. §2.2 mandates 200 for the first
+// and third; §2.1 mandates an error for the second.
+func RefreshTokenOwner(ctx context.Context, tx pgx.Tx, tokenHash []byte) (string, error) {
+	var owner string
+	err := tx.QueryRow(ctx, `
+		SELECT f.client_id
+		FROM core.refresh_tokens t
+		JOIN core.refresh_token_families f ON f.id = t.family_id
+		WHERE t.token_hash = $1`, tokenHash).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("looking up refresh token owner: %w", err)
+	}
+	return owner, nil
 }

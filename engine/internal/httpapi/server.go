@@ -84,7 +84,7 @@ type Server struct {
 	// refusal rule as policies: only a document that parsed, passed its own
 	// tests and cleared the static safety analysis is ever cached.
 	flows *flowCache
-	geo      risk.Resolver
+	geo   risk.Resolver
 	// mailer is never nil: New substitutes a logging driver when no SMTP is
 	// configured, so no call site has to nil-check before telling a user
 	// something important.
@@ -300,6 +300,17 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /ssf/receive", s.handleSSFReceive)
 
 	mux.HandleFunc("GET /.well-known/authzen-configuration", s.handleAuthzMetadata)
+
+	// SSF §7.2. The bare path is correct for an issuer with no path component,
+	// which is the ordinary case and the only one most implementations serve.
+	mux.HandleFunc("GET "+ssf.WellKnownBase, s.handleSSFMetadata)
+	// And §7.2.1's other case: an issuer WITH a path component puts the document
+	// at /.well-known/ssf-configuration<path>. Registered only when the issuer
+	// actually has one, so the ordinary deployment does not carry a duplicate
+	// route -- and registering it unconditionally would panic on the collision.
+	if p := ssf.WellKnownPath(strings.TrimRight(s.cfg.Issuer, "/")); p != ssf.WellKnownBase {
+		mux.HandleFunc("GET "+p, s.handleSSFMetadata)
+	}
 	// RFC 9728. Signari is a protected resource for its own /oauth2/userinfo,
 	// and this document is where MCP's discovery flow begins.
 	mux.HandleFunc("GET "+protectedResourcePath, s.handleProtectedResourceMetadata)

@@ -186,3 +186,109 @@ Re-checked August 2026: `Profile.java:177` carries
 (`SsfAdminResource`, `CreateStreamRequest`, `AddSubjectRequest`).
 
 
+## Point 3, done properly: every normative clause, against the spec text
+
+The specification was parsed rather than remembered — OpenID Shared Signals
+Framework 1.0, Standards Track (Final), **29 August 2025** — and every RFC 2119
+keyword extracted with its section. **265 keyword uses across 58 sections; 46
+sections carry MUST/SHALL/REQUIRED.**
+
+### The receiver: 12 MUSTs, all implemented, each with the clause beside it
+
+`internal/ssf/receive.go`'s `Verify` was read in full against the extracted text:
+
+| Clause | Requirement | Ours |
+|---|---|---|
+| §4.1.1 | SETs MUST use explicit typing (RFC 8417 §2.3) | `typ` must equal `secevent+jwt` |
+| §4.1.2 | `sub` MUST NOT be present in any SET | refused, with the reason quoted |
+| §4.1.3 | the three distinguishing checks together | all three |
+| §4.1.6 | `iss` MUST match the stream configuration; receivers MUST validate | `c.Issuer != src.Issuer` → refused |
+| §4.1.7 | `exp` MUST NOT be used in SETs | refused |
+| §4.1.8 | `aud` | `containsFold(c.Audience, src.Audience)` |
+| §3.6 | MUST discard an event with an unprocessable **Critical** subject member | `unprocessableCritical` |
+
+Plus, beyond the profile: algorithms pinned with `none` absent from the list,
+`jwk`/`jku`/`x5u` headers refused, exactly one signature required, duplicate JSON
+keys refused, `jti` and `iat` required, future-dated tokens refused with a
+deliberately asymmetric window.
+
+§4.1.9's `txn` uniqueness and §7.2.4's configuration validation are transmitter
+and discovery obligations respectively, not receiver ones; §7.2.4 does not apply
+because our sources are operator-configured rather than discovered.
+
+**Conclusion: the receiver holds up.** Every receiver-side MUST in SSF 1.0 Final
+is implemented, and the profile's central concern — §4.1.3, "the possibility that
+SETs are confused for other kinds of JWTs" — is covered by all three of its
+checks rather than the one most implementations stop at.
+
+### The transmitter: we were undiscoverable, and now are not
+
+The same sweep found the gap on the other side. We transmit SETs and published
+**no `/.well-known/ssf-configuration` at all**, so §7.1's document did not exist
+here. A receiver had no way to learn our issuer, our signing keys or our delivery
+method without an operator telling it out of band.
+
+Two details from §7.1 decided the shape:
+
+- **`spec_version` is not optional in effect.** "If absent, the Transmitter is
+  assumed to conform to `1_0-ID1` version of the specification" — an implementer's
+  draft. Silence is not neutral; it is a claim about a different document. We
+  publish `"1_0"`.
+- **`jwks_uri` is OPTIONAL in general and required for us:** "MUST be specified
+  if the Transmitter intends to generate signed JWTs." Every SET we emit is
+  signed.
+
+Implemented in `internal/ssf/metadata.go`, served at `internal/httpapi/ssfmetadata.go`.
+
+**What is deliberately absent, and why absence is the honest answer.** The §8
+management endpoints — `configuration_endpoint`, `status_endpoint`,
+`add_subject_endpoint`, `remove_subject_endpoint`, `verification_endpoint` — and
+`authorization_schemes` are all omitted, because this engine's streams are
+administered by its operator. Advertising a configuration endpoint that 404s is
+worse than advertising nothing: the receiver's next move is to call it. This is
+the rule the project adopted after OIDC discovery once advertised three endpoints
+that did not exist.
+
+`default_subjects` is omitted for a sharper reason. §7.1 permits exactly two
+values — "If present, the value MUST be either `ALL` or `NONE`" — and this engine
+is neither: a stream carries events about the subjects that client has actually
+seen, narrower than ALL and wider than NONE. Omitting is explicitly conformant
+("If not provided, the Transmitter behavior in this regard is unspecified"),
+while `ALL` would promise events about every user in the directory and `NONE`
+would direct the receiver to an add-subject endpoint we do not offer.
+
+**The issuer is published verbatim, including a development `http` one.** §7.1
+calls for https, but also says the value "MUST be identical to the `iss` claim
+value in Security Event Tokens issued from this Transmitter" — and that is the
+half a receiver enforces, because §4.1.6 requires it to reject any SET whose
+`iss` does not match. Publishing a tidied https variant of an issuer we actually
+sign with would satisfy the scheme sentence by breaking the `iss` sentence, and
+make us unsubscribable rather than more secure. §7.2 puts the receiver in charge
+of noticing: "Receivers SHOULD ensure that the Issuer URL... uses the https
+scheme."
+
+**§7.2.1's path case is handled**, which most implementations skip. For an issuer
+with a path component the document belongs at
+`/.well-known/ssf-configuration/issuer1`, not at the bare path — the rule exists
+for multi-tenant hosting, and a transmitter serving only the bare path is
+undiscoverable in exactly those deployments. The route is registered only when
+the issuer has a path, so the ordinary deployment carries no duplicate.
+
+Tested including a check that follows our **own** advertised `jwks_uri` back
+through the router and confirms a key set comes back. A discovery document is
+only worth having if following it works, and the failure it prevents — a
+plausible path that 404s — is one a receiver otherwise finds at the moment it
+tries to verify its first event.
+
+
+Their SSF tree is `ssf/{core,transmitter,services,tests}`. There is no receiver
+package. The two files whose names contain "Receiver" —
+`SsfTransmitterGetReceiverClientTest` and `SsfUtilReceiverTest` — are transmitter
+tests about the receiver they push *to*. **Our claim to be the only one that
+receives holds.**
+
+Not implemented on the transmitter side, for the record:
+the section 8 stream management API, RISC events, and an opt-out legacy
+Apple SSE CAEP profile.
+ The corrected picture is in
+[comparison-matrix.md](comparison-matrix.md).

@@ -684,7 +684,7 @@ border:1px solid var(--brand-primary,#767676);border-radius:4px;cursor:pointer}
 {{end}}
 <button type="submit">Sign in</button>
 </form>
-<p class="alt"><button type="button" id="passkey-signin">Sign in with a passkey</button></p>
+<p class="alt" id="passkey-row" hidden><button type="button" id="passkey-signin">Sign in with a passkey</button></p>
 {{if .Providers}}<div class="alt">
 {{range .Providers}}<p><a class="ext" href="/login/with/{{.Slug}}">Continue with {{.Name}}</a></p>{{end}}
 </div>{{end}}

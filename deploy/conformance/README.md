@@ -105,3 +105,25 @@ instance at https://www.certification.openid.net against a publicly reachable
 deployment of the engine. Local self-hosting of the suite is supported but the
 browser automation is the fragile part, and certification requires a public
 deployment anyway.
+
+
+## Re-checked, August 2026: is our page the reason the driver stalls?
+
+The blocker above is the suite's HtmlUnit driver, and it was worth asking whether
+we were contributing to it. We are not, and the check produced something else.
+
+
+**What the check did find** is a control that was inert without script. The
+passkey button is `type="button"`, so it does nothing on its own, and
+`passkey.js` only ever attached a click listener to it — it never revealed it. A
+visitor with scripting off, or on a browser without WebAuthn, saw a button that
+did nothing when pressed. `passkeyjs.go` carries a comment explaining that inline
+`onclick` handlers were avoided precisely because a CSP would leave "a button
+that silently does nothing"; the same outcome had been reached by a different
+route. The row is now `hidden` in the markup and revealed by the script only when
+`PublicKeyCredential` exists.
+
+**On automating the suite**: the OpenID Foundation does publish a Python driver
+for CI use, and `run.sh` already invokes it (`scripts/run-test-plan.py`). It is
+not the missing piece — the stall is inside the suite's own browser automation,
+downstream of that script. The recommendation below is unchanged.

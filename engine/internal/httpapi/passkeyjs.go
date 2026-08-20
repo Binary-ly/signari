@@ -163,7 +163,23 @@ window.signariSignInWithPasskey = function () {
 // nothing, with the reason visible only in the browser console.
 document.addEventListener("DOMContentLoaded", function () {
   const b = document.getElementById("passkey-signin");
-  if (b) b.addEventListener("click", () => window.signariSignInWithPasskey());
+  if (!b) return;
+  // Revealed here, not in the HTML, and this is the same argument as the one
+  // above about inline handlers -- one step further along.
+  //
+  // Avoiding onclick stopped the button being inert when the CSP blocked the
+  // handler. It did not stop the button being inert when there is no JavaScript
+  // at all, or no WebAuthn: the markup shipped it visible and this file only
+  // ever attached a listener to it. Somebody with scripting off, or on a browser
+  // without PublicKeyCredential, saw a button that did nothing when pressed --
+  // which is the exact outcome the comment above says it exists to prevent.
+  //
+  // The sign-in form itself needs no JavaScript and must keep working with none;
+  // this is the one control on the page that genuinely cannot.
+  if (!window.PublicKeyCredential) return;
+  const row = document.getElementById("passkey-row");
+  if (row) row.hidden = false;
+  b.addEventListener("click", () => window.signariSignInWithPasskey());
 });
 
 // Conditional UI: the passkey appears in the username field's autofill dropdown

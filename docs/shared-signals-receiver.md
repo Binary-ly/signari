@@ -178,3 +178,11 @@ and discovery says exactly that) and UMA (no claims gathering, so `need_info` is
 never returned). An unimplemented half of a framework is only safe when it is
 written down; the failure mode otherwise is an integrator discovering it against
 a live deployment.
+
+
+Re-checked August 2026: `Profile.java:177` carries
+`SSF("Shared Signals Framework", Type.EXPERIMENTAL)`, and `kc/ssf/` contains
+`core`, `services` and `transmitter` — with §8.1.1 stream configuration endpoints
+(`SsfAdminResource`, `CreateStreamRequest`, `AddSubjectRequest`).
+
+

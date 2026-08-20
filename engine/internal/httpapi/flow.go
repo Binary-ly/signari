@@ -1568,6 +1568,44 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 		// Fall through.
 	}
 
+	// ASVS 5.0.0 V7.2.4: "generates a new session token on user authentication,
+	// including re-authentication, and TERMINATES THE CURRENT SESSION TOKEN."
+	//
+	// A fresh sid and cookie token are minted below every time, so session
+	// fixation has never worked here. What did not happen is the second half: the
+	// session this browser already held stayed live until not_after.
+	//
+	// Step-up is the case that matters. Someone signs in with a password (acr=1),
+	// something asks for another factor, they re-authenticate, and they hold an
+	// acr=2 session. The acr=1 session remained valid for hours -- so anyone
+	// holding that earlier cookie kept a working password-only session, and the
+	// user re-authenticated precisely because something warranted it.
+	//
+	// Terminated in THIS transaction, so the old session dies exactly when the
+	// new one is born; a crash between the two cannot leave both live. Going
+	// through TerminateSessions rather than an UPDATE also queues the CAEP
+	// session-revoked notices, so relying parties holding tokens from the old
+	// session learn it ended rather than discovering it at expiry.
+	//
+	// The session presented by THIS browser, and only that one. A user signed in
+	// on a phone and a laptop who re-authenticates on the laptop has not asked to
+	// be signed out of the phone.
+	if old := sessionCookie(r); old != "" {
+		var oldSID string
+		if err := tx.QueryRow(ctx, `
+			SELECT sid FROM core.sessions
+			WHERE cookie_hash = $1 AND revoked_at IS NULL`,
+			store.HashToken(old)).Scan(&oldSID); err == nil && oldSID != "" {
+			if _, terr := store.TerminateSessions(ctx, tx, oldSID, "",
+				store.ReasonReauthenticated); terr != nil {
+				s.log.Error("terminating the superseded session", "err", terr,
+					"correlation_id", correlationID(ctx))
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
 	// Two independent random values: a public sid that goes in tokens, and a
 	// secret cookie token that never leaves the browser. Deriving one from the
 	// other would collapse them back into a single value.

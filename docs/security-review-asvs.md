@@ -289,3 +289,64 @@ V6 Authentication (47), V7 Session Management (19), V8 Authorization (13) and
 V11 Cryptography (24) have partial coverage from the protocol reviews but no
 requirement-by-requirement sweep — recorded in TODO-FOR-YOU.md as open rather
 than claimed.
+
+## V7 Session Management: nineteen requirements, one gap (21 August 2026)
+
+| Requirement | Status |
+|---|---|
+| **V7.2.1** verification on a trusted backend | met — the cookie is a reference token resolved against the database on every request |
+| **V7.2.2** dynamically generated, not static secrets | met |
+| **V7.2.3** CSPRNG, ≥128 bits | **exceeded** — `newSID` is 32 bytes from `crypto/rand`, 256 bits, and the sid and cookie token are two independent values |
+| **V7.2.4** new token on authentication **and the current one terminated** | **was half met** — fixed, below |
+| **V7.4.1** termination disallows further use | met — every lookup filters `revoked_at IS NULL` |
+| **V7.4.2** all sessions terminated when an account is disabled | **exceeded** — session lookups join `u.status = 'active'`, so disabling a user kills every session *instantly*, with no sweep and no window |
+| **V7.4.3** option to end other sessions after a factor changes | partial — `ReasonPasswordChange` and `ReasonMFAReset` exist and terminate; the user-facing *option* does not |
+| **V7.4.5** administrators can terminate sessions | met — `ReasonAdminRevoke` |
+| **V7.3.1** inactivity timeout | **not met** — item 9f, unchanged |
+| **V7.3.2** absolute maximum lifetime | met — `not_after`, enforced in every lookup as well as by the sweep |
+| **V7.5.2** users can view and terminate their sessions | partial — the data exists; the page does not |
+| **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | partial — timeouts and deviations are documented here and in TODO-FOR-YOU.md; concurrent-session policy is not |
+
+### V7.2.4: the half that was missing
+
+> "Verify that the application generates a new session token on user
+> authentication, **including re-authentication**, and terminates the current
+> session token."
+
+`completeSignIn` mints a fresh sid and cookie token every time, so session
+fixation has never worked here. The previous session row, however, stayed live
+until `not_after`.
+
+**Step-up is where that bites.** Someone signs in with a password (`acr=1`),
+something asks for another factor, they re-authenticate, and they now hold an
+`acr=2` session. The `acr=1` session remained valid for hours — so anyone holding
+that earlier cookie kept a working password-only session. And step-up is usually
+prompted *because* something looked wrong, which makes the stale session the one
+an attacker is most likely to be holding.
+
+Now terminated in the same transaction that creates the replacement, so the old
+session dies exactly when the new one is born and a crash between the two cannot
+leave both live. It goes through `TerminateSessions` rather than an `UPDATE`,
+which means the CAEP `session-revoked` notices are queued too: relying parties
+holding tokens from the old session learn it ended instead of discovering it at
+expiry.
+
+**Scoped to the session this browser presented**, not to the user. Someone signed
+in on a phone and a laptop who re-authenticates on the laptop has not asked to be
+signed out of the phone — that would be a defensible product decision and a
+different one, and it would turn every step-up into a global sign-out. There is a
+test for each direction.
+
+A new `reauthenticated` termination reason rather than reusing `logout`: an
+operator reading the audit trail should be able to tell a session that ended
+because somebody left from one that ended because it was superseded, and the
+value travels to relying parties in the CAEP event.
+
+### What V7 leaves open
+
+V7.3.1 (inactivity timeout) is item **9f** and unchanged. V7.4.3 and V7.5.2 both
+describe a *page* — "give the option to terminate all other sessions", "users are
+able to view and terminate active sessions" — and the mechanism behind both
+already exists and is used by the admin path. What is missing is the screen, which
+is the same shape as **9k**. Recorded rather than built, because a session-list UI
+is a product surface and you have not asked for one.

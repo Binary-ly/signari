@@ -23,6 +23,10 @@ const (
 	ReasonMFAReset        TerminationReason = "mfa_reset"
 	ReasonExpired         TerminationReason = "expired"
 	ReasonReuseDetected   TerminationReason = "reuse_detected"
+	// ReasonReauthenticated is the session replaced when its holder authenticates
+	// again. ASVS V7.2.4 requires the previous token to be terminated, not merely
+	// replaced in the browser.
+	ReasonReauthenticated TerminationReason = "reauthenticated"
 	// Support access ended -- by an administrator stopping it, or by it running
 	// out. Distinct from logout so an audit reader can tell the two apart.
 	ReasonImpersonationEnded TerminationReason = "impersonation_ended"

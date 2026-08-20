@@ -235,3 +235,50 @@ them is a one-line change per site. What is not one line is deciding whether to
 narrow them globally — which breaks every existing RS256 client — or per client,
 which needs a registration attribute and a migration. Recorded rather than
 changed, for the same reason as the other three.
+
+## §5.4.1 key strength: the floor was not enforced (20 August 2026)
+
+Reviewed against **FAPI 2.0 Security Profile, Final, 22 February 2025**, with
+every normative keyword extracted by section — 92 uses, densest at §5.3.2.2
+(16), §5.3.2.1 (15) and §5.3.3.1 (15).
+
+> "RSA keys shall have a minimum length of 2048 bits."
+> "Elliptic curve keys shall have a minimum length of 224 bits."
+
+Nothing enforced this on a client's registered JWKS. A client could register a
+**1024-bit RSA public key** and authenticate with `private_key_jwt` indefinitely —
+a key below every recognised floor since NIST withdrew 1024-bit RSA in 2013, and
+one a well-resourced attacker can factor.
+
+The client is the party harmed, which is precisely why the authorization server
+has to be the one checking: the client that registers a weak key is the client
+least likely to notice.
+
+It was also an inconsistency inside one codebase rather than a considered
+position. The same floor was already enforced on SAML encryption certificates
+(`internal/saml/encrypt.go:107`) and on certificate import in the CLI. Only the
+path that authenticates clients was missing it.
+
+**Enforced against the key that actually verified**, not by filtering the
+registered set up front. A client mid-rotation with one strong key and one legacy
+weak key keeps working on the strong one; a client that signed with the weak one
+gets an error naming the key type and the bit length, rather than the "no
+registered key verified it" message that would send an integrator to the wrong
+place.
+
+Elliptic curve keys need no separate gate in practice — `jose.ParseSigned` pins
+the algorithm list, and P-256 upward all clear 224 bits — but the check is
+written for both so the floor does not depend on that coincidence holding.
+
+### §5.4.3, Handling Duplicate Key Identifiers — already satisfied
+
+> "when there are multiple keys with the same `kid`, the verifier shall consider
+> other JWK attributes, such as `kty`, `use`, `alg`, etc., when selecting the
+> verification key"
+
+Our verifiers iterate candidate keys and attempt verification rather than
+committing to the first `kid` match, which is a strictly stronger selector than
+comparing `alg`: a key that produces a valid signature is the key that signed it.
+`internal/ssf/receive.go` filters on `kid` and then tries each match;
+`internal/clientauth/privatekeyjwt.go` tries every registered key. Both terminate
+on a verified signature, so a duplicate `kid` cannot cause a false rejection.

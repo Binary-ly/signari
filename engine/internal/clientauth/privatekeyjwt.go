@@ -26,6 +26,8 @@
 package clientauth
 
 import (
+	"crypto/ecdsa"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -61,6 +63,58 @@ var allowedAlgs = []jose.SignatureAlgorithm{
 	jose.PS256, jose.PS384, jose.PS512,
 	jose.ES256, jose.ES384, jose.ES512,
 	jose.EdDSA,
+}
+
+// MinRSABits and MinECBits are the key-strength floor.
+//
+// FAPI 2.0 Security Profile (Final, 22 February 2025) §5.4.1:
+//
+//	"RSA keys shall have a minimum length of 2048 bits."
+//	"Elliptic curve keys shall have a minimum length of 224 bits."
+//
+// Nothing enforced this. A client could register a 1024-bit RSA public key and
+// authenticate with it indefinitely -- an assertion signed by a key that has been
+// below every recognised floor since NIST withdrew 1024-bit RSA in 2013, and that
+// a well-resourced attacker can factor.
+//
+// The client is the party harmed, which is exactly why the authorization server
+// has to be the one checking: the client that registers a weak key is the client
+// least likely to notice. The same floor is already enforced on SAML encryption
+// certificates in internal/saml/encrypt.go, so this was an inconsistency inside
+// one codebase rather than a considered position.
+const (
+	MinRSABits = 2048
+	MinECBits  = 224
+)
+
+// keyStrength reports why a key is too weak, or nil.
+//
+// Checked against the key that ACTUALLY verified rather than by filtering the
+// registered set up front. A client with one strong key and one legacy weak key
+// keeps working on the strong one; a client that signed with the weak one gets an
+// error naming the key and the bit length, instead of the "no registered key
+// verified it" message that sends an integrator looking at the wrong thing.
+func keyStrength(k *jose.JSONWebKey) error {
+	switch pub := k.Key.(type) {
+	case *rsa.PublicKey:
+		if n := pub.N.BitLen(); n < MinRSABits {
+			return fmt.Errorf("the assertion was signed by a %d-bit RSA key; the "+
+				"minimum is %d (FAPI 2.0 §5.4.1, and NIST withdrew 1024-bit RSA "+
+				"in 2013)", n, MinRSABits)
+		}
+	case *ecdsa.PublicKey:
+		if pub.Curve == nil {
+			return fmt.Errorf("the assertion was signed by an EC key with no curve")
+		}
+		if n := pub.Curve.Params().BitSize; n < MinECBits {
+			return fmt.Errorf("the assertion was signed by a %d-bit EC key; the "+
+				"minimum is %d (FAPI 2.0 §5.4.1)", n, MinECBits)
+		}
+	}
+	// Ed25519 has one size and it is fine. An unknown key type never reaches
+	// here: jose.ParseSigned pins the algorithms, and a key that matches none of
+	// them cannot have produced the signature we just verified.
+	return nil
 }
 
 // Assertion is a verified client assertion.
@@ -115,6 +169,7 @@ func VerifyPrivateKeyJWT(assertion, clientID, jwksJSON string, audiences []strin
 	// assertion's own header. A `jwk` header here would let the assertion name
 	// the key that verifies it, which authenticates nobody.
 	var payload []byte
+	var verifiedBy *jose.JSONWebKey
 	var lastErr error
 	for _, k := range jwks.Keys {
 		if !k.IsPublic() {
@@ -126,13 +181,21 @@ func VerifyPrivateKeyJWT(assertion, clientID, jwksJSON string, audiences []strin
 		}
 		if p, verr := tok.Verify(k); verr == nil {
 			payload = p
+			key := k
+			verifiedBy = &key
 			break
 		} else {
 			lastErr = verr
 		}
 	}
-	if false && (payload == nil) {
+	if payload == nil {
 		return nil, fmt.Errorf("the client assertion was not signed by any registered key: %w", lastErr)
+	}
+	// The key verified the signature. Whether it was strong enough to mean
+	// anything is a separate question, and it is asked after rather than before
+	// so the answer can name the key the client actually used.
+	if err := keyStrength(verifiedBy); err != nil {
+		return nil, err
 	}
 
 	var c assertionClaims

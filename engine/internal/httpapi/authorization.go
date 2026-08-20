@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -360,7 +361,7 @@ func (s *Server) handleAuthzSearchResource(w http.ResponseWriter, r *http.Reques
 	echoRequestID(w, r)
 	writeJSONResponse(w, http.StatusOK, authzen.SearchResponse{
 		Results: items,
-		Page:    pageResponse(items, more, last),
+		Page:    pageResponse(req, items, more, last),
 	})
 }
 
@@ -414,7 +415,7 @@ func (s *Server) handleAuthzSearchSubject(w http.ResponseWriter, r *http.Request
 	echoRequestID(w, r)
 	writeJSONResponse(w, http.StatusOK, authzen.SearchResponse{
 		Results: items,
-		Page:    pageResponse(items, more, last),
+		Page:    pageResponse(req, items, more, last),
 	})
 }
 
@@ -488,6 +489,27 @@ func (s *Server) handleAuthzSearchAction(w http.ResponseWriter, r *http.Request)
 // the caller as §8.2 requires ("an opaque string value"). Opaque matters: a
 // caller that can construct a token by hand can walk somebody else's result set
 // from the middle.
+// pageOf reads the pagination parameters and enforces §8.2's request binding.
+//
+//	"When a request contains a token, all entities (e.g., subject, resource,
+//	action, context) and pagination parameters (e.g., limit) MUST be identical to
+//	the preceding request. PDPs SHOULD return an error when any entity or
+//	parameter has been changed."
+//
+// The token used to be the cursor and nothing else, base64 of the last id. That
+// made the rule unenforceable rather than unenforced: with no record of what the
+// first request asked, a second request carrying the same token but a different
+// subject is indistinguishable from a legitimate continuation.
+//
+// What that produced was not a disclosure -- the search still runs against the
+// NEW subject, so nobody sees another principal's rows -- but silent nonsense: a
+// page of the new subject's results starting at a cursor from the old subject's
+// ordering, skipping everything before it. The caller has no way to know, and
+// "some resources are missing" is the hardest kind of bug to report.
+//
+// The token now carries a fingerprint of the request it was issued for. A
+// changed entity is refused by name, which is what §8.2 asks for and what makes
+// the failure legible.
 func pageOf(req authzen.SearchRequest) (limit int, after string, err error) {
 	if req.Page == nil {
 		return 0, "", nil
@@ -503,7 +525,41 @@ func pageOf(req authzen.SearchRequest) (limit int, after string, err error) {
 	if derr != nil {
 		return 0, "", fmt.Errorf("page.token is not a token this PDP issued")
 	}
-	return limit, string(raw), nil
+	fp, cursor, ok := strings.Cut(string(raw), ".")
+	if !ok {
+		return 0, "", fmt.Errorf("page.token is not a token this PDP issued")
+	}
+	if fp != searchFingerprint(req) {
+		return 0, "", fmt.Errorf("page.token was issued for a different search: " +
+			"section 8.2 requires every entity and pagination parameter to be " +
+			"identical to the request that produced the token, and at least one " +
+			"of subject, action, resource, context or limit has changed")
+	}
+	return limit, cursor, nil
+}
+
+// searchFingerprint identifies the request a page token belongs to.
+//
+// Everything §8.2 names -- the entities and the pagination parameters -- and
+// nothing else. The token itself is excluded for the obvious reason, and
+// page.properties is excluded because §8.2.1 allows extensions there whose
+// meaning this PDP does not define.
+//
+// Truncated to twelve bytes. This is a consistency check, not an authenticator:
+// the token is already opaque and a PEP that wants a different search can simply
+// ask for one. Twelve bytes is far past accidental collision and keeps the token
+// short enough to sit in a JSON body without comment.
+func searchFingerprint(req authzen.SearchRequest) string {
+	h := sha256.New()
+	enc := json.NewEncoder(h)
+	_ = enc.Encode(req.Subject)
+	_ = enc.Encode(req.Resource)
+	_ = enc.Encode(req.Action)
+	_ = enc.Encode(req.Context)
+	if req.Page != nil {
+		_ = enc.Encode(req.Page.Limit)
+	}
+	return base64.RawURLEncoding.EncodeToString(h.Sum(nil)[:12])
 }
 
 // pageResponse builds the page object the specification requires.
@@ -516,10 +572,18 @@ func pageOf(req authzen.SearchRequest) (limit int, after string, err error) {
 // caller with 1001 accessible documents was told about 1000 and had no way to
 // know -- which for an authorization search is worse than an error, because the
 // answer looks complete.
-func pageResponse(items []authzen.Item, more bool, lastID string) *authzen.PageResponse {
+// pageResponse builds §8.2.2's page object.
+//
+// NextToken is left empty when the result set is exhausted rather than omitted:
+// "If there are no more results after this page, its value MUST be an empty
+// string." The struct tag carries no omitempty for the same reason.
+func pageResponse(req authzen.SearchRequest, items []authzen.Item, more bool, lastID string) *authzen.PageResponse {
 	p := &authzen.PageResponse{Count: len(items)}
 	if more && lastID != "" {
-		p.NextToken = base64.RawURLEncoding.EncodeToString([]byte(lastID))
+		// The fingerprint travels with the cursor so the next request can be
+		// checked against the one that produced it.
+		p.NextToken = base64.RawURLEncoding.EncodeToString(
+			[]byte(searchFingerprint(req) + "." + lastID))
 	}
 	return p
 }

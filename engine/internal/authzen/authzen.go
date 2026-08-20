@@ -130,7 +130,20 @@ type SearchResponse struct {
 
 // PageResponse describes the page returned.
 type PageResponse struct {
-	NextToken  string         `json:"next_token,omitempty"`
+	// NextToken is always present, and empty when the result set is exhausted.
+	//
+	// §8.2.2: "next_token: REQUIRED. An opaque string value indicating the next
+	// page of results to return. If there are no more results after this page,
+	// its value MUST be an empty string."
+	//
+	// It carried `omitempty`, so a final page omitted the field entirely. A PEP
+	// following §8.2.2 tests `next_token === ""` to learn it is done; an absent
+	// field reads as undefined, which is a different thing in every language a
+	// client is written in. §8.2 pairs with this: "A paginated response MUST be
+	// clearly identified by the inclusion of a page object containing a
+	// NON-EMPTY, opaque next_token" -- so empty and absent are meant to be
+	// distinguishable, and omitempty collapsed them.
+	NextToken  string         `json:"next_token"`
 	Count      int            `json:"count,omitempty"`
 	Total      int            `json:"total,omitempty"`
 	Properties map[string]any `json:"properties,omitempty"`

@@ -87,7 +87,7 @@ Both now have tests that isolate the rule: every signature verifies and every
 other check passes, so the only thing that can refuse the chain is the rule under
 test. Both kill their mutant.
 
-## What this sweep did not settle
+## What this sweep did not settle, and one way it overstates
 
 76 of OpenID Federation's 121 mutants still survive, and 57 more never compiled —
 the harness rewrites a guard to `if false`, which strands variables the body used.
@@ -95,6 +95,21 @@ Those 57 are unmeasured, not clean. The survivors are dominated by cache
 plumbing, error-formatting branches and checks a later layer repeats, but "the
 property holds by some other route" has been verified for the trust-chain rules
 and assumed for the rest. Assumed is the honest word.
+
+**The harness runs only the mutated package's own tests** (`go test ./<pkg>/`),
+so "survived" means *no test in that package* kills it — not that nothing
+anywhere does. For a self-contained package the two coincide; for a package whose
+guarantees are enforced through its callers they do not, and the survivor count
+reads worse than the truth.
+
+That was demonstrated rather than supposed. `Client.UnknownScopes` survived the
+`internal/clients` sweep, which would make ASVS V10.4.11 look untested; running
+the dependent packages with the guard disabled killed it immediately, via
+`TestADeviceFlowCannotRequestScopesTheClientIsNotRegisteredFor` in
+`internal/httpapi`. The property was tested all along, one package out.
+
+The rule this leaves: a survivor is a *question*, not a finding. Re-run it
+against the whole suite before believing it.
 
 A caution that belongs with the technique: **a surviving mutant is not
 automatically a defect.** Layered defences catch each other, so deleting one line

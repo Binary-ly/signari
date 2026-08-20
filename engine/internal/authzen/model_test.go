@@ -221,20 +221,40 @@ func TestValidateNamesEveryMissingField(t *testing.T) {
 	if err == nil {
 		t.Fatal("an empty request validated")
 	}
-	for _, want := range []string{"subject.type", "subject.id", "action.name", "resource.type"} {
+	for _, want := range []string{
+		"subject.type", "subject.id", "action.name", "resource.type", "resource.id",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %q, want it to name %q", err, want)
 		}
 	}
+}
 
-	// resource.id is NOT required: a search or a type-level question does not
-	// have one, and demanding it would refuse valid requests.
-	if err := (Request{
+// TestAnEvaluationWithoutAResourceIDIsRefused.
+//
+// This test previously asserted the opposite, on the reasoning that "a search or
+// a type-level question does not have one". Authorization API 1.0 reached Final
+// on 11 January 2026 and marks Resource `id` REQUIRED; searches use
+// SearchRequest, which never reaches this code; and type-level questions are
+// what the Resource Search API is for.
+//
+// The old behaviour was not a security hole -- an absent id matches no relation,
+// so the decision was a denial either way. It answered a malformed request with
+// `decision: false`, which is precisely what the 400 in the handler exists to
+// prevent: "no" and "that question was malformed" must not look the same.
+func TestAnEvaluationWithoutAResourceIDIsRefused(t *testing.T) {
+	err := (Request{
 		Subject:  Subject{Type: "user", ID: "alice"},
 		Action:   Action{Name: "read"},
 		Resource: Resource{Type: "document"},
-	}).Validate(); err != nil {
-		t.Fatalf("a request without resource.id was refused: %v", err)
+	}).Validate()
+	if err == nil {
+		t.Fatal("an evaluation with no resource.id validated; the specification " +
+			"marks it REQUIRED, and answering it with a decision rather than a 400 " +
+			"tells the caller their malformed request was a denial")
+	}
+	if !strings.Contains(err.Error(), "resource.id") {
+		t.Errorf("refused, but without naming the field: %v", err)
 	}
 }
 

@@ -1,3 +1,13 @@
+// Package authzen implements the OpenID AuthZEN Authorization API.
+//
+// Written against **Authorization API 1.0, Final, 11 January 2026**
+// (https://openid.net/specs/authorization-api-1_0.html).
+//
+// The version is recorded here because it was not recorded anywhere before, and
+// that is how the Implementer's Draft this was originally written against could
+// be superseded by a Final specification with nothing in the tree noticing. A
+// package that names the text it implements can be checked against it; one that
+// does not can only be checked against somebody's memory.
 package authzen
 
 import (
@@ -192,6 +202,27 @@ func (r Request) Validate() error {
 	}
 	if r.Resource.Type == "" {
 		missing = append(missing, "resource.type")
+	}
+	// Authorization API 1.0 (Final, 11 January 2026), Resource: "`id`:
+	// REQUIRED. A string value containing the unique identifier of the
+	// Resource, scoped to the `type`."
+	//
+	// This was deliberately NOT checked, on the reasoning that "a search or a
+	// type-level question does not have one". Half of that is answered by the
+	// code: a search is a SearchRequest, a different type that does not reach
+	// here. The other half is answered by the specification, which puts
+	// type-level questions in the Resource Search API rather than in an
+	// evaluation.
+	//
+	// The consequence of omitting it was not a security hole -- store.HoldsAny
+	// compares object_id for equality, so an absent id matches no relation and
+	// the answer is a denial. It was worse than that in one specific way: the
+	// caller got `decision: false` for a request that was malformed, which is
+	// the exact failure the 400 above exists to avoid. As the handler puts it,
+	// "a PDP that returns false for both teaches callers that a denial might
+	// just mean they sent the wrong shape".
+	if r.Resource.ID == "" {
+		missing = append(missing, "resource.id")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("the request is missing %s", strings.Join(missing, ", "))

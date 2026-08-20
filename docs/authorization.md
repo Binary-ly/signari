@@ -474,3 +474,61 @@ must not be satisfied by the absence of evidence.*
 
 Four mutations were run against the two fixes and the required-attribute check.
 All four were caught.
+
+
+### 3. `resource.id` was not required, though the specification marks it REQUIRED
+
+Found in a later pass, and worth recording precisely because the section above
+already claimed to have re-read "every normative MUST". It had not caught this
+one.
+
+Authorization API 1.0 (Final, 11 January 2026), Resource:
+
+> `id`: REQUIRED. A string value containing the unique identifier of the
+> Resource, scoped to the `type`.
+
+`Request.Validate` checked `subject.type`, `subject.id`, `action.name` and
+`resource.type`, and deliberately not `resource.id`. There was a test asserting
+the omission, with a stated reason: "a search or a type-level question does not
+have one, and demanding it would refuse valid requests."
+
+Half of that reason is answered by our own code — a search arrives as a
+`SearchRequest`, a different type that never reaches this validation. The other
+half is answered by the specification, which puts type-level questions in the
+Resource Search API rather than in an evaluation.
+
+**This was not a security defect, and it would be easy to write it up as one.**
+`store.HoldsAny` compares `object_id` for equality, so a request with no resource
+id matches no relation and the answer is a denial. Nothing was let through.
+
+What was wrong is narrower and is a rule this codebase states in the handler four
+lines above the check:
+
+> 400, not a denial. "No" and "that question was malformed" are different
+> answers, and a PDP that returns false for both teaches callers that a denial
+> might just mean they sent the wrong shape.
+
+A caller that dropped `resource.id` — a PEP bug, a template that did not
+interpolate — received `decision: false` and no indication that it had asked a
+malformed question. It would read as "access denied" and be handled as such.
+
+Now a 400 naming the field. Both the general validation test and a dedicated one
+fail if the check is removed.
+
+## Currency of the emerging standards, August 2026
+
+Checked against the publishers rather than against notes, because a review is
+only as current as the text it was written from:
+
+| | version we implement | published | verdict |
+|---|---|---|---|
+| AuthZEN Authorization API | 1.0 | **Final, 11 Jan 2026** | current |
+| SD-JWT VC | draft-18 | draft-18, 3 Aug 2026 | current |
+| Transaction Tokens | draft-11 | draft-11, 30 Jul 2026 (WG Last Call) | current |
+| Attestation-Based Client Auth | draft-10 | draft-10, 6 Jul 2026 | current |
+| FAPI 2.0 Security Profile | Final 22 Feb 2025 | unchanged, no errata | current |
+
+All five are the current published text. The `internal/authzen` package recorded
+no version string at all before this pass, which is how a Final specification
+could supersede the Implementer's Draft it was written against without anything
+noticing.

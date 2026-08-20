@@ -367,3 +367,36 @@ func TestAProofWithTwoSignaturesIsRefused(t *testing.T) {
 			"key is bad when the real fault is the number of signatures: %v", err)
 	}
 }
+
+// signWithAttestation is sign() plus Appendix D's key_attestation JOSE header.
+func (h *holder) signWithAttestation(t *testing.T, claims map[string]any,
+	embedKey bool, kid, attestation string) string {
+	t.Helper()
+	opts := (&jose.SignerOptions{}).WithType(jose.ContentType(TypProof))
+	if embedKey {
+		opts = opts.WithHeader("jwk", h.jwk)
+	}
+	if kid != "" {
+		opts = opts.WithHeader("kid", kid)
+	}
+	if attestation != "" {
+		opts = opts.WithHeader(jose.HeaderKey(HeaderKeyAttestation), attestation)
+	}
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: h.key}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, err := signer.Sign(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := obj.CompactSerialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}

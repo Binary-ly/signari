@@ -73,6 +73,10 @@ type ProofContext struct {
 	ExpectedNonce string
 	// AllowedAlgs are the signing algorithms the issuer advertises.
 	AllowedAlgs []jose.SignatureAlgorithm
+	// TrustedAttesters are the public keys of key attesters this issuer trusts,
+	// per OID4VCI Appendix D. Empty means `key_attestation` is REFUSED rather
+	// than ignored -- see attestation.go for why that is the safe direction.
+	TrustedAttesters []*jose.JSONWebKey
 }
 
 // ValidateJWTProof checks a `jwt` key proof and returns the key it binds to.
@@ -113,12 +117,18 @@ func ValidateJWTProof(raw string, ctx ProofContext, now time.Time) (*ProofKey, e
 	// x5c is read from the raw header: go-jose exposes Certificates as a
 	// verification helper rather than as the header value.
 	_, hasX5C := h.ExtraHeaders[jose.HeaderKey("x5c")]
+	present := 0
+	for _, ok := range []bool{hasJWK, hasKID, hasX5C} {
+		if ok {
+			present++
+		}
+	}
 	switch {
-	case hasJWK && hasKID, hasJWK && hasX5C, hasKID && hasX5C:
+	case present > 1:
 		return nil, fmt.Errorf("the key proof carries more than one of kid, jwk " +
 			"and x5c; they are mutually exclusive, and two key sources mean the " +
 			"key verified and the key bound could differ")
-	case !hasJWK && !hasKID && !hasX5C:
+	case present == 0:
 		return nil, fmt.Errorf("the key proof identifies no key: one of kid, jwk " +
 			"or x5c is required")
 	}
@@ -131,14 +141,57 @@ func ValidateJWTProof(raw string, ctx ProofContext, now time.Time) (*ProofKey, e
 	// expected to already know (typically a DID URL), and `x5c` requires a trust
 	// decision about a certificate chain. Accepting either without performing
 	// that resolution would be accepting a proof we did not verify.
-	if !hasJWK {
-		which := "kid"
-		if hasX5C {
-			which = "x5c"
+	// Appendix D: a key attestation, when present, is what makes `kid` resolvable
+	// and what turns an inline `jwk` from a claim into a vouched-for one.
+	var attested *AttestedKeySet
+	if rawAtt, ok := h.ExtraHeaders[jose.HeaderKey(HeaderKeyAttestation)].(string); ok && rawAtt != "" {
+		// D.1: exp is REQUIRED when the attestation travels in a jwt proof.
+		//
+		// The expected nonce is deliberately EMPTY here. The attestation is
+		// issued by the attester -- a device manufacturer or wallet provider --
+		// which has no knowledge of this issuer's c_nonce, so requiring it to
+		// echo one would refuse every real attestation. Appendix D lists `nonce`
+		// as optional for that reason. Freshness of THIS request is carried by
+		// the proof, which does echo the c_nonce and is checked below; the
+		// attestation attests to the key, not to the moment.
+		set, err := VerifyKeyAttestation(rawAtt, ctx.TrustedAttesters, algs, true, "", now)
+		if err != nil {
+			return nil, fmt.Errorf("the key proof's key_attestation is not acceptable: %w", err)
 		}
-		return nil, fmt.Errorf("this issuer accepts key proofs that carry the key "+
-			"inline as `jwk`; %s identifies a key it would have to resolve and "+
-			"trust separately, which it does not do", which)
+		attested = set
+	}
+
+	if !hasJWK {
+		if hasKID && attested != nil {
+			// The key comes from the ATTESTED set, never from anything the wallet
+			// supplied alongside it, so the key verified is by construction one
+			// the attester vouched for.
+			k := attested.ByKeyID(h.KeyID)
+			if k == nil {
+				return nil, fmt.Errorf("the key proof names kid %q, which is not among the "+
+					"attested_keys the attestation vouches for", h.KeyID)
+			}
+			h.JSONWebKey = k
+		} else {
+			which := "kid"
+			if hasX5C {
+				which = "x5c"
+			}
+			hint := ""
+			if which == "kid" {
+				hint = " (a kid IS resolvable when the proof also carries an " +
+					"Appendix D key_attestation, because the keys then travel with it)"
+			}
+			return nil, fmt.Errorf("this issuer accepts key proofs that carry the key "+
+				"inline as `jwk`; %s identifies a key it would have to resolve and "+
+				"trust separately, which it does not do%s", which, hint)
+		}
+	} else if attested != nil && !attested.Contains(h.JSONWebKey) {
+		// An attestation that does not cover the key being proved is worse than
+		// none: it makes the request look hardware-backed while the signing key
+		// is whatever the wallet chose.
+		return nil, fmt.Errorf("the key proof carries a key_attestation that does not " +
+			"vouch for the key in the proof's jwk header")
 	}
 	// Defence in depth, and honestly labelled: go-jose refuses an embedded
 	// private JWK inside ParseSigned ("invalid embedded jwk, must be public

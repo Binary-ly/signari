@@ -111,6 +111,24 @@ the dependent packages with the guard disabled killed it immediately, via
 The rule this leaves: a survivor is a *question*, not a finding. Re-run it
 against the whole suite before believing it.
 
+**A second flaw in the harness, and the fix.** Rewriting a guard to `if false`
+drops the reference to whatever the condition mentioned, so every `if err != nil`
+mutation left `err` declared and unused and simply failed to compile. In
+`internal/tokens` that was **21 of 31 guards unmeasured** — and unmeasured reads
+exactly like clean in a summary line.
+
+Rewriting to `if false && (<original condition>)` keeps the variables referenced
+while leaving the branch dead. On the same package the numbers went from
+`killed=2, uncompilable=21` to `killed=6, killed_by_dependents=11,
+uncompilable=6`. Two of the guards that became measurable for the first time were
+the issuer checks in `VerifyIDTokenAudience` and `VerifyTyped`, which had never
+been tested.
+
+Both flaws pointed the same way: the harness was reporting less coverage than
+existed in one direction and less measurement than it claimed in the other. Any
+survivor count produced before these fixes should be read as an upper bound on
+the gaps, not a count of them.
+
 A caution that belongs with the technique: **a surviving mutant is not
 automatically a defect.** Layered defences catch each other, so deleting one line
 often leaves the system correct — three of ABCA's survivors and four of the JWT

@@ -30,7 +30,7 @@ requirement asks for. Details below, then the gap.
 | V9.1.3 | Key material from pre-configured sources; reject `jku`, `x5u`, `jwk` | ✅ refused explicitly, and tested (`TestATokenCannotSupplyItsOwnKey`) |
 | V9.2.1 | Honour `nbf`/`exp` | ✅ |
 | V9.2.2 | Validate token **type** and purpose | ✅ `typ` is checked per token class — `at+jwt`, `secevent+jwt`, `logout+jwt` |
-| V9.2.3 | Accept only tokens whose audience is this service | ✅ |
+| V9.2.3 | Accept only tokens whose audience is this service | ✅, and the **issuer** check beside it is now tested too — it had survived mutation against the whole suite, and on this server aliased issuers share a key set, so `iss` is the only thing separating them |
 | V9.2.4 | Audience restriction when one key serves several audiences | ✅ RFC 8707 resources become the audience; the client id is the fallback only when none were requested |
 
 ## V10.1 / V10.2 / V10.5 — client-side

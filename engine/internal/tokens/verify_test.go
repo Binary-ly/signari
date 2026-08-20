@@ -630,3 +630,57 @@ func TestAnIDTokenCannotBeMintedWithoutItsRequiredClaims(t *testing.T) {
 		}
 	}
 }
+
+// A token minted for one issuer must not verify as another.
+//
+// This is not defence in depth here, because on this server the two issuers
+// share a key set. Migration 0015 gives a client an `issuer_alias`, registered
+// on the instance, so that a relying party moving from a previous provider keeps
+// seeing the old `iss` while the same keys sign both. `acceptedIssuers()` is
+// literally `append([]string{s.cfg.Issuer}, s.cfg.IssuerAliases...)`.
+//
+// So the signature check cannot separate them — it is the same key — and `iss`
+// is the only thing that does. Both checks survived mutation against the whole
+// test suite: neither VerifyIDTokenAudience nor VerifyTyped had a test in which
+// the issuer was wrong, which means the one guard standing between an aliased
+// client's token and a canonical-issuer context was unverified.
+func TestATokenMintedForOneIssuerDoesNotVerifyAsAnother(t *testing.T) {
+	set, k := testSet(t)
+	now := time.Now()
+	const mine = "https://idp.example"
+	const alias = "https://old-provider.example" // a registered alias, same keys
+
+	t.Run("VerifyIDTokenAudience", func(t *testing.T) {
+		raw, err := NewSigner(k).SignIDToken(IDTokenClaims{
+			Issuer: alias, Subject: "user-1", Audience: "client-1",
+			Expiry: now.Add(time.Hour).Unix(), IssuedAt: now.Unix(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Sanity: it verifies as the issuer it was actually minted for, so a
+		// failure below is about the issuer and not about the signature.
+		if _, err := VerifyIDTokenAudience(set, alias, raw); err != nil {
+			t.Fatalf("the token does not verify even as its own issuer: %v", err)
+		}
+		if aud, err := VerifyIDTokenAudience(set, mine, raw); err == nil {
+			t.Fatalf("an ID token minted for %q verified as %q and returned audience "+
+				"%q; the two share a key set, so `iss` is the only thing separating "+
+				"an aliased client's tokens from the canonical issuer's", alias, mine, aud)
+		}
+	})
+
+	t.Run("VerifyTyped", func(t *testing.T) {
+		payload := []byte(`{"iss":"` + alias + `","sub":"user-1"}`)
+		raw, err := NewSigner(k).SignJSON(json.RawMessage(payload), TypAccessToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := VerifyTyped(set, alias, raw, TypAccessToken); err != nil {
+			t.Fatalf("the token does not verify even as its own issuer: %v", err)
+		}
+		if _, err := VerifyTyped(set, mine, raw, TypAccessToken); err == nil {
+			t.Fatalf("a %s token minted for %q verified as %q", TypAccessToken, alias, mine)
+		}
+	})
+}

@@ -247,10 +247,8 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 		return nil
 	}
 
-	// Someone else's token. Inactive, with no explanation -- the caller learns
-	// nothing it did not already know.
-	if claims.ClientID != c.ClientID {
-		s.log.Info("client introspected another client's token",
+	if claims.ClientID != c.ClientID && !audienceIncludes(claims.Audience, c.ClientID) {
+		s.log.Info("client introspected a token it is neither the owner nor an audience of",
 			"caller", c.ClientID, "token_client", claims.ClientID)
 		return &introspectionResponse{Active: false}
 	}
@@ -342,4 +340,20 @@ func (s *Server) introspectRefreshToken(ctx context.Context, c *clients.Client, 
 		Issuer:    s.cfg.Issuer,
 		SessionID: st.SID,
 	}
+}
+
+// audienceIncludes reports whether a caller is named in a token's audience.
+//
+// RFC 7662 §4's test for who may introspect: "whether or not the token can be
+// used at the resource server making the introspection call".
+func audienceIncludes(aud []string, clientID string) bool {
+	if clientID == "" {
+		return false
+	}
+	for _, a := range aud {
+		if a == clientID {
+			return true
+		}
+	}
+	return false
 }

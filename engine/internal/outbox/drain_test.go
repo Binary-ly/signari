@@ -331,13 +331,36 @@ func TestSlowReceiverDoesNotBlockOthers(t *testing.T) {
 	clearOutbox(t, pool)
 	t.Cleanup(func() { clearOutbox(t, pool) })
 
+	// The property is CONCURRENCY, and it is asserted structurally rather than
+	// as elapsed wall-clock.
+	//
+	// This test used to assert `elapsed < 4s`. That is a load-sensitive proxy for
+	// the thing it cares about: on a busy machine the whole batch legitimately
+	// takes longer, and the test fails while the property it names still holds.
+	// It did exactly that during a full-suite run alongside a static-analysis
+	// pass, reporting 36 seconds — and in isolation, seconds later, 2.1.
+	//
+	// What "one slow receiver does not block the others" actually means is that a
+	// quick delivery COMPLETES WHILE THE SLOW ONE IS STILL IN FLIGHT. That is
+	// observable directly, and no amount of machine load changes it: if delivery
+	// were serial, every quick receiver would be hit only after the slow one
+	// returned, whatever the clock says.
 	var fast int64
+	var mu sync.Mutex
+	var slowDone, lastQuick time.Time
+
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(2 * time.Second)
+		mu.Lock()
+		slowDone = time.Now()
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer slow.Close()
 	quick := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		lastQuick = time.Now()
+		mu.Unlock()
 		atomic.AddInt64(&fast, 1)
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -365,10 +388,27 @@ func TestSlowReceiverDoesNotBlockOthers(t *testing.T) {
 	if got := atomic.LoadInt64(&fast); got != 6 {
 		t.Fatalf("the quick receiver was called %d times, want 6", got)
 	}
-	// Serially this would be at least the slow receiver's 2s plus each quick
-	// one; concurrently it is bounded by the slowest.
-	if elapsed > 4*time.Second {
-		t.Fatalf("the batch took %s. One slow receiver is delaying the others.", elapsed)
+	// Compare the instants, not the total.
+	//
+	// Concurrent: every quick delivery lands within milliseconds, and the slow one
+	// finishes two seconds later -- so lastQuick is BEFORE slowDone.
+	// Serial:     the slow one is first in the queue, so the quick deliveries
+	//             cannot start until it returns -- lastQuick is AFTER slowDone.
+	//
+	// Total elapsed is ~2s either way, which is why the previous assertion
+	// (`elapsed < 4s`) passed whether or not the deliveries overlapped. It was
+	// measuring the slow receiver's own sleep and calling it concurrency.
+	mu.Lock()
+	sd, lq := slowDone, lastQuick
+	mu.Unlock()
+	if sd.IsZero() || lq.IsZero() {
+		t.Fatalf("both receivers must have been reached: slowDone=%v lastQuick=%v", sd, lq)
+	}
+	if lq.After(sd) {
+		t.Fatalf("every quick delivery finished only after the slow receiver "+
+			"returned (last quick %s after it; batch took %s). That is a serial "+
+			"drain: one unreachable relying party delays the logout notices for "+
+			"all the others.", lq.Sub(sd).Round(time.Millisecond), elapsed)
 	}
 }
 

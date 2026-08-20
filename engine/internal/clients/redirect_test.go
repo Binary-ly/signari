@@ -166,3 +166,47 @@ func TestThePortExceptionIsOnlyForLoopback(t *testing.T) {
 		t.Error("a loopback registration authorised a public host")
 	}
 }
+
+// TestOnlyTheThreePermittedSchemesAreAccepted.
+//
+// A redirect URI is where the authorization code is delivered, so the set of
+// schemes that may appear in one is a security boundary rather than a matter of
+// taste. RFC 8252 names the three: https, http on a loopback address for native
+// apps, and a private-use scheme in reverse-domain form.
+//
+// This rule existed only in the dynamic-registration path, whose comment claimed
+// it "applies the same rules an operator-registered client gets". It did not:
+// there were two validators and this one -- used by the CLI and the admin API --
+// checked only that http was confined to loopback. Everything else passed,
+// including `javascript:`, `data:` and `file:`.
+//
+// It takes an operator to register one, and a browser will not navigate to
+// `javascript:` from a Location header, so nothing was on fire. The code is
+// still appended to whatever is registered, and an embedded webview is far less
+// careful than a browser.
+func TestOnlyTheThreePermittedSchemesAreAccepted(t *testing.T) {
+	for _, bad := range []string{
+		"javascript:alert(1)",
+		"data:text/html,<script>alert(1)</script>",
+		"vbscript:msgbox(1)",
+		"file:///etc/passwd",
+		"ftp://example.com/cb",
+	} {
+		if err := ValidateRedirectURI(bad); err == nil {
+			t.Errorf("%q was accepted as a redirect URI; the authorization code is "+
+				"appended to whatever is registered here", bad)
+		}
+	}
+
+	for _, good := range []string{
+		"https://app.example/cb",
+		"http://127.0.0.1:8080/cb",
+		"http://localhost:3000/callback",
+		"http://[::1]:9000/cb",
+		"com.example.app:/oauth2redirect",
+	} {
+		if err := ValidateRedirectURI(good); err != nil {
+			t.Errorf("%q is a legitimate redirect URI and was refused: %v", good, err)
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/store"
 )
 
@@ -236,7 +237,16 @@ func (s *Server) authorizeRegistration(ctx context.Context, r *http.Request) (or
 
 // validateRegisteredRedirect applies the same rules an operator-registered
 // client gets. A self-registered client is not held to a lower standard.
+//
+// That claim used to be false. This function had its own copy of the rules and
+// was STRICTER than clients.ValidateRedirectURI, which the CLI and admin API use
+// -- so `javascript:`, `data:` and `file:` were refused here and accepted there.
+// The scheme allow-list now lives in clients.ValidateRedirectURI and both paths
+// go through it; what remains below is the two rules dynamic registration adds.
 func validateRegisteredRedirect(u string) error {
+	if err := clients.ValidateRedirectURI(u); err != nil {
+		return err
+	}
 	if strings.Contains(u, "*") {
 		return fmt.Errorf("redirect_uri %q contains a wildcard; they are matched "+
 			"exactly, because anything looser lets a request steer where the "+

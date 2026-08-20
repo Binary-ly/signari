@@ -48,6 +48,35 @@ func ValidateRedirectURI(raw string) error {
 				"authorization code would cross the network in the clear", raw)
 		}
 	}
+
+	// An ALLOW-LIST of schemes: https, loopback http, or an RFC 8252 private-use
+	// scheme, which is reverse-domain and therefore contains a dot.
+	//
+	// This rule already existed, in the dynamic-registration path, whose comment
+	// said it "applies the same rules an operator-registered client gets". It did
+	// not: there were two validators for one rule and they disagreed. This one --
+	// the one the CLI and the admin API use -- rejected only http on a
+	// non-loopback host, so `javascript:`, `data:`, `vbscript:` and `file:` were
+	// all accepted as redirect URIs for an operator-registered client.
+	//
+	// The practical risk was small: it takes an operator to register one, and a
+	// browser will not navigate to `javascript:` or `data:` from a Location
+	// header. It is not nothing, though -- the authorization code is appended to
+	// whatever is registered, so a `file:` or bespoke scheme hands the code to a
+	// local handler, and an embedded webview is far less careful than a browser.
+	//
+	// One implementation now, so the two paths cannot drift again.
+	switch {
+	case u.Scheme == "https", u.Scheme == "http":
+		// Covered above.
+	case strings.Contains(u.Scheme, "."):
+		// RFC 8252 §7.1: "com.example.app:/oauth2redirect/example-provider".
+	default:
+		return fmt.Errorf("%q uses the %q scheme; a redirect URI must be https, "+
+			"http on a loopback address, or a private-use scheme in reverse-domain "+
+			"form -- anything else hands the authorization code to whatever on the "+
+			"device claims that scheme", raw, u.Scheme)
+	}
 	// No user-info. `https://good.example@evil.example/cb` reads as good.example
 	// to a person and resolves to evil.example -- and defeating the parse of
 	// this component is precisely how CVE-2026-7504 worked.

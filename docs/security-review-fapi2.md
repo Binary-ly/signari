@@ -185,3 +185,53 @@ somebody reads an access log. Presenting the token in the header *and* the body
 is also rejected rather than resolved by precedence — two token values in one
 request is either a broken client or an attempt to have the check read one and
 the logic use the other.
+
+## §5.2 and §5.4, the sections this review had not opened
+
+The table above covers §5.3.2.1 and the addendum covers §5.3.4. Two more
+normative sections bind a server.
+
+### §5.2 Network layer protections
+
+| Requirement | Signari |
+|---|---|
+| "shall only offer TLS protected endpoints" | deployment property — the binary serves plaintext behind a terminating proxy, which is the operator's arrangement, not ours to assert |
+| "shall set up TLS connections using TLS version 1.2 or later" | Go's default minimum is TLS 1.2; outbound calls use the standard library |
+| **§5.2.3: "Servers shall not support CORS for the authorization endpoint"** | **met, and tested** — `oidc.PathAuthorize` is deliberately absent from the CORS allow-list with a comment saying it must stay absent, and `TestTheAuthorizationEndpointNeverGetsCORS` holds it there. The same prohibition appears as RFC 9700 §2.6, which is where our comment cites it |
+
+The CORS rule is the one worth dwelling on: the authorization endpoint is reached
+by **navigation**, never by `fetch`. Any script that can read its response is
+reading a page that may already carry an authorization code.
+
+### §5.4 Cryptography and secrets
+
+| Requirement | Signari |
+|---|---|
+| "RSA keys shall have a minimum length of 2048 bits" | met — `rsa.GenerateKey(rand.Reader, 2048)` |
+| "Elliptic curve keys shall have a minimum length of 224 bits" | met — ES256 is P-256 |
+| "not use or accept the `none` algorithm" | met — every verifier parses with an asymmetric allow-list; `none` is absent everywhere |
+| §5.4.2 "shall only serve the `jwks_uri` endpoint over TLS" | deployment property, as above |
+| §5.4.2 "should not use the JOSE headers for `x5u` and `jku`" | met — both refused explicitly in `verifiedPayload`, alongside an embedded `jwk` |
+| §5.4.2 "should not serve a JWK set with multiple keys with the same `kid`" | met **structurally** — `keys.NewSet` refuses to construct a set with a duplicate `kid` at all, so an offending set cannot be served because it cannot exist |
+| **"use PS256, ES256, or EdDSA (using the Ed25519 variant) algorithms"** | **profile mode** — see below |
+
+### The one that is profile mode, and was not previously listed
+
+FAPI's algorithm list is `PS256`, `ES256`, `EdDSA`. **RS256 is not on it.**
+
+We sign with ES256 by default and support PS256 and EdDSA, all three of which
+qualify. But `RS256` is also a supported signing algorithm, and
+`clientauth.allowedAlgs` accepts `RS256`/`RS384`/`RS512` for `private_key_jwt`
+assertions. A FAPI deployment must not use or accept those.
+
+That puts §5.4.1 in the same category as the three profile-mode rows already in
+the table above — public clients, mandatory sender-constraining, and global PAR:
+capabilities a FAPI deployment turns off rather than defaults we get wrong. It
+was simply never listed, which is the difference between a deviation somebody
+chose and one nobody noticed.
+
+**What it would take:** the algorithm allow-lists are constants, and narrowing
+them is a one-line change per site. What is not one line is deciding whether to
+narrow them globally — which breaks every existing RS256 client — or per client,
+which needs a registration attribute and a migration. Recorded rather than
+changed, for the same reason as the other three.

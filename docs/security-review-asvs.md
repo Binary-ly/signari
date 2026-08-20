@@ -58,11 +58,11 @@ Our userinfo and introspection endpoints are the resource server.
 
 | | Requirement | Verdict |
 |---|---|---|
-| V10.3.1 | Accept only tokens whose audience is this service | ✅ |
+| V10.3.1 | Accept only tokens whose audience is this service | ✅ `AudienceAccepted` gates `/userinfo` and the credential endpoint. Verified by mutation against the **whole** suite: making it return true unconditionally fails `TestATokenForAnotherResourceIsRefused` and `TestAudienceRestrictionIsEnforcedAgainstOurselves` |
 | V10.3.2 | Enforce `sub`, `scope`, `authorization_details` in the decision | ✅ all three. The **scope** half is now tested at `/oauth2/userinfo`, and it needed to be: the handler gates `email`, `profile` and `groups` individually, and no test varied the scope — so nothing established that a claim is actually **withheld**. A test asking for everything and receiving everything passes identically against a handler that ignores scope; only asking for less proves the difference. Releasing `email` unconditionally now fails `TestUserinfoWithholdsClaimsTheScopeDidNotGrant` |
 | V10.3.3 | Identify the user by a non-reassignable claim | ✅ `sub` is a uuid, never an email |
 | V10.3.4 | Enforce `acr`, `amr`, `auth_time` when required | ✅ `ACRFromAMR` derives the context from the factors **actually used**, and `FlowDemandsMFA` is consulted per authorization request rather than frozen at sign-in — a live password-only session is stepped up when `acr_values` demands it |
-| V10.3.5 (L3) | Sender-constrained tokens | ✅ DPoP (RFC 9449) and mTLS (RFC 8705) both |
+| V10.3.5 (L3) | Sender-constrained tokens | ✅ both, with 7 tests across `dpoprefresh_test.go` and `mtlsrefresh_test.go` covering the bound key refusing a different key, refusing no proof at all, and still working with the right one |
 
 ## V10.4 — authorization server, the core
 
@@ -124,7 +124,7 @@ empty `sid`, and `TestARefreshFamilyMustNameASession` keeps it that way.
 
 | | Requirement | Verdict |
 |---|---|---|
-| V10.6.1 | Only `code`, `ciba`, `id_token`, `id_token code`; never `token` | ✅ `response_types_supported` is `["code"]` alone |
+| V10.6.1 | Only `code`, `ciba`, `id_token`, `id_token code`; never `token` | ✅ `response_types_supported` is `["code"]` alone, and the authorize endpoint refuses anything containing `token` outright — an access token must never cross the front channel |
 | V10.6.2 | **Mitigate denial of service through forced logout** | ❌ → fixed |
 
 V10.6.2, verbatim:
@@ -172,8 +172,8 @@ would reintroduce the attack through the parameter meant to prevent it.
 
 | | Requirement | Verdict |
 |---|---|---|
-| V10.7.1 | Consent to each authorization request | ✅ |
-| V10.7.2 | Clear information about what is being consented to | ✅ scopes rendered with descriptions |
+| V10.7.1 | Consent to each authorization request | ✅ and the hard case is covered: `authorization_details` **always** prompt, which neither stored consent nor the first-party exemption can bypass — a user who approved the scope `payments` approved a capability, never a payment. `TestAuthorizationDetailsAlwaysPromptEvenForAFirstPartyClient` |
+| V10.7.2 | Clear information about what is being consented to | ✅ `scopeDescriptions` maps each scope to a human sentence and the screen renders `{Name, Description}` pairs, so a person is not asked to approve the string `groups` |
 | V10.7.3 | User can review, modify and revoke granted consents | ✅ the connected-applications screen, which revokes the tokens with the consent — **now tested**, and it needed to be. `WithdrawConsent` deliberately does *not* touch tokens; only `DisconnectApp` does both, in one transaction. So the requirement is met by one caller choosing the right function, and a future handler reaching for the obvious-sounding `WithdrawConsent` would keep the screen working and lose the property silently |
 
 ## What this sweep leaves open

@@ -240,10 +240,20 @@ func Build(cfg Config) (*Metadata, error) {
 		// response type that returns a token in the front channel is a class of
 		// bug we are choosing not to have.
 		ResponseTypesSupported: []string{"code"},
-		// `query` alone. form_post was advertised and then ignored -- the
-		// authorize endpoint now refuses it outright, and a mode that is refused
-		// must not appear here. With `code` as the only response type there is
-		// nothing in the redirect that form_post would protect.
+		// All three, and all three are served.
+		//
+		// This comment used to say "`query` alone... the authorize endpoint now
+		// refuses [form_post] outright, and a mode that is refused must not
+		// appear here" -- directly above a line listing three modes. It described
+		// a state that ended when form_post was implemented, and nobody updated
+		// it.
+		//
+		// Stale in the worst place: this is exactly where a reader checks the
+		// advertise-only-what-you-serve invariant, and the comment told them the
+		// list was shorter than it is. The invariant itself holds --
+		// `ValidateAuthz` accepts query, fragment and form_post, and
+		// `internal/httpapi/responsemode.go` renders all three, form_post as a
+		// self-posting HTML page.
 		ResponseModesSupported: []string{"query", "fragment", "form_post"},
 
 		// No `password` grant: ROPC is removed in OAuth 2.1 and there is no

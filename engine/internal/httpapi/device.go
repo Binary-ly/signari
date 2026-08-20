@@ -286,7 +286,7 @@ func (s *Server) handleDeviceCodeGrant(w http.ResponseWriter, r *http.Request, c
 		return
 	}
 
-	d, err := store.PollDeviceCode(ctx, s.db, store.HashToken(deviceCode), clientID)
+	d, err := store.PollDeviceCode(ctx, s.db, store.HashToken(deviceCode), clientID, "device")
 	switch {
 	case errors.Is(err, store.ErrDeviceCodePending):
 		writeTokenError(w, &oauth.TokenError{Code: "authorization_pending",

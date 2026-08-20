@@ -44,6 +44,13 @@ func CreateDeviceAuthorization(ctx context.Context, db *pgxpool.Pool, orgID, cli
 	scope string, resource []string, deviceHash, userHash []byte, interval int,
 	lifetime time.Duration) (string, error) {
 
+	// See CreateBackchannelAuthentication: a nil slice is SQL NULL, which the
+	// NOT NULL on `resource` rejects rather than defaulting. A caller with no
+	// resource indicators is the ordinary case and must not have to know that.
+	if resource == nil {
+		resource = []string{}
+	}
+
 	var id string
 	err := db.QueryRow(ctx, `
 		INSERT INTO core.device_authorizations
@@ -119,8 +126,16 @@ var ErrDeviceCodeWrongClient = errors.New("device code belongs to another client
 // redeemed, and only then be rejected -- burning a legitimate approval and
 // leaving the real device stuck on expired_token forever. The check has to
 // happen before the state changes, not after.
+//
+// flow selects which specification's rows are eligible: "device" for RFC 8628,
+// "ciba" for CIBA Core 1.0. Both store their secret in device_code_hash, so
+// WITHOUT this filter a device_code would be redeemable through the CIBA grant
+// and an auth_req_id through the device grant. Nothing terrible follows from
+// that -- the client, user and scope are the same either way -- but it is grant
+// confusion, and the fix is one WHERE clause rather than an argument about
+// whether it matters.
 func PollDeviceCode(ctx context.Context, db *pgxpool.Pool, deviceHash []byte,
-	clientID string) (*DeviceAuthorization, error) {
+	clientID, flow string) (*DeviceAuthorization, error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -135,8 +150,8 @@ func PollDeviceCode(ctx context.Context, db *pgxpool.Pool, deviceHash []byte,
 		       COALESCE(user_id::text,''), COALESCE(sid,''), interval_s,
 		       expires_at, last_polled_at, redeemed_at
 		FROM core.device_authorizations
-		WHERE device_code_hash = $1
-		FOR UPDATE`, deviceHash).
+		WHERE device_code_hash = $1 AND flow = $2
+		FOR UPDATE`, deviceHash, flow).
 		Scan(&d.ID, &d.OrgID, &d.ClientID, &d.Scope, &d.Resource, &d.Status,
 			&d.UserID, &d.SID, &d.Interval, &d.ExpiresAt, &lastPolled, &redeemed)
 	if err != nil {

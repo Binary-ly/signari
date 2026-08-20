@@ -552,6 +552,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		s.handleDeviceCodeGrant(w, r, c.ClientID)
 		return
 	}
+	if req.GrantType == oauth.GrantTypeCIBA {
+		s.handleCIBAGrant(w, r, c.ClientID)
+		return
+	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

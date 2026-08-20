@@ -310,6 +310,11 @@ func (s *Server) mux() *http.ServeMux {
 	if s.fedKeys != nil {
 		mux.HandleFunc("GET "+oidfed.WellKnownPath, s.handleEntityConfiguration)
 	}
+	// CIBA Core 1.0. The backchannel endpoint authenticates the client; the
+	// approval page authenticates the person.
+	mux.HandleFunc("POST /oauth2/backchannel", s.handleBackchannelAuth)
+	mux.HandleFunc("/account/requests", s.handleBackchannelRequests)
+
 	mux.HandleFunc("POST /access/v1/evaluation", s.handleAuthzEvaluate)
 	mux.HandleFunc("POST /access/v1/evaluations", s.handleAuthzEvaluations)
 	mux.HandleFunc("POST /access/v1/search/subject", s.handleAuthzSearchSubject)

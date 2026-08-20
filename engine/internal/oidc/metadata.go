@@ -36,7 +36,14 @@ type Metadata struct {
 	// RFC 9126 §5.
 	PushedAuthorizationRequestEndpoint string `json:"pushed_authorization_request_endpoint,omitempty"`
 	DeviceAuthorizationEndpoint        string `json:"device_authorization_endpoint,omitempty"`
-	RegistrationEndpoint               string `json:"registration_endpoint,omitempty"`
+	// CIBA Core 1.0 §4 metadata. The delivery modes are listed explicitly and
+	// say only "poll", because ping and push would have us call an endpoint the
+	// client hosts and we do not. Advertising a mode that never delivers is the
+	// failure this whole file exists to prevent.
+	BackchannelAuthenticationEndpoint string   `json:"backchannel_authentication_endpoint,omitempty"`
+	BackchannelTokenDeliveryModes     []string `json:"backchannel_token_delivery_modes_supported,omitempty"`
+	BackchannelUserCodeSupported      *bool    `json:"backchannel_user_code_parameter_supported,omitempty"`
+	RegistrationEndpoint              string   `json:"registration_endpoint,omitempty"`
 	// RFC 9449 §5.1.
 	DPoPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
 	// OIDC Discovery §3.
@@ -207,6 +214,13 @@ func Build(cfg Config) (*Metadata, error) {
 		},
 		PushedAuthorizationRequestEndpoint: at("/oauth2/par"),
 		DeviceAuthorizationEndpoint:        at("/oauth2/device_authorization"),
+		BackchannelAuthenticationEndpoint:  at("/oauth2/backchannel"),
+		BackchannelTokenDeliveryModes:      []string{"poll"},
+		// Advertised as false rather than omitted. §7.1 gates `user_code` on this
+		// being true, and a client reading an absent field has to guess; a client
+		// reading `false` knows not to send one, which is exactly what the
+		// endpoint enforces.
+		BackchannelUserCodeSupported: &cibaUserCodeUnsupported,
 		// Both logout channels are advertised because both run. Back-channel is
 		// the reliable one; the front channel reaches browser-held state the back
 		// channel cannot. Claiming either alone would overstate what a logout
@@ -241,7 +255,8 @@ func Build(cfg Config) (*Metadata, error) {
 		GrantTypesSupported: []string{"authorization_code", "refresh_token",
 			"urn:ietf:params:oauth:grant-type:device_code",
 			"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange",
-			"urn:ietf:params:oauth:grant-type:pre-authorized_code"},
+			"urn:ietf:params:oauth:grant-type:pre-authorized_code",
+			"urn:openid:params:grant-type:ciba"},
 
 		SubjectTypesSupported:   []string{"public"},
 		IDTokenSigningAlgValues: algNames,
@@ -288,3 +303,7 @@ func Build(cfg Config) (*Metadata, error) {
 		RequestURIParameterSupported: false,
 	}, nil
 }
+
+// cibaUserCodeUnsupported backs the pointer in the metadata, so the field is
+// emitted as an explicit false rather than omitted.
+var cibaUserCodeUnsupported = false

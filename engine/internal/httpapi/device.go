@@ -35,7 +35,23 @@ const (
 	// the space, and codes live for ten minutes. Generous enough that a person
 	// mistyping a code off a television never meets it.
 	deviceAttemptsPerWindow = 20
-	deviceAttemptWindow     = 10 * time.Minute
+
+	// deviceAttemptsPerUser is RFC 8628 §5.1's budget, applied where it bites.
+	//
+	// 21^8 / 2^32 = 8.8, so EIGHT attempts per code lifetime is the largest
+	// budget that keeps a single account at or below the 2^-32 probability §5.1
+	// works towards. See the comment at the limiter for why the per-address
+	// bucket cannot carry this property on its own.
+	//
+	// Ten was written here first, on the reasoning that 2^-31.8 is "2^-32 to
+	// within a rounding". The test that pins this does the sum and disagreed, and
+	// the test is right: a budget chosen for tidiness is exactly the kind of
+	// number that drifts, and the specification names a threshold rather than a
+	// neighbourhood. Eight is still far more than a person approving a television
+	// ever needs -- nobody mistypes an eight-character code eight times.
+	deviceAttemptsPerUser = 8
+
+	deviceAttemptWindow = 10 * time.Minute
 )
 
 // handleDeviceAuthorization answers a device asking to be authorised.
@@ -212,6 +228,39 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		return
 	} else if !res.Allowed {
 		render("", "Too many attempts from this address. Wait a few minutes.", nil)
+		return
+	}
+
+	// And per ACCOUNT, which is the bucket the specification's arithmetic
+	// actually describes.
+	//
+	// §5.1 works the sum out: an 8-character base-20 code has ~34.5 bits, and
+	// "the rate-limiting interval and validity period would need to only allow 5
+	// attempts in order to get the same 2^-32 probability of success by random
+	// guessing". Ours is 8 characters from a 21-letter alphabet -- 21^8, or
+	// 2^35.14 -- so the equivalent budget is 21^8 / 2^32, which is 8.8.
+	//
+	// The per-address limit does not bound that sum, because an address is not a
+	// scarce resource. One attacker behind a thousand proxies had 20 guesses
+	// each, capped only by the global backstop at 200/s -- around 120,000 guesses
+	// per ten-minute code lifetime, which is 2^-18 against this code space rather
+	// than 2^-32.
+	//
+	// An ACCOUNT is scarce, because this page requires a signed-in session: §5.1's
+	// attack is "approve the authorization grant with their own credentials", so
+	// the guesser necessarily has one. Charging the account is what turns the
+	// specification's arithmetic into something the code enforces.
+	//
+	// Eight, which is floor(21^8 / 2^32) and therefore the largest budget that
+	// satisfies the section. A person approving a television mistypes once or
+	// twice, never eight times.
+	if res, err := store.AllowRate(ctx, s.db, "device:user:"+userID,
+		deviceAttemptsPerUser, deviceAttemptWindow); err != nil {
+		s.log.Error("device per-user rate limit unavailable", "err", err)
+		render("", "Try again in a moment.", nil)
+		return
+	} else if !res.Allowed {
+		render("", "Too many attempts. Wait a few minutes and try again.", nil)
 		return
 	}
 

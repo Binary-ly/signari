@@ -279,9 +279,18 @@ func validBindingMessage(s string) error {
 
 // NewAuthReqID mints an auth_req_id.
 //
-// §7.3: "It is RECOMMENDED that the value be a cryptographically random string
-// with at least 128 bits of entropy" and the value is restricted to
-// "[A-Za-z0-9.\-_]". 32 bytes base64url gives 256 bits from that exact alphabet.
+// §7.3, quoted correctly on the second attempt: the entropy floor is a **MUST**
+// of "a minimum of 128 bits while 160 bits is recommended", over the character
+// set "'A'-'Z', 'a'-'z', '0'-'9', '.', '-' and '_'".
+//
+// The first version of this comment wrote it as "It is RECOMMENDED that the
+// value be ... at least 128 bits", which turns a MUST into advice and loses the
+// 160-bit recommendation entirely. We comply either way — 32 bytes base64url is
+// 256 bits from exactly that alphabet, past both numbers — so nothing was built
+// wrong. The citation was, and it is the same shape as the two other misquotes
+// this review found (NIST's "advises against" for a SHALL NOT, and RFC 8628's
+// "20 bits" read off "base 20"): a real document, a plausible paraphrase, and a
+// normative level quietly softened.
 //
 // The same width as an authorization code, because it is the same kind of thing:
 // whoever holds it can collect the tokens once it is approved.

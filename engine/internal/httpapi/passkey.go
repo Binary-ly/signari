@@ -262,9 +262,16 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		name = "Passkey"
 	}
 
+	// Every credential this server creates is discoverable: BeginRegistration
+	// passes ResidentKey: ResidentKeyRequirementRequired. That is a fact about
+	// our configuration, so it is written as one rather than inferred from a
+	// flag that means something else -- which is exactly what happened here
+	// before, when cred.Flags.BackupEligible was passed into the `discoverable`
+	// parameter and stored in is_discoverable.
 	if err := store.SaveCredential(ctx, tx, userID, orgID, rp.RPID(),
 		cred.ID, cred.PublicKey, cred.Authenticator.AAGUID, cred.Authenticator.SignCount,
-		cred.Flags.BackupEligible, transports, cred.AttestationType, name); err != nil {
+		true, cred.Flags.BackupEligible, cred.Flags.BackupState,
+		transports, cred.AttestationType, name); err != nil {
 		s.log.Error("saving credential", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
@@ -484,8 +491,26 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 	// it is evidence, not proof, and a false positive here locks a legitimate
 	// user out of their own account. It is recorded at WARN and audited so an
 	// operator can act on a pattern rather than a single event.
+	// §6.1.3: a BS transition from 1 to 0 means the credential is no longer
+	// backed up, so the user is one lost device away from losing this factor.
+	// The specification says the relying party "SHOULD guide the user through a
+	// process to validate their other authentication factors". We record it;
+	// the user-facing prompt is a product decision and is item 9k.
+	if stored.BackupState && !cred.Flags.BackupState {
+		s.log.Warn("passkey is no longer backed up; the user may be one device loss "+
+			"from losing this credential", "user_id", resolvedUser,
+			"correlation_id", correlationID(ctx))
+		if aerr := audit.Write(ctx, tx, audit.Event{
+			Type: "mfa.passkey_backup_lost", OrgID: resolvedOrg, SubjectID: resolvedUser,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"rp_id": stored.RPID},
+		}); aerr != nil {
+			s.log.Error("auditing a passkey backup-state change", "err", aerr)
+		}
+	}
+
 	if err := store.UpdateSignCount(ctx, tx, cred.ID, stored.SignCount,
-		cred.Authenticator.SignCount); err != nil {
+		cred.Authenticator.SignCount, cred.Flags.BackupState); err != nil {
 		if errors.Is(err, store.ErrCredentialCloned) {
 			s.log.Warn("passkey signature counter went backwards; possible cloned authenticator",
 				"user_id", resolvedUser, "stored", stored.SignCount,

@@ -43,12 +43,24 @@ type WebAuthnCredential struct {
 	PublicKey      []byte
 	SignCount      uint32
 	IsDiscoverable bool
-	Transports     []string
-	AAGUID         []byte
-	RPID           string
-	FriendlyName   string
-	CreatedAt      time.Time
-	LastUsedAt     *time.Time
+	// BackupEligible is the WebAuthn L3 BE flag, fixed at registration.
+	//
+	// §6.1.3: "The value of the BE flag is set during authenticatorMakeCredential
+	// operation and MUST NOT change." It must therefore survive from registration
+	// to every later assertion -- go-webauthn compares the asserted flag against
+	// this one and refuses the login when they differ, so a credential loaded
+	// without it cannot sign in if it is backup eligible.
+	BackupEligible bool
+	// BackupState is the BS flag as of the most recent ceremony. §6.1.3 RECOMMENDS
+	// storing "the most recent value of these flags with the user account"; a
+	// 1->0 transition means a credential stopped being backed up.
+	BackupState  bool
+	Transports   []string
+	AAGUID       []byte
+	RPID         string
+	FriendlyName string
+	CreatedAt    time.Time
+	LastUsedAt   *time.Time
 }
 
 // SaveCredential records a newly registered authenticator.
@@ -60,15 +72,23 @@ type WebAuthnCredential struct {
 // operator see exactly which passkeys a change would have destroyed.
 func SaveCredential(ctx context.Context, tx pgx.Tx, userID, orgID, rpID string,
 	credentialID, publicKey, aaguid []byte, signCount uint32,
-	discoverable bool, transports []string, attestation, friendlyName string) error {
+	discoverable, backupEligible, backupState bool,
+	transports []string, attestation, friendlyName string) error {
 
+	// discoverable and backupEligible are separate arguments deliberately, and
+	// named apart from each other, because they were once ONE argument's worth of
+	// confusion: the caller passed cred.Flags.BackupEligible into a parameter
+	// called `discoverable`, and it went into is_discoverable. Two adjacent
+	// booleans of the same type, so nothing complained for as long as it existed.
 	_, err := tx.Exec(ctx, `
 		INSERT INTO core.webauthn_credentials
 			(user_id, org_id, credential_id, public_key, sign_count,
-			 is_discoverable, transports, aaguid, attestation_type, rp_id, friendly_name)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			 is_discoverable, backup_eligible, backup_state,
+			 transports, aaguid, attestation_type, rp_id, friendly_name)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		userID, orgID, credentialID, publicKey, int64(signCount),
-		discoverable, transports, aaguid, attestation, rpID, nullIfEmpty(friendlyName))
+		discoverable, backupEligible, backupState,
+		transports, aaguid, attestation, rpID, nullIfEmpty(friendlyName))
 	if err != nil {
 		return fmt.Errorf("saving webauthn credential: %w", err)
 	}
@@ -79,6 +99,7 @@ func SaveCredential(ctx context.Context, tx pgx.Tx, userID, orgID, rpID string,
 func CredentialsForUser(ctx context.Context, tx pgx.Tx, userID string) ([]WebAuthnCredential, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, credential_id, public_key, sign_count, is_discoverable,
+		       backup_eligible, backup_state,
 		       transports, aaguid, rp_id, COALESCE(friendly_name,''), created_at, last_used_at
 		FROM core.webauthn_credentials
 		WHERE user_id = $1::uuid
@@ -93,6 +114,7 @@ func CredentialsForUser(ctx context.Context, tx pgx.Tx, userID string) ([]WebAut
 		var c WebAuthnCredential
 		var count int64
 		if err := rows.Scan(&c.ID, &c.CredentialID, &c.PublicKey, &count, &c.IsDiscoverable,
+			&c.BackupEligible, &c.BackupState,
 			&c.Transports, &c.AAGUID, &c.RPID, &c.FriendlyName, &c.CreatedAt, &c.LastUsedAt); err != nil {
 			return nil, err
 		}
@@ -109,11 +131,13 @@ func CredentialByID(ctx context.Context, tx pgx.Tx, credentialID []byte) (*WebAu
 	var userID string
 	err := tx.QueryRow(ctx, `
 		SELECT id::text, user_id::text, credential_id, public_key, sign_count,
-		       is_discoverable, transports, aaguid, rp_id, COALESCE(friendly_name,''),
+		       is_discoverable, backup_eligible, backup_state,
+		       transports, aaguid, rp_id, COALESCE(friendly_name,''),
 		       created_at, last_used_at
 		FROM core.webauthn_credentials WHERE credential_id = $1
 		FOR UPDATE`, credentialID).
 		Scan(&c.ID, &userID, &c.CredentialID, &c.PublicKey, &count, &c.IsDiscoverable,
+			&c.BackupEligible, &c.BackupState,
 			&c.Transports, &c.AAGUID, &c.RPID, &c.FriendlyName, &c.CreatedAt, &c.LastUsedAt)
 	if err == pgx.ErrNoRows {
 		return nil, "", ErrCredentialNotFound
@@ -158,7 +182,7 @@ func CredentialByID(ctx context.Context, tx pgx.Tx, credentialID []byte) (*WebAu
 // The counter is still written on the cloning path. Refusing to advance it would
 // let an attacker replay the same assertion indefinitely, each attempt producing
 // the same alarm and none of them closing the hole.
-func UpdateSignCount(ctx context.Context, tx pgx.Tx, credentialID []byte, stored, presented uint32) error {
+func UpdateSignCount(ctx context.Context, tx pgx.Tx, credentialID []byte, stored, presented uint32, backupState bool) error {
 	// The disjunction WebAuthn L3 §7.2 step 21 specifies, not a conjunction.
 	//
 	// stored=0, presented=0  -> skipped entirely: the authenticator does not
@@ -170,8 +194,13 @@ func UpdateSignCount(ctx context.Context, tx pgx.Tx, credentialID []byte, stored
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.webauthn_credentials
-		SET sign_count = GREATEST(sign_count, $2), last_used_at = now()
-		WHERE credential_id = $1`, credentialID, int64(presented)); err != nil {
+		SET sign_count = GREATEST(sign_count, $2), last_used_at = now(),
+		    -- §6.1.3: "It is RECOMMENDED that Relying Parties store the most
+		    -- recent value of these flags with the user account for future
+		    -- evaluation." BS is the one that legitimately changes; BE is fixed
+		    -- at registration and is never written here.
+		    backup_state = $3
+		WHERE credential_id = $1`, credentialID, int64(presented), backupState); err != nil {
 		return fmt.Errorf("updating sign count: %w", err)
 	}
 	if cloned {

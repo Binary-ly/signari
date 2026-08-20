@@ -23,7 +23,9 @@ func waFixture(t *testing.T) (pgx.Tx, string, string) {
 func addCred(t *testing.T, tx pgx.Tx, userID, orgID string, id byte, count uint32) {
 	t.Helper()
 	if err := SaveCredential(context.Background(), tx, userID, orgID, "localhost",
-		[]byte{id}, []byte{0x02}, nil, count, true, []string{"internal"}, "none", "Test key"); err != nil {
+		[]byte{id}, []byte{0x02}, nil, count,
+		true /*discoverable*/, false /*backupEligible*/, false, /*backupState*/
+		[]string{"internal"}, "none", "Test key"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -78,7 +80,7 @@ func TestSignCountCloningRules(t *testing.T) {
 			credID := byte(0xA0 + i)
 			addCred(t, tx, userID, orgID, credID, tc.stored)
 
-			err := UpdateSignCount(ctx, tx, []byte{credID}, tc.stored, tc.presented)
+			err := UpdateSignCount(ctx, tx, []byte{credID}, tc.stored, tc.presented, false)
 			if got := errors.Is(err, ErrCredentialCloned); got != tc.wantCloned {
 				t.Fatalf("cloned=%v, want %v (err=%v)", got, tc.wantCloned, err)
 			}

@@ -145,9 +145,27 @@ func ToLibrary(stored []store.WebAuthnCredential) []webauthn.Credential {
 				return "none"
 			}(),
 			Transport: transports,
+			// BackupEligible MUST come from what registration recorded.
+			//
+			// WebAuthn L3 §6.1.3 fixes BE at registration and forbids it changing,
+			// and go-webauthn enforces that by comparing the asserted flag against
+			// the one on this struct. It used to be left at its zero value, so
+			// every credential this server loaded claimed BE=0 -- and any synced
+			// passkey, which asserts BE=1, was refused at login with "Backup
+			// Eligible flag inconsistency". Registration worked, because
+			// registration has nothing to compare against; the credential simply
+			// could never be used again.
+			//
+			// UserPresent and UserVerified stay hardcoded, and that is sound
+			// rather than lazy: BeginRegistration requires user verification, so
+			// no credential reaches storage without both, and the library
+			// re-checks the ASSERTED flags on every login regardless of what is
+			// claimed here.
 			Flags: webauthn.CredentialFlags{
-				UserPresent:  true,
-				UserVerified: true,
+				UserPresent:    true,
+				UserVerified:   true,
+				BackupEligible: c.BackupEligible,
+				BackupState:    c.BackupState,
 			},
 			Authenticator: webauthn.Authenticator{
 				AAGUID:    c.AAGUID,

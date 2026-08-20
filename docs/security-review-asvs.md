@@ -23,15 +23,19 @@ requirement asks for. Details below, then the gap.
 
 ## V9 — Self-contained Tokens
 
+Re-verified against source in August 2026, one requirement at a time. The
+verdict column says where the check actually is, so a reader can disagree with
+it rather than take a tick on trust.
+
 | | Requirement | Verdict |
 |---|---|---|
-| V9.1.1 | Validate signature before accepting contents | ✅ every verifier parses with an algorithm allow-list, then verifies, then reads |
-| V9.1.2 | Algorithm allowlist, no `none`, no symmetric/asymmetric confusion | ✅ explicit lists; `none` absent; asymmetric only |
+| V9.1.1 | Validate signature before accepting contents | ✅ `verifiedPayload` returns the payload only after `tok.Verify`; every caller unmarshals from that return value, so no path reads claims first |
+| V9.1.2 | Algorithm allowlist, no `none`, no symmetric/asymmetric confusion | ✅ the list is `RS256, ES256, PS256, EdDSA` — asymmetric only, `none` absent. The check that matters is the next one: `if string(key.Algorithm()) != h.Algorithm` pins the algorithm to the **key's** declared one rather than the header's, which is what actually defeats alg confusion; an allow-list alone does not |
 | V9.1.3 | Key material from pre-configured sources; reject `jku`, `x5u`, `jwk` | ✅ refused explicitly, and tested (`TestATokenCannotSupplyItsOwnKey`) |
-| V9.2.1 | Honour `nbf`/`exp` | ✅ |
-| V9.2.2 | Validate token **type** and purpose | ✅ `typ` is checked per token class — `at+jwt`, `secevent+jwt`, `logout+jwt` |
+| V9.2.1 | Honour `nbf`/`exp` | ✅ **`exp` fail-closed** — `c.Expiry == 0` is treated as expired, not as absent. **`nbf` is checked exactly where externally-minted JWTs arrive**: `private_key_jwt` client assertions (`privatekeyjwt.go:204`, bounded by `MaxClockSkew`). Our own access tokens carry no `nbf`, so there is nothing to honour there. On the SSF receive path `exp` is not merely checked but **forbidden**, per SSF §4.1.7 |
+| V9.2.2 | Validate token **type** and purpose | ✅ checked inside the shared verifier against a value the caller names, so a single-purpose token cannot be presented elsewhere — `at+jwt`, `secevent+jwt`, `logout+jwt` |
 | V9.2.3 | Accept only tokens whose audience is this service | ✅, and the **issuer** check beside it is now tested too — it had survived mutation against the whole suite, and on this server aliased issuers share a key set, so `iss` is the only thing separating them |
-| V9.2.4 | Audience restriction when one key serves several audiences | ✅ RFC 8707 resources become the audience; the client id is the fallback only when none were requested |
+| V9.2.4 | Audience restriction when one key serves several audiences | ✅ `audience := []string{c.ClientID}; if len(resources) > 0 { audience = resources }` — RFC 8707 resources become the audience, the client id the fallback only when none were requested |
 
 ## V10.1 / V10.2 / V10.5 — client-side
 

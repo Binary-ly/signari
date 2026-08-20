@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Client-Initiated Backchannel Authentication.
@@ -81,6 +83,11 @@ const CIBAMinPollInterval = 5
 // phone's notification. A limit is still needed: this string is displayed to a
 // person as part of an approval decision, and an unbounded one is a way to push
 // the actual question off the screen.
+//
+// Counted in CHARACTERS, not bytes. The constraint is how much room the message
+// takes on a notification, and a byte limit makes that depend on the script --
+// 140 bytes is 140 Latin characters but around 46 Arabic or Japanese ones, so
+// the same sentence would fit in English and be refused in translation.
 const maxBindingMessage = 140
 
 // CIBARequest is a parsed backchannel authentication request.
@@ -250,32 +257,21 @@ func (r *CIBARequest) Expiry() time.Duration {
 	return CIBADefaultExpiry
 }
 
-// validBindingMessage applies §7.1's "relatively short ... limited set of plain
-// text characters".
-//
-// Control characters are the ones that matter. This string is rendered on an
-// approval screen next to the question "do you want to allow this", and a
-// newline or a bidirectional override in it is a way to make the screen say
-// something other than what it appears to say.
 func validBindingMessage(s string) error {
-	if len(s) > maxBindingMessage {
-		return fmt.Errorf("the binding message is %d bytes, over the %d-byte limit; "+
-			"it has to render on a phone notification beside the approval prompt",
-			len(s), maxBindingMessage)
+	if n := utf8.RuneCountInString(s); n > maxBindingMessage {
+		return fmt.Errorf("the binding message is %d characters, over the %d-character "+
+			"limit; it has to render on a phone notification beside the approval prompt",
+			n, maxBindingMessage)
+	}
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("the binding message is not valid UTF-8")
 	}
 	for _, r := range s {
-		switch {
-		case r == '\n', r == '\r', r == '\t':
-			return fmt.Errorf("the binding message contains a line break or tab; it is " +
-				"displayed inline beside an approval prompt and must not be able to " +
-				"restructure it")
-		case r < 0x20, r == 0x7f:
-			return fmt.Errorf("the binding message contains a control character")
-		// Bidirectional overrides can reverse displayed text, so a message can
-		// read as one thing and be another.
-		case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
-			return fmt.Errorf("the binding message contains a bidirectional control " +
-				"character, which can make it display differently from what it says")
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("the binding message contains the non-printing character "+
+				"U+%04X; it is displayed beside an approval prompt, and invisible, "+
+				"directional and line-separating characters can make it read as "+
+				"something other than what it says", r)
 		}
 	}
 	return nil

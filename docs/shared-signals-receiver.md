@@ -138,3 +138,43 @@ The embedded-key guard originally had a test that passed for the wrong reason:
 the rogue token was also signed by an untrusted key, so it was refused either
 way. Mutation testing caught it. The test now asserts *which* check refused it,
 so removing the guard fails the test.
+
+## What this implements, and what it does not (August 2026)
+
+Checked against SSF 1.0 Final's own section list rather than against RFC 8417 and
+RFC 8935 alone, which is what the review above covers. The framework is larger
+than the SET format, and the boundary was nowhere stated.
+
+**Transmitting.** Streams exist — `core.ssf_streams` carries `endpoint_url`,
+`events_requested`, `auth_token` and a `status` — and SETs are delivered through
+`internal/outbox` with its retry, capped backoff and parked-failure handling.
+They are **administered locally**, not through §8.1.1's Stream Configuration
+Endpoint. A receiver cannot create, read or update its own stream by HTTP.
+
+**Receiving.** `POST /ssf/receive` accepts SETs from a configured source. We do
+not act as a stream-managing receiver: nothing here creates a stream against a
+foreign transmitter, reads §7.2 transmitter configuration metadata, or requests
+verification.
+
+### The consequence, stated plainly
+
+| SSF 1.0 section | Status |
+|---|---|
+| §4.1 SET format, explicit typing, `iss`, forbidden `exp`/`sub` | implemented, and reviewed above |
+| §6.1.1 Push delivery over HTTP | implemented, both directions |
+| §6.1.2 Poll delivery | **not implemented** |
+| §7.1 / §7.2 Transmitter configuration metadata | **not implemented** |
+| §8.1.1 Stream Configuration Endpoint | **not implemented** — streams are configured by an operator |
+| §8.1.4 Verification (the verification event and its `state` echo) | **not implemented** |
+
+So §8.1.4's receiver SHALL — "the Event Receiver SHALL confirm that the value for
+`state` is as expected" — does not bind us, because we never request
+verification. That is a scope statement rather than an excuse: a deployment that
+expects to negotiate a stream with us over the wire, or to verify one, will find
+those endpoints absent, and until now nothing here said so.
+
+This is the same rule the rest of this project follows for CIBA (poll mode only,
+and discovery says exactly that) and UMA (no claims gathering, so `need_info` is
+never returned). An unimplemented half of a framework is only safe when it is
+written down; the failure mode otherwise is an integrator discovering it against
+a live deployment.

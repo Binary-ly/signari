@@ -457,3 +457,49 @@ func TestAnonymousSearchCanBeEnabledDeliberately(t *testing.T) {
 		t.Error("no entries returned")
 	}
 }
+
+// RFC 4514 escaping in a bind DN, which usernameFromDN does not decode.
+//
+// A DN value may legitimately contain an escaped comma (`uid=alice\,bob,...`) or
+// a hex escape (`uid=alice\41`). `usernameFromDN` splits on the first raw comma
+// and never unescapes, so neither form is decoded.
+//
+// That is the safe direction and this test pins it there. The two ways it could
+// have gone wrong:
+//
+//   - an escaped comma parsed as a separator leaves a mangled leading RDN whose
+//     remainder is not the base DN, so the suffix check refuses it; and
+//   - a hex escape left undecoded is looked up as the literal string, so
+//     `uid=alice\41` searches for `alice\41` and not for `aliceA`.
+//
+// Both refuse. What must never happen is either form resolving to a DIFFERENT
+// existing user than the one the raw bytes name — that is the LDAP equivalent of
+// the `uid=admin,ou=uid=alice` burial the leading-RDN rule already prevents.
+//
+// The cost is that a username containing a comma cannot bind. That is a real
+// limitation and the right trade: decoding escapes correctly is a parser, and a
+// half-correct DN parser in an authentication path is worse than a restriction.
+func TestEscapedBindDNsAreRefusedRatherThanDecoded(t *testing.T) {
+	addr, _ := startServer(t, Config{})
+	for _, dn := range []string{
+		`uid=alice\,bob,` + baseDN,   // escaped comma inside the value
+		`uid=alice\41,` + baseDN,     // hex escape that would decode to aliceA
+		`uid=alice\\,` + baseDN,      // escaped backslash
+		`uid=al\ice,` + baseDN,       // stray escape
+		`uid=alice+cn=bob,` + baseDN, // multi-valued RDN
+	} {
+		c := dial(t, addr)
+		if err := c.Bind(dn, "correct-horse-battery"); err == nil {
+			t.Errorf("bound successfully with DN %q. An escaped DN must be refused, "+
+				"not decoded — a half-correct escape parser in a bind path is how one "+
+				"DN comes to name a different user than its bytes say", dn)
+		}
+	}
+
+	// The unescaped form still works, so the test above is not passing because
+	// binding is broken.
+	c := dial(t, addr)
+	if err := c.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
+		t.Fatalf("the ordinary DN stopped binding: %v", err)
+	}
+}

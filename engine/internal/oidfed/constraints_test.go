@@ -153,45 +153,6 @@ func TestAnIntermediateCannotVouchOutsideItsDelegatedSubtree(t *testing.T) {
 	}
 }
 
-// §6.2.3: federation_entity is always allowed, an absent constraint allows
-// everything, and the empty array allows only federation_entity.
-func TestEntityTypeFiltering(t *testing.T) {
-	md := map[string]any{
-		"openid_provider":      map[string]any{"issuer": "x"},
-		"openid_relying_party": map[string]any{"client_id": "y"},
-		"federation_entity":    map[string]any{"organization_name": "z"},
-	}
-
-	// "If there is no allowed_entity_types constraint, it means that any Entity
-	// Type is allowed."
-	if got := FilterEntityTypes(md, nil); len(got) != 3 {
-		t.Errorf("an absent constraint removed types: %v", got)
-	}
-
-	// A constraint listing one type keeps it, plus federation_entity.
-	got := FilterEntityTypes(md, &[]string{"openid_provider"})
-	if _, ok := got["openid_relying_party"]; ok {
-		t.Error("a type outside the constraint survived")
-	}
-	if _, ok := got["openid_provider"]; !ok {
-		t.Error("the permitted type was removed")
-	}
-	if _, ok := got["federation_entity"]; !ok {
-		t.Error("federation_entity was removed; §6.2.3 says it MUST NOT be")
-	}
-
-	// "If the constraint is the empty array [], it means that only the
-	// federation_entity Entity Type is allowed." Distinct from absent, which is
-	// why the field is a pointer.
-	got = FilterEntityTypes(md, &[]string{})
-	if len(got) != 1 {
-		t.Errorf("the empty array should leave only federation_entity: %v", got)
-	}
-	if _, ok := got["federation_entity"]; !ok {
-		t.Error("the empty array removed federation_entity")
-	}
-}
-
 // §6.2.3 through the real resolution path, not just the filter helper.
 //
 // A superior that constrains its subtree to relying parties must not be able to

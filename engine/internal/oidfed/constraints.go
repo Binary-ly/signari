@@ -192,34 +192,6 @@ func hostOf(entityID string) (string, error) {
 	return h, nil
 }
 
-// FilterEntityTypes applies §6.2.3 to a subject's metadata.
-//
-//	"To apply the allowed_entity_types constraint during Trust Chain Resolution
-//	all Entity Types that are not listed in the allowed_entity_types constraint
-//	MUST be removed from the metadata Claim in the subject's Entity
-//	Configuration. The federation_entity Entity Type MUST NOT be removed."
-//
-// Removal rather than rejection, which is worth noticing: a subject carrying a
-// type its superior did not allow does not invalidate the chain, it loses that
-// type. An implementation that refuses the chain instead is stricter than the
-// specification and breaks federations that are merely untidy.
-func FilterEntityTypes(metadata map[string]any, allowed *[]string) map[string]any {
-	if allowed == nil {
-		return metadata // no constraint: every Entity Type is allowed
-	}
-	permitted := map[string]bool{FederationEntityType: true}
-	for _, t := range *allowed {
-		permitted[t] = true
-	}
-	out := make(map[string]any, len(metadata))
-	for k, v := range metadata {
-		if permitted[k] {
-			out[k] = v
-		}
-	}
-	return out
-}
-
 // entityTypeAllowed applies §6.2.3 across a chain.
 //
 // Each Subordinate Statement's constraint is applied independently, like the

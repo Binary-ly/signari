@@ -291,3 +291,75 @@ func signClaims(t *testing.T, e *entity, claims map[string]any) string {
 	}
 	return raw
 }
+
+// The same §10.2 step 6 rule, isolated.
+//
+// TestABrokenLinkIsRefused above breaks the link by having the anchor vouch for
+// a different entity AND publish that entity's keys -- so ES[1] no longer
+// verifies, and the chain is refused by the signature check before the linkage
+// check is ever consulted. The rule appears tested and is not: deleting the
+// `ES[j].iss == ES[j+1].sub` comparison fails no test.
+//
+// Here the anchor vouches for a different SUBJECT while publishing the
+// intermediate's real keys. Every signature still verifies. The only thing wrong
+// is that the statements describe unrelated entities, which is precisely the
+// property step 6 exists to enforce: without it a chain can be assembled from
+// statements that are each individually valid and vouch for nobody in
+// particular.
+func TestALinkThatDoesNotJoinIsRefusedEvenWhenEverySignatureVerifies(t *testing.T) {
+	_, inter, anchor, chain := chainFor(t)
+	other := newEntity(t, "https://elsewhere.example", "other-1")
+	exp := time.Now().Add(time.Hour)
+
+	// sub is somebody else; jwks is still the intermediate's, so ES[1] verifies.
+	chain[2] = anchor.sign(t, other.id, inter.jwks(t), exp)
+
+	_, err := ValidateChain(chain, anchor.id, anchor.jwks(t), time.Now())
+	if err == nil {
+		t.Fatal("a chain whose links do not join was accepted, even though the " +
+			"anchor never vouched for the intermediate that signed ES[1]")
+	}
+	// The reason matters. If this is refused as a signature failure the linkage
+	// check has stopped running and nothing here would say so.
+	if !strings.Contains(err.Error(), "does not vouch") &&
+		!strings.Contains(err.Error(), "iss") &&
+		!strings.Contains(err.Error(), "subject") {
+		t.Errorf("refused, but not as a linkage failure: %v", err)
+	}
+}
+
+// §10.2 step 4: ES[0] is an Entity Configuration, so iss == sub.
+//
+// Isolated, because the other checks do not catch this one. An entity signs a
+// statement with its OWN key and its OWN jwks, but names somebody else as the
+// subject:
+//
+//	ES[0]: iss = leaf, sub = victim, signed by leaf, jwks = leaf's
+//
+// Step 5's self-signature check passes -- it verifies against ES[0]'s own jwks,
+// which are the leaf's real keys. Step 6 passes too: ES[0].iss is the leaf, and
+// the intermediate's statement really is about the leaf. Every link joins and
+// every signature verifies. The only thing wrong is that the configuration
+// claims to describe an entity that never signed anything, and step 4 is the
+// only check that looks.
+//
+// Without it the chain validates and its subject is the victim, which is entity
+// impersonation with a fully valid chain behind it.
+func TestAnEntityConfigurationAboutSomebodyElseIsRefused(t *testing.T) {
+	leaf, _, anchor, chain := chainFor(t)
+	victim := newEntity(t, "https://victim.example", "victim-1")
+	exp := time.Now().Add(time.Hour)
+
+	// Signed by the leaf, carrying the leaf's keys, but subject = victim.
+	chain[0] = leaf.sign(t, victim.id, leaf.jwks(t), exp)
+
+	got, err := ValidateChain(chain, anchor.id, anchor.jwks(t), time.Now())
+	if err == nil {
+		t.Fatalf("an Entity Configuration naming a subject that never signed it "+
+			"was accepted; the chain resolved to %+v, which is impersonation with "+
+			"a valid chain behind it", got)
+	}
+	if !strings.Contains(err.Error(), "Entity Configuration") {
+		t.Errorf("refused, but not as a malformed Entity Configuration: %v", err)
+	}
+}

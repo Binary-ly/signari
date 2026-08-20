@@ -123,3 +123,63 @@ func TestConcurrentRedemptionOfOneAuthorizationCodeYieldsOneTokenSet(t *testing.
 		}
 	}
 }
+
+func TestConcurrentRefreshRotationYieldsOneWinnerAndKillsTheFamily(t *testing.T) {
+	f := newTokenFixture(t)
+	const verifier = "verifier-for-the-refresh-race-0123456789-abcdef"
+	code := f.issueCode(t, verifier)
+
+	status, body := f.post(t, f.redeem(code, verifier))
+	if status != http.StatusOK {
+		t.Fatalf("redemption: %d %v", status, body)
+	}
+	refresh, _ := body["refresh_token"].(string)
+	if refresh == "" {
+		t.Fatalf("no refresh token: %v", body)
+	}
+
+	const racers = 4
+	var wg sync.WaitGroup
+	codes := make([]int, racers)
+	winner := make([]string, racers)
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			var b map[string]any
+			codes[i], b = f.post(t, url.Values{"grant_type": {"refresh_token"},
+				"refresh_token": {refresh}, "client_id": {f.clientID}})
+			winner[i], _ = b["refresh_token"].(string)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	won, successor := 0, ""
+	for i, c := range codes {
+		if c == http.StatusOK {
+			won++
+			successor = winner[i]
+		}
+	}
+	if won != 1 {
+		t.Fatalf("%d of %d concurrent rotations of one refresh token succeeded; "+
+			"exactly one may, or the lineage forks and two clients hold live "+
+			"credentials for one grant", won, racers)
+	}
+
+	// The recorded consequence: the winner's successor is already dead, because
+	// the losers looked like replay. If this assertion ever fails, someone has
+	// introduced a grace window -- which may well be right, but must be a
+	// decision rather than an accident.
+	status, _ = f.post(t, url.Values{"grant_type": {"refresh_token"},
+		"refresh_token": {successor}, "client_id": {f.clientID}})
+	if status == http.StatusOK {
+		t.Fatal("the successor from a self-race still works, so the family was NOT " +
+			"revoked. That is a behaviour change: reuse no longer implies theft. " +
+			"If it was intended, update this test and docs/security-review-asvs.md " +
+			"V10.4.5 together")
+	}
+}

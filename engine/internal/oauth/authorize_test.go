@@ -339,3 +339,52 @@ func TestResponseTypeIsASet(t *testing.T) {
 		t.Fatalf("the reversed spelling was refused: %s — %s", err.Code, err.Description)
 	}
 }
+
+// ASVS 5.0 V10.4.4: "only the grants that client needs" — enforced at the
+// AUTHORIZE endpoint, not merely at redemption.
+//
+// Both of these guards survived mutation against the whole test suite: setting
+// either to `if false` broke nothing, anywhere. The restriction was implemented
+// and unconstrained.
+//
+// It matters here rather than only at the token endpoint because by the time a
+// code is issued the damage is partly done: the person has been shown a consent
+// screen for a client that was never permitted this flow, and has approved it.
+// Refusing at redemption would mean the authorization server asked a user to
+// agree to something it was always going to refuse.
+func TestAClientMayNotUseAFlowItIsNotRegisteredFor(t *testing.T) {
+	t.Run("the authorization_code grant", func(t *testing.T) {
+		c := testClient()
+		c.GrantTypes = []string{"refresh_token"} // registered, but not for the code grant
+
+		err := ValidateAuthz(goodRequest(), c, nil)
+		if err == nil {
+			t.Fatal("a client not registered for authorization_code was allowed to " +
+				"start the code flow; a consent screen would be shown for a grant " +
+				"this client may not use")
+		}
+		if err.Code != "unauthorized_client" {
+			t.Errorf("code = %q, want unauthorized_client", err.Code)
+		}
+	})
+
+	t.Run("the response_type", func(t *testing.T) {
+		c := testClient()
+		c.ResponseTypes = []string{"code id_token"} // not plain "code"
+
+		err := ValidateAuthz(goodRequest(), c, nil)
+		if err == nil {
+			t.Fatal("a client used a response_type it is not registered for")
+		}
+		if err.Code != "unauthorized_client" {
+			t.Errorf("code = %q, want unauthorized_client", err.Code)
+		}
+	})
+
+	// The positive case, so the test cannot pass by refusing everything.
+	t.Run("a properly registered client still works", func(t *testing.T) {
+		if err := ValidateAuthz(goodRequest(), testClient(), nil); err != nil {
+			t.Fatalf("a correctly registered client was refused: %v", err)
+		}
+	})
+}

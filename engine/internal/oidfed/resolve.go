@@ -280,6 +280,19 @@ func MetadataOf(chain []Statement, entityType string) (map[string]any, error) {
 		}
 	}
 
+	// §6.2.3, and the ordering is the specification's: "This MUST be done before
+	// applying Metadata Policies but after applying Metadata from a direct
+	// superior's Subordinate Statement." So it sits exactly here, between the
+	// two blocks above and below it.
+	//
+	// The spec frames this as removing disallowed Entity Types from the metadata
+	// claim. This function resolves one type at a time, so removal becomes
+	// refusal: a caller asking for a type the chain's constraints exclude gets
+	// the same answer it would get if the type had been stripped.
+	if err := entityTypeAllowed(chain, entityType); err != nil {
+		return nil, err
+	}
+
 	policy, perr := ResolvePolicy(chain)
 	if perr != nil {
 		return nil, perr

@@ -52,6 +52,11 @@ type Statement struct {
 	IssuedAt int64           `json:"iat"`
 	Expiry   int64           `json:"exp"`
 	JWKS     json.RawMessage `json:"jwks"`
+
+	// Constraints is §6.2, present only on Subordinate Statements. See
+	// constraints.go: §10.2 makes enforcing these a MUST, and this engine
+	// parsed and ignored them until August 2026.
+	Constraints *Constraints `json:"constraints,omitempty"`
 }
 
 // ChainResult is a validated chain.
@@ -165,6 +170,17 @@ func ValidateChain(chain []Statement, trustAnchorID string, trustAnchorKeys json
 	if err := verifyWith(last, trustAnchorKeys); err != nil {
 		return nil, fmt.Errorf("the trust anchor's statement does not verify "+
 			"against the anchor keys held out of band: %w", err)
+	}
+
+	// §10.2's closing MUST: "constraints MUST be enforced for each Subordinate
+	// Statement of the Trust Chain, as explained in Section 6.2."
+	//
+	// Last, after the signatures. A constraint is a statement about what a
+	// superior permits, and it is only worth reading once we know the superior
+	// actually said it.
+	if err := applyConstraints(chain); err != nil {
+		return nil, fmt.Errorf("the chain is signed correctly and violates the "+
+			"constraints its superiors imposed: %w", err)
 	}
 
 	return &ChainResult{

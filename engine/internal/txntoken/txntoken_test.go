@@ -304,17 +304,36 @@ func TestTheCallChainComesFromThePreviousTokenNotTheCaller(t *testing.T) {
 func TestTheCallChainIsBounded(t *testing.T) {
 	now := time.Now()
 	cur := base(now)
+	// The chain must grow to the bound and then REFUSE, rather than keep issuing
+	// tokens with workloads quietly missing from the record. §13.15 makes
+	// maintaining the chain a MUST, so once it cannot be maintained the only
+	// conformant answer is to stop issuing.
+	var refusedAt int
 	for i := 0; i < MaxCallChain+10; i++ {
 		next, err := Replace(Replacement{Previous: cur, Workload: "w"},
 			"https://id.example", now, DefaultTTL)
 		if err != nil {
-			t.Fatalf("hop %d: %v", i, err)
+			if !errors.Is(err, ErrChainTooLong) {
+				t.Fatalf("hop %d failed for an unrelated reason: %v", i, err)
+			}
+			refusedAt = i
+			break
 		}
 		cur = next
+		if len(cur.CallChain) > MaxCallChain {
+			t.Fatalf("chain grew to %d, above the bound of %d", len(cur.CallChain), MaxCallChain)
+		}
 	}
-	if len(cur.CallChain) > MaxCallChain {
-		t.Fatalf("chain grew to %d, above the bound of %d -- an unbounded chain "+
-			"is both a growing token and a sign something is looping",
+	if refusedAt == 0 {
+		t.Fatalf("the chain was extended %d times without ever being refused; it "+
+			"is either unbounded or it is silently dropping workloads from the "+
+			"record, and a dropped workload is the one an investigation looks for",
+			MaxCallChain+10)
+	}
+	// And the chain it stopped at must be complete -- every hop present, none
+	// truncated away.
+	if len(cur.CallChain) != MaxCallChain {
+		t.Errorf("the last issued chain holds %d workloads, want the full %d",
 			len(cur.CallChain), MaxCallChain)
 	}
 }

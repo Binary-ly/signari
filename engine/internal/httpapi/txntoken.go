@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -115,9 +116,20 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 			RequestContext: req.RequestContext,
 		}, s.cfg.Issuer, now, txntoken.DefaultTTL)
 		if err != nil {
+			// Matched on the error VALUE, not on its text. This read
+			// `strings.Contains(err.Error(), "widen")`, so the one case that has
+			// its own OAuth error code kept it only for as long as nobody
+			// reworded the sentence -- and a scope violation reported as
+			// `invalid_grant` tells the caller its token is bad rather than that
+			// it asked for too much.
 			code := "invalid_grant"
-			if strings.Contains(err.Error(), "widen") {
+			switch {
+			case errors.Is(err, txntoken.ErrWiden):
 				code = "invalid_scope"
+			case errors.Is(err, txntoken.ErrChainTooLong):
+				s.log.Warn("txn-token: call chain limit reached",
+					"caller", c.ClientID, "txn", prev.Transaction,
+					"correlation_id", correlationID(ctx))
 			}
 			writeTokenError(w, &oauth.TokenError{Code: code,
 				Description: err.Error(), Status: http.StatusBadRequest})

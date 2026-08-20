@@ -182,6 +182,9 @@ type Replacement struct {
 // ErrWiden is returned when a replacement asks for authority it was not given.
 var ErrWiden = fmt.Errorf("a replacement token may not widen scope")
 
+// ErrChainTooLong is returned when the call chain has reached MaxCallChain.
+var ErrChainTooLong = fmt.Errorf("the call chain has reached its limit")
+
 // Replace derives the next token in a chain.
 //
 // The immutable fields are copied rather than re-derived, so there is no path
@@ -193,6 +196,29 @@ func Replace(r Replacement, issuer string, now time.Time, ttl time.Duration) (Cl
 	}
 	if ttl <= 0 || ttl > MaxTTL {
 		ttl = DefaultTTL
+	}
+
+	// §13.15 makes maintaining the chain a MUST: a TTS "MUST maintain the Call
+	// Chain of workloads that requested the Txn-Token being replaced in the
+	// subsequently issued Txn-Token".
+	//
+	// This used to truncate at MaxCallChain and issue the token anyway, on the
+	// reasoning that refusing a live transaction is worse than shortening its
+	// history. That reading is wrong, and the same list of rules says why: a TTS
+	// "SHOULD limit the number of times a Txn-Token is replaced". Refusing
+	// satisfies both the MUST and the SHOULD; truncating satisfies neither, and
+	// it fails in the quietest possible way -- the token still works, so nothing
+	// reports it, and the workload that gets dropped from the record is the one
+	// somebody investigating would be looking for.
+	//
+	// A chain this long is a loop or a design nobody intended. Both are things an
+	// operator should see, and an error is how they see it.
+	if len(existingChain(r.Previous)) >= MaxCallChain {
+		return Claims{}, fmt.Errorf("%w of %d workloads; the chain cannot be "+
+			"extended without dropping a workload from the record, and section "+
+			"13.15 requires it to be maintained. A transaction crossing this many "+
+			"workloads is a loop or a design nobody intended",
+			ErrChainTooLong, MaxCallChain)
 	}
 
 	had := splitScope(r.Previous.Scope)
@@ -295,9 +321,8 @@ func contains(hay []string, needle string) bool {
 // minted before this claim existed still contributes its workload rather than
 // vanishing from the history.
 //
-// Bounded. Section 13.15 also says a TTS SHOULD limit how many times a token is
-// replaced; an unbounded chain is both a growing token and a hint that
-// something is looping.
+// The bound is enforced by Replace before this is reached, so that a chain which
+// cannot grow produces an error rather than a token missing a workload.
 func appendChain(prev Claims, next string) []string {
 	chain := prev.CallChain
 	if len(chain) == 0 && prev.RequestingWorkload != "" {
@@ -308,18 +333,23 @@ func appendChain(prev Claims, next string) []string {
 	// scribble over each other.
 	out := make([]string, 0, len(chain)+1)
 	out = append(out, chain...)
-	if len(out) >= MaxCallChain {
-		return out
-	}
 	return append(out, next)
+}
+
+// existingChain is the chain a token already carries, with the same fallback
+// appendChain uses so the two cannot disagree about its length.
+func existingChain(prev Claims) []string {
+	if len(prev.CallChain) == 0 && prev.RequestingWorkload != "" {
+		return []string{prev.RequestingWorkload}
+	}
+	return prev.CallChain
 }
 
 // MaxCallChain bounds how long a chain may grow.
 //
-// A transaction crossing more than this many workloads is a loop or a design
-// nobody intended to have. Reaching it does not fail the request -- refusing a
-// live transaction because its history is long would be worse than truncating
-// the history -- but the chain stops growing, which is visible.
+// Reaching it fails the replacement. See Replace for why that is the right
+// answer rather than truncating: §13.15 requires the chain to be maintained, so
+// the only conformant way to stop it growing is to stop issuing.
 const MaxCallChain = 32
 
 // MaxContextBytes bounds the caller-supplied context claims.

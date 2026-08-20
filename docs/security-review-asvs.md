@@ -174,7 +174,7 @@ would reintroduce the attack through the parameter meant to prevent it.
 |---|---|---|
 | V10.7.1 | Consent to each authorization request | ✅ |
 | V10.7.2 | Clear information about what is being consented to | ✅ scopes rendered with descriptions |
-| V10.7.3 | User can review, modify and revoke granted consents | ✅ the connected-applications screen, which revokes the tokens with the consent |
+| V10.7.3 | User can review, modify and revoke granted consents | ✅ the connected-applications screen, which revokes the tokens with the consent — **now tested**, and it needed to be. `WithdrawConsent` deliberately does *not* touch tokens; only `DisconnectApp` does both, in one transaction. So the requirement is met by one caller choosing the right function, and a future handler reaching for the obvious-sounding `WithdrawConsent` would keep the screen working and lose the property silently |
 
 ## What this sweep leaves open
 

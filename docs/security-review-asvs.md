@@ -63,6 +63,36 @@ Our userinfo and introspection endpoints are the resource server.
 ## V10.4 — authorization server, the core
 
 
+### V10.4.2, and the half a sequential test cannot reach
+
+The requirement was met and the revocation was properly tested:
+`TestCodeReuseRevokesTheIssuedTokens` replays the code and then reads
+`core.refresh_token_families` to confirm `revoked_at` is set.
+
+What no test reached was **concurrency**. A stolen authorization code races the
+legitimate client by construction — both hold it at the same moment — and a
+sequential "redeem twice" passes even against an implementation that reads the
+row, decides it is unspent, and updates it afterwards, because the window between
+the two is never open.
+
+Rewriting `ConsumeCode` from
+
+```sql
+UPDATE core.authorization_codes SET consumed_at = now()
+WHERE code_hash = $1 AND consumed_at IS NULL RETURNING ...
+```
+
+into a `SELECT` followed by an `UPDATE` makes
+`TestConcurrentRedemptionOfOneAuthorizationCodeYieldsOneTokenSet` report **8 of 8
+simultaneous redemptions received tokens** — while every pre-existing test,
+including the revocation one above, still passes. A racy implementation would
+have shipped through the suite unnoticed.
+
+Two tests now pin it: eight goroutines released together against one code over
+three rounds, and a behavioural check that the refresh token is exercised
+*before* the replay and its rotated successor refused *after*, so revocation is
+measured by the refresh grant being denied rather than by a column being set.
+
 ### V10.4.8, and why it is met by something better than a cap
 
 The requirement is *"refresh tokens have an absolute expiration, including if

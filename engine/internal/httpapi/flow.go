@@ -867,7 +867,14 @@ func (s *Server) mintTokens(ctx context.Context, tx pgx.Tx, c *clients.Client, g
 	return resp, nil
 }
 
-func (s *Server) mintFromGrant(ctx context.Context, tx pgx.Tx, c *clients.Client, g *store.RefreshGrant) (*tokenResponse, []byte, error) {
+// mintFromGrant issues from a rotated refresh grant.
+//
+// scopes is what the new tokens carry: the grant's own, or a narrower set the
+// client asked for. The caller has already established it is a subset -- this
+// function must never be the place that decides, because it is also called
+// where there is nothing to compare against.
+func (s *Server) mintFromGrant(ctx context.Context, tx pgx.Tx, c *clients.Client,
+	g *store.RefreshGrant, scopes []string) (*tokenResponse, []byte, error) {
 	// No nonce on refresh: the claim belongs to the original authorization
 	// request, and re-emitting a stale one would assert a binding that no longer
 	// corresponds to any live client request.
@@ -883,8 +890,11 @@ func (s *Server) mintFromGrant(ctx context.Context, tx pgx.Tx, c *clients.Client
 	if derr != nil {
 		return nil, nil, derr
 	}
+	if len(scopes) == 0 {
+		scopes = g.Scopes
+	}
 	resp, rtHash, err := s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, "",
-		g.Scopes, g.Resources, granted, g.FamilyID)
+		scopes, g.Resources, granted, g.FamilyID)
 	if err != nil {
 		return resp, rtHash, err
 	}
@@ -1213,7 +1223,40 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	resp, newHash, err := s.mintFromGrant(ctx, tx, c, grant)
+	scopes := grant.Scopes
+	if req.Scope != "" {
+		requested := splitScopes(req.Scope)
+		granted := map[string]bool{}
+		for _, sc := range grant.Scopes {
+			granted[sc] = true
+		}
+		for _, sc := range requested {
+			if !granted[sc] {
+				writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
+					Description: "scope " + sc + " was not granted to this refresh " +
+						"token; a refresh may narrow what was granted, never widen it",
+					Status: http.StatusBadRequest})
+				return
+			}
+		}
+		// Narrowing away offline_access would end the refresh chain, because a
+		// grant without it gets no successor token. Refused rather than obeyed:
+		// some client libraries send a fixed `scope` on every refresh out of
+		// habit, and silently consuming their last refresh token is a session
+		// that dies for a reason nobody can find. Loud beats convenient.
+		if containsScope(grant.Scopes, "offline_access") &&
+			!containsScope(requested, "offline_access") {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
+				Description: "this refresh token was granted offline_access and the " +
+					"requested scope omits it, which would end the refresh chain; " +
+					"include offline_access, or stop refreshing",
+				Status: http.StatusBadRequest})
+			return
+		}
+		scopes = requested
+	}
+
+	resp, newHash, err := s.mintFromGrant(ctx, tx, c, grant, scopes)
 	if err != nil {
 		s.log.Error("minting from refresh", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})

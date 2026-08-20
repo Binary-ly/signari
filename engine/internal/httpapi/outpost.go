@@ -114,6 +114,16 @@ func (s *Server) outpostAuth(w http.ResponseWriter, r *http.Request) (orgID, kin
 	// Recorded on every call, not on a heartbeat. An outpost that stops asking
 	// is an outage nobody is told about otherwise: the protocol simply stops
 	// answering somewhere the operator is not looking.
+	// context.Background, not r.Context(), and that is the point rather than an
+	// oversight: this write must OUTLIVE the request. Using the request context
+	// would cancel it the instant the response is written, so the recording would
+	// land only when the database happened to be faster than the handler's
+	// return -- which is the kind of intermittent that gets diagnosed as "the
+	// outpost stopped reporting".
+	//
+	// Bounded at five seconds so a detached goroutine cannot accumulate.
+	//
+	// #nosec G118 -- deliberate detachment, bounded above.
 	go func(ip string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

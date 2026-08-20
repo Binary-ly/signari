@@ -41,7 +41,7 @@ const (
 
 	nsXMLEnc   = "http://www.w3.org/2001/04/xmlenc#"
 	nsXMLEnc11 = "http://www.w3.org/2009/xmlenc11#"
-	nsDS     = "http://www.w3.org/2000/09/xmldsig#"
+	nsDS       = "http://www.w3.org/2000/09/xmldsig#"
 )
 
 // EncryptAssertion wraps a signed assertion in <saml:EncryptedAssertion>.
@@ -136,10 +136,18 @@ func EncryptAssertion(signedAssertion *etree.Element, certPEM, keyTransport stri
 	// what makes this work under FIPS 140-only mode, where GCM with a
 	// caller-supplied IV is refused outright -- a nonce reused under the same
 	// key destroys GCM completely, so the rule is that the module owns it.
+	// #nosec G407 -- gosec sees the nil nonce below and reads it as a hardcoded
+	// IV. NewGCMWithRandomNonce REQUIRES nil there: it generates a fresh nonce
+	// per Seal and prepends it, which is the whole point of the constructor. The
+	// rule predates the API. Annotated rather than left in the report so that a
+	// future edit that DOES introduce a constant nonce is not lost among findings
+	// everyone has learned to ignore.
 	gcm, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, err
 	}
+	// #nosec G407 -- the nil nonce is required by NewGCMWithRandomNonce above,
+	// which generates one per call and prepends it. See the comment there.
 	ciphertext := gcm.Seal(nil, nil, []byte(plaintext), nil)
 
 	oaepHash := crypto.SHA256.New()

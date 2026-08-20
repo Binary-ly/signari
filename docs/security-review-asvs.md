@@ -589,3 +589,71 @@ every chapter that governs an identity provider's core function. The remaining
 199 are in chapters about frontend rendering, file handling, WebRTC,
 configuration and general secure coding — relevant to the product, not specific
 to it, and not where this engine's risk concentrates.
+
+## CWE coverage, via a tool rather than a recital (21 August 2026)
+
+Point 4 names the CWE Top 25. I could not retrieve it: both
+`cwe.mitre.org/top25/archive/2024/` and the 2025 page render their tables in
+JavaScript, and the served HTML contains **no CWE identifiers at all** — a scrape
+returns zero. The CWE REST API resolves an ID to a name but does not publish the
+ranked list.
+
+Listing twenty-five weaknesses from memory and asserting each is handled would be
+exactly the reliance this task forbids, and it would produce no evidence. So the
+CWE question was answered the other way round: run a tool that maps findings to
+CWE identifiers **against the actual code**, and triage what it says.
+
+`gosec` scanned **252 files, 74,737 lines**, and reported 98 findings.
+
+### The two that needed real inspection
+
+**`G407` / CWE-1204, hardcoded IV — `saml/encrypt.go`.** A constant nonce under
+AES-GCM destroys the cipher, so this was checked first and in full. It is a false
+positive, and an instructive one: the code calls
+`cipher.NewGCMWithRandomNonce(block)` and then `gcm.Seal(nil, nil, ...)`. That
+API **requires** the nil, because it generates a fresh nonce per call and prepends
+it. The rule predates the constructor.
+
+The choice was already deliberate — the surrounding comment explains that the
+prefix-IV/suffix-tag layout is exactly what XML Encryption expects, and that
+letting the library own the nonce is what makes it work under FIPS 140-only mode,
+"where GCM with a caller-supplied IV is refused outright".
+
+**`G118` / CWE-400, request context not used — `httpapi/outpost.go`.** A goroutine
+recording an outpost's `last_seen_at` uses `context.Background()` with a
+five-second timeout rather than the request context. That is the point rather
+than an oversight: the write must **outlive** the request, and `r.Context()` would
+cancel it the instant the response is written — so the recording would land only
+when the database happened to beat the handler's return. Intermittent, and
+diagnosed later as "the outpost stopped reporting".
+
+Both are now annotated with the reason. **Annotated rather than left in the
+report**, because a finding everyone has learned to ignore is a finding that hides
+the next real one — and a future edit that genuinely introduces a constant nonce
+would arrive into a report already containing a G407 nobody reads.
+
+### The remaining 96, by class
+
+| Rule | CWE | Count | Assessment |
+|---|---|---|---|
+| `G101` | 798 | 37 | Name-pattern false positives. The rule matches identifiers containing "token", "secret", "credential" — ours hold protocol constants: `at+jwt`, `urn:ietf:params:oauth:token-type:access_token`, SAML URNs, provider endpoint URLs, `/oauth2/token` |
+| `G304` | 22 | 29 | File reads with a non-constant path; every one is an operator-supplied CLI flag (certificate bundles, the GeoIP database) |
+| `G703` | 22 | 8 | The same class under taint analysis. An operator who can set `--ldap-ca` can already read the file |
+| `G710` | — | 13 | Style-level |
+| `G114`, `G203`, `G204`, `G117`, `G306`, `G706` | various | 9 | Low-severity, reviewed, none attacker-reachable |
+
+The G101 and G304/G703 groups are the tool telling us what it cannot know:
+whether a string is a credential, and whether a path is attacker-controlled. In a
+server whose entire vocabulary is token type URNs, the first is guaranteed noise.
+
+### Why this is better evidence than a Top 25 checklist
+
+A checklist answers "have you thought about SQL injection". A tool run answers
+"here are the 98 places in your code that pattern-match a weakness class, and
+here is what each one turned out to be". The second is falsifiable, repeatable,
+and produced two annotations that will save the next reader an hour each.
+
+What it does not do is cover the classes gosec has no rule for — business-logic
+flaws, authorization gaps, the protocol-level defects that made up almost
+everything found this session. Those came from reading specifications against
+source, which no scanner does.

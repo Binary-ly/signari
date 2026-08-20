@@ -318,3 +318,66 @@ One unmet SHALL stands: **§4.1.2.1's binding notification** (TODO 9h). One
 deliberate deviation stands: **§3.2.2's consecutive-failure limit** for passwords
 (TODO 9e), taken to avoid a targeted denial-of-service. Everything else in the
 normative sections is met, and now says where.
+
+## Syncable authenticators and account notifications (20 August 2026)
+
+Re-read against the published text rather than from notes, using the document's
+own headings. Two areas that had not been checked line by line before.
+
+### Appendix: Syncable Authenticators — normative, and we satisfy it
+
+The appendix states outright that it "is normative". Its verifier requirements
+are about WebAuthn Level 3 flags, which is the same ground as the backup-flag
+defect fixed earlier this session — so the two pieces of work meet here.
+
+| Requirement | Ours |
+|---|---|
+| UP — "Verifiers SHOULD confirm that the User Present flag has been set" | the library verifies it on every assertion |
+| UV — "Verifiers SHALL indicate that UV is preferred **and SHALL inspect responses to confirm the value of the UV flag**" | we go further than "preferred": `BeginLogin` and `BeginDiscoverableLogin` both pass `VerificationRequired`, and `amrForPasskey` reads the returned flag |
+| **"If the user is not verified, agencies SHALL treat the authenticator as a single-factor cryptographic authenticator"** | `amrForPasskey` adds `mfa` **only** when `UserVerified`, and `ACRFromAMR` then yields `ACRSingleFactor` — tested in `amr_test.go` across all four flag combinations |
+| BE — "necessary to distinguish authenticators that are device-bound from those that may be cloned" | stored as of this session, and emitted as `hwk` vs `swk` in `amr` |
+| BS — "Agencies SHOULD NOT condition acceptance based on this flag for public-facing applications" | we do not condition acceptance on it; it is recorded, and a 1→0 transition is audited |
+
+The single-factor rule is the one worth calling out. A tapped security key with no
+PIN or biometric proves possession and nothing else, and `amr_test.go`'s first
+case asserts exactly that: `["user","hwk"]`, `acr` single-factor. If that yielded
+multi-factor, a tap would silently satisfy every MFA requirement in the system.
+
+### Account Notifications — one SHALL closed, one still open
+
+> "When an authenticator is added, the CSP SHALL notify the subscriber via a
+> mechanism independent of the transaction binding the new authenticator"
+
+**Was unmet; now implemented.** Registering a passkey emails the account holder
+after the commit, naming the authenticator, with instructions for the case where
+it was not them and contact information — which is the other half of the
+requirement:
+
+> "The notification SHALL provide clear instructions, including contact
+> information, in case the recipient repudiates the event associated with the
+> notification."
+
+Three details that are the requirement rather than decoration:
+
+- **Independent of the transaction.** Email, not a banner on the page that just
+  did it. Whoever is holding the browser is exactly who must not be the only one
+  who finds out.
+- **After the commit.** A notice about a registration that then rolled back
+  teaches the recipient that these messages are noise, which is the one thing a
+  security notification cannot afford.
+- **A send failure does not undo the registration.** The credential is real by
+  then and refusing it would leave the user holding an authenticator the server
+  has forgotten. It is audited as `mfa.passkey_notice_failed` so an operator can
+  see that a required notification did not go out.
+
+The threat is concrete: an attacker with momentary control of a session — a
+borrowed laptop, a stolen cookie — registers their own passkey and obtains
+durable access outliving the session they took. Nothing told the owner, and the
+credential list is a page nobody visits.
+
+> "CSPs SHALL support at least two notification addresses per subscriber account."
+
+**Still unmet.** We model one email address per user, so the notice reaches
+exactly one place — and if that mailbox is the one the attacker holds, it reaches
+nobody who matters. Recorded as **9l**: which channels to support is a decision
+about the product, and the schema and send path follow from it.

@@ -13,6 +13,7 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/passkeys"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -297,6 +298,31 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
+
+	// NIST SP 800-63B-4, Binding an Additional Authenticator:
+	//
+	//	"When an authenticator is added, the CSP SHALL notify the subscriber via
+	//	a mechanism independent of the transaction binding the new authenticator"
+	//
+	// An unmet SHALL until now. The point is not tidiness: an attacker who has
+	// momentary control of a session -- a borrowed laptop, a hijacked cookie --
+	// registers their own passkey and thereby obtains durable access that
+	// outlives the session they stole. Nothing else in the system would have told
+	// the account's owner, and the credential list is a page nobody visits.
+	//
+	// Independent of the transaction, which is why it is email rather than a
+	// banner on the page that just did it: whoever is holding the browser is
+	// exactly who must not be the only one who finds out.
+	//
+	// AFTER the commit. A notification about a registration that then rolled back
+	// is worse than none -- it teaches the recipient that these messages are
+	// noise, which is the one thing a security notification cannot afford.
+	//
+	// Failure to send does NOT undo the registration. The credential is real and
+	// refusing it now would leave the user with an authenticator the server has
+	// forgotten. It is logged and audited instead, so an operator can see that a
+	// required notification did not go out.
+	s.notifyAuthenticatorBound(ctx, userID, orgID, name)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":      "registered",
@@ -603,4 +629,60 @@ func (s *Server) defaultOrg(ctx context.Context) (string, error) {
 		WHERE i.issuer = $1
 		ORDER BY o.created_at LIMIT 1`, s.cfg.Issuer).Scan(&orgID)
 	return orgID, err
+}
+
+// notifyAuthenticatorBound sends the NIST-required notice that a new
+// authenticator was added.
+//
+// The message says what happened, when, and what to do if it was not them --
+// "The notification SHALL provide clear instructions, including contact
+// information, in case the recipient repudiates the event associated with the
+// notification."
+//
+// Text only, like every other message this server sends. HTML mail from an
+// identity provider trains users that a message about their account can contain
+// a styled button they should click, which is the shape of the attack it is
+// warning them about.
+func (s *Server) notifyAuthenticatorBound(ctx context.Context, userID, orgID, name string) {
+	var email string
+	if err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(email,'') FROM core.users WHERE id = $1::uuid`, userID).
+		Scan(&email); err != nil {
+		s.log.Error("looking up an address for an authenticator-bound notice",
+			"err", err, "correlation_id", correlationID(ctx))
+		return
+	}
+	if email == "" {
+		// NIST also requires at least two notification addresses per account,
+		// which this server does not yet model -- see item 9l. With none at all
+		// there is nothing to send to, and that is worth an operator seeing
+		// rather than passing in silence.
+		s.log.Warn("a passkey was registered for an account with no notification "+
+			"address; NIST SP 800-63B-4 requires the subscriber to be told",
+			"user_id", userID, "correlation_id", correlationID(ctx))
+		return
+	}
+
+	support := s.cfg.Issuer
+	if err := s.mailer.Send(ctx, mail.Message{
+		To:      email,
+		Subject: "A new passkey was added to your account",
+		Body: fmt.Sprintf("A passkey named %q was added to your account on %s.\n\n"+
+			"If you added it, there is nothing to do.\n\n"+
+			"If you did NOT add it, someone else may have had access to your "+
+			"account. Sign in, remove the passkey you do not recognise, and "+
+			"change your password. If you cannot sign in, contact support at %s.\n",
+			name, time.Now().UTC().Format("2 January 2006 at 15:04 UTC"), support),
+	}); err != nil {
+		// Logged AND audited. A required notification that did not go out is an
+		// operational fact somebody has to be able to find later, and a log line
+		// alone is not durable enough for that.
+		s.log.Error("sending an authenticator-bound notice", "err", err,
+			"user_id", userID, "correlation_id", correlationID(ctx))
+		s.auditDetached(ctx, audit.Event{
+			Type: "mfa.passkey_notice_failed", OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": err.Error()},
+		})
+	}
 }

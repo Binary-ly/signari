@@ -223,3 +223,44 @@ func readSourceFile(t *testing.T, name string) string {
 	}
 	return string(b)
 }
+
+// §3.1.1: "an Entity Configuration is a statement about itself" — iss == sub.
+//
+// `EntityConfigurationOf` checks this as well as checking that `iss` matches the
+// entity we asked for, and the two are not the same check. The second one is
+// tested by TestAConfigurationMustBeAboutTheEntityWeAsked; **this one survived
+// mutation against the whole suite**.
+//
+// Removing it leaves a document that is issued by the entity we asked for and is
+// ABOUT somebody else. Along the chain path that is caught later, at
+// ValidateChain's step-4 — so the redundancy is genuine and the code says so.
+// What it is not redundant for is the case the comment names: a caller that
+// fetches a configuration DIRECTLY, to read `authority_hints`, never runs
+// ValidateChain and gets no other guarantee.
+//
+// So this pins the direct-fetch promise rather than the chain one.
+func TestAFetchedConfigurationMustBeAboutItself(t *testing.T) {
+	// The document must be SERVED FROM the URL it names as issuer, or the
+	// entityID check refuses it first and this test proves nothing about the
+	// iss==sub rule. The first version of this test built the statement, closed
+	// the server and started another — so the fetch failed on a connection
+	// error and passed with the guard disabled. Caught by mutating the guard,
+	// which is the only way that kind of pass shows itself.
+	//
+	// A mutable body lets the handler serve a statement signed with the server's
+	// own URL as issuer.
+	var body string
+	srv := serveStatement(t, func(*http.Request) (string, int) { return body, 200 })
+
+	self := newEntity(t, srv.URL, "k1")
+	victim := newEntity(t, "https://victim.example", "v1")
+	body = self.sign(t, victim.id, victim.jwks(t), time.Now().Add(time.Hour)).Raw
+
+	f := &Fetcher{HTTP: srv.Client(), AllowLoopbackForTesting: true}
+
+	if _, err := f.EntityConfigurationOf(context.Background(), srv.URL); err == nil {
+		t.Fatal("a configuration issued by the entity we asked for, but about a " +
+			"different subject, was accepted. A caller reading authority_hints from " +
+			"it walks the chain of an entity that never published it")
+	}
+}

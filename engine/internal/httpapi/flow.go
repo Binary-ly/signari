@@ -2227,6 +2227,16 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		}
 	}
 
+	// RFC 8693 §4.4. Only bites when the subject token actually carries the
+	// claim; an absent may_act leaves the per-client permission and audience
+	// allow-list as the bound, which is what they were always for.
+	if err := oauth.CheckMayAct(subject.MayAct, c.ClientID, subject.Subject,
+		s.cfg.Issuer); err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: err.Error(), Status: http.StatusBadRequest})
+		return
+	}
+
 	granted, audience, terr := oauth.ValidateExchange(ex, c.MayExchange, c.ExchangeAudiences,
 		c.ClientID, splitScopes(subject.Scope))
 	if terr != nil {

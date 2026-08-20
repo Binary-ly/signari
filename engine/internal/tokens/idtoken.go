@@ -303,6 +303,25 @@ type AccessTokenClaims struct {
 	// revoke that this could cascade from, and emitting an empty one would put a
 	// meaningless claim in every token this server issues.
 	GrantID string `json:"gid,omitempty"`
+
+	// MayAct is RFC 8693 §4.4's authorized-actor claim.
+	//
+	//	"The "may_act" claim makes a statement that one party is authorized to
+	//	become the actor and act on behalf of another party... [it] can be used
+	//	by the authorization server to determine whether the client (or party
+	//	identified in the "actor_token") is authorized to engage in the requested
+	//	delegation or impersonation."
+	//
+	// Kept as a raw map because §4.4 does not fix the member set: "the
+	// combination of the two claims "iss" and "sub" are sometimes necessary to
+	// uniquely identify an authorized actor, while the "email" claim might be
+	// used to provide additional useful information". A struct would silently
+	// drop members it did not know, and dropping a constraint is the one failure
+	// this claim cannot tolerate.
+	//
+	// It was previously not modelled at all, so a subject token carrying it was
+	// parsed and the claim discarded. See oauth.CheckMayAct.
+	MayAct map[string]any `json:"may_act,omitempty"`
 }
 
 // Actor identifies a party acting for someone else. Nested, so A-acting-for-B

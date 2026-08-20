@@ -310,6 +310,10 @@ func (s *Server) mux() *http.ServeMux {
 	if s.fedKeys != nil {
 		mux.HandleFunc("GET "+oidfed.WellKnownPath, s.handleEntityConfiguration)
 	}
+	// UMA 2.0. The permission endpoint authenticates the resource server; the
+	// grant is dispatched from the token endpoint.
+	mux.HandleFunc("POST /uma2/permission", s.handleUMAPermission)
+
 	// CIBA Core 1.0. The backchannel endpoint authenticates the client; the
 	// approval page authenticates the person.
 	mux.HandleFunc("POST /oauth2/backchannel", s.handleBackchannelAuth)

@@ -40,6 +40,14 @@ import (
 // GrantTypeCIBA is CIBA §7.4's grant type.
 const GrantTypeCIBA = "urn:openid:params:grant-type:ciba"
 
+// GrantTypeUMATicket is UMA 2.0 §3.3.1's grant type.
+//
+// Declared beside CIBA's rather than in internal/uma, for the reason given above
+// GrantTypePreAuthorizedCode: the allow-list decides which grants the token
+// endpoint will consider at all, and that question should not require importing
+// the package that implements each one.
+const GrantTypeUMATicket = "urn:ietf:params:oauth:grant-type:uma-ticket"
+
 // CIBADefaultExpiry is how long an auth_req_id lives when the client does not
 // ask for something shorter.
 //

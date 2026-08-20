@@ -556,6 +556,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		s.handleCIBAGrant(w, r, c.ClientID)
 		return
 	}
+	if req.GrantType == oauth.GrantTypeUMATicket {
+		s.handleUMAGrant(w, r, c)
+		return
+	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

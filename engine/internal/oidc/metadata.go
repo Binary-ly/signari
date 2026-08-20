@@ -40,6 +40,9 @@ type Metadata struct {
 	// say only "poll", because ping and push would have us call an endpoint the
 	// client hosts and we do not. Advertising a mode that never delivers is the
 	// failure this whole file exists to prevent.
+	// UMA 2.0 Federated Authorization §2: where a resource server asks for a
+	// permission ticket.
+	PermissionEndpoint                string   `json:"permission_endpoint,omitempty"`
 	BackchannelAuthenticationEndpoint string   `json:"backchannel_authentication_endpoint,omitempty"`
 	BackchannelTokenDeliveryModes     []string `json:"backchannel_token_delivery_modes_supported,omitempty"`
 	BackchannelUserCodeSupported      *bool    `json:"backchannel_user_code_parameter_supported,omitempty"`
@@ -214,6 +217,7 @@ func Build(cfg Config) (*Metadata, error) {
 		},
 		PushedAuthorizationRequestEndpoint: at("/oauth2/par"),
 		DeviceAuthorizationEndpoint:        at("/oauth2/device_authorization"),
+		PermissionEndpoint:                 at("/uma2/permission"),
 		BackchannelAuthenticationEndpoint:  at("/oauth2/backchannel"),
 		BackchannelTokenDeliveryModes:      []string{"poll"},
 		// Advertised as false rather than omitted. §7.1 gates `user_code` on this
@@ -256,7 +260,8 @@ func Build(cfg Config) (*Metadata, error) {
 			"urn:ietf:params:oauth:grant-type:device_code",
 			"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange",
 			"urn:ietf:params:oauth:grant-type:pre-authorized_code",
-			"urn:openid:params:grant-type:ciba"},
+			"urn:openid:params:grant-type:ciba",
+			"urn:ietf:params:oauth:grant-type:uma-ticket"},
 
 		SubjectTypesSupported:   []string{"public"},
 		IDTokenSigningAlgValues: algNames,

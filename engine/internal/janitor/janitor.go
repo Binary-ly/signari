@@ -148,6 +148,12 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	if st.DeviceCodesPurged, err = store.PurgeExpiredDeviceCodes(ctx, tx); err != nil {
 		return st, fmt.Errorf("purging expired device authorizations: %w", err)
 	}
+	// UMA permission tickets. Each is a single-use bearer credential describing
+	// what somebody asked for on which resource -- keeping spent ones past their
+	// expiry stores a record of intent that grants nothing.
+	if _, err := store.PurgeExpiredPermissionTickets(ctx, tx); err != nil {
+		return st, fmt.Errorf("purging expired permission tickets: %w", err)
+	}
 	// Recovery requests nobody can use any more. Each row holds two token hashes
 	// for a password reset, so keeping them past their expiry stores credentials
 	// that grant nothing -- all risk, no purpose.

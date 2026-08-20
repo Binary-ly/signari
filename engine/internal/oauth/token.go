@@ -416,7 +416,7 @@ func ValidateGrantType(gt string) *TokenError {
 	switch gt {
 	case "authorization_code", "refresh_token", "client_credentials",
 		GrantTypeTokenExchange, GrantTypeDeviceCode, GrantTypePreAuthorizedCode,
-		GrantTypeCIBA:
+		GrantTypeCIBA, GrantTypeUMATicket:
 		return nil
 	case "":
 		return tokenErr("invalid_request", "grant_type is required")

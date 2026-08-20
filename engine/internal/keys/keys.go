@@ -129,6 +129,37 @@ func NewSoftwareKey(kid string, alg Algorithm, state State, signer crypto.Signer
 // Generate creates fresh private material for alg. New keys always enter the set
 // as StateNext -- never as active, because an unpublished key that signs
 // immediately is precisely the rotation outage this package exists to prevent.
+// RSABits is the modulus size for RSA keys this server GENERATES.
+//
+// ASVS 5.0.0 V11.2.3: "Verify that all cryptographic primitives utilize a minimum
+// of 128-bits of security based on the algorithm, key size, and configuration.
+// For example, a 256-bit ECC key provides roughly 128 bits of security where RSA
+// requires a 3072-bit key to achieve the same."
+//
+// This was 2048, which is roughly 112 bits — the NIST floor for "acceptable
+// until 2030", not the 128-bit floor ASVS asks for. P-256 is the default
+// algorithm here and already meets it; RS256 exists for clients whose libraries
+// do only RSA, and those clients were being handed the weaker key.
+//
+// # Why raising this is free and raising the ACCEPT floor is not
+//
+// These are two different numbers and they are pulled in opposite directions by
+// two standards we follow.
+//
+// What we generate is entirely our choice. Clients fetch the modulus from our
+// JWKS and verify with whatever we publish; RSA verification is size-agnostic in
+// every mainstream library, and the cost is a few hundred microseconds on a path
+// that is not hot. Nothing breaks.
+//
+// What we ACCEPT from a client stays at 2048 — clientauth.MinRSABits — because
+// FAPI 2.0 §5.4.1 sets that floor and most clients hold 2048-bit keys. Raising it
+// would refuse working integrations to gain 16 bits of security in somebody
+// else's key, and the client is the party bearing that risk.
+//
+// So: strict about our own key, conventional about theirs. The asymmetry is the
+// point rather than an inconsistency.
+const RSABits = 3072
+
 func Generate(kid string, alg Algorithm) (Key, error) {
 	var (
 		signer crypto.Signer
@@ -136,7 +167,7 @@ func Generate(kid string, alg Algorithm) (Key, error) {
 	)
 	switch alg {
 	case RS256, PS256:
-		signer, err = rsa.GenerateKey(rand.Reader, 2048)
+		signer, err = rsa.GenerateKey(rand.Reader, RSABits)
 	case ES256:
 		signer, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	case EdDSA:

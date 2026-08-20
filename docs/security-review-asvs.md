@@ -432,3 +432,87 @@ succeed by querying the wrong schema.
 | **V8.1.x** documentation of the rules | partial — the rules are in code comments and these reviews rather than in one document |
 | **V8.2.3** field-level (BOPLA) | partial — SCIM releases a fixed attribute set; there is no per-field permission model |
 | **V8.2.4 / V8.4.2** adaptive controls, layered admin access | partial — the policy engine evaluates device posture and impossible travel; it is not applied to the admin interface specifically |
+
+## V11 Cryptography: twenty-four requirements (21 August 2026)
+
+| Requirement | Status |
+|---|---|
+| **V11.2.1** industry-validated implementations | met — Go's standard library and `x/crypto`; no hand-rolled primitives |
+| **V11.2.3** minimum 128 bits of security | **was not met for generated RSA keys** — fixed, below |
+| **V11.2.4** constant-time comparison | met — `subtle.ConstantTimeCompare` on every secret comparison, and `hmac.Equal` where a MAC is compared |
+| **V11.3.1** no insecure block modes or weak padding | met for encryption — AES-GCM everywhere, RSA-OAEP for SAML key transport. See the RS256 note below |
+| **V11.3.2** approved ciphers such as AES-GCM | met — `cipher.NewGCM` in `keys/store.go`, `keys/subject.go`, `saml/encrypt.go` |
+| **V11.3.3** encrypted data protected against modification | met — GCM is authenticated encryption, so this is the same fact as V11.3.2 |
+| **V11.4.1** approved hash functions; no MD5 | met, with three protocol-mandated exceptions, below |
+| **V11.4.2** password hashing with an approved KDF | met — Argon2id |
+| **V11.4.3** collision-resistant hashes ≥256 bits for signatures | met — SHA-256 and above throughout; SHA-1 refused on inbound SAML |
+| **V11.5.1** CSPRNG, ≥128 bits of entropy | **exceeded** — `crypto/rand`, 256 bits for session and device codes |
+| **V11.6.1** approved algorithms for key generation and signatures | met — P-256, Ed25519, RSA |
+| **V11.1.x** documented key policy and inventory | partial — key lifecycle is documented in ADR-005 and the keys package; there is no single cryptographic inventory document |
+| **V11.7.x** in-use memory encryption | not met, and out of scope for a server process |
+
+### V11.2.3: we were generating the weaker key
+
+> "Verify that all cryptographic primitives utilize a minimum of 128-bits of
+> security based on the algorithm, key size, and configuration. For example, a
+> 256-bit ECC key provides roughly 128 bits of security where RSA requires a
+> 3072-bit key to achieve the same."
+
+`keys.Generate` produced **2048-bit** RSA for RS256 and PS256 — roughly 112 bits.
+That is the NIST floor for "acceptable until 2030", not the 128-bit floor ASVS
+asks for.
+
+P-256 is the default algorithm here and already clears it, which is why this was
+easy to miss: almost every deployment signs with ES256. RS256 exists for clients
+whose libraries do only RSA — and those clients were being handed the weaker key,
+which is exactly backwards.
+
+Now 3072.
+
+**Raising this is free; raising the other RSA floor is not.** They are two
+different numbers pulled in opposite directions by two standards:
+
+- **What we generate** is entirely our choice. Clients fetch the modulus from our
+  JWKS and verify with whatever we publish. RSA verification is size-agnostic in
+  every mainstream library, and the extra cost lands on a path that is not hot.
+- **What we accept** from a client stays at 2048 (`clientauth.MinRSABits`),
+  because FAPI 2.0 §5.4.1 sets that floor and most clients hold 2048-bit keys.
+  Raising it would refuse working integrations to gain sixteen bits of security
+  in somebody else's key — and the client is the party bearing that risk.
+
+Strict about our own key, conventional about theirs. The asymmetry is the point.
+
+### V11.4.1: three MD5 sites, and why each stays
+
+MD5 appears in three places, each annotated at the call site:
+
+- **`radius/packet.go`** — RFC 2865 §5.2 specifies MD5 for the User-Password
+  keystream and RFC 3579 §3.2 specifies HMAC-MD5 for Message-Authenticator.
+  Neither is optional: an access point that expects RFC 2865 will not interoperate
+  with anything else. HMAC-MD5 is also not affected by the collision attacks that
+  motivate avoiding MD5 — which is precisely why Blast-RADIUS's mitigation *is*
+  the HMAC-MD5 attribute.
+- **`radius/eapserver.go`** — RFC 2548 MS-MPPE key derivation, same argument.
+- **`passwords/foreign.go`** — verifying somebody **else's** stored hash during a
+  migration. We never produce these; we read them once, check the password, and
+  write an Argon2id hash in their place. Refusing to verify them would mean
+  refusing to migrate the deployments this feature exists for.
+
+The first two are the case ASVS's "for any cryptographic purpose" has to bend
+around when a protocol predates the guidance. The third is not our hash at all.
+
+### RS256 and PKCS#1 v1.5
+
+V11.3.1 names "weak padding schemes (e.g., PKCS#1 v1.5)". RS256 is
+RSASSA-PKCS1-v1_5, and a strict reading catches it.
+
+The requirement's concern is RSAES-PKCS1-v1_5 — the *encryption* padding that
+Bleichenbacher's attack breaks. We do not use it: SAML key transport is RSA-OAEP.
+RSASSA-PKCS1-v1_5 for signatures remains approved in NIST FIPS 186-5 and is the
+`RS256` every OIDC client library implements.
+
+It is still the weakest thing we offer, and it is already recorded as a FAPI
+deviation: FAPI 2.0 §5.4.1's list is `PS256, ES256, EdDSA`, and RS256 is not on
+it. The decision to keep or drop it is the same decision in both standards, and
+it is not mine to make alone — it would refuse every client that implements only
+RS256.

@@ -189,10 +189,18 @@ disable — the account stays reachable to its owner through a second factor, an
 the attacker's 100 guesses buy them nothing. That is a design, not a patch, which
 is the other reason it is a decision rather than a fix made here.
 
-## §4's AAL requirements: reauthentication and phishing resistance (August 2026)
+## §5 Session Management: reauthentication, and §2's phishing resistance (August 2026)
 
-The sections above cover authenticators. §4's AAL requirements bind the *session*,
-and were not examined.
+The sections above cover authenticators. Reauthentication binds the *session* and
+was not examined.
+
+**A numbering correction I owe this document.** An earlier version of this
+section was headed "§4's AAL requirements". That is wrong twice over: SP
+800-63B-4's §2 is *Authentication Assurance Levels*, §4 is *Authenticator Event
+Management*, and the reauthentication timeouts live in **§5 Session Management**.
+The requirements quoted below were right; the section number attached to them was
+not. Same defect class as the three citation errors this review already records —
+and made while writing the section that records them.
 
 ### Reauthentication timeouts
 
@@ -233,3 +241,49 @@ this on its own.
 
 The SHALL is to *offer* one, not to require it, so having password-plus-TOTP
 available alongside does not affect conformance.
+
+## §4 Authenticator Event Management — the section nothing had checked
+
+SP 800-63B-4 §4 governs what happens across an authenticator's life: binding,
+loss, compromise, revocation. This review had never opened it.
+
+| Requirement | Signari |
+|---|---|
+| §4.1.2.1: "When an authenticator is added, the CSP **SHALL** notify the subscriber via a mechanism independent of the transaction binding the new authenticator" | **not met** — see below |
+| §4.3: "**SHALL** suspend, invalidate, or destroy compromised authenticators … promptly following compromise detection" | met — a credential can be removed from the account screen, and a session compromise revokes the refresh lineage |
+| §4.5: "**SHALL** promptly invalidate authenticators when a subscriber account ceases to exist …, when requested by the subscriber, when the authenticator is compromised …" | met |
+| §4.5: "**SHOULD** notify the subscriber when an authenticator is invalidated" | not met, same cause |
+
+### The gap: adding an authenticator is silent
+
+Enrolling a **passkey** or a **TOTP credential** writes an audit event and sends
+nothing. Enrolling an **email OTP** address does send mail — but that is the
+confirmation code, part of the binding transaction rather than independent of it,
+which is precisely the distinction §4.1.2.1 draws. (It does carry the right
+warning: *"If you did not ask to use this address for sign-in codes, somebody may
+be signed in to your account."*)
+
+**Why the independence matters, concretely.** The attack this requirement exists
+for is: somebody obtains a live session — a stolen cookie, a borrowed laptop, a
+session fixed before the victim noticed — and enrols *their own* authenticator.
+They now hold a credential of their own on the victim's account, which survives a
+password change. The victim's only signal is an audit entry they will never read.
+A message to an address the attacker does not control is what turns that into
+something the victim can act on within minutes.
+
+An audit event is not a substitute. It is a record for whoever investigates
+afterwards; a notification is a control that reaches the person who can stop it.
+
+### Why this is recorded rather than fixed
+
+The mailer exists and the enrolment paths already reach it, so the code is small.
+What is not small is the decision around it: which channel is "independent" when
+the account may have only one address, what happens when mail delivery fails
+mid-enrolment (refuse the binding, or bind and log?), and whether an SMS-enrolled
+account should be told by mail or by SMS. Getting that wrong makes enrolment
+fragile in a way users experience immediately.
+
+It is in [TODO-FOR-YOU.md](../TODO-FOR-YOU.md) as **9h**, and it is the first
+NIST gap this review has found that is a plain **SHALL** with no deviation
+argument behind it — unlike §3.2.2's rate limiting, where the deviation is
+deliberate and defensible.

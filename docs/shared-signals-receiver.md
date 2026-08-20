@@ -292,3 +292,73 @@ the section 8 stream management API, RISC events, and an opt-out legacy
 Apple SSE CAEP profile.
  The corrected picture is in
 [comparison-matrix.md](comparison-matrix.md).
+
+## Second pass: §3 Subject Identifiers, and a wire-format defect (21 August 2026)
+
+The first SSF pass covered §4.1.x — the twelve receiver-side SET validation MUSTs
+— and §7.1, the transmitter metadata document. **It never opened §3**, which is
+the part that decides *who an event is about*.
+
+### The defect: our events did not carry a top-level `sub_id`
+
+> §3.1: "claim named `sub_id` MUST be used to describe the primary subject of the
+> event."
+>
+> §3.1.1: "MUST include the top-level `sub_id` claim **even for these existing
+> event types**." — that is, for CAEP and RISC, which is everything we emit.
+
+`Mint` put the subject **inside the event object**, as `subject`:
+
+```json
+{"iss":"...","jti":"...","events":{"...session-revoked":{"subject":{...}}}}
+```
+
+That is the pre-1.0 CAEP shape. A receiver written against SSF 1.0 reads the top
+level, finds no `sub_id`, and cannot determine which principal the event concerns
+— so a session-revoked notice either fails validation or revokes nothing.
+
+**The first pass made this sharper without noticing.** It added
+`spec_version: "1_0"` to the transmitter metadata, on the correct reasoning that
+omitting the field means a receiver assumes the `1_0-ID1` draft. So this engine
+began advertising conformance to Final while continuing to emit draft-shaped
+subjects — the two halves of the same specification, disagreeing, because one was
+read and the other was not.
+
+Fixed. `sub_id` is now a top-level claim carrying format, `iss` and `sub`.
+
+The event-level `subject` is **kept alongside it**, deliberately: §3.1.2 forbids
+it only for *new* event types, and §3.1.1 requires the top-level claim for the
+existing CAEP and RISC types without forbidding the old one. Emitting both is
+conformant and strictly more interoperable — a 1.0 receiver reads `sub_id`, an
+older one reads `subject`, neither is broken by the other. The code carries a note
+that if this engine ever defines an event type of its own, §3.1.2 applies and the
+line must not be copied.
+
+### The receiver was reading them in the wrong order
+
+`rawSubject` accepted both keys and tried **`subject` first**.
+
+For a well-formed event that is invisible. For an event carrying both, it is a
+divergence: we would act on `subject` while a conformant 1.0 receiver acts on
+`sub_id`. Two receivers, one signed token, two different principals signed out.
+
+Now `sub_id` first, and an event whose two subjects **disagree** is refused
+outright, citing §3.1.4: "Each Subject Member MUST refer to exactly one Subject
+Principal." Both keys naming the *same* subject is what we ourselves emit and
+stays acceptable.
+
+### Three second passes, six defects, all in unopened sections
+
+| Standard | Section the first pass skipped | Defects |
+|---|---|---|
+| AuthZEN | §8 Search APIs | 2 |
+| OID4VCI | §4 Credential Offer | 2 |
+| SSF | §3 Subject Identifiers | 2 |
+
+Not one of the six was in code a first pass read and misjudged. All six were in
+code it never reached.
+
+And this one is the sharpest illustration of why that matters: the first pass
+fixed the *metadata* claim about which version we implement, without checking
+whether the *events* matched it. A section left unopened does not merely stay
+unchecked — it can be silently contradicted by the section that was.

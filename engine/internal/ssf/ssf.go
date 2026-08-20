@@ -138,6 +138,18 @@ type setClaims struct {
 	JTI      string   `json:"jti"`
 	IssuedAt int64    `json:"iat"`
 	Audience audience `json:"aud"`
+	// SubID is §3.1's top-level subject, and it is REQUIRED.
+	//
+	//	§3.1   "claim named sub_id MUST be used to describe the primary subject
+	//	       of the event."
+	//	§3.1.1 "MUST include the top-level sub_id claim even for these existing
+	//	       event types." -- that is, for CAEP and RISC events, which is all of
+	//	       the ones we emit.
+	//
+	// It was absent. The subject travelled INSIDE the event object as `subject`,
+	// which is the pre-1.0 CAEP shape, so a conformant SSF 1.0 receiver reading
+	// the top level found nothing and could not tell who the event was about.
+	SubID map[string]any `json:"sub_id,omitempty"`
 	// Expiry and Subject are both FORBIDDEN by the Shared Signals Framework
 	// profile, and are parsed here only so their PRESENCE can be refused.
 	//
@@ -177,12 +189,25 @@ func Mint(s Signer, issuer, audience, jti string, e Event, now time.Time) (strin
 		return "", fmt.Errorf("refusing to mint an event with no subject")
 	}
 
+	subject := map[string]any{
+		"format": e.Subject.Format,
+		"iss":    e.Subject.Issuer,
+		"sub":    e.Subject.Sub,
+	}
+
 	payload := map[string]any{
-		"subject": map[string]any{
-			"format": e.Subject.Format,
-			"iss":    e.Subject.Issuer,
-			"sub":    e.Subject.Sub,
-		},
+		// Kept alongside the top-level sub_id, deliberately.
+		//
+		// §3.1.2 forbids the event-level subject for NEW event types; §3.1.1 only
+		// requires the top-level claim for the existing CAEP and RISC types, which
+		// is all we emit. So both is conformant here and strictly more
+		// interoperable: a receiver written against 1.0 reads sub_id, one written
+		// against the earlier drafts reads this, and neither is broken by the
+		// other's presence.
+		//
+		// If this engine ever defines an event type of its own, §3.1.2 applies and
+		// this line must not be copied into it.
+		"subject": subject,
 		// Seconds, per CAEP. Milliseconds here is a common and silent
 		// interoperability bug: a receiver reads a timestamp forty thousand years
 		// in the future and either rejects the event or orders it last forever.
@@ -207,6 +232,7 @@ func Mint(s Signer, issuer, audience, jti string, e Event, now time.Time) (strin
 		JTI:      jti,
 		IssuedAt: now.Unix(),
 		Audience: []string{audience},
+		SubID:    subject,
 		Events:   map[string]map[string]any{e.Type: payload},
 	}, TypSET)
 }

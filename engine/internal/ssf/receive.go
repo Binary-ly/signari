@@ -408,6 +408,15 @@ func Verify(ctx context.Context, f *KeyFetcher, src Source, raw string, now time
 	// cannot read means the event is scoped by something we are ignoring -- a
 	// device, a tenant, a session -- and acting on it would apply the right
 	// action to the wrong set of things, silently.
+	// §3.1.4: "Each Subject Member MUST refer to exactly one Subject Principal."
+	// An event that names two different principals cannot satisfy that, and which
+	// one a receiver honours would otherwise decide who gets signed out.
+	if ambiguousSubject(out.Claims) {
+		return out, fmt.Errorf("%w: the event carries both sub_id and subject and "+
+			"they name different principals; section 3.1.4 requires a subject to "+
+			"refer to exactly one", ErrNotVerified)
+	}
+
 	if raw, ok := rawSubject(out.Claims); ok {
 		if bad := src.unprocessableCritical(raw); len(bad) > 0 {
 			return out, fmt.Errorf("%w: the subject carries the critical member(s) %v, "+
@@ -431,8 +440,20 @@ func Verify(ctx context.Context, f *KeyFetcher, src Source, raw string, now time
 // are read, because a receiver that only understands one silently ignores half
 // the transmitters in the world.
 // rawSubject returns the subject object as sent, before parsing.
+// rawSubject returns the subject object as sent.
+//
+// `sub_id` FIRST, because §3.1 makes it the one that counts: "claim named sub_id
+// MUST be used to describe the primary subject of the event". `subject` is
+// accepted after it for transmitters written against the earlier CAEP drafts,
+// which put the subject inside the event.
+//
+// The order used to be the other way round, and that is a divergence rather than
+// a preference. An event carrying BOTH -- malformed, or crafted -- would be read
+// by us as `subject` and by a conformant 1.0 receiver as `sub_id`, so two
+// receivers act on two different principals from the same signed token. See
+// ambiguousSubject, which now refuses that case outright.
 func rawSubject(body map[string]any) (map[string]any, bool) {
-	for _, key := range []string{"subject", "sub_id"} {
+	for _, key := range []string{"sub_id", "subject"} {
 		if raw, ok := body[key].(map[string]any); ok {
 			return raw, true
 		}
@@ -440,9 +461,31 @@ func rawSubject(body map[string]any) (map[string]any, bool) {
 	return nil, false
 }
 
+// ambiguousSubject reports whether an event names its subject twice, differently.
+//
+// Both keys carrying the SAME subject is what this engine itself emits, for
+// interoperability with pre-1.0 receivers, and is fine. Both carrying different
+// subjects is not: which one a receiver acts on becomes an implementation
+// detail, and the whole point of an event naming a principal is that every
+// receiver agrees which principal it is.
+func ambiguousSubject(body map[string]any) bool {
+	a, aok := body["sub_id"].(map[string]any)
+	b, bok := body["subject"].(map[string]any)
+	if !aok || !bok {
+		return false
+	}
+	for _, k := range []string{"format", "iss", "sub", "email", "phone_number", "uri"} {
+		if fmt.Sprint(a[k]) != fmt.Sprint(b[k]) {
+			return true
+		}
+	}
+	return false
+}
+
 func subjectFrom(body map[string]any) Subject {
 	var s Subject
-	for _, key := range []string{"subject", "sub_id"} {
+	// Same order as rawSubject, and for the same reason.
+	for _, key := range []string{"sub_id", "subject"} {
 		raw, ok := body[key].(map[string]any)
 		if !ok {
 			continue

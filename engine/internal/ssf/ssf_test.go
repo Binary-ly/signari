@@ -199,3 +199,52 @@ func TestReasonsAreSeparate(t *testing.T) {
 			"internal detail")
 	}
 }
+
+// SSF 1.0 §3.1: "claim named sub_id MUST be used to describe the primary subject
+// of the event", and §3.1.1: "MUST include the top-level sub_id claim even for
+// these existing event types" — CAEP and RISC, which is everything we emit.
+//
+// Found on the second pass over this specification. The first pass covered
+// §4.1.x SET validation and §7.1 transmitter metadata; it never opened §3, which
+// is the part that decides WHO an event is about.
+//
+// The subject travelled inside the event object as `subject`, the pre-1.0 CAEP
+// shape. A conformant 1.0 receiver reads the top level, finds nothing, and cannot
+// tell who the event concerns. The first pass sharpened this without noticing:
+// it added spec_version "1_0" to our metadata, so we advertised Final while
+// emitting draft-shaped subjects.
+func TestMintEmitsTheTopLevelSubID(t *testing.T) {
+	raw, err := Mint(&fakeSigner{}, "https://idp.example", "https://rp.example",
+		"jti-1", Event{
+			Type:      EventSessionRevoked,
+			Subject:   Subject{Format: "iss_sub", Issuer: "https://idp.example", Sub: "user-1"},
+			EventTime: time.Now(),
+		}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claims := decode(t, raw)
+
+	sub, ok := claims["sub_id"].(map[string]any)
+	if !ok {
+		t.Fatalf("no top-level sub_id; §3.1 makes it the claim that describes the "+
+			"subject and §3.1.1 requires it even for CAEP events: %v", claims)
+	}
+	if sub["sub"] != "user-1" || sub["iss"] != "https://idp.example" {
+		t.Errorf("sub_id does not name the subject: %v", sub)
+	}
+	if sub["format"] != "iss_sub" {
+		t.Errorf("sub_id carries no format: %v", sub)
+	}
+
+	// The event-level subject is kept for receivers written against the earlier
+	// drafts. §3.1.1 requires the top-level claim for existing CAEP types; it does
+	// not forbid this one.
+	events, _ := claims["events"].(map[string]any)
+	ev, _ := events[EventSessionRevoked].(map[string]any)
+	if _, ok := ev["subject"].(map[string]any); !ok {
+		t.Errorf("the event-level subject was dropped; a pre-1.0 receiver would "+
+			"now be unable to read it: %v", ev)
+	}
+}

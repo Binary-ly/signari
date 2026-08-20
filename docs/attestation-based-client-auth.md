@@ -102,3 +102,49 @@ method so the gate can see it at all.
   `use_attestation_challenge`, which is the case §7.4 makes mandatory; attaching
   one to every successful response is optional and not done.
 - **Resource-server-side attestation** (§7.6, "as an additional security signal").
+
+
+## Harsh review against draft-10 (August 2026)
+
+Currency verified at the datatracker first: **draft-ietf-oauth-attestation-based-client-auth-10, 6 July 2026**, the revision implemented here.
+
+Every check in §7.1 and §7.2 was read against the code, and then every guarantee
+was deleted in turn to see whether a test noticed.
+
+### Conformance
+
+All twelve §7.1 requirements hold — exactly one header, the required claims,
+asymmetric algorithms only, signature by a trusted attester, `cnf` not a private
+key, freshness, and `client_id` matching `sub`. §7.2's rules 1–8 likewise, with
+rule 9 (replay) implemented in the caller through single-use challenges, which the
+draft leaves conditional on deployment.
+
+### Two tests that passed for the wrong reason
+
+**An untrusted attester.** `TestAnAttestationFromAnUnknownAttesterIsRefused`
+asserted only that the call errored. Bypassing the trust check left it passing:
+with no key matched the payload stays nil, and the JSON decode a few lines later
+fails, so an error still came back. The test could not distinguish "no attester
+vouched for this" from "the bytes did not parse", and would have gone on passing
+if the trust check were deleted outright. It now asserts the reason.
+
+**A future-dated attestation.** Refused by the code, tested by nothing. This is
+the same shape as the defect found in the Transaction Token verifier — a
+timestamp that MOVES the usable window rather than lengthening it — and an
+attester with a badly wrong clock produces one by accident. Now covered, together
+with the case that must still work: a few seconds of skew is tolerated, because
+an attester whose clock is marginally fast must not be unable to attest anything.
+
+### Three survivors that are not defects
+
+Deleting these breaks no test, and should not:
+
+- **exactly-one-signature** — compact JWS carries one by construction; the check
+  is unreachable defence.
+- **`cnf.jwk` presence** — an absent value fails the JWK unmarshal on the next
+  line.
+- **`cnf` key validity** — an unusable key cannot verify the PoP.
+
+Each is caught by an adjacent check, so a mutation to it leaves the system
+correct. Treating every surviving mutant as a finding would be as wrong as
+ignoring them; what matters is whether the property still holds by some route.

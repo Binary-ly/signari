@@ -119,6 +119,16 @@ func TestAnAttestationFromAnUnknownAttesterIsRefused(t *testing.T) {
 		t.Fatal("an attestation signed by an unregistered key was accepted: anybody " +
 			"able to sign a JWT could then vouch for any client")
 	}
+	// Asserting the REASON, not merely the refusal.
+	//
+	// Bypassing the trust check left this test passing: with no trusted key
+	// matched the payload stays nil, and the JSON decode of nil fails a few lines
+	// later, so the call still errored. The test could not tell "no attester
+	// vouched for this" from "the bytes did not parse", and would have gone on
+	// passing if the trust check were deleted.
+	if !strings.Contains(err.Error(), "trusted client attester") {
+		t.Errorf("refused, but not as an untrusted attester: %v", err)
+	}
 }
 
 func TestNoTrustedAttestersMeansNothingVerifies(t *testing.T) {
@@ -398,5 +408,42 @@ func TestAnAttestationWithNoExpSaysSo(t *testing.T) {
 	if !strings.Contains(err.Error(), "no exp claim") {
 		t.Fatalf("refused with %q; an absent exp must not be reported as an expiry "+
 			"in 1970, which sends an integrator to look at clocks", err)
+	}
+}
+
+// TestAnAttestationDatedInTheFutureIsRefused.
+//
+// §7.1 rule 6 asks that the attestation be "sufficiently fresh", checking `iat`
+// or `exp`. `exp` is enforced, so freshness is covered and this is defence in
+// depth — but it was untested, and a future `iat` is the same shape as the defect
+// found in the Transaction Token verifier: a timestamp that moves the usable
+// window rather than lengthening it.
+//
+// An attester whose clock is badly wrong produces these by accident; one that is
+// compromised produces them on purpose.
+func TestAnAttestationDatedInTheFutureIsRefused(t *testing.T) {
+	attester, instance := newKey(t), newKey(t)
+	now := time.Now()
+
+	raw := attestationFor(t, attester, instance, "client-1", func(c map[string]any) {
+		c["iat"] = now.Add(10 * time.Minute).Unix()
+		c["exp"] = now.Add(20 * time.Minute).Unix()
+	})
+	_, err := VerifyAttestation(raw, attester.set(), now)
+	if err == nil {
+		t.Fatal("an attestation claiming to be issued ten minutes from now was accepted")
+	}
+	if !strings.Contains(err.Error(), "future") {
+		t.Errorf("refused, but not as a future-dated attestation: %v", err)
+	}
+
+	// Modest skew is still tolerated: an attester whose clock is a few seconds
+	// fast must not be unable to attest anything.
+	ok := attestationFor(t, attester, instance, "client-1", func(c map[string]any) {
+		c["iat"] = now.Add(5 * time.Second).Unix()
+		c["exp"] = now.Add(10 * time.Minute).Unix()
+	})
+	if _, err := VerifyAttestation(ok, attester.set(), now); err != nil {
+		t.Errorf("five seconds of clock skew was refused: %v", err)
 	}
 }

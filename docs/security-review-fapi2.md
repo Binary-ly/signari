@@ -159,3 +159,29 @@ The remaining FAPI gaps are profile modes: restrictions a FAPI deployment must
 turn on (confidential clients only, sender-constrained tokens only, single
 assertion audience), not behaviours that are wrong by default. Making them a
 selectable profile is the honest next step, and is not built.
+
+## The requirements this review had not listed (August 2026)
+
+The table above covers §5.3.2.1's authorization-server list. Reading the profile's
+section structure rather than working from the existing table showed three groups
+missing from it entirely. All were checked against source.
+
+### §5.3.2.1, two rows that were absent
+
+| Requirement | Signari |
+|---|---|
+| "shall return an `iss` parameter in the authorization response according to [RFC9207]" | **yes** — `authorize.go:324` sets it on every response, and `authorization_response_iss_parameter_supported` is advertised in metadata. This is the mix-up defence from the provider side, and it was implemented without being recorded here |
+| "shall reject authorization requests sent without [RFC9126]" | **profile mode** — `require_pushed_authorization` is per client (`par.go:293`), not global. Same standing as the two other profile-mode rows: a FAPI deployment turns it on, a general-purpose one cannot without breaking every client that does not push |
+
+### §5.3.4, the resource server requirements — none were listed
+
+We are a resource server for `/userinfo`, `/introspect` and the credential
+endpoint, so all five bind us.
+
+
+Requirement 2 is the one worth dwelling on: it is a **shall not**, it is the
+cheapest of the five to get wrong, and getting it wrong is invisible until
+somebody reads an access log. Presenting the token in the header *and* the body
+is also rejected rather than resolved by precedence — two token values in one
+request is either a broken client or an attempt to have the check read one and
+the logic use the other.

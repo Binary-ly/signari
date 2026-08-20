@@ -187,7 +187,7 @@ func (i Issuer) Issue(cfg Configuration, subject map[string]any,
 			"token, which is what binding exists to prevent")
 	}
 
-	// draft-ietf-oauth-sd-jwt-vc-18 §3.2.2.2: iss, nbf, exp, cnf and vct "MUST
+	// draft-ietf-oauth-sd-jwt-vc-18 §2.2.2.3: iss, nbf, exp, cnf and vct "MUST
 	// NOT be included in the Disclosures, i.e., cannot be selectively disclosed".
 	// They are the credential's own frame -- hiding the issuer or the expiry
 	// would leave a verifier unable to decide anything at all.
@@ -195,7 +195,7 @@ func (i Issuer) Issue(cfg Configuration, subject map[string]any,
 		"iss": i.CredentialIssuer,
 		"vct": cfg.VCT,
 		"iat": now.Unix(),
-		// §3.2.2.2: cnf is "REQUIRED" when key binding is supported. It is what
+		// §2.2.2.3: cnf is "REQUIRED" when key binding is supported. It is what
 		// makes the credential presentable only by whoever holds the private key.
 		"cnf": map[string]any{"jwk": holderKey},
 	}

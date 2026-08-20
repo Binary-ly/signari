@@ -337,3 +337,57 @@ The access token was obtained by redeeming a pre-authorized code **with no
   carry its key inline as `jwk`. `kid` names a key we would have to resolve and
   `x5c` a chain we would have to trust; accepting either without doing that work
   would be accepting a proof we did not verify.
+
+
+## Harsh review of SD-JWT against RFC 9901 (August 2026)
+
+### The core specification is no longer a draft
+
+`draft-ietf-oauth-selective-disclosure-jwt` was published as **RFC 9901,
+"Selective Disclosure for JSON Web Tokens", Internet Standards Track, November
+2025**. Our code still cited the draft — the same shape as the AuthZEN finding,
+nine months old.
+
+### The code is conformant; the citations were not
+
+This is the first review in this pass that found **no defect in the
+implementation**, and saying so plainly is better than manufacturing one. Every
+issuer-side requirement holds:
+
+| RFC 9901 | |
+|---|---|
+| §4.2.3 digest over the base64url string, not the decoded bytes | correct, with the specification's own test vector |
+| §4.1 the same digest MUST NOT appear twice | a `seen` set covering decoys, made falsifiable by an injectable decoy source |
+| §4.2.1 a Disclosure name MUST NOT be `_sd` or `...` | refused, on both the always-visible and the selective side |
+| §4.2.1 nor a name already permanently present | refused |
+| §4.1.1 `_sd_alg` | written explicitly as `sha-256` rather than relying on the default |
+| §4.2.5 decoy digests | present, with a **random** count — a fixed one is worse than none, since a verifier subtracts it |
+| §4.2.4.1 hide the original claim order | digests sorted |
+| §9.3 salt entropy | 16 bytes from `crypto/rand` |
+| trailing `~` when there is no Key Binding JWT | written unconditionally |
+
+One subtlety worth keeping: disclosures are JSON-encoded with HTML escaping
+**off**. Go's default encoder rewrites `<`, `>` and `&`, which changes the bytes
+— and §4.2.3 hashes the bytes.
+
+**RFC 9901's verifier requirements do not apply to us.** We issue; `Split` and
+`Parse` have no production callers. Stated rather than assumed, because a review
+that checked our verifier against §7 would have been checking something that
+does not exist.
+
+### Five wrong section numbers
+
+The numbering shifted between SD-JWT VC drafts and nobody re-checked:
+
+| cited | actual |
+|---|---|
+| `typ` at §3.2.1 | **§2.2.1** |
+| Registered claims red list at §3.2.2.2 (×4 sites) | **§2.2.2.3** |
+| salt entropy at §4.2.1 | **§9.3** |
+| draft-18 dated 10 August 2026 | **3 August 2026** |
+
+Not a code defect. It matters anyway: in this codebase the comment carries the
+argument, and a reviewer sent to §3.2.2.3 finds a section about something else
+and cannot check the claim. RFC 9901's own numbering turned out to be unchanged
+from the draft — which is good news, and precisely the kind of thing that should
+be verified rather than assumed.

@@ -1,6 +1,13 @@
 // Package sdjwt implements Selective Disclosure for JWTs
-// (draft-ietf-oauth-selective-disclosure-jwt) and the SD-JWT VC credential
-// format (draft-ietf-oauth-sd-jwt-vc-18, 10 August 2026).
+// (RFC 9901, Standards Track, November 2025) and the SD-JWT VC credential
+// format (draft-ietf-oauth-sd-jwt-vc-18, 3 August 2026).
+//
+// The core specification was a draft when this was written and is now an RFC.
+// Section numbers below are RFC 9901's, and were checked against it rather than
+// carried over: 4.1 Issuer-Signed JWT, 4.1.1 Hash Function Claim, 4.2.1
+// Disclosures for Object Properties, 4.2.3 Hashing Disclosures, 4.2.5 Decoy
+// Digests, 9.3 Entropy of the Salt. They happen to be unchanged from the draft,
+// which is worth stating because it is not something a reader should assume.
 //
 // # What selective disclosure buys
 //
@@ -48,7 +55,7 @@ const Separator = "~"
 
 // TypSDJWTVC is the `typ` header an SD-JWT VC carries.
 //
-// draft-18 §3.2.1: the value MUST be `dc+sd-jwt`. Earlier drafts used
+// draft-18 §2.2.1: the value MUST be `dc+sd-jwt`. Earlier drafts used
 // `vc+sd-jwt`, "changed to avoid conflict with the vc media type name", and a
 // transitional period is permitted for accepting the old one. We ISSUE only the
 // current value: emitting a deprecated type keeps it alive in verifiers.
@@ -93,7 +100,7 @@ func (d Disclosure) Digest() string { return DigestOf(d.Encoded) }
 func NewDisclosure(name string, value any) (Disclosure, error) {
 	if RedList[name] {
 		return Disclosure{}, fmt.Errorf("%q cannot be selectively disclosed: "+
-			"section 3.2.2.2 requires it in the SD-JWT itself, because a verifier "+
+			"section 2.2.2.3 requires it in the SD-JWT itself, because a verifier "+
 			"that cannot see it cannot evaluate the credential at all", name)
 	}
 	if name == "_sd" || name == "..." {
@@ -129,7 +136,12 @@ func newDisclosureWithSalt(salt, name string, value any) (Disclosure, error) {
 	}, nil
 }
 
-// newSalt returns 128 bits of randomness, base64url encoded (§4.2.1).
+// newSalt returns 128 bits of randomness, base64url encoded.
+//
+// RFC 9901 §9.3, "Entropy of the Salt": the salt "MUST be cryptographically
+// random" with "at least 128 bits". §4.2.1 defines where the salt sits in a
+// Disclosure; the entropy requirement is §9.3, and citing the wrong one sends
+// the next reviewer to a section that does not contain the rule.
 func newSalt() (string, error) {
 	b := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {

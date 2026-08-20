@@ -269,7 +269,26 @@ func (s *Server) verifyTxnToken(raw string) (txntoken.Claims, error) {
 		txntoken.Typ, &c); err != nil {
 		return c, err
 	}
-	if c.Expiry > 0 && time.Now().Unix() >= c.Expiry {
+	// draft-ietf-oauth-transaction-tokens-11 §9.2 lists `exp` as REQUIRED, so a
+	// token without one is malformed rather than eternal.
+	//
+	// This was written as `if c.Expiry > 0 && ...`, which disabled the expiry
+	// check exactly when the claim it depends on was absent. A token carrying no
+	// `exp` verified, never expired, and could be replaced indefinitely --
+	// `Replace` skipped its own clamp for the same reason -- so each hop got a
+	// fresh full lifetime and the chain never ended. That is the outcome §13.15
+	// forbids: "MUST NOT issue a new Txn-Token when the Txn-Token being replaced
+	// has expired".
+	//
+	// It was not reachable: the token has to be signed by our key and carry
+	// typ=txntoken+jwt, and every path that mints one sets an expiry. The shape
+	// was still wrong, and a guard whose condition is the missing field is a
+	// guard that fails open.
+	if c.Expiry <= 0 {
+		return c, fmt.Errorf("the transaction token carries no expiry, which §9.2 " +
+			"requires; a token that never expires cannot be a transaction token")
+	}
+	if time.Now().Unix() >= c.Expiry {
 		return c, fmt.Errorf("the transaction token has expired")
 	}
 	return c, nil

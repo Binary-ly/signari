@@ -209,11 +209,17 @@ func Replace(r Replacement, issuer string, now time.Time, ttl time.Duration) (Cl
 		}
 	}
 
-	// The replacement may NOT outlive the token it came from. Otherwise a chain
-	// extends its own life one hop at a time, and a five-minute token becomes
-	// permanent across enough services.
+	// §9.2 makes `exp` REQUIRED, so a previous token without one is malformed.
+	// Refused here as well as at verification: this function is exported and a
+	// future caller might not verify first, and the clamp below is the only thing
+	// stopping a chain extending its own life one hop at a time.
+	if r.Previous.Expiry <= 0 {
+		return Claims{}, fmt.Errorf("the presented token carries no expiry")
+	}
+
+	// The replacement may NOT outlive the token it came from.
 	exp := now.Add(ttl).Unix()
-	if r.Previous.Expiry > 0 && exp > r.Previous.Expiry {
+	if exp > r.Previous.Expiry {
 		exp = r.Previous.Expiry
 	}
 	if exp <= now.Unix() {

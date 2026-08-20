@@ -243,3 +243,67 @@ the chain rather than once by whoever sent it.
 The second mutation matters: a per-map limit is trivially doubled by splitting
 the payload across `tctx` and `rctx`, which is the obvious way to write it and
 the wrong one.
+
+
+## Harsh review against draft-11 (August 2026)
+
+Currency first: **draft-ietf-oauth-transaction-tokens-11, 30 July 2026, In WG
+Last Call** — verified at the datatracker, and the revision we implement.
+
+Every normative requirement re-read and checked against the code.
+
+### What holds
+
+| §9.2 REQUIRED claim | emitted |
+|---|---|
+| `iat`, `exp`, `aud`, `txn`, `sub`, `scope`, `req_wl` | all seven |
+
+- §9.1 `typ` is `txntoken+jwt`, and `verifyTxnToken` requires it — an access
+  token presented as a Txn-Token is refused, which is the confusion the distinct
+  `typ` exists to prevent.
+- §11.4 `token_type` is the literal `N_A`; `issued_token_type` is the txn_token
+  URN; **`refresh_token` is not merely omitted but absent from the response
+  struct**, so §11.4's "MUST NOT include" cannot be violated by an edit.
+- §13.6, requested scope ≤ the subject token's: enforced, and read from the
+  *verified* token rather than the form — a caller cannot describe its own token
+  as carrying anything and thereby choose its own ceiling.
+- §13.15's four rules on replacement: `txn`, `sub` and `aud` are copied from the
+  verified previous token so they cannot be modified; scope may narrow but never
+  widen; the call chain is appended from the previous token's history, not from
+  anything the caller supplies; and the trust domain cannot change mid-chain.
+
+### The defect: an expiry check disabled by the missing expiry
+
+§9.2 makes `exp` REQUIRED. Both the verifier and `Replace` guarded on its
+presence:
+
+```go
+if c.Expiry > 0 && time.Now().Unix() >= c.Expiry     // verifyTxnToken
+if r.Previous.Expiry > 0 && exp > r.Previous.Expiry  // Replace
+```
+
+A Txn-Token carrying no `exp` therefore **verified, never expired, and could be
+replaced indefinitely** — the clamp that stops a replacement outliving its
+predecessor was skipped for the same reason, so every hop received a fresh full
+lifetime and the chain never ended. That is precisely what §13.15's "MUST NOT
+issue a new Txn-Token when the Txn-Token being replaced has expired" forbids.
+
+**Not reachable.** The token must be signed by our own key and carry
+`typ=txntoken+jwt`, and every path that mints one sets an expiry. The shape was
+still wrong: a guard whose condition is the absence of the safety-critical field
+is a guard that fails open, and it is the inverse of every other check in this
+file.
+
+Both now refuse a token with no expiry outright.
+
+### `verifyTxnToken` had no test at all
+
+It is the function on which every rule in §13.15 rests — it decides whether the
+token presented for replacement is real — and nothing exercised it. Five tests
+now do.
+
+The mutation pass then found that the fix in `Replace` was **itself untested**:
+restoring the original condition broke nothing, because `verifyTxnToken` rejects
+such tokens first. The check is kept — `Replace` is exported and a future caller
+may not verify — but a reason to keep a check only holds if the check is known to
+work, so it got the two tests it was missing.

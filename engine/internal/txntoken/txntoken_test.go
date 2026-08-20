@@ -437,3 +437,66 @@ func TestTheContextClaimsAreBounded(t *testing.T) {
 		t.Fatal("two contexts each under the limit summed past it and were accepted")
 	}
 }
+
+// TestReplacingATokenWithNoExpiryIsRefused.
+//
+// §9.2 makes `exp` REQUIRED. The clamp below it — a replacement may not outlive
+// the token it came from — was written as
+//
+//	if r.Previous.Expiry > 0 && exp > r.Previous.Expiry
+//
+// so a previous token carrying no expiry skipped the clamp entirely and produced
+// a successor with a fresh full lifetime. Repeat per hop and a chain never ends,
+// which is what §13.15 forbids: "MUST NOT issue a new Txn-Token when the
+// Txn-Token being replaced has expired."
+//
+// This test exists because removing the guard broke nothing. Replace is
+// exported, and the reason given for keeping the check is that a future caller
+// might not verify first — a reason that only holds if the check is known to
+// work.
+func TestReplacingATokenWithNoExpiryIsRefused(t *testing.T) {
+	now := time.Now()
+
+	_, err := Replace(Replacement{
+		Previous: Claims{
+			Audience:    "https://trust-domain.example",
+			Transaction: "txn-1",
+			Subject:     "user-1",
+			Scope:       "transfer",
+			// No Expiry.
+		},
+		Workload: "next-hop",
+	}, "https://issuer.example", now, DefaultTTL)
+
+	if err == nil {
+		t.Fatal("a replacement was issued from a token with no expiry; the successor " +
+			"carries a fresh lifetime, so the chain never ends")
+	}
+	if !strings.Contains(err.Error(), "expiry") {
+		t.Errorf("refused, but not as a missing expiry: %v", err)
+	}
+}
+
+// TestAReplacementNeverOutlivesWhatItCameFrom is the clamp itself, which the
+// test above only reaches the edge of.
+func TestAReplacementNeverOutlivesWhatItCameFrom(t *testing.T) {
+	now := time.Now()
+	// Previous expires in 30 seconds; the default TTL is minutes.
+	prevExp := now.Add(30 * time.Second).Unix()
+
+	got, err := Replace(Replacement{
+		Previous: Claims{
+			Audience: "https://trust-domain.example", Transaction: "txn-1",
+			Subject: "user-1", Scope: "transfer", Expiry: prevExp,
+		},
+		Workload: "next-hop",
+	}, "https://issuer.example", now, DefaultTTL)
+	if err != nil {
+		t.Fatalf("a valid replacement was refused: %v", err)
+	}
+	if got.Expiry != prevExp {
+		t.Errorf("replacement expires at %d, previous at %d; a chain that can extend "+
+			"its own life one hop at a time makes a five-minute token permanent",
+			got.Expiry, prevExp)
+	}
+}

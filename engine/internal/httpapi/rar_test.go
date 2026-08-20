@@ -525,3 +525,77 @@ func TestIntrospectionConveysDetailsAsATopLevelMember(t *testing.T) {
 		t.Fatalf("introspection reports %+v, not what was granted", got)
 	}
 }
+
+// ASVS 5.0 V10.4.15 (L3): the granted `authorization_details` come from the
+// authorization request, never from a parameter the client supplies at the token
+// endpoint.
+//
+// docs/security-review-asvs.md claims exactly this — "the granted details are
+// read from the code, never from a token-endpoint parameter" — and nothing
+// tested it. The handler happens to read `consumed.Details`, which is right, but
+// that is an implementation detail rather than a constraint anyone was holding
+// down; a later change that started consulting the form would break the rule
+// with nothing to notice.
+//
+// The rule is what makes RAR safe. `authorization_details` describe what the
+// user approved — "initiate a payment of £4,000 from acct-1". If a client could
+// restate them at the token endpoint, it would be approving its own request
+// after the fact, and the consent screen the user actually saw would be
+// decoration.
+func TestAuthorizationDetailsCannotBeWidenedAtTheTokenEndpoint(t *testing.T) {
+	f := newTokenFixture(t)
+	registerType(t, f, "payment_initiation",
+		[]string{"actions", "identifier"}, []string{"actions"})
+
+	verifier := "verifier-for-rar-injection-00000000000000000000000"
+	granted := []rar.Detail{{
+		Type: "payment_initiation", Actions: []string{"status"}, Identifier: "acct-1",
+	}}
+	code := f.issueCodeWithDetails(t, verifier, granted)
+
+	// The client asks for more than it was granted, at the token endpoint.
+	escalated, err := json.Marshal([]rar.Detail{{
+		Type: "payment_initiation", Actions: []string{"initiate", "status"},
+		Identifier: "acct-999",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := f.post(t, url.Values{
+		"grant_type": {"authorization_code"}, "code": {code},
+		"client_id": {f.clientID}, "redirect_uri": {"https://rp.test/cb"},
+		"code_verifier":         {verifier},
+		"authorization_details": {string(escalated)},
+	})
+
+	// Either answer is acceptable: refusing the request outright, or ignoring the
+	// parameter and returning what was actually granted. What must NOT happen is
+	// the escalated details coming back.
+	if status != http.StatusOK {
+		return // refused outright, which is a fine way to satisfy the rule
+	}
+	blob, err := json.Marshal(body["authorization_details"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []rar.Detail
+	if err := json.Unmarshal(blob, &got); err != nil {
+		t.Fatalf("authorization_details did not decode: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly the granted detail, got %d: %s", len(got), blob)
+	}
+	if got[0].Identifier != "acct-1" {
+		t.Errorf("the token was granted details for %q, which the user never "+
+			"approved — they approved acct-1. A client that can restate its own "+
+			"authorization_details at the token endpoint approves its own request",
+			got[0].Identifier)
+	}
+	for _, a := range got[0].Actions {
+		if a == "initiate" {
+			t.Error("the token carries the `initiate` action, which was not granted; " +
+				"the user approved `status` only")
+		}
+	}
+}

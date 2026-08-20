@@ -398,6 +398,10 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /account/mfa/totp", s.handleTOTPConfirm)
 	mux.HandleFunc("POST /account/passkeys/begin", s.handlePasskeyRegisterBegin)
 	mux.HandleFunc("POST /account/passkeys/finish", s.handlePasskeyRegisterFinish)
+	// NIST SP 800-63B-4 §4.5 requires invalidation "when requested by the
+	// subscriber". There was no way to request it: store.DeleteCredential existed,
+	// was tested, and had no caller.
+	mux.HandleFunc("POST /account/passkeys/delete", s.handlePasskeyDelete)
 	mux.HandleFunc("POST /login/passkey/begin", s.handlePasskeyLoginBegin)
 	mux.HandleFunc("POST /login/passkey/finish", s.handlePasskeyLoginFinish)
 	return mux

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -683,6 +684,146 @@ func (s *Server) notifyAuthenticatorBound(ctx context.Context, userID, orgID, na
 			Type: "mfa.passkey_notice_failed", OrgID: orgID, SubjectID: userID,
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"reason": err.Error()},
+		})
+	}
+}
+
+// handlePasskeyDelete removes one of the caller's own authenticators.
+//
+// # Why this exists, and why its absence was a defect rather than a missing feature
+//
+// NIST SP 800-63B-4 §4.5, Invalidation:
+//
+//	"CSPs SHALL promptly invalidate authenticators when a subscriber account
+//	ceases to exist..., WHEN REQUESTED BY THE SUBSCRIBER, when the authenticator
+//	is compromised, or when the CSP determines that the subscriber no longer
+//	meets its eligibility requirements."
+//
+// A subscriber could not request it. store.DeleteCredential was written, given
+// an ownership check and a last-credential guard, tested — and never called from
+// anywhere. Registering a passkey was possible; removing one was not.
+//
+// The notice this server now sends when a passkey is bound made that worse by
+// naming it: "If you did NOT add it, someone else may have had access to your
+// account. Sign in, remove the passkey you do not recognise, and change your
+// password." The instruction was unfollowable. A security notification that tells
+// someone to do something the product does not let them do is worse than one that
+// says nothing, because it spends the reader's trust on a dead end.
+//
+// # The last-credential guard is the store's, not this handler's
+//
+// store.DeleteCredential returns ErrWouldLockOut rather than removing a user's
+// only authenticator, and that belongs there: the check and the delete have to be
+// one transaction or two concurrent requests each see one credential left and
+// both proceed.
+func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	_, userID, orgID, ok := s.currentSession(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "login_required", "sign in first")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "that form could not be read")
+		return
+	}
+	// Removing an authenticator is exactly the state change an attacker would
+	// want to make from another origin: strip a factor, or lock the owner out.
+	if !checkCSRF(r) {
+		writeError(w, http.StatusForbidden, "invalid_request", "that form expired; try again")
+		return
+	}
+	id := strings.TrimSpace(r.PostForm.Get("id"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "id is required")
+		return
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The name, read before the row goes, so the notice can say which passkey
+	// went. Scoped to this user, and a miss is not decided here: DeleteCredential
+	// answers "no such passkey" for a credential that does not exist and for one
+	// belonging to somebody else, deliberately, because distinguishing them would
+	// confirm which uuids are real.
+	var name, rpID string
+	_ = tx.QueryRow(ctx, `
+		SELECT COALESCE(friendly_name,''), rp_id FROM core.webauthn_credentials
+		WHERE id = $1::uuid AND user_id = $2::uuid`, id, userID).Scan(&name, &rpID)
+
+	if derr := store.DeleteCredential(ctx, tx, userID, id); derr != nil {
+		if errors.Is(derr, store.ErrWouldLockOut) {
+			writeError(w, http.StatusConflict, "would_lock_out",
+				"this is your only passkey; add another before removing it")
+			return
+		}
+		if errors.Is(derr, store.ErrCredentialNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "no such passkey")
+			return
+		}
+		s.log.Error("deleting a passkey", "err", derr)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	if aerr := audit.Write(ctx, tx, audit.Event{
+		Type: "mfa.passkey_removed", OrgID: orgID, SubjectID: userID,
+		CorrelationID: correlationID(ctx),
+		Detail:        map[string]any{"name": name, "rp_id": rpID},
+	}); aerr != nil {
+		s.log.Error("auditing a passkey removal", "err", aerr)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+
+	// §4.5: "The CSP SHOULD notify the subscriber when an authenticator is
+	// invalidated, as described in Sec. 4.6." The threat is the mirror of
+	// binding: an attacker who removes a factor has made the account weaker, and
+	// the owner is the last person to notice a thing that is simply gone.
+	s.notifyAuthenticatorRemoved(ctx, userID, orgID, name)
+
+	writeJSON(w, http.StatusOK, map[string]any{"removed": id})
+}
+
+// notifyAuthenticatorRemoved is the §4.5 counterpart to
+// notifyAuthenticatorBound.
+func (s *Server) notifyAuthenticatorRemoved(ctx context.Context, userID, orgID, name string) {
+	var email string
+	if err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(email,'') FROM core.users WHERE id = $1::uuid`, userID).
+		Scan(&email); err != nil || email == "" {
+		if err != nil {
+			s.log.Error("looking up an address for an authenticator-removed notice", "err", err)
+		}
+		return
+	}
+	if name == "" {
+		name = "Passkey"
+	}
+	if err := s.mailer.Send(ctx, mail.Message{
+		To:      email,
+		Subject: "A passkey was removed from your account",
+		Body: fmt.Sprintf("The passkey %q was removed from your account on %s.\n\n"+
+			"If you removed it, there is nothing to do.\n\n"+
+			"If you did NOT remove it, someone else may have access to your "+
+			"account. Sign in, check the passkeys listed there, and change your "+
+			"password. If you cannot sign in, contact support at %s.\n",
+			name, time.Now().UTC().Format("2 January 2006 at 15:04 UTC"), s.cfg.Issuer),
+	}); err != nil {
+		s.log.Error("sending an authenticator-removed notice", "err", err,
+			"user_id", userID, "correlation_id", correlationID(ctx))
+		s.auditDetached(ctx, audit.Event{
+			Type: "mfa.passkey_notice_failed", OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": err.Error(), "event": "removed"},
 		})
 	}
 }

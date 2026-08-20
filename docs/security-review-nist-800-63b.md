@@ -381,3 +381,67 @@ credential list is a page nobody visits.
 exactly one place — and if that mailbox is the one the attacker holds, it reaches
 nobody who matters. Recorded as **9l**: which channels to support is a decision
 about the product, and the schema and send path follow from it.
+
+## §4.5 Invalidation: the subscriber could not request it (21 August 2026)
+
+> "CSPs SHALL promptly invalidate authenticators when a subscriber account ceases
+> to exist..., **when requested by the subscriber**, when the authenticator is
+> compromised, or when the CSP determines that the subscriber no longer meets its
+> eligibility requirements."
+
+There was no way to make the request. `store.DeleteCredential` was written, given
+an ownership check and a last-credential guard, tested — and **had no caller
+anywhere in the tree**. No route, no CLI path, no admin path. Registering a
+passkey was possible; removing one was not.
+
+**The notification added the day before made it worse by naming it.** That notice
+says: "If you did NOT add it, someone else may have had access to your account.
+Sign in, remove the passkey you do not recognise, and change your password." The
+instruction was unfollowable. A security notification that tells someone to do
+something the product does not permit is worse than one that says nothing,
+because it spends the reader's trust on a dead end.
+
+`POST /account/passkeys/delete` now exists. Three properties, each tested:
+
+- **The last credential cannot be removed** — `ErrWouldLockOut`, enforced in the
+  store where the count and the delete share one transaction, because two
+  concurrent requests each seeing "two remain" would otherwise leave zero.
+- **Another user's credential cannot be removed**, and the answer is the same 404
+  whether it does not exist or belongs to somebody else. Distinguishing them
+  would confirm which uuids are real.
+- **CSRF is required.** Kill-checked: with the guard removed, a request carrying
+  only a session cookie removes a passkey. Stripping a factor is exactly what a
+  cross-origin post would want, and the account it targets is one the attacker
+  already knows is signed in somewhere.
+
+§4.5 also says "The CSP SHOULD notify the subscriber when an authenticator is
+invalidated, as described in Sec. 4.6", so removal now sends the mirror of the
+binding notice. The threat is the mirror too: an attacker who *removes* a factor
+has made the account weaker, and a thing that is simply gone is the hardest change
+for its owner to notice.
+
+## §5.2 session timeouts, checked against the AAL tables
+
+> "Periodic reauthentication of subscriber sessions SHALL be performed... A
+> definite reauthentication overall timeout SHALL be established, which SHOULD be
+> no more than 24 hours at AAL2. The inactivity timeout SHOULD be no more than 1
+> hour."
+
+**The overall timeout SHALL is met**: sessions carry `not_after`, `SweepExpiredSessions`
+ends them at it, and every session lookup filters on `not_after > now()` — so an
+expired session is dead to a reader even before the sweep runs.
+
+**The inactivity timeout SHOULD is not met**, which is item **9f** and was already
+recorded. Reading §5.2 sharpens why it matters rather than changing the verdict:
+"Session activity SHALL reset the inactivity timeout" — so the feature is not a
+second expiry column, it is a write on every authenticated request, and that is a
+cost worth deciding deliberately rather than adding by reflex.
+
+One thing that reads like a defect and is not: our session cookie carries no
+`MaxAge`, which the original plan called a mismatch against the 12-hour database
+value. §5.2 is explicit that this is correct — "Session secrets that are used as
+bearer tokens for session management SHOULD NOT be persistent (i.e., retained
+across a restart of the associated application or a reboot of the host device)".
+A cookie with no `MaxAge` is a session cookie, which is exactly what the sentence
+asks for. The database holds the authoritative lifetime; the browser holds one
+that dies with the browser.

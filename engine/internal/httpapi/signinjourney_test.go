@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
@@ -145,6 +147,9 @@ func newSignInFixture(t *testing.T) *signInFixture {
 		_, _ = pool.Exec(c, `DELETE FROM core.sessions WHERE user_id = $1::uuid`, f.userID)
 		_, _ = pool.Exec(c, `DELETE FROM core.clients WHERE client_id = $1`, f.clientID)
 	})
+
+	// A previous run of THIS test must not be able to fail this one.
+	clearSignInBucket(t, f.pool)
 	return f
 }
 
@@ -158,6 +163,37 @@ type outcome struct {
 
 // signedIn is the question every test in this file is really asking.
 func (o outcome) signedIn() bool { return o.sessionCookie != "" }
+
+// testClientIP gives each test its own source address.
+//
+// Every sign-in test used to post from 203.0.113.7, so they shared one
+// `signin:fail:ip:` bucket in core.rate_limits. That bucket is keyed by a
+// five-minute window and survives the process, so running the suite twice inside
+// one window accumulated failures across BOTH runs and the twentieth tripped the
+// limiter -- and the tests that then failed were whichever happened to run last,
+// with a 429 that looks nothing like the assertion they were making.
+//
+// A suite whose result depends on how recently it was last run is not a suite.
+// Deriving the address from the test name gives each one its own bucket;
+// clearSignInBucket then makes a repeat run of the SAME test clean, which
+// covers the collision case too.
+func testClientIP(t *testing.T) string {
+	t.Helper()
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(t.Name()))
+	return fmt.Sprintf("203.0.113.%d", h.Sum32()%254+1)
+}
+
+// clearSignInBucket drops the rate-limit rows for this test's address, so a
+// previous run of it cannot make this one fail.
+func clearSignInBucket(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM core.rate_limits WHERE bucket_key LIKE 'signin:%' || $1`,
+		testClientIP(t)); err != nil {
+		t.Fatalf("clearing the sign-in rate bucket: %v", err)
+	}
+}
 
 // attempt runs one POST /login through the real entry point.
 //
@@ -195,7 +231,7 @@ func (f *signInFixture) attempt(t *testing.T, identifier, password string) outco
 	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: csrfCookie})
-	req.RemoteAddr = "203.0.113.7:5555"
+	req.RemoteAddr = testClientIP(t) + ":5555"
 
 	rec := httptest.NewRecorder()
 	f.srv.rateLimitedLogin(rec, req)

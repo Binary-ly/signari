@@ -516,3 +516,76 @@ deviation: FAPI 2.0 §5.4.1's list is `PS256, ES256, EdDSA`, and RS256 is not on
 it. The decision to keep or drop it is the same decision in both standards, and
 it is not mine to make alone — it would refuse every client that implements only
 RS256.
+
+## V6 Authentication: forty-seven requirements (21 August 2026)
+
+The largest chapter, and the one this product is most about. No new defects —
+which is the expected result for the area that has had the most attention, and is
+worth recording as carefully as a finding.
+
+### Met above the bar
+
+| Requirement | Ours |
+|---|---|
+| **V6.2.1** ≥8 characters, 15 recommended | **15 by default** — NIST SP 800-63B-4 §3.1.1.2's SHALL for single-factor, with a comment recording that the previous value of 8 was an *accurate citation of revision 3*, "the more dangerous kind of stale" |
+| **V6.2.9** ≥64 characters permitted | 1024 — and `MaxLength` exists to bound the hasher, not the password: "Argon2 over a megabyte of input is a denial of service with a text box in front of it" |
+| **V6.2.8** verified exactly as received | met — `argon2.IDKey([]byte(password), ...)` takes it verbatim; the only `ToLower` is inside the guessability *estimator* and never reaches the hash |
+| **V6.2.5** no composition rules | met |
+| **V6.2.12** checked against breached passwords | met — `internal/passwords/breached.go` |
+| **V6.3.2** no default accounts | met — no migration seeds a user |
+| **V6.4.2** no password hints or secret questions | met — nothing of the kind exists |
+| **V6.5.1** OTPs usable only once | met — the code hash is nulled on success, under `FOR UPDATE` so two concurrent attempts cannot both spend it. TOTP carries `lastUsed`, the highest counter already accepted, which is the replay check TOTP implementations most often skip |
+| **V6.5.3** CSPRNG for codes | met — `rand.Int` rather than modulo over a byte, with the reason written down: "a six-digit code has only a million of them, so the distribution IS the entropy" |
+| **V6.5.8** TOTP time from a trusted source | met — the counter is computed server-side and never read from the request |
+| **V6.6.3** OOB codes rate limited | met — a per-credential `attempts` counter, and one live code per user by construction |
+
+### V6.8.1, and the reason it is the strongest item here
+
+> "Verify that, if the application supports multiple identity providers (IdPs),
+> the user's identity cannot be spoofed via another supported identity provider
+> (e.g. by using the same user identifier)."
+
+`internal/federation/decide.go` sets out the attack in five steps and then says:
+**"This package has no email-matching path at any setting."** Identities are keyed
+`(provider_id, subject)` — a database `UNIQUE` constraint, not a convention — and
+attaching an external account to a local one requires authenticating locally
+first, which proves control of both sides rather than asserting it from an email
+address.
+
+
+### Partial, and honestly so
+
+- **V6.6.2** — codes bound to the *original authentication request*. Ours are
+  bound to the **user**: one live code per account, and requesting another
+  replaces the pending one, so guesses cannot accumulate. A code issued during
+  one login attempt could be spent in a later attempt by the same user. The
+  practical gap is narrow, because spending it still requires the first factor,
+  and binding to a session does not stop the relay attack people actually run
+  (persuading someone to read a code aloud). Recorded rather than changed.
+- **V6.1.x, V6.3.4** — documentation of every authentication pathway and its
+  strength. The pathways are documented individually across these reviews; there
+  is no single document listing all of them side by side.
+- **V6.4.4** — identity proofing at enrolment level when a factor is lost. We
+  have recovery codes and delay-and-notify recovery; we do not do identity
+  proofing, which is an IAL question rather than an AAL one.
+- **V6.3.5, V6.3.7** — notification of suspicious attempts and of credential
+  changes. Passkey bind and removal now notify (NIST §4.1.2 and §4.5). Password
+  changes and unusual-location sign-ins do not. This is the same missing piece as
+  item **9l**: one notification address per account, so the channel is thin.
+
+## ASVS status after this pass
+
+| Chapter | Requirements | State |
+|---|---|---|
+| V6 Authentication | 47 | swept |
+| V7 Session Management | 19 | swept — 1 defect fixed |
+| V8 Authorization | 13 | swept — 18 tables corrected |
+| V9 Self-contained Tokens | 7 | swept — 1 defect fixed |
+| V10 OAuth and OIDC | 36 | swept earlier, 41 of 43 items evidenced |
+| V11 Cryptography | 24 | swept — 1 defect fixed |
+
+**146 of 345 requirements** now have a requirement-by-requirement sweep, covering
+every chapter that governs an identity provider's core function. The remaining
+199 are in chapters about frontend rendering, file handling, WebRTC,
+configuration and general secure coding — relevant to the product, not specific
+to it, and not where this engine's risk concentrates.

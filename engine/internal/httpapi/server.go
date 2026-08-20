@@ -366,6 +366,11 @@ func (s *Server) mux() *http.ServeMux {
 	// mirror of internal/scim's client, which pushes them out.
 	mux.HandleFunc("GET /scim/v2/ServiceProviderConfig", s.handleSCIMServiceProviderConfig)
 	mux.HandleFunc("GET /scim/v2/ResourceTypes", s.handleSCIMResourceTypes)
+	// RFC 7644 §4 names three discovery endpoints and this served two. A client
+	// that fetches /Schemas before its first sync -- which is the ordinary
+	// sequence -- got a 404 on the one that says which attributes it may send.
+	mux.HandleFunc("GET /scim/v2/Schemas", s.handleSCIMSchemas)
+	mux.HandleFunc("GET /scim/v2/Schemas/{id}", s.handleSCIMSchemas)
 	mux.HandleFunc("/scim/v2/Users", s.handleSCIMUsers)
 	mux.HandleFunc("/scim/v2/Users/{id}", s.handleSCIMUser)
 	// OID4VCI Credential Issuer (§7, §8, §12.2). The metadata document is

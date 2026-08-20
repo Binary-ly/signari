@@ -47,7 +47,19 @@ func (s *Server) scimListGroups(w http.ResponseWriter, r *http.Request, src *sto
 	}
 	count := scimDefaultPageSize
 	if v := q.Get("count"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+		if n, err := strconv.Atoi(v); err == nil {
+			// RFC 7644 §3.4.2.4, Table 6: "A negative value SHALL be interpreted
+			// as \"0\"", and "A value of \"0\" indicates that no resource results
+			// are to be returned except for \"totalResults\"".
+			//
+			// This used to require n >= 0 to assign, so a negative count fell
+			// through to the DEFAULT page size -- a client asking for nothing was
+			// sent a hundred records. Wrong in the direction that returns more
+			// data than was asked for, which is the wrong direction for a
+			// provisioning API to be wrong in.
+			if n < 0 {
+				n = 0
+			}
 			count = n
 		}
 	}

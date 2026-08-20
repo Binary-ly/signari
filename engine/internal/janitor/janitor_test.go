@@ -98,7 +98,7 @@ func TestSweepTerminatesExpiredSessionsAndNotifiesRelyingParties(t *testing.T) {
 // and fails for a reason that has nothing to do with the property. It did:
 // 10,016 dead sessions had accumulated from earlier runs.
 //
-// Counting the notices queued for one known sid tests the actual rule -- an
+// Reading the session's own `revoked_at` tests the actual rule -- an
 // already-dead session is not re-terminated -- and cannot be perturbed by
 // anything happening in another package.
 func TestSweepIsIdempotent(t *testing.T) {
@@ -107,35 +107,49 @@ func TestSweepIsIdempotent(t *testing.T) {
 
 	sid := plantExpiredSession(t, pool)
 
-	noticesFor := func(what string) int {
+	// Asserted on the SESSION ROW, not on outbox counts.
+	//
+	// An earlier version counted back-channel logout notices for this sid and
+	// required the number not to grow. It reported a delta of MINUS ONE: the
+	// janitor drains the outbox as well as filling it, so the second pass
+	// removed the notice the first pass had queued. Counting rows that the code
+	// under test is also deleting measures the drain, not the sweep.
+	//
+	// `revoked_at` is written once when a session is terminated and never
+	// updated afterwards, so if an already-dead session were re-swept the
+	// timestamp would move. Nothing else in the system touches it.
+	revokedAt := func(what string) *time.Time {
 		t.Helper()
-		var n int
-		if err := pool.QueryRow(ctx, `
-			SELECT count(*) FROM core.outbox
-			WHERE topic = 'backchannel_logout' AND payload->>'sid' = $1`, sid).Scan(&n); err != nil {
-			t.Fatalf("counting notices %s: %v", what, err)
+		var at *time.Time
+		if err := pool.QueryRow(ctx,
+			`SELECT revoked_at FROM core.sessions WHERE sid = $1`, sid).Scan(&at); err != nil {
+			t.Fatalf("reading revoked_at %s: %v", what, err)
 		}
-		return n
+		return at
 	}
 
 	if _, err := RunOnce(ctx, pool, discard()); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
-	after := noticesFor("after the first pass")
-	if after == 0 {
-		t.Fatal("the first pass queued no logout notice, so the second pass could " +
-			"not demonstrate anything")
+	first := revokedAt("after the first pass")
+	if first == nil {
+		t.Fatal("the first pass did not terminate the expired session, so the " +
+			"second pass could not demonstrate anything")
 	}
 
 	if _, err := RunOnce(ctx, pool, discard()); err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
-	if again := noticesFor("after the second pass"); again != after {
-		t.Errorf("the second pass queued %d more notice(s) for a session the first "+
-			"pass already terminated; already-dead sessions are being re-swept, "+
-			"which is a logout storm that grows with the age of the database",
-			again-after)
+	second := revokedAt("after the second pass")
+	if second == nil {
+		t.Fatal("the session lost its revoked_at between passes")
 	}
+	if !second.Equal(*first) {
+		t.Errorf("revoked_at moved from %s to %s: the second pass re-terminated a "+
+			"session the first one had already killed, which is a logout storm that "+
+			"grows with the age of the database", first, second)
+	}
+
 }
 
 // The whole reason this is safe to start on every node.

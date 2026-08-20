@@ -44,7 +44,7 @@ federation, where Signari is the relying party.
 
 | | Requirement | Verdict |
 |---|---|---|
-| V10.2.1 | CSRF defence on the code flow (PKCE or `state`) | ✅ both |
+| V10.2.1 | CSRF defence on the code flow (PKCE or `state`) | ✅ both, and the `state` half is **now tested** — nothing referenced `ConsumeFederatedLogin` or `core.federated_logins` before. Single-use (`DELETE … RETURNING`), bound to the originating browser by a cookie hash compared in constant time, and — the subtle part — the comparison happens **after** the row is destroyed, so a wrong binding still burns the state rather than leaving it to be ground against. All three tested; dropping the binding comparison fails the second |
 | V10.2.2 | Mix-up defence across several authorization servers | ✅ `discovery.go:60` — `strings.TrimSuffix(d.Issuer,"/") != strings.TrimSuffix(issuer,"/")` refuses a discovery document that declares an issuer other than the one asked for (RFC 8414 §3.3), and the id_token's `iss` is compared to the configured issuer again at `client.go:252` |
 | V10.5.1 | ID Token replay — `nonce` | ✅ generated per login with `randomToken()` and stored on the pending record, so the empty-nonce path in `verifyIDToken` is unreachable from the live flow. Both directions tested: `TestIDTokenAttacks` covers **"nonce from a different login (replay)"** and **"no nonce at all"** |
 | V10.5.2 | Identify the user by a claim that cannot be reassigned | ✅ `iss`+`sub` pair, never email |

@@ -93,7 +93,20 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if len(batch.Evaluations) == 0 {
-		authzError(w, http.StatusBadRequest, "the batch contains no evaluations")
+		single := authzen.Request{}.Merge(batch)
+		if err := single.Validate(); err != nil {
+			authzError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		resp, derr := s.decide(ctx, orgID, single)
+		if derr != nil {
+			s.log.Error("evaluating a defaults-only evaluations request", "err", derr,
+				"correlation_id", correlationID(ctx))
+			authzError(w, http.StatusInternalServerError, "the decision could not be made")
+			return
+		}
+		echoRequestID(w, r)
+		writeJSONResponse(w, http.StatusOK, resp)
 		return
 	}
 	// Bounded. An unbounded batch is a way to make one request cost a thousand
@@ -164,6 +177,8 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 		// and B and C evaluated anyway. The array it got back did not mean what
 		// the semantic promised.
 		if semantic == authzen.DenyOnFirstDeny && !resp.Decision {
+			out[len(out)-1].Context = markShortCircuit(resp.Context,
+				string(authzen.DenyOnFirstDeny))
 			break
 		}
 		if semantic == authzen.PermitOnFirstPermit && resp.Decision {
@@ -172,6 +187,14 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 	}
 	echoRequestID(w, r)
 	writeJSONResponse(w, http.StatusOK, authzen.EvaluationsResponse{Evaluations: out})
+}
+
+func markShortCircuit(ctx map[string]any, semantic string) map[string]any {
+	if ctx == nil {
+		ctx = map[string]any{}
+	}
+	ctx["reason"] = semantic
+	return ctx
 }
 
 // decide is the single evaluation path. Both endpoints use it, so a batch and a

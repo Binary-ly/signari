@@ -45,11 +45,11 @@ federation, where Signari is the relying party.
 | | Requirement | Verdict |
 |---|---|---|
 | V10.2.1 | CSRF defence on the code flow (PKCE or `state`) | ✅ both |
-| V10.2.2 | Mix-up defence across several authorization servers | ✅ issuer pinned per source; metadata `issuer` compared to the configured one |
-| V10.5.1 | ID Token replay — `nonce` | ✅ |
+| V10.2.2 | Mix-up defence across several authorization servers | ✅ `discovery.go:60` — `strings.TrimSuffix(d.Issuer,"/") != strings.TrimSuffix(issuer,"/")` refuses a discovery document that declares an issuer other than the one asked for (RFC 8414 §3.3), and the id_token's `iss` is compared to the configured issuer again at `client.go:252` |
+| V10.5.1 | ID Token replay — `nonce` | ✅ generated per login with `randomToken()` and stored on the pending record, so the empty-nonce path in `verifyIDToken` is unreachable from the live flow. Both directions tested: `TestIDTokenAttacks` covers **"nonce from a different login (replay)"** and **"no nonce at all"** |
 | V10.5.2 | Identify the user by a claim that cannot be reassigned | ✅ `iss`+`sub` pair, never email |
-| V10.5.3 | Reject metadata whose issuer does not match | ✅ the same check OID4VCI §12.2.3 and OpenID Federation §9 both state |
-| V10.5.4 | ID Token `aud` equals our client id | ✅ |
+| V10.5.3 | Reject metadata whose issuer does not match | ✅ `discovery.go:60`, the same check OID4VCI §12.2.3 and OpenID Federation §9 both state |
+| V10.5.4 | ID Token `aud` equals our client id | ✅ `audienceContains` handles both the string and array forms, and `TestAudienceArrayIsHandled` plus the "audience is a different application" attack case cover it |
 | V10.5.5 | Back-channel logout: `typ`, and DoS through forced logout | ✅ `logout+jwt` enforced; see V10.6.2 for the provider side |
 
 ## V10.3 — resource server
@@ -61,7 +61,7 @@ Our userinfo and introspection endpoints are the resource server.
 | V10.3.1 | Accept only tokens whose audience is this service | ✅ |
 | V10.3.2 | Enforce `sub`, `scope`, `authorization_details` in the decision | ✅ all three — `authorization_details` implemented since this review (RFC 9396) |
 | V10.3.3 | Identify the user by a non-reassignable claim | ✅ `sub` is a uuid, never an email |
-| V10.3.4 | Enforce `acr`, `amr`, `auth_time` when required | ✅ and re-evaluated per authorization request rather than frozen at sign-in |
+| V10.3.4 | Enforce `acr`, `amr`, `auth_time` when required | ✅ `ACRFromAMR` derives the context from the factors **actually used**, and `FlowDemandsMFA` is consulted per authorization request rather than frozen at sign-in — a live password-only session is stepped up when `acr_values` demands it |
 | V10.3.5 (L3) | Sender-constrained tokens | ✅ DPoP (RFC 9449) and mTLS (RFC 8705) both |
 
 ## V10.4 — authorization server, the core

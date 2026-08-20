@@ -86,24 +86,55 @@ func TestSweepTerminatesExpiredSessionsAndNotifiesRelyingParties(t *testing.T) {
 	}
 }
 
-// The second pass must find nothing. Without the revoked_at IS NULL filter, every
-// pass would re-terminate every already-dead session and re-queue its notices --
-// a logout storm that grows with the age of the database.
+// The second pass must not touch a session the first one already killed. Without
+// the revoked_at IS NULL filter, every pass would re-terminate every already-dead
+// session and re-queue its notices -- a logout storm that grows with the age of
+// the database.
+//
+// Asserted about THIS test's session rather than about the global sweep count.
+// `go test ./...` runs packages in parallel against one database, so between the
+// two passes other tests legitimately create and expire sessions of their own;
+// an assertion on st.SessionsSwept == 0 measures their timing, not our filter,
+// and fails for a reason that has nothing to do with the property. It did:
+// 10,016 dead sessions had accumulated from earlier runs.
+//
+// Counting the notices queued for one known sid tests the actual rule -- an
+// already-dead session is not re-terminated -- and cannot be perturbed by
+// anything happening in another package.
 func TestSweepIsIdempotent(t *testing.T) {
 	pool := newPool(t)
 	ctx := context.Background()
 
-	plantExpiredSession(t, pool)
+	sid := plantExpiredSession(t, pool)
+
+	noticesFor := func(what string) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*) FROM core.outbox
+			WHERE topic = 'backchannel_logout' AND payload->>'sid' = $1`, sid).Scan(&n); err != nil {
+			t.Fatalf("counting notices %s: %v", what, err)
+		}
+		return n
+	}
 
 	if _, err := RunOnce(ctx, pool, discard()); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
-	st, err := RunOnce(ctx, pool, discard())
-	if err != nil {
+	after := noticesFor("after the first pass")
+	if after == 0 {
+		t.Fatal("the first pass queued no logout notice, so the second pass could " +
+			"not demonstrate anything")
+	}
+
+	if _, err := RunOnce(ctx, pool, discard()); err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
-	if st.SessionsSwept != 0 {
-		t.Errorf("the second pass swept %d sessions; already-dead sessions are being re-terminated", st.SessionsSwept)
+	if again := noticesFor("after the second pass"); again != after {
+		t.Errorf("the second pass queued %d more notice(s) for a session the first "+
+			"pass already terminated; already-dead sessions are being re-swept, "+
+			"which is a logout storm that grows with the age of the database",
+			again-after)
 	}
 }
 

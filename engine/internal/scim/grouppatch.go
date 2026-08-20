@@ -68,8 +68,10 @@ func memberValueSelectedBy(f *Filter) string {
 
 // ApplyGroupPatch reads a PATCH body into the changes it implies.
 func ApplyGroupPatch(req PatchRequest) (*GroupPatch, error) {
-	if len(req.Operations) == 0 {
-		return nil, fmt.Errorf("PATCH with no operations")
+	// Shared with ApplyUserPatch: a group PATCH is the one where the cap bites
+	// hardest, because each operation can be a membership write.
+	if err := checkPatchEnvelope(req); err != nil {
+		return nil, err
 	}
 	out := &GroupPatch{}
 	for i, op := range req.Operations {

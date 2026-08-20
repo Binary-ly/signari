@@ -1,6 +1,7 @@
 package scim
 
 import (
+	"errors"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -56,14 +57,36 @@ type UserPatch struct {
 	Unsupported []string
 }
 
+const MaxPatchOperations = 100
+
+// ErrTooManyOperations is returned when a PATCH exceeds MaxPatchOperations.
+//
+// A distinct error because the response needs a distinct scimType: RFC 7644
+// §3.12 registers "tooMany", and an upstream that receives it can split its
+// batch and retry, where a plain 400 tells it only that something was wrong.
+var ErrTooManyOperations = errors.New("too many operations in one PATCH")
+
+// checkPatchEnvelope applies the limits common to every PATCH, whatever resource
+// it targets. Shared so the user and group handlers cannot drift.
+func checkPatchEnvelope(req PatchRequest) error {
+	if len(req.Operations) == 0 {
+		return fmt.Errorf("PATCH with no operations")
+	}
+	if len(req.Operations) > MaxPatchOperations {
+		return fmt.Errorf("%w: %d operations, the limit is %d; split the batch",
+			ErrTooManyOperations, len(req.Operations), MaxPatchOperations)
+	}
+	return nil
+}
+
 // ApplyUserPatch reads a PATCH body into the changes it implies.
 //
 // Unknown operations are an ERROR, not a no-op. A silently ignored PATCH is
 // reported to the upstream as success, and the upstream then believes a
 // deactivation took effect.
 func ApplyUserPatch(req PatchRequest) (*UserPatch, error) {
-	if len(req.Operations) == 0 {
-		return nil, fmt.Errorf("PATCH with no operations")
+	if err := checkPatchEnvelope(req); err != nil {
+		return nil, err
 	}
 
 	out := &UserPatch{}

@@ -19,6 +19,7 @@ import (
 
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidc"
+	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
 )
 
@@ -482,5 +483,47 @@ func TestSCIMGroupMembershipReachesATokenAndIsRevokedByRemoval(t *testing.T) {
 		t.Fatalf("groups in a token = %v after the upstream removed the member; "+
 			"the person keeps whatever the group grants and a provisioning client shows them as "+
 			"removed", groups)
+	}
+}
+
+// The operations cap on the wire, RFC 7644 §3.12's scimType included.
+//
+// Asserted against a group id that does NOT exist, deliberately. The cap has to
+// fire before the lookup, because the point of it is to refuse the work rather
+// than to do it and report afterwards -- a 404 here would mean the server had
+// already gone to the database once for a request it was always going to
+// refuse. Getting "tooMany" rather than "not found" is the evidence for that
+// ordering.
+func TestAnOversizedPatchIsRefusedBeforeAnyLookup(t *testing.T) {
+	f := newSCIMFixture(t)
+
+	var ops []string
+	for i := 0; i <= scim.MaxPatchOperations; i++ { // one over
+		ops = append(ops, fmt.Sprintf(
+			`{"op":"add","path":"members","value":[{"value":"u-%d"}]}`, i))
+	}
+	body := `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+	          "Operations":[` + strings.Join(ops, ",") + `]}`
+
+	status, resp := f.do(t, http.MethodPatch,
+		"/scim/v2/Groups/00000000-0000-0000-0000-000000000000", body)
+
+	if status != http.StatusBadRequest {
+		t.Fatalf("%d operations answered %d %v; want 400", scim.MaxPatchOperations+1,
+			status, resp)
+	}
+	if resp["scimType"] != "tooMany" {
+		t.Errorf("scimType = %v, want tooMany (RFC 7644 §3.12) so the client knows "+
+			"to split the batch rather than treat it as permanent", resp["scimType"])
+	}
+	// A group PATCH at the limit reaches the lookup and 404s, which is the
+	// proof that 100 is not itself being refused.
+	ok := `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+	        "Operations":[` + strings.Join(ops[:scim.MaxPatchOperations], ",") + `]}`
+	status, _ = f.do(t, http.MethodPatch,
+		"/scim/v2/Groups/00000000-0000-0000-0000-000000000000", ok)
+	if status == http.StatusBadRequest {
+		t.Errorf("a PATCH at exactly the limit was refused as malformed; the cap "+
+			"must admit the documented number, got %d", status)
 	}
 }

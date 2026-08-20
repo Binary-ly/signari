@@ -249,6 +249,10 @@ func (s *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	patch, err := scim.ApplyGroupPatch(req)
+	if errors.Is(err, scim.ErrTooManyOperations) {
+		writeSCIMErrorType(w, http.StatusBadRequest, "tooMany", err.Error())
+		return
+	}
 	if err != nil {
 		// A PATCH we cannot read is an ERROR, never a silent 200. This is the
 		// whole point of the group half: a misread removal is never retried.

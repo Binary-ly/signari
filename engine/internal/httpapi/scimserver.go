@@ -50,6 +50,17 @@ func (s *Server) scimAuth(r *http.Request) (*store.SCIMSource, error) {
 	return src, nil
 }
 
+func writeSCIMErrorType(w http.ResponseWriter, status int, scimType, detail string) {
+	w.Header().Set("Content-Type", scimContentType)
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"schemas":  []string{"urn:ietf:params:scim:api:messages:2.0:Error"},
+		"scimType": scimType,
+		"detail":   detail,
+		"status":   strconv.Itoa(status),
+	})
+}
+
 func writeSCIMError(w http.ResponseWriter, status int, detail string) {
 	w.Header().Set("Content-Type", scimContentType)
 	w.WriteHeader(status)
@@ -320,6 +331,10 @@ func (s *Server) scimPatchUser(w http.ResponseWriter, r *http.Request,
 	}
 
 	patch, err := scim.ApplyUserPatch(req)
+	if errors.Is(err, scim.ErrTooManyOperations) {
+		writeSCIMErrorType(w, http.StatusBadRequest, "tooMany", err.Error())
+		return
+	}
 	if err != nil {
 		// A PATCH we cannot read is an ERROR, never a silent 200. An upstream
 		// that receives 200 records the deactivation as done.

@@ -146,3 +146,45 @@ Two things were nonetheless wrong:
 The strength estimator is not a composition rule and the distinction matters: it
 scores how many guesses a password would take, so a long lowercase passphrase
 passes and `Password1!` does not — the opposite of what a composition rule does.
+
+## §3.2 and §3.1's other verifier SHALLs (August 2026)
+
+Read from the document's own section list rather than from this review's earlier
+scope, which stopped at §3.1.1.2. Three more SHALLs bind a verifier that
+implements what we implement.
+
+| Requirement | Signari |
+|---|---|
+| §3.1.4 single-factor OTP: "Verifiers **SHALL** accept a given OTP only once while it is valid to provide replay resistance" | **met** — the last accepted counter is stored per credential and a repeat is refused (`TestReplayIsRefused`) |
+| §3.1.2 look-up secrets: "A secret from a look-up secret authenticator **SHALL** be used successfully only once" | **met** — recovery codes are consumed by `UPDATE … WHERE used_at IS NULL`, so the row is spent by the statement that finds it and a concurrent second use affects no rows |
+| §3.2.2 rate limiting: "The verifier **SHALL** limit consecutive failed authentication attempts using a specific authenticator on a single subscriber account to no more than 100 **by disabling that authenticator**" | **met for TOTP; deliberately deviated for passwords** — see below |
+
+### The deviation, stated rather than glossed
+
+**TOTP meets it comfortably.** `MaxTOTPFailures = 5` locks the credential, which
+is twenty times tighter than the ceiling the SHALL sets.
+
+**Passwords do not meet it as written.** The protection is a *windowed rate
+limit* — 30 failures per 15 minutes per account, 20 per 5 minutes per address —
+not a consecutive-failure counter that disables. An attacker willing to wait can
+therefore exceed 100 consecutive failures; they simply take about fifty minutes
+to do it.
+
+That is a deliberate choice and the reasoning is in `server.go`: the per-account
+key is **chosen by whoever submits the form**, so a counter that disables the
+authenticator is a way to lock any named person out of their account on demand.
+Complying with §3.2.2 literally would mean 100 guesses disables anybody — which
+converts a brute-force defence into a denial-of-service primitive aimed at a
+person the attacker names.
+
+So the honest statement is not "met" and not "missed": it is a **known deviation
+from a SHALL, taken to avoid a worse failure mode**, and it belongs in a
+conformance conversation rather than in a tick-box. A deployment that needs
+AAL2 conformance on paper needs to know about it, which is why it is now in
+[TODO-FOR-YOU.md](../TODO-FOR-YOU.md) as a decision rather than settled here.
+
+What would close it without the DoS: a very high consecutive-failure counter
+(100, reset on any success) that triggers a *step-up requirement* rather than a
+disable — the account stays reachable to its owner through a second factor, and
+the attacker's 100 guesses buy them nothing. That is a design, not a patch, which
+is the other reason it is a decision rather than a fix made here.

@@ -142,3 +142,43 @@ evidence from headers an MDM sets, and is described in
 [device-posture.md](device-posture.md). It is listed nowhere above because there
 is no specification to be current with, which is worth stating rather than
 leaving the reader to wonder why it is missing.
+
+## A class of defect worth naming: the field that vanishes
+
+AuthZEN's finding — `decision` would disappear from every deny if the bool ever
+gained `omitempty` — turned out to be an instance of something general, so the
+whole tree was swept for it: every boolean serialised with `omitempty`, where
+`false` and "absent" mean different things to the receiver.
+
+Five sites. Four are correct by construction and one needed a test:
+
+| Site | Verdict |
+|---|---|
+| `oidc/metadata.go` `frontchannel_logout_supported`, `..._session_supported` | correct — the OIDC Front-Channel Logout spec *defines* omission as false, so omitting is what it asks for |
+| `oidc/metadata.go` `backchannel_user_code_parameter_supported` | correct — `*bool`, so false is emitted and only unset is omitted |
+| `scim/client.go` `primary` | correct — SCIM treats absent as false, and this is outbound |
+| `tokens/idtoken.go` `email_verified` | correct, **now pinned** — see below |
+| `authzen` `decision` | correct, **now pinned** — no `omitempty`, and the deny wire format is asserted |
+
+### `email_verified`, and why both failure directions matter
+
+OIDC Core §5.1: "True if the End-User's e-mail address has been verified;
+**otherwise false**." Otherwise *false*, not otherwise absent. A relying party
+deciding whether to trust an address needs "asserted, and not verified" to look
+different from "not asserted" — several treat an absent claim as unknown and some
+treat it as true, which makes a silently-dropped claim an account-linking hazard
+at the receiving end.
+
+The field is a `*bool`, always assigned when the email scope is granted. Two ways
+to break it, and they are caught by different things:
+
+- **plain `bool` with `omitempty`** — every unverified address goes quiet. This
+  does not compile: `flow.go` assigns `&verified`, so the type change is caught
+  at build time.
+- **`*bool` without `omitempty`** — a token with no email scope emits
+  `"email_verified":null`, asserting a claim it has no basis for. The compiler is
+  happy; the new test is what catches it.
+
+Neither was covered before. Worth separating because "the compiler protects it"
+and "a test protects it" are different guarantees, and only one of them survives
+somebody deciding to change both sites at once.

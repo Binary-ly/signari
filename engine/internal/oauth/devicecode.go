@@ -31,9 +31,35 @@ const DeviceCodeAlphabet = "ACDEFGHJKLMNPQRTUVWXY"
 
 // UserCodeLength is the number of characters, before formatting.
 //
-// Eight from a 21-character alphabet is about 35 bits. RFC 8628 §5.1 asks for
-// at least 20 bits of entropy against a rate-limited endpoint; this is well
-// past that while still being typable.
+// Eight from a 21-character alphabet: 21^8 = 2^35.14.
+//
+// An earlier version of this comment said "RFC 8628 §5.1 asks for at least 20
+// bits of entropy". **It does not, and there is no 20-bit figure anywhere in
+// §5.1.** The number came from misreading the section's worked example, which
+// says "an 8-character BASE 20 user code (with roughly 34.5 bits of entropy)" —
+// base 20 is the size of the alphabet, not a bit count. The correction matters
+// because the mistaken version made our margin look like 15 spare bits when it
+// is really about half a bit over the RFC's own illustration.
+//
+// What §5.1 actually says:
+//
+//	"it is recommended that the server rate-limit user code attempts."
+//	"The user code SHOULD have enough entropy that, when combined with
+//	 rate-limiting and other mitigations, a brute-force attack becomes
+//	 infeasible."
+//
+// So entropy is only half the requirement and the arithmetic has to include the
+// limit. Ours: 20 attempts per ten minutes per address (deviceAttemptsPerWindow),
+// against a code that lives ten minutes, so an address gets at most ~20 guesses
+// in a code's lifetime: 20 / 2^35.14 = 2^-30.8.
+//
+// §5.1's illustration targets 2^-32 and observes that at 34.5 bits you would
+// "only allow 5 attempts" to reach it. Five would put us at 2^-32.8. We are
+// therefore roughly four times more permissive than that illustration, which is
+// a deliberate usability choice — a person mistyping a code off a television
+// gets more than five tries — and is stated here rather than rounded away. The
+// limit is also per-address, so a distributed attacker is bounded by the code
+// lifetime rather than by this number.
 const UserCodeLength = 8
 
 // NewUserCode returns a code a person can read off a screen and type.

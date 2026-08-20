@@ -149,6 +149,42 @@ func ParseCIBARequest(form url.Values, clientID string) (*CIBARequest, *CIBAErro
 		}
 	}
 
+	// §7.1.1 signed authentication requests are not supported, and a `request`
+	// parameter is REFUSED rather than ignored.
+	//
+	// §7.2 says "OpenID Providers MUST ignore unrecognized request parameters",
+	// and `request` is not unrecognised -- it is recognised by the specification
+	// and unimplemented here. The distinction decides the behaviour.
+	//
+	// Ignoring it fails two ways. A client that sends only `request` (which is
+	// what §7.1.1 describes, with the parameters inside the JWT) reaches the hint
+	// check below and is told "exactly one of login_hint, login_hint_token or
+	// id_token_hint is required" -- a true statement that sends an integrator to
+	// look at hints they did put in, inside the object we discarded.
+	//
+	// Worse is the client that sends BOTH, for compatibility with servers that
+	// take either. Reading the form and dropping the JWT means the binding
+	// message, scope and hint that were SIGNED are replaced by the plaintext
+	// copies beside them, and the signature protects nothing. Anything that can
+	// rewrite the form -- a proxy, a compromised SDK -- changes the transaction
+	// the user is asked to approve.
+	//
+	// The metadata already says this: §4 makes
+	// backchannel_authentication_request_signing_alg_values_supported OPTIONAL
+	// and "If omitted, signed authentication requests are not supported by the
+	// OP", and we omit it. This makes the endpoint agree with the document.
+	for _, p := range []string{"request", "request_uri"} {
+		if strings.TrimSpace(form.Get(p)) != "" {
+			return nil, cibaErr(400, "invalid_request",
+				"this server does not support signed backchannel authentication "+
+					"requests, and refuses "+p+" rather than ignoring it: the "+
+					"parameters inside a signed request object would otherwise be "+
+					"silently replaced by the unsigned copies in this form. See "+
+					"backchannel_authentication_request_signing_alg_values_supported "+
+					"in the discovery document, which is absent")
+		}
+	}
+
 	req := &CIBARequest{
 		ClientID:                clientID,
 		Scope:                   strings.TrimSpace(form.Get("scope")),

@@ -125,7 +125,27 @@ func clearOutbox(t *testing.T, pool *pgxpool.Pool) {
 	// A test that asserts on elapsed time must control everything the code under
 	// test will touch. Scoping this to one topic looked tidier and quietly made
 	// the assertion depend on unrelated history.
-	if _, err := pool.Exec(context.Background(), `DELETE FROM core.outbox`); err != nil {
+	//
+	// # And why it is bounded by age rather than deleting everything
+	//
+	// Deleting the whole table was the first fix, and it broke the janitor
+	// package: `go test ./...` runs packages in PARALLEL against one database, so
+	// a bare DELETE removed rows another package's test had just written and was
+	// about to assert on. The failure read "no back-channel logout notice was
+	// queued" and had nothing to do with the janitor.
+	//
+	// Age separates the two cases exactly. Debris from previous runs is minutes
+	// or days old; a row a concurrently-running test just wrote is seconds old.
+	// Two minutes is far longer than any test here takes and far shorter than the
+	// gap between runs.
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM core.outbox WHERE created_at < now() - interval '2 minutes'`); err != nil {
+		t.Fatal(err)
+	}
+	// The current run's own rows, whatever their age, since a test that measures
+	// a drain must start from a known state for its own topic.
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM core.outbox WHERE topic = 'backchannel_logout'`); err != nil {
 		t.Fatal(err)
 	}
 }

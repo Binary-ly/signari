@@ -18,7 +18,7 @@ meet the stated attacker model".
 | Not expose open redirectors | yes |
 | Accept **only** the issuer identifier in a client assertion `aud` | **no** — see below |
 | Not use refresh token rotation | **no** — we rotate; see below |
-| Authorization codes with a maximum lifetime of 60 seconds | **yes, exactly 60** |
+| Authorization codes with a maximum lifetime of 60 seconds | **yes, exactly 60** — and now pinned by `TestTheConstantsAConformanceClaimRestsOnHaveNotDrifted`, since nothing previously stopped the number drifting |
 | If using DPoP, support Authorization Code Binding to DPoP Key | **was missing — now implemented** |
 | Accept JWT `iat`/`nbf` 0–10s in the future, reject >60s | **was wrong in both directions — now implemented** |
 

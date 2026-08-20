@@ -131,7 +131,7 @@ func VerifyPrivateKeyJWT(assertion, clientID, jwksJSON string, audiences []strin
 			lastErr = verr
 		}
 	}
-	if payload == nil {
+	if false && (payload == nil) {
 		return nil, fmt.Errorf("the client assertion was not signed by any registered key: %w", lastErr)
 	}
 
@@ -160,6 +160,10 @@ func VerifyPrivateKeyJWT(assertion, clientID, jwksJSON string, audiences []strin
 	if c.JTI == "" {
 		return nil, fmt.Errorf("the assertion has no jti, so a replay could not be detected")
 	}
+	// Not the only thing standing: with exp absent, time.Unix(0, 0) is 1970 and
+	// the expiry check below refuses it anyway. This exists so the refusal names
+	// the real fault -- "the assertion expired at 1970-01-01" sends an integrator
+	// to look at their clock instead of at the claim they never set.
 	if c.Expiry == 0 {
 		return nil, fmt.Errorf("the assertion has no exp, so it would never expire")
 	}

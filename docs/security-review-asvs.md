@@ -212,3 +212,80 @@ requirements, unchanged.
 So this review is current, and the check cost one download. Worth repeating
 before trusting it again — the failure mode being guarded against is a review
 that was accurate when written and quietly stops being so.
+
+## V9 Self-contained Tokens: all seven, swept completely (21 August 2026)
+
+The ASVS 5.0.0 requirement set was downloaded and enumerated rather than
+recalled — **345 requirements across 17 chapters**. V9 is seven of them, small
+enough to check *every one* rather than sample, which is what a systematic sweep
+has to mean.
+
+| Requirement | Status |
+|---|---|
+| **V9.1.1** signature validated before contents are accepted | met — `verifiedPayload` returns the payload only after `tok.Verify`, and no caller can reach claims another way |
+| **V9.1.2** algorithm allowlist, no `None` | met, and now guarded — see below |
+| **V9.1.3** key material only from pre-configured sources; `jku`/`x5u`/`jwk` validated | **exceeded** — those headers are refused outright rather than allowlisted |
+| **V9.2.1** validity span honoured (`nbf` and `exp`) | **was partial** — fixed, see below |
+| **V9.2.2** correct token type for the purpose | met structurally — every verification passes an expected `typ`, so there is no code path that reads claims without one |
+| **V9.2.3** audience checked against an allowlist | met |
+| **V9.2.4** audience restriction uniquely identifies the audience | met — RFC 8707 resources become `aud`, validated because they do |
+
+### V9.1.2, turned from a review into a standing check
+
+This engine parses signed tokens in eight places: access tokens, ID tokens, DPoP
+proofs, SSF events, federation trust chains, upstream OIDC, Apple client secrets,
+`private_key_jwt`, ABCA attestations. Each passes its own allowlist to
+`jose.ParseSigned`, which is the right shape — the library makes the list
+mandatory, so it cannot be forgotten.
+
+What that shape cannot prevent is a future edit adding `jose.HS256` to one of the
+eight "so the test client works". A reviewer looking at that file sees a
+plausible list. Nobody looks at all eight at once.
+
+`TestNoTokenVerifierAcceptsNoneOrHMAC` does, and it fails naming the file and
+line — verified by planting `jose.HS256` in the DPoP allowlist:
+
+```
+1 token verifier(s) admit 'none' or an HMAC algorithm:
+  engine/internal/dpop/dpop.go:73: jose.HS256,
+```
+
+It also refuses to pass if it finds fewer than five `ParseSigned` sites, so it
+cannot succeed by walking the wrong directory — the failure mode that once let a
+mutation harness report eight covered guards as uncovered.
+
+**Asymmetric-only everywhere is stronger than V9.1.2 asks.** The requirement
+allows both families with "additional controls... to prevent key confusion". With
+no symmetric algorithm in any verifier, that attack cannot be constructed here:
+there is no context in which a public key could be presented as an HMAC secret,
+because nothing will accept an HMAC.
+
+### V9.2.1: the gap, and why it hid
+
+`internal/federation/client.go` validated `iss`, `aud`, `exp` and `nonce` on an
+upstream ID token — and not `nbf`.
+
+> "Verify that, if a validity time span is present in the token data, the token
+> and its content are accepted only if the verification time is within this
+> validity time span. For example, for JWTs, the claims 'nbf' and 'exp' must be
+> verified."
+
+An upstream that said "not valid before T" was honoured before T.
+
+**It hid because we never emit `nbf`.** Every token this code was written against
+and tested with lacked one, so nothing exercised the missing branch and nothing
+looked absent. The claim only arrives from somebody else's issuer — which is
+precisely the direction this file faces.
+
+Fixed, with `iat` bounded in the same direction and by the same ten seconds
+`clientauth` allows for FAPI 2.0 §5.3.2.1. Both cases are now in
+`TestIDTokenAttacks` beside "expired", "no expiry at all" and "alg none", and the
+`nbf` case was kill-checked.
+
+### Chapter coverage after this pass
+
+V9 complete (7/7). V10 OAuth and OIDC was swept earlier at 41 of 43 evidenced.
+V6 Authentication (47), V7 Session Management (19), V8 Authorization (13) and
+V11 Cryptography (24) have partial coverage from the protocol reviews but no
+requirement-by-requirement sweep — recorded in TODO-FOR-YOU.md as open rather
+than claimed.

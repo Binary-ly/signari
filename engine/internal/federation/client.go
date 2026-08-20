@@ -193,15 +193,24 @@ func (c Config) oidcIdentity(ctx context.Context, hc *http.Client, ts *TokenSet,
 // idTokenClaims is only what we read. Anything not listed cannot be trusted by
 // accident.
 type idTokenClaims struct {
-	Issuer        string          `json:"iss"`
-	Subject       string          `json:"sub"`
-	Audience      json.RawMessage `json:"aud"`
-	Expiry        int64           `json:"exp"`
-	IssuedAt      int64           `json:"iat"`
-	Nonce         string          `json:"nonce"`
-	Email         string          `json:"email"`
-	EmailVerified bool            `json:"email_verified"`
-	Name          string          `json:"name"`
+	Issuer   string          `json:"iss"`
+	Subject  string          `json:"sub"`
+	Audience json.RawMessage `json:"aud"`
+	Expiry   int64           `json:"exp"`
+	IssuedAt int64           `json:"iat"`
+	// NotBefore is the other half of the validity span. ASVS 5.0.0 V9.2.1: "if a
+	// validity time span is present in the token data, the token and its content
+	// are accepted only if the verification time is within this validity time
+	// span. For example, for JWTs, the claims 'nbf' and 'exp' must be verified."
+	//
+	// We never emit nbf ourselves, which is why it was missing here: every token
+	// this code was written against lacked one. An UPSTREAM may emit it, and a
+	// provider that says "not valid before T" has said something we were ignoring.
+	NotBefore     int64  `json:"nbf"`
+	Nonce         string `json:"nonce"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	Name          string `json:"name"`
 	// XMSEdov is a pointer so "absent" and "false" stay distinguishable --
 	// absent means the app registration never asked for it, which is an
 	// operator problem with a different fix from "the domain is unverified".
@@ -265,6 +274,28 @@ func (c Config) verifyIDToken(ctx context.Context, hc *http.Client, raw, nonce s
 	now := time.Now()
 	if claims.Expiry == 0 || now.After(time.Unix(claims.Expiry, 0)) {
 		return nil, fmt.Errorf("the id_token has expired")
+	}
+	// The lower bound of the validity span, when the upstream set one.
+	//
+	// Skew is allowed in the same direction and by the same amount as everywhere
+	// else in this codebase: a provider whose clock runs a few seconds fast is a
+	// configuration problem, not an attack, and refusing it produces an
+	// intermittent login failure nobody can reproduce.
+	if claims.NotBefore != 0 &&
+		time.Unix(claims.NotBefore, 0).After(now.Add(federationClockSkew)) {
+		return nil, fmt.Errorf("the id_token is not valid until %s, which is more "+
+			"than %s from now",
+			time.Unix(claims.NotBefore, 0).UTC().Format(time.RFC3339), federationClockSkew)
+	}
+	// And an iat far in the future, which is the same fault reported by a
+	// different claim. Checked only when present: iat is REQUIRED by OIDC Core
+	// but an upstream that omits it fails elsewhere, and refusing here would
+	// name the wrong problem.
+	if claims.IssuedAt != 0 &&
+		time.Unix(claims.IssuedAt, 0).After(now.Add(federationClockSkew)) {
+		return nil, fmt.Errorf("the id_token says it was issued at %s, which is in "+
+			"the future by more than %s",
+			time.Unix(claims.IssuedAt, 0).UTC().Format(time.RFC3339), federationClockSkew)
 	}
 	if nonce != "" && claims.Nonce != nonce {
 		// The binding to THIS login. Without it an id_token obtained anywhere
@@ -416,3 +447,11 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+// federationClockSkew is how far ahead an upstream provider's clock may be.
+//
+// The same ten seconds clientauth allows, and for the same reason: FAPI 2.0
+// §5.3.2.1 requires accepting 0-10 seconds of future-dating and rejecting more
+// than 60, and every second of tolerance is a second a token is usable before its
+// issuer says it should be.
+const federationClockSkew = 10 * time.Second

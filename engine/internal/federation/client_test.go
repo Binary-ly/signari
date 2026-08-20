@@ -114,6 +114,32 @@ func TestIDTokenAttacks(t *testing.T) {
 		nonce string
 	}{
 		{
+			// ASVS 5.0.0 V9.2.1: "if a validity time span is present in the token
+			// data, the token and its content are accepted only if the
+			// verification time is within this validity time span. For example,
+			// for JWTs, the claims 'nbf' and 'exp' must be verified."
+			//
+			// We never emit nbf ourselves, which is why this was unchecked: every
+			// token this code was written against lacked one. An upstream that
+			// says "not valid before T" has said something we were ignoring.
+			name: "not valid until an hour from now",
+			token: func() string {
+				cl := goodClaims(fp)
+				cl["nbf"] = time.Now().Add(time.Hour).Unix()
+				return fp.sign(t, cl)
+			},
+			nonce: "the-nonce",
+		},
+		{
+			name: "issued an hour in the future",
+			token: func() string {
+				cl := goodClaims(fp)
+				cl["iat"] = time.Now().Add(time.Hour).Unix()
+				return fp.sign(t, cl)
+			},
+			nonce: "the-nonce",
+		},
+		{
 			name: "audience is a different application",
 			token: func() string {
 				cl := goodClaims(fp)

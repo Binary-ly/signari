@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -142,9 +144,26 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One instant for the whole batch.
+	//
+	// RFC 9901 §10.1 requires the time claims to be rounded, and `Issue` rounds
+	// them -- but it was previously called with a fresh `time.Now()` per proof,
+	// so a batch that straddled a period boundary would still emit two different
+	// values. Reading the clock once makes the batch agree by construction
+	// instead of by how fast the loop happened to run.
+	issuedAt := time.Now()
+
 	// Each proof binds one credential (§8.3: "Each key provided by the Wallet is
 	// used to bind to, at most, one Credential"), so each is validated and each
 	// c_nonce spent separately.
+	//
+	// §10.1 requires NEW key binding keys for each credential in a batch, and a
+	// wallet that sends the same key twice -- with two different c_nonces, which
+	// it can freely obtain -- would get two credentials carrying an identical
+	// `cnf`. Those are linkable by inspection, which is the one thing batch
+	// issuance exists to prevent, so the batch is refused rather than served.
+	seenKeys := make(map[string]bool, len(proofs))
+
 	issued := make([]oid4vci.IssuedCredential, 0, len(proofs))
 	for _, p := range proofs {
 		key, perr := s.validateCredentialProof(ctx, claims, p)
@@ -152,7 +171,24 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 			writeCredentialError(w, http.StatusBadRequest, "invalid_proof", perr.Error())
 			return
 		}
-		cred, ierr := s.issueCredential(ctx, orgID, claims.Subject, cfg, key)
+		tp, terr := key.Thumbprint(crypto.SHA256)
+		if terr != nil {
+			s.log.Error("thumbprinting a holder key", "err", terr)
+			writeCredentialError(w, http.StatusBadRequest, "invalid_proof",
+				"the key in a proof could not be canonicalised")
+			return
+		}
+		if fp := base64.RawURLEncoding.EncodeToString(tp); seenKeys[fp] {
+			writeCredentialError(w, http.StatusBadRequest, "invalid_proof",
+				"two proofs carry the same public key; RFC 9901 section 10.1 "+
+					"requires a new key binding key for each credential in a batch, "+
+					"because credentials sharing a cnf can be linked to one holder "+
+					"by any two verifiers that compare them")
+			return
+		} else {
+			seenKeys[fp] = true
+		}
+		cred, ierr := s.issueCredential(ctx, orgID, claims.Subject, cfg, key, issuedAt)
 		if ierr != nil {
 			s.log.Error("issuing a credential", "err", ierr,
 				"correlation_id", correlationID(ctx))
@@ -202,7 +238,7 @@ func (s *Server) validateCredentialProof(ctx context.Context,
 
 // issueCredential mints one SD-JWT VC.
 func (s *Server) issueCredential(ctx context.Context, orgID, userID string,
-	cfg oid4vci.Configuration, holderKey *jose.JSONWebKey) (string, error) {
+	cfg oid4vci.Configuration, holderKey *jose.JSONWebKey, now time.Time) (string, error) {
 
 	subject, err := store.CredentialSubject(ctx, s.db, userID)
 	if err != nil {
@@ -218,7 +254,7 @@ func (s *Server) issueCredential(ctx context.Context, orgID, userID string,
 			return tokens.NewSigner(key).SignRaw(payload, typ)
 		},
 	}
-	return issuer.Issue(cfg, subject, holderKey, time.Now())
+	return issuer.Issue(cfg, subject, holderKey, now)
 }
 
 // credentialIssuerID is the identifier a proof's `aud` must equal (§F.1).

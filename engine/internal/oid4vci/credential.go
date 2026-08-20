@@ -187,6 +187,13 @@ func (i Issuer) Issue(cfg Configuration, subject map[string]any,
 			"token, which is what binding exists to prevent")
 	}
 
+	// RFC 9901 §10.1: the time claims in a batch MUST be rounded or randomized,
+	// or every credential in it carries the same second-precision fingerprint and
+	// the fresh salts and holder keys above buy the holder nothing. The caller
+	// passes one instant for the whole batch; rounding makes the credentials
+	// agree even when a batch straddles a period boundary.
+	now = sdjwt.RoundForUnlinkability(now, cfg.Lifetime)
+
 	// draft-ietf-oauth-sd-jwt-vc-18 §2.2.2.3: iss, nbf, exp, cnf and vct "MUST
 	// NOT be included in the Disclosures, i.e., cannot be selectively disclosed".
 	// They are the credential's own frame -- hiding the issuer or the expiry

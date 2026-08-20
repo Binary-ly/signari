@@ -44,6 +44,7 @@ import (
 	"math/big"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Separator joins the issuer-signed JWT and its disclosures.
@@ -71,7 +72,7 @@ const AlgSHA256 = "sha-256"
 
 var RedList = map[string]bool{
 	"iss": true, "iat": true, "nbf": true, "exp": true,
-	"cnf": true, "vct": true, "status": true,
+	"cnf": true, "vct": true, "status": true, "aud": true,
 }
 
 // Disclosure is one selectively disclosable claim.
@@ -356,4 +357,27 @@ func Parse(encoded string) (Disclosure, error) {
 		return Disclosure{}, fmt.Errorf("a disclosure claim name must be a string")
 	}
 	return Disclosure{Salt: salt, Name: name, Value: parts[2], Encoded: encoded}, nil
+}
+
+func RoundForUnlinkability(now time.Time, lifetime time.Duration) time.Time {
+	period := periodFor(lifetime)
+	return now.Truncate(period).UTC()
+}
+
+// periodFor picks the coarsest rounding period a lifetime can afford.
+func periodFor(lifetime time.Duration) time.Duration {
+	if lifetime <= 0 {
+		// No `exp` is emitted, so there is nothing that can expire early.
+		return 24 * time.Hour
+	}
+	for _, p := range []time.Duration{24 * time.Hour, time.Hour, time.Minute} {
+		if p <= lifetime/8 {
+			return p
+		}
+	}
+	// A lifetime under eight minutes. Second precision is what the specification
+	// objects to, but rounding further would expire the credential on arrival,
+	// and refusing to issue would be a worse answer than issuing a linkable
+	// credential to a holder who asked for one lasting minutes.
+	return time.Second
 }

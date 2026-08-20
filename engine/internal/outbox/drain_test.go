@@ -108,8 +108,24 @@ func enqueue(t *testing.T, pool *pgxpool.Pool, endpoint string, n int) {
 
 func clearOutbox(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(),
-		`DELETE FROM core.outbox WHERE topic = 'backchannel_logout'`); err != nil {
+	// EVERY topic, not just backchannel_logout.
+	//
+	// This used to scope the delete to one topic, and the tests below call
+	// drainOnce -- which drains ALL of them. So a test that measures how long a
+	// drain takes was also draining whatever other topics had accumulated, and
+	// the outbox is a table this suite's other packages write to and never clean.
+	//
+	// The test database had 633 undelivered rows by the time this was found,
+	// almost all webhook deliveries pointing at httptest ports that stopped
+	// existing when those tests ended. TestSlowReceiverDoesNotBlockOthers claims
+	// a batch of up to 500 and tries every one of them, so its timing assertion
+	// was measuring the accumulated debris of every previous run. It eventually
+	// took long enough to blow a 90-second package timeout.
+	//
+	// A test that asserts on elapsed time must control everything the code under
+	// test will touch. Scoping this to one topic looked tidier and quietly made
+	// the assertion depend on unrelated history.
+	if _, err := pool.Exec(context.Background(), `DELETE FROM core.outbox`); err != nil {
 		t.Fatal(err)
 	}
 }

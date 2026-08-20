@@ -9,7 +9,7 @@ nothing without knowing how many there are.
 
 | package | specification | version and status | currency verified | reviewed in depth |
 |---|---|---|---|---|
-| `internal/authzen` | AuthZEN Authorization API | **1.0 Final**, 11 Jan 2026 | yes | **yes** — one conformance defect |
+| `internal/authzen` | AuthZEN Authorization API | **1.0 Final**, 11 Jan 2026 | yes | **yes** — one conformance defect; re-verified Aug 2026 against the Final text: all five §10.1 endpoints at their default paths, and the §6.2 deny wire format now pinned |
 | `internal/sdjwt` | Selective Disclosure for JWTs | **RFC 9901**, Standards Track, Nov 2025 | yes | **yes** — two inert tests |
 | `internal/sdjwt` | SD-JWT VC | draft-18, 3 Aug 2026 | yes | **yes** — five wrong section numbers |
 | `internal/txntoken` | Transaction Tokens | draft-11, 30 Jul 2026 (WG Last Call) | yes | **yes** — one defect |

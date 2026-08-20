@@ -1,6 +1,7 @@
 package sdjwt
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -161,10 +162,34 @@ func TestValuesContainingHTMLCharactersHashPortably(t *testing.T) {
 	if raw.Value != "a<b&c>d" {
 		t.Fatalf("value round-tripped as %v; HTML escaping changed the bytes", raw.Value)
 	}
-	if strings.Contains(string(mustDecode(t, d.Encoded)), `<`) {
-		t.Error("the disclosure contains an escaped <, so its digest will not " +
-			"match what another implementation computes")
+	// Decoded with base64 DIRECTLY, not through mustDecode.
+	//
+	// mustDecode parses the Disclosure and then re-marshals it with
+	// json.Marshal, which escapes HTML by default -- so it returned escaped
+	// bytes whatever the package had produced, and this assertion could never
+	// fire. Turning SetEscapeHTML back on broke no test, which is how the
+	// inertness was found: by mutating rather than by reading.
+	onTheWire := string(mustBase64(t, d.Encoded))
+	if strings.Contains(onTheWire, `\u003c`) || strings.Contains(onTheWire, `\u0026`) {
+		t.Errorf("the disclosure escapes HTML characters: %s", onTheWire)
 	}
+	if !strings.Contains(onTheWire, "a<b&c>d") {
+		t.Errorf("the value does not appear literally on the wire: %s", onTheWire)
+	}
+}
+
+// mustBase64 returns the actual bytes of a Disclosure as transmitted.
+//
+// The distinction from mustDecode is the point: this is what a verifier hashes
+// (RFC 9901 §4.2.3), whereas mustDecode shows the round-tripped VALUES and tells
+// you nothing about the encoding.
+func mustBase64(t *testing.T, encoded string) []byte {
+	t.Helper()
+	b, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // The combined serialisation and its parser agree.
@@ -395,5 +420,95 @@ func TestADecoyCollidingWithARealDigestIsDropped(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("the real digest appears %d times; a decoy colliding with it "+
 			"would make that digest ambiguous", count)
+	}
+}
+
+// TestTheSaltCarriesTheEntropyTheRFCRequires.
+//
+// RFC 9901 §9.3, "Entropy of the Salt":
+//
+//	"The salt value MUST be cryptographically random ... The salt value MUST
+//	contain at least 128 bits of cryptographically secure random data."
+//
+// This is not decoration. The digest of a Disclosure is public, and a Disclosure
+// is `[salt, name, value]` — so a verifier who can guess the salt can confirm a
+// claim the holder chose NOT to reveal, by hashing candidate values until one
+// matches. For a claim with a small domain — a date of birth, a postcode, a
+// boolean — the value space is trivial, and the salt is the only thing making
+// the digest opaque.
+//
+// Written because the guarantee was untested: shrinking the salt from 16 bytes
+// to 8 broke no test at all. A security parameter nothing measures is one that
+// can be reduced by a refactor nobody reviews closely.
+func TestTheSaltCarriesTheEntropyTheRFCRequires(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 64; i++ {
+		d, err := NewDisclosure("age_over_18", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(d.Salt)
+		if err != nil {
+			t.Fatalf("the salt is not base64url: %v", err)
+		}
+		if len(raw)*8 < 128 {
+			t.Fatalf("the salt is %d bits; RFC 9901 §9.3 requires at least 128, and "+
+				"the salt is the only thing stopping a verifier brute-forcing a "+
+				"withheld claim from its digest", len(raw)*8)
+		}
+		if seen[d.Salt] {
+			t.Fatal("the same salt was produced twice; §9.3 requires a fresh one per " +
+				"Disclosure, and a repeat makes two digests linkable")
+		}
+		seen[d.Salt] = true
+	}
+}
+
+// TestAValueContainingHTMLCharactersIsEncodedLiterally.
+//
+// Go's json.Encoder rewrites `<`, `>` and `&` into \u003c, \u003e and \u0026 by
+// default. newDisclosureWithSalt turns that off.
+//
+// What that buys needs stating precisely, because the package comment overstates
+// it. Hashing is self-consistent either way: we hash the encoding we transmit,
+// and a verifier following RFC 9901 §4.2.3 hashes the string as RECEIVED, so an
+// escaped Disclosure would still verify and still decode to the same value.
+//
+// What escaping actually costs is interoperability with anything that
+// re-serialises before hashing -- non-conformant, and something real wallets have
+// done -- and readability when somebody is debugging a credential by hand. The
+// specification's own examples are unescaped.
+//
+// So it is a defensive choice rather than a load-bearing one, and it was
+// untested: turning escaping back on broke nothing, because the only test of it
+// compared re-marshalled bytes instead of the bytes on the wire.
+func TestAValueContainingHTMLCharactersIsEncodedLiterally(t *testing.T) {
+	d, err := NewDisclosure("employer", "Smith & Sons <Ltd>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onTheWire := string(mustBase64(t, d.Encoded))
+
+	for _, esc := range []string{`\u0026`, `\u003c`, `\u003e`} {
+		if strings.Contains(onTheWire, esc) {
+			t.Errorf("the disclosure contains %s; Go escaped an HTML character, which "+
+				"is not what the specification's examples show and differs from what "+
+				"a re-serialising verifier would produce.\n%s", esc, onTheWire)
+		}
+	}
+	if !strings.Contains(onTheWire, "Smith & Sons <Ltd>") {
+		t.Errorf("the value does not appear literally in the disclosure: %s", onTheWire)
+	}
+
+	// And it still round-trips, which must not be traded away for readability.
+	back, err := Parse(d.Encoded)
+	if err != nil {
+		t.Fatalf("the disclosure did not parse back: %v", err)
+	}
+	if back.Value != "Smith & Sons <Ltd>" {
+		t.Errorf("value round-tripped as %#v", back.Value)
+	}
+	if DigestOf(d.Encoded) != d.Digest() {
+		t.Error("the digest does not match the encoded form it is taken over")
 	}
 }

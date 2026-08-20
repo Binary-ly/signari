@@ -375,6 +375,49 @@ One subtlety worth keeping: disclosures are JSON-encoded with HTML escaping
 that checked our verifier against §7 would have been checking something that
 does not exist.
 
+### Reading found nothing; mutating found two things
+
+The review above was done by reading, and reading is not harsh testing. Every
+guarantee in the package was then broken deliberately to see whether a test
+noticed. Eight of ten mutants died. Two survived, and both were real:
+
+**1. The salt could be halved and nothing failed.** RFC 9901 §9.3 requires at
+least 128 bits. Shrinking `newSalt` from 16 bytes to 8 broke no test. That is a
+security parameter with nothing measuring it — and the salt is the only thing
+that stops a verifier confirming a *withheld* claim by hashing candidate values
+until one matches a public digest. For a claim with a small domain — a date of
+birth, a postcode, a boolean — the search is trivial. Now tested, including that
+salts do not repeat.
+
+**2. The test guarding the package's headline subtlety could not fail.**
+
+`TestValuesContainingHTMLCharactersHashPortably` existed to check that
+disclosures are encoded without Go's HTML escaping. It asserted:
+
+```go
+if strings.Contains(string(mustDecode(t, d.Encoded)), `<`) {
+```
+
+`mustDecode` does not decode the wire bytes. It `Parse`s the Disclosure and then
+**re-marshals it with `json.Marshal`**, which escapes HTML by default — so it
+returned escaped bytes whatever the package had produced, and the literal `<`
+was never present either way. The assertion could not fire. Turning
+`SetEscapeHTML(false)` into `true` broke nothing.
+
+The code was correct throughout. The test was inert, and it was inert around
+exactly the detail the package documentation singles out as the one
+implementations get wrong. It now decodes the base64 directly — what a verifier
+hashes under §4.2.3 — and checks for `\u003c` and `\u0026` rather than for a
+literal that cannot appear.
+
+While fixing it, the package comment turned out to **overstate** the case.
+Hashing is self-consistent either way: we hash the encoding we transmit, and a
+conformant verifier hashes the string as received, so an escaped Disclosure would
+still verify and still decode to the same value. What escaping costs is
+interoperability with anything that re-serialises before hashing, and readability
+when somebody is debugging a credential by hand. Defensive, not load-bearing —
+now said that way in the test.
+
 ### Five wrong section numbers
 
 The numbering shifted between SD-JWT VC drafts and nobody re-checked:

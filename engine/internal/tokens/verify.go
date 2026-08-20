@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -89,15 +90,17 @@ func VerifyAccessTokenAny(set *keys.Set, issuers []string, raw string) (*AccessT
 	return &c, nil
 }
 
-// HasScope reports whether a space-delimited scope string contains one scope.
 func HasScope(scope, want string) bool {
-	start := 0
-	for i := 0; i <= len(scope); i++ {
-		if i == len(scope) || scope[i] == ' ' {
-			if scope[start:i] == want {
-				return true
-			}
-			start = i + 1
+	if want == "" {
+		// "" is not a scope. Fields never yields an empty field, so this cannot
+		// match by accident today -- but the old scanner DID return true for
+		// HasScope("a  b", ""), and a caller passing a scope it failed to parse
+		// should get "no", not "yes".
+		return false
+	}
+	for _, s := range strings.Fields(scope) {
+		if s == want {
+			return true
 		}
 	}
 	return false

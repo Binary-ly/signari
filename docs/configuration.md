@@ -227,3 +227,4 @@ them as undocumented and so nobody sets them in production expecting an effect.
 | `SIGNARI_DESTRUCTIVE_TEST_DSN` | A **disposable** database for tests that deliberately break the audit chain. See [the audit chain fork](audit-chain-fork.md) |
 | `SIGNARI_DNS_CHECK`, `SIGNARI_DNS_DOMAIN` | Gate the live DNS deliverability test |
 | `SIGNARI_SMS_TWILIO_BASE_URL` | Points the Twilio client at a local server |
+| `SIGNARI_ALLOW_SKIPPED_DB_TESTS` | Set to `1` to run the suite without a database. Most tests then skip, and the run proves almost nothing — the flag exists so that is a stated choice rather than the accident of an unset `SIGNARI_TEST_DSN`, which once let a mutation harness report eight covered guards as uncovered |

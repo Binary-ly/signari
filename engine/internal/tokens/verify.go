@@ -113,29 +113,26 @@ func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 // make logout harder precisely when it matters. The signature and issuer still
 // must check out, so the hint cannot be forged.
 func VerifyIDTokenAudience(set *keys.Set, issuer, raw string) (string, error) {
-	permitted := []jose.SignatureAlgorithm{jose.RS256, jose.ES256, jose.PS256, jose.EdDSA}
-	tok, err := jose.ParseSigned(raw, permitted)
+	// Through the SHARED verifier, which is the whole point of there being one.
+	//
+	// This function used to hand-roll its own copy of the header hardening, and
+	// the copy had drifted: it checked the algorithm allow-list, the single
+	// signature, the embedded key material and the kid/alg pinning, and it did
+	// NOT check `typ`. Every other path here does.
+	//
+	// The consequence was specific. This is what reads an `id_token_hint` at the
+	// end-session endpoint, and its answer decides which client's registered
+	// post-logout URIs apply and whether the logout confirmation is skipped. Any
+	// token this server signed whose claims unmarshal into IDTokenClaims was
+	// accepted — access tokens were safe by accident, because their `aud` is an
+	// array and this struct wants a string, but a transaction token carries a
+	// string `aud` and sailed through.
+	//
+	// Found by mutating the shared verifier and watching nothing fail, because
+	// the tests went through code that did not use it.
+	payload, err := verifiedPayload(set, raw, TypIDToken)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidToken, err)
-	}
-	if len(tok.Signatures) != 1 {
-		return "", fmt.Errorf("%w: expected exactly one signature", ErrInvalidToken)
-	}
-	h := tok.Signatures[0].Header
-	if h.JSONWebKey != nil || h.ExtraHeaders[jose.HeaderKey("jku")] != nil ||
-		h.ExtraHeaders[jose.HeaderKey("x5u")] != nil {
-		return "", fmt.Errorf("%w: token carries its own key material", ErrInvalidToken)
-	}
-	key, ok := set.ByKID(h.KeyID)
-	if !ok {
-		return "", fmt.Errorf("%w: unknown kid", ErrInvalidToken)
-	}
-	if string(key.Algorithm()) != h.Algorithm {
-		return "", fmt.Errorf("%w: kid/alg mismatch", ErrInvalidToken)
-	}
-	payload, err := tok.Verify(key.Signer().Public())
-	if err != nil {
-		return "", fmt.Errorf("%w: signature does not verify", ErrInvalidToken)
+		return "", err
 	}
 	var c IDTokenClaims
 	if err := json.Unmarshal(payload, &c); err != nil {
@@ -159,32 +156,20 @@ func VerifyIDTokenAudience(set *keys.Set, issuer, raw string) (string, error) {
 // enforce subject, jti or audience, because internal tokens carry their own
 // shape. Callers must validate their own claims after unmarshalling.
 func VerifyTyped(set *keys.Set, issuer, raw, wantTyp string) ([]byte, error) {
-	permitted := []jose.SignatureAlgorithm{jose.RS256, jose.ES256, jose.PS256, jose.EdDSA}
-	tok, err := jose.ParseSigned(raw, permitted)
+	// The THIRD copy of the header hardening used to live here, and it was the
+	// one the tests exercised -- so mutating the shared verifier broke nothing and
+	// the shared verifier's checks were, in practice, unverified.
+	//
+	// The comment on VerifyTypedJSON below says the hardening "is the part that
+	// is easy to write twice and get right once", and that "the shared part lives
+	// in verifiedPayload and both callers use it". That was the intent; there were
+	// three hand-rolled copies. They agreed on everything except `typ`, which
+	// VerifyIDTokenAudience had quietly dropped.
+	//
+	// One implementation now, so a mutation to it fails a test.
+	payload, err := verifiedPayload(set, raw, wantTyp)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
-	}
-	if len(tok.Signatures) != 1 {
-		return nil, fmt.Errorf("%w: expected exactly one signature", ErrInvalidToken)
-	}
-	h := tok.Signatures[0].Header
-	if h.JSONWebKey != nil || h.ExtraHeaders[jose.HeaderKey("jku")] != nil ||
-		h.ExtraHeaders[jose.HeaderKey("x5u")] != nil {
-		return nil, fmt.Errorf("%w: token carries its own key material", ErrInvalidToken)
-	}
-	if typ, _ := h.ExtraHeaders[jose.HeaderKey("typ")].(string); typ != wantTyp {
-		return nil, fmt.Errorf("%w: typ is %q, want %q", ErrInvalidToken, typ, wantTyp)
-	}
-	key, ok := set.ByKID(h.KeyID)
-	if !ok {
-		return nil, fmt.Errorf("%w: unknown kid", ErrInvalidToken)
-	}
-	if string(key.Algorithm()) != h.Algorithm {
-		return nil, fmt.Errorf("%w: kid/alg mismatch", ErrInvalidToken)
-	}
-	payload, err := tok.Verify(key.PublicJWK().Key)
-	if err != nil {
-		return nil, fmt.Errorf("%w: signature does not verify", ErrInvalidToken)
+		return nil, err
 	}
 	var probe struct {
 		Issuer string `json:"iss"`

@@ -185,3 +185,71 @@ and watching the loop test fail.
 
 This predates the flow engine — the hardcoded `if enrolled` it replaced behaved
 identically.
+
+
+## Mutating the JWT verifier (August 2026)
+
+`internal/tokens/verify.go` is where alg-confusion, `jku` and `typ`-confusion
+attacks land. It had thirteen tests, all passing. Every hardening property was
+deleted in turn to see whether any test noticed.
+
+### A real defect: `id_token_hint` accepted tokens that were not ID tokens
+
+The hardening was implemented **three times** — in `VerifyIDTokenAudience`,
+`VerifyTyped` and `verifiedPayload` — despite a comment in the same file saying
+it "is easy to write twice and get right once" and that "the shared part lives in
+verifiedPayload and both callers use it". That was the intent, not the state.
+
+The copies had drifted. `VerifyIDTokenAudience` checked the algorithm allow-list,
+the single signature, embedded key material and the kid/alg pinning — and **not
+`typ`**. Every other path checks it.
+
+That function reads an `id_token_hint` at the end-session endpoint, and its
+answer decides which client's registered post-logout URIs apply and whether the
+logout confirmation prompt is skipped — RP-Initiated Logout accepts a verified
+hint in place of asking the person. So any token this server signed whose claims
+unmarshal into `IDTokenClaims` was accepted as an ID token.
+
+Access tokens were safe **by accident**: their `aud` is a JSON array and the
+struct wants a string, so they fail to unmarshal. Transaction tokens carry a
+string `aud` and went straight through.
+
+Fixed by routing all three paths through `verifiedPayload`. One implementation
+now, so a mutation to it can fail a test.
+
+### A test that could not tell which defence had fired
+
+`TestAlgConfusionIsRejected` forged tokens with the signature `"AAAA"` — garbage.
+Every one is refused, but by the last check rather than the one under test:
+whichever header defence you delete, `tok.Verify` still fails. Deleting the
+algorithm allow-list broke nothing.
+
+`TestAlgConfusionWithARealSignatureIsRejected` performs the actual attack: a
+token signed **HS256 using our own published JWKS entry as the HMAC secret**,
+which is a genuinely valid signature for the algorithm claimed. It asserts not
+merely that the token is refused but that it is refused *before any key is
+consulted*.
+
+### What single-mutant survival actually means here
+
+Four properties still survive deletion on their own: `kid` required, exactly one
+signature, the algorithm allow-list, and the kid/alg pinning. That is **not** four
+untested defects. They are mutually redundant:
+
+- Drop the allow-list, and the kid/alg pinning refuses the HS256 token.
+- Drop the pinning, and the allow-list refuses it.
+- Drop both, and go-jose declines to verify an HMAC signature against an EC key —
+  a third layer, in the library.
+- Drop the `kid` requirement, and `ByKID("")` fails anyway.
+
+Removing any one leaves the system safe, which is the point of defence in depth
+and the expected result. The new test kills the case where **both** application
+layers go.
+
+### A correction to this review's own method
+
+The first mutation run reported all six properties surviving, and that was
+wrong — Go caches test results, and the harness read a cached `ok`. Re-run with
+`-count=1` the picture changed: two died immediately. A mutation harness that
+does not defeat the test cache reports every mutant as surviving and looks like a
+damning finding.

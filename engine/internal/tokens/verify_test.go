@@ -1,6 +1,8 @@
 package tokens
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -370,4 +372,125 @@ func TestAudienceRestrictionIsEnforcedAgainstOurselves(t *testing.T) {
 			t.Fatal("an empty audience was treated as audienced to everyone")
 		}
 	})
+}
+
+// TestOnlyAnIDTokenIsAcceptedAsAnIDTokenHint.
+//
+// VerifyIDTokenAudience is what reads an `id_token_hint` at the end-session
+// endpoint. Its answer decides two things: which client's registered
+// post-logout URIs apply, and whether the logout confirmation prompt is skipped
+// — OIDC RP-Initiated Logout accepts a verified hint in place of asking the
+// person.
+//
+// It hand-rolled its own copy of the header hardening and that copy had drifted:
+// every other verification path in this file checks `typ`, and this one did not.
+// So any token this server signs whose claims happen to unmarshal into
+// IDTokenClaims was accepted as an ID token.
+//
+// Access tokens were never usable this way — theirs is `"aud": ["webapp"]`, an
+// array, which fails to unmarshal into a string field. Transaction tokens carry
+// a STRING `aud`, so they were, and holding one is enough to suppress a logout
+// confirmation.
+//
+// Found by mutation: removing the typ check from the shared verifier broke
+// nothing, because the path the tests exercise never used the shared verifier.
+func TestOnlyAnIDTokenIsAcceptedAsAnIDTokenHint(t *testing.T) {
+	set, key := testSet(t)
+	now := time.Now()
+
+	// A properly SIGNED token with a string audience and our issuer, differing
+	// from an ID token only in its typ. A forged signature would be rejected
+	// before the typ check and would prove nothing.
+	type stringAudClaims struct {
+		Issuer   string `json:"iss"`
+		Subject  string `json:"sub"`
+		Audience string `json:"aud"`
+		Expiry   int64  `json:"exp"`
+		IssuedAt int64  `json:"iat"`
+	}
+	claims := stringAudClaims{
+		Issuer: testIssuer, Subject: "user-1", Audience: "webapp",
+		Expiry: now.Add(5 * time.Minute).Unix(), IssuedAt: now.Unix(),
+	}
+
+	for _, typ := range []string{"txntoken+jwt", "at+jwt", "pending+jwt", "kb+jwt"} {
+		raw, err := NewSigner(key).SignJSON(claims, typ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		aud, err := VerifyIDTokenAudience(set, testIssuer, raw)
+		if err == nil {
+			t.Errorf("a token with typ=%q was accepted as an id_token_hint and "+
+				"reported audience %q; it identifies a relying party and can skip "+
+				"the logout confirmation", typ, aud)
+		}
+	}
+
+	// And a genuine ID token still works, so the check above is not simply
+	// refusing everything.
+	idt, err := NewSigner(key).SignJSON(IDTokenClaims{
+		Issuer: testIssuer, Subject: "user-1", Audience: "webapp",
+		Expiry: now.Add(5 * time.Minute).Unix(), IssuedAt: now.Unix(),
+	}, TypIDToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aud, err := VerifyIDTokenAudience(set, testIssuer, idt)
+	if err != nil {
+		t.Fatalf("a genuine ID token was refused as an id_token_hint: %v", err)
+	}
+	if aud != "webapp" {
+		t.Errorf("audience = %q, want webapp", aud)
+	}
+}
+
+// TestAlgConfusionWithARealSignatureIsRejected.
+//
+// TestAlgConfusionIsRejected above forges tokens with the signature "AAAA" --
+// garbage. Every one of them is refused, but by the LAST check rather than the
+// one under test: whichever header defence you delete, the token still fails at
+// `tok.Verify`. Deleting the algorithm allow-list broke no test.
+//
+// This is the actual attack. An ES256 verifier that takes the algorithm from the
+// HEADER rather than from the key can be handed a token signed HS256, using the
+// verifier's own PUBLIC key as the HMAC secret -- which the attacker has, because
+// it is published at /oauth2/jwks. The signature is genuinely valid for the
+// algorithm claimed, so nothing downstream saves you.
+//
+// Written after mutation showed the existing test could not distinguish "refused
+// because the algorithm is not permitted" from "refused because the signature is
+// nonsense".
+func TestAlgConfusionWithARealSignatureIsRejected(t *testing.T) {
+	set, key := testSet(t)
+
+	// The attacker's material: the public key, exactly as we publish it.
+	pubJWK, err := json.Marshal(key.PublicJWK())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	header := map[string]any{"alg": "HS256", "typ": TypAccessToken, "kid": key.KID()}
+	hb, _ := json.Marshal(header)
+	pb, _ := json.Marshal(validClaims())
+	signingInput := base64.RawURLEncoding.EncodeToString(hb) + "." +
+		base64.RawURLEncoding.EncodeToString(pb)
+
+	// A CORRECT HMAC over the signing input, keyed with the published public key.
+	mac := hmac.New(sha256.New, pubJWK)
+	mac.Write([]byte(signingInput))
+	raw := signingInput + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+
+	if _, err := VerifyAccessToken(set, testIssuer, raw); err == nil {
+		t.Fatal("a token signed HS256 with our own published public key as the HMAC " +
+			"secret was ACCEPTED; anyone who can read /oauth2/jwks can mint tokens")
+	}
+
+	// And the refusal must come from the algorithm being impermissible, not from
+	// the signature happening not to verify -- otherwise this test would pass
+	// again the moment somebody widened the allow-list.
+	_, err = VerifyAccessToken(set, testIssuer, raw)
+	if strings.Contains(err.Error(), "signature does not verify") {
+		t.Errorf("refused only at signature verification (%v); the algorithm should "+
+			"have been refused before any key was consulted", err)
+	}
 }

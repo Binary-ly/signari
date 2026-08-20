@@ -113,6 +113,22 @@ func BuildOffer(issuer string, configurationIDs []string, code string, tx *TxCod
 		return nil, fmt.Errorf("a credential offer must name at least one " +
 			"credential_configuration_id; an offer of nothing is not an offer")
 	}
+	// §4.1.1: "credential_configuration_ids: REQUIRED. A non-empty array of
+	// UNIQUE strings". Non-empty was checked; unique was not.
+	//
+	// A duplicate is not harmless. §8.3 says the credentials array "matches the
+	// number of keys that the Wallet has provided via the proofs parameter", so a
+	// wallet reading a twice-named configuration reasonably supplies two proofs
+	// and expects two credentials -- and gets an issuance it did not intend from
+	// an offer the operator did not mean to make.
+	seen := make(map[string]bool, len(configurationIDs))
+	for _, id := range configurationIDs {
+		if seen[id] {
+			return nil, fmt.Errorf("the credential offer names %q twice; section "+
+				"4.1.1 requires credential_configuration_ids to be unique", id)
+		}
+		seen[id] = true
+	}
 	if code == "" {
 		return nil, fmt.Errorf("the pre-authorized code is required (section 3.5)")
 	}

@@ -38,6 +38,7 @@ import (
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/provision"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -55,6 +56,7 @@ import (
 	"signari.dev/engine/internal/doctor"
 	"signari.dev/engine/internal/duo"
 	"signari.dev/engine/internal/federation"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/httpapi"
 	"signari.dev/engine/internal/importer"
 	"signari.dev/engine/internal/janitor"
@@ -66,7 +68,6 @@ import (
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/outbox"
 	"signari.dev/engine/internal/passwords"
-	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/proxycheck"
@@ -6220,6 +6221,40 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 			Description: fmt.Sprintf("Enter the %d-digit code from the issuer",
 				txLength),
 		}
+	}
+
+	// §4.1.1: the ids "each identify one of the keys in the name/value pairs
+	// stored in the credential_configurations_supported Credential Issuer
+	// metadata". Checked here, where the configurations are reachable.
+	//
+	// Without it a typo produces a perfectly well-formed offer. The holder scans
+	// it, authenticates, redeems the pre-authorized code -- and the credential
+	// endpoint answers unsupported_credential_type, after everything they were
+	// asked to do has been done correctly. The failure is maximally late and
+	// lands on the wallet, which is the one component that did nothing wrong.
+	configured, cerr := store.CredentialConfigurations(ctx, conn, orgID)
+	if cerr != nil {
+		return fmt.Errorf("loading credential configurations: %w", cerr)
+	}
+	var unknown []string
+	for _, id := range ids {
+		if _, ok := configured[id]; !ok {
+			unknown = append(unknown, id)
+		}
+	}
+	if len(unknown) > 0 {
+		known := make([]string, 0, len(configured))
+		for id := range configured {
+			known = append(known, id)
+		}
+		sort.Strings(known)
+		if len(known) == 0 {
+			return fmt.Errorf("this organisation issues no credentials, so an offer "+
+				"naming %s could not be redeemed. Configure one first with "+
+				"`signari credential config set`", strings.Join(unknown, ", "))
+		}
+		return fmt.Errorf("no credential configuration named %s; this issuer "+
+			"advertises %s", strings.Join(unknown, ", "), strings.Join(known, ", "))
 	}
 
 	offer, err := oid4vci.BuildOffer(ci, ids, code, tx)

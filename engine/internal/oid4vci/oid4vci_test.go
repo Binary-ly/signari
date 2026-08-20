@@ -158,3 +158,37 @@ func TestAnOfferMustNameACredential(t *testing.T) {
 		t.Fatal("an unrecognised tx_code input_mode was accepted")
 	}
 }
+
+// §4.1.1: "credential_configuration_ids: REQUIRED. A non-empty array of UNIQUE
+// strings".
+//
+// Found on the second pass over this specification. The first covered §7, §8.3
+// and §12.2.4 and never opened §4 — which is where the offer, the thing a holder
+// actually scans, is defined.
+//
+// A duplicate is not cosmetic. §8.3 says the credentials array "matches the
+// number of keys that the Wallet has provided via the proofs parameter", so a
+// wallet reading a twice-named configuration reasonably sends two proofs and
+// expects two credentials — an issuance the operator did not intend, from an
+// offer they did not mean to make.
+func TestAnOfferCannotNameAConfigurationTwice(t *testing.T) {
+	_, err := BuildOffer("https://issuer.example", []string{"IdentityCredential"},
+		"code-123", nil)
+	if err != nil {
+		t.Fatalf("a single-configuration offer was refused: %v", err)
+	}
+
+	_, err = BuildOffer("https://issuer.example",
+		[]string{"IdentityCredential", "IdentityCredential"}, "code-123", nil)
+	if err == nil {
+		t.Fatal("an offer naming the same configuration twice was accepted; " +
+			"§4.1.1 requires the ids to be unique")
+	}
+
+	// Two DIFFERENT configurations remain legal — §4.1.1 is about uniqueness,
+	// not about offering one credential at a time.
+	if _, err := BuildOffer("https://issuer.example",
+		[]string{"IdentityCredential", "MembershipCredential"}, "code-123", nil); err != nil {
+		t.Errorf("an offer of two distinct configurations was refused: %v", err)
+	}
+}

@@ -197,7 +197,7 @@ func (s *Server) continueSAMLLogoutChain(w http.ResponseWriter, r *http.Request,
 		if err := tx.Commit(ctx); err != nil {
 			return false
 		}
-		http.Redirect(w, r, url, http.StatusFound)
+		http.Redirect(w, r, url, http.StatusSeeOther)
 		return true
 	}
 
@@ -225,7 +225,7 @@ func (s *Server) continueSAMLLogoutChain(w http.ResponseWriter, r *http.Request,
 	}
 
 	if chain.FinalRedirect != "" {
-		http.Redirect(w, r, chain.FinalRedirect, http.StatusFound)
+		http.Redirect(w, r, chain.FinalRedirect, http.StatusSeeOther)
 		return true
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -60,7 +60,7 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	_, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 
@@ -143,7 +143,7 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	_, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 
@@ -157,7 +157,7 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	cred, err := store.LoadTOTP(ctx, tx, userID, s.cfg.Root)
 	if err != nil {
 		s.log.Info("confirming TOTP without a pending enrolment", "err", err)
-		http.Redirect(w, r, "/account/mfa/totp", http.StatusFound)
+		http.Redirect(w, r, "/account/mfa/totp", http.StatusSeeOther)
 		return
 	}
 
@@ -416,7 +416,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	_, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, parkLogin("/account/mfa/email"), http.StatusFound)
+		http.Redirect(w, r, parkLogin("/account/mfa/email"), http.StatusSeeOther)
 		return
 	}
 
@@ -583,7 +583,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	_, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, parkLogin("/account/mfa/sms"), http.StatusFound)
+		http.Redirect(w, r, parkLogin("/account/mfa/sms"), http.StatusSeeOther)
 		return
 	}
 

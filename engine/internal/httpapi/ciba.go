@@ -239,7 +239,7 @@ func (s *Server) handleBackchannelRequests(w http.ResponseWriter, r *http.Reques
 	ctx := r.Context()
 	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, parkLogin("/account/requests"), http.StatusFound)
+		http.Redirect(w, r, parkLogin("/account/requests"), http.StatusSeeOther)
 		return
 	}
 

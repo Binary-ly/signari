@@ -229,7 +229,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		back := "/saml/sso?" + samlResumeQuery(encoded, relayState, r.Method, r.URL.RawQuery)
-		http.Redirect(w, r, parkLogin(back), http.StatusFound)
+		http.Redirect(w, r, parkLogin(back), http.StatusSeeOther)
 		return
 	}
 

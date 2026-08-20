@@ -195,7 +195,7 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 	}
 	_, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 
@@ -271,7 +271,7 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, oidc.PathAuthorize+"?"+authzQuery, http.StatusFound)
+	http.Redirect(w, r, oidc.PathAuthorize+"?"+authzQuery, http.StatusSeeOther)
 }
 
 // denyToClient returns access_denied to the client's redirect_uri.

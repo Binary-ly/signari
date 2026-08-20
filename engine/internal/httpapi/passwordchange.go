@@ -61,11 +61,11 @@ func (s *Server) handlePasswordChangePost(w http.ResponseWriter, r *http.Request
 	}
 	pending, err := s.readPending(r)
 	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 

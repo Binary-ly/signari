@@ -63,7 +63,7 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, req.RedirectURL, http.StatusFound)
+	http.Redirect(w, r, req.RedirectURL, http.StatusSeeOther)
 }
 
 // handleSAMLSourceACS consumes an assertion from the upstream provider.

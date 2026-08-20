@@ -81,7 +81,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request) {
 
 	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, parkLogin(r.URL.RequestURI()), http.StatusFound)
+		http.Redirect(w, r, parkLogin(r.URL.RequestURI()), http.StatusSeeOther)
 		return
 	}
 

@@ -1669,7 +1669,7 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 
 	// Back to whatever was parked, if anything was.
 	if authzQuery != "" {
-		http.Redirect(w, r, resumeAfterSignIn(authzQuery), http.StatusFound)
+		http.Redirect(w, r, resumeAfterSignIn(authzQuery), http.StatusSeeOther)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "signed in"})
@@ -1738,7 +1738,7 @@ func (s *Server) writeAuthzError(w http.ResponseWriter, r *http.Request,
 	if e.Disposition == oauth.DispositionRedirect {
 		target, err := oauth.ErrorRedirect(req.RedirectURI, s.cfg.Issuer, req.State, e)
 		if err == nil {
-			http.Redirect(w, r, target, http.StatusFound)
+			http.Redirect(w, r, target, http.StatusSeeOther)
 			return
 		}
 		s.log.Error("building error redirect", "err", err)
@@ -1904,20 +1904,20 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 		if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, target); chain != "" {
 			// SAML first: its chain needs the browser, and the front channel would
 			// otherwise navigate away mid-chain.
-			http.Redirect(w, r, chain, http.StatusFound)
+			http.Redirect(w, r, chain, http.StatusSeeOther)
 			return
 		}
 		if len(frontChannel) > 0 {
 			s.renderFrontChannelLogout(w, r, frontChannel, target)
 			return
 		}
-		http.Redirect(w, r, target, http.StatusFound)
+		http.Redirect(w, r, target, http.StatusSeeOther)
 		return
 	}
 
 	// No post-logout redirect: propagate, then report.
 	if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, ""); chain != "" {
-		http.Redirect(w, r, chain, http.StatusFound)
+		http.Redirect(w, r, chain, http.StatusSeeOther)
 		return
 	}
 	if len(frontChannel) > 0 {

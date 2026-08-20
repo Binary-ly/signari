@@ -177,7 +177,7 @@ func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 		if rd != "" {
 			back += "?rd=" + url.QueryEscape(rd)
 		}
-		http.Redirect(w, r, parkLogin(back), http.StatusFound)
+		http.Redirect(w, r, parkLogin(back), http.StatusSeeOther)
 		return
 	}
 
@@ -237,7 +237,7 @@ func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "proxy session established"})
 		return
 	}
-	http.Redirect(w, r, target, http.StatusFound)
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 // validateProxyRedirect refuses anything not under a protected host.

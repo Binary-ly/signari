@@ -86,7 +86,7 @@ func TestALogoutPOSTWithoutCSRFIsRefused(t *testing.T) {
 	rec := httptest.NewRecorder()
 	f.srv.Routes().ServeHTTP(rec, req)
 
-	if rec.Code == http.StatusFound || rec.Code == http.StatusOK {
+	if rec.Code == http.StatusSeeOther || rec.Code == http.StatusOK {
 		t.Fatalf("a POST with no CSRF token was accepted (status %d); the "+
 			"confirmation step would be forgeable", rec.Code)
 	}

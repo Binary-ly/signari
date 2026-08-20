@@ -89,13 +89,13 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// The token expired or was never there. Back to the start rather than a
 		// message about tokens, which means nothing to whoever is reading it.
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 
 	p, err := store.LoadPrompt(ctx, s.db, pending.OrgID, r.PostFormValue("prompt"))
 	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 

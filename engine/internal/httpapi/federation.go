@@ -70,7 +70,7 @@ func (s *Server) startFederation(w http.ResponseWriter, r *http.Request, linking
 	if linking {
 		_, userID, orgID, ok := s.currentSession(r)
 		if !ok {
-			http.Redirect(w, r, parkLogin("/account/link/"+url.PathEscape(slug)), http.StatusFound)
+			http.Redirect(w, r, parkLogin("/account/link/"+url.PathEscape(slug)), http.StatusSeeOther)
 			return
 		}
 		if orgID != provider.OrgID {
@@ -123,7 +123,7 @@ func (s *Server) startFederation(w http.ResponseWriter, r *http.Request, linking
 		MaxAge:   600,
 	})
 	http.Redirect(w, r, provider.AuthorizeURL(s.federationRedirectURI(slug), state, nonce, verifier),
-		http.StatusFound)
+		http.StatusSeeOther)
 }
 
 func (s *Server) handleFederatedCallback(w http.ResponseWriter, r *http.Request) {
@@ -345,7 +345,7 @@ func (s *Server) redirectAfterFederation(w http.ResponseWriter, r *http.Request,
 	if returnTo == "" {
 		returnTo = fallback
 	}
-	http.Redirect(w, r, returnTo, http.StatusFound)
+	http.Redirect(w, r, returnTo, http.StatusSeeOther)
 }
 
 // validFederationReturn keeps a return target on this origin.

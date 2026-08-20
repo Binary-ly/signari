@@ -173,7 +173,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		if code := r.URL.Query().Get("user_code"); code != "" {
 			back += "?user_code=" + template.URLQueryEscaper(code)
 		}
-		http.Redirect(w, r, parkLogin(back), http.StatusFound)
+		http.Redirect(w, r, parkLogin(back), http.StatusSeeOther)
 		return
 	}
 

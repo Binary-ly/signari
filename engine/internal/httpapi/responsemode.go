@@ -105,7 +105,25 @@ func (s *Server) deliverAuthzResponse(w http.ResponseWriter, r *http.Request,
 		}
 		u.RawQuery = q.Encode()
 	}
-	http.Redirect(w, r, u.String(), http.StatusFound)
+	// 303, not 302, and never 307.
+	//
+	// FAPI 2.0 §5.3.2.2 states both halves: an authorization server "shall not
+	// use the HTTP 307 status code when redirecting a request that contains user
+	// credentials to avoid forwarding the credentials to a third party
+	// accidentally", and "should use the HTTP 303 status code when redirecting
+	// the user agent using status codes".
+	//
+	// 307 is the obvious hazard -- it preserves the method and body, so a POSTed
+	// password is re-sent to wherever the redirect points. 302 is the quiet one:
+	// RFC 7231 §6.4.3 says a user agent MAY change the method from POST to GET,
+	// which means it may also keep it. The behaviour is the agent's choice, and
+	// "usually GET" is not a security property.
+	//
+	// 303 removes the choice: §6.4.4 requires the method change. Every redirect
+	// this server issues is "the result is at another URI, go and GET it", so the
+	// whole codebase uses it rather than leaving one status code here and another
+	// everywhere else for a reader to reason about.
+	http.Redirect(w, r, u.String(), http.StatusSeeOther)
 }
 
 // postAuthzResponse renders the self-submitting form.

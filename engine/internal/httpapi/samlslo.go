@@ -225,7 +225,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 	if strings.ContainsRune(sloURL, '?') {
 		sep = "&"
 	}
-	http.Redirect(w, r, sloURL+sep+query, http.StatusFound)
+	http.Redirect(w, r, sloURL+sep+query, http.StatusSeeOther)
 }
 
 // endSAMLSession terminates the session a LogoutRequest names.

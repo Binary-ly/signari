@@ -66,7 +66,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 
 	_, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, parkLogin("/account"), http.StatusFound)
+		http.Redirect(w, r, parkLogin("/account"), http.StatusSeeOther)
 		return
 	}
 
@@ -125,7 +125,7 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 	}
 	_, userID, _, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, parkLogin("/account"), http.StatusFound)
+		http.Redirect(w, r, parkLogin("/account"), http.StatusSeeOther)
 		return
 	}
 	slug := r.PathValue("slug")

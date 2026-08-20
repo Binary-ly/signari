@@ -46,7 +46,7 @@ func (s *Server) handleRACView(w http.ResponseWriter, r *http.Request) {
 	_, userID, orgID, ok := s.currentSession(r)
 	slug := r.PathValue("slug")
 	if !ok {
-		http.Redirect(w, r, parkLogin("/rac/view/"+slug), http.StatusFound)
+		http.Redirect(w, r, parkLogin("/rac/view/"+slug), http.StatusSeeOther)
 		return
 	}
 
@@ -81,7 +81,7 @@ func (s *Server) handleRACIndex(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	_, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, parkLogin("/rac"), http.StatusFound)
+		http.Redirect(w, r, parkLogin("/rac"), http.StatusSeeOther)
 		return
 	}
 	conns, err := store.ListRACConnections(ctx, s.db, orgID, userID)

@@ -43,7 +43,7 @@ func (s *Server) handleImpersonateStart(w http.ResponseWriter, r *http.Request) 
 	}
 	adminSID, actorID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -153,7 +153,7 @@ func (s *Server) handleImpersonateStart(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.setSessionCookie(w, cookieToken)
-	http.Redirect(w, r, "/", http.StatusFound)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // handleImpersonateStop ends it.
@@ -168,7 +168,7 @@ func (s *Server) handleImpersonateStop(w http.ResponseWriter, r *http.Request) {
 	}
 	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 
@@ -202,5 +202,5 @@ func (s *Server) handleImpersonateStop(w http.ResponseWriter, r *http.Request) {
 	// dormant administrative session is exactly what an attacker who reaches
 	// this browser would want to find.
 	s.clearSessionCookie(w)
-	http.Redirect(w, r, "/login", http.StatusFound)
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }

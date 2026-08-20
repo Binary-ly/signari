@@ -135,7 +135,7 @@ func (s *Server) startDuo(w http.ResponseWriter, r *http.Request,
 		return false
 	}
 
-	http.Redirect(w, r, target, http.StatusFound)
+	http.Redirect(w, r, target, http.StatusSeeOther)
 	return true
 }
 

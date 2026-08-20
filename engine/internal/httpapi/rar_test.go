@@ -160,7 +160,10 @@ func TestTheAuthorizeEndpointRefusesAnUnregisteredType(t *testing.T) {
 	rec := serve(t, f.srv, req)
 
 	loc := rec.Header().Get("Location")
-	if rec.Code != http.StatusFound || loc == "" {
+	// 303, per FAPI 2.0 §5.3.2.2's "should use the HTTP 303 status code when
+	// redirecting the user agent". See responsemode.go for why the whole codebase
+	// uses it rather than 302.
+	if rec.Code != http.StatusSeeOther || loc == "" {
 		t.Fatalf("expected a redirected error, got %d %s", rec.Code, rec.Body.String())
 	}
 	u, err := url.Parse(loc)

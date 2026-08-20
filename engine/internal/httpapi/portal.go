@@ -37,7 +37,7 @@ func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, parkLogin("/apps"), http.StatusFound)
+		http.Redirect(w, r, parkLogin("/apps"), http.StatusSeeOther)
 		return
 	}
 

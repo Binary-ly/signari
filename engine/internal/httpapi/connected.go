@@ -70,7 +70,7 @@ func (s *Server) handleConnectedApps(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	_, userID, _, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, parkLogin("/account/connected"), http.StatusFound)
+		http.Redirect(w, r, parkLogin("/account/connected"), http.StatusSeeOther)
 		return
 	}
 
@@ -116,12 +116,12 @@ func (s *Server) handleConnectedRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	_, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, parkLogin("/account/connected"), http.StatusFound)
+		http.Redirect(w, r, parkLogin("/account/connected"), http.StatusSeeOther)
 		return
 	}
 	clientID := strings.TrimSpace(r.PostForm.Get("client_id"))
 	if clientID == "" {
-		http.Redirect(w, r, "/account/connected", http.StatusFound)
+		http.Redirect(w, r, "/account/connected", http.StatusSeeOther)
 		return
 	}
 

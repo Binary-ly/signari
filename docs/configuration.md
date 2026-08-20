@@ -228,3 +228,4 @@ them as undocumented and so nobody sets them in production expecting an effect.
 | `SIGNARI_DNS_CHECK`, `SIGNARI_DNS_DOMAIN` | Gate the live DNS deliverability test |
 | `SIGNARI_SMS_TWILIO_BASE_URL` | Points the Twilio client at a local server |
 | `SIGNARI_ALLOW_SKIPPED_DB_TESTS` | Set to `1` to run the suite without a database. Most tests then skip, and the run proves almost nothing — the flag exists so that is a stated choice rather than the accident of an unset `SIGNARI_TEST_DSN`, which once let a mutation harness report eight covered guards as uncovered |
+| `SIGNARI_AUTHZEN_INTEROP` | Path to the OpenID AuthZEN interop fixture `decisions-authorization-api-1_0-02.json`. Set to run the working group's 43-scenario decision suite against this engine; see [benchmarks.md](benchmarks.md) |

@@ -494,3 +494,91 @@ func TestAlgConfusionWithARealSignatureIsRejected(t *testing.T) {
 			"have been refused before any key was consulted", err)
 	}
 }
+
+// TestAtHashAndCHashAgainstIndependentlyComputedVectors.
+//
+// OIDC Core §3.3.2.11: at_hash is "the base64url encoding of the left-most half
+// of the hash of the octets of the ASCII representation of the access_token
+// value" — "if the alg is RS256, hash the access_token value with SHA-256, then
+// take the left-most 128 bits and base64url-encode them". c_hash is the same
+// construction over the authorization code.
+//
+// These two claims are what bind an ID token to the access token and the code
+// issued with it. A relying party that validates them rejects our tokens
+// outright if we compute them wrongly, so the value is interoperability-critical
+// — and it had NO test. Mutation proved it: hashing the wrong thing, taking the
+// whole hash instead of half, and returning a fixed string for EdDSA all passed
+// the suite.
+//
+// The expected values are the ones in the specification's own ID Token examples,
+// and they are used here having been recomputed independently with openssl
+// rather than read off the page:
+//
+//	printf '%s' "$TOKEN" | openssl dgst -sha256 -binary \
+//	  | head -c 16 | base64 | tr '+/' '-_' | tr -d '='
+//
+// That matters more than convenience. Every other test here is written from the
+// same reading of the specification that produced the implementation, so it
+// agrees with the code by construction. A value produced by a different tool, on
+// a different code path, is the one kind of check that cannot.
+func TestAtHashAndCHashAgainstIndependentlyComputedVectors(t *testing.T) {
+	const (
+		accessToken  = "jHkWEdUXMU1BwAsC4vtUsZwnNvTIxEl0z9K3vx5KF0Y"
+		wantAtHash   = "77QmUPtjPfzWtF2AnpK9RQ"
+		code         = "Qcb0Orv1zh30vL1MPRsbm-diHiMwcLyZvn1arpZv-Jxf_11jnpEX3Tgfvk"
+		wantCodeHash = "LDktKdoQak3Pk0cnXxCltA"
+	)
+
+	for _, alg := range []keys.Algorithm{keys.ES256, keys.RS256, keys.PS256} {
+		got, err := AtHash(alg, accessToken)
+		if err != nil {
+			t.Fatalf("%s: %v", alg, err)
+		}
+		if got != wantAtHash {
+			t.Errorf("%s: at_hash = %q, want %q -- a relying party validating this "+
+				"claim will refuse every ID token we issue", alg, got, wantAtHash)
+		}
+		got, err = CHash(alg, code)
+		if err != nil {
+			t.Fatalf("%s: %v", alg, err)
+		}
+		if got != wantCodeHash {
+			t.Errorf("%s: c_hash = %q, want %q", alg, got, wantCodeHash)
+		}
+	}
+
+	// 128 bits, base64url, no padding: 22 characters. Asserted separately so a
+	// change that produced a well-formed value of the wrong LENGTH — the whole
+	// hash rather than half of it — is named as that rather than as a mismatch.
+	if n := len(wantAtHash); n != 22 {
+		t.Fatalf("the vector itself is %d characters, not 22; the test is wrong", n)
+	}
+
+	// A second vector, chosen because its encoding DISTINGUISHES the two base64
+	// alphabets. The specification's example above does not: its hash happens to
+	// contain no byte that encodes to `+` or `/`, so standard and URL-safe
+	// base64 produce the same 22 characters and swapping the encoder breaks
+	// nothing. This one differs in the twelfth character.
+	//
+	//	printf '%s' "tok-4" | openssl dgst -sha256 -binary | head -c 16 | base64
+	//	  -> mm5z0CjQGPltZ/GoEUxk1Q     (standard)
+	//	  -> mm5z0CjQGPltZ_GoEUxk1Q     (URL-safe, which is what §3.3.2.11 wants)
+	//
+	// A relying party decoding with the URL-safe alphabet gets different bytes
+	// from a `/`, so the comparison fails and the ID token is refused.
+	if got, err := AtHash(keys.ES256, "tok-4"); err != nil {
+		t.Fatal(err)
+	} else if got != "mm5z0CjQGPltZ_GoEUxk1Q" {
+		t.Errorf("at_hash = %q, want mm5z0CjQGPltZ_GoEUxk1Q -- base64url, not "+
+			"standard base64", got)
+	}
+
+	// EdDSA has no paired hash in the JOSE registry, so the claim is omitted
+	// rather than guessed. An empty string here means "do not set at_hash"; a
+	// non-empty one would be a value no relying party could verify.
+	if got, err := AtHash(keys.EdDSA, accessToken); err != nil || got != "" {
+		t.Errorf("EdDSA at_hash = %q, err = %v; it must be omitted, because there "+
+			"is no hash paired with Ed25519 and inventing one produces a claim that "+
+			"fails validation everywhere", got, err)
+	}
+}

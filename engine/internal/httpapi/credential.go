@@ -288,7 +288,24 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 		"nonce_endpoint":      s.cfg.Issuer + oidcPathCredentialNonce,
 		// The wallet needs to know where to get a token, and for us that is the
 		// same deployment.
-		"authorization_servers":               []string{s.cfg.Issuer},
+		"authorization_servers": []string{s.cfg.Issuer},
+		// §12.2.4: "The presence of this parameter means that the issuer supports
+		// more than one key proof in the proofs parameter in the Credential
+		// Request." Its ABSENCE therefore says the opposite -- and we accept up to
+		// MaxProofsPerRequest, so leaving it out told every conformant wallet that
+		// a capability we have does not exist. A wallet batching keys for
+		// unlinkability would have sent one proof at a time forever.
+		//
+		// This is the project's own discovery rule read the other way round.
+		// "Advertise only what works" has a second half: something that works and
+		// is not advertised may as well not exist, because the client is doing
+		// exactly what the specification tells it to and never asking.
+		//
+		// batch_size "MUST be 2 or greater"; ours is MaxProofsPerRequest, and the
+		// test asserts the advertised number is the one actually enforced.
+		"batch_credential_issuance": map[string]any{
+			"batch_size": oid4vci.MaxProofsPerRequest,
+		},
 		"credential_configurations_supported": supported,
 	})
 }

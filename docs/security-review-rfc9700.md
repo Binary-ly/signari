@@ -253,3 +253,27 @@ wrong — Go caches test results, and the harness read a cached `ok`. Re-run wit
 `-count=1` the picture changed: two died immediately. A mutation harness that
 does not defeat the test cache reports every mutant as surviving and looks like a
 damning finding.
+
+## Re-verified by mutation, August 2026
+
+The tables above record what the code does. This section records what happens
+when it stops doing it — each MUST was disabled in turn and the **whole** test
+suite run, not just the owning package, because a guarantee enforced through a
+caller is killed by a test in another package and a package-local run reports
+that as a survivor.
+
+| Requirement | Level | Mutation | Killed by |
+|---|---|---|---|
+| §2.1 no open redirectors | MUST NOT | make pre-verification errors redirect instead of rendering directly | **4 tests** — `TestErrorsBeforeRedirectVerificationAreDirect`, `TestRedirectURIMatchingIsExact`, `TestErrorRedirectRefusesDirectErrors`, `TestLookupErrorIsInvalidClient` |
+| §2.1 exact redirect matching | MUST | drop the loopback confinement | `TestThePortExceptionAppliesOnlyToLoopback` (written this pass — it had survived the whole suite) |
+| §2.1.1 PKCE downgrade | MUST | accept a `code_verifier` for a code that carried no challenge | `TestAVerifierAgainstACodeWithNoChallengeIsRefused` |
+| §2.2 refresh rotation with reuse detection | MUST | — | verified under **concurrency** this pass: 8 simultaneous rotations yield exactly one winner, and a read-then-update rewrite yields 8 |
+| §2.3 resource server refuses a token not meant for it | MUST | `AudienceAccepted` returns true unconditionally | `TestATokenForAnotherResourceIsRefused` and `TestAudienceRestrictionIsEnforcedAgainstOurselves` |
+
+Every one died. That is a different statement from "the table says yes", and it
+is the only one worth making about a MUST.
+
+**What is still honestly not implemented:** §2.1.1's encouragement to detect
+constant PKCE challenge or nonce values across requests. It is "encouraged"
+rather than a MUST, it needs cross-request state we do not keep, and it is
+recorded as absent rather than quietly omitted.

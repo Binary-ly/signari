@@ -188,3 +188,48 @@ What would close it without the DoS: a very high consecutive-failure counter
 disable — the account stays reachable to its owner through a second factor, and
 the attacker's 100 guesses buy them nothing. That is a design, not a patch, which
 is the other reason it is a decision rather than a fix made here.
+
+## §4's AAL requirements: reauthentication and phishing resistance (August 2026)
+
+The sections above cover authenticators. §4's AAL requirements bind the *session*,
+and were not examined.
+
+### Reauthentication timeouts
+
+| | Overall timeout | Inactivity timeout | Signari |
+|---|---|---|---|
+| AAL1 | SHALL exist; SHOULD ≤ 30 days | optional | met |
+| AAL2 | SHALL exist; SHOULD ≤ 24 hours | SHOULD ≤ 1 hour | **overall met; inactivity absent** |
+| AAL3 | **SHALL** ≤ 12 hours | SHOULD ≤ 15 minutes | **overall met exactly; inactivity absent** |
+
+`sessionTTL = 12 * time.Hour` (`flow.go:34`), written to `sessions.not_after` at
+creation and — as established in the V10.4.8 work — **never extended anywhere**.
+So the overall timeout is a real ceiling rather than a sliding window: it satisfies
+AAL2's SHOULD comfortably and lands exactly on AAL3's SHALL.
+
+**There is no inactivity timeout.** A session idle for eleven hours is as good as
+one used a minute ago. That misses AAL2's and AAL3's SHOULD — both are SHOULDs,
+not SHALLs, so this is a deviation rather than a violation, but it was previously
+unrecorded either way.
+
+Worth being precise about what it would cost. An inactivity timeout needs a
+`last_seen_at` written on each authenticated request, which is a write on the hot
+path for every request — the reason it is usually implemented as a coarse
+throttled update rather than a true one. That is a design with a performance
+consequence, not a constant to change, which is why it is recorded here rather
+than added quietly.
+
+### Phishing resistance
+
+> "Verifiers **SHALL** offer at least one phishing-resistant authentication
+> option at AAL2."
+
+**Met.** WebAuthn is implemented across eight routes — registration begin/finish,
+assertion, the passkey signal endpoints (WebAuthn L3 `signalAllAcceptedCredentials`
+and friends) — and the sign-in form carries `autocomplete="username webauthn"` so
+conditional UI works. A passkey is origin-bound by construction, which is what
+makes it phishing-resistant; TOTP and email OTP are not, and neither would satisfy
+this on its own.
+
+The SHALL is to *offer* one, not to require it, so having password-plus-TOTP
+available alongside does not affect conformance.

@@ -350,3 +350,85 @@ able to view and terminate active sessions" — and the mechanism behind both
 already exists and is used by the admin path. What is missing is the screen, which
 is the same shape as **9k**. Recorded rather than built, because a session-list UI
 is a product surface and you have not asked for one.
+
+## V8 Authorization: the tenant boundary, audited by enumeration (21 August 2026)
+
+V8.4.1 — "multi-tenant applications use cross-tenant controls to ensure consumer
+operations will never affect tenants with which they do not have permissions to
+interact" — is checkable by enumeration rather than reading, because the boundary
+is in the schema.
+
+Querying `pg_class` for every `core` table carrying `org_id` found **58 tables**,
+of which **18 did not enforce isolation**:
+
+- **11 with no row-level security at all** — `audit_events`,
+  `credential_configurations`, `credential_nonces`, `preauthorized_codes`,
+  `rac_sessions`, `duo_enrollments`, `duo_challenges`, `client_attesters`,
+  `attestation_challenges`, `authorization_detail_types`,
+  `client_authorization_detail_types`
+- **7 with a policy but no FORCE** — `relations`, `authorization_models`,
+  `impersonations`, `event_deliveries`, `event_subscriptions`, `ssf_received`,
+  `ssf_sources`
+
+The FORCE half is the subtle one. Core tables are owned by `signari_engine`, and
+**PostgreSQL exempts a table's owner from its own policies unless FORCE is set**.
+So those seven carried a policy that read as protection and did nothing for the
+engine — not by decision, but by a database default.
+
+### A claim I made and had to withdraw
+
+The first version of this finding said the console could reach other tenants'
+rows in the eleven unprotected tables. **That was wrong.** Checking the roles
+instead of assuming them shows why:
+
+| Role | Reaches `core` | BYPASSRLS | Login |
+|---|---|---|---|
+| `signari_admin` (the Laravel console) | **no grants at all** — 15 views in `core_v1` | no | yes |
+| `signari_maintenance` | full DML | **yes**, deliberately | **no** — `SET ROLE` only |
+| `signari_engine` | owner | no | yes |
+
+The console cannot touch a core table with or without RLS. `signari_maintenance`
+is exempt on purpose, and migration 0003 says so in as many words: "Cross-org
+maintenance (key rotation, expiry sweeps, the bootstrap CLI) runs as
+signari_maintenance." It is `NOLOGIN`, so it is reachable only by an explicit
+`SET ROLE`.
+
+So **no role that connects today was crossing tenants, and none could have.** The
+finding is real and its severity is not what I first wrote. It is worth recording
+the correction rather than quietly restating the smaller claim, because the
+error was the same one this session has caught three times elsewhere — asserting
+what a component does without reading the component.
+
+### What the fix is actually worth
+
+Uniformity. Fifty-eight org-scoped tables now behave identically; `is_engine()`
+is the single visible escape rather than one escape plus a silent ownership
+default; and a role added later inherits the boundary instead of inheriting
+eleven exceptions nobody remembers.
+
+`TestEveryOrgScopedTableEnforcesTenantIsolation` keeps it that way, and the
+reason it earns its place is that **the eighteen exceptions were never
+decisions**. A table gets created, its migration does not copy the four lines the
+other fifty-seven carry, and nothing notices. The test notices and names the
+table — verified by dropping FORCE from `relations`:
+
+```
+relations: enabled but not FORCEd, so the owning role (signari_engine)
+bypasses the policy silently
+```
+
+It also refuses to pass if it finds fewer than 40 org-scoped tables, so it cannot
+succeed by querying the wrong schema.
+
+### The rest of V8
+
+| Requirement | Status |
+|---|---|
+| **V8.2.1** function-level access restricted to explicit permissions | met — `Principal.Can`, and every admin route checks a scope |
+| **V8.2.2** data-specific access, IDOR/BOLA | met — `MayActOn` on both the create path and the update path, which the comment there notes is the whole point: "a boundary that holds for creates and not for edits is worse than no boundary" |
+| **V8.3.1** enforced at a trusted service layer | met |
+| **V8.3.3** decisions use the originating subject's permissions | met — RFC 8693 `act` chains the actor rather than replacing the subject |
+| **V8.4.1** cross-tenant controls | met, and now uniform |
+| **V8.1.x** documentation of the rules | partial — the rules are in code comments and these reviews rather than in one document |
+| **V8.2.3** field-level (BOPLA) | partial — SCIM releases a fixed attribute set; there is no per-field permission model |
+| **V8.2.4 / V8.4.2** adaptive controls, layered admin access | partial — the policy engine evaluates device posture and impossible travel; it is not applied to the admin interface specifically |

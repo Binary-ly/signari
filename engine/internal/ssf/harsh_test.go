@@ -10,6 +10,8 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -364,3 +366,83 @@ func TestANormalSETIsNotSeenAsDuplicated(t *testing.T) {
 }
 
 func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
+
+// TestASETWithoutAnIssuedAtIsRefused.
+//
+// RFC 8417 §2.2 makes `iat` REQUIRED of a Security Event Token. The receiver
+// refuses one without it — and nothing tested that, which matters more here than
+// it first appears.
+//
+// The check immediately below it rejects a token minted in the future. With `iat`
+// absent that check reads `time.Unix(0, 0)` — 1970 — which is comfortably not in
+// the future, so it passes. The two guards look like one defence and are not: the
+// second cannot substitute for the first, because the value it inspects is the
+// one that is missing.
+//
+// Same shape as the defects found in the Transaction Token verifier and in ABCA
+// this week: a timestamp guard that the missing timestamp switches off.
+func TestASETWithoutAnIssuedAtIsRefused(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	claims := goodClaims(now)
+	delete(claims, "iat")
+
+	raw := tr.sign(t, TypSET, claims, nil, tr.kid)
+	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(), raw, now); err == nil {
+		t.Fatal("a SET with no iat was accepted; RFC 8417 §2.2 makes it REQUIRED, " +
+			"and the future-dating check below cannot stand in for it -- with iat " +
+			"absent it inspects 1970 and passes")
+	}
+}
+
+// TestASETSignedAgainstAnEmptyKeySetIsRefused.
+//
+// A transmitter whose JWKS is empty — misconfigured, mid-rotation, or serving an
+// error page with a 200 — must not verify anything. The failure mode this guards
+// is a verifier that treats "no keys to check against" as "nothing objected".
+func TestASETSignedAgainstAnEmptyKeySetIsRefused(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+	raw := tr.sign(t, TypSET, goodClaims(now), nil, tr.kid)
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	defer empty.Close()
+
+	src := tr.source()
+	src.JWKSURI = empty.URL
+
+	if _, err := Verify(context.Background(), &KeyFetcher{}, src, raw, now); err == nil {
+		t.Fatal("a SET verified against a transmitter serving an empty key set; " +
+			"having nothing to check a signature against is not the same as the " +
+			"signature being good")
+	}
+}
+
+// TestAJWKSEndpointThatErrorsDoesNotVerifyAnything.
+//
+// The other half: a transmitter's key endpoint returning 500. A receiver that
+// fell back to accepting the event would be trusting whoever could take that
+// endpoint down.
+func TestAJWKSEndpointThatErrorsDoesNotVerifyAnything(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+	raw := tr.sign(t, TypSET, goodClaims(now), nil, tr.kid)
+
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+	}))
+	defer broken.Close()
+
+	src := tr.source()
+	src.JWKSURI = broken.URL
+
+	if _, err := Verify(context.Background(), &KeyFetcher{}, src, raw, now); err == nil {
+		t.Fatal("a SET was accepted while the transmitter's JWKS endpoint was " +
+			"failing; an outage at the transmitter must not become a way to have " +
+			"unverified events acted on")
+	}
+}

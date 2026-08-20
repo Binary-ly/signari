@@ -282,3 +282,88 @@ func TestUnsafeAlgorithmsAreRefused(t *testing.T) {
 			"credential to any key by writing JSON")
 	}
 }
+
+// The key-source rules of Appendix F.1, which TestEveryProofRejection does not
+// reach despite its name: it varies the claims and the typ, never the way the
+// header identifies the key.
+//
+// These matter because the header is what decides WHICH key the credential gets
+// bound to. Mutation found them: deleting the `!hasJWK` guard killed no test,
+// and it could not, because nothing here had ever sent a proof without an
+// inline `jwk`.
+
+// A `kid` proof names a key this issuer would have to resolve and trust
+// separately -- typically a DID URL. Accepting one would be binding a credential
+// to a key we never saw.
+func TestAProofThatIdentifiesItsKeyByKidIsRefused(t *testing.T) {
+	h := newHolder(t)
+	now := time.Now()
+	// embedKey false, kid set: the mutually-exclusive rule is satisfied, so this
+	// reaches the "we do not resolve external keys" refusal specifically.
+	raw := h.sign(t, TypProof, goodProofClaims(now), false, "did:example:123#key-1")
+
+	key, err := ValidateJWTProof(raw, ctxFor(), now)
+	if err == nil {
+		t.Fatalf("a kid-only key proof was accepted, binding a credential to a key "+
+			"this issuer never resolved; returned %+v", key)
+	}
+	if !strings.Contains(err.Error(), "kid") {
+		t.Errorf("refused for the wrong reason: %v", err)
+	}
+}
+
+// Both key sources at once is the actual attack: the key VERIFIED and the key
+// BOUND can differ.
+func TestAProofCarryingBothJWKAndKidIsRefused(t *testing.T) {
+	h := newHolder(t)
+	now := time.Now()
+	raw := h.sign(t, TypProof, goodProofClaims(now), true, "did:example:123#key-1")
+
+	if _, err := ValidateJWTProof(raw, ctxFor(), now); err == nil {
+		t.Fatal("a key proof carrying both jwk and kid was accepted; the key " +
+			"verified and the key bound could differ")
+	} else if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("refused for the wrong reason: %v", err)
+	}
+}
+
+// A JWS may carry several signatures in its JSON serialization. If more than one
+// were tolerated, "the proof verified" would not say WHICH signature verified,
+// and a second signer could ride along on a proof the first one made.
+func TestAProofWithTwoSignaturesIsRefused(t *testing.T) {
+	one, two := newHolder(t), newHolder(t)
+	now := time.Now()
+
+	opts := (&jose.SignerOptions{}).WithType(jose.ContentType(TypProof)).
+		WithHeader("jwk", one.jwk)
+	signer, err := jose.NewMultiSigner([]jose.SigningKey{
+		{Algorithm: jose.ES256, Key: one.key},
+		{Algorithm: jose.ES256, Key: two.key},
+	}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := json.Marshal(goodProofClaims(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, err := signer.Sign(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = ValidateJWTProof(obj.FullSerialize(), ctxFor(), now)
+	if err == nil {
+		t.Fatal("a key proof with two signatures was accepted; which key the " +
+			"credential binds to is then ambiguous")
+	}
+	// Asserting the REASON, not merely the refusal. go-jose's Verify also
+	// refuses a multi-signature object, so deleting our own check still leaves
+	// the proof rejected -- but rejected as "the signature does not verify",
+	// which is false and would send an integrator looking at their key. This
+	// assertion is what notices if our check stops being the thing that fires.
+	if !strings.Contains(err.Error(), "exactly one signature") {
+		t.Errorf("refused, but for the wrong reason -- the caller is told their "+
+			"key is bad when the real fault is the number of signatures: %v", err)
+	}
+}

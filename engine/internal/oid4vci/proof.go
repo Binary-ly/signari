@@ -89,6 +89,11 @@ func ValidateJWTProof(raw string, ctx ProofContext, now time.Time) (*ProofKey, e
 	if err != nil {
 		return nil, fmt.Errorf("the key proof did not parse: %w", err)
 	}
+	// go-jose's Verify also refuses a multi-signature object, so this check is
+	// not the only thing standing -- but without it the refusal reads "the
+	// signature does not verify", which is false and sends an integrator looking
+	// at their key. The check is here to make the error tell the truth, and the
+	// test asserts the reason rather than merely the refusal.
 	if len(tok.Signatures) != 1 {
 		return nil, fmt.Errorf("a key proof must carry exactly one signature")
 	}

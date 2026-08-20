@@ -420,3 +420,86 @@ func TestReplaceClientsRefusesAnUnusableSecret(t *testing.T) {
 		t.Fatal("a refused reload lost the working configuration")
 	}
 }
+
+func TestTwoMessageAuthenticatorsAreRefusedEvenWhenBothVerify(t *testing.T) {
+	s, a := newServer(t)
+	pkt := buildRequest(t, testSecret, "alice", "correct-horse-battery", true)
+
+	// Append a second, zero-valued Message-Authenticator and fix the length.
+	dup := append(append([]byte(nil), pkt...), AttrMessageAuthenticator, 18)
+	dup = append(dup, make([]byte, 16)...)
+	binary.BigEndian.PutUint16(dup[2:4], uint16(len(dup)))
+
+	// Zero the first one too, then compute the HMAC over the whole packet — the
+	// same bytes the verifier will construct.
+	zeroed := append([]byte(nil), dup...)
+	for i := headerLen; i+2 <= len(zeroed); {
+		l := int(zeroed[i+1])
+		if l < 2 || i+l > len(zeroed) {
+			break
+		}
+		if zeroed[i] == AttrMessageAuthenticator {
+			for j := i + 2; j < i+l; j++ {
+				zeroed[j] = 0
+			}
+		}
+		i += l
+	}
+	mac := hmac.New(md5.New, []byte(testSecret))
+	mac.Write(zeroed)
+	sum := mac.Sum(nil)
+
+	// Write that HMAC into BOTH attributes, so each is individually correct.
+	for i := headerLen; i+2 <= len(dup); {
+		l := int(dup[i+1])
+		if l < 2 || i+l > len(dup) {
+			break
+		}
+		if dup[i] == AttrMessageAuthenticator && l == 18 {
+			copy(dup[i+2:i+18], sum)
+		}
+		i += l
+	}
+
+	if reply := exchange(t, s, dup); reply != nil {
+		t.Fatalf("a request carrying two individually-valid Message-Authenticators "+
+			"got a reply (code %d); which one was verified is then up to the parser",
+			reply.Code)
+	}
+	if a.calls != 0 {
+		t.Errorf("the authenticator ran %d time(s) for a packet that could not be "+
+			"unambiguously authenticated", a.calls)
+	}
+}
+
+// A truncated Message-Authenticator must be refused rather than compared.
+//
+// RFC 2869 §5.14 fixes the value at 16 bytes. A shorter one cannot be a valid
+// HMAC-MD5, and comparing it is how an implementation ends up doing a
+// prefix-length comparison instead of a full one.
+func TestShortMessageAuthenticatorIsRefused(t *testing.T) {
+	s, _ := newServer(t)
+	pkt := buildRequest(t, testSecret, "alice", "correct-horse-battery", true)
+
+	out := append([]byte(nil), pkt[:headerLen]...)
+	for i := headerLen; i+2 <= len(pkt); {
+		l := int(pkt[i+1])
+		if l < 2 || i+l > len(pkt) {
+			break
+		}
+		if pkt[i] == AttrMessageAuthenticator {
+			// 8 bytes of value instead of 16.
+			out = append(out, AttrMessageAuthenticator, 10)
+			out = append(out, pkt[i+2:i+10]...)
+		} else {
+			out = append(out, pkt[i:i+l]...)
+		}
+		i += l
+	}
+	binary.BigEndian.PutUint16(out[2:4], uint16(len(out)))
+
+	if reply := exchange(t, s, out); reply != nil {
+		t.Fatalf("a request with an 8-byte Message-Authenticator got a reply (code %d)",
+			reply.Code)
+	}
+}

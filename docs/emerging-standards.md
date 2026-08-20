@@ -15,15 +15,16 @@ nothing without knowing how many there are.
 | `internal/txntoken` | Transaction Tokens | draft-11, 30 Jul 2026 (WG Last Call) | yes | **yes** — one defect |
 | `internal/abca` | Attestation-Based Client Auth | draft-10, 6 Jul 2026 | yes | **yes** — two wrong-reason tests |
 | `internal/uma` | UMA 2.0 Grant | Kantara Recommendation, 7 Jan 2018 | yes | **yes** — implemented Aug 2026 |
-| `internal/oid4vci` | OpenID for Verifiable Credential Issuance | **1.0 Final**, 16 Sep 2025 | yes | earlier pass; not re-mutated |
-| `internal/oidfed` | OpenID Federation | **1.0 Final**, 17 Feb 2026 | yes | earlier pass; not re-mutated |
-| `internal/ssf` | Shared Signals Framework | **1.0 Final**, 29 Aug 2025 | yes | earlier pass; not re-mutated |
+| `internal/oid4vci` | OpenID for Verifiable Credential Issuance | **1.0 Final**, 16 Sep 2025 | yes | **yes** — three untested key-source rules |
+| `internal/oidfed` | OpenID Federation | **1.0 Final**, 17 Feb 2026 | yes | **yes** — two untested trust-chain rules |
+| `internal/ssf` | Shared Signals Framework | **1.0 Final**, 29 Aug 2025 | yes | **yes** — three untested SET assertions |
 | — | FAPI 2.0 Security Profile | **Final**, 22 Feb 2025, no errata | yes | **yes** — two MUST-level defects |
 
-Ten specifications. All ten currency-verified against the publisher. Six put
-through a full review-and-mutate pass; three reviewed in earlier passes and
-confirmed current but not re-mutated; one implemented from the specification this
-month.
+Ten specifications. All ten currency-verified against the publisher, and all ten
+now put through a full review-and-mutate pass. The last three — OID4VCI, OpenID
+Federation and SSF — were the ones that had been reviewed by reading only, and
+mutating them found eight untested guarantees that reading had passed over,
+including the two below.
 
 ## Two of them had moved without anybody noticing
 
@@ -49,12 +50,51 @@ what found almost everything:
 | found by | count |
 |---|---|
 | reading the specification | 3 defects |
-| mutating the implementation | 6 inert or wrong-reason tests, 2 defects |
+| mutating the implementation | 14 untested or wrong-reason guarantees, 2 defects |
 
-Reading finds requirements nobody implemented. Mutation finds requirements
-everybody believed were implemented and tested, where the test could not fail.
+Reading finds requirements nobody implemented. Mutation finds requirements that
+are implemented correctly but that no test constrains — either because the test
+was never written, or because one exists whose name claims the rule and whose
+assertion is satisfied by a different check entirely. The second kind is worse
+than no test, because it reports coverage.
 The second category is invisible to review and is where most of this session's
 findings came from.
+
+## The two worth naming
+
+Both are in OpenID Federation's trust-chain validator, both were enforced
+correctly, and both had a test whose name claimed to cover them.
+
+**§10.2 step 6, the chain linkage.** `TestABrokenLinkIsRefused` breaks a link by
+having the anchor vouch for a different entity *and* publish that entity's keys —
+so the statement below it no longer verifies, and the chain is refused by the
+signature check before the linkage check is consulted. Delete the linkage
+comparison and no test fails. A chain assembled from individually-valid
+statements about unrelated entities would validate.
+
+**§10.2 step 4, `iss == sub` on the Entity Configuration.** Nothing tested it,
+and nothing else catches it. An entity can sign a configuration with its own key,
+carrying its own keys, naming *somebody else* as the subject: the self-signature
+verifies against its own jwks, and the linkage rule is satisfied because the
+issuer really is the entity the intermediate vouched for. With step 4 removed the
+chain validates and resolves to
+
+    Subject: https://victim.example   TrustAnchor: https://anchor.example
+
+— entity impersonation with a fully valid chain behind it.
+
+Both now have tests that isolate the rule: every signature verifies and every
+other check passes, so the only thing that can refuse the chain is the rule under
+test. Both kill their mutant.
+
+## What this sweep did not settle
+
+76 of OpenID Federation's 121 mutants still survive, and 57 more never compiled —
+the harness rewrites a guard to `if false`, which strands variables the body used.
+Those 57 are unmeasured, not clean. The survivors are dominated by cache
+plumbing, error-formatting branches and checks a later layer repeats, but "the
+property holds by some other route" has been verified for the trust-chain rules
+and assumed for the rest. Assumed is the honest word.
 
 A caution that belongs with the technique: **a surviving mutant is not
 automatically a defect.** Layered defences catch each other, so deleting one line

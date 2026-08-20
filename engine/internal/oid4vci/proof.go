@@ -1,6 +1,7 @@
 package oid4vci
 
 import (
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -77,6 +78,9 @@ type ProofContext struct {
 	// per OID4VCI Appendix D. Empty means `key_attestation` is REFUSED rather
 	// than ignored -- see attestation.go for why that is the safe direction.
 	TrustedAttesters []*jose.JSONWebKey
+	// TrustedX5CRoots are the roots an `x5c` chain must verify to. Nil means
+	// `x5c` is refused, for the same reason: see x5c.go.
+	TrustedX5CRoots *x509.CertPool
 }
 
 // ValidateJWTProof checks a `jwt` key proof and returns the key it binds to.
@@ -172,19 +176,24 @@ func ValidateJWTProof(raw string, ctx ProofContext, now time.Time) (*ProofKey, e
 					"attested_keys the attestation vouches for", h.KeyID)
 			}
 			h.JSONWebKey = k
+		} else if hasX5C {
+			// Appendix F.1's third key source. The chain must verify to a root
+			// this issuer was configured with; see x5c.go for why accepting a
+			// self-signed chain would make this no stronger than an inline jwk.
+			chain, cerr := ParseX5CChain(h.ExtraHeaders[jose.HeaderKey("x5c")])
+			if cerr != nil {
+				return nil, fmt.Errorf("the key proof's x5c header is not usable: %w", cerr)
+			}
+			k, kerr := ResolveX5CKey(chain, ctx.TrustedX5CRoots, string(h.Algorithm), now)
+			if kerr != nil {
+				return nil, fmt.Errorf("the key proof's x5c chain was not accepted: %w", kerr)
+			}
+			h.JSONWebKey = k
 		} else {
-			which := "kid"
-			if hasX5C {
-				which = "x5c"
-			}
-			hint := ""
-			if which == "kid" {
-				hint = " (a kid IS resolvable when the proof also carries an " +
-					"Appendix D key_attestation, because the keys then travel with it)"
-			}
-			return nil, fmt.Errorf("this issuer accepts key proofs that carry the key "+
-				"inline as `jwk`; %s identifies a key it would have to resolve and "+
-				"trust separately, which it does not do%s", which, hint)
+			return nil, fmt.Errorf("this issuer accepts key proofs that carry the key " +
+				"inline as `jwk`, by `kid` against an Appendix D key_attestation, or " +
+				"by `x5c` verified to a configured root; this proof's `kid` has no " +
+				"attestation to resolve it against")
 		}
 	} else if attested != nil && !attested.Contains(h.JSONWebKey) {
 		// An attestation that does not cover the key being proved is worse than

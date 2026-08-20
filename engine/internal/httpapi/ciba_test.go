@@ -664,3 +664,71 @@ func TestDiscoveryDescribesTheCIBAWeActuallyImplement(t *testing.T) {
 		t.Error("the CIBA grant is accepted at the token endpoint and not advertised")
 	}
 }
+
+// TestAnApprovedButExpiredRequestYieldsNothing.
+//
+// The shared poll path (PollDeviceCode, used by both RFC 8628 and CIBA) selects
+// the row WITHOUT an expiry filter and then checks the deadline in Go. Remove
+// that check and an approved-but-expired authorization mints tokens: nothing
+// else catches it, because LookupUserCode's `expires_at > now()` guards the
+// APPROVAL screen, not the poll.
+//
+// The sequence is ordinary rather than contrived — somebody approves on their
+// phone, the device is asleep or offline, and it polls twenty minutes later.
+// RFC 8628 §3.5 defines `expired_token` precisely so that stops working, and
+// CIBA §11 repeats it.
+//
+// Found by mutation. The device flow has no store-level tests of its own; the
+// other guarantees on this path — the polling interval, the client binding, the
+// single use — are covered only because the CIBA tests above exercise the same
+// function.
+func TestAnApprovedButExpiredRequestYieldsNothing(t *testing.T) {
+	f := newCIBAFixture(t)
+	ctx := context.Background()
+
+	authReqID := f.request(t)
+	if err := f.approve(t, authReqID, f.userID); err != nil {
+		t.Fatalf("approving: %v", err)
+	}
+
+	// Approved, then time passes. Expiry is moved rather than waited for.
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE core.device_authorizations
+		SET expires_at = now() - interval '1 minute', last_polled_at = NULL
+		WHERE device_code_hash = $1`, store.HashToken(authReqID)); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body := f.poll(t, f.clientID, authReqID)
+	if code == http.StatusOK {
+		t.Fatal("an approved authorization that had since expired produced tokens; " +
+			"the deadline is what bounds how long an approval stays spendable")
+	}
+	if body["error"] != "expired_token" {
+		t.Errorf("error %v, want expired_token", body["error"])
+	}
+
+	// The same must hold for the device flow, which shares this code path.
+	deviceCode := "dc-expired-" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
+	userCode := "EXPIREDX"
+	id, err := store.CreateDeviceAuthorization(ctx, f.pool, f.orgID, f.clientID,
+		"openid", nil, store.HashToken(deviceCode), store.HashToken(userCode),
+		5, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("creating a device authorization: %v", err)
+	}
+	if err := store.ApproveDeviceAuthorization(ctx, f.pool, id, f.userID,
+		f.sessionFor(t, f.userID)); err != nil {
+		t.Fatalf("approving the device authorization: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE core.device_authorizations
+		SET expires_at = now() - interval '1 minute', last_polled_at = NULL
+		WHERE id = $1::uuid`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PollDeviceCode(ctx, f.pool, store.HashToken(deviceCode),
+		f.clientID, "device"); err == nil {
+		t.Fatal("an approved device authorization that had since expired was redeemed")
+	}
+}

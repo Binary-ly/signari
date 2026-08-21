@@ -400,3 +400,48 @@ func (h *holder) signWithAttestation(t *testing.T, claims map[string]any,
 	}
 	return s
 }
+
+func TestATrustChainHeaderIsRefusedRatherThanIgnored(t *testing.T) {
+	h := newHolder(t)
+	now := time.Now()
+
+	sign := func(t *testing.T, extra map[string]any) string {
+		t.Helper()
+		opts := (&jose.SignerOptions{}).WithType(jose.ContentType(TypProof)).
+			WithHeader("jwk", h.jwk)
+		for k, v := range extra {
+			opts = opts.WithHeader(jose.HeaderKey(k), v)
+		}
+		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: h.key}, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(goodProofClaims(now))
+		obj, err := signer.Sign(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, _ := obj.CompactSerialize()
+		return s
+	}
+
+	ctx := ProofContext{CredentialIssuer: issuerID, ExpectedNonce: "n-123"}
+
+	// Control: the same proof without the header must still work, or the test is
+	// measuring something else.
+	if _, err := ValidateJWTProof(sign(t, nil), ctx, now); err != nil {
+		t.Fatalf("the control proof was refused, so this test proves nothing: %v", err)
+	}
+
+	// A federation trust chain beside an inline key.
+	raw := sign(t, map[string]any{"trust_chain": []string{"eyJhbGciOiJFUzI1NiJ9.e30.sig"}})
+	_, err := ValidateJWTProof(raw, ctx, now)
+	if err == nil {
+		t.Fatal("a proof carrying an OpenID Federation trust_chain was accepted and " +
+			"the chain discarded; the wallet believes its federation attestation was " +
+			"evaluated and it was not")
+	}
+	if !strings.Contains(err.Error(), "trust_chain") {
+		t.Errorf("refused, but not for the trust_chain: %v", err)
+	}
+}

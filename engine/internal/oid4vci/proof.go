@@ -112,6 +112,13 @@ func ValidateJWTProof(raw string, ctx ProofContext, now time.Time) (*ProofKey, e
 			"typing an ID token could be replayed here", typ, TypProof)
 	}
 
+	if _, ok := h.ExtraHeaders[jose.HeaderKey("trust_chain")]; ok {
+		return nil, fmt.Errorf("the key proof carries a trust_chain header, which " +
+			"this issuer does not evaluate; it is refused rather than ignored, " +
+			"because a discarded trust chain makes the request look federation-" +
+			"vouched while the key bound is whatever the proof supplied")
+	}
+
 	// §F.1: kid, jwk and x5c are mutually exclusive -- "It MUST NOT be present
 	// if jwk or x5c is present", stated for each. Two key sources in one proof
 	// means the key that was VERIFIED and the key the credential is BOUND to can

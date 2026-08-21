@@ -2287,10 +2287,70 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		}
 	}
 
+	if c.ExchangeRequiresAudienceMatch &&
+		subject.ClientID != c.ClientID && !audienceIncludes(subject.Audience, c.ClientID) {
+		s.log.Info("token exchange: caller is neither the holder nor in the subject token's audience",
+			"caller", c.ClientID, "token_client", subject.ClientID,
+			"correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "this client may only exchange subject tokens it holds or " +
+				"is named in the audience of",
+			Status: http.StatusBadRequest})
+		return
+	}
+
+	// RFC 8693 §4.1 delegation. The actor token names the party actually doing
+	// the acting, when that is somebody other than the calling client.
+	//
+	// Verified exactly as the subject token is -- signature, issuer, revocation,
+	// session liveness. §2.1 makes that a MUST: the server "MUST perform the
+	// appropriate validation procedures" for the actor token too. An actor token
+	// that is expired, revoked, or from an ended session names a party who can no
+	// longer act, and recording them in the `act` chain would put a name in the
+	// audit trail that the credential no longer supports.
+	actorSubject := ""
+	if ex.ActorToken != "" {
+		actor, aerr := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), ex.ActorToken)
+		if aerr != nil {
+			s.log.Info("token exchange: actor token rejected", "err", aerr,
+				"caller", c.ClientID, "correlation_id", correlationID(ctx))
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the actor token is not valid", Status: http.StatusBadRequest})
+			return
+		}
+		if gone, gerr := store.GrantRevoked(ctx, s.db, actor.GrantID); gerr != nil || gone {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the authorization behind the actor token has been revoked",
+				Status:      http.StatusBadRequest})
+			return
+		}
+		if revoked, rerr := store.JTIRevoked(ctx, s.db, actor.JTI); rerr != nil || revoked {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the actor token has been revoked", Status: http.StatusBadRequest})
+			return
+		}
+		if actor.SessionID != "" {
+			live, serr := store.SessionLive(ctx, s.db, actor.SessionID)
+			if serr != nil || !live {
+				writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+					Description: "the session behind the actor token has ended",
+					Status:      http.StatusBadRequest})
+				return
+			}
+		}
+		actorSubject = actor.Subject
+	}
+
 	// RFC 8693 §4.4. Only bites when the subject token actually carries the
 	// claim; an absent may_act leaves the per-client permission and audience
 	// allow-list as the bound, which is what they were always for.
-	if err := oauth.CheckMayAct(subject.MayAct, c.ClientID, subject.Subject,
+	//
+	// `actorSubject` is the ACTOR's subject, empty when no actor token was
+	// presented. It used to be the subject token's own `sub` -- the user being
+	// acted for -- so `may_act: {"sub": "<that user>"}` compared a value against
+	// itself and passed. CheckMayAct now treats an absent actor subject as an
+	// unevaluable constraint rather than a satisfied one.
+	if err := oauth.CheckMayAct(subject.MayAct, c.ClientID, actorSubject,
 		s.cfg.Issuer); err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: err.Error(), Status: http.StatusBadRequest})
@@ -2316,10 +2376,19 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		return
 	}
 
-	// The actor chain. The caller is recorded as acting for the subject, and any
-	// chain the subject token already carried is nested beneath -- so a token
-	// three delegations deep still names every party, in order.
-	act := &tokens.Actor{Subject: c.ClientID, Act: subject.Act}
+	// The actor chain. The acting party is recorded, and any chain the subject
+	// token already carried is nested beneath -- so a token three delegations deep
+	// still names every party, in order.
+	//
+	// The actor is the ACTOR TOKEN's subject when one was presented, and the
+	// calling client otherwise. §4.1's example shows a human in `act.sub`, which
+	// is only expressible once a delegated actor can be named; before that every
+	// link in the chain was a client id.
+	actorName := c.ClientID
+	if actorSubject != "" {
+		actorName = actorSubject
+	}
+	act := &tokens.Actor{Subject: actorName, Act: subject.Act}
 
 	// The subject token's rich permissions come WITH it.
 	//

@@ -126,40 +126,44 @@ func ValidateExchange(req ExchangeRequest, confidential, mayExchange bool,
 			fmt.Sprintf("requested_token_type %q is not supported", req.RequestedTokenType))
 	}
 
-	// The actor token, refused rather than ignored.
+	// The actor token: RFC 8693 §4.1 delegation.
 	//
-	// RFC 8693 §2.1 is a MUST on the server: "In processing the request, the
-	// authorization server MUST perform the appropriate validation procedures
-	// for the indicated token type and, if the actor token is present, also
-	// perform the appropriate validation procedures for its indicated token
-	// type."
+	// §2.1 is a MUST on the server: "In processing the request, the authorization
+	// server MUST perform the appropriate validation procedures for the indicated
+	// token type and, if the actor token is present, also perform the appropriate
+	// validation procedures for its indicated token type."
 	//
-	// These two parameters were parsed into ExchangeRequest and then read by
-	// nothing. A client sending an actor_token is asserting "this specific party
-	// is doing the acting" -- and received a token whose `act` chain named only
-	// the calling client, with a 200 and no indication that the assertion was
-	// dropped. Same shape as the PKCE downgrade: the caller believes a binding
-	// is in force, the server never applies it, and the response says nothing.
+	// These two parameters were once parsed and read by nothing, so a client
+	// asserting "this specific party is doing the acting" received a token whose
+	// `act` chain named only the calling client, with a 200 and no sign the
+	// assertion had been dropped. That was fixed by REFUSING the parameter, which
+	// is correct for something unimplemented but is not the same as supporting
+	// delegation -- and it left `may_act.sub` with nothing to compare against.
 	//
-	// Not supporting delegated actors is a legitimate position; proceeding as
-	// though the parameter had not been sent is not. When it is implemented,
-	// this branch is where the validation goes.
-	if req.ActorToken != "" {
-		if req.ActorTokenType == "" {
-			// §2.1: actor_token_type "is REQUIRED when the actor_token parameter
-			// is present in the request".
-			return nil, nil, tokenErr("invalid_request",
-				"actor_token_type is required when actor_token is present")
-		}
+	// Now validated. The parameter shape is checked here; the token itself is
+	// verified by the caller, which can reach the key set and the revocation
+	// state, exactly as it does for the subject token.
+	if req.ActorToken != "" && req.ActorTokenType == "" {
+		// §2.1: actor_token_type "is REQUIRED when the actor_token parameter is
+		// present in the request".
 		return nil, nil, tokenErr("invalid_request",
-			"actor_token is not supported by this authorization server; the "+
-				"exchanged token records the calling client as the actor, so "+
-				"sending one would assert a delegation that is not applied")
+			"actor_token_type is required when actor_token is present")
 	}
-	if req.ActorTokenType != "" {
+	if req.ActorToken == "" && req.ActorTokenType != "" {
 		// §2.1: actor_token_type "MUST NOT be included otherwise".
 		return nil, nil, tokenErr("invalid_request",
 			"actor_token_type must not be sent without actor_token")
+	}
+	if req.ActorToken != "" {
+		switch req.ActorTokenType {
+		case TokenTypeAccess, TokenTypeJWT:
+		default:
+			// Same reasoning as the subject token: silently accepting a type we do
+			// not validate the way its specification requires is how a token issued
+			// for one purpose becomes authority for another.
+			return nil, nil, tokenErr("invalid_request",
+				fmt.Sprintf("actor_token_type %q is not supported", req.ActorTokenType))
+		}
 	}
 
 	// THE SCOPE CEILING.

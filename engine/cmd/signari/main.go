@@ -268,6 +268,7 @@ func run(args []string) error {
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
 	dpopBound := fs.Bool("dpop-bound", false, "RFC 9449 §5.2: refuse token requests from this client that carry no DPoP proof")
+	exchangeAudMatch := fs.Bool("exchange-audience-match", false, "RFC 8693: only exchange subject tokens this client holds or is named in the audience of")
 	promptFile := fs.String("prompt-file", "", "YAML defining a sign-in prompt")
 	configFile := fs.String("f", "", "declarative configuration file")
 	prune := fs.Bool("prune", false,
@@ -499,6 +500,8 @@ func run(args []string) error {
 	case "client set-tls":
 		return clientSetTLS(ctx, conn, *clientID, *tlsSubjectDN, *tlsSANDNS, *tlsSANURI,
 			*spCert, *tlsBound)
+	case "client set-exchange-containment":
+		return clientSetExchangeContainment(ctx, conn, *clientID, *exchangeAudMatch)
 	case "client set-dpop":
 		return clientSetDPoP(ctx, conn, *clientID, *dpopBound)
 	case "client set-hybrid":
@@ -6759,6 +6762,27 @@ func clientSetDPoP(ctx context.Context, conn *pgx.Conn, clientID string, require
 		fmt.Printf("%s now requires a DPoP proof on every token request\n", clientID)
 	} else {
 		fmt.Printf("%s no longer requires DPoP; tokens are bound only when a proof is sent\n", clientID)
+	}
+	return nil
+}
+
+func clientSetExchangeContainment(ctx context.Context, conn *pgx.Conn, clientID string, on bool) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client")
+	}
+	tag, err := conn.Exec(ctx, `
+		UPDATE core.clients SET exchange_requires_audience_match = $2, updated_at = now()
+		WHERE client_id = $1`, clientID, on)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no client %q", clientID)
+	}
+	if on {
+		fmt.Printf("%s may now only exchange subject tokens it holds or is named in the audience of\n", clientID)
+	} else {
+		fmt.Printf("%s may exchange any valid subject token, bounded by its audience allow-list\n", clientID)
 	}
 	return nil
 }

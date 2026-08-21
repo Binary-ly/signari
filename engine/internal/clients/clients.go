@@ -67,6 +67,8 @@ type Client struct {
 	// downgrade requires no attack on DPoP, only the omission of a proof.
 	DPoPBoundAccessTokens bool
 
+	ExchangeRequiresAudienceMatch bool
+
 	// TokenEndpointAuthMethod is how this client is REGISTERED to authenticate,
 	// as distinct from how a given request happened to present credentials.
 	//
@@ -126,7 +128,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       id_token_signed_alg, refresh_token_ttl_s, first_party, issuer_alias,
 		       may_exchange, exchange_audiences,
 		       tls_subject_dn, tls_san_dns, tls_san_uri, tls_thumbprint, tls_bound_tokens,
-		       allow_hybrid, token_endpoint_auth_method, dpop_bound_access_tokens
+		       allow_hybrid, token_endpoint_auth_method, dpop_bound_access_tokens,
+		       exchange_requires_audience_match
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -134,7 +137,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias,
 			&c.MayExchange, &c.ExchangeAudiences,
 			&tlsDN, &tlsDNS, &tlsURI, &c.TLSThumbprint, &c.TLSBoundTokens,
-			&c.AllowHybrid, &c.TokenEndpointAuthMethod, &c.DPoPBoundAccessTokens)
+			&c.AllowHybrid, &c.TokenEndpointAuthMethod, &c.DPoPBoundAccessTokens,
+			&c.ExchangeRequiresAudienceMatch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

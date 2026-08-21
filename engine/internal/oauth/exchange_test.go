@@ -105,7 +105,7 @@ func TestUnsupportedSubjectTokenTypesAreRefused(t *testing.T) {
 //
 // Not supporting delegated actors is a legitimate position. Proceeding as though
 // the parameter had not been sent is not.
-func TestAnActorTokenIsRefusedRatherThanIgnored(t *testing.T) {
+func TestActorTokenParameterRules(t *testing.T) {
 	base := func() ExchangeRequest {
 		return ExchangeRequest{
 			SubjectToken:     "st",
@@ -113,16 +113,37 @@ func TestAnActorTokenIsRefusedRatherThanIgnored(t *testing.T) {
 		}
 	}
 
-	t.Run("an actor token is refused", func(t *testing.T) {
+	// Delegation is now implemented rather than refused, so a well-formed actor
+	// token passes the parameter rules here and is VERIFIED by the caller —
+	// signature, issuer, revocation and session liveness, exactly as the subject
+	// token is (§2.1 makes that a MUST for the actor token too).
+	//
+	// This test used to assert a blanket refusal, which was the right behaviour
+	// while the parameter was unimplemented: accepting and ignoring it would have
+	// told a caller its delegation was applied when it was not. The refusal is
+	// gone because the feature arrived, not because the objection stopped being
+	// true — everything below still holds it to the shape §2.1 requires.
+	t.Run("a well-formed actor token passes the parameter rules", func(t *testing.T) {
 		req := base()
 		req.ActorToken = "at"
 		req.ActorTokenType = TokenTypeAccess
 
+		if _, _, err := ValidateExchange(req, true, true, nil, "caller", []string{"read"}); err != nil {
+			t.Fatalf("a well-formed actor_token was refused at the parameter layer: %v", err)
+		}
+	})
+
+	t.Run("an actor token of a type we do not validate", func(t *testing.T) {
+		// Same reasoning as the subject token: accepting a type we do not check
+		// the way its own specification requires is how a token issued for one
+		// purpose becomes authority for another.
+		req := base()
+		req.ActorToken = "at"
+		req.ActorTokenType = TokenTypeID
+
 		_, _, err := ValidateExchange(req, true, true, nil, "caller", []string{"read"})
 		if err == nil {
-			t.Fatal("an actor_token was accepted and silently ignored; the caller " +
-				"believes it delegated through a specific actor and the issued " +
-				"token does not say so")
+			t.Fatal("an id_token was accepted as an actor_token")
 		}
 		if err.Code != "invalid_request" {
 			t.Errorf("code = %q, want invalid_request", err.Code)

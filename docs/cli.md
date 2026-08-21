@@ -57,6 +57,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari client set-keys` | Switch to `private_key_jwt` with a public JWKS |
 | `signari client set-tls` | mTLS client authentication and certificate-bound tokens |
 | `signari client set-dpop` | RFC 9449 §5.2: require a DPoP proof on every token request from this client |
+| `signari client set-exchange-containment` | RFC 8693: only exchange subject tokens this client holds or is named in the audience of |
 | `signari client set-hybrid` | Permit hybrid response types |
 | `signari client set-grants` | Which grant types this client may use (RFC 6749 §5.2) |
 

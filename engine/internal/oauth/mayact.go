@@ -49,8 +49,28 @@ func CheckMayAct(mayAct map[string]any, actorClientID, actorSubject, issuer stri
 
 	known := map[string]string{
 		"client_id": actorClientID,
-		"sub":       actorSubject,
 		"iss":       issuer,
+	}
+	// `sub` names the ACTOR, and there is only an actor subject to compare against
+	// when the request presented an `actor_token`.
+	//
+	// §4.4: the claim identifies "some party that is authorized to become the
+	// actor and act on behalf of the subject", and "the claims within the may_act
+	// claim pertain only to the identity of that party."
+	//
+	// This used to receive the SUBJECT token's own `sub` -- the user being acted
+	// FOR, not the party doing the acting -- which made the comparison compare a
+	// value against itself. `may_act: {"sub": "<the subject>"}`, meaning "only
+	// this person may act", matched and passed, so a restriction naming one human
+	// was honoured by any client with `may_exchange`. A false pass on a real
+	// constraint, which is the failure this whole function exists to prevent.
+	//
+	// With no actor token the acting party is a client and has no user subject, so
+	// `sub` is left out of the map and falls through to the unevaluable-member
+	// branch below: refused, and named, rather than compared against the wrong
+	// identity.
+	if actorSubject != "" {
+		known["sub"] = actorSubject
 	}
 
 	var unknown []string
@@ -73,10 +93,17 @@ func CheckMayAct(mayAct map[string]any, actorClientID, actorSubject, issuer stri
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
+		hint := ""
+		for _, u := range unknown {
+			if u == "sub" {
+				hint = " (may_act.sub names the party that may act; present an " +
+					"actor_token identifying that party)"
+			}
+		}
 		return fmt.Errorf("the subject token's may_act constrains the actor by %s, "+
 			"which this server cannot evaluate; refusing rather than honouring "+
-			"part of a restriction (RFC 8693 section 4.4)",
-			strings.Join(unknown, ", "))
+			"part of a restriction (RFC 8693 section 4.4)%s",
+			strings.Join(unknown, ", "), hint)
 	}
 	return nil
 }

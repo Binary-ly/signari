@@ -271,6 +271,8 @@ func run(args []string) error {
 	tlsSubjectDN := fs.String("tls-subject-dn", "", "certificate subject DN that must match (RFC 4514)")
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
+	tlsSANIP := fs.String("tls-san-ip", "", "certificate iPAddress SAN that must match (RFC 8705)")
+	tlsSANEmail := fs.String("tls-san-email", "", "certificate rfc822Name SAN that must match (RFC 8705)")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
 	dpopBound := fs.Bool("dpop-bound", false, "RFC 9449 §5.2: refuse token requests from this client that carry no DPoP proof")
 	exchangeAudMatch := fs.Bool("exchange-audience-match", false, "RFC 8693: only exchange subject tokens this client holds or is named in the audience of")
@@ -504,7 +506,7 @@ func run(args []string) error {
 		return userCreate(ctx, conn, *email, *password)
 	case "client set-tls":
 		return clientSetTLS(ctx, conn, *clientID, *tlsSubjectDN, *tlsSANDNS, *tlsSANURI,
-			*spCert, *tlsBound)
+			*tlsSANIP, *tlsSANEmail, *spCert, *tlsBound)
 	case "client set-exchange-containment":
 		return clientSetExchangeContainment(ctx, conn, *clientID, *exchangeAudMatch)
 	case "client set-dpop":
@@ -3803,20 +3805,20 @@ func clientCAPool() *x509.CertPool {
 
 // clientSetTLS registers a client for mutual-TLS authentication.
 func clientSetTLS(ctx context.Context, conn *pgx.Conn, clientID, subjectDN, sanDNS,
-	sanURI, certPath string, boundTokens bool) error {
+	sanURI, sanIP, sanEmail, certPath string, boundTokens bool) error {
 
 	if clientID == "" {
 		return fmt.Errorf("give -client-id")
 	}
 	set := 0
-	for _, v := range []string{subjectDN, sanDNS, sanURI, certPath} {
+	for _, v := range []string{subjectDN, sanDNS, sanURI, sanIP, sanEmail, certPath} {
 		if v != "" {
 			set++
 		}
 	}
 	if set == 0 {
 		return fmt.Errorf("give exactly one of -tls-subject-dn, -tls-san-dns, " +
-			"-tls-san-uri (PKI) or -sp-cert (self-signed)")
+			"-tls-san-uri, -tls-san-ip, -tls-san-email (PKI) or -sp-cert (self-signed)")
 	}
 	if set > 1 {
 		return fmt.Errorf("give exactly ONE matching rule. Several would be an AND " +
@@ -3844,10 +3846,11 @@ func clientSetTLS(ctx context.Context, conn *pgx.Conn, clientID, subjectDN, sanD
 	tag, err := conn.Exec(ctx, `
 		UPDATE core.clients
 		SET tls_subject_dn = NULLIF($2,''), tls_san_dns = NULLIF($3,''),
-		    tls_san_uri = NULLIF($4,''), tls_thumbprint = $5,
-		    tls_bound_tokens = $6, updated_at = now()
+		    tls_san_uri = NULLIF($4,''), tls_san_ip = NULLIF($5,''),
+		    tls_san_email = NULLIF($6,''), tls_thumbprint = $7,
+		    tls_bound_tokens = $8, updated_at = now()
 		WHERE client_id = $1`,
-		clientID, subjectDN, sanDNS, sanURI, thumb, boundTokens)
+		clientID, subjectDN, sanDNS, sanURI, sanIP, sanEmail, thumb, boundTokens)
 	if err != nil {
 		return err
 	}

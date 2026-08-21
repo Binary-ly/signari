@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -32,9 +33,14 @@ const (
 // Exactly one field is set. The database enforces that; this type carries the
 // same rule so a caller cannot construct an ambiguous one in memory.
 type TLSExpectation struct {
-	SubjectDN  string
-	SANDNS     string
-	SANURI     string
+	SubjectDN string
+	SANDNS    string
+	SANURI    string
+	// SANIP and SANEmail complete RFC 8705 §2.1's five subject forms. A client
+	// whose certificate identifies it by address or mailbox could not be
+	// registered at all before these existed.
+	SANIP      string
+	SANEmail   string
 	Thumbprint []byte
 }
 
@@ -43,7 +49,8 @@ func (e TLSExpectation) Method() string {
 	if len(e.Thumbprint) > 0 {
 		return MethodSelfSignedTLSClientAuth
 	}
-	if e.SubjectDN != "" || e.SANDNS != "" || e.SANURI != "" {
+	if e.SubjectDN != "" || e.SANDNS != "" || e.SANURI != "" ||
+		e.SANIP != "" || e.SANEmail != "" {
 		return MethodTLSClientAuth
 	}
 	return ""
@@ -147,6 +154,39 @@ func VerifyClientCertificate(state *tls.ConnectionState, e TLSExpectation, roots
 			}
 			return fmt.Errorf("certificate has no uniformResourceIdentifier matching %q",
 				e.SANURI)
+
+		case e.SANIP != "":
+			// Compared as a parsed ADDRESS, never as text.
+			//
+			// "192.168.1.1" and "192.168.001.001" are the same address and
+			// different strings; "::1" and "0:0:0:0:0:0:0:1" likewise. A textual
+			// comparison would refuse a certificate that carries exactly the
+			// registered address written another way -- and, worse, invites
+			// somebody to "fix" it with a normalisation that accepts more than it
+			// should. net.IP.Equal answers the question that was actually asked.
+			want := net.ParseIP(e.SANIP)
+			if want == nil {
+				return fmt.Errorf("the registered iPAddress %q is not an IP address",
+					e.SANIP)
+			}
+			for _, ip := range cert.IPAddresses {
+				if ip.Equal(want) {
+					return nil
+				}
+			}
+			return fmt.Errorf("certificate has no iPAddress matching %q", e.SANIP)
+
+		case e.SANEmail != "":
+			// Case-insensitive, matching how the DNS half is treated and how
+			// mailbox comparison works in practice. No normalisation beyond that:
+			// stripping dots or plus-addressing would make two different mailboxes
+			// compare equal, and this value is an identity.
+			for _, m := range cert.EmailAddresses {
+				if strings.EqualFold(m, e.SANEmail) {
+					return nil
+				}
+			}
+			return fmt.Errorf("certificate has no rfc822Name matching %q", e.SANEmail)
 		}
 	}
 	return fmt.Errorf("no usable mutual-TLS expectation is registered")

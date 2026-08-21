@@ -541,7 +541,8 @@ func checkMTLS(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	if err := conn.QueryRow(ctx, `
 		SELECT count(*) FROM core.clients
 		WHERE tls_subject_dn IS NOT NULL OR tls_san_dns IS NOT NULL
-		   OR tls_san_uri IS NOT NULL`).Scan(&pkiClients); err != nil {
+		   OR tls_san_uri IS NOT NULL OR tls_san_ip IS NOT NULL
+		   OR tls_san_email IS NOT NULL`).Scan(&pkiClients); err != nil {
 		return err
 	}
 	if pkiClients > 0 && os.Getenv("SIGNARI_TLS_CLIENT_CA") == "" {

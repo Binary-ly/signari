@@ -52,6 +52,8 @@ type Client struct {
 	TLSSubjectDN   string
 	TLSSANDNS      string
 	TLSSANURI      string
+	TLSSANIP       string
+	TLSSANEmail    string
 	TLSThumbprint  []byte
 	TLSBoundTokens bool
 
@@ -139,14 +141,15 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	c := &Client{ClientID: clientID}
 	var secret *string
 	var alias *string
-	var tlsDN, tlsDNS, tlsURI *string
+	var tlsDN, tlsDNS, tlsURI, tlsIP, tlsEmail *string
 
 	err := q.QueryRow(ctx, `
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce, pkce_methods,
 		       id_token_signed_alg, refresh_token_ttl_s, first_party, issuer_alias,
 		       may_exchange, exchange_audiences,
-		       tls_subject_dn, tls_san_dns, tls_san_uri, tls_thumbprint, tls_bound_tokens,
+		       tls_subject_dn, tls_san_dns, tls_san_uri, tls_san_ip, tls_san_email,
+		       tls_thumbprint, tls_bound_tokens,
 		       allow_hybrid, token_endpoint_auth_method, dpop_bound_access_tokens,
 		       exchange_requires_audience_match,
 		       backchannel_token_delivery_mode,
@@ -157,7 +160,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE, &c.PKCEMethods,
 			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias,
 			&c.MayExchange, &c.ExchangeAudiences,
-			&tlsDN, &tlsDNS, &tlsURI, &c.TLSThumbprint, &c.TLSBoundTokens,
+			&tlsDN, &tlsDNS, &tlsURI, &tlsIP, &tlsEmail,
+			&c.TLSThumbprint, &c.TLSBoundTokens,
 			&c.AllowHybrid, &c.TokenEndpointAuthMethod, &c.DPoPBoundAccessTokens,
 			&c.ExchangeRequiresAudienceMatch,
 			&c.BackchannelTokenDeliveryMode,
@@ -182,6 +186,12 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	}
 	if tlsURI != nil {
 		c.TLSSANURI = *tlsURI
+	}
+	if tlsIP != nil {
+		c.TLSSANIP = *tlsIP
+	}
+	if tlsEmail != nil {
+		c.TLSSANEmail = *tlsEmail
 	}
 
 	rows, err := q.Query(ctx,
@@ -345,6 +355,8 @@ func (c *Client) TLSExpectation() clientauth.TLSExpectation {
 		SubjectDN:  c.TLSSubjectDN,
 		SANDNS:     c.TLSSANDNS,
 		SANURI:     c.TLSSANURI,
+		SANIP:      c.TLSSANIP,
+		SANEmail:   c.TLSSANEmail,
 		Thumbprint: c.TLSThumbprint,
 	}
 }

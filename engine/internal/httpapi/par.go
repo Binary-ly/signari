@@ -99,7 +99,19 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	clientID := creds.ClientID
 	c, err := s.lookupClient(ctx, clientID)
 	if err != nil || c == nil {
-		writeError(w, http.StatusUnauthorized, "invalid_client", "unknown client")
+		// writeTokenError, not writeError.
+		//
+		// RFC 9126 §2: "The rules for client authentication as defined in
+		// [RFC6749] for token endpoint requests... apply for the PAR endpoint as
+		// well." That includes §5.2's requirement that a 401 for `invalid_client`
+		// carry a WWW-Authenticate challenge, and RFC 9110 §11.6.1's broader rule
+		// that any 401 must carry one at all.
+		//
+		// `writeTokenError` attaches it; `writeError` does not. The token endpoint
+		// used the first and this endpoint used the second, so the same failure
+		// answered a challenge in one place and a bare 401 in the other.
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
+			Description: "unknown client", Status: http.StatusUnauthorized})
 		return
 	}
 
@@ -111,7 +123,8 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		if err := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); err != nil {
 			s.log.Info("PAR client authentication failed", "client_id", clientID, "err", err,
 				"correlation_id", correlationID(ctx))
-			writeError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
+				Description: "client authentication failed", Status: http.StatusUnauthorized})
 			return
 		}
 	}

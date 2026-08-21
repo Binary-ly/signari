@@ -183,10 +183,11 @@ type introspectionResponse struct {
 	Expiry    int64  `json:"exp,omitempty"`
 	IssuedAt  int64  `json:"iat,omitempty"`
 	Subject   string `json:"sub,omitempty"`
-	Audience  string `json:"aud,omitempty"`
-	Issuer    string `json:"iss,omitempty"`
-	JTI       string `json:"jti,omitempty"`
-	SessionID string `json:"sid,omitempty"`
+
+	Audience  audienceValue `json:"aud,omitempty"`
+	Issuer    string        `json:"iss,omitempty"`
+	JTI       string        `json:"jti,omitempty"`
+	SessionID string        `json:"sid,omitempty"`
 
 	// AuthorizationDetails is RFC 9396 §9.2:
 	//
@@ -200,6 +201,41 @@ type introspectionResponse struct {
 	// introspection and the JWT claim cannot disagree about what was granted;
 	// two independently-built answers to one question is how they drift.
 	AuthorizationDetails json.RawMessage `json:"authorization_details,omitempty"`
+
+	// Cnf conveys the sender constraint to the resource server.
+	//
+	// RFC 9449 §6.2: "For a DPoP-bound access token, the hash of the public key
+	// to which the token is bound is conveyed to the protected resource as
+	// metainformation in a token introspection response ... as a top-level
+	// member of the introspection response JSON." RFC 8705 §3.2 says the same
+	// for the `x5t#S256` member of a certificate-bound token.
+	//
+	// Without it an RS that validates by introspection -- which is the caller
+	// §2.1 describes -- cannot honour the binding at all. RFC 9449 §6 states
+	// the requirement from the RS's side: "Resource servers MUST be able to
+	// reliably identify whether an access token is DPoP-bound".
+	//
+	// Carried verbatim from the verified token for the same reason as
+	// `authorization_details`: two independently-derived answers to one
+	// question are two answers that can drift apart.
+	Cnf *tokens.Confirmation `json:"cnf,omitempty"`
+}
+
+// audienceValue renders `aud` the way JWT does: absent when empty, a bare string
+// when there is exactly one, an array when there are several.
+//
+// RFC 7662 §2.2 permits either form -- "Service-specific string identifier or
+// list of string identifiers" -- and RFC 7519 §4.1.3 makes the single-string
+// case the special one. Emitting an array unconditionally would be legal and
+// would still break any resource server that reads `aud` as a string, which is
+// the shape this endpoint has always returned.
+type audienceValue []string
+
+func (a audienceValue) MarshalJSON() ([]byte, error) {
+	if len(a) == 1 {
+		return json.Marshal(a[0])
+	}
+	return json.Marshal([]string(a))
 }
 
 // handleIntrospect implements RFC 7662.
@@ -296,16 +332,17 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 		Active:    true,
 		Scope:     claims.Scope,
 		ClientID:  claims.ClientID,
-		TokenType: "Bearer",
+		TokenType: introspectedTokenType(claims.Cnf),
 		Expiry:    claims.Expiry,
 		IssuedAt:  claims.IssuedAt,
 		Subject:   claims.Subject,
-		Audience:  c.ClientID,
+		Audience:  claims.Audience,
 		Issuer:    s.cfg.Issuer,
 		JTI:       claims.JTI,
 		SessionID: claims.SessionID,
 
 		AuthorizationDetails: claims.AuthorizationDetails,
+		Cnf:                  claims.Cnf,
 	}
 }
 
@@ -336,7 +373,6 @@ func (s *Server) introspectRefreshToken(ctx context.Context, c *clients.Client, 
 		TokenType: "refresh_token",
 		Expiry:    st.ExpiresAt.Unix(),
 		Subject:   st.UserID,
-		Audience:  c.ClientID,
 		Issuer:    s.cfg.Issuer,
 		SessionID: st.SID,
 	}
@@ -356,4 +392,29 @@ func audienceIncludes(aud []string, clientID string) bool {
 		}
 	}
 	return false
+}
+
+// introspectedTokenType names the token type for an introspection response.
+//
+// RFC 9449 §6.2: "If the token_type member is included in the introspection
+// response, it MUST contain the value DPoP." We included the member and
+// hardcoded "Bearer", so a resource server was told a sender-constrained token
+// was an ordinary bearer token -- and an RS that believes "Bearer" never asks
+// for a proof, so it honours the token for whoever presents it. The wrong answer
+// is worse here than no answer at all.
+//
+// `bearerOrDPoP` in dpop.go is the same rule for the token endpoint, where it
+// was found and fixed in an earlier pass across three call sites. This is a
+// fourth site, in another file, and §6.2 states the requirement separately for
+// it -- which is why sweeping the token responses did not reach it.
+//
+// A certificate-bound token stays "Bearer". RFC 8705 conveys its binding through
+// `cnf.x5t#S256` and never redefines the token type: such a token is still
+// presented with the Bearer scheme, over a mutually-authenticated connection.
+// Calling it "DPoP" would tell the client to send a proof it does not have.
+func introspectedTokenType(cnf *tokens.Confirmation) string {
+	if cnf != nil && cnf.JKT != "" {
+		return "DPoP"
+	}
+	return "Bearer"
 }

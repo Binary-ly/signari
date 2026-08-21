@@ -1,8 +1,8 @@
 package scim
 
 import (
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )

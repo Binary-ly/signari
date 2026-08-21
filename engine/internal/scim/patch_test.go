@@ -2,6 +2,7 @@ package scim
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -215,3 +216,49 @@ func TestAnAttributeWeDoNotStoreIsStillReported(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func TestAddAndReplaceAgreeOnSingleValuedAttributes(t *testing.T) {
+	for _, op := range []string{"add", "replace"} {
+		var req PatchRequest
+		if err := json.Unmarshal([]byte(`{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+			"Operations":[{"op":"`+op+`","path":"displayName","value":"Alicia"}]}`), &req); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ApplyUserPatch(req)
+		if err != nil {
+			t.Fatalf("%s: %v", op, err)
+		}
+		if got.DisplayName == nil || *got.DisplayName != "Alicia" {
+			t.Errorf("%s produced DisplayName=%v, want the value replaced", op, got.DisplayName)
+		}
+	}
+}
+
+// The premise the unification rests on, checked directly.
+//
+// Every field `applyAssign` can set must be single-valued. A slice or map here
+// means a multi-valued attribute exists, and `add` and `replace` must then stop
+// being the same branch — §3.5.2.1 makes `add` append where `replace` replaces
+// the whole attribute.
+func TestUserPatchHoldsNoMultiValuedAttribute(t *testing.T) {
+	ty := reflect.TypeOf(UserPatch{})
+	for i := 0; i < ty.NumField(); i++ {
+		f := ty.Field(i)
+		if f.Name == "Unsupported" {
+			// Diagnostics, not a patchable attribute.
+			continue
+		}
+		k := f.Type.Kind()
+		if k == reflect.Ptr {
+			k = f.Type.Elem().Kind()
+		}
+		if k == reflect.Slice || k == reflect.Map {
+			t.Errorf("UserPatch.%s is multi-valued (%s). ApplyUserPatch sends `add` "+
+				"and `replace` down the same branch because no multi-valued "+
+				"attribute is stored; with one, RFC 7644 §3.5.2.1 requires `add` to "+
+				"APPEND while §3.5.2.3 has `replace` replace the whole attribute. "+
+				"Adding this field means splitting that branch, or a client adding "+
+				"one value will delete the others", f.Name, f.Type)
+		}
+	}
+}

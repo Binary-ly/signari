@@ -703,7 +703,23 @@ border:1px solid var(--brand-primary,#767676);border-radius:4px;cursor:pointer}
 <input id="u" name="username" autocomplete="username webauthn" autocapitalize="none" autofocus required>
 <label for="p">Password</label>
 <input id="p" name="password" type="password" autocomplete="current-password" required>
-{{if .Captcha}}
+` + captchaWidget + `<button type="submit">Sign in</button>
+</form>
+<p class="alt" id="passkey-row" hidden><button type="button" id="passkey-signin">Sign in with a passkey</button></p>
+{{if .Providers}}<div class="alt">
+{{range .Providers}}<p><a class="ext" href="/login/with/{{.Slug}}">Continue with {{.Name}}</a></p>{{end}}
+</div>{{end}}
+<script src="/passkey.js"></script>
+</body></html>`))
+
+// captchaWidget is the challenge markup, shared by every page that shows one.
+//
+// One copy, because there were two pages that needed it and the second was
+// written without it. A challenge configured by an operator was rendered on the
+// sign-in form and not on the sign-up form, so the control existed on the
+// endpoint that checks a password and not on the endpoint that creates accounts
+// and sends mail.
+const captchaWidget = `{{if .Captcha}}
 {{if eq .CaptchaProvider "turnstile"}}
 <div class="cf-turnstile" data-sitekey="{{.CaptchaSiteKey}}"></div>
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
@@ -715,14 +731,24 @@ border:1px solid var(--brand-primary,#767676);border-radius:4px;cursor:pointer}
 <script src="https://www.google.com/recaptcha/api.js" async defer></script>
 {{end}}
 {{end}}
-<button type="submit">Sign in</button>
-</form>
-<p class="alt" id="passkey-row" hidden><button type="button" id="passkey-signin">Sign in with a passkey</button></p>
-{{if .Providers}}<div class="alt">
-{{range .Providers}}<p><a class="ext" href="/login/with/{{.Slug}}">Continue with {{.Name}}</a></p>{{end}}
-</div>{{end}}
-<script src="/passkey.js"></script>
-</body></html>`))
+`
+
+// captchaFields adds the widget's template data when a challenge is due.
+//
+// `Required` rather than `Enabled`: the challenge is adaptive, and asking every
+// visitor to prove they are human when nothing suggests otherwise is a cost paid
+// by the people who are.
+func (s *Server) captchaFields(r *http.Request, data map[string]any) map[string]any {
+	if data == nil {
+		data = map[string]any{}
+	}
+	if s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr) {
+		data["Captcha"] = true
+		data["CaptchaProvider"] = string(s.captcha.Provider())
+		data["CaptchaSiteKey"] = s.captcha.SiteKey()
+	}
+	return data
+}
 
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	md, err := oidc.Build(s.cfg)

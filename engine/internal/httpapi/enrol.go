@@ -267,8 +267,19 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 	// img-src is widened ONLY when a logo is actually configured. An unbranded
 	// deployment keeps default-src 'none', so the permission exists exactly
 	// where it is used rather than everywhere in case it is needed.
-	setCSP(w, `default-src 'none'; style-src 'unsafe-inline';`+brandImgSrc(b)+
-		` form-action 'self'; frame-ancestors 'none'`)
+	// A challenge is third-party script, so the policy is widened only when one
+	// is actually on the page, and only to that provider's origins -- the same
+	// rule the sign-in page follows. Keyed off the data the caller already set,
+	// so a page cannot render a widget that its own policy then blocks.
+	policy := `default-src 'none'; style-src 'unsafe-inline';` + brandImgSrc(b) +
+		` form-action 'self'; frame-ancestors 'none'`
+	if on, _ := data["Captcha"].(bool); on {
+		if origins := captchaOrigins(s.captcha.Provider()); origins != "" {
+			policy += `; script-src ` + origins + `; frame-src ` + origins +
+				`; connect-src ` + origins
+		}
+	}
+	setCSP(w, policy)
 	w.Header().Set("X-Frame-Options", "DENY")
 
 	if b != nil {

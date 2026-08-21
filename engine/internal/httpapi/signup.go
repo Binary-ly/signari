@@ -65,7 +65,7 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	data := map[string]any{"CSRF": csrf, "CSRFField": csrfFormField}
+	data := s.captchaFields(r, map[string]any{"CSRF": csrf, "CSRFField": csrfFormField})
 
 	if token := r.URL.Query().Get("invite"); token != "" {
 		inv, err := store.PeekInvitation(ctx, s.db, token)
@@ -73,10 +73,10 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 			// Said now rather than after a password has been chosen. Refusing on
 			// submission means filling in a form to be told the link was dead
 			// before it was opened.
-			s.renderPage(w, r, signupPage, map[string]any{
+			s.renderPage(w, r, signupPage, s.captchaFields(r, map[string]any{
 				"Error": "That invitation link is not valid. It may have been used " +
 					"already, or expired. Ask whoever invited you for a new one.",
-			})
+			}))
 			return
 		}
 		data["Invite"] = token
@@ -119,16 +119,46 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The challenge, checked before anything is created.
+	//
+	// `internal/flow`'s shipped enrolment flow has declared
+	// `{stage: captcha, when: captcha_required}` since it was written, and this
+	// endpoint had no challenge at all -- the only `captcha.Verify` in the engine
+	// was on the sign-in path. So an operator who configured a provider got it on
+	// the endpoint that checks a password and not on the endpoint that writes
+	// rows and sends mail, while the flow file told them otherwise.
+	//
+	// A failure is recorded, like the sign-in path, so adaptive mode escalates
+	// rather than being held still by a stream of blank submissions.
+	if s.captcha.Required(ctx, r.RemoteAddr) {
+		if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
+			s.captcha.RecordFailure(ctx, r.RemoteAddr)
+			s.log.Info("captcha refused at sign-up", "err", cerr,
+				"correlation_id", correlationID(ctx))
+			csrf, _ := s.csrfToken(w, r)
+			s.renderPage(w, r, signupPage, s.captchaFields(r, map[string]any{
+				"Error":  "That challenge was not completed. Please try again.",
+				"Email":  strings.ToLower(strings.TrimSpace(r.PostFormValue("email"))),
+				"Invite": r.PostFormValue("invite"),
+				"CSRF":   csrf, "CSRFField": csrfFormField,
+			}))
+			return
+		}
+	}
+
 	email := strings.ToLower(strings.TrimSpace(r.PostFormValue("email")))
 	password := r.PostFormValue("password")
 	token := r.PostFormValue("invite")
 
 	fail := func(msg string) {
 		csrf, _ := s.csrfToken(w, r)
-		s.renderPage(w, r, signupPage, map[string]any{
+		// The widget is re-rendered on failure. Without it the form comes back
+		// with no challenge, the next submission has nothing to send, and the
+		// person is refused for a reason the page does not show them.
+		s.renderPage(w, r, signupPage, s.captchaFields(r, map[string]any{
 			"Error": msg, "Email": email, "Invite": token,
 			"CSRF": csrf, "CSRFField": csrfFormField,
-		})
+		}))
 	}
 
 	if email == "" || !strings.Contains(email, "@") {
@@ -326,7 +356,7 @@ var signupPage = template.Must(template.New("signup").Parse(`<!doctype html>
 <input id="p" name="password" type="password" autocomplete="new-password" required
   minlength="8">
 <p class="hint">At least 8 characters. You can add a passkey once you are in.</p>
-<button type="submit">Create account</button>
+` + captchaWidget + `<button type="submit">Create account</button>
 </form>
 {{end}}
 </body></html>`))

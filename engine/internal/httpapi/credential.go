@@ -307,6 +307,23 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 				},
 			},
 			"credential_signing_alg_values_supported": []string{string(keys.ES256)},
+			// §12.2.4, and absence here is not neutral:
+			//
+			//	"It MUST be present when Cryptographic Key Binding is required for
+			//	a Credential, and omitted otherwise. If absent, Cryptographic Key
+			//	Binding is not required for this credential."
+			//
+			// `Issuer.Issue` refuses a request with no holder key -- "an unbound
+			// credential is a bearer token, which is what binding exists to
+			// prevent" -- so binding is required unconditionally. Omitting this
+			// parameter told every conformant wallet the opposite of what the
+			// endpoint does.
+			//
+			// `jwk` because that is the representation we use: the credential
+			// carries `cnf: {"jwk": ...}`. A wallet that holds its key as a COSE
+			// Key needs to know which form to present, and the only other place
+			// that could be inferred from is a failed request.
+			"cryptographic_binding_methods_supported": []string{"jwk"},
 		}
 		if c.DisplayName != "" {
 			entry["display"] = []map[string]any{{"name": c.DisplayName, "locale": "en-US"}}

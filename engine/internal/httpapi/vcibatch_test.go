@@ -98,3 +98,59 @@ func credentialIssuerMetadata(t *testing.T, f *tokenFixture) map[string]any {
 	}
 	return doc
 }
+
+// OID4VCI 1.0 §12.2.4, `cryptographic_binding_methods_supported`:
+//
+//	"It MUST be present when Cryptographic Key Binding is required for a
+//	Credential, and omitted otherwise. If absent, Cryptographic Key Binding is
+//	not required for this credential."
+//
+// Found on a second pass over the specification — 509 normative uses across 84
+// sections, extracted and checked rather than sampled. The first pass read §4,
+// §7, §8 and the top-level parameters of §12.2.4; this requirement is in the
+// per-configuration half of the same section.
+//
+// `Issuer.Issue` refuses a request with no holder key, so binding is required
+// unconditionally. The parameter was absent, and absence has a defined meaning
+// here: it states that binding is NOT required. The metadata said the opposite
+// of what the endpoint enforces.
+func TestKeyBindingIsAdvertisedBecauseItIsRequired(t *testing.T) {
+	f := newTokenFixture(t)
+	configureCredential(t, f)
+
+	doc := credentialIssuerMetadata(t, f)
+	configs, ok := doc["credential_configurations_supported"].(map[string]any)
+	if !ok || len(configs) == 0 {
+		t.Fatalf("no credential_configurations_supported: %v", doc)
+	}
+
+	for id, raw := range configs {
+		cfg, _ := raw.(map[string]any)
+		methods, present := cfg["cryptographic_binding_methods_supported"]
+		if !present {
+			t.Errorf("configuration %q does not advertise "+
+				"cryptographic_binding_methods_supported. Its absence tells a wallet "+
+				"that key binding is not required, and this issuer refuses every "+
+				"request that does not carry a holder key", id)
+			continue
+		}
+		list, _ := methods.([]any)
+		if len(list) == 0 {
+			t.Errorf("configuration %q advertises an empty binding-method list; "+
+				"§12.2.4 requires a non-empty array", id)
+			continue
+		}
+		var found bool
+		for _, m := range list {
+			if m == "jwk" {
+				found = true
+			}
+		}
+		if !found {
+			// The credential carries `cnf: {"jwk": ...}`, so `jwk` is the
+			// representation a wallet must present.
+			t.Errorf("configuration %q advertises %v, which does not include the "+
+				"representation this issuer actually binds to", id, list)
+		}
+	}
+}

@@ -57,6 +57,16 @@ type Statement struct {
 	// constraints.go: §10.2 makes enforcing these a MUST, and this engine
 	// parsed and ignored them until August 2026.
 	Constraints *Constraints `json:"constraints,omitempty"`
+
+	// Crit is §3.2's `crit` claim: the issuer marking extension claims that a
+	// reader must understand before it may act on this statement.
+	//
+	// Distinct from `metadata_policy_crit`, which marks critical POLICY
+	// OPERATORS and has been enforced in policy.go since it was written. This
+	// one marks critical CLAIMS on the statement itself, and was not read at all
+	// -- so an issuer saying "do not use this statement unless you process X"
+	// was answered by using it without processing X.
+	Crit []string `json:"crit,omitempty"`
 }
 
 // ChainResult is a validated chain.
@@ -119,6 +129,9 @@ func ValidateChain(chain []Statement, trustAnchorID string, trustAnchorKeys json
 		}
 		if len(es.JWKS) == 0 {
 			return nil, fmt.Errorf("statement %d carries no jwks", j)
+		}
+		if err := checkCrit(es); err != nil {
+			return nil, fmt.Errorf("statement %d: %w", j, err)
 		}
 		if !time.Unix(es.IssuedAt, 0).Before(now) {
 			return nil, fmt.Errorf("statement %d has an iat in the future", j)
@@ -235,4 +248,77 @@ func verifyWith(es Statement, rawJWKS json.RawMessage) error {
 		return nil
 	}
 	return fmt.Errorf("no key with kid %q in the key set", kid)
+}
+
+// knownCritClaims are extension claims this implementation understands well
+// enough to act on when an issuer marks them critical.
+//
+// Empty, and that is the honest state rather than an oversight: §3.2 requires
+// each `crit` entry to name a claim "that is not defined by this specification",
+// so by construction every possible entry is an extension, and we implement no
+// federation extensions.
+//
+// It exists as a named, empty set so that adding an extension has one obvious
+// place to register it -- and so the emptiness is a statement rather than an
+// absence.
+var knownCritClaims = map[string]bool{}
+
+// checkCrit applies §3.2's rule for the `crit` claim.
+//
+//	"If the crit Claim is present, then each array element in this Claim's value
+//	MUST be a string representing an Entity Statement Claim that is not defined
+//	by this specification and that Claim MUST be understood and be able to be
+//	processed by the implementation."
+//
+// followed by:
+//
+//	"If any of these validation steps fail, the Entity Statement MUST be
+//	rejected."
+//
+// # Why ignoring this is worse than it looks
+//
+// `crit` is the issuer saying: this statement means something different from
+// what it appears to mean, and if you cannot process the named claim you must
+// not use it. Reading the statement anyway is not a partial understanding of it
+// -- it is acting on a document whose author has told you in advance that you
+// will misread it.
+//
+// That is the same shape as the `constraints` claim in this package, parsed and
+// ignored until August 2026, and as `may_act`, the WebAuthn backup-eligibility
+// flag and CIBA's signed request object elsewhere in this engine. A sender put a
+// restriction in a signed object and the receiver dropped it.
+//
+// Rejecting every non-empty `crit` is the conformant answer while
+// knownCritClaims is empty, and it fails closed: a federation that starts using
+// an extension gets a refusal naming the claim, rather than silent
+// misinterpretation of statements that govern who may sign in.
+func checkCrit(es Statement) error {
+	for _, name := range es.Crit {
+		if name == "" {
+			return fmt.Errorf("the crit claim contains an empty entry")
+		}
+		if definedClaims[name] {
+			// §3.2: an entry must name a claim NOT defined by the specification.
+			// Marking `iss` critical is malformed, not a stricter request.
+			return fmt.Errorf("the crit claim names %q, which this specification "+
+				"defines; crit may only name extension claims", name)
+		}
+		if !knownCritClaims[name] {
+			return fmt.Errorf("the claim %q is declared critical by its issuer and "+
+				"this implementation does not process it, so the statement cannot "+
+				"be acted on (section 3.2)", name)
+		}
+	}
+	return nil
+}
+
+// definedClaims are the Entity Statement claims this specification defines, for
+// the "crit may only name extension claims" half of the rule.
+var definedClaims = map[string]bool{
+	"iss": true, "sub": true, "iat": true, "exp": true, "aud": true, "jti": true,
+	"jwks": true, "authority_hints": true, "trust_anchor_hints": true,
+	"metadata": true, "metadata_policy": true, "metadata_policy_crit": true,
+	"constraints": true, "crit": true, "trust_marks": true,
+	"trust_mark_issuers": true, "trust_mark_owners": true,
+	"source_endpoint": true,
 }

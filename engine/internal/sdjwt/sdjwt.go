@@ -71,8 +71,10 @@ const TypSDJWTVC = "dc+sd-jwt"
 const AlgSHA256 = "sha-256"
 
 var RedList = map[string]bool{
-	"iss": true, "iat": true, "nbf": true, "exp": true,
-	"cnf": true, "vct": true, "status": true, "aud": true,
+	"iss": true, "nbf": true, "exp": true, "cnf": true,
+	"vct": true, "vct#integrity": true, "aka_vcts": true, "status": true,
+	// Not from the profile. See above.
+	"aud": true, "iat": true,
 }
 
 // Disclosure is one selectively disclosable claim.

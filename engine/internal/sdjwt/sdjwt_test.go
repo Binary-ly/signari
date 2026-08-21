@@ -512,3 +512,47 @@ func TestAValueContainingHTMLCharactersIsEncodedLiterally(t *testing.T) {
 		t.Error("the digest does not match the encoded form it is taken over")
 	}
 }
+
+func TestRedListCoversEverySectionTwoTwoTwoThreeClaim(t *testing.T) {
+	// draft-ietf-oauth-sd-jwt-vc-18 §2.2.2.3, first list: "MUST NOT be included
+	// in the Disclosures, i.e., cannot be selectively disclosed".
+	mustNotBeDisclosed := []string{
+		"iss", "nbf", "exp", "cnf", "vct", "vct#integrity", "aka_vcts", "status",
+	}
+	for _, claim := range mustNotBeDisclosed {
+		if !RedList[claim] {
+			t.Errorf("§2.2.2.3 forbids selectively disclosing %q and RedList permits "+
+				"it; an issuer can build a credential whose %q a holder simply "+
+				"withholds", claim, claim)
+		}
+	}
+
+	// The second list: "MAY be included in Disclosures". `sub` must stay out of
+	// RedList -- blocking it would make a conformant credential unissuable.
+	if RedList["sub"] {
+		t.Error("§2.2.2.3 permits selectively disclosing `sub`; blocking it makes " +
+			"a conformant credential unissuable")
+	}
+	// `iat` is the documented deviation. If this fires, the deviation was removed
+	// and the comment on RedList is now stale.
+	if !RedList["iat"] {
+		t.Error("`iat` left RedList; §2.2.2.3 permits disclosing it, so this may " +
+			"well be right -- but the comment on RedList still calls it a " +
+			"deliberate deviation and must be updated with it")
+	}
+}
+
+// The two claims the drift actually cost us, through the function an issuer calls.
+//
+// Unit-testing the map would pass against a RedList nothing consults; this goes
+// through NewDisclosure, which is what issuance uses.
+func TestTypeMetadataIntegrityCannotBeMadeSelectivelyDisclosable(t *testing.T) {
+	for _, claim := range []string{"vct#integrity", "aka_vcts"} {
+		if _, err := NewDisclosure(claim, "anything"); err == nil {
+			t.Errorf("NewDisclosure(%q) succeeded; a holder could withhold it, and "+
+				"for vct#integrity that leaves the verifier trusting whatever the "+
+				"Type Metadata URL serves at verification time -- the substitution "+
+				"§5 exists to prevent", claim)
+		}
+	}
+}

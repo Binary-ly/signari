@@ -553,3 +553,78 @@ rule reaching six member names and stopping.
 That is the same shape as the session's other findings and it is worth stating as
 a general result: **a rule enforced in fewer places than its documentation claims
 is invisible to any method that reads the documentation.**
+
+## SD-JWT VC — the same staleness, one draft apart
+
+The SSF finding suggested a mechanical sweep: every fixed list of field names used
+for a comparison or a prohibition can go stale, because the list lives in one file
+and the reason for each entry lives in a specification that keeps moving. Across
+the emerging-standards packages there are exactly two such lists —
+`processableSubjectMembers` in SSF, whose absences are deliberate and documented,
+and `RedList` in SD-JWT.
+
+`RedList` is the set of claims that MUST NOT be selectively disclosed. It held
+`iss, iat, nbf, exp, cnf, vct, status, aud`.
+
+### Checking it required first noticing the wrong document
+
+The cached copy of the profile was **draft-10**, and the code cites **draft-18**.
+Against draft-10 the analysis produced a confident, wrong answer — that `sub` was
+missing from our list — because draft-10 §3.2.2.2 and draft-18 §2.2.2.3 are the
+same section renumbered, and the section contains **two** lists whose members read
+identically in a flat text extraction: the claims that cannot be selectively
+disclosed, and the claims that can.
+
+`sub` and `iat` are in the second list. Reading the first list's members as though
+they were the section's members produces exactly the inverted conclusion. Recorded
+because the failure was silent: the extraction succeeded, the output was
+well-formed, and only pulling the surrounding sentence showed it was the wrong half
+of the section.
+
+### What draft-18 actually says, and what it cost us
+
+| §2.2.2.3 | Claims |
+|---|---|
+| MUST NOT be selectively disclosed | `iss`, `nbf`, `exp`, `cnf`, `vct`, **`vct#integrity`**, **`aka_vcts`**, `status` |
+| MAY be selectively disclosed | `sub`, `iat` |
+
+Two claims were missing from ours, both added since the draft the list was copied
+from:
+
+**`vct#integrity`** is §5's hash of the Type Metadata document — the thing that
+lets a verifier confirm the metadata it fetched is the metadata the issuer signed
+over. Selectively disclosable, a holder withholds it and the verifier falls back
+to trusting whatever that URL serves at verification time. That is precisely the
+substitution §5 exists to prevent, and our library would have issued such a
+credential without complaint.
+
+**`aka_vcts`** is the credential's other declared types; withholding it hides what
+else the credential claims to be.
+
+And one deviation in the other direction: `iat` is on the **permitted** list in
+both the profile and RFC 9901 §9.7, and we block it. That is stricter than either
+specification. It is kept — nothing here needs a hideable issuance time — but it is
+now recorded as a deviation with the condition that should end it: an ecosystem
+whose Type Metadata marks `iat` as `"sd": "always"` (§9.3) cannot be served until
+that entry goes.
+
+
+An earlier version of our comment cited that agreement approvingly. It is worth
+being careful about what it demonstrates: both lists were copied from the same
+document at roughly the same time, so they agree about what that document said and
+about what it has since added. Agreement between two implementations reading one
+source is not independent confirmation, and the two claims neither of us carried
+are the demonstration.
+
+### The fix that matters is the test, not the two names
+
+Adding `vct#integrity` and `aka_vcts` closes today's hole.
+`TestRedListCoversEverySectionTwoTwoTwoThreeClaim` transcribes §2.2.2.3's first
+list literally and asserts `RedList` covers it, asserts `sub` stays out, and fails
+if the documented `iat` deviation is removed without updating the comment that
+describes it. `TestTypeMetadataIntegrityCannotBeMadeSelectivelyDisclosable` goes
+through `NewDisclosure` rather than the map, because a red list nothing consults
+passes a map test.
+
+Both die against the old list, with the message naming what a holder could
+withhold.

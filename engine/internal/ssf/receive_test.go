@@ -784,3 +784,151 @@ func TestAnInEventSubjectPairFromDifferentIssuersIsRefused(t *testing.T) {
 		t.Fatal("an event naming the same sub under two different issuers was accepted")
 	}
 }
+
+// SSF 1.0 §3.3 Complex Subject Members — a section no pass had opened, found by
+// listing the spec's sections and checking which ones our code and docs cite.
+//
+//	"A Complex Subject Member has a name and a value that is a JSON object that
+//	has a format field, and one or more Simple Subject Members. The name of the
+//	format field is "format", and its value is "complex"."
+//
+// The spec's own example:
+//
+//	"sub_id": {
+//	  "format": "complex",
+//	  "user":   {"format": "email",   "email": "bar@example.com"},
+//	  "tenant": {"format": "iss_sub", "iss": "...", "sub": "1234"}
+//	}
+//
+// `subjectFrom` read `format`, `iss`, `sub` and `email` off the object directly.
+// Against a complex subject all four are absent — the identity is one level
+// down — so it returned an empty Subject, `ResolveSSFSubject` matched nobody,
+// and the event was recorded as `no_matching_user` while revoking nothing.
+//
+// §3.3.1 is what makes reading the `user` member correct rather than a guess:
+// "All members within a Complex Subject MUST represent attributes of the same
+// Subject Principal. As a whole, the Complex Subject MUST refer to exactly one
+// Subject Principal." The members are attributes of one principal, not a
+// conjunction of separate scopes.
+func TestAComplexSubjectNamesItsUser(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	claims := goodClaims(now)
+	claims["events"] = map[string]any{
+		EventSessionRevoked: map[string]any{
+			"sub_id": map[string]any{
+				"format": "complex",
+				"user": map[string]any{
+					"format": "iss_sub", "iss": "https://transmitter.test", "sub": "user-42",
+				},
+				"tenant": map[string]any{
+					"format": "iss_sub", "iss": "https://transmitter.test", "sub": "tenant-1",
+				},
+			},
+			"event_timestamp": now.Unix(),
+		},
+	}
+
+	got, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, claims, nil, tr.kid), now)
+	if err != nil {
+		t.Fatalf("an event with a §3.3 complex subject was refused: %v", err)
+	}
+	if got.Subject.Sub != "user-42" || got.Subject.Format != "iss_sub" {
+		t.Fatalf("subject = %+v, want user-42/iss_sub from the complex subject's "+
+			"`user` member. An empty subject resolves to nobody, so the revocation "+
+			"is recorded as no_matching_user and no session ends", got.Subject)
+	}
+}
+
+// The `email` form of the same shape, since that is what the specification's own
+// example uses for `user`.
+func TestAComplexSubjectWithAnEmailUser(t *testing.T) {
+	got := subjectFrom(map[string]any{"sub_id": map[string]any{
+		"format": "complex",
+		"user":   map[string]any{"format": "email", "email": "bar@example.com"},
+	}})
+	if got.Format != "email" || got.Sub != "bar@example.com" {
+		t.Errorf("subject = %+v, want the email form from the `user` member", got)
+	}
+}
+
+// A complex subject naming no user is not something this receiver can act on —
+// it identifies a device or a tenant, and we revoke per user. It must resolve to
+// nothing, which the caller already records as `no_matching_user`, rather than
+// resolving to some other member and revoking the wrong person's sessions.
+func TestAComplexSubjectWithNoUserResolvesToNobody(t *testing.T) {
+	got := subjectFrom(map[string]any{"sub_id": map[string]any{
+		"format": "complex",
+		"device": map[string]any{"format": "iss_sub", "iss": "https://t.test", "sub": "dev-9"},
+	}})
+	if got.Sub != "" {
+		t.Errorf("subject = %+v, want empty: this event names a device, and "+
+			"treating a device id as a user id revokes somebody's sessions on the "+
+			"strength of a string collision", got)
+	}
+}
+
+// Why reading only `user` is safe, rather than a shortcut.
+//
+// This receiver revokes per user. An event scoped to one session or one device
+// is therefore applied more broadly than it was sent — every session of that
+// person's, not the one named. §3.6 is the mechanism a transmitter uses when it
+// cannot accept that: mark the member Critical, and a receiver "unable to
+// process" it MUST discard the event rather than act on a scope it is ignoring.
+//
+// So the correctness of reading only `user` depends on the other complex member
+// names staying OUT of `processableSubjectMembers`. These two cases are that
+// dependency, made into a test: a critical `session` must be refused, and a
+// critical `user` must now be accepted because we do read it.
+func TestComplexSubjectScopesWeIgnoreAreRefusedWhenCritical(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	complexSubject := func(extra string) map[string]any {
+		sub := map[string]any{
+			"format": "complex",
+			"user": map[string]any{
+				"format": "iss_sub", "iss": "https://transmitter.test", "sub": "user-42",
+			},
+		}
+		if extra != "" {
+			sub[extra] = map[string]any{
+				"format": "iss_sub", "iss": "https://transmitter.test", "sub": "scope-1",
+			}
+		}
+		claims := goodClaims(now)
+		claims["events"] = map[string]any{
+			EventSessionRevoked: map[string]any{
+				"sub_id": sub, "event_timestamp": now.Unix(),
+			},
+		}
+		return claims
+	}
+
+	// A session scope we do not honour, declared critical: discard.
+	src := tr.source()
+	src.CriticalSubjectMembers = []string{"session"}
+	_, err := Verify(context.Background(), &KeyFetcher{}, src,
+		tr.sign(t, TypSET, complexSubject("session"), nil, tr.kid), now)
+	if err == nil {
+		t.Error("an event scoped to one session, with `session` marked critical, " +
+			"was accepted. We revoke per user, so acting on it ends every session " +
+			"that person has — §3.6 says discard instead of applying the right " +
+			"action to the wrong set of things")
+	}
+
+	// The member we DO read, declared critical: process it.
+	src2 := tr.source()
+	src2.CriticalSubjectMembers = []string{"user"}
+	got, err := Verify(context.Background(), &KeyFetcher{}, src2,
+		tr.sign(t, TypSET, complexSubject(""), nil, tr.kid), now)
+	if err != nil {
+		t.Errorf("a critical `user` member was treated as unprocessable, but that "+
+			"is the one member this receiver resolves: %v", err)
+	}
+	if got.Subject.Sub != "user-42" {
+		t.Errorf("subject = %+v", got.Subject)
+	}
+}

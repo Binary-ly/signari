@@ -235,6 +235,32 @@ func TestASignedSignalEndsRealSessions(t *testing.T) {
 		t.Fatalf("an unknown issuer returned %d, want 400 per RFC 8935 §2.3", c)
 	}
 
+	// SSF 1.0 §9.3 Malicious Subject Removal — a section nothing in this
+	// repository cited until it was found by listing the specification's sections
+	// and checking which ones our code and docs reference.
+	//
+	//	"Event Receivers MUST tolerate receiving events for subjects that have
+	//	been removed from the stream, and MUST NOT report these events as errors
+	//	to the Event Transmitter."
+	//
+	// The reason is in the section's title. Removing a subject from a stream is
+	// something an ATTACKER wants: it blinds the receiver to that account while
+	// they use it. So a transmitter may keep sending events for a removed
+	// subject, and a receiver that answers 4xx to them teaches the transmitter to
+	// stop — completing the attacker's work on their behalf.
+	//
+	// We already behaved correctly (an unresolvable subject is recorded as
+	// `no_matching_user` and committed), but nothing held it in place. The
+	// tempting "cleanup" is to treat an event about nobody as a client error,
+	// because from inside it looks like one.
+	if c := post(tx.mint(t, issuer, audience, fmt.Sprintf("jti-gone-%d", suffix),
+		ssf.EventSessionRevoked, "subject-that-was-removed")); c != http.StatusAccepted {
+		t.Fatalf("an event for a subject we cannot resolve returned %d, want 202. "+
+			"§9.3 MUST NOT report these as errors: a transmitter told 4xx stops "+
+			"sending, which is exactly what removing a subject from a stream is "+
+			"an attack for", c)
+	}
+
 	// Garbage.
 	if c := post("not.a.token"); c != http.StatusBadRequest {
 		t.Fatalf("garbage returned %d, want 400", c)

@@ -439,3 +439,94 @@ The last is worth stating rather than fixing. Precedence between the two is
 agreement makes the choice moot. A test asserting precedence would be asserting
 an implementation detail that no conformant input can distinguish — the honest
 record is that the contradiction check is what makes precedence not matter.
+
+## Reading the sections nobody had opened (21 August 2026)
+
+The protocol-review notes had already concluded, from six second passes, that
+**"the risk is unread sections, not misread ones"** — every finding came from a
+section a first pass never opened, none from code a first pass read and
+misjudged. That is a claim you can act on mechanically rather than by re-reading
+everything: list the specification's sections, list the ones our code and docs
+cite, and look at the difference.
+
+For SSF 1.0 that is **77 sections, 33 cited, 49 never referenced anywhere**. Two
+of the 49 mattered.
+
+### §3.3 Complex Subject Members — a second silent no-op
+
+A Complex Subject carries `"format": "complex"` and its identity one level down,
+in Simple Subject Members named `user`, `device`, `session`, `tenant` and so on.
+The specification's own example:
+
+```json
+"sub_id": {
+  "format": "complex",
+  "user":   {"format": "email",   "email": "bar@example.com"},
+  "tenant": {"format": "iss_sub", "iss": "https://example.com/idp1", "sub": "1234"}
+}
+```
+
+`subjectFrom` read `format`, `iss`, `sub` and `email` off the object directly.
+Against this, all four are absent — so it returned an empty Subject with
+`Format: "complex"`, `ResolveSSFSubject` had no case for that format, and the
+event was recorded `no_matching_user` while revoking nothing.
+
+**This is the same failure as the top-level `sub_id` defect above, through a
+different door**, and finding it one day later is the argument for the sweep: the
+first fix was correct and did not generalise, because the bug was never really
+"we read the wrong level" — it was "we assume one subject shape".
+
+Reading the `user` member is not a choice among candidates. §3.3.1: *"All members
+within a Complex Subject MUST represent attributes of the same Subject Principal.
+As a whole, the Complex Subject MUST refer to exactly one Subject Principal."*
+They are attributes of one principal, and `user` is the one naming an account.
+
+**Falling back to `device` or `tenant` when `user` is absent is refused**, and
+tested. A device identifier that happens to collide with a user identifier would
+otherwise revoke a real person's sessions.
+
+#### Why reading only `user` is safe, and where that safety actually lives
+
+This receiver revokes per user, so an event scoped to one session is applied more
+broadly than it was sent. The specification already has the mechanism for that,
+and we already implement it: §3.6 requires a receiver to **discard** an event
+carrying a Critical member it cannot process. `device`, `session`, `tenant` and
+the rest are deliberately **absent** from `processableSubjectMembers`, so a
+transmitter that cannot accept the wider application marks the member Critical
+and the event is refused instead of over-applied.
+
+That dependency is now a test rather than an implication. The mutation that adds
+every complex member name to `processableSubjectMembers` — which looks like
+completing the list — kills the valve, and fails both that test and a
+pre-existing one.
+
+### §9.3 Malicious Subject Removal — correct already, and now held
+
+> "Event Receivers MUST tolerate receiving events for subjects that have been
+> removed from the stream, and MUST NOT report these events as errors to the
+> Event Transmitter."
+
+The reason is in the section's title: removing a subject from a stream is
+something an **attacker** wants, because it blinds the receiver to that account
+while they use it. A transmitter may therefore keep sending events for a removed
+subject — and a receiver that answers 4xx teaches it to stop, finishing the
+attacker's work on their behalf.
+
+We were already correct: an unresolvable subject is recorded as
+`no_matching_user`, committed, and answered 202. Nothing held it there, and the
+tempting cleanup is to treat an event about nobody as a client error, because
+from the inside that is exactly what it looks like. There is now a test, and the
+mutation that returns 400 fails it.
+
+### §9.1 Subject Probing — not applicable, checked rather than assumed
+
+Its receiver-facing MUST NOT concerns what a receiver may infer from a 204 to an
+*add subject* request. We never call one: `add_subject_endpoint` appears in this
+codebase only as a field we publish as a transmitter.
+
+```
+CAUGHT   ignore complex subjects (the state before this pass)
+CAUGHT   fall back to device/session/tenant when `user` is absent
+CAUGHT   mark every complex member processable (drops the §3.6 valve)
+CAUGHT   answer 400 for an event about a subject we cannot resolve
+```

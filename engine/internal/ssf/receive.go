@@ -62,6 +62,18 @@ type Source struct {
 // would make us discard events we now understand perfectly well.
 var processableSubjectMembers = map[string]bool{
 	"format": true, "iss": true, "sub": true, "email": true,
+	// §3.3's complex subject, whose `user` member is the one we resolve to an
+	// account. The other member names it defines -- device, session,
+	// application, tenant, org_unit, group -- are deliberately ABSENT.
+	//
+	// That absence is the §3.6 safety valve doing its job rather than an
+	// omission. We revoke per user, so an event scoped to one session or one
+	// device is applied more broadly than it was sent. A transmitter that cannot
+	// accept that says so by marking the member Critical, and this receiver then
+	// discards the event instead of over-applying it -- which is exactly what
+	// §3.6 is for: "unable to process ... a Critical member". Adding them here
+	// would silently claim we honour scopes we ignore.
+	"user": true,
 }
 
 // unprocessableCritical returns the Critical members present in a subject that
@@ -540,6 +552,29 @@ func subjectFrom(body map[string]any) Subject {
 		raw, ok := body[key].(map[string]any)
 		if !ok {
 			continue
+		}
+		// §3.3: a Complex Subject carries `"format": "complex"` and its identity
+		// one level down, in Simple Subject Members named `user`, `device`,
+		// `session`, `tenant` and so on. Read flat, every field below is absent
+		// and the result is an empty Subject that resolves to nobody -- so the
+		// event is recorded as `no_matching_user` and revokes nothing.
+		//
+		// `user` specifically, and nothing else. §3.3.1 says the members are
+		// attributes of ONE principal -- "As a whole, the Complex Subject MUST
+		// refer to exactly one Subject Principal" -- so this is not a choice
+		// between candidates; it is the member that names the account, which is
+		// the only thing this receiver can act on. Falling back to `device` or
+		// `tenant` when `user` is absent would revoke somebody's sessions on the
+		// strength of a string collision between a device id and a user id.
+		//
+		// Members are Simple by definition, so there is no nesting to recurse
+		// into: one level down is the whole of it.
+		if fmt.Sprint(raw["format"]) == "complex" {
+			u, ok := raw["user"].(map[string]any)
+			if !ok {
+				continue
+			}
+			raw = u
 		}
 		s.Format, _ = raw["format"].(string)
 		s.Issuer, _ = raw["iss"].(string)

@@ -2679,6 +2679,12 @@ func flowTest(path string) error {
 	for i := range f.Flows {
 		fl := &f.Flows[i]
 		fmt.Printf("\n  %s (%s)\n", fl.Name, fl.On)
+		if !fl.On.Driven() {
+			fmt.Printf("    !!   this engine does not EXECUTE %s flows. The file "+
+				"parses, its\n         safety rules apply and its tests run -- and "+
+				"no endpoint consults\n         it. See item 9q in TODO-FOR-YOU.md.\n",
+				fl.On)
+		}
 		for _, tc := range fl.Tests {
 			fmt.Printf("    ok   %s\n", tc.Name)
 		}
@@ -2785,6 +2791,7 @@ func flowApply(ctx context.Context, conn *pgx.Conn, orgID, path string) error {
 		return err
 	}
 	fmt.Printf("applied %s (%s)\n", path, f.Summary())
+	warnUndriven(f)
 	// The journeys, not just the count. An operator has just changed how every
 	// person in this organisation signs in, and this is the moment to show them
 	// what they changed it to.
@@ -6683,4 +6690,33 @@ func attesterList(ctx context.Context, conn *pgx.Conn) error {
 			"authentication cannot verify anything until one is added")
 	}
 	return rows.Err()
+}
+
+// warnUndriven says which flows in a file were stored and will not run.
+//
+// Printed at the moment of installation, not only when a file is checked. An
+// operator who applies a recovery flow has just been told it is deployed, and it
+// is not: `/recover` is a hardcoded journey that never reads this document.
+//
+// The engine drives `authentication` flows and no others. See item 9q.
+func warnUndriven(f *flow.File) {
+	var undriven []string
+	for i := range f.Flows {
+		if !f.Flows[i].On.Driven() {
+			undriven = append(undriven,
+				fmt.Sprintf("%s (%s)", f.Flows[i].Name, f.Flows[i].On))
+		}
+	}
+	if len(undriven) == 0 {
+		return
+	}
+	fmt.Printf("\n  WARNING: %d flow(s) in this file are stored and NOT executed:\n",
+		len(undriven))
+	for _, u := range undriven {
+		fmt.Printf("    - %s\n", u)
+	}
+	fmt.Printf("  This engine drives %s flows only. The rest are parsed, "+
+		"safety-checked and\n  tested, and nothing consults them at run time: "+
+		"sign-up and recovery are\n  hardcoded journeys. See item 9q in "+
+		"TODO-FOR-YOU.md.\n", flow.Authentication)
 }

@@ -38,6 +38,43 @@ const (
 	Unenrolment Designation = "unenrolment"
 )
 
+// Driven reports whether this engine actually EXECUTES flows of a designation.
+//
+// # Why this exists
+//
+// The flow language defines four designations and the engine drives one.
+// `flowFor` has exactly two callers and both pass Authentication; `/signup` and
+// `/recover` are hardcoded journeys that never consult a flow file.
+//
+// So an operator can write a recovery flow, have it parsed, have its safety
+// analysed by rules written specifically for it -- `recoveryProving` exists so a
+// recovery flow cannot accept the very factor it is replacing -- watch its tests
+// pass, install it with `signari flow apply`, and it will govern nothing.
+//
+// The tests pass because they exercise the walker, which genuinely works. What
+// does not exist is a driver that consults it at those endpoints.
+//
+// This predicate does not fix that. It exists so that nothing in this codebase
+// can claim otherwise by omission: every place that accepts a flow file asks
+// this question and says the answer out loud. A promise that is unenforced is
+// worse than an absent feature, because the operator stops looking.
+//
+// See item 9q in TODO-FOR-YOU.md. Closing the gap properly -- driving enrolment,
+// then recovery -- is a scope decision rather than a technical one, and it is not
+// this file's to make.
+func (d Designation) Driven() bool { return d == Authentication }
+
+// Undriven returns the designations this engine parses and does not execute.
+func Undriven() []Designation {
+	var out []Designation
+	for _, d := range []Designation{Authentication, Enrolment, Recovery, Unenrolment} {
+		if !d.Driven() {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // Flow is one journey.
 type Flow struct {
 	Name string `yaml:"name"`
@@ -56,9 +93,9 @@ type Flow struct {
 // Exactly one of Stage and OneOf is set. YAML admits three spellings, because
 // the common case should be one word:
 //
-//	- password                       a stage, unconditional
-//	- {stage: mfa, when: ...}        a stage, conditional
-//	- {one_of: [...]}                a choice between branches
+//   - password                       a stage, unconditional
+//   - {stage: mfa, when: ...}        a stage, conditional
+//   - {one_of: [...]}                a choice between branches
 type Step struct {
 	Stage StageName `yaml:"stage,omitempty"`
 	When  string    `yaml:"when,omitempty"`

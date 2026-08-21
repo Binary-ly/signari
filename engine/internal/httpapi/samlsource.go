@@ -220,7 +220,14 @@ func (s *Server) handleSAMLSourceMetadata(w http.ResponseWriter, r *http.Request
   </SPSSODescriptor>
 </EntityDescriptor>
 `
-	w.Header().Set("Content-Type", "application/samlmetadata+xml")
+	// charset stated on the wire, not only in the XML declaration.
+	//
+	// ASVS 5.0.0 V4.1.1 names `*/+xml` among the types whose Content-Type must
+	// carry it. RFC 7303 §9.1 gives the reason this is not pedantry: for a `+xml`
+	// media type the HTTP charset parameter takes PRECEDENCE over the encoding
+	// declaration inside the document, so a consumer that applies a default when
+	// the header omits it can disagree with the bytes it was sent.
+	w.Header().Set("Content-Type", "application/samlmetadata+xml; charset=utf-8")
 	_, _ = w.Write([]byte(xml))
 }
 

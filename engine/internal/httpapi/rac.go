@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -25,11 +27,27 @@ import (
 // guacd will connect to whatever it is told to connect to. It has no notion of
 // a user and cannot be given one. So the order here is not incidental:
 //
-//	1. a signed-in session          who
-//	2. the access policy            may they be here at all, right now
-//	3. the connection's group       is this machine theirs to reach
-//	4. an audit entry               recorded before a single byte moves
-//	5. guacd
+//	1. the request's origin         is this OUR page asking
+//	2. a signed-in session          who
+//	3. the access policy            may they be here at all, right now
+//	4. the connection's group       is this machine theirs to reach
+//	5. an audit entry               recorded before a single byte moves
+//	6. guacd
+//
+// Step 1 was missing from this list and from this position, and the omission was
+// not cosmetic. The WebSocket library checks the origin during the upgrade --
+// correctly, and it is still doing so -- but the upgrade is the LAST thing that
+// happens here. guacd had already been dialled, which means a connection to the
+// target host was already open, a session row was already written and an audit
+// entry already recorded, before anything asked who was asking.
+//
+// A WebSocket handshake carries cookies like any other request, so a page on
+// another origin could open one against a signed-in victim: every check above
+// passes, because the victim genuinely is entitled to that host. The attacker
+// cannot read a byte -- the upgrade is refused a moment later -- but the
+// connection to the internal machine happened, and it happens again on every
+// reload of their page. An origin check that runs after the side effects is a
+// check on the wrong thing.
 //
 // Steps 2 and 3 are separate on purpose. Policy answers "is this person, on
 // this device, from this network, permitted"; the group answers "is this
@@ -49,6 +67,17 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 		// half is missing.
 		writeError(w, http.StatusServiceUnavailable, "unavailable",
 			"remote access is not configured on this server")
+		return
+	}
+
+	// Before the session is even looked up, because everything below it has an
+	// effect somewhere: a policy evaluation, an audit row, a TCP connection to a
+	// machine somebody cares about.
+	if !sameOriginRequest(r) {
+		s.log.Info("remote access refused: cross-origin upgrade",
+			"origin", r.Header.Get("Origin"), "correlation_id", correlationID(ctx))
+		writeError(w, http.StatusForbidden, "access_denied",
+			"a remote access session may only be opened from this site")
 		return
 	}
 
@@ -127,9 +156,14 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols: []string{"guacamole"},
-		// No cross-origin upgrades. The session cookie travels with a WebSocket
-		// handshake like any other request, so an unchecked origin here is a
-		// cross-site remote desktop.
+		// nil means same-origin only: the library compares the Origin host to
+		// the request Host (`authenticateOrigin`, coder/websocket v1.8.15).
+		//
+		// Kept even though the handler now checks the origin itself, before any
+		// of this runs. Two checks of one rule is usually a smell; here the
+		// earlier one exists to protect the SIDE EFFECTS above and this one
+		// protects the STREAM, and a future edit that reorders the handler
+		// should not be able to open a cross-origin socket by accident.
 		OriginPatterns: nil,
 	})
 	if err != nil {
@@ -220,4 +254,32 @@ func intParam(r *http.Request, name string, def int) int {
 		return def
 	}
 	return n
+}
+
+// sameOriginRequest reports whether a request came from this server's own pages.
+//
+// ASVS 5.0.0 V4.4.2: "during the initial HTTP WebSocket handshake, the Origin
+// header field is checked against a list of origins allowed for the
+// application."
+//
+// The same rule the WebSocket library applies, hoisted so it can run before the
+// handler does anything: Origin's host must equal the Host the request was sent
+// to.
+//
+// An ABSENT Origin is allowed, which is the library's behaviour too and is
+// deliberate rather than inherited. Browsers always send Origin on a WebSocket
+// handshake and on any cross-site form post, so absence means a non-browser
+// client -- a CLI, a test, a native app -- and those are not the thing this
+// defends against. A browser cannot suppress the header, so nothing an attacker
+// controls reaches this branch.
+func sameOriginRequest(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }

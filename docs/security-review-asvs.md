@@ -879,3 +879,92 @@ Configuration, V14 Data Protection, V15 Secure Coding, V17 WebRTC.
 
 Two of the two chapters taken off the "not specific to us" list have now produced
 a real defect each. That list should be read as work not yet done.
+
+
+## V4 API and Web Service: sixteen requirements (21 August 2026)
+
+Third chapter off the dismissed list, third real defect. This one is the most
+serious of the three.
+
+### The finding: the origin was checked, after everything it was protecting
+
+ASVS V4.4.2 asks that the Origin header be checked "during the initial HTTP
+WebSocket handshake". `internal/httpapi/rac.go` — browser remote access, proxying
+a browser to `guacd` — passes `OriginPatterns: nil` to `coder/websocket`, and
+that is genuinely same-origin enforcement: `authenticateOrigin` in v1.8.15
+compares `Origin`'s host to the request `Host`. Verified in the module source
+rather than taken from the comment beside it.
+
+**It runs too late to protect anything but the stream.** The handler's own doc
+comment sets out its order as a deliberate design:
+
+```
+1. a signed-in session          who
+2. the access policy            may they be here at all, right now
+3. the connection's group       is this machine theirs to reach
+4. an audit entry               recorded before a single byte moves
+5. guacd
+```
+
+The origin check is not on that list. It happens inside `websocket.Accept`, at
+step 6 — after `rac.Dial` has opened a connection to the target machine, after a
+`rac_sessions` row, after the audit entry.
+
+A WebSocket handshake carries cookies like any other request, and this endpoint
+authenticates with the session cookie and nothing else. So a page on another
+origin can open one against a signed-in victim, and every check above passes,
+because the victim genuinely is entitled to that host. The attacker reads
+nothing — the upgrade is refused a moment later. But the connection to the
+internal machine was made, the session row written, the audit entry recorded, and
+it all happens again on every reload of their page: a cross-site driver for
+connections into the network, plus audit noise in the log somebody would search
+during an incident.
+
+**Fixed** by hoisting the check to the top of the handler, before the session is
+even looked up. The library's check stays: the early one protects the side
+effects, the late one protects the stream, and a future edit that reorders the
+handler should not be able to open a cross-origin socket by accident.
+
+There were no tests for this handler of any kind. There are now, including one
+that points `guacdAddr` at a listener the test owns, so "was the target dialled"
+is an observable rather than an assertion about ordering.
+
+### The smaller one: `*/+xml` served without a charset
+
+V4.1.1 (L1) names `*/+xml` among the types whose `Content-Type` must state the
+character encoding. SAML metadata was served as `application/samlmetadata+xml`
+with none.
+
+Not pedantry, and RFC 7303 §9.1 says why: for a `+xml` media type the HTTP
+charset parameter **takes precedence over the encoding declaration inside the
+document**. A consumer applying a default when the header omits it can therefore
+disagree with the bytes it was sent, and the document's own
+`<?xml version="1.0" encoding="UTF-8"?>` does not settle it. Both sites now state
+it.
+
+### The rest of V4
+
+| Requirement | Verdict |
+|---|---|
+| V4.1.1 Content-Type matches, with charset | **one gap, fixed** — HTML and JavaScript already stated it; JSON needs none (RFC 8259 defines no charset parameter) |
+| V4.1.2 transparent HTTP→HTTPS only for user-facing | n/a — the engine does not redirect http to https; TLS terminates ahead of it |
+| V4.1.3 intermediary headers not user-overridable | met, and deliberately: `clientIP` reads `r.RemoteAddr` only, never `X-Forwarded-For`. Forward-auth does read `X-Forwarded-Proto/Host/Uri`, but `firstHeader` takes only the first value — the comment names the `good, evil` injection it exists to stop — and the result only builds a redirect back to our own `/proxy/start`, whose target is validated |
+| V4.1.4 unused HTTP methods blocked | met by construction — every route is registered with a method pattern, so anything else is 405 |
+| V4.1.5 per-message signatures | met beyond the requirement — logout tokens, SSF SETs, JARM and webhook bodies are all signed or MACed |
+| V4.2.1–V4.2.4 request smuggling, header injection | met by the runtime: Go's `net/http` rejects conflicting `Content-Length`/`Transfer-Encoding`, and rejects CR/LF in header values |
+| V4.2.5 over-long outbound URIs and headers | partial — outbound requests are bounded by what we construct, but no explicit length ceiling is enforced |
+| V4.3.1–V4.3.2 GraphQL | n/a — none |
+| V4.4.1 WSS | deployment; TLS terminates ahead of the engine |
+| V4.4.2 Origin checked at the handshake | **was checked too late — fixed** |
+| V4.4.3–V4.4.4 dedicated WebSocket tokens | n/a as written — the requirement applies "if the application's standard session management cannot be used". Ours can and is used, and the connection is authorized per-host by policy and group membership on top of it |
+
+### Chapter coverage after this pass
+
+**210 of 345.** V4 joins V3, V6, V7, V8, V9, V10, V11 and V16. Still unswept: V1
+Encoding, V2 Validation, V5 File, V12 Secure Communication, V13 Configuration,
+V14 Data Protection, V15 Secure Coding, V17 WebRTC.
+
+Three chapters taken off the "relevant to the product, not specific to it" list,
+three defects — a missing header set, a missing panic handler, and an origin
+check positioned after the side effects it was meant to prevent. The dismissal
+has now been wrong three times out of three.

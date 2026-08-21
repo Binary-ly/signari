@@ -73,7 +73,7 @@ a class of failure that shows up as data corruption rather than an error.
 
 | | |
 |---|---|
-| `signari keys list` / `keys rotate` | Signing keys; rotation is next → active → passive |
+| `signari keys list` / `keys rotate` / `keys retire` | Signing keys; rotation is next → active → passive → retired. See [key-rotation.md](key-rotation.md) |
 | `signari audit checkpoint` | Anchor the audit chain. See [audit-chain-fork.md](audit-chain-fork.md) |
 | `signari export audit` | Export the trail |
 | `signari admin-token create` / `admin-token list` / `admin-token revoke` | Admin API credentials |

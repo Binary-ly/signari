@@ -616,10 +616,10 @@ func reportErasure(r *Report, subjects int) {
 			"left to the operator because a mistaken shred cannot be undone.")
 }
 
-// checkCredentialLifetimes reports credentials that would outlive the key that
-// signed them, if key retirement were ever implemented.
+// checkCredentialLifetimes reports the credential configurations that hold
+// passive signing keys in the JWKS.
 //
-// # The trap this exists to defuse
+// # The trap this defused, and what it became
 //
 // `keys.MinPassiveBeforeRetire` is 24 hours, and its comment says the value
 // "must exceed the longest lifetime of any token it signed". That was true when
@@ -633,19 +633,22 @@ func reportErasure(r *Report, subjects int) {
 // ninety days, signed by a key retired twenty-four hours after demotion, would
 // stop verifying with eighty-nine days left to run.
 //
-// **Nothing is broken today**, and that is precisely why this is a diagnostic
-// rather than a fix: `MinPassiveBeforeRetire` is declared and never read, there
-// is no retirement path, and passive keys are published indefinitely. Rotation is
-// safe in the direction that matters.
+// When this check was written there was no retirement path at all, so the hazard
+// was latent and aimed at whoever built one: they would reach for that constant,
+// and the deployments where reaching for it is wrong are exactly the ones that
+// cannot notice.
 //
-// The hazard is latent and lands on somebody else. Whoever implements retirement
-// will reach for that constant, and the deployments where reaching for it is
-// wrong are exactly the ones that cannot notice -- their credentials fail
-// verification weeks later, at a verifier they do not run.
+// **Retirement now exists, and it does not reach for the constant.**
+// keys.RequiredPassiveDwell takes the maximum of the floor and the longest
+// credential lifetime on the instance, so a key stays published for exactly as
+// long as anything it signed can still be valid. The failure this check was
+// written to prevent cannot now occur.
 //
-// Choosing the remedy is a product question recorded in TODO-FOR-YOU.md: a
-// separate key purpose for credentials, a ceiling on credential lifetime, or a
-// decision never to retire. Reporting which configurations are affected is not.
+// So the finding changed meaning rather than going away. These configurations are
+// the reason a passive key will sit in the JWKS for weeks or months, and an
+// operator looking at a key that will not retire deserves to be told which
+// configuration is holding it rather than left to work it out. That is an
+// operational fact, reported at Info, not a warning about anything broken.
 func checkCredentialLifetimes(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	r.ran("credential lifetime against key retention")
 
@@ -723,17 +726,17 @@ func reportCredentialLifetimes(r *Report, over []string) {
 	if len(listed) > shown {
 		listed, extra = listed[:shown], len(over)-shown
 	}
-	summary := fmt.Sprintf("%d credential configuration(s) outlive the %s key retention window: %s",
+	summary := fmt.Sprintf("%d credential configuration(s) outlive the %s key retention floor: %s",
 		len(over), keys.MinPassiveBeforeRetire, strings.Join(listed, ", "))
 	if extra > 0 {
 		summary += fmt.Sprintf(", and %d more (longest first)", extra)
 	}
 	r.add(Info, "keys", summary,
-		"These credentials are signed by the same key as access and ID tokens, and "+
-			"keys.MinPassiveBeforeRetire assumes nothing signed outlives 24 hours. "+
-			"Nothing is wrong today -- key retirement is not implemented, so passive "+
-			"keys are published indefinitely and every credential keeps verifying. "+
-			"It matters when retirement is added: these credentials would stop "+
-			"verifying while still valid, at a verifier you do not operate. See the "+
-			"key rotation review and TODO-FOR-YOU.md.")
+		"These credentials are signed by the same key as access and ID tokens, so a "+
+			"demoted key must stay in the JWKS until the longest of them expires. "+
+			"Nothing is wrong: `signari keys retire` computes the dwell from these "+
+			"lifetimes rather than from the 24h floor, so no credential can be left "+
+			"unverifiable. This is why a passive key may remain published for weeks "+
+			"or months -- run `signari keys retire -dry-run` to see the deadline and "+
+			"which configuration set it.")
 }

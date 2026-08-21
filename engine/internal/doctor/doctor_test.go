@@ -162,9 +162,10 @@ func TestNoSubjectKeysMeansNoErasureFinding(t *testing.T) {
 // untrue since OID4VCI, whose credential lifetime is an operator-configured
 // interval with no ceiling and is signed by the same key.
 //
-// Nothing is broken today: the constant is declared and never read, there is no
-// retirement path, and passive keys are published indefinitely. The check exists
-// for whoever implements retirement, because they will reach for that constant.
+// Retirement now exists and computes its dwell from these lifetimes rather than
+// from the constant, so the failure cannot occur. The finding stayed because it
+// changed meaning: these configurations are why a passive key remains published
+// for weeks, and the operator looking at one should be told which.
 func TestCredentialsOutlivingTheKeyWindowAreReported(t *testing.T) {
 	r := findingsFor(t, func(r *Report) {
 		reportCredentialLifetimes(r, []string{"IdentityCredential (720h0m0s)"})
@@ -174,14 +175,14 @@ func TestCredentialsOutlivingTheKeyWindowAreReported(t *testing.T) {
 	}
 	f := r.Findings[0]
 	if f.Severity != Info {
-		t.Errorf("severity = %v, want Info: retirement is not implemented, so "+
-			"nothing fails today", f.Severity)
+		t.Errorf("severity = %v, want Info: the dwell already accounts for these "+
+			"lifetimes, so nothing fails", f.Severity)
 	}
 	if !strings.Contains(f.Summary, "IdentityCredential") {
 		t.Errorf("the finding does not name the configuration: %q", f.Summary)
 	}
-	if !strings.Contains(f.Fix, "retirement") {
-		t.Errorf("the fix does not say why it is not urgent yet: %q", f.Fix)
+	if !strings.Contains(f.Fix, "keys retire") {
+		t.Errorf("the fix does not point at the command that explains the dwell: %q", f.Fix)
 	}
 }
 

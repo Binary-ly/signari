@@ -58,6 +58,11 @@ const (
 	StateNext    State = "next"
 	StateActive  State = "active"
 	StatePassive State = "passive"
+	// StateRetired is a key that has left the JWKS. It is not loaded into a Set
+	// and never appears in a published key set, so nothing here can sign or
+	// verify with it; the row survives only so an operator can answer "when did
+	// this kid stop being served?".
+	StateRetired State = "retired"
 )
 
 // Timing defaults. These are security parameters with names, not magic numbers.
@@ -87,8 +92,18 @@ type Key interface {
 	Signer() crypto.Signer
 	// PublicJWK is what is published in the JWKS.
 	PublicJWK() jose.JSONWebKey
-	// PublishedAt drives the promotion and retirement dwell times.
+	// PublishedAt drives the promotion dwell time.
 	PublishedAt() time.Time
+	// DemotedAt is when the key left active service, and drives the retirement
+	// dwell. Zero means it has never been demoted.
+	//
+	// Separate from PublishedAt because the two clocks measure different things
+	// and an earlier comment here conflated them. Retirement measured from
+	// publication would retire a key the instant it was demoted -- a key
+	// published in January and demoted in June is long past any publication
+	// dwell, so the check would pass immediately and the passive window,
+	// the entire point of the state, would be zero.
+	DemotedAt() time.Time
 }
 
 // softwareKey holds private material in process memory. It is the development
@@ -100,6 +115,7 @@ type softwareKey struct {
 	state       State
 	signer      crypto.Signer
 	publishedAt time.Time
+	demotedAt   time.Time
 }
 
 func (k *softwareKey) KID() string            { return k.kid }
@@ -107,6 +123,7 @@ func (k *softwareKey) Algorithm() Algorithm   { return k.alg }
 func (k *softwareKey) State() State           { return k.state }
 func (k *softwareKey) Signer() crypto.Signer  { return k.signer }
 func (k *softwareKey) PublishedAt() time.Time { return k.publishedAt }
+func (k *softwareKey) DemotedAt() time.Time   { return k.demotedAt }
 
 func (k *softwareKey) PublicJWK() jose.JSONWebKey {
 	return jose.JSONWebKey{
@@ -309,10 +326,31 @@ func (s *Set) Keys() []Key {
 func WithState(k Key, state State) (Key, error) {
 	switch state {
 	case StateNext, StateActive, StatePassive:
+	case StateRetired:
+		// Retirement does not go through here. A retired key is not a member of
+		// any Set -- LoadSetFor does not read one -- so producing a Key in that
+		// state would only create something whose only correct use is never to
+		// be used. Retire persists the state directly.
+		return nil, fmt.Errorf("retirement is not a Set transition; use keys.Retire")
 	default:
 		return nil, fmt.Errorf("unknown key state %q", state)
 	}
-	return NewSoftwareKey(k.KID(), k.Algorithm(), state, k.Signer(), k.PublishedAt())
+	out, err := NewSoftwareKey(k.KID(), k.Algorithm(), state, k.Signer(), k.PublishedAt())
+	if err != nil {
+		return nil, err
+	}
+	// Carry the demotion stamp across the transition. Dropping it would silently
+	// reset the retirement clock, and it would reset it in the safe-looking
+	// direction: a zero stamp reads as "never demoted", which CanRetire refuses.
+	// The bug would therefore be invisible -- keys would simply never retire.
+	return withDemotedAt(out, k.DemotedAt()), nil
+}
+
+// withDemotedAt returns k carrying a demotion stamp.
+func withDemotedAt(k Key, at time.Time) Key {
+	sk := k.(*softwareKey)
+	sk.demotedAt = at
+	return sk
 }
 
 // Active returns the key currently signing for alg.
@@ -377,4 +415,38 @@ func (s *Set) CanPromote(k Key) (bool, time.Duration) {
 		return true, 0
 	}
 	return false, MinPublishBeforeActive - elapsed
+}
+
+// CanRetire reports whether a passive key has been out of service long enough to
+// leave the JWKS, and how long remains if not.
+//
+// `dwell` is passed in rather than read from MinPassiveBeforeRetire because that
+// constant is a floor, not the answer. A verifiable credential is signed with the
+// same key and its lifetime is operator-configured with no ceiling, so the real
+// dwell is the longest lifetime anything signed by this key can still have. See
+// RequiredPassiveDwell, which computes it, and the doctor check that reports the
+// configurations driving it.
+//
+// The comparison is >=, matching the exclusive boundary the doctor already
+// documents: the window starts at demotion and Set.Active hands out only active
+// keys, so a demoted key never signs again. Anything it signed at time T <= D
+// expires by D+dwell, and at exactly D+dwell the key was still published at every
+// instant that token was valid.
+func (s *Set) CanRetire(k Key, dwell time.Duration) (bool, time.Duration) {
+	if k.State() != StatePassive {
+		return false, 0
+	}
+	// A passive key with no demotion stamp is refused rather than treated as
+	// demoted at the zero time, which would make it instantly retirable -- the
+	// exact inversion that turns a missing timestamp into a deleted key. Rows
+	// written before demoted_at was populated land here, and so does any key
+	// demoted in memory but not yet reloaded from the database that stamps it.
+	if k.DemotedAt().IsZero() {
+		return false, 0
+	}
+	elapsed := s.now().Sub(k.DemotedAt())
+	if elapsed >= dwell {
+		return true, 0
+	}
+	return false, dwell - elapsed
 }

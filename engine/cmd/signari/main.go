@@ -129,6 +129,7 @@ commands:
   import authentik    import users and groups from an authentik dumpdata export
   keys list           show signing keys, their state and when each may advance
   keys rotate         advance the rotation one safe step (run it again later)
+  keys retire         remove passive keys nothing can still be verifying against
   proxy check         prove a forward-auth deployment actually protects the app
   saml add-sp         register a SAML service provider
   saml list           show registered SAML service providers
@@ -205,7 +206,7 @@ func run(args []string) error {
 	public := fs.Bool("public", false, "register a public client (PKCE, no secret)")
 	file := fs.String("file", "", "path to a realm export (import)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
-	dryRun := fs.Bool("dry-run", false, "report what would be imported and change nothing")
+	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
 	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm (default: all in use)")
 	promoteNow := fs.Bool("now", false, "promote without waiting for the publication dwell -- key compromise only")
 	appURL := fs.String("app", "", "protected application URL, as the browser reaches it (proxy check)")
@@ -567,6 +568,8 @@ func run(args []string) error {
 		return keysList(ctx, conn)
 	case "keys rotate":
 		return keysRotate(ctx, conn, *alg, *promoteNow)
+	case "keys retire":
+		return keysRetire(ctx, conn, *dryRun)
 	case "saml add-sp":
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
@@ -747,7 +750,15 @@ func loadInstanceKeys(ctx context.Context, conn *pgx.Conn) (instanceID string, s
 }
 
 func keysList(ctx context.Context, conn *pgx.Conn) error {
-	_, set, _, err := loadInstanceKeys(ctx, conn)
+	instanceID, set, _, err := loadInstanceKeys(ctx, conn)
+	if err != nil {
+		return err
+	}
+
+	// Retired keys are not in the set and so are not listed. That is the same
+	// answer the JWKS gives, which is the point of listing at all: this command
+	// should show what relying parties can see.
+	dwell, _, err := keys.RequiredPassiveDwell(ctx, conn, instanceID)
 	if err != nil {
 		return err
 	}
@@ -755,11 +766,20 @@ func keysList(ctx context.Context, conn *pgx.Conn) error {
 	fmt.Printf("%-24s %-8s %-8s %-22s %s\n", "KID", "ALG", "STATE", "PUBLISHED", "NOTE")
 	for _, k := range set.Keys() {
 		note := ""
-		if k.State() == keys.StateNext {
+		switch k.State() {
+		case keys.StateNext:
 			if ok, wait := set.CanPromote(k); ok {
 				note = "ready to promote"
 			} else {
 				note = fmt.Sprintf("promotable in %s", wait.Round(time.Minute))
+			}
+		case keys.StatePassive:
+			if ok, wait := set.CanRetire(k, dwell); ok {
+				note = "ready to retire"
+			} else if k.DemotedAt().IsZero() {
+				note = "no demotion time recorded; will not retire"
+			} else {
+				note = fmt.Sprintf("retirable in %s", wait.Round(time.Minute))
 			}
 		}
 		fmt.Printf("%-24s %-8s %-8s %-22s %s\n",
@@ -871,6 +891,87 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 			a, promoted.KID())
 	}
 
+	return tx.Commit(ctx)
+}
+
+// keysRetire removes passive keys that nothing can still be verifying against.
+//
+// This is the last step of the rotation machine, and the one that was documented
+// from the start and never built: passive keys stayed in the JWKS forever, so the
+// published set grew with every rotation and no key ever left.
+//
+// There is deliberately no `-now`. `keys rotate -now` exists because signing with
+// a compromised key is worse than some relying parties failing verification for a
+// few hours, and the operator sees that failure immediately. Retiring early
+// inverts both halves: it does not stop a compromised key being used -- demotion
+// already did that -- and the damage lands on tokens already in the field,
+// failing at verifiers this deployment does not run, weeks later. There is no
+// emergency that early retirement solves, so the flag would only ever be a way to
+// cause the problem the dwell exists to prevent.
+func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
+	instanceID, set, _, err := loadInstanceKeys(ctx, conn)
+	if err != nil {
+		return err
+	}
+
+	dwell, why, err := keys.RequiredPassiveDwell(ctx, conn, instanceID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Passive keys must stay published for %s (%s).\n", dwell, why)
+
+	var eligible []keys.Key
+	var waiting int
+	for _, k := range set.Keys() {
+		if k.State() != keys.StatePassive {
+			continue
+		}
+		ok, wait := set.CanRetire(k, dwell)
+		switch {
+		case ok:
+			eligible = append(eligible, k)
+		case k.DemotedAt().IsZero():
+			// Refused rather than retired. See CanRetire: a missing stamp must
+			// not read as "demoted at the zero time", which would retire it now.
+			fmt.Printf("%s (%s): passive but has no demotion time recorded; not retiring it.\n",
+				k.KID(), k.Algorithm())
+			waiting++
+		default:
+			fmt.Printf("%s (%s): retirable in %s.\n",
+				k.KID(), k.Algorithm(), wait.Round(time.Minute))
+			waiting++
+		}
+	}
+
+	if len(eligible) == 0 {
+		if waiting == 0 {
+			fmt.Println("No passive keys. Nothing to retire.")
+		}
+		return nil
+	}
+
+	if dryRun {
+		for _, k := range eligible {
+			fmt.Printf("%s (%s): would be retired (demoted %s).\n",
+				k.KID(), k.Algorithm(), k.DemotedAt().UTC().Format(time.RFC3339))
+		}
+		fmt.Printf("Dry run: %d key(s) would leave the JWKS. Nothing changed.\n", len(eligible))
+		return nil
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, k := range eligible {
+		if err := keys.Retire(ctx, tx, instanceID, k.KID(), dwell); err != nil {
+			return err
+		}
+		fmt.Printf("%s (%s): retired. It leaves the JWKS at the next restart or config reload.\n",
+			k.KID(), k.Algorithm())
+	}
 	return tx.Commit(ctx)
 }
 

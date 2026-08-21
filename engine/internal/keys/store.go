@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -158,10 +159,17 @@ func LoadSetFor(ctx context.Context, conn *pgx.Conn, instanceID, purpose string,
 	// published at /oauth2/jwks the moment one was generated -- the exact
 	// conflation the separation exists to prevent, arriving silently rather than
 	// as a decision anybody made.
+	//
+	// The state list is an allow-list, not `state <> 'retired'`. A retired key
+	// must never reach a Set -- it is not published and must not verify -- and
+	// naming the three published states means a state added later is excluded
+	// until somebody decides otherwise, rather than published by default.
 	rows, err := conn.Query(ctx, `
-		SELECT kid, algorithm, state, public_jwk, wrapped_private, key_ref, published_at
+		SELECT kid, algorithm, state, public_jwk, wrapped_private, key_ref,
+		       published_at, demoted_at
 		FROM core.signing_keys
 		WHERE instance_id = $1 AND purpose = $2
+		  AND state IN ('next', 'active', 'passive')
 		ORDER BY published_at`, instanceID, purpose)
 	if err != nil {
 		return nil, fmt.Errorf("querying signing keys: %w", err)
@@ -175,8 +183,10 @@ func LoadSetFor(ctx context.Context, conn *pgx.Conn, instanceID, purpose string,
 			jwkRaw                  []byte
 			wrapped                 []byte
 			publishedAt             time.Time
+			demotedAt               *time.Time
 		)
-		if err := rows.Scan(&kid, &alg, &state, &jwkRaw, &wrapped, &keyRef, &publishedAt); err != nil {
+		if err := rows.Scan(&kid, &alg, &state, &jwkRaw, &wrapped, &keyRef,
+			&publishedAt, &demotedAt); err != nil {
 			return nil, err
 		}
 		if wrapped == nil {
@@ -205,6 +215,9 @@ func LoadSetFor(ctx context.Context, conn *pgx.Conn, instanceID, purpose string,
 		k, err := NewSoftwareKey(kid, Algorithm(alg), State(state), signer, publishedAt)
 		if err != nil {
 			return nil, fmt.Errorf("key %s: %w", kid, err)
+		}
+		if demotedAt != nil {
+			k = withDemotedAt(k, *demotedAt)
 		}
 		loaded = append(loaded, k)
 	}
@@ -317,4 +330,87 @@ func Refresh(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootK
 		return fmt.Errorf("reloading signing keys: %w", err)
 	}
 	return live.Replace(next.Keys()...)
+}
+
+// RequiredPassiveDwell is how long a demoted key must stay published for this
+// instance, and why.
+//
+// MinPassiveBeforeRetire is a floor derived from token lifetimes: access and ID
+// tokens live minutes, logout and security event tokens less, refresh tokens are
+// opaque and never signed. OID4VCI broke that reasoning. A verifiable credential
+// is signed with the same `oidc`-purpose key and its lifetime is an
+// operator-configured interval on core.credential_configurations with no ceiling.
+// Retiring on the floor alone would stop a ninety-day credential verifying with
+// eighty-nine days left to run -- and it would fail at a verifier the operator
+// does not run, so nobody here would ever hear about it.
+//
+// Taking the maximum resolves that without anyone having to choose a policy: the
+// key stays published exactly as long as something it signed can still be valid.
+// The cost is a JWKS that keeps a passive key for months in deployments issuing
+// long-lived credentials, which is the correct outcome and is worth stating out
+// loud -- hence the returned reason, which the command prints.
+//
+// The lifetime is read across the whole instance, not per organisation, because
+// one key signs for every organisation on it. Scoping this per tenant would
+// retire a key on the shortest tenant's schedule and break the longest one's.
+func RequiredPassiveDwell(ctx context.Context, conn *pgx.Conn, instanceID string) (time.Duration, string, error) {
+	var present *string
+	if err := conn.QueryRow(ctx,
+		`SELECT to_regclass('core.credential_configurations')::text`).Scan(&present); err != nil {
+		return 0, "", err
+	}
+	if present == nil {
+		return MinPassiveBeforeRetire, "no credential issuance on this schema", nil
+	}
+
+	var longest *time.Duration
+	var configID *string
+	err := conn.QueryRow(ctx, `
+		SELECT cc.lifetime, cc.config_id
+		FROM core.credential_configurations cc
+		JOIN core.organizations o ON o.id = cc.org_id
+		WHERE o.instance_id = $1 AND cc.lifetime IS NOT NULL
+		ORDER BY cc.lifetime DESC, cc.config_id
+		LIMIT 1`, instanceID).Scan(&longest, &configID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, "", fmt.Errorf("reading credential lifetimes: %w", err)
+	}
+	if longest == nil || *longest <= MinPassiveBeforeRetire {
+		return MinPassiveBeforeRetire, fmt.Sprintf(
+			"the %s floor for token lifetimes", MinPassiveBeforeRetire), nil
+	}
+	return *longest, fmt.Sprintf(
+		"credential configuration %q issues credentials valid for %s",
+		*configID, *longest), nil
+}
+
+// Retire takes a key out of the published set.
+//
+// The row is kept. Deleting it would destroy the only record that the `kid`
+// ever existed, and that record is exactly what is wanted when a relying party
+// appears months later reporting an unknown key -- a retirement date is an
+// answer, a missing row is a mystery. The wrapped private half stays with it and
+// stops being loaded, so nothing can sign or verify with the key again.
+//
+// The guard is in SQL rather than in Go so that it holds against a concurrent
+// rotation: two processes both reading `passive` and both writing would
+// otherwise be a lost update, and here the second one matches no rows.
+func Retire(ctx context.Context, tx pgx.Tx, instanceID, kid string, dwell time.Duration) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE core.signing_keys
+		SET state = 'retired', retire_after = demoted_at + $3::interval
+		WHERE instance_id = $1 AND kid = $2
+		  AND state = 'passive'
+		  AND demoted_at IS NOT NULL
+		  AND demoted_at + $3::interval <= now()`,
+		instanceID, kid, dwell.String())
+	if err != nil {
+		return fmt.Errorf("retiring key %s: %w", kid, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf(
+			"key %s was not retired: it is no longer passive, has no demotion time, "+
+				"or has not been demoted for %s", kid, dwell)
+	}
+	return nil
 }

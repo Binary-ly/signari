@@ -575,6 +575,16 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 			}); aerr != nil {
 				s.log.Error("auditing counter regression", "err", aerr)
 			}
+			if s.cfg.RefuseClonedAuthenticators {
+				if cerr := tx.Commit(ctx); cerr != nil {
+					s.log.Error("committing the counter regression audit", "err", cerr)
+				}
+				writeError(w, http.StatusUnauthorized, "invalid_grant",
+					"this authenticator's signature counter did not advance, which "+
+						"can mean the credential has been copied; sign in another "+
+						"way and remove the passkey")
+				return
+			}
 		} else {
 			s.log.Error("updating the signature counter", "err", err)
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")

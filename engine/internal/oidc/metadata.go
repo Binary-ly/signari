@@ -123,6 +123,8 @@ type Config struct {
 	// plaintext means every token, code and secret in the flow crosses the network
 	// readable, so anything that sets this in production has no security at all.
 	AllowInsecureIssuer bool
+
+	RefuseClonedAuthenticators bool
 }
 
 // Paths are fixed relative to the issuer so that discovery, the routes the server

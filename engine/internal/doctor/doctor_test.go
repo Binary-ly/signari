@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -149,5 +150,67 @@ func TestNoSubjectKeysMeansNoErasureFinding(t *testing.T) {
 	if len(r.Findings) != 0 {
 		t.Errorf("a deployment with no subject keys was told it cannot erase them: %v",
 			r.Findings)
+	}
+}
+
+// A credential outliving the key that signed it is a failure nobody present can
+// observe: it verifies today, and stops verifying weeks later at a verifier the
+// operator does not run.
+//
+// `keys.MinPassiveBeforeRetire` is 24 hours and its comment says the value "must
+// exceed the longest lifetime of any token it signed" — true when written, and
+// untrue since OID4VCI, whose credential lifetime is an operator-configured
+// interval with no ceiling and is signed by the same key.
+//
+// Nothing is broken today: the constant is declared and never read, there is no
+// retirement path, and passive keys are published indefinitely. The check exists
+// for whoever implements retirement, because they will reach for that constant.
+func TestCredentialsOutlivingTheKeyWindowAreReported(t *testing.T) {
+	r := findingsFor(t, func(r *Report) {
+		reportCredentialLifetimes(r, []string{"IdentityCredential (720h0m0s)"})
+	})
+	if len(r.Findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(r.Findings))
+	}
+	f := r.Findings[0]
+	if f.Severity != Info {
+		t.Errorf("severity = %v, want Info: retirement is not implemented, so "+
+			"nothing fails today", f.Severity)
+	}
+	if !strings.Contains(f.Summary, "IdentityCredential") {
+		t.Errorf("the finding does not name the configuration: %q", f.Summary)
+	}
+	if !strings.Contains(f.Fix, "retirement") {
+		t.Errorf("the fix does not say why it is not urgent yet: %q", f.Fix)
+	}
+}
+
+// A deployment issuing only short-lived credentials, or none, must not be told
+// about a hazard it does not have.
+func TestShortCredentialsProduceNoKeyWindowFinding(t *testing.T) {
+	r := findingsFor(t, func(r *Report) { reportCredentialLifetimes(r, nil) })
+	if len(r.Findings) != 0 {
+		t.Errorf("a deployment with no long-lived credentials was warned: %v", r.Findings)
+	}
+}
+
+// A list that is cut short without saying so reads as the complete answer. An
+// operator who sees five names and fixes five configurations, when there were
+// forty, has been told something false by omission.
+func TestALongListSaysHowMuchItLeftOut(t *testing.T) {
+	var many []string
+	for i := 0; i < 12; i++ {
+		many = append(many, fmt.Sprintf("cred-%d (2160h0m0s)", i))
+	}
+	r := findingsFor(t, func(r *Report) { reportCredentialLifetimes(r, many) })
+	if len(r.Findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(r.Findings))
+	}
+	s := r.Findings[0].Summary
+	if !strings.Contains(s, "12 credential") {
+		t.Errorf("the true total is not stated: %q", s)
+	}
+	if !strings.Contains(s, "7 more") {
+		t.Errorf("the list was truncated without saying by how much: %q", s)
 	}
 }

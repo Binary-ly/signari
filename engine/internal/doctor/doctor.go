@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"signari.dev/engine/internal/keys"
 	"sort"
 	"strings"
 	"time"
@@ -120,6 +121,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 		return nil, err
 	}
 	if err := checkEmailFactor(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkCredentialLifetimes(ctx, conn, r); err != nil {
 		return nil, err
 	}
 	if err := checkErasure(ctx, conn, r); err != nil {
@@ -610,4 +614,126 @@ func reportErasure(r *Report, subjects int) {
 			"here -- immediate, delayed and cancellable, or requiring two "+
 			"administrators -- is item 9o in TODO-FOR-YOU.md, and it is deliberately "+
 			"left to the operator because a mistaken shred cannot be undone.")
+}
+
+// checkCredentialLifetimes reports credentials that would outlive the key that
+// signed them, if key retirement were ever implemented.
+//
+// # The trap this exists to defuse
+//
+// `keys.MinPassiveBeforeRetire` is 24 hours, and its comment says the value
+// "must exceed the longest lifetime of any token it signed". That was true when
+// it was written: access and ID tokens live five minutes, logout tokens and
+// security event tokens less, and refresh tokens are opaque -- looked up by
+// hash, never signed.
+//
+// OID4VCI changed it. A verifiable credential is signed with the same
+// `oidc`-purpose key, and its lifetime is an operator-configured interval on
+// `core.credential_configurations` with **no ceiling**. A credential issued for
+// ninety days, signed by a key retired twenty-four hours after demotion, would
+// stop verifying with eighty-nine days left to run.
+//
+// **Nothing is broken today**, and that is precisely why this is a diagnostic
+// rather than a fix: `MinPassiveBeforeRetire` is declared and never read, there
+// is no retirement path, and passive keys are published indefinitely. Rotation is
+// safe in the direction that matters.
+//
+// The hazard is latent and lands on somebody else. Whoever implements retirement
+// will reach for that constant, and the deployments where reaching for it is
+// wrong are exactly the ones that cannot notice -- their credentials fail
+// verification weeks later, at a verifier they do not run.
+//
+// Choosing the remedy is a product question recorded in TODO-FOR-YOU.md: a
+// separate key purpose for credentials, a ceiling on credential lifetime, or a
+// decision never to retire. Reporting which configurations are affected is not.
+func checkCredentialLifetimes(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("credential lifetime against key retention")
+
+	// Probe for the table separately, so that every error after this point can
+	// be treated as real. `Query` reports a missing relation through `rows.Err`
+	// rather than at call time, and a check that cannot distinguish "old schema"
+	// from "the database is broken" either breaks doctor on old schemas or goes
+	// silent on real ones. `checkErasure` sidesteps this by using `QueryRow`;
+	// this check needs many rows, so it asks first.
+	var present *string
+	if err := conn.QueryRow(ctx,
+		`SELECT to_regclass('core.credential_configurations')::text`).Scan(&present); err != nil || present == nil {
+		// An older schema is a migration matter, reported by the migration check.
+		return nil
+	}
+
+	// DISTINCT because `config_id` is unique per organisation, not per
+	// deployment: without it, ten tenants sharing one configuration name are
+	// reported ten times as if they were ten separate problems. Longest first,
+	// because the worst offender is the one worth reading.
+	//
+	// The boundary is deliberately exclusive, though the constant's own comment
+	// -- "must exceed the longest lifetime of any token it signed" -- reads as
+	// though it should be inclusive. The window starts at *demotion*, and
+	// `Set.Active` hands out only active keys, so a demoted key never signs
+	// again. A credential signed at time T by a key demoted at D >= T is
+	// published until D+24h and expires at T+lifetime <= D+lifetime. It can
+	// therefore outlive its key only when lifetime > 24h; at exactly 24h the key
+	// is still published at every instant the credential is valid. Flagging that
+	// case would be a false positive, and a diagnostic nobody believes is worse
+	// than no diagnostic.
+	//
+	// `IS NOT NULL` is redundant against three-valued logic -- `NULL > interval`
+	// is already not TRUE -- and kept because a credential with no expiry is the
+	// one case where a reader would most want to know it was considered.
+	rows, err := conn.Query(ctx, `
+		SELECT DISTINCT config_id, lifetime
+		FROM core.credential_configurations
+		WHERE lifetime IS NOT NULL AND lifetime > $1::interval
+		ORDER BY lifetime DESC, config_id`,
+		keys.MinPassiveBeforeRetire.String())
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var over []string
+	for rows.Next() {
+		var id string
+		var life time.Duration
+		if err := rows.Scan(&id, &life); err != nil {
+			return err
+		}
+		over = append(over, fmt.Sprintf("%s (%s)", id, life.Round(time.Hour)))
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	reportCredentialLifetimes(r, over)
+	return nil
+}
+
+// reportCredentialLifetimes is the judgement, separated from the query so it can
+// be tested the way every other check in this package is.
+func reportCredentialLifetimes(r *Report, over []string) {
+	if len(over) == 0 {
+		return
+	}
+	// A deployment with a hundred configurations must not turn one finding into
+	// a wall of text -- but a truncated list that does not say it is truncated
+	// reads as the whole answer. Name the count, show the longest few, and say
+	// what was left out.
+	const shown = 5
+	listed, extra := over, 0
+	if len(listed) > shown {
+		listed, extra = listed[:shown], len(over)-shown
+	}
+	summary := fmt.Sprintf("%d credential configuration(s) outlive the %s key retention window: %s",
+		len(over), keys.MinPassiveBeforeRetire, strings.Join(listed, ", "))
+	if extra > 0 {
+		summary += fmt.Sprintf(", and %d more (longest first)", extra)
+	}
+	r.add(Info, "keys", summary,
+		"These credentials are signed by the same key as access and ID tokens, and "+
+			"keys.MinPassiveBeforeRetire assumes nothing signed outlives 24 hours. "+
+			"Nothing is wrong today -- key retirement is not implemented, so passive "+
+			"keys are published indefinitely and every credential keeps verifying. "+
+			"It matters when retirement is added: these credentials would stop "+
+			"verifying while still valid, at a verifier you do not operate. See the "+
+			"key rotation review and TODO-FOR-YOU.md.")
 }

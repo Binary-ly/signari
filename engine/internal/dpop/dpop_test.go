@@ -8,6 +8,9 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"math/big"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -425,5 +428,147 @@ func TestAdvertisedAlgsAreTheOnesEnforced(t *testing.T) {
 		if strings.Contains(SupportedAlgs(), forbidden) {
 			t.Errorf("the challenge advertises %q", forbidden)
 		}
+	}
+}
+
+func TestTheReplayWindowOutlivesEveryAcceptableProof(t *testing.T) {
+	// A proof is accepted while iat-MaxSkew <= now <= iat+MaxAge.
+	widest := MaxAge + MaxSkew
+	if ReplayWindow < widest {
+		t.Fatalf("ReplayWindow is %s but a proof stays acceptable for %s "+
+			"(MaxAge %s + MaxSkew %s). The replay record expires while the proof "+
+			"is still accepted, so a captured proof works again in the gap — this "+
+			"is a known upstream issue",
+			ReplayWindow, widest, MaxAge, MaxSkew)
+	}
+
+	// The boundary case stated as the timeline it comes from, so a future reader
+	// can check the reasoning rather than trusting the sum.
+	//
+	// Earliest a proof can be seen: iat - MaxSkew (client clock maximally ahead).
+	// Latest it is still accepted: iat + MaxAge.
+	const iat = 1_000_000
+	earliestFirstSight := iat - int64(MaxSkew.Seconds())
+	lastAcceptable := iat + int64(MaxAge.Seconds())
+	recordExpiresAt := earliestFirstSight + int64(ReplayWindow.Seconds())
+	if recordExpiresAt < lastAcceptable {
+		t.Errorf("a proof first seen at the earliest possible moment (%d) has its "+
+			"replay record expire at %d, while it is still accepted until %d",
+			earliestFirstSight, recordExpiresAt, lastAcceptable)
+	}
+}
+
+func TestTheProofLifetimeStaysOnTheOrderOfMinutes(t *testing.T) {
+	if MaxAge > 5*time.Minute {
+		t.Errorf("MaxAge is %s. RFC 9449 §11.1 asks for \"a relatively brief "+
+			"period on the order of seconds or minutes\", and every second of it "+
+			"is a second a captured proof still works", MaxAge)
+	}
+}
+
+func TestRSAProofKeysAreBoundedInBothDirections(t *testing.T) {
+	for _, tc := range []struct {
+		bits    int
+		wantErr string
+	}{
+		{1024, "under"},
+		{2048, ""},
+	} {
+		t.Run(fmt.Sprint(tc.bits), func(t *testing.T) {
+			k, err := rsa.GenerateKey(rand.Reader, tc.bits)
+			if err != nil {
+				t.Skipf("cannot generate a %d-bit key here: %v", tc.bits, err)
+			}
+			jwk := jose.JSONWebKey{Key: &k.PublicKey, Algorithm: "RS256"}
+			opts := (&jose.SignerOptions{}).
+				WithHeader(jose.HeaderType, TypDPoP).WithHeader("jwk", jwk)
+			signer, serr := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: k}, opts)
+			if serr != nil {
+				t.Fatal(serr)
+			}
+			payload, _ := json.Marshal(map[string]any{
+				"jti": "k-" + fmt.Sprint(tc.bits), "htm": http.MethodGet,
+				"htu": "https://x.test/r", "iat": time.Now().Unix(),
+			})
+			obj, _ := signer.Sign(payload)
+			proof, _ := obj.CompactSerialize()
+
+			_, verr := Verify(proof, http.MethodGet, "https://x.test/r", "", time.Now())
+			switch {
+			case tc.wantErr == "" && verr != nil:
+				t.Errorf("a %d-bit key was refused: %v", tc.bits, verr)
+			case tc.wantErr != "" && verr == nil:
+				t.Errorf("a %d-bit RSA proof key was accepted", tc.bits)
+			case tc.wantErr != "" && !strings.Contains(verr.Error(), tc.wantErr):
+				t.Errorf("a %d-bit key was refused for the wrong reason: %v", tc.bits, verr)
+			}
+		})
+	}
+}
+
+func TestAnOversizedJTIIsRefused(t *testing.T) {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwk := jose.JSONWebKey{Key: &k.PublicKey, Algorithm: "ES256"}
+	opts := (&jose.SignerOptions{}).
+		WithHeader(jose.HeaderType, TypDPoP).WithHeader("jwk", jwk)
+	signer, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: k}, opts)
+
+	for _, tc := range []struct{ name, jti string }{
+		{"ordinary", strings.Repeat("a", 36)},
+		{"oversized", strings.Repeat("a", 4000)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, _ := json.Marshal(map[string]any{
+				"jti": tc.jti, "htm": http.MethodGet,
+				"htu": "https://x.test/r", "iat": time.Now().Unix(),
+			})
+			obj, _ := signer.Sign(payload)
+			proof, _ := obj.CompactSerialize()
+			_, verr := Verify(proof, http.MethodGet, "https://x.test/r", "", time.Now())
+			if tc.name == "ordinary" && verr != nil {
+				t.Errorf("an ordinary jti was refused: %v", verr)
+			}
+			if tc.name == "oversized" && verr == nil {
+				t.Error("a 4 kB jti was accepted and would be stored verbatim, once " +
+					"per request, by an unauthenticated caller")
+			}
+		})
+	}
+}
+
+// The ceiling, against `checkKeyStrength` directly.
+//
+// Generating a 16384-bit RSA key takes minutes; constructing a public key of
+// that size takes microseconds, and the bound under test reads only `N.BitLen()`.
+// Verified once out-of-band that a real 16384-bit proof does reach this check and
+// costs ~3 ms to verify — which is the number that motivates the bound.
+func TestTheRSACeilingRejectsAnOversizedKey(t *testing.T) {
+	for _, bits := range []int{8192, 8193, 16384, 32768} {
+		n := new(big.Int).Lsh(big.NewInt(1), uint(bits-1)) // exactly `bits` long
+		jwk := &jose.JSONWebKey{Key: &rsa.PublicKey{N: n, E: 65537}}
+		err := checkKeyStrength(jwk)
+		switch {
+		case bits <= maxRSABits && err != nil:
+			t.Errorf("%d-bit key refused: %v", bits, err)
+		case bits > maxRSABits && err == nil:
+			t.Errorf("%d-bit RSA proof key accepted; verification cost is chosen by "+
+				"an unauthenticated caller at this endpoint", bits)
+		}
+	}
+}
+
+// A non-RSA key has no size to check here: each EC and Ed algorithm in
+// allowedAlgs pins one curve, so `alg` already fixes the strength and go-jose
+// refuses a mismatch. The bound must not accidentally refuse them.
+func TestTheKeyStrengthCheckIgnoresNonRSAKeys(t *testing.T) {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkKeyStrength(&jose.JSONWebKey{Key: &k.PublicKey}); err != nil {
+		t.Errorf("an EC key was refused by the RSA size bound: %v", err)
 	}
 }

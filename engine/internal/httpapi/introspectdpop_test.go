@@ -203,3 +203,48 @@ func TestIntrospectionReportsTheTokensAudienceNotTheCallers(t *testing.T) {
 			"audience rather than the token's own", got["aud"])
 	}
 }
+
+func TestADPoPRefusalChallengeCarriesTheAcceptableAlgorithms(t *testing.T) {
+	f := newTokenFixture(t)
+	key := newProofKey(t)
+
+	const verifier = "verifier-dpop-challenge-aaaaaaaaaaaaaaaaaaa"
+	code := f.issueCodeWithDetailsAndScopes(t, verifier, nil, []string{"openid"})
+	status, body := f.postDPoP(t, url.Values{
+		"grant_type": {"authorization_code"}, "code": {code},
+		"client_id": {f.clientID}, "redirect_uri": {"https://rp.test/cb"},
+		"code_verifier": {verifier},
+	}, key.proof(t, "jti-dpop-challenge-1"))
+	if status != http.StatusOK {
+		t.Fatalf("redemption under DPoP gave %d: %v", status, body)
+	}
+	access, _ := body["access_token"].(string)
+
+	// §7.2's downgrade: a bound token presented under the Bearer scheme. It is
+	// refused, and the refusal is a DPoP challenge.
+	req := httptest.NewRequest(http.MethodGet, "/oauth2/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer "+access)
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a DPoP-bound token presented as Bearer gave %d, want 401", rec.Code)
+	}
+	ch := rec.Header().Get("WWW-Authenticate")
+	if !strings.Contains(ch, "DPoP") {
+		t.Fatalf("the challenge is not a DPoP challenge: %q", ch)
+	}
+	if !strings.Contains(ch, "algs=") {
+		t.Errorf("the refusal challenge carries no algs parameter: %q — RFC 9449 "+
+			"§7.1 SHOULD include it, and Figure 16 shows it on exactly this case", ch)
+	}
+	// It must name algorithms we actually accept, not a hardcoded list that can
+	// drift from what Verify enforces.
+	if !strings.Contains(ch, "ES256") {
+		t.Errorf("algs does not include ES256, which this server accepts: %q", ch)
+	}
+	if strings.Contains(ch, "none") || strings.Contains(ch, "HS256") {
+		t.Errorf("algs advertises a symmetric or none algorithm, which would let a "+
+			"caller mint a proof for any key: %q", ch)
+	}
+}

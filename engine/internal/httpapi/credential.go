@@ -91,8 +91,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	// misses them), then the proof itself when the token is bound.
 	bound := claims.Cnf != nil && claims.Cnf.JKT != ""
 	if perr := dpop.CheckPresentation(bound, scheme); perr != nil {
-		w.Header().Set("WWW-Authenticate",
-			`DPoP realm="signari", error="invalid_token"`)
+		w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token", perr.Error()))
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -100,8 +99,8 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		if jkt, derr := s.verifyDPoPForRequest(r, raw); derr != nil || jkt == "" {
 			s.log.Info("DPoP enforcement refused a credential request",
 				"correlation_id", correlationID(ctx))
-			w.Header().Set("WWW-Authenticate",
-				`DPoP realm="signari", error="invalid_token"`)
+			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
+				"the access token is sender-constrained and the DPoP proof did not match"))
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}

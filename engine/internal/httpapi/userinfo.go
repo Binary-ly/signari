@@ -112,9 +112,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	if perr := dpop.CheckPresentation(bound, scheme); perr != nil {
 		s.log.Info("a token was presented under the wrong scheme", "err", perr,
 			"correlation_id", correlationID(ctx))
-		w.Header().Set("WWW-Authenticate",
-			`DPoP realm="signari", error="invalid_token", error_description="`+
-				perr.Error()+`"`)
+		w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token", perr.Error()))
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -128,9 +126,8 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 			}
 			s.log.Info("DPoP enforcement refused a userinfo request", "reason", reason,
 				"correlation_id", correlationID(ctx))
-			w.Header().Set("WWW-Authenticate",
-				`DPoP realm="signari", error="invalid_token", error_description="`+
-					`the access token is sender-constrained and the DPoP proof did not match"`)
+			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
+				"the access token is sender-constrained and the DPoP proof did not match"))
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -138,9 +135,8 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 			&dpop.Proof{JKT: jkt}); err != nil {
 			s.log.Info("DPoP binding mismatch", "err", err,
 				"correlation_id", correlationID(ctx))
-			w.Header().Set("WWW-Authenticate",
-				`DPoP realm="signari", error="invalid_token", error_description="`+
-					`this access token is bound to a different key"`)
+			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
+				"this access token is bound to a different key"))
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}

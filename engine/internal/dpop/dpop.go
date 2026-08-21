@@ -32,6 +32,7 @@ package dpop
 
 import (
 	"crypto"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -59,8 +60,15 @@ const (
 	// MaxSkew allows for a client clock running ahead of ours.
 	MaxSkew = 30 * time.Second
 
+	ReplayWindow = MaxAge + MaxSkew
+
 	// maxProofBytes bounds the header before any parsing.
 	maxProofBytes = 8 << 10
+
+	maxJTIBytes = 255
+
+	minRSABits = 2048
+	maxRSABits = 8192
 )
 
 // allowedAlgs is an allow-list, and asymmetric only.
@@ -167,6 +175,9 @@ func Verify(header, method, uri, accessToken string, now time.Time) (*Proof, err
 	if !jwk.Valid() {
 		return nil, fmt.Errorf("the DPoP proof carries an unusable key")
 	}
+	if err := checkKeyStrength(jwk); err != nil {
+		return nil, err
+	}
 
 	payload, err := tok.Verify(jwk)
 	if err != nil {
@@ -179,6 +190,10 @@ func Verify(header, method, uri, accessToken string, now time.Time) (*Proof, err
 	}
 	if c.JTI == "" {
 		return nil, fmt.Errorf("the DPoP proof has no jti, so a replay could not be detected")
+	}
+	if len(c.JTI) > maxJTIBytes {
+		return nil, fmt.Errorf("the DPoP proof's jti is %d bytes, over the %d limit",
+			len(c.JTI), maxJTIBytes)
 	}
 
 	if !strings.EqualFold(c.HTM, method) {
@@ -332,6 +347,30 @@ func BoundTo(cnf *Confirmation, proof *Proof) error {
 	if cnf.JKT != proof.JKT {
 		return fmt.Errorf("this access token is bound to a different key than the " +
 			"DPoP proof was signed with")
+	}
+	return nil
+}
+
+// checkKeyStrength bounds an RSA proof key in both directions.
+//
+// Only RSA has a size to check: the EC and Ed algorithms in `allowedAlgs` each
+// pin a single curve, so `alg` already fixes the strength and go-jose refuses a
+// mismatch. RSA is the one where the caller chooses.
+func checkKeyStrength(jwk *jose.JSONWebKey) error {
+	pub, ok := jwk.Key.(*rsa.PublicKey)
+	if !ok {
+		return nil
+	}
+	bits := pub.N.BitLen()
+	if bits < minRSABits {
+		return fmt.Errorf("the DPoP proof key is a %d-bit RSA key, under the %d-bit "+
+			"minimum; a token bound to it would claim sender-constraint while resting "+
+			"on a key an adversary can factor", bits, minRSABits)
+	}
+	if bits > maxRSABits {
+		return fmt.Errorf("the DPoP proof key is a %d-bit RSA key, over the %d-bit "+
+			"maximum; verification cost is chosen by the caller and this endpoint is "+
+			"reached before any client authentication", bits, maxRSABits)
 	}
 	return nil
 }

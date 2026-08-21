@@ -95,7 +95,7 @@ func (s *Server) verifyDPoPForRequest(r *http.Request, accessToken string) (stri
 	// Replay. The proof is fresh, signed and correctly bound -- and still
 	// replayable within its lifetime by whoever captured it.
 	fresh, err := store.MarkDPoPProofSeen(r.Context(), s.db, proof.JKT, proof.JTI,
-		dpop.MaxAge+dpop.MaxSkew)
+		dpop.ReplayWindow)
 	if err != nil {
 		s.log.Error("recording a DPoP proof", "err", err)
 		// Fail CLOSED. If replay detection is unavailable, the proof cannot be
@@ -224,4 +224,9 @@ func (s *Server) refuseUnboundTokenRequest(w http.ResponseWriter, ctx context.Co
 			"so every token request must carry a DPoP proof",
 		Status: http.StatusBadRequest})
 	return true
+}
+
+func dpopChallenge(errCode, description string) string {
+	return `DPoP realm="signari", error="` + errCode + `", error_description="` +
+		description + `", algs="` + dpop.SupportedAlgs() + `"`
 }

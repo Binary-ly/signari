@@ -63,7 +63,21 @@ type CredentialRequest struct {
 // CredentialResponse is §8.3's response body.
 type CredentialResponse struct {
 	Credentials []IssuedCredential `json:"credentials,omitempty"`
-	// NotificationID is optional and only meaningful alongside credentials.
+	// NotificationID is §11's handle for the Notification Endpoint, and it must
+	// stay EMPTY until that endpoint exists.
+	//
+	// §11: "The Credential Issuer needs to return one notification_id parameter
+	// per Credential Response ... for the Wallet to be able to use this endpoint.
+	// Support for this endpoint is OPTIONAL."
+	//
+	// We do not implement §11, so emitting an id would hand a wallet a handle for
+	// an endpoint that 404s -- the wallet would POST its issuance notification and
+	// get nothing, which is worse than never offering the capability. `omitempty`
+	// plus nothing assigning it is what keeps that true today.
+	//
+	// Kept rather than deleted because the field is the right shape and the
+	// coupling is the part worth recording: whoever implements the Notification
+	// Endpoint sets this in the same change, and nobody sets it before.
 	NotificationID string `json:"notification_id,omitempty"`
 }
 

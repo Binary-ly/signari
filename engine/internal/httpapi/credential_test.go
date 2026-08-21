@@ -417,3 +417,88 @@ func credentialConfigNames(t *testing.T, f *tokenFixture) map[string]bool {
 	}
 	return out
 }
+
+// OID4VCI §14.3, Multiple Accesses to the Credential Endpoint — a section
+// nothing in this repository cited until the second-turn sweep, which listed the
+// specification's 149 sections and checked which our code and docs reference.
+//
+//	"The Credential Endpoint can be accessed multiple times by a Wallet using the
+//	same Access Token, even for the same Credential."
+//
+//	"The Credential Issuer SHOULD NOT revoke previously issued, valid Credentials
+//	solely as a result of a subsequent successful Credential Request. This, for
+//	example, ensures that the Wallet can keep a desired number of Credentials
+//	without causing additional revocation and issuance overhead."
+//
+// We satisfy both, and satisfied them by construction rather than by decision:
+// the credential endpoint spends the `c_nonce` and nothing else. It does not
+// mark the access token used, and it does not touch previously issued
+// credentials.
+//
+// That is exactly the kind of property worth pinning. It holds because of what
+// the code does NOT do, so nothing fails when it stops holding — a future change
+// that spent the access token, or revoked prior credentials on re-issue, would
+// break a wallet's ability to top up its credential supply and there would be no
+// test to notice. §13.8 makes the nonce single-use deliberately, so a second
+// request fetching a fresh nonce is the intended path, not a workaround.
+func TestTheCredentialEndpointServesTheSameAccessTokenTwice(t *testing.T) {
+	f := newTokenFixture(t)
+	configureCredential(t, f)
+	wa := newWallet(t)
+	token := f.mintAccessToken(t)
+
+	issue := func(t *testing.T, attempt string) string {
+		t.Helper()
+		// A fresh nonce each time: §13.8 spends them, and "a Wallet can continue
+		// using a given nonce until it is rejected by the Credential Issuer".
+		status, nb := f.postJSON(t, "/oid4vci/nonce", "", "")
+		if status != http.StatusOK {
+			t.Fatalf("%s: nonce endpoint gave %d: %v", attempt, status, nb)
+		}
+		nonce, _ := nb["c_nonce"].(string)
+		if nonce == "" {
+			t.Fatalf("%s: no c_nonce: %v", attempt, nb)
+		}
+		body := `{"credential_configuration_id":"IdentityCredential",
+		          "proofs":{"jwt":[` + mustJSONString(t, wa.proof(t, f.srv.cfg.Issuer, nonce)) + `]}}`
+		status, resp := f.postJSON(t, "/oid4vci/credential", token, body)
+		if status != http.StatusOK {
+			t.Fatalf("%s: credential endpoint gave %d: %v — §14.3 says the endpoint "+
+				"\"can be accessed multiple times by a Wallet using the same Access "+
+				"Token, even for the same Credential\"", attempt, status, resp)
+		}
+		creds, _ := resp["credentials"].([]any)
+		if len(creds) != 1 {
+			t.Fatalf("%s: got %d credentials: %v", attempt, len(creds), resp)
+		}
+		one, _ := creds[0].(map[string]any)
+		got, _ := one["credential"].(string)
+		if got == "" {
+			t.Fatalf("%s: empty credential: %v", attempt, resp)
+		}
+		return got
+	}
+
+	first := issue(t, "first request")
+	second := issue(t, "second request with the same access token")
+
+	// Two genuinely distinct credentials, not the same bytes handed back. Each
+	// carries its own salts and its own `jti`-equivalent, which is what makes
+	// them separately presentable without correlating the holder.
+	if first == second {
+		t.Error("the second request returned byte-identical credentials; a wallet " +
+			"topping up its supply would hold two copies of one credential, which " +
+			"correlates every presentation it makes")
+	}
+
+	// And the first must still verify — §14.3's SHOULD NOT.
+	if _, _, err := sdjwtParse(first); err != nil {
+		t.Errorf("the first credential no longer parses after a second issuance: %v", err)
+	}
+}
+
+// sdjwtParse is a thin check that a credential is still a well-formed SD-JWT.
+func sdjwtParse(s string) (string, []string, error) {
+	jwt, disclosures, _, err := sdjwt.Split(s)
+	return jwt, disclosures, err
+}

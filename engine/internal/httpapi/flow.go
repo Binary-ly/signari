@@ -1647,6 +1647,38 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	// literal here is how a password-only session ends up claiming multi-factor.
 	acr := oauth.ACRFromAMR(amr)
 
+	// The organisation's concurrent-session cap, applied BEFORE the row is
+	// written so the count read is the count this insert adds to. Unlimited by
+	// default, so most deployments do one extra cheap query and nothing else.
+	evicted, lerr := store.EnforceSessionLimit(ctx, tx, orgID, userID)
+	if errors.Is(lerr, store.ErrSessionLimitReached) {
+		// The credential was correct; the policy refused. Audited as its own
+		// event rather than as a login failure, because reading it as a bad
+		// password would send somebody to reset a password that works.
+		if aerr := audit.Write(ctx, tx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": "session_limit"},
+		}); aerr != nil {
+			s.log.Error("auditing a session-limit refusal", "err", aerr)
+		}
+		if cerr := tx.Commit(ctx); cerr != nil {
+			s.log.Error("committing the session-limit refusal", "err", cerr)
+		}
+		s.renderLogin(w, r, "", "You are already signed in on the maximum number "+
+			"of devices for this organisation. Sign out somewhere else and try again.")
+		return
+	}
+	if lerr != nil {
+		s.log.Error("enforcing the session limit", "err", lerr)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if len(evicted) > 0 {
+		s.log.Info("sessions evicted to make room", "user_id", userID,
+			"count", len(evicted), "correlation_id", correlationID(ctx))
+	}
+
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO core.sessions (sid, cookie_hash, org_id, user_id, acr, amr, auth_time, not_after)
 		VALUES ($1, $2, $3, $4, $5, $6, now(), now() + $7::interval)`,

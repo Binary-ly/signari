@@ -23,6 +23,11 @@ const (
 	ReasonMFAReset        TerminationReason = "mfa_reset"
 	ReasonExpired         TerminationReason = "expired"
 	ReasonReuseDetected   TerminationReason = "reuse_detected"
+	// ReasonSessionLimit is the oldest session ended to make room for a new one,
+	// under an organisation's concurrent-session cap. Distinct from
+	// ReasonAdminRevoke because nobody decided this about this session in
+	// particular -- a policy did, and the person will want to know which.
+	ReasonSessionLimit TerminationReason = "session_limit"
 	// ReasonReauthenticated is the session replaced when its holder authenticates
 	// again. ASVS V7.2.4 requires the previous token to be terminated, not merely
 	// replaced in the browser.

@@ -112,3 +112,42 @@ func TestEveryFindingCarriesAFix(t *testing.T) {
 		}
 	}
 }
+
+// A deployment holding subject keys and no way to erase one should be told.
+//
+// `keys.EraseSubject` destroys a subject's data-encryption key and is tested;
+// a tree-wide search finds no caller outside its own tests. Every part of the
+// schema advertises erasure support — `erased_at`, a constraint that a shredded
+// key holds no DEK, an audit chain hashed over ciphertext specifically so it
+// survives a shred — so an operator reading it would reasonably conclude the
+// capability is there. It is a mechanism with no handle.
+//
+// The check reports rather than fixes, because what erasure should MEAN has
+// three defensible answers and is irreversible in a way account takeover is not.
+// That decision is the operator's (item 9o). Reporting it is not.
+func TestADeploymentIsToldItCannotErase(t *testing.T) {
+	r := findingsFor(t, func(r *Report) { reportErasure(r, 42) })
+	if len(r.Findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(r.Findings))
+	}
+	f := r.Findings[0]
+	if f.Severity != Info {
+		t.Errorf("severity = %v, want Info: nothing is broken or unsafe today, and "+
+			"a deployment with no erasure obligations may ignore it", f.Severity)
+	}
+	if !strings.Contains(f.Fix, "9o") {
+		t.Errorf("the fix does not point at the decision that unblocks it: %q", f.Fix)
+	}
+	if !strings.Contains(f.Fix, "EraseSubject") {
+		t.Errorf("the fix does not name the mechanism that exists: %q", f.Fix)
+	}
+}
+
+// And a deployment storing nothing must not be nagged.
+func TestNoSubjectKeysMeansNoErasureFinding(t *testing.T) {
+	r := findingsFor(t, func(r *Report) { reportErasure(r, 0) })
+	if len(r.Findings) != 0 {
+		t.Errorf("a deployment with no subject keys was told it cannot erase them: %v",
+			r.Findings)
+	}
+}

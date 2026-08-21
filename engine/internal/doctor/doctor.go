@@ -122,6 +122,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkEmailFactor(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkErasure(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	if err := checkMTLS(ctx, conn, r); err != nil {
 		return nil, err
 	}
@@ -546,4 +549,65 @@ func checkMTLS(ctx context.Context, conn *pgx.Conn, r *Report) error {
 				"certificates, or move them to self_signed_tls_client_auth")
 	}
 	return nil
+}
+
+// checkErasure reports that this deployment cannot honour an erasure request.
+//
+// # Why a diagnostic rather than a fix
+//
+// The mechanism exists and works. `core.subject_keys` holds each subject's
+// data-encryption key wrapped by a root key that is not in the database, with an
+// `erased_at` column and a constraint that a shredded key has no DEK. The audit
+// chain hashes ciphertext rather than plaintext precisely so it stays verifiable
+// after a shred. `keys.EraseSubject` performs the destruction and is tested.
+//
+// **Nothing calls it.** There is no admin API, CLI or console path that erases a
+// subject, so a deployment holding personal data has no way to destroy it on
+// request.
+//
+// What erasure should MEAN here is a decision with three defensible answers --
+// immediate, delay-and-notify like account recovery, or two-person -- and it is
+// irreversible in a way that account takeover is not: a mistaken shred cannot be
+// undone by anybody. Choosing on the operator's behalf is not a call this code
+// should make, which is why the gap is reported rather than closed.
+//
+// Reported at all, though, because the failure mode is silence. Every part of
+// this schema advertises erasure support, and an operator reading it would
+// reasonably conclude the capability is there. It is a mechanism with no handle.
+//
+// Info rather than Warning: nothing is broken or unsafe today, and a deployment
+// with no erasure obligations is entitled to ignore it. It stops being Info the
+// moment somebody asks to be forgotten.
+func checkErasure(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("subject erasure")
+
+	var subjects, erased int
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE erased_at IS NOT NULL)
+		FROM core.subject_keys`).Scan(&subjects, &erased); err != nil {
+		// The table not existing is not a doctor failure; an older schema is a
+		// migration problem and is reported by the migration check.
+		return nil
+	}
+	reportErasure(r, subjects)
+	return nil
+}
+
+// reportErasure is the judgement, separated from the query so it can be tested
+// the way every other check in this package is.
+func reportErasure(r *Report, subjects int) {
+	if subjects == 0 {
+		// Nothing is protected by a subject key yet, so nothing needs erasing.
+		return
+	}
+	r.add(Info, "erasure",
+		fmt.Sprintf("%d subject key(s) are stored and this build has no way to erase one",
+			subjects),
+		"The crypto-shredding mechanism is implemented (keys.EraseSubject) and "+
+			"nothing invokes it: there is no admin API, CLI or console path that "+
+			"destroys a subject's data-encryption key. A deployment that receives "+
+			"an erasure request cannot honour it. Deciding what erasure should mean "+
+			"here -- immediate, delayed and cancellable, or requiring two "+
+			"administrators -- is item 9o in TODO-FOR-YOU.md, and it is deliberately "+
+			"left to the operator because a mistaken shred cannot be undone.")
 }

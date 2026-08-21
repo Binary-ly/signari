@@ -129,7 +129,7 @@ implementations agreeing:
 
 | | |
 |---|---|
-| password → Duo | 302 to the prompt, challenge recorded, **no session yet** |
+| password → Duo | 303 to the prompt, challenge recorded, **no session yet** |
 | callback | `acr: 2`, `amr: [pwd, mfa]`, `mfa.duo_succeeded` audited |
 | Duo answers about another user | 400, no session |
 | Duo is down, fail closed | 400, honest message |

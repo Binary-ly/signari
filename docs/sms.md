@@ -81,7 +81,7 @@ Verified against a running engine, not just in tests. A session proved with
 GET /oauth2/authorize?client_id=thirdparty…   400
    "This application requires a passkey or security key."
 
-GET /oauth2/authorize?client_id=webapp…       302 → code issued
+GET /oauth2/authorize?client_id=webapp…       303 → code issued
 ```
 
 The second line is the control. Without it, a policy that denied everything

@@ -39,7 +39,7 @@ you are signed in; do not, and you are not.
 ```
 correct password → Terms of service
                    session cookies: 0
-                   GET /account → 302
+                   GET /account → 303
 ```
 
 Establishing the session first and prompting afterwards would make it advisory —

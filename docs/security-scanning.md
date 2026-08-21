@@ -230,7 +230,7 @@ engine rather than by reading:
 
 ```
 unregistered redirect_uri + an invalid request   400, rendered here, no redirect
-registered redirect_uri + an invalid request     302 to the registered URI, with iss
+registered redirect_uri + an invalid request     303 to the registered URI, with iss
 unregistered post_logout_redirect_uri            400, no redirect
 return=//evil.test  through a full sign-in       resumed on the engine's own origin
 ```

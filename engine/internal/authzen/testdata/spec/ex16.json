@@ -1,0 +1,35 @@
+{
+  "subject": {
+    "type": "user",
+    "id": "alice@example.com"
+  },
+  "context": {
+    "time": "2024-05-31T15:22-07:00"
+  },
+  "action": {
+    "name": "can_read"
+  },
+  "evaluations": [
+    {
+      "resource": {
+        "type": "document",
+        "id": "boxcarring.md"
+      }
+    },
+    {
+      "resource": {
+        "type": "document",
+        "id": "subject-search.md"
+      }
+    },
+    {
+      "action": {
+        "name": "can_edit"
+      },
+      "resource": {
+        "type": "document",
+        "id": "resource-search.md"
+      }
+    }
+  ]
+}

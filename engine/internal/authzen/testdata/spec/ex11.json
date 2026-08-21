@@ -1,0 +1,14 @@
+{
+  "decision": false,
+  "context": {
+    "metadata": {
+      "response_time": 60,
+      "response_time_unit": "ms"
+    },
+    "environment": {
+      "ip": "10.10.0.1",
+      "datetime": "2025-06-27T18:03-07:00",
+      "os": "ubuntu24.04.2LTS-AMDx64"
+    }
+  }
+}

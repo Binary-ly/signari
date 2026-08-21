@@ -1,0 +1,6 @@
+{
+  "name": "extend-loan",
+  "properties": {
+    "period": "2W"
+  }
+}

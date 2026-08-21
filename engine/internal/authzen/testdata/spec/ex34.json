@@ -1,0 +1,12 @@
+{
+  "results": [
+    {
+      "type": "account",
+      "id": "123"
+    },
+    {
+      "type": "account",
+      "id": "456"
+    }
+  ]
+}

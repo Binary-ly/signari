@@ -1,0 +1,19 @@
+{
+  "evaluations": [
+    {
+      "decision": true
+    },
+    {
+      "decision": false,
+      "context": {
+        "reason": "resource not found"
+      }
+    },
+    {
+      "decision": false,
+      "context": {
+        "reason": "Subject is a viewer of the resource"
+      }
+    }
+  ]
+}

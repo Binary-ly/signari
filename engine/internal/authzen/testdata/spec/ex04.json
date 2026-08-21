@@ -1,0 +1,10 @@
+{
+  "type": "book",
+  "id": "123",
+  "properties": {
+    "library_record":{
+      "title": "AuthZEN in Action",
+      "isbn": "978-0593383322"
+    }
+  }
+}

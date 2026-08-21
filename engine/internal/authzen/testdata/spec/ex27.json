@@ -1,0 +1,17 @@
+{
+  "page": {
+    "next_token": "a3M9NDU2O3N6PTI=",
+    "count": 2,
+    "total": 3
+  },
+  "results": [
+    {
+      "type": "account",
+      "id": "123"
+    },
+    {
+      "type": "account",
+      "id": "456"
+    }
+  ]
+}

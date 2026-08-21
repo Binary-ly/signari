@@ -1,0 +1,14 @@
+{
+  "evaluations": [
+    {
+      "decision": true
+    },
+    {
+      "decision": false,
+      "context": {
+        "code": "200",
+        "reason": "deny_on_first_deny"
+      }
+    }
+  ]
+}

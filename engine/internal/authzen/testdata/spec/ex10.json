@@ -1,0 +1,11 @@
+{
+  "decision": false,
+  "context": {
+    "reason_admin": {
+      "403": "Request failed policy C076E82F"
+    },
+    "reason_user": {
+      "403": "Insufficient privileges. Contact your administrator"
+    }
+  }
+}

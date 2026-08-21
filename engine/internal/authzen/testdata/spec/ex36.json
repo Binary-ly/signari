@@ -1,0 +1,10 @@
+{
+  "results": [
+    {
+      "name": "can_read"
+    },
+    {
+      "name": "can_write"
+    }
+  ]
+}

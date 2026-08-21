@@ -384,3 +384,101 @@ then found; they were handled and then re-verified by a method that did not know
 that in advance. That is the outcome a second turn should have when the first one
 was done properly, and it is worth distinguishing from a second turn that finds
 nothing because it looked in the wrong place.
+
+---
+
+# Third pass: running each specification's own examples through our decoder
+
+Two methods have been applied to these ten so far. Sweeping the sections nobody
+had cited asks *what does the specification say that we never read*. Extracting
+every prohibition asks *what must not happen*. Both read prose.
+
+
+So: extract every JSON example from the specification, decode it with the types
+that actually serve the API, re-encode, and compare.
+
+## AuthZEN 1.0 Final
+
+52 code blocks in the specification, 48 of which parse as JSON. `testdata/spec/`
+now holds all 48, and `TestEverySpecExampleSurvivesDecoding` runs them.
+
+The comparison rule is asymmetric, because not every difference is a defect:
+
+| Difference | Verdict | Why |
+|---|---|---|
+| A field disappears | **failure** | either unmodelled or mismodelled |
+| A value changes | **failure** | worse than losing it |
+| An **empty** value appears | tolerated | Go zero values serialise; see below |
+| A **non-empty** value appears | **failure** | inventing content |
+
+### What it found in the test, before it found anything in the code
+
+The first version of the classifier skipped every example that was a *bare
+entity* — the `{"type","id","properties"}` and `{"name","properties"}` blocks that
+§5.1–§5.3 use to define the entity shapes. They have no `subject` or `resource`
+key, so nothing matched them.
+
+That mattered more than it sounds. The full-request examples happen to carry
+`properties` only on `action` and `resource`, never on `subject`. So renaming
+`Subject.Properties`' JSON tag to `props` — a total break of §5.1's `properties`
+member — left the entire suite green. The test asserted a coverage it did not have.
+
+Fixed by classifying bare entities, and because §5.1 Subject and §5.2 Resource are
+the identical three members on the wire, an example of one is checked as both. The
+same mutation now fails in three examples. A corpus test that has never been shown
+to fail is a corpus test that has not been shown to do anything.
+
+### What it found in the code: nothing dropped, and one thing worth naming
+
+No specification content is lost by any of our types. Four things that looked like
+findings were checked and are not:
+
+**`page` on Search requests** — appeared as dropped, and was the classifier again:
+`SearchRequest` decodes `page.limit` and `page.token` correctly.
+
+**§8.2's "identical to the preceding request"** — the same passage that defines
+`next_token` also says all entities and pagination parameters MUST be identical to
+the request that produced the token, and that PDPs SHOULD error otherwise. This is
+implemented *and compared*: `pageOf` decodes the cursor, recomputes
+`searchFingerprint(req)`, and refuses a mismatch by naming which entity changed.
+A fingerprint computed and never compared is this review's most common finding;
+this one is compared.
+
+**`next_token` on an exhausted result set** — and here the specification disagrees
+with itself. §8.2.2 says `next_token` is REQUIRED inside the page object and "If
+there are no more results after this page, its value MUST be an empty string."
+The specification's own example of a complete result set shows a page object with
+`count` and `total` and **no `next_token`**. We follow the normative text and
+always emit it — which also happens to satisfy a client written against the
+example, since `""` is falsy everywhere a PEP is written. Recorded because the next
+person to read that example will think we are wrong.
+
+**Unknown members inside `options`** — dropped, and §10.1.1 requires receivers to
+ignore unknown fields, so dropping is conformant. The half that matters is that
+ignoring the unknown member must not cost the known one beside it: a decoder that
+bails on the first unrecognised key would lose `evaluations_semantic` and silently
+fall back to a semantic the caller did not ask for. Pinned by
+`TestUnknownOptionsAreIgnoredWithoutLosingKnownOnes`.
+
+### The one real finding: a latent defect that cannot fire yet
+
+`Request.Subject` is a value, not a pointer. Once decoded, "this boxcar entry
+omitted a subject" and "this entry sent an empty subject" are the same state, and
+re-encoding an omitted subject produces `{"type":"","id":""}`.
+
+As a PDP this is harmless, and provably so: `Request.Merge` applies batch defaults
+**field by field**, which is what §6.3 requires, so an entry that omitted a subject
+still inherits it. The corpus tolerates the artifact for that reason.
+
+It stops being harmless the moment anything here *sends* an Evaluations body.
+Nothing does — this package implements the PDP side, and a PDP only receives them —
+but a PEP client built on these types would ship an explicit empty subject inside
+every boxcar entry, and a PDP that merges all-or-nothing rather than field by field
+reads that as "this entry overrides the default with nobody" instead of "this entry
+didn't say".
+
+This is the "correct by construction but unguarded" shape: the property holds
+because of something we do not do, so nothing fails when we start doing it.
+`TestBoxcarEntriesWouldMisreportAnOmittedSubject` does not assert the bug is absent
+— structurally it is not. It asserts that the reasoning above still holds, and
+skips itself with an instruction to delete it if the field ever becomes a pointer.

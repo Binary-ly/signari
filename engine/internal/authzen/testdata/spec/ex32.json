@@ -1,0 +1,12 @@
+{
+  "results": [
+    {
+      "type": "user",
+      "id": "alice@example.com"
+    },
+    {
+      "type": "user",
+      "id": "bob@example.com"
+    }
+  ]
+}

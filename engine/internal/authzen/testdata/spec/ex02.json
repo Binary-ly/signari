@@ -1,0 +1,8 @@
+{
+  "type": "user",
+  "id": "alice@example.com",
+  "properties": {
+    "ip_address": "172.217.22.14",
+    "device_id": "8:65:ee:17:7e:0b"
+  }
+}

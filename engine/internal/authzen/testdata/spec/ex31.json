@@ -1,0 +1,15 @@
+{
+  "subject": {
+    "type": "user"
+  },
+  "action": {
+    "name": "can_read"
+  },
+  "resource": {
+    "type": "account",
+    "id": "123"
+  },
+  "context": {
+    "time": "2024-10-26T01:22-07:00"
+  }
+}

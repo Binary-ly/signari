@@ -1,0 +1,6 @@
+{
+  "policy_decision_point": "https://pdp.example.com",
+  "access_evaluation_endpoint": "https://pdp.example.com/access/v1/evaluation",
+  "search_subject_endpoint": "https://pdp.example.com/access/v1/search/subject",
+  "search_resource_endpoint": "https://pdp.example.com/access/v1/search/resource"
+}

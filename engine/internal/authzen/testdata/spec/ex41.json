@@ -1,0 +1,22 @@
+{
+  "evaluations": [
+    {
+      "decision": true
+    },
+    {
+      "decision": false,
+      "context": {
+        "error": {
+          "status": 404,
+          "message": "Resource not found"
+        }
+      }
+    },
+    {
+      "decision": false,
+      "context": {
+        "reason": "Subject is a viewer of the resource"
+      }
+    }
+  ]
+}

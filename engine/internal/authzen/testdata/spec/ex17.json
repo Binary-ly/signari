@@ -1,0 +1,16 @@
+{
+  "evaluations": [{
+    "resource": {
+      "type": "doc",
+      "id": "1"
+    },
+    "subject": {
+      "type": "doc",
+      "id": "2"
+    }
+  }],
+  "options": {
+    "evaluations_semantic": "execute_all",
+    "another_option": "value"
+  }
+}

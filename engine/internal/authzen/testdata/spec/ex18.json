@@ -1,0 +1,32 @@
+{
+  "subject": {
+    "type": "user",
+    "id": "alice@example.com"
+  },
+  "action": {
+    "name": "read"
+  },
+  "options": {
+    "evaluations_semantic": "execute_all"
+  },
+  "evaluations": [
+    {
+      "resource": {
+        "type": "document",
+        "id": "1"
+      }
+    },
+    {
+      "resource": {
+        "type": "document",
+        "id": "2"
+      }
+    },
+    {
+      "resource": {
+        "type": "document",
+        "id": "3"
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "page": {
+    "count": 2,
+    "total": 102
+  },
+  "context": {
+    "query_execution_time_ms": 42
+  },
+  "results": [
+    {
+      "type": "account",
+      "id": "123"
+    },
+    {
+      "type": "account",
+      "id": "456"
+    }
+  ]
+}

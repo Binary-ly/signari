@@ -1,0 +1,52 @@
+{
+  "evaluations": [
+    {
+      "subject": {
+        "type": "user",
+        "id": "alice@example.com"
+      },
+      "action": {
+        "name": "can_read"
+      },
+      "resource": {
+        "type": "document",
+        "id": "boxcarring.md"
+      },
+      "context": {
+        "time": "2024-05-31T15:22-07:00"
+      }
+    },
+    {
+      "subject": {
+        "type": "user",
+        "id": "alice@example.com"
+      },
+      "action": {
+        "name": "can_read"
+      },
+      "resource": {
+        "type": "document",
+        "id": "subject-search.md"
+      },
+      "context": {
+        "time": "2024-05-31T15:22-07:00"
+      }
+    },
+    {
+      "subject": {
+        "type": "user",
+        "id": "alice@example.com"
+      },
+      "action": {
+        "name": "can_read"
+      },
+      "resource": {
+        "type": "document",
+        "id": "resource-search.md"
+      },
+      "context": {
+        "time": "2024-05-31T15:22-07:00"
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "subject": {
+    "type": "user",
+    "id": "alice@example.com"
+  },
+  "action": {
+    "name": "can_read"
+  },
+  "resource": {
+    "type": "account"
+  },
+  "page": {
+    "limit": 2
+  }
+}

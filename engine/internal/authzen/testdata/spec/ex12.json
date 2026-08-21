@@ -1,0 +1,7 @@
+{
+  "decision": false,
+  "context": {
+    "acr_values": "urn:com:example:loa:3",
+    "amr_values": "mfa hwk"
+  }
+}

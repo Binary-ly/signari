@@ -1,0 +1,13 @@
+{
+  "evaluations": [
+    {
+      "decision": true
+    },
+    {
+      "decision": false
+    },
+    {
+      "decision": true
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "subject": {
+    "type": "user",
+    "id": "alice@example.com"
+  },
+  "resource": {
+    "type": "account",
+    "id": "123"
+  },
+  "action": {
+    "name": "can_read",
+    "properties": {
+      "method": "GET"
+    }
+  },
+  "context": {
+    "time": "1985-10-26T01:22-07:00"
+  }
+}

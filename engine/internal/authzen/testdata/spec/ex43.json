@@ -1,0 +1,15 @@
+{
+  "page": {
+    "next_token": "a3M9NDU2O3N6PTI="
+  },
+  "results": [
+    {
+      "type": "user",
+      "id": "alice@example.com"
+    },
+    {
+      "type": "user",
+      "id": "bob@example.com"
+    }
+  ]
+}

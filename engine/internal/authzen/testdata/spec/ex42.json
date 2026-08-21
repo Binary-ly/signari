@@ -1,0 +1,12 @@
+{
+  "subject": {
+    "type": "user"
+  },
+  "action": {
+    "name": "can_read"
+  },
+  "resource": {
+    "type": "account",
+    "id": "123"
+  }
+}

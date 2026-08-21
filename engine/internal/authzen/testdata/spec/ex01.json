@@ -1,0 +1,7 @@
+{
+  "type": "user",
+  "id": "alice@example.com",
+  "properties": {
+    "department": "Sales"
+  }
+}

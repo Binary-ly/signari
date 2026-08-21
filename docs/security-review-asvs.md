@@ -752,7 +752,8 @@ for relying parties — would be scoring a checklist rather than securing anythi
 | V3.4.2 CORS allowlist | met — a fixed allowlist, checked earlier under V10 |
 | V3.4.6 `frame-ancestors` | met — every page sets it to `'none'`; note ASVS considers `X-Frame-Options` obsolete, and we send both |
 | V3.4.7 CSP report location | L3, not set |
-| V3.5.1–V3.5.3 origin separation / CSRF | met — per-session CSRF tokens on every state-changing form, `POST` for every sensitive operation |
+| V3.5.1 / V3.5.3 origin separation, CSRF, safe methods | met — per-session CSRF tokens, `POST` for every sensitive operation |
+| V3.5.2 preflight cannot be bypassed | ~~met~~ **was NOT met — fixed 21 August, see below** |
 | V3.5.5 postMessage | not applicable — zero uses |
 | V3.5.6 JSONP | not applicable — zero uses |
 | V3.6.1 subresource integrity | not applicable by default — no external assets are loaded; the CAPTCHA case is the sole exception and already carries a written justification at the CSP that permits it |
@@ -1356,3 +1357,53 @@ specific to it, and not where this engine's risk concentrates" was wrong in six
 places. What it got right is that none of the six was a critical, exploitable
 break; they are the defects of omission that accumulate where nobody is looking,
 which is exactly what a requirement-by-requirement sweep is for.
+
+
+## A correction to the V3 sweep: V3.5.2 (21 August 2026)
+
+The V3 table above marked V3.5.1 through V3.5.3 as met on the strength of "CSRF
+tokens on every state-changing form". A later sweep — asking which
+cookie-authenticated POSTs actually call `checkCSRF` — found that **sixteen of
+twenty do and four do not**, and the four are the WebAuthn ceremony endpoints:
+
+```
+/account/passkeys/begin     /login/passkey/begin
+/account/passkeys/finish    /login/passkey/finish
+```
+
+Three mechanisms were standing in for the token, and two of them are sound:
+
+- **`SameSite=Lax`** — the session cookie is not sent on a cross-site POST at
+  all, so such a request arrives unauthenticated.
+- **WebAuthn's own origin binding** — a page on another origin cannot produce a
+  credential or an assertion for this relying party's ID; the browser enforces it.
+- **`corsNone` for these paths** — a cross-origin `fetch` gets no
+  `Access-Control-Allow-Origin` and is refused at preflight.
+
+**The third was bypassable, which is precisely what V3.5.2 is about.** The
+requirement asks that functionality defended by preflight not be callable by a
+request that triggers no preflight. `Content-Type: application/json` forces one —
+but `text/plain` is CORS-safelisted, a plain HTML `<form enctype="text/plain">`
+can send it, and a form body can be crafted to be valid JSON. The handlers
+decoded whatever arrived without ever inspecting the content type, so the
+preflight they relied on was optional.
+
+Not exploitable as things stood: `SameSite=Lax` withholds the cookie, and the
+mutation confirms it — with the new check removed, the request reaches the
+handler and is answered `401 login_required` rather than being refused earlier.
+That is the defence holding, and it is *one* mechanism deep where the rest of this
+package is two or three.
+
+**Fixed**: `requireJSONContentType` on all four. Our own `passkey.js` already
+sends `application/json`, so nothing legitimate changes.
+
+**Why a CSRF token was not added instead.** It would require the client script to
+carry one, and the ceremony is already origin-bound by the browser in a way a
+token cannot improve on — an attacker who could somehow submit the form still
+cannot produce an assertion for our RP ID. Making the preflight non-bypassable
+restores the layer that was actually missing rather than adding a fourth.
+
+**What this says about the earlier verdict.** "CSRF tokens on every
+state-changing form" was written from the pattern rather than from the call
+sites. Counting them took one script and found four exceptions. A verdict in a
+compliance table is worth exactly as much as the enumeration behind it.

@@ -161,6 +161,12 @@ func (s *Server) relyingParty(ctx context.Context, orgID string) (*passkeys.Rely
 
 // handlePasskeyRegisterBegin starts adding an authenticator to a live account.
 func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Request) {
+	// V3.5.2: these endpoints are defended by CORS preflight, which only holds
+	// if the content type cannot be a CORS-safelisted one. See jsonct.go.
+	if err := requireJSONContentType(r); err != nil {
+		writeJSONContentTypeError(w, err)
+		return
+	}
 	ctx := r.Context()
 	_, userID, orgID, ok := s.currentSession(r)
 	if !ok {
@@ -200,6 +206,12 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 
 // handlePasskeyRegisterFinish verifies the attestation and stores the credential.
 func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Request) {
+	// V3.5.2: these endpoints are defended by CORS preflight, which only holds
+	// if the content type cannot be a CORS-safelisted one. See jsonct.go.
+	if err := requireJSONContentType(r); err != nil {
+		writeJSONContentTypeError(w, err)
+		return
+	}
 	ctx := r.Context()
 
 	// Cleared unconditionally: a challenge that survives a failed attempt can be
@@ -379,6 +391,12 @@ func (s *Server) passkeyUser(ctx context.Context, userID string) (*passkeys.User
 // not any account exists, which removes the enumeration oracle that a
 // username-first passkey flow always has.
 func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
+	// V3.5.2: these endpoints are defended by CORS preflight, which only holds
+	// if the content type cannot be a CORS-safelisted one. See jsonct.go.
+	if err := requireJSONContentType(r); err != nil {
+		writeJSONContentTypeError(w, err)
+		return
+	}
 	ctx := r.Context()
 
 	orgID, err := s.defaultOrg(ctx)
@@ -411,6 +429,12 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 
 // handlePasskeyLoginFinish verifies the assertion and signs the user in.
 func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
+	// V3.5.2: these endpoints are defended by CORS preflight, which only holds
+	// if the content type cannot be a CORS-safelisted one. See jsonct.go.
+	if err := requireJSONContentType(r); err != nil {
+		writeJSONContentTypeError(w, err)
+		return
+	}
 	ctx := r.Context()
 	defer s.clearCeremony(w)
 

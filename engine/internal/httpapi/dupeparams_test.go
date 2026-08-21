@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -113,5 +114,53 @@ func TestRepeatedResourceIndicatorsAreAccepted(t *testing.T) {
 		t.Errorf("two `resource` values were refused as duplicates; RFC 8707 §2 "+
 			"permits the parameter more than once, and this server reads it as a "+
 			"list everywhere else: %s", truncate(rec.Body.String(), 200))
+	}
+}
+
+// The third call site.
+//
+// `refuseDuplicateParams` is called from three places — the authorization
+// endpoint (`flow.go:55`), the token endpoint (`flow.go:468`) and PAR
+// (`par.go:70`) — and until this test only the first two were exercised through
+// HTTP. That is the shape this review keeps finding: a rule enforced in fewer
+// places than its tests claim, which looks identical to one enforced everywhere
+// right up until somebody removes a call.
+//
+// PAR matters more than the count suggests. RFC 9126 §2.1 has the authorization
+// server treat the pushed body as the authoritative request, so a duplicate that
+// slipped through here would be locked into a `request_uri` and replayed at the
+// authorization endpoint with the guard already behind it.
+func TestThePAREndpointRefusesDuplicateParameters(t *testing.T) {
+	f := newTokenFixture(t)
+
+	form := url.Values{
+		"response_type": {"code"},
+		"client_id":     {f.clientID},
+		// The SAME registered URI twice. An unregistered value would be refused
+		// for that reason instead, and the test would pass with the duplicate
+		// guard removed — which is exactly what a first version of this test did.
+		"redirect_uri": {"https://rp.test/cb", "https://rp.test/cb"},
+		"scope":        {"openid"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth2/par",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PAR accepted a request carrying two redirect_uri values "+
+			"(status %d); RFC 6749 §3.1 forbids repeating a parameter, and the "+
+			"two most deployed other implementations resolve this same request to "+
+			"different URIs — another implementation to the first, another implementation to the last",
+			rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["error"] != "invalid_request" {
+		t.Errorf("error = %v, want invalid_request", body["error"])
+	}
+	if d, _ := body["error_description"].(string); !strings.Contains(d, "redirect_uri") {
+		t.Errorf("description = %q; it should name the offending parameter", d)
 	}
 }

@@ -732,3 +732,121 @@ func TestAnApprovedButExpiredRequestYieldsNothing(t *testing.T) {
 		t.Fatal("an approved device authorization that had since expired was redeemed")
 	}
 }
+
+func TestAnApprovalDiesWithTheSessionItWasMadeFrom(t *testing.T) {
+	f := newCIBAFixture(t)
+	ctx := context.Background()
+
+	authReqID := f.request(t)
+
+	// The session the approval is made from. `approve` records it against the
+	// authorization, exactly as a real approval on a phone would.
+	sid := f.sessionFor(t, f.userID)
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE core.device_authorizations
+		SET status = 'approved', user_id = $2::uuid, sid = $3
+		WHERE device_code_hash = $1`, store.HashToken(authReqID), f.userID, sid); err != nil {
+		t.Fatalf("approving: %v", err)
+	}
+
+	// That session ends before the client polls — an administrator revoking it,
+	// the user signing out everywhere, or an upstream Shared Signals transmitter
+	// reporting it compromised all arrive here.
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TerminateSessions(ctx, tx, sid, "", store.ReasonAdminRevoke); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.clearPollClock(t)
+
+	code, body := f.poll(t, f.clientID, authReqID)
+	if code == http.StatusOK {
+		t.Fatalf("an approval whose session had been revoked still produced tokens "+
+			"(%v). Revoking a session, or disabling the account behind it, must "+
+			"stop a pending approval from being spendable", body["access_token"] != nil)
+	}
+	if body["error"] != "expired_token" && body["error"] != "invalid_grant" &&
+		body["error"] != "access_denied" {
+		t.Errorf("refused with %v, which is not about the approval being dead: %v",
+			body["error"], body)
+	}
+}
+
+// A session that simply ran out is as dead as one somebody revoked.
+//
+// Mutation found this: changing the liveness query to check `revoked_at` alone
+// and ignore `not_after` passed every test, because they all revoke rather than
+// expire. The case is real — a session near the end of its lifetime approves a
+// request, and the ten-minute authorization outlives it.
+func TestAnApprovalDiesWithAnExpiredSessionToo(t *testing.T) {
+	f := newCIBAFixture(t)
+	ctx := context.Background()
+
+	authReqID := f.request(t)
+	sid := f.sessionFor(t, f.userID)
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE core.device_authorizations
+		SET status = 'approved', user_id = $2::uuid, sid = $3
+		WHERE device_code_hash = $1`, store.HashToken(authReqID), f.userID, sid); err != nil {
+		t.Fatal(err)
+	}
+
+	// Not revoked — simply past its deadline.
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE core.sessions SET not_after = now() - interval '1 minute'
+		WHERE sid = $1`, sid); err != nil {
+		t.Fatal(err)
+	}
+	f.clearPollClock(t)
+
+	code, body := f.poll(t, f.clientID, authReqID)
+	if code == http.StatusOK {
+		t.Fatal("an approval whose session had expired still produced tokens; " +
+			"a session that ran out is as dead as one that was revoked")
+	}
+	if body["error"] != "access_denied" {
+		t.Errorf("error is %v, want access_denied", body["error"])
+	}
+}
+
+// An approval that records no session is refused cleanly, not with a 500.
+//
+// The liveness check first skipped the empty-sid case, on the reasoning that
+// reading "no session" as "revoked" would refuse an approval nobody revoked.
+// Writing this test showed the branch cannot arise and could not succeed if it
+// did: approval always records a session, and one without a session fails
+// downstream with a server error rather than issuing tokens.
+//
+// So the special case protected nothing and turned an impossible state into a
+// 500. The check now runs unconditionally, and this pins the difference between
+// "refused" and "crashed" — which is what an operator reading logs cares about.
+func TestAnApprovalWithNoRecordedSessionIsRefusedNotCrashed(t *testing.T) {
+	f := newCIBAFixture(t)
+	ctx := context.Background()
+
+	authReqID := f.request(t)
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE core.device_authorizations
+		SET status = 'approved', user_id = $2::uuid, sid = NULL
+		WHERE device_code_hash = $1`, store.HashToken(authReqID), f.userID); err != nil {
+		t.Fatal(err)
+	}
+	f.clearPollClock(t)
+
+	code, body := f.poll(t, f.clientID, authReqID)
+	if code == http.StatusOK {
+		t.Fatal("an approval with no recorded session produced tokens")
+	}
+	if body["error"] == "server_error" {
+		t.Errorf("refused with server_error: an impossible state should be a "+
+			"refusal, not a crash: %v", body)
+	}
+	if body["error"] != "access_denied" {
+		t.Errorf("error is %v, want access_denied", body["error"])
+	}
+}

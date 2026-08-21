@@ -219,6 +219,18 @@ func (s *Server) handleCIBAGrant(w http.ResponseWriter, r *http.Request, clientI
 			Description: "this auth_req_id was not issued to this client",
 			Status:      http.StatusBadRequest})
 		return
+	case errors.Is(err, store.ErrDeviceCodeSessionGone):
+		// The person did approve; the session they approved from has since ended.
+		// `access_denied` rather than `expired_token`, because the authorization
+		// was withdrawn rather than timed out — RFC 8628 §3.5 gives the code for
+		// "the end user denied", and a revoked session is the closest true
+		// statement: the authority behind the approval is gone.
+		s.log.Info("approval refused: the session behind it has ended",
+			"correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "access_denied",
+			Description: "the session this request was approved from has ended",
+			Status:      http.StatusBadRequest})
+		return
 	case errors.Is(err, store.ErrDeviceCodeUnknown):
 		writeTokenError(w, &oauth.TokenError{Code: "expired_token",
 			Description: "the auth_req_id has expired; make a new authentication request",

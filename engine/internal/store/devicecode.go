@@ -23,6 +23,10 @@ var (
 	ErrDeviceCodeDenied = errors.New("access_denied")
 	// ErrDeviceCodeSlowDown means the device polled faster than its interval.
 	ErrDeviceCodeSlowDown = errors.New("slow_down")
+	// ErrDeviceCodeSessionGone is an approval whose session ended before the
+	// client polled. Distinct from expiry and from denial: the person did
+	// approve, and something afterwards took that authority away.
+	ErrDeviceCodeSessionGone = errors.New("the session behind this approval has ended")
 )
 
 // DeviceAuthorization is a pending or completed device grant.
@@ -212,6 +216,21 @@ func PollDeviceCode(ctx context.Context, db *pgxpool.Pool, deviceHash []byte,
 			return nil, err
 		}
 		return nil, ErrDeviceCodeDenied
+	}
+
+	var live bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM core.sessions
+			WHERE sid = $1 AND revoked_at IS NULL AND not_after > now())`,
+		d.SID).Scan(&live); err != nil {
+		return nil, err
+	}
+	if !live {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return nil, ErrDeviceCodeSessionGone
 	}
 
 	// Approved. Mark redeemed in the same transaction that hands it over.

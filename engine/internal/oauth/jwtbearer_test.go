@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -79,11 +80,19 @@ func TestAnAssertionForSomebodyElseIsRefused(t *testing.T) {
 		t.Errorf("a registered issuer alias was not accepted as our identity: %s", err.Description)
 	}
 
-	// And one of several audiences naming us is enough: an assertion may legally
-	// address several parties.
+	// An assertion naming us AMONG OTHERS is refused, and this is deliberately
+	// stricter than the specification.
+	//
+	// RFC 7523 §3 asks only that one value identify us, so this assertion is
+	// conformant and an earlier version of this test asserted it was accepted.
+	// The reason it changed: `aud: [us, partner]` is a working credential at the
+	// partner too, so the partner can present it here and act as its subject.
+	// Replay protection does not catch that -- their use of it leaves no record
+	// in our table.
 	c.Audience = Audience{"https://other.example", "https://idp.example.com"}
-	if err := ValidateAssertionClaims(c, ourIssuers, now); err != nil {
-		t.Errorf("an assertion naming us among several audiences was refused: %s", err.Description)
+	if err := ValidateAssertionClaims(c, ourIssuers, now); err == nil {
+		t.Error("an assertion addressed to us and to a third party was accepted; " +
+			"that third party can replay it here")
 	}
 }
 
@@ -142,14 +151,63 @@ func TestExpiredAndNotYetValidAssertionsAreRefused(t *testing.T) {
 	}
 }
 
-// nbf and iat are MAY. Refusing an assertion that omits them would reject
-// conformant issuers.
+// nbf and iat are MAY, and omitting them must not refuse a conformant issuer.
+//
+// `jti` is a MAY too, and is REQUIRED here anyway -- see below.
 func TestOptionalClaimsMayBeAbsent(t *testing.T) {
 	now := time.Now()
 	c := goodAssertion(now)
-	c.NotBefore, c.IssuedAt, c.JTI = 0, 0, ""
+	c.NotBefore, c.IssuedAt = 0, 0
 	if err := ValidateAssertionClaims(c, ourIssuers, now); err != nil {
-		t.Fatalf("an assertion without the optional claims was refused: %s", err.Description)
+		t.Fatalf("an assertion without nbf or iat was refused: %s", err.Description)
+	}
+}
+
+// `jti` is required, which is stricter than RFC 7523 §3 item 7.
+//
+// The first version accepted an assertion without one and skipped replay
+// protection for it, documented as a known limit. That is precisely the defect
+// this review keeps finding elsewhere: a protection the documentation claims,
+// silently absent for some inputs. Failing closed is the only version of "replay
+// protected" that is true.
+func TestAnAssertionWithoutAJTIIsRefused(t *testing.T) {
+	now := time.Now()
+	c := goodAssertion(now)
+	c.JTI = ""
+	err := ValidateAssertionClaims(c, ourIssuers, now)
+	if err == nil {
+		t.Fatal("an assertion with no jti was accepted, so it had no replay protection")
+	}
+	if !strings.Contains(err.Description, "jti") {
+		t.Errorf("the refusal does not name the missing claim: %s", err.Description)
+	}
+}
+
+// An assertion that has been sitting around must not still work merely because
+// its expiry is near.
+//
+// The exp ceiling bounds how far ahead an assertion reaches; it says nothing
+// about age. One issued ninety minutes ago with five minutes left passes that
+// check, and is exactly the shape of an assertion recovered from a log.
+func TestAnAssertionIssuedLongAgoIsRefused(t *testing.T) {
+	now := time.Now()
+	c := goodAssertion(now)
+	c.IssuedAt = now.Add(-MaxAssertionLifetime - 30*time.Minute).Unix()
+	c.Expiry = now.Add(5 * time.Minute).Unix() // still unexpired
+
+	err := ValidateAssertionClaims(c, ourIssuers, now)
+	if err == nil {
+		t.Fatalf("an assertion issued %s ago was accepted because it had not expired yet",
+			MaxAssertionLifetime+30*time.Minute)
+	}
+	if !strings.Contains(err.Description, "issued more than") {
+		t.Errorf("refused for the wrong reason: %s", err.Description)
+	}
+
+	// And one issued recently is unaffected.
+	c.IssuedAt = now.Add(-time.Minute).Unix()
+	if err := ValidateAssertionClaims(c, ourIssuers, now); err != nil {
+		t.Errorf("a freshly issued assertion was refused: %s", err.Description)
 	}
 }
 

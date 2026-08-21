@@ -58,10 +58,17 @@ to everything granted for the other.
 5. The assertion's `sub` is linked to a local user whose status is `active`.
 6. The assertion's `jti` has not been seen before.
 
-Failures are reported as `invalid_grant` with no detail about which step failed.
-The list of issuers a deployment trusts is a map of who can be impersonated if one
-of them is ever compromised, and it is not something an unauthenticated caller
-should be able to enumerate.
+6. The account has no unmet obligation — an account flagged as needing a password
+   change cannot mint tokens through a door that involves no password.
+
+Every failure returns the **same** `invalid_grant` and the same sentence, with the
+real reason in the log against a correlation id. That matters more than it looks:
+the issuer is resolved *before* any signature is checked, because `iss` selects the
+verification key — so a distinct "issuer not trusted" reply would let anyone with
+client credentials enumerate a deployment's trusted issuers using assertions that
+are not signed at all. Separating "subject not linked" from "account disabled"
+would enumerate accounts. A test asserts that seven different causes produce one
+identical response.
 
 ## The claim rules
 
@@ -71,11 +78,12 @@ Every one is a MUST in RFC 7523 §3:
 |---|---|
 | `iss` | Required. Selects the trusted provider. |
 | `sub` | Required. Resolved against `(provider, subject)`, never `subject` alone. |
-| `aud` | Required, and **must name this issuer** (§3.1). Accepts a string or an array (RFC 7519 §4.1.3). |
+| `aud` | Required, must **name this issuer** (§3.1), and must name **only** this issuer. Accepts either spelling (RFC 7519 §4.1.3). |
 | `exp` | Required, must be in the future, and must not be *"unreasonably far in the future"* — capped at one hour. |
+| `iat` age | When present, the assertion must have been issued **within the last hour**. Not just unexpired. |
 | `nbf` | Optional. Binding when present. |
-| `iat` | Optional. Refused if in the future. |
-| `jti` | Optional per the RFC. Used for replay protection when present. |
+| `iat` | Optional. Refused if in the future, or more than an hour old. |
+| `jti` | Optional per the RFC and **required here** — see below. |
 
 **The audience rule is the one worth understanding.** Without it, an assertion the
 platform minted for some *other* relying party can be forwarded here and spent —
@@ -85,6 +93,20 @@ and the issuer, having done nothing wrong, cannot tell.
 behaviour. An assertion valid for a year is a bearer credential valid for a year,
 whatever the issuer intended. No major platform needs longer: Google caps
 service-account assertions at an hour and CI tokens are minutes.
+
+**The age bound is separate from the expiry cap**, and it is the one people miss.
+The cap bounds how far ahead an assertion reaches; it says nothing about how long
+one may sit around before being spent. An assertion issued ninety minutes ago with
+five minutes left passes the cap — and is exactly the shape of an assertion
+recovered from a log or a crash report. So when `iat` is present, the assertion
+must also have been *minted* within the hour.
+
+**Only one audience.** This is stricter than the specification, which permits an
+array. An assertion carrying `aud: ["https://us", "https://partner"]` is a working
+credential at the partner too, and the partner can present it here and act as its
+subject — replay protection does not catch it, because their use of it leaves no
+record in our table. It is the confused-deputy form of the attack the audience
+check exists to prevent.
 
 ## Replay protection, which the RFC does not require
 
@@ -100,9 +122,16 @@ The record is keyed by `(provider, jti)`, so two issuers cannot invalidate each
 other's assertions by choosing colliding identifiers, and it carries the
 assertion's own `exp` so the janitor can drop it exactly when it stops mattering.
 
-An issuer that omits `jti` gets no replay protection. That is a real limit and it
-is stated rather than hidden — `jti` is a MAY, and refusing assertions without one
-would reject conformant issuers.
+**`jti` is required**, which is also stricter than the RFC.
+
+An earlier version accepted assertions without one and simply skipped replay
+protection for them, documented as a known limit. That was the wrong call: a
+protection the documentation claims, silently absent for some inputs, with nothing
+telling the operator which issuers are unprotected. Failing closed is the only
+version of "replay protected" that is true.
+
+The practical cost is nil — every issuer this grant is for emits `jti` — and an
+issuer that does not gets a specific error in the log rather than silent exposure.
 
 ## What this grant deliberately does not do
 

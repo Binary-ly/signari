@@ -147,13 +147,31 @@ func FindActiveFederatedUser(ctx context.Context, db *pgxpool.Pool, providerID, 
 	if providerID == "" || subject == "" {
 		return "", "", ErrNoLinkedAccount
 	}
+	// The third condition is an outstanding obligation on the account.
+	//
+	// `must_change` says the person has to change their password before
+	// proceeding. This grant involves no password at all, so without the check it
+	// is a side door around exactly that: an administrator flags an account, and
+	// the account keeps minting tokens through an assertion.
+	//
+	// Taken from reading the competitor's implementation, which refuses when
+	// `user.getRequiredActionsStream()` is non-empty. Ours had no equivalent. The
+	// principle is theirs and it is right: an account with an unmet requirement is
+	// not in good standing, whichever door it is knocking on.
+	//
+	// NOT EXISTS rather than a join, so an account with no password credential at
+	// all -- the ordinary case for a workload -- is unaffected.
 	err = db.QueryRow(ctx, `
 		SELECT u.id::text, u.org_id::text
 		FROM core.federated_identities f
 		JOIN core.users u ON u.id = f.user_id
 		WHERE f.provider_id = $1::uuid
 		  AND f.subject = $2
-		  AND u.status = 'active'`, providerID, subject).Scan(&userID, &orgID)
+		  AND u.status = 'active'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM core.password_credentials pc
+		      WHERE pc.user_id = u.id AND pc.must_change
+		  )`, providerID, subject).Scan(&userID, &orgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// One error for "never linked" and for "linked but disabled". The

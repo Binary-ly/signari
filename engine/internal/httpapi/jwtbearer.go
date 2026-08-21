@@ -29,6 +29,28 @@ import (
 // value is taken from it -- the issuer, used only to look up a trust anchor -- and
 // every claim that decides anything is read back out of the VERIFIED payload
 // afterwards.
+// assertionRefused is the ONE description every post-authentication refusal
+// carries.
+//
+// # Why they are all the same sentence
+//
+// The causes are genuinely different -- unknown issuer, disabled provider,
+// unlinked subject, deactivated user, unmet obligation, replay -- and telling
+// them apart is a capability the caller must not have:
+//
+//   - The issuer is resolved BEFORE any signature is checked, because `iss`
+//     selects the verification key. So a distinct "issuer not trusted" reply lets
+//     anyone with client credentials enumerate the deployment's trusted issuers
+//     using assertions that are not signed at all.
+//   - A distinct "no active account" reply enumerates which subjects are linked,
+//     and separating "not linked" from "disabled" says which accounts an
+//     administrator has turned off.
+//
+// The most deployed implementation of this grant returns its internal exception
+// message to the client, so it answers all six questions. This returns one
+// sentence and logs the real reason against a correlation id.
+const assertionRefused = "the assertion could not be used to obtain a token"
+
 func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c *clients.Client) {
 	ctx := r.Context()
 
@@ -53,7 +75,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	untrustedIssuer, err := oauth.PeekAssertionIssuer(assertion)
 	if err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the assertion is not a well-formed JWT", Status: http.StatusBadRequest})
+			Description: assertionRefused, Status: http.StatusBadRequest})
 		return
 	}
 
@@ -67,8 +89,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 			"issuer", untrustedIssuer, "client_id", c.ClientID,
 			"err", err, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the assertion's issuer is not trusted for this grant",
-			Status:      http.StatusBadRequest})
+			Description: assertionRefused, Status: http.StatusBadRequest})
 		return
 	}
 
@@ -80,7 +101,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 			"provider", provider.Slug, "client_id", c.ClientID,
 			"err", err, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the assertion did not verify", Status: http.StatusBadRequest})
+			Description: assertionRefused, Status: http.StatusBadRequest})
 		return
 	}
 
@@ -88,7 +109,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	var claims oauth.AssertionClaims
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the assertion's claims are malformed", Status: http.StatusBadRequest})
+			Description: assertionRefused, Status: http.StatusBadRequest})
 		return
 	}
 	// The verified issuer must be the provider we selected. The payload that was
@@ -102,14 +123,21 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 			"verified", claims.Issuer, "selected", provider.Issuer(),
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the assertion did not verify", Status: http.StatusBadRequest})
+			Description: assertionRefused, Status: http.StatusBadRequest})
 		return
 	}
 	if terr := oauth.ValidateAssertionClaims(claims, s.acceptedIssuers(), time.Now()); terr != nil {
+		// The per-rule descriptions are precise and stay in the log. They are not
+		// returned: "the assertion names more than one audience" and "the
+		// assertion has no jti" describe the CALLER's own token, which is
+		// harmless, but "issued more than 1h0m0s ago" and the audience rules also
+		// describe this deployment's policy, and the whole set is a probe surface
+		// for free. One sentence out, the detail in the log.
 		s.log.Info("jwt-bearer: assertion claims refused",
 			"provider", provider.Slug, "reason", terr.Description,
 			"correlation_id", correlationID(ctx))
-		writeTokenError(w, terr)
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: assertionRefused, Status: http.StatusBadRequest})
 		return
 	}
 
@@ -120,8 +148,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 			"provider", provider.Slug, "err", err,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the assertion's subject has no active account here",
-			Status:      http.StatusBadRequest})
+			Description: assertionRefused, Status: http.StatusBadRequest})
 		return
 	}
 	if orgID != c.OrgID {
@@ -134,8 +161,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 			"client_org", c.OrgID, "account_org", orgID, "provider", provider.Slug,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the assertion's subject has no active account here",
-			Status:      http.StatusBadRequest})
+			Description: assertionRefused, Status: http.StatusBadRequest})
 		return
 	}
 
@@ -162,7 +188,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 			"provider", provider.Slug, "client_id", c.ClientID,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "this assertion has already been used", Status: http.StatusBadRequest})
+			Description: assertionRefused, Status: http.StatusBadRequest})
 		return
 	}
 

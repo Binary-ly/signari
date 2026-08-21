@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -392,3 +393,134 @@ func tokenClaimsOf(raw string) (map[string]any, error) {
 }
 
 var errNotAJWT = errors.New("not a three-part JWT")
+
+// An account with an unmet obligation must not mint tokens through the side door.
+//
+// `must_change` says the person has to change their password before proceeding.
+// This grant involves no password, so without the check the flag is simply
+// bypassed: an administrator marks the account and it keeps working.
+//
+// Taken from the competitor's implementation, which refuses when the user has any
+// pending required action. Ours had no equivalent until this comparison.
+func TestAnAccountWithAnUnmetObligationIsRefused(t *testing.T) {
+	f := newAssertionFixture(t)
+	if code, _ := f.grant(t, f.assert(t, nil), nil); code != http.StatusOK {
+		t.Fatalf("the fixture does not work before flagging: %d", code)
+	}
+
+	// A password credential flagged as needing a change.
+	if _, err := f.pool.Exec(context.Background(), `
+		INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, must_change)
+		VALUES ($1::uuid, $2::uuid, 'x', 'argon2id', true)`,
+		f.userID, f.orgID); err != nil {
+		t.Skipf("could not plant a password credential: %v", err)
+	}
+
+	if code, body := f.grant(t, f.assert(t, nil), nil); code == http.StatusOK {
+		t.Fatalf("an account flagged must_change minted a token: %v", body)
+	}
+}
+
+// Different failures must be indistinguishable to the caller.
+//
+// # Why this is a test and not a convention
+//
+// The competitor's implementation of this same grant ends in:
+//
+//	catch (Exception e) {
+//	    throw new CorsErrorResponseException(cors, INVALID_GRANT, e.getMessage(), BAD_REQUEST);
+//	}
+//
+// so the client receives the internal message verbatim: "No Identity Provider for
+// provided issuer", "User not found", "User is not enabled", "Account is not
+// fully set up". Those are four different answers to four different questions a
+// caller should not be able to ask. Together they enumerate which issuers a
+// deployment trusts, which subjects are linked, and which of those accounts are
+// disabled.
+//
+// Ours returns one description and logs the real reason. That is only true while
+// somebody keeps it true, so it is asserted here.
+func TestFailuresAreIndistinguishableToTheCaller(t *testing.T) {
+	f := newAssertionFixture(t)
+
+	// Four genuinely different causes, all reached after client authentication.
+	causes := []struct {
+		name  string
+		setup func(t *testing.T)
+		build func(t *testing.T) string
+	}{
+		{"issuer not trusted", func(t *testing.T) {}, func(t *testing.T) string {
+			return f.assert(t, func(c map[string]any) { c["iss"] = "https://not-trusted.example" })
+		}},
+		{"subject not linked", func(t *testing.T) {}, func(t *testing.T) string {
+			return f.assert(t, func(c map[string]any) { c["sub"] = "nobody" })
+		}},
+		{"provider disabled", func(t *testing.T) {
+			if _, err := f.pool.Exec(context.Background(),
+				`UPDATE core.identity_providers SET enabled = false WHERE id = $1::uuid`,
+				f.providerID); err != nil {
+				t.Fatal(err)
+			}
+		}, func(t *testing.T) string { return f.assert(t, nil) }},
+		{"user deactivated", func(t *testing.T) {
+			if _, err := f.pool.Exec(context.Background(),
+				`UPDATE core.identity_providers SET enabled = true WHERE id = $1::uuid`,
+				f.providerID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.pool.Exec(context.Background(),
+				`UPDATE core.users SET status = 'deactivated' WHERE id = $1::uuid`,
+				f.userID); err != nil {
+				t.Fatal(err)
+			}
+		}, func(t *testing.T) string { return f.assert(t, nil) }},
+		// The claim rules, which have precise per-rule descriptions internally.
+		{"claim rule refused", func(t *testing.T) {}, func(t *testing.T) string {
+			return f.assert(t, func(c map[string]any) { delete(c, "jti") })
+		}},
+		// Not a JWT at all.
+		{"malformed assertion", func(t *testing.T) {}, func(t *testing.T) string {
+			return "not.a.jwt"
+		}},
+		// Replay. Spent once here so the second use below is the refusal.
+		//
+		// Added after a mutation survived: with only the first four causes, giving
+		// the replay branch its own message changed nothing this test could see,
+		// so the guard covered two thirds of what it claimed to.
+		{"replay", func(t *testing.T) {
+			if _, err := f.pool.Exec(context.Background(),
+				`UPDATE core.users SET status = 'active' WHERE id = $1::uuid`,
+				f.userID); err != nil {
+				t.Fatal(err)
+			}
+		}, func(t *testing.T) string {
+			a := f.assert(t, nil)
+			if code, _ := f.grant(t, a, nil); code != http.StatusOK {
+				t.Fatalf("the first use of the replay fixture failed (%d)", code)
+			}
+			return a
+		}},
+	}
+
+	seen := map[string][]string{}
+	for _, c := range causes {
+		c.setup(t)
+		code, body := f.grant(t, c.build(t), nil)
+		if code == http.StatusOK {
+			t.Fatalf("%s: the request succeeded, so this case proves nothing", c.name)
+		}
+		key := body["error"].(string) + " | " + body["error_description"].(string)
+		seen[key] = append(seen[key], c.name)
+	}
+
+	if len(seen) != 1 {
+		var lines []string
+		for k, names := range seen {
+			lines = append(lines, k+"  <- "+strings.Join(names, ", "))
+		}
+		sort.Strings(lines)
+		t.Errorf("%d distinguishable responses across %d different causes; a caller "+
+			"can tell them apart and enumerate the deployment:\n  %s",
+			len(seen), len(causes), strings.Join(lines, "\n  "))
+	}
+}

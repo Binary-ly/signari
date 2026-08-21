@@ -140,6 +140,29 @@ func ValidateAssertionClaims(c AssertionClaims, audiences []string, now time.Tim
 		return tokenErr("invalid_grant",
 			"the assertion's audience does not name this issuer, so it was not issued for us")
 	}
+	// Exactly one audience, which is STRICTER than the specification.
+	//
+	// RFC 7519 §4.1.3 allows an array, and RFC 7523 §3 asks only that one value
+	// identify us -- so an assertion naming several parties is conformant and an
+	// earlier version of this function accepted it.
+	//
+	// It is refused because of what the other names can do. If an issuer mints
+	// `aud: ["https://us", "https://partner"]`, that assertion is a valid
+	// credential at BOTH, and the partner can present it here and act as its
+	// subject. Replay protection does not help: the partner spending it at their
+	// own endpoint leaves no trace in our table, so ours is still the first use we
+	// have seen. It is the confused-deputy version of the exact attack the
+	// audience check exists to stop.
+	//
+	// The most deployed implementation of this grant reached the same conclusion
+	// and passes `multipleAudienceAllowed = false` for it, while allowing multiple
+	// elsewhere. Matching that, and saying why, beats being conformant and
+	// exploitable.
+	if len(c.Audience) > 1 {
+		return tokenErr("invalid_grant",
+			"the assertion names more than one audience; an assertion addressed to "+
+				"several parties can be replayed here by any of them")
+	}
 
 	// §3 item 4. Required, and bounded in both directions.
 	if c.Expiry == 0 {
@@ -164,8 +187,47 @@ func ValidateAssertionClaims(c AssertionClaims, audiences []string, now time.Tim
 	// would refuse conformant assertions -- but an iat in the future is a clock
 	// problem or a forgery, and either way the exp derived from it is not to be
 	// trusted.
-	if c.IssuedAt != 0 && time.Unix(c.IssuedAt, 0).After(now.Add(AssertionSkew)) {
-		return tokenErr("invalid_grant", "the assertion says it was issued in the future")
+	if c.IssuedAt != 0 {
+		iat := time.Unix(c.IssuedAt, 0)
+		if iat.After(now.Add(AssertionSkew)) {
+			return tokenErr("invalid_grant", "the assertion says it was issued in the future")
+		}
+		// And an upper bound on AGE, not just on remaining life.
+		//
+		// The exp ceiling above bounds how far into the future an assertion may
+		// reach. It says nothing about how long one may sit around before being
+		// spent: an assertion issued ninety minutes ago whose exp is five minutes
+		// away passes it, because only five minutes remain.
+		//
+		// That is the leaked-assertion case. Something that has been in a log, a
+		// crash report or a proxy trace for an hour should not still mint tokens
+		// merely because its issuer refreshed the window. Bounding from `iat`
+		// closes it, and this check was taken from reading a competitor's
+		// implementation, which does exactly this and which ours did not.
+		if now.After(iat.Add(MaxAssertionLifetime)) {
+			return tokenErr("invalid_grant", fmt.Sprintf(
+				"the assertion was issued more than %s ago; an assertion must be "+
+					"used near the time it was minted, not merely before it expires",
+				MaxAssertionLifetime))
+		}
+	}
+
+	// §3 item 7 makes `jti` a MAY, and this REQUIRES it.
+	//
+	// The first version accepted an assertion without one and simply skipped
+	// replay protection -- documented as a known limit. That is the defect this
+	// review keeps finding in other people's code: a protection the documentation
+	// claims, silently absent for some inputs, with nothing to tell the operator
+	// which issuers are unprotected.
+	//
+	// Failing closed is the only version of "replay protected" that is true. Every
+	// issuer this grant is for -- GitHub Actions, Kubernetes, cloud service
+	// accounts -- emits `jti`, so the practical cost is nil, and an issuer that
+	// does not gets a specific error rather than silent exposure.
+	if c.JTI == "" {
+		return tokenErr("invalid_grant",
+			"the assertion has no jti claim; it is required here so that a replayed "+
+				"assertion can be detected")
 	}
 
 	return nil

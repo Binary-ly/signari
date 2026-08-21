@@ -37,6 +37,20 @@ type registrationRequest struct {
 	Scope                   string   `json:"scope"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	LogoutURI               string   `json:"backchannel_logout_uri"`
+
+	// CIBA §4 makes this REQUIRED client metadata for a client registering to
+	// use CIBA, and this server implements poll mode only.
+	//
+	// Read so that a mismatch is refused rather than dropped. RFC 7591 §2 permits
+	// ignoring unrecognised metadata, and ignoring THIS one has a specific
+	// consequence: a client registering for `push` would be recorded as an
+	// ordinary CIBA client, receive an `auth_req_id`, and wait for a delivery
+	// that never comes. The same reasoning the backchannel endpoint already
+	// applies to `client_notification_token` — "a client that receives an
+	// auth_req_id concludes the mode it asked for was accepted, and would wait
+	// forever" — belongs at registration too, where the client is still able to
+	// act on being told.
+	BackchannelTokenDeliveryMode string `json:"backchannel_token_delivery_mode"`
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -73,6 +87,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// a caller which would let them map where registration is open.
 		writeError(w, http.StatusUnauthorized, "invalid_token",
 			"registration is not available with these credentials")
+		return
+	}
+
+	// CIBA §4: poll mode only, and discovery says so. A client asking for a mode
+	// we do not implement is told now, while it can still act on being told.
+	//
+	// After authorisation deliberately: metadata feedback to a caller who may not
+	// register here would let them probe what this issuer validates.
+	if m := req.BackchannelTokenDeliveryMode; m != "" && m != "poll" {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata",
+			"backchannel_token_delivery_mode "+m+" is not supported by this issuer; "+
+				"backchannel_token_delivery_modes_supported lists poll, and a client "+
+				"registered for ping or push would wait for a delivery that never comes")
 		return
 	}
 

@@ -384,6 +384,16 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST "+oidcPathCredential, s.handleCredential)
 	mux.HandleFunc("POST "+oidcPathCredentialNonce, s.handleCredentialNonce)
 	mux.HandleFunc("GET /.well-known/openid-credential-issuer", s.handleCredentialIssuerMetadata)
+	// SD-JWT VC §3: how a VERIFIER — not the wallet — resolves the key that
+	// signed a credential. §2.5 defines only two mechanisms, this and an inline
+	// x5c chain, and requires a recipient that can use neither to REJECT the
+	// credential. We sign with a `kid` and no `x5c`, so without this route every
+	// credential we issue was unverifiable by anyone implementing the spec.
+	//
+	// The path inserts the well-known string between host and path of the issuer,
+	// so a deployment whose issuer carries a path is reachable at the location a
+	// verifier actually constructs.
+	mux.HandleFunc("GET "+jwtVCIssuerPath(s.cfg.Issuer), s.handleJWTVCIssuerMetadata)
 
 	mux.HandleFunc("/scim/v2/Groups", s.handleSCIMGroups)
 	mux.HandleFunc("/scim/v2/Groups/{id}", s.handleSCIMGroup)

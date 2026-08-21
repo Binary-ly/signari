@@ -417,7 +417,20 @@ func Verify(ctx context.Context, f *KeyFetcher, src Source, raw string, now time
 			"refer to exactly one", ErrNotVerified)
 	}
 
-	if raw, ok := rawSubject(out.Claims); ok {
+	// §3.1.4 again, across the two levels rather than within one: a top-level
+	// `sub_id` that contradicts the subject inside the event names two principals
+	// for one event, and which of them a receiver honours would decide who gets
+	// signed out.
+	if inner, ok := rawSubject(out.Claims); ok && len(c.SubID) > 0 {
+		if subjectsDiffer(inner, c.SubID) {
+			return out, fmt.Errorf("%w: the top-level `sub_id` and the subject "+
+				"inside the event name different principals; section 3.1.4 requires "+
+				"a subject to refer to exactly one", ErrNotVerified)
+		}
+	}
+
+	subjectBody := effectiveSubject(out.Claims, c.SubID)
+	if raw, ok := rawSubject(subjectBody); ok {
 		if bad := src.unprocessableCritical(raw); len(bad) > 0 {
 			return out, fmt.Errorf("%w: the subject carries the critical member(s) %v, "+
 				"which this receiver cannot interpret; §3.6 requires discarding the "+
@@ -425,7 +438,7 @@ func Verify(ctx context.Context, f *KeyFetcher, src Source, raw string, now time
 				ErrNotVerified, bad)
 		}
 	}
-	out.Subject = subjectFrom(out.Claims)
+	out.Subject = subjectFrom(subjectBody)
 	if t, ok := out.Claims["event_timestamp"].(float64); ok {
 		out.EventTime = time.Unix(int64(t), 0)
 	} else {
@@ -474,12 +487,50 @@ func ambiguousSubject(body map[string]any) bool {
 	if !aok || !bok {
 		return false
 	}
+	return subjectsDiffer(a, b)
+}
+
+// subjectsDiffer compares two subject objects member by member.
+//
+// Shared by the two places a subject can be named twice: `sub_id` beside
+// `subject` inside one event, and the top-level `sub_id` beside either of those.
+// §3.1.4 -- "Each Subject Member MUST refer to exactly one Subject Principal" --
+// covers both, and a receiver that enforces it in one place and not the other
+// lets the same contradiction through the other door.
+func subjectsDiffer(a, b map[string]any) bool {
 	for _, k := range []string{"format", "iss", "sub", "email", "phone_number", "uri"} {
 		if fmt.Sprint(a[k]) != fmt.Sprint(b[k]) {
 			return true
 		}
 	}
 	return false
+}
+
+// effectiveSubject picks the object that names who the event is about.
+//
+// SSF 1.0 §3.1 puts the subject at the TOP LEVEL of the SET -- "claim named
+// sub_id MUST be used to describe the primary subject of the event" -- and
+// §3.1.1 requires it "even for these existing event types", meaning CAEP and
+// RISC. Our own transmitter was fixed to emit it there. The receiver was not
+// brought along: it read `c.Events[type]` and nothing else, so a conformant
+// transmitter -- this server talking to itself included -- sent an event that
+// verified perfectly and named nobody. A session-revocation event that names
+// nobody revokes nothing, silently, which is the single outcome this subsystem
+// exists to prevent.
+//
+// The event body still WINS when it carries a subject. Most transmitters in the
+// field still use the pre-1.0 in-event shape, and `subjectFrom` already argues
+// the point about `sub_id` versus `subject`: "a receiver that only understands
+// one silently ignores half the transmitters in the world." Preferring the top
+// level would have moved the blind spot rather than removed it.
+func effectiveSubject(body map[string]any, top map[string]any) map[string]any {
+	if _, ok := rawSubject(body); ok {
+		return body
+	}
+	if len(top) == 0 {
+		return body
+	}
+	return map[string]any{"sub_id": top}
 }
 
 func subjectFrom(body map[string]any) Subject {

@@ -618,3 +618,169 @@ func TestNoCriticalMembersDeclaredMeansNoNewRefusals(t *testing.T) {
 			"transmitter declared none: %v", err)
 	}
 }
+
+// SSF 1.0 §3.1 puts the subject at the TOP LEVEL of the SET:
+//
+//	§3.1    "claim named sub_id MUST be used to describe the primary subject of
+//	        the event."
+//	§3.1.1  "MUST include the top-level sub_id claim even for these existing
+//	        event types" — that is, for CAEP and RISC events.
+//
+// Our transmitter was fixed to do exactly this: `setClaims.SubID` exists, is
+// tagged `json:"sub_id"`, and its comment records that the subject used to
+// travel inside the event object in the pre-1.0 CAEP shape.
+//
+// The receiver was never brought along. `out.Claims` is `c.Events[out.Type]` —
+// the event body — and `subjectFrom` looks for `sub_id` or `subject` inside it.
+// The top-level claim is decoded into `c.SubID` and read by nothing.
+//
+// So a conformant SSF 1.0 transmitter, including this server talking to itself,
+// sends a session-revocation event whose subject the receiver cannot see. The
+// event verifies — signature, issuer, audience, jti, iat all check out — and
+// then names nobody. Nothing is refused and nothing is revoked: the failure is
+// a session that stays alive after a transmitter said to kill it, which is the
+// one outcome this entire subsystem exists to prevent.
+func TestTheTopLevelSubIdIsRead(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	claims := goodClaims(now)
+	// §3.1's shape: the subject at the top level, and an event body that carries
+	// only its own detail. This is what our own transmitter emits.
+	claims["sub_id"] = map[string]any{
+		"format": "iss_sub", "iss": "https://transmitter.test", "sub": "user-42",
+	}
+	claims["events"] = map[string]any{
+		EventSessionRevoked: map[string]any{"event_timestamp": now.Unix()},
+	}
+
+	got, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, claims, nil, tr.kid), now)
+	if err != nil {
+		t.Fatalf("a conformant SSF 1.0 event was refused: %v", err)
+	}
+	if got.Subject.Sub != "user-42" || got.Subject.Format != "iss_sub" {
+		t.Fatalf("subject = %+v, want user-42/iss_sub from the top-level sub_id. "+
+			"The event verified and named nobody, so the revocation it carries "+
+			"applies to no session", got.Subject)
+	}
+}
+
+// The pre-1.0 shape must keep working: most transmitters in the field still put
+// the subject inside the event body, and a receiver that understands only the
+// new shape ignores half the world — the same objection `subjectFrom` already
+// makes about `subject` versus `sub_id`.
+func TestTheInEventSubjectStillWins(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+	got, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, goodClaims(now), nil, tr.kid), now)
+	if err != nil {
+		t.Fatalf("the pre-1.0 shape was refused: %v", err)
+	}
+	if got.Subject.Sub != "user-42" {
+		t.Fatalf("subject = %+v", got.Subject)
+	}
+}
+
+// §3.1.4: "Each Subject Member MUST refer to exactly one Subject Principal."
+//
+// The receiver already enforced this WITHIN an event — `sub_id` beside
+// `subject` naming different people is refused. Reading the top-level `sub_id`
+// opens a second door to the same contradiction: an event body naming user-A
+// under a SET whose top-level subject is user-B.
+//
+// Which one a receiver honours would otherwise decide who gets signed out, and
+// the two plausible precedence rules pick different victims. Refusing is the
+// only answer that does not silently make that choice.
+func TestATopLevelSubjectContradictingTheEventIsRefused(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	claims := goodClaims(now) // event body names user-42
+	claims["sub_id"] = map[string]any{
+		"format": "iss_sub", "iss": "https://transmitter.test", "sub": "user-99",
+	}
+
+	_, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, claims, nil, tr.kid), now)
+	if err == nil {
+		t.Fatal("a SET naming user-42 inside the event and user-99 at the top " +
+			"level was accepted; one of the two gets signed out and which is an " +
+			"implementation detail")
+	}
+	if !strings.Contains(err.Error(), "different principals") {
+		t.Errorf("refused, but not as a subject contradiction: %v", err)
+	}
+}
+
+// The same subject in both places is what a transmitter emits for
+// interoperability with pre-1.0 receivers, and must keep working.
+func TestTheSameSubjectInBothPlacesIsFine(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+	claims := goodClaims(now)
+	claims["sub_id"] = map[string]any{
+		"format": "iss_sub", "iss": "https://transmitter.test", "sub": "user-42",
+	}
+	got, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, claims, nil, tr.kid), now)
+	if err != nil {
+		t.Fatalf("a SET naming the same subject twice was refused: %v", err)
+	}
+	if got.Subject.Sub != "user-42" {
+		t.Fatalf("subject = %+v", got.Subject)
+	}
+}
+
+// `iss_sub` is issuer-scoped: the same `sub` under a different `iss` is a
+// different person. A comparison that looks only at `sub` reads "user-42 at
+// transmitter.test" and "user-42 at evil.test" as the same principal, so a
+// transmitter could name its own user in the event body and somebody else's at
+// the top level and have the pair accepted as consistent.
+//
+// This applies equally to the within-event check, which has always compared the
+// same member list; the mutation that exposed it — compare only `sub` — survived
+// every existing test.
+func TestSubjectsFromDifferentIssuersAreDifferentPrincipals(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	claims := goodClaims(now) // event body: user-42 @ transmitter.test
+	claims["sub_id"] = map[string]any{
+		"format": "iss_sub", "iss": "https://evil.test", "sub": "user-42",
+	}
+
+	_, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, claims, nil, tr.kid), now)
+	if err == nil {
+		t.Fatal("a SET naming user-42 at transmitter.test inside the event and " +
+			"user-42 at evil.test at the top level was accepted; iss_sub is " +
+			"issuer-scoped, so those are two different people")
+	}
+	if !strings.Contains(err.Error(), "different principals") {
+		t.Errorf("refused, but not as a subject contradiction: %v", err)
+	}
+}
+
+// The same distinction within one event, which is the older code path.
+func TestAnInEventSubjectPairFromDifferentIssuersIsRefused(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+	claims := goodClaims(now)
+	claims["events"] = map[string]any{
+		EventSessionRevoked: map[string]any{
+			"subject": map[string]any{
+				"format": "iss_sub", "iss": "https://transmitter.test", "sub": "user-42",
+			},
+			"sub_id": map[string]any{
+				"format": "iss_sub", "iss": "https://evil.test", "sub": "user-42",
+			},
+			"event_timestamp": now.Unix(),
+		},
+	}
+	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, claims, nil, tr.kid), now); err == nil {
+		t.Fatal("an event naming the same sub under two different issuers was accepted")
+	}
+}

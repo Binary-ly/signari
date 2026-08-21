@@ -362,3 +362,80 @@ And this one is the sharpest illustration of why that matters: the first pass
 fixed the *metadata* claim about which version we implement, without checking
 whether the *events* matched it. A section left unopened does not merely stay
 unchecked — it can be silently contradicted by the section that was.
+
+## The subject the receiver could not see (21 August 2026)
+
+Found by the same sweep that produced the LDAP and Chrome-posture findings:
+fields decoded off the wire and read by nothing. `setClaims.SubID` was one.
+
+SSF 1.0 puts the subject at the **top level** of the SET:
+
+> §3.1 — "claim named `sub_id` MUST be used to describe the primary subject of
+> the event."
+>
+> §3.1.1 — "MUST include the top-level `sub_id` claim even for these existing
+> event types" — that is, for CAEP and RISC events, which is all of the ones
+> anybody sends.
+
+Our **transmitter** was fixed for this in an earlier pass. Its comment records
+the reason precisely: the subject used to travel inside the event object in the
+pre-1.0 CAEP shape, so *"a conformant SSF 1.0 receiver reading the top level
+found nothing and could not tell who the event was about."*
+
+**Our receiver was that receiver.** It read `c.Events[type]` and nothing else.
+`subjectFrom` looked for `sub_id` or `subject` inside the event body; the
+top-level claim was decoded into `c.SubID` and used by no code at all.
+
+So a conformant SSF 1.0 transmitter — including this server talking to itself —
+could send a `session-revoked` event that **verified perfectly and named
+nobody**. Signature valid, issuer matched, audience matched, `jti` present, `iat`
+sane, `exp` and `sub` correctly absent. Every check this subsystem performs said
+yes, and the resulting `Subject` was the zero value.
+
+Nothing was refused and nothing was revoked. The failure mode is a session that
+stays alive after a transmitter said to kill it, reported as success — which is
+the single outcome the whole receiver exists to prevent, and the only one that
+leaves no trace anywhere to notice it by.
+
+### What was done
+
+**The event body still wins when it carries a subject.** Most transmitters in the
+field still use the in-event shape, and `subjectFrom` already makes the argument
+about `sub_id` versus `subject`: *"a receiver that only understands one silently
+ignores half the transmitters in the world."* Preferring the top level would have
+moved the blind spot rather than removed it.
+
+**A top-level subject that contradicts the event's own is refused.** §3.1.4 —
+"Each Subject Member MUST refer to exactly one Subject Principal" — was already
+enforced *within* an event, between `sub_id` and `subject`. Reading the top level
+opens a second door to the same contradiction, and a receiver that enforces a
+rule at one door and not the other has not enforced it. Which subject a receiver
+honours would otherwise decide who gets signed out.
+
+### A second defect, older than this one
+
+The member-by-member comparison was extracted into `subjectsDiffer` and given a
+test it did not have. A mutation that compared **only `sub`**, ignoring `iss`,
+survived every pre-existing test.
+
+That is not cosmetic. `iss_sub` is *issuer-scoped*: "user-42 at
+transmitter.test" and "user-42 at evil.test" are different people. A comparison
+blind to `iss` reads them as the same principal, so a transmitter could name its
+own user in the event body and somebody else's at the top level and have the pair
+accepted as consistent. The within-event check had the same blind spot for as
+long as it has existed.
+
+### Mutation results
+
+```
+CAUGHT      ignore the top-level sub_id (the state before this pass)
+CAUGHT      skip the cross-level contradiction check
+CAUGHT      compare only `sub`, ignoring `iss` (the older defect)
+EQUIVALENT  make the top level win over the event body
+```
+
+The last is worth stating rather than fixing. Precedence between the two is
+**unobservable whenever both are present**, because disagreement is refused and
+agreement makes the choice moot. A test asserting precedence would be asserting
+an implementation detail that no conformant input can distinguish — the honest
+record is that the contradiction check is what makes precedence not matter.

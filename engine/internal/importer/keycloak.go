@@ -167,12 +167,39 @@ func Import(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm,
 	}
 
 	for _, c := range realm.Clients {
-		if c.ClientID == "" || !c.StandardFlowEnabled {
-			// Only the authorization code flow is imported. A client configured
-			// for a flow we do not implement would be created here in a shape
-			// that cannot work, which is worse than leaving it out and saying so.
+		// Keycloak calls the client credentials grant "service accounts", and a
+		// client may have it with or without the browser flow.
+		//
+		// This used to import only `standardFlowEnabled` clients and hardcode
+		// grant_types to authorization_code + refresh_token, which got both cases
+		// wrong in opposite directions. A client with BOTH flows was created
+		// without client_credentials: browser logins kept working, and its
+		// machine-to-machine calls started failing `unauthorized_client` after
+		// cutover -- the silent half of a migration, discovered by whichever
+		// batch job ran next. A client with ONLY service accounts was skipped and
+		// reported as "not using the authorization code flow", which is true and
+		// beside the point, because we implement the grant it does use.
+		//
+		// The comment below this one already stated the principle: a client
+		// "created here in a shape that cannot work ... is worse than leaving it
+		// out and saying so". It was applied to the clients left out and not to
+		// the ones brought in.
+		grants := []string{}
+		if c.StandardFlowEnabled {
+			grants = append(grants, "authorization_code", "refresh_token")
+		}
+		// Confidential only. Keycloak does not permit service accounts on a public
+		// client, and a public client holding no secret cannot authenticate for
+		// this grant -- importing it would create exactly the unusable shape this
+		// block exists to avoid.
+		if c.ServiceAccountEnabled && !c.PublicClient {
+			grants = append(grants, "client_credentials")
+		}
+		if c.ClientID == "" || len(grants) == 0 {
+			// A client using no flow we implement. Left out and said so, rather
+			// than created in a shape that cannot work.
 			res.ClientsSkipped = append(res.ClientsSkipped,
-				c.ClientID+" (not using the authorization code flow)")
+				c.ClientID+" (uses no flow this server implements)")
 			continue
 		}
 		if dryRun {
@@ -204,11 +231,14 @@ func Import(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm,
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 			                          client_secret_hash, enabled, grant_types, scopes, require_pkce)
-			VALUES ($1, $2::uuid, $1, $3, $4, $5,
-			        ARRAY['authorization_code','refresh_token'],
+			VALUES ($1, $2::uuid, $1, $3, $4, $5, $7,
 			        ARRAY['openid','profile','email'], $6)
 			ON CONFLICT (client_id) DO NOTHING`,
-			c.ClientID, orgID, kind, secretHash, c.Enabled, c.PublicClient); err != nil {
+			c.ClientID, orgID, kind, secretHash, c.Enabled,
+			// PKCE is required for public clients, and meaningless for a client
+			// that only ever uses client_credentials -- there is no redirect and
+			// no authorization request to bind.
+			c.PublicClient, grants); err != nil {
 			return nil, fmt.Errorf("importer: creating client %s: %w", c.ClientID, err)
 		}
 		for _, u := range c.RedirectURIs {

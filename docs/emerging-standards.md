@@ -182,3 +182,72 @@ to break it, and they are caught by different things:
 Neither was covered before. Worth separating because "the compiler protects it"
 and "a test protects it" are different guarantees, and only one of them survives
 somebody deciding to change both sites at once.
+
+## Second-turn section sweeps, 21 August 2026
+
+The reviews had concluded, from six second passes, that **"the risk is unread
+sections, not misread ones"** — every finding came from a section a first pass
+never opened. That is mechanisable: enumerate the specification's sections,
+enumerate the ones our code and docs cite, and read the difference.
+
+Five standards swept so far.
+
+| Standard | Sections | Cited | Never cited | Outcome |
+|---|---:|---:|---:|---|
+| SSF 1.0 | 77 | 33 | 49 | **two defects** — §3.3 complex subjects resolved to nobody; §9.3's tolerance MUST correct but untested |
+| RFC 9901 SD-JWT | 70 | 25 | 45 | none — most bind a Verifier, and we are issuer-only |
+| OID4VCI 1.0 | 149 | 38 | 111 | none new; §14.3 correct-by-accident, now pinned by a test |
+| Transaction Tokens draft-11 | 61 | 13 | 48 | none — see below |
+| CIBA Core 1.0 | 35 | 14 | 21 | none — see below |
+| AuthZEN 1.0 Final | 89 | 8 | 81 | mostly examples and registries; nothing binding unread |
+
+Three of the six came back empty. That is worth recording rather than leaving as
+silence: "swept and found nothing" and "never swept" are indistinguishable in a
+repository a month later, and the whole value of the technique is knowing which
+sections have had eyes on them.
+
+### Transaction Tokens §11.2.1 and §11.2.2 — correctly refused, and named
+
+Both define optional subject token types: a **self-signed JWT**
+(`urn:ietf:params:oauth:token-type:self_signed`) and an **unsigned JSON object**
+(`urn:ietf:params:oauth:token-type:unsigned_json`). Both are "A requester MAY
+use", so supporting them is the TTS's choice.
+
+`CheckSubjectTokenType` refuses both explicitly — *"defined by the specification
+but not implemented here"* — rather than falling through to the generic "not a
+type this deployment accepts". The distinction matters to an integrator: one
+message says "you have misread the spec", the other says "this deployment does
+not do that yet".
+
+Refusing `unsigned_json` is the conservative reading and worth stating: accepting
+it means taking the caller's `sub` entirely on trust, gated only by whatever
+mutual authentication the deployment puts in front of the TTS. §13.5 exists for
+that decision.
+
+### CIBA §7.1.2 and §14 — verified, no change
+
+**§7.1.2 User Code.** We advertise `backchannel_user_code_parameter_supported`
+as **`false`** rather than omitting it, and the endpoint refuses a supplied
+`user_code`. The reasoning is already in `metadata.go`: §7.1 gates the parameter
+on this being true, "a client reading an absent field has to guess; a client
+reading `false` knows not to send one".
+
+**§14 Security Considerations.** Its `id_token_hint` guidance — that an OP should
+accept hints whose expiry has passed, because the token is being used in a
+context other than the one it was issued for — does not bind us: we accept
+**`login_hint` only**, and refuse `id_token_hint` and `login_hint_token` with a
+message naming what to use instead.
+
+Checked rather than assumed that a subset is permitted. §7.1's REQUIRED is on the
+**Client** — "it is REQUIRED that the Client provides one (and only one) of the
+hints" — and the specification contains no corresponding requirement that an OP
+accept all three. There is also no discovery parameter for which hints an OP
+takes, so the error message is the only channel a client has; ours names the
+supported one.
+
+### What a sweep cannot tell you
+
+It finds sections nobody read. It does not find a section that was read and
+misjudged. The six passes that motivated this technique all failed the first
+way — but that is evidence about those six, not a proof that the second way
+never happens.

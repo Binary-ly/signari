@@ -27,6 +27,38 @@ import (
 // which is the design. The 19 MiB memory-hard hash is meant to dominate, and a
 // change that showed up against it would be a change worth worrying about.
 //
+// # Re-measured 21 August 2026, and the second sentence above is no longer true
+//
+// Three consecutive runs at the documented `-benchtime 30x`, same machine:
+//
+//	BenchmarkFullSignIn-8         76.0, 75.7, 76.3 ms   (was 59.8)
+//	BenchmarkFlowMFADecision-8    152, 156, 150 us      (was 442)
+//	BenchmarkArgon2Verify         30.2 ms  (measured separately, throwaway)
+//
+// **Argon2 is now 40% of a sign-in, not the dominant share.** 76 ms total against
+// 30 ms of hashing leaves ~46 ms of other work on a path this comment describes
+// as "Argon2-bound". The claim was true when written and has stopped being true,
+// which is exactly what re-running a benchmark is for.
+//
+// The two figures moved in OPPOSITE directions on the same machine in the same
+// session -- the decision got three times faster while the sign-in got 27%
+// slower -- so this is not the machine being uniformly slower. At least one of
+// them is a real change in the code.
+//
+// Ruled out, with measurements rather than reasoning:
+//
+//   - Argon2 parameters: unchanged at 19 MiB, t=2, p=1.
+//   - Double hashing via the lazy rehash in flow.go: the fixture stores a
+//     current-policy `$argon2id$` hash, so `needsRehash` is false and Hash is
+//     never called on this path.
+//   - Database round trips: ~13 transactions per sign-in, and an in-process pgx
+//     round trip on loopback is sub-millisecond.
+//
+// Not localised. `attempt` measures a GET of the form (render plus CSRF mint)
+// and then the POST, so the ~46 ms is spread across two requests and whatever
+// middleware now sits in front of them. Recorded in TODO-FOR-YOU.md rather than
+// guessed at.
+//
 // The decision costs ONE query, the same as the `if enrolled` it replaced. An
 // earlier version of this code cost three, and then six; see
 // TestTheSecondFactorDecisionCostsOneQuery, which pins it.

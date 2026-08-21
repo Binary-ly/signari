@@ -45,7 +45,8 @@ func ValidateRedirectURI(raw string) error {
 		host := u.Hostname()
 		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
 			return fmt.Errorf("%q uses http on a non-loopback host; the "+
-				"authorization code would cross the network in the clear", raw)
+				"authorization code would cross the network in the clear. Use "+
+				"https, or http on a loopback address for local development", raw)
 		}
 	}
 

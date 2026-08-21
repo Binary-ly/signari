@@ -27,7 +27,10 @@
 package config
 
 import (
+	"net/url"
+
 	"fmt"
+	"signari.dev/engine/internal/clients"
 	"sort"
 	"strings"
 
@@ -140,14 +143,8 @@ func (f *File) Validate() error {
 			add("clients[%s]: at least one redirect_uri is required", c.ClientID)
 		}
 		for _, u := range c.RedirectURIs {
-			if !secureURL(u) {
-				add("clients[%s]: redirect_uri %q must be https (or a loopback "+
-					"address for development)", c.ClientID, u)
-			}
-			if strings.Contains(u, "*") {
-				add("clients[%s]: redirect_uri %q contains a wildcard. They are "+
-					"matched exactly, because anything looser lets a request steer "+
-					"where the authorization code is delivered", c.ClientID, u)
+			if err := clients.ValidateRedirectURI(u); err != nil {
+				add("clients[%s]: %s", c.ClientID, err.Error())
 			}
 		}
 		if c.LaunchURL != "" && !secureURL(c.LaunchURL) {
@@ -222,10 +219,29 @@ func (f *File) Validate() error {
 	return nil
 }
 
-func secureURL(u string) bool {
-	return strings.HasPrefix(u, "https://") ||
-		strings.HasPrefix(u, "http://localhost") ||
-		strings.HasPrefix(u, "http://127.0.0.1")
+// secureURL reports whether a URL is https, or http on a loopback host.
+//
+// Parsed rather than prefix-matched. `strings.HasPrefix(u, "http://localhost")`
+// is true for `http://localhost.evil.com`, and `strings.HasPrefix(u, "https://")`
+// is true for `https://good.example@evil.example` -- a host that reads as one
+// name and resolves to another.
+//
+// Redirect URIs no longer come through here at all; they go to
+// clients.ValidateRedirectURI. This remains for launch and logo URLs, where the
+// same two mistakes are less dangerous and still wrong.
+func secureURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || u.User != nil {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return u.Host != ""
+	case "http":
+		h := u.Hostname()
+		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	}
+	return false
 }
 
 // Change is one difference between the file and the deployment.

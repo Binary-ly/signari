@@ -267,9 +267,8 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 	// img-src is widened ONLY when a logo is actually configured. An unbranded
 	// deployment keeps default-src 'none', so the permission exists exactly
 	// where it is used rather than everywhere in case it is needed.
-	w.Header().Set("Content-Security-Policy",
-		`default-src 'none'; style-src 'unsafe-inline';`+brandImgSrc(b)+
-			` form-action 'self'; frame-ancestors 'none'`)
+	setCSP(w, `default-src 'none'; style-src 'unsafe-inline';`+brandImgSrc(b)+
+		` form-action 'self'; frame-ancestors 'none'`)
 	w.Header().Set("X-Frame-Options", "DENY")
 
 	if b != nil {

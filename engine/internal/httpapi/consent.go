@@ -166,8 +166,7 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request,
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy",
-		`default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
+	setCSP(w, `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
 	// Clickjacking matters more here than anywhere else in the product: an
 	// invisible framed consent screen with a decoy button over "Allow" is how a
 	// user grants access they never saw.

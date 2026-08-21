@@ -228,9 +228,8 @@ func (s *Server) wsFedPost(w http.ResponseWriter, dest, wresult, wctx string) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
-			"form-action "+formActionOrigin(dest)+"; frame-ancestors 'none'")
+	setCSP(w, "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
+		"form-action "+formActionOrigin(dest)+"; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 	_ = wsFedPage.Execute(w, map[string]any{
 		"Action": dest, "WResult": wresult, "WCtx": wctx, "Nonce": nonce,

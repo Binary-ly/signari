@@ -235,7 +235,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 // wrapper is not optional -- a route reachable without an id would be the one
 // nobody can trace.
 func (s *Server) Routes() http.Handler {
-	return s.withCorrelation(s.withCORS(s.mux()))
+	return s.withCorrelation(s.withSecurityHeaders(s.withCORS(s.mux())))
 }
 
 func (s *Server) mux() *http.ServeMux {
@@ -629,10 +629,9 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		}
 	}
 	b := s.brandNow(r.Context())
-	w.Header().Set("Content-Security-Policy",
-		`default-src 'none'; script-src `+script+`; connect-src `+connect+`; `+
-			`frame-src `+frame+`; style-src 'unsafe-inline';`+brandImgSrc(b)+
-			` form-action 'self'; frame-ancestors 'none'`)
+	setCSP(w, `default-src 'none'; script-src `+script+`; connect-src `+connect+`; `+
+		`frame-src `+frame+`; style-src 'unsafe-inline';`+brandImgSrc(b)+
+		` form-action 'self'; frame-ancestors 'none'`)
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.WriteHeader(status)
 	// The reference is only shown alongside an error. On a normal page it is

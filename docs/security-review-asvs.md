@@ -590,6 +590,11 @@ every chapter that governs an identity provider's core function. The remaining
 configuration and general secure coding — relevant to the product, not specific
 to it, and not where this engine's risk concentrates.
 
+> **That last sentence was wrong about V3, and V3 has now been swept — see
+> below.** "Frontend rendering" is where the sign-in page lives, and V3.4 is the
+> chapter that says what the browser is told to do with it. The sweep found five
+> response headers absent entirely, two of them Level 1.
+
 ## CWE coverage, via a tool rather than a recital (21 August 2026)
 
 Point 4 names the CWE Top 25. I could not retrieve it: both
@@ -657,3 +662,120 @@ What it does not do is cover the classes gosec has no rule for — business-logi
 flaws, authorization gaps, the protocol-level defects that made up almost
 everything found this session. Those came from reading specifications against
 source, which no scanner does.
+
+
+## V3 Web Frontend Security: thirty-one requirements (21 August 2026)
+
+This chapter was outside the earlier sweeps, on the reasoning quoted above. That
+reasoning was a judgement about a chapter *title*, made without opening the
+chapter. An identity provider's sign-in page is the most attacked page it serves,
+and V3.4 governs exactly that page.
+
+Requirements taken from the ASVS 5.0.0 JSON export rather than recalled: 345
+across 17 chapters, which matches the count already in this document, so it is
+the right revision.
+
+### V3.3 Cookie Setup — all five met, nothing to do
+
+Worth recording as met rather than skipped, because it is the part most
+applications get wrong and this one did not. Every cookie the engine sets carries
+the `__Host-` prefix (`__Host-signari_session`, `__Host-signari_csrf`,
+`__Host-signari_pending`, `__Host-signari_ceremony`), which the *browser* enforces
+as `Secure` + `Path=/` + no `Domain`, alongside explicit `Secure`, `HttpOnly` and
+`SameSite=Lax`. V3.3.1 through V3.3.5 hold, and the `__Host-` choice satisfies
+V3.3.1 and V3.3.3 with one mechanism instead of two conventions.
+
+### V3.4 Browser Security Mechanism Headers — the finding
+
+Five headers were absent from the engine entirely. Not weak, not misconfigured —
+zero occurrences across `internal/`:
+
+| Requirement | Level | State before | Now |
+|---|---|---|---|
+| V3.4.4 `X-Content-Type-Options: nosniff` | **L1** | absent | set on every response |
+| V3.4.1 `Strict-Transport-Security` | **L1** | absent | `max-age=31536000; includeSubDomains`, https issuers only |
+| V3.4.5 `Referrer-Policy` | L2 | absent | `no-referrer` |
+| V3.4.3 `base-uri 'none'` in CSP | L2 | absent | appended to all ten policies |
+| V3.4.8 `Cross-Origin-Opener-Policy` | L3 | absent | **deliberately still absent — see below** |
+
+**V3.4.4 is the one that mattered.** This server answers JSON on nearly every
+endpoint and several of those responses echo caller-supplied values back inside
+an `error_description`. Without `nosniff`, a browser may decide a JSON body is
+HTML and render it — turning an echoed request parameter into script execution on
+the issuer's own origin, which is the origin holding the session cookie. It is a
+Level 1 requirement, the baseline, and it was missing from every response the
+engine has ever sent.
+
+**V3.4.3 and the directive that has no fallback.** Our policies opened with
+`default-src 'none'`, which covers `object-src` — that directive falls back to
+`default-src`. **`base-uri` does not.** It is deliberately outside the
+`default-src` chain, which is precisely why V3.4.3 names both explicitly rather
+than one. So every page this server rendered left `<base>` unrestricted,
+including the sign-in page, where `script-src` is relaxed to `'self'` and widened
+further to a provider's origins when a CAPTCHA is configured.
+
+With `script-src 'self'` an injected `<base>` cannot pull script from another
+origin, so this is hardening rather than a live hole — and it is one directive,
+named by the standard, providing exactly the protection that disappears the next
+time somebody widens a policy.
+
+**How it was fixed matters more than that it was.** There were ten places
+building a CSP by hand. Editing ten string literals fixes ten pages and does
+nothing about the eleventh, written next month by someone starting from a copy of
+whichever one they found first. All ten now go through `setCSP`, which appends
+the invariants. There is one place left that can forget them, and it is the one
+place a test points at.
+
+### V3.4.8 Cross-Origin-Opener-Policy: not set, and why
+
+`COOP: same-origin` severs `window.opener` when a cross-origin document opens
+ours in a popup. Popup-mode OIDC is a real and common relying-party pattern: the
+RP opens `/oauth2/authorize` in a popup and its own callback page messages the
+opener when the flow completes. Setting COOP on the authorization, login or
+consent pages breaks that chain — the popup lands back on the RP's origin with
+`window.opener` already null.
+
+`same-origin-allow-popups` does not help; it governs popups *we* open, not the
+opener relationship of a popup we are inside.
+
+So this L3 requirement is not met, deliberately, with the reason recorded. The
+alternative — meeting an L3 header by breaking a documented integration pattern
+for relying parties — would be scoring a checklist rather than securing anything.
+
+### The rest of V3
+
+| Section | Verdict |
+|---|---|
+| V3.1.1 documentation of expected browser features | L3, partially — the headers are documented here and in the middleware, the "behave when unavailable" half is not |
+| V3.2.1 / V3.2.2 content interpretation | met — `nosniff` now, and all rendering goes through `html/template`, which escapes by context |
+| V3.2.3 DOM clobbering | not applicable — the sign-in form needs no JavaScript at all, proven by a standing test |
+| V3.4.2 CORS allowlist | met — a fixed allowlist, checked earlier under V10 |
+| V3.4.6 `frame-ancestors` | met — every page sets it to `'none'`; note ASVS considers `X-Frame-Options` obsolete, and we send both |
+| V3.4.7 CSP report location | L3, not set |
+| V3.5.1–V3.5.3 origin separation / CSRF | met — per-session CSRF tokens on every state-changing form, `POST` for every sensitive operation |
+| V3.5.5 postMessage | not applicable — zero uses |
+| V3.5.6 JSONP | not applicable — zero uses |
+| V3.6.1 subresource integrity | not applicable by default — no external assets are loaded; the CAPTCHA case is the sole exception and already carries a written justification at the CSP that permits it |
+| V3.7.2 redirect allowlist | met — `redirect_uri` is an exact-match allowlist per client |
+| V3.7.4 HSTS preload | not done; a deployment decision for whoever owns the domain, not the engine |
+
+### Mutation results
+
+```
+CAUGHT   middleware not wired into Routes()      (no nosniff on any response)
+CAUGHT   base-uri dropped from the invariants    (policy sent without it)
+CAUGHT   HSTS gate inverted                      (absent on an https issuer)
+```
+
+The first is the one worth having. A middleware that is correct and a middleware
+that is *reachable* are different claims, and only a test that goes through the
+router checks the second — every existing sign-in page test in this package calls
+the handler directly and would have passed with the middleware unwired.
+
+### Chapter coverage after this pass
+
+**177 of 345.** V3 joins V6, V7, V8, V9, V10 and V11. The chapters still unswept
+are V1 Encoding, V2 Validation, V4 API, V5 File, V12 Secure Communication, V13
+Configuration, V14 Data Protection, V15 Secure Coding, V16 Logging and V17
+WebRTC — and after this pass, the claim that they are unlikely to matter should
+be treated as untested rather than as a finding. V3 was in that list yesterday.

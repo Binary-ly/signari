@@ -69,7 +69,7 @@ func (s *Server) handleRACView(w http.ResponseWriter, r *http.Request) {
 	// script-src 'self' because the library and the glue are both served from
 	// here; connect-src for the WebSocket; img-src data: and blob: because the
 	// display decodes image streams into both.
-	w.Header().Set("Content-Security-Policy", rac.ViewCSP)
+	setCSP(w, rac.ViewCSP)
 	w.Header().Set("X-Frame-Options", "DENY")
 	_ = rac.ViewPage.Execute(w, map[string]any{
 		"Slug": conn.Slug, "Name": conn.DisplayName, "Protocol": conn.Protocol,

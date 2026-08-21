@@ -146,9 +146,8 @@ func (s *Server) postAuthzResponse(w http.ResponseWriter, redirectURI string, p 
 	// Never cached. The page contains a single-use code and, in a hybrid
 	// response, a signed assertion about who just signed in.
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
-			"form-action "+formActionOrigin(redirectURI)+"; frame-ancestors 'none'")
+	setCSP(w, "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
+		"form-action "+formActionOrigin(redirectURI)+"; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 	_ = formPostPage.Execute(w, map[string]any{
 		"Action": redirectURI, "Fields": fields, "Nonce": nonce,

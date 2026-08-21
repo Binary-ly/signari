@@ -224,8 +224,8 @@ func (f *signInFixture) attempt(t *testing.T, identifier, password string) outco
 	csrfField := rest[:strings.Index(rest, `"`)]
 
 	form := url.Values{
-		"username":     {identifier},
-		"password":     {password},
+		"username":    {identifier},
+		"password":    {password},
 		csrfFormField: {csrfField},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))

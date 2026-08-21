@@ -478,7 +478,7 @@ func (s *Server) postSAMLResponse(w http.ResponseWriter, acs, doc, relayState st
 	// auto-submitting form is how an assertion gets delivered without the user
 	// realising anything happened.
 	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+	setCSP(w, "frame-ancestors 'none'")
 
 	if err := samlPostForm.Execute(w, map[string]string{
 		"ACS":        acs,

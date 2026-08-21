@@ -50,7 +50,7 @@ func TestUserinfoWithholdsClaimsTheScopeDidNotGrant(t *testing.T) {
 			Issuer: f.srv.cfg.Issuer, Subject: f.userID,
 			Audience: []string{f.clientID},
 			Expiry:   now.Add(time.Minute).Unix(), IssuedAt: now.Unix(),
-			JTI: "userinfo-scope-" + strings.ReplaceAll(scope, " ", "-"),
+			JTI:      "userinfo-scope-" + strings.ReplaceAll(scope, " ", "-"),
 			ClientID: f.clientID, Scope: scope,
 		}, tokens.TypAccessToken)
 		if err != nil {

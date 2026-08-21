@@ -2,13 +2,13 @@ package httpapi
 
 import (
 	"context"
-	"time"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"

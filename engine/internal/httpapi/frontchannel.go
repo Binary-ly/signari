@@ -106,9 +106,8 @@ func (s *Server) renderFrontChannelLogout(w http.ResponseWriter, r *http.Request
 	// frame-src is deliberately broad because the frames ARE the point, and the
 	// URLs are registered rather than caller-supplied. Everything else is denied:
 	// no script, no styles from elsewhere, and no form submission.
-	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; frame-src https:; style-src 'unsafe-inline'; "+
-			"frame-ancestors 'none'")
+	setCSP(w, "default-src 'none'; frame-src https:; style-src 'unsafe-inline'; "+
+		"frame-ancestors 'none'")
 
 	if continueTo == "" {
 		continueTo = "/"

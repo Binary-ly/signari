@@ -282,3 +282,80 @@ comparing `alg`: a key that produces a valid signature is the key that signed it
 `internal/ssf/receive.go` filters on `kid` and then tries each match;
 `internal/clientauth/privatekeyjwt.go` tries every registered key. Both terminate
 on a verified signature, so a duplicate `kid` cannot cause a false rejection.
+
+## §5.3.2.2's 303: did anyone try it and revert? (21 August 2026)
+
+We converted 46 redirect sites from `302` to `303` for one SHOULD:
+
+> "should use the HTTP 303 status code when redirecting the user agent"
+
+
+```
+OIDCRedirectUriBuilder$QueryRedirectUriBuilder     sipush 302 → Response.status(I)
+OIDCRedirectUriBuilder$FragmentRedirectUriBuilder  sipush 302 → Response.status(I)
+OIDCRedirectUriBuilder$JWTRedirectUriBuilder       sipush 302 → Response.status(I)
+OIDCRedirectUriBuilder$FormPostRedirectUriBuilder  Status.OK  → an HTML form
+```
+
+
+```python
+class HttpResponseRedirectScheme(HttpResponseRedirect):
+    """HTTP Response to redirect, can be to a non-http scheme"""
+```
+
+No `status_code` override anywhere in the module, so it inherits Django's
+**302**.
+
+
+### The finding: it is not that 303 is wrong, it is that it breaks passivity
+
+The strongest evidence is from a third implementation. **Spring Authorization
+Server #1051** and **Spring Security #18264** both ask for exactly this change,
+citing *A Comprehensive Formal Security Analysis of OAuth 2.0* — the paper that
+first described the 307 credential-leak attack, and the reason FAPI writes this
+requirement at all.
+
+Both issues are **open**. Both carry the label `type: breaks-passivity`, Spring's
+term for a change that alters behaviour relying parties may depend on.
+
+That is the real answer to "why doesn't anyone do this". Not that the SHOULD is
+wrong, not that it was tried and reverted — but that changing the status code of
+an authorization response in a mature server is a compatibility event, and
+mature servers defer compatibility events. We have no installed base to break, so
+the cost that stops them does not apply to us. That is a better reason to be
+ahead than "we read the specification and they did not", and it is the one
+supported by evidence.
+
+### The counter-evidence, weighed rather than omitted
+
+One report exists of 303 breaking an OAuth flow: a Hugging Face forum thread
+(February 2024) where an authorization endpoint returning 303 was blamed for "the
+loss of the original window object", so a popup-based client could not
+programmatically close its auth tab. Libraries like `react-use-oauth2` are named.
+
+Assessed as most likely a misattribution, and the reasoning is recorded so
+somebody can disagree with it:
+
+- A redirect status code does not sever `window.opener`. Ordinary cross-origin
+  navigation does not either. The mechanism that *does* is
+  `Cross-Origin-Opener-Policy` — which is why this engine deliberately does not
+  set it, for this same population of relying parties (see
+  `security-review-asvs.md`, V3.4.8).
+- The symptom described — a parent unable to read or control the popup — is what
+  happens when a script reads `popup.location.search` across origins, which
+  throws regardless of status code.
+- The thread is an unresolved user report, not a maintainer diagnosis, and no
+  follow-up establishes cause.
+
+It is possible and unproven. What makes it low risk for us specifically is that
+303 differs from 302 in exactly one respect: it *requires* the method to become
+GET, where 302 merely permits it. Every redirect this engine emits after a POST
+targets a handler that expects a GET, so the coercion 303 forces is the behaviour
+we already relied on 302 to choose.
+
+### Verdict
+
+
+Nobody tried our way and reverted. Two of the three have not tried; the third
+wants to and is blocked by backward compatibility rather than by a defect. Ours
+is better here, and now for a reason that was checked instead of assumed.

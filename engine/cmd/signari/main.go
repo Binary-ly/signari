@@ -135,6 +135,8 @@ commands:
   saml list           show registered SAML service providers
   idp add             register an external sign-in provider (Google, GitHub, ...)
   idp list            show external sign-in providers
+  idp assertions      allow or refuse RFC 7523 assertions from a provider
+  idp add-issuer      register a key-publishing issuer for the jwt-bearer grant
   scim add            register a SCIM provisioning target
   scim list           show provisioning targets
   scim sync           converge targets on this directory (preview unless -apply)
@@ -209,6 +211,8 @@ func run(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
 	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm (default: all in use)")
 	promoteNow := fs.Bool("now", false, "promote without waiting for the publication dwell -- key compromise only")
+	allowAssertions := fs.Bool("allow-assertions", false, "`idp assertions`: let this provider's JWTs be exchanged for tokens (RFC 7523)")
+	jwksURL := fs.String("jwks-url", "", "`idp add-issuer`: URL publishing the issuer's signing keys")
 	appURL := fs.String("app", "", "protected application URL, as the browser reaches it (proxy check)")
 	origin := fs.String("origin", "", "the application's own address, to test the bypass (proxy check)")
 	probePath := fs.String("path", "", "extra path to probe, repeatable as a comma-separated list (proxy check)")
@@ -647,6 +651,10 @@ func run(args []string) error {
 		return idpAppleSecret(ctx, conn, *slug, *appleTeam, *appleKeyID, *appleKeyFile)
 	case "idp list":
 		return idpList(ctx, conn)
+	case "idp assertions":
+		return idpAssertions(ctx, conn, *slug, *allowAssertions)
+	case "idp add-issuer":
+		return idpAddIssuer(ctx, conn, *orgID, *slug, *name, *issuer, *jwksURL)
 	case "scim add":
 		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2)
 	case "provision add":
@@ -2230,6 +2238,7 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 func idpList(ctx context.Context, conn *pgx.Conn) error {
 	rows, err := conn.Query(ctx, `
 		SELECT slug, display_name, kind, allow_signup, allow_linking, enabled,
+		       allow_jwt_bearer,
 		       (SELECT count(*) FROM core.federated_identities f WHERE f.provider_id = p.id)
 		FROM core.identity_providers p ORDER BY slug`)
 	if err != nil {
@@ -2237,23 +2246,159 @@ func idpList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-14s %-12s %-8s %-8s %-8s %s\n",
-		"SLUG", "KIND", "SIGNUP", "LINKING", "ENABLED", "LINKED ACCOUNTS")
+	fmt.Printf("%-14s %-12s %-8s %-8s %-8s %-10s %s\n",
+		"SLUG", "KIND", "SIGNUP", "LINKING", "ENABLED", "ASSERTIONS", "LINKED ACCOUNTS")
 	var n int
 	for rows.Next() {
 		var slug, name, kind string
-		var signup, linking, enabled bool
+		var signup, linking, enabled, assertions bool
 		var linked int
-		if err := rows.Scan(&slug, &name, &kind, &signup, &linking, &enabled, &linked); err != nil {
+		if err := rows.Scan(&slug, &name, &kind, &signup, &linking, &enabled,
+			&assertions, &linked); err != nil {
 			return err
 		}
 		n++
-		fmt.Printf("%-14s %-12s %-8t %-8t %-8t %d\n", slug, kind, signup, linking, enabled, linked)
+		fmt.Printf("%-14s %-12s %-8t %-8t %-8t %-10t %d\n",
+			slug, kind, signup, linking, enabled, assertions, linked)
 	}
 	if n == 0 {
 		fmt.Println("(none registered -- add one with `signari idp add`)")
 	}
 	return rows.Err()
+}
+
+// idpAddIssuer registers an issuer that only publishes signing keys.
+//
+// # Why this is not `idp add`
+//
+// `idp add` discovers a generic OIDC provider and refuses one whose discovery
+// document names no authorization or token endpoint. That is correct for
+// interactive sign-in, and it makes the most important class of RFC 7523 issuer
+// impossible to register:
+//
+//	$ signari idp add -kind oidc -issuer https://token.actions.githubusercontent.com
+//	signari: discovering ...: the discovery document names no authorization or
+//	         token endpoint
+//
+// GitHub Actions, Kubernetes service-account issuers and SPIFFE bundles have no
+// such endpoints and never will. They publish a JWKS. There is nothing to
+// redirect a browser to.
+//
+// So they get their own command, exactly as an upstream SAML provider does, and
+// the row it writes can never become a sign-in option: the schema refuses
+// allow_signup and allow_linking on this kind, and the loader the interactive
+// path uses refuses the kind outright.
+func idpAddIssuer(ctx context.Context, conn *pgx.Conn, orgID, slug, name, issuer, jwks string) error {
+	switch {
+	case orgID == "":
+		return fmt.Errorf("give -org, the organisation uuid this issuer belongs to")
+	case slug == "":
+		return fmt.Errorf("give -slug, a short name for this issuer")
+	case issuer == "":
+		return fmt.Errorf("give -issuer, the exact value assertions carry in `iss`")
+	case jwks == "":
+		return fmt.Errorf("give -jwks, the URL publishing this issuer's signing keys")
+	}
+	if name == "" {
+		name = slug
+	}
+
+	// Fetched now, so a wrong URL fails in front of the person who typed it
+	// rather than at the first grant -- the same reason `idp add` discovers
+	// immediately. A trust anchor whose keys cannot be read is not a trust
+	// anchor, it is a provider that refuses everything for a reason nobody can
+	// see from the outside.
+	set, err := federation.FetchJWKS(ctx, &http.Client{Timeout: 15 * time.Second}, jwks)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", jwks, err)
+	}
+	fmt.Printf("read %d key(s) from %s\n", len(set.Keys), jwks)
+
+	var id string
+	err = conn.QueryRow(ctx, `
+		INSERT INTO core.identity_providers
+			(org_id, slug, display_name, kind, client_id, issuer, jwks_url,
+			 allow_signup, allow_linking, enabled, allow_jwt_bearer)
+		VALUES ($1::uuid, $2, $3, 'assertion', '', $4, $5, false, false, true, false)
+		RETURNING id::text`, orgID, slug, name, issuer, jwks).Scan(&id)
+	if err != nil {
+		return fmt.Errorf("registering the issuer: %w", err)
+	}
+
+	fmt.Printf("registered %s as an assertion issuer for %s\n", slug, issuer)
+	// Off, and said out loud. Registering trust and granting it are two
+	// decisions, and this command only makes the first.
+	fmt.Printf("\nAssertions from it are NOT yet accepted. To allow them:\n"+
+		"  signari idp assertions -slug %s -allow-assertions\n", slug)
+	fmt.Printf("\nEach assertion's `sub` must also be linked to a local account before\n" +
+		"it can mint anything.\n")
+	return nil
+}
+
+// idpAssertions turns the RFC 7523 jwt-bearer grant on or off for one provider.
+//
+// Separate from `idp add` because it is a separate decision. Registering a
+// provider says a person may sign in through it in a browser. This says any JWT
+// that provider signs, presented by a client with nobody present, mints our
+// tokens for the linked account -- which is a great deal more power, and an
+// operator who set up "sign in with Google" did not ask for it.
+//
+// So it is off until somebody runs this, and the confirmation says what was
+// granted rather than just "ok".
+func idpAssertions(ctx context.Context, conn *pgx.Conn, slug string, allow bool) error {
+	if slug == "" {
+		return fmt.Errorf("-slug is required")
+	}
+	var issuer, jwks string
+	var enabled bool
+	err := conn.QueryRow(ctx, `
+		UPDATE core.identity_providers SET allow_jwt_bearer = $2, updated_at = now()
+		WHERE slug = $1
+		RETURNING COALESCE(issuer,''), COALESCE(jwks_url,''), enabled`,
+		slug, allow).Scan(&issuer, &jwks, &enabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("no identity provider called %q", slug)
+	}
+	if err != nil {
+		return err
+	}
+
+	if !allow {
+		fmt.Printf("%s: assertions refused. Its JWTs can no longer be exchanged for tokens.\n", slug)
+		return nil
+	}
+
+	fmt.Printf("%s: assertions allowed. JWTs it signs may now be exchanged for our tokens\n"+
+		"  by any client registered for the jwt-bearer grant, on behalf of the local\n"+
+		"  account each assertion's subject is linked to.\n", slug)
+
+	// Two conditions that make the switch inert, reported rather than left for
+	// somebody to discover through a grant that silently never works.
+	if !enabled {
+		fmt.Printf("  NOTE: %s is currently disabled, so nothing will be accepted from it\n"+
+			"  until it is enabled.\n", slug)
+	}
+	if jwks == "" {
+		// For a named kind the JWKS URL comes from the preset, so an empty column
+		// is only a problem for generic OIDC providers.
+		var kind string
+		if err := conn.QueryRow(ctx,
+			`SELECT kind FROM core.identity_providers WHERE slug = $1`, slug).Scan(&kind); err == nil &&
+			kind == "oidc" {
+			fmt.Printf("  WARNING: %s has no jwks_url, so no assertion from it can be\n"+
+				"  verified and every attempt will be refused.\n", slug)
+		}
+	}
+	if issuer == "" {
+		var kind string
+		if err := conn.QueryRow(ctx,
+			`SELECT kind FROM core.identity_providers WHERE slug = $1`, slug).Scan(&kind); err == nil &&
+			kind == "oidc" {
+			fmt.Printf("  WARNING: %s has no issuer configured, so no assertion can be\n"+
+				"  matched to it.\n", slug)
+		}
+	}
+	return nil
 }
 
 // scimHTTPClient builds the client used to reach SCIM targets.

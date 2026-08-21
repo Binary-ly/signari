@@ -78,6 +78,8 @@ a class of failure that shows up as data corruption rather than an error.
 | | |
 |---|---|
 | `signari idp add` / `idp list` | An upstream OIDC or OAuth provider |
+| `signari idp assertions` | Allow or refuse RFC 7523 assertions from a provider. See [jwt-bearer.md](jwt-bearer.md) |
+| `signari idp add-issuer` | Register a key-publishing issuer (GitHub Actions, Kubernetes) for the jwt-bearer grant |
 | `signari idp apple-secret` | Mint the client secret Apple requires (a signed JWT that expires) |
 | `signari google` / `signari entra` | Shorthands for the two most common ones |
 | `signari saml add-sp` / `saml list` | SAML service providers |

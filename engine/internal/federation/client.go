@@ -42,6 +42,16 @@ func (c Config) userinfoURL() string  { return pick(c.UserinfoOverride, c.Preset
 func (c Config) jwksURL() string      { return pick(c.JWKSOverride, c.Preset.JWKSURL) }
 func (c Config) issuer() string       { return pick(c.IssuerOverride, c.Preset.Issuer) }
 
+// Issuer and JWKSURL are the exported forms of the two resolutions above.
+//
+// They exist because a caller outside this package cannot otherwise learn a
+// provider's EFFECTIVE issuer, and the effective one is the only correct answer:
+// for a named kind the `issuer` column is empty and the value lives in the
+// preset, so anything matching on the column alone silently fails to recognise
+// every Google, Apple or Microsoft provider in the deployment.
+func (c Config) Issuer() string  { return c.issuer() }
+func (c Config) JWKSURL() string { return c.jwksURL() }
+
 // emailsURL is GitHub's separate verified-address endpoint. Derived from the
 // userinfo URL when the preset does not name one, so a GitHub Enterprise host
 // works without a second setting.
@@ -330,6 +340,17 @@ func (c Config) fetchJWKS(ctx context.Context, hc *http.Client) (*jose.JSONWebKe
 		return nil, fmt.Errorf("no JWKS URL is configured for this provider, so its " +
 			"id_token signature cannot be checked")
 	}
+	return fetchJWKSFrom(ctx, hc, u)
+}
+
+// fetchJWKSFrom is the transport half, split out so the cache and the
+// Config-based caller share ONE implementation of "what a JWKS response is
+// allowed to be".
+//
+// The response limit matters and is easy to lose in a refactor: without it a
+// provider -- or anything that can answer as one -- streams until we run out of
+// memory, on a path an unauthenticated caller can trigger.
+func fetchJWKSFrom(ctx context.Context, hc *http.Client, u string) (*jose.JSONWebKeySet, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err

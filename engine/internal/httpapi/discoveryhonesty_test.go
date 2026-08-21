@@ -39,6 +39,12 @@ func TestEveryAdvertisedGrantIsDispatched(t *testing.T) {
 func TestEveryDispatchedGrantIsAdvertised(t *testing.T) {
 	// Written out rather than derived, because deriving it from the same switch
 	// the other test reads would make both tests one test.
+	//
+	// This list was incomplete when found: it named six grants while
+	// ValidateGrantType accepted eight, so CIBA and the UMA ticket grant could
+	// have been dispatched-but-unadvertised and this test would have said
+	// nothing. That is the failure it exists to catch, missing for the two
+	// newest entries -- which is how a list maintained by hand goes stale.
 	dispatched := []string{
 		"authorization_code",
 		"refresh_token",
@@ -46,6 +52,9 @@ func TestEveryDispatchedGrantIsAdvertised(t *testing.T) {
 		oauth.GrantTypeDeviceCode,
 		oauth.GrantTypeTokenExchange,
 		oauth.GrantTypePreAuthorizedCode,
+		oauth.GrantTypeCIBA,
+		oauth.GrantTypeUMATicket,
+		oauth.GrantTypeJWTBearer,
 	}
 	md := buildHonestyMetadata(t)
 

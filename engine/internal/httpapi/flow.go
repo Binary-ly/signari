@@ -583,6 +583,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		s.handleUMAGrant(w, r, c)
 		return
 	}
+	if req.GrantType == oauth.GrantTypeJWTBearer {
+		s.handleJWTBearerGrant(w, r, c)
+		return
+	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

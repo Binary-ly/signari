@@ -282,7 +282,14 @@ func Build(cfg Config) (*Metadata, error) {
 			"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange",
 			"urn:ietf:params:oauth:grant-type:pre-authorized_code",
 			"urn:openid:params:grant-type:ciba",
-			"urn:ietf:params:oauth:grant-type:uma-ticket"},
+			"urn:ietf:params:oauth:grant-type:uma-ticket",
+			// RFC 7523 §2.1. Advertised because the ENGINE implements it, on the
+			// same footing as client_credentials -- which is advertised whether or
+			// not any client is registered for it. Whether a given deployment
+			// trusts any issuer is configuration, and a metadata document that
+			// changed shape according to how many rows were in a table would be
+			// unusable for the caching every relying party does.
+			"urn:ietf:params:oauth:grant-type:jwt-bearer"},
 
 		SubjectTypesSupported:   []string{"public"},
 		IDTokenSigningAlgValues: algNames,

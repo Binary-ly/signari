@@ -35,6 +35,18 @@ const (
 	// preset, because a SAML upstream's endpoints and certificate come from its
 	// metadata rather than from a list this package could know.
 	KindSAML Kind = "saml"
+	// KindAssertion only publishes signing keys. It is a trust anchor for the
+	// RFC 7523 jwt-bearer grant and is never signed in through: there is no
+	// authorization endpoint to send a browser to and no token endpoint to
+	// exchange a code at, because issuers of this shape -- GitHub Actions,
+	// Kubernetes service accounts, SPIFFE bundles -- publish a JWKS and nothing
+	// else.
+	//
+	// It has a preset entry, unlike KindSAML, only because PresetFor must
+	// succeed for it: the jwt-bearer lookup resolves every candidate's effective
+	// issuer through a preset. The entry is deliberately empty -- an assertion
+	// issuer's issuer and JWKS URL always come from its own row.
+	KindAssertion Kind = "assertion"
 )
 
 // Preset is the endpoint configuration and email-verification policy for a kind.
@@ -281,6 +293,19 @@ var presets = map[Kind]Preset{
 			"will refuse.",
 	},
 
+	KindAssertion: {
+		// No endpoints: see KindAssertion. Issuer and JWKS URL always come from
+		// the provider's own row.
+		//
+		// TrustsEmailVerification is false and the question does not really
+		// arise: this kind never provides an email address, because it never
+		// signs anybody in. It is answered rather than left blank because an
+		// operator comparing providers should not have to infer which of them
+		// the column applies to.
+		Note: "an assertion issuer publishes signing keys only -- it never signs " +
+			"anyone in and never supplies an email address, so there is no " +
+			"verification claim to trust or distrust",
+	},
 	KindOIDC: {
 		Scopes:                  []string{"openid", "email", "profile"},
 		OIDC:                    true,

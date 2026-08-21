@@ -82,6 +82,9 @@ type Stats struct {
 	ImpersonationsExpired int
 	// FederatedLoginsSwept are external sign-ins abandoned at the provider.
 	FederatedLoginsSwept int64
+	// AssertionsSwept are RFC 7523 replay records past the assertion's own
+	// expiry.
+	AssertionsSwept int64
 	// DPoPProofsSwept are proof identifiers past their replay window.
 	DPoPProofsSwept int64
 	// PushedRequestsSwept are PAR handles nobody redeemed.
@@ -184,6 +187,14 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	// live flow state for a flow nobody is going to finish.
 	if st.FederatedLoginsSwept, err = store.SweepExpiredFederatedLogins(ctx, tx); err != nil {
 		return st, fmt.Errorf("sweeping abandoned external logins: %w", err)
+	}
+
+	// RFC 7523 assertion identifiers past the assertion's own expiry. Keeping
+	// them longer protects nothing: an assertion past its `exp` is refused for
+	// being expired before this table is ever consulted, so the row would only
+	// be storing which workloads authenticated and when.
+	if st.AssertionsSwept, err = store.SweepUsedAssertions(ctx, tx); err != nil {
+		return st, fmt.Errorf("sweeping used assertions: %w", err)
 	}
 
 	// Pushed authorization requests nobody redeemed.

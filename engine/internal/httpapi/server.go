@@ -23,6 +23,7 @@ import (
 
 	"signari.dev/engine/internal/captcha"
 	"signari.dev/engine/internal/delegated"
+	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/oidc"
@@ -43,6 +44,11 @@ type Server struct {
 	jwks *bucket
 	// ssfKeys caches transmitters' signing keys.
 	ssfKeys *ssf.KeyFetcher
+	// assertionKeys caches trusted issuers' signing keys for the RFC 7523
+	// jwt-bearer grant. On the Server rather than per-request because a cache
+	// rebuilt per request is not a cache: it would put an outbound HTTP fetch on
+	// the token endpoint for every single grant.
+	assertionKeys federation.JWKSCache
 	// The marshalled key set, cached between rotations. See jwksBody.
 	jwksMu    sync.Mutex
 	jwksCache []byte

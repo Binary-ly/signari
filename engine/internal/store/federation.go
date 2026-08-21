@@ -47,6 +47,18 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 	if !enabled {
 		return nil, fmt.Errorf("identity provider %q is disabled", slug)
 	}
+	// An assertion issuer is not a sign-in provider and must never be reachable
+	// as one.
+	//
+	// It has no authorization endpoint, so /login/with/<slug> would build a
+	// redirect to the empty string -- a broken login button produced as a side
+	// effect of configuring a machine-to-machine trust. The schema also refuses
+	// allow_signup and allow_linking on this kind; this is the other half, at the
+	// one function the interactive path loads providers through.
+	if kind == string(federation.KindAssertion) {
+		return nil, fmt.Errorf("identity provider %q publishes assertion signing keys "+
+			"only and cannot be signed in through", slug)
+	}
 
 	c.Kind = federation.Kind(kind)
 	preset, err := federation.PresetFor(c.Kind)

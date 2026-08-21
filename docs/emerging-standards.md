@@ -482,3 +482,74 @@ because of something we do not do, so nothing fails when we start doing it.
 `TestBoxcarEntriesWouldMisreportAnOmittedSubject` does not assert the bug is absent
 — structurally it is not. It asserts that the reasoning above still holds, and
 skips itself with an instruction to delete it if the field ever becomes a pointer.
+
+## SSF 1.0 — the third pass finds a real one
+
+The decode-and-compare method does not transfer to SSF unchanged: our SET claims
+are `map[string]any`, so nothing is ever dropped and a round-trip corpus would
+report a clean sweep while proving nothing. The equivalent question for a
+permissive decoder is not "did a field survive" but "does the receiver reach the
+same conclusion the specification does". So the examples were pushed one layer
+further in — through subject resolution, which is where this subsystem's last
+defect lived.
+
+### The finding
+
+§3.1.4 says "Each Subject Member MUST refer to exactly one Subject Principal", and
+the receiver enforces it in two places: `sub_id` beside `subject` within an event,
+and the top-level `sub_id` beside either. Both call `subjectsDiffer`, which
+compared a fixed list of member names:
+
+```go
+for _, k := range []string{"format", "iss", "sub", "email", "phone_number", "uri"} {
+```
+
+That is the membership of RFC 9493's *simple* formats and nothing else. The
+identifier formats whose identity lives elsewhere were therefore invisible to it:
+
+| Format | Identity lives in | Compared before |
+|---|---|---|
+| §3.3 complex | `user`, `device`, `session`, `tenant`, … | **no** |
+| §3.2.6 aliases | `identifiers` | **no** |
+| opaque | `id` | **no** |
+| did | `url` | **no** |
+
+Two complex subjects — one naming alice, one naming mallory — agree on `format`
+("complex") and carry none of the six listed members. The loop compared six pairs
+of absent values, found no difference, and reported them as the same principal.
+The §3.1.4 check then passed, and a session-revocation SET naming two different
+people was **accepted**.
+
+Verified before it was believed and again after it was fixed: the two journey
+tests fail against the old comparison and pass against the new one, and the
+acceptance test — the same complex subject in both places, which is what a
+conformant transmitter emits — passes under both.
+
+### The fix, and why the list was the real defect
+
+`subjectsDiffer` now compares every member present in **either** object. That
+covers the four rows above and every format RFC 9493 has not yet registered.
+
+The list is worth dwelling on, because the missing member names were not an
+oversight so much as a maintenance obligation nobody could see: the comparison
+was correct when it was written, and became wrong when the code started accepting
+complex subjects — a change in a different file, which had no reason to know this
+list existed. Nothing connected the two. A comparison keyed on what is *present*
+has no such coupling, which is why the fix is a smaller thing than the list plus
+four names.
+
+`fmt.Sprint` is kept rather than `reflect.DeepEqual`: it preserves the existing
+tolerance for a transmitter that sends `1` where another sends `"1"`, and Go
+prints map keys in sorted order, so nested members compare stably.
+
+### What made it findable
+
+Not reading §3.1.4 — an earlier pass read it, quoted it, and implemented it. Not
+extracting the prohibitions — it is in the prohibition list and was checked off,
+correctly, because the rule *is* enforced. Both prose methods confirm a rule that
+exists. Only running actual subject shapes through the actual comparison shows the
+rule reaching six member names and stopping.
+
+That is the same shape as the session's other findings and it is worth stating as
+a general result: **a rule enforced in fewer places than its documentation claims
+is invisible to any method that reads the documentation.**

@@ -509,10 +509,39 @@ func ambiguousSubject(body map[string]any) bool {
 // §3.1.4 -- "Each Subject Member MUST refer to exactly one Subject Principal" --
 // covers both, and a receiver that enforces it in one place and not the other
 // lets the same contradiction through the other door.
+//
+// Every member present in EITHER object, not a fixed list of member names. The
+// fixed list was `format, iss, sub, email, phone_number, uri`, which is the
+// members of RFC 9493's simple formats and no others -- so two subjects whose
+// identity lives anywhere else compared as the same principal and the §3.1.4
+// check above passed on a SET naming two different people:
+//
+//	§3.3 complex   -- identity is in `user`/`device`/`session`/`tenant`/...
+//	§3.2.6 aliases -- identity is in `identifiers`
+//	opaque         -- identity is in `id`
+//	did            -- identity is in `url`
+//
+// A complex subject naming alice beside one naming mallory agreed on `format`
+// ("complex") and was absent from all five other keys, so the loop compared six
+// pairs of nothings and reported no difference. The union has no such blind spot
+// and needs no maintenance when a new identifier format is registered, which is
+// the actual failure here: the list had to be revisited every time RFC 9493 grew
+// and nothing made that obligation visible.
+//
+// fmt.Sprint rather than reflect.DeepEqual, deliberately: it keeps the existing
+// tolerance for a transmitter that sends 1 where another sends "1", and Go prints
+// map keys in sorted order, so nested members compare stably.
 func subjectsDiffer(a, b map[string]any) bool {
-	for _, k := range []string{"format", "iss", "sub", "email", "phone_number", "uri"} {
-		if fmt.Sprint(a[k]) != fmt.Sprint(b[k]) {
-			return true
+	seen := make(map[string]bool, len(a)+len(b))
+	for _, m := range []map[string]any{a, b} {
+		for k := range m {
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			if fmt.Sprint(a[k]) != fmt.Sprint(b[k]) {
+				return true
+			}
 		}
 	}
 	return false

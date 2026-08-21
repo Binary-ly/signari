@@ -932,3 +932,115 @@ func TestComplexSubjectScopesWeIgnoreAreRefusedWhenCritical(t *testing.T) {
 		t.Errorf("subject = %+v", got.Subject)
 	}
 }
+
+// §3.1.4 once more, for the subject shapes whose identity does not live in any of
+// the members the comparison used to name.
+//
+// `subjectsDiffer` compared a fixed list -- format, iss, sub, email,
+// phone_number, uri -- which is RFC 9493's simple formats and nothing else. Two
+// §3.3 complex subjects agree on `format` ("complex") and carry no member from
+// that list at all, so the comparison examined six pairs of absent values and
+// reported that alice and mallory were the same principal. The contradiction
+// check above then passed, and a session-revocation event naming two different
+// people was accepted.
+//
+// This is the whole journey rather than the comparison alone: a signed SET,
+// through Verify, refused by name. The unit-level version would pass against a
+// receiver that computed the difference correctly and then ignored it.
+func TestContradictoryComplexSubjectsAreRefused(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	claims := goodClaims(now)
+	claims["events"] = map[string]any{
+		EventSessionRevoked: map[string]any{
+			"subject": map[string]any{
+				"format": "complex",
+				"user":   map[string]any{"format": "email", "email": "alice@example.com"},
+			},
+			"event_timestamp": now.Unix(),
+		},
+	}
+	claims["sub_id"] = map[string]any{
+		"format": "complex",
+		"user":   map[string]any{"format": "email", "email": "mallory@example.com"},
+	}
+
+	_, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, claims, nil, tr.kid), now)
+	if err == nil {
+		t.Fatal("a SET whose event names alice and whose top-level sub_id names " +
+			"mallory was accepted; §3.1.4 requires a subject to refer to exactly " +
+			"one principal, and whichever one this receiver acts on, the other is " +
+			"either signed out without cause or left signed in without one")
+	}
+	if !strings.Contains(err.Error(), "different principals") {
+		t.Errorf("refused, but not as a subject contradiction: %v", err)
+	}
+}
+
+// The same blind spot for RFC 9493 §3.2.6 aliases, whose identity is the
+// `identifiers` array. Included because the fix must not be a special case for
+// `user`: the comparison now covers every member present in either object, and
+// this is the second shape that proves it.
+func TestContradictoryAliasSubjectsAreRefused(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	claims := goodClaims(now)
+	claims["events"] = map[string]any{
+		EventSessionRevoked: map[string]any{
+			"subject": map[string]any{
+				"format": "aliases",
+				"identifiers": []any{
+					map[string]any{"format": "email", "email": "alice@example.com"},
+				},
+			},
+			"event_timestamp": now.Unix(),
+		},
+	}
+	claims["sub_id"] = map[string]any{
+		"format": "aliases",
+		"identifiers": []any{
+			map[string]any{"format": "email", "email": "mallory@example.com"},
+		},
+	}
+
+	_, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, claims, nil, tr.kid), now)
+	if err == nil {
+		t.Fatal("a SET whose event and top-level sub_id carry different alias " +
+			"identifier lists was accepted as naming one principal")
+	}
+	if !strings.Contains(err.Error(), "different principals") {
+		t.Errorf("refused, but not as a subject contradiction: %v", err)
+	}
+}
+
+// The half that must not break: a member present in one object and absent from
+// the other is still a difference, but two objects that agree everywhere -- which
+// is what this engine's own transmitter emits, the same map under both keys --
+// must still pass. TestTheSameSubjectInBothPlacesIsFine covers the simple format;
+// this covers the shape the union comparison newly reaches into.
+func TestIdenticalComplexSubjectsInBothPlacesAreAccepted(t *testing.T) {
+	tr := newTransmitter(t)
+	now := time.Now()
+
+	subject := map[string]any{
+		"format": "complex",
+		"user":   map[string]any{"format": "email", "email": "alice@example.com"},
+	}
+	claims := goodClaims(now)
+	claims["events"] = map[string]any{
+		EventSessionRevoked: map[string]any{
+			"subject": subject, "event_timestamp": now.Unix(),
+		},
+	}
+	claims["sub_id"] = subject
+
+	if _, err := Verify(context.Background(), &KeyFetcher{}, tr.source(),
+		tr.sign(t, TypSET, claims, nil, tr.kid), now); err != nil {
+		t.Fatalf("a SET naming the same complex subject in both places was "+
+			"refused, so the contradiction check now rejects conformant events: %v", err)
+	}
+}

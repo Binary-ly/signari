@@ -1066,3 +1066,79 @@ unswept: V1 Encoding, V2 Validation, V5 File, V12 Secure Communication, V13
 Configuration, V15 Secure Coding.
 
 Four chapters taken off the dismissed list, four defects.
+
+
+## V1 Encoding and Sanitization: thirty requirements, no defects (21 August 2026)
+
+The first chapter off the dismissed list that produced nothing. Recorded in full
+anyway, because "we looked and found nothing" is only worth something if what was
+looked at is written down — and because four chapters in a row producing a defect
+had started to feel like a rule rather than a sample.
+
+The reason it is clean is not luck. V1 is the injection chapter, and the injection
+classes here were each addressed where they arise: SQL in the store layer, XML in
+the SAML reviews, SSRF in `internal/safedial`, output encoding by using
+`html/template` everywhere instead of building HTML.
+
+### Checked, with the evidence
+
+| Requirement | Verdict |
+|---|---|
+| V1.1.1 decode once, when expected | met — the only unescaping is `parseBasic`, which decodes client credentials **once**, in the Basic-auth path only, because RFC 6749 §2.3.1 form-urlencodes them before base64. Nothing decodes a value a second time |
+| V1.1.2 encode at the interpreter | met — `html/template` escapes by context at render |
+| V1.2.1 context-correct output encoding | met — every page renders through `html/template`; **two** sites bypass it and both are examined below |
+| V1.2.2 safe URL protocols | met — brand logo and support URLs must begin `https://`, enforced in `Brand.Validate`, called from `SaveBrand`, which is the only write path. `html/template` would neutralise `javascript:` in an `href` regardless, so this is two gates |
+| V1.2.3 JSON/JavaScript encoding | met — `encoding/json` throughout, never string-built |
+| V1.2.4 SQL injection | met — every query is parameterized. A scan for `Query`/`Exec`/`QueryRow` combined with `Sprintf` or string concatenation returns **one** hit, and it is a URL being built, not SQL |
+| V1.2.5 OS command injection | met — exactly one `exec.CommandContext` in the engine (kadmin, for Kerberos principal sync). Arguments are a slice, so no shell is involved, and every value in it is operator configuration: realm, principal, keytab path, and the literal query `list_principals`. No end-user input reaches it |
+| V1.2.6 LDAP injection | met — and this one was worth checking properly, because the engine both serves LDAP and consumes it. The sync filter is either an operator-configured string or one of three constants, and the base DN is configuration. **No end-user value is interpolated into a filter or a DN anywhere**, which is why there is no `EscapeFilter` call to find |
+| V1.2.7 XPath injection | n/a — no XPath |
+| V1.2.8 LaTeX | n/a |
+| V1.2.9 regex metacharacters | met vacuously and verifiably: **zero** regular expressions are compiled from a variable. Every `regexp.MustCompile` in the engine takes a literal |
+| V1.2.10 CSV/formula injection | n/a — the audit export is JSON |
+| V1.3.1 HTML sanitization | n/a — no rich-text input |
+| V1.3.2 no `eval` | n/a — Go, and no dynamic evaluation |
+| V1.3.3 sanitize for dangerous contexts | met — see V1.3.11 |
+| V1.3.4 SVG sanitization | **met by construction**, see below |
+| V1.3.5 scriptable templates | n/a — templates are compiled in, never built from input |
+| V1.3.6 SSRF | met — `internal/safedial` checks at dial time, including IPv4-mapped IPv6 |
+| V1.3.7 template injection | met — no template is constructed from untrusted input |
+| V1.3.8 JNDI | n/a |
+| V1.3.9 memcache | n/a |
+| V1.3.10 format strings | met — no format string comes from input |
+| V1.3.11 SMTP injection | met, deliberately: `sanitiseHeader` strips CR and LF from `From` and `To`, the subject is RFC 2047 Q-encoded after newline stripping, and the comment names the attack ("an attacker-chosen display name could otherwise append `Bcc:`"). Go's `net/smtp` independently rejects CR/LF in `Rcpt` |
+| V1.3.12 ReDoS | met — no regex is built from input, and the literals are simple |
+| V1.4.1–V1.4.3 memory safety | n/a — Go, no unsafe, no cgo in the engine |
+| V1.5.1 XXE | met, and thoroughly: `scanForUnsafeConstructs` walks the raw token stream and refuses DOCTYPE declarations **and comments** before any parser touches the document, then `dec.Entity = nil` and `dec.Strict = true` are set explicitly with a comment saying they restate a safe default so that changing it is a deliberate act. Comment refusal is the signature-wrapping defence, not decoration |
+| V1.5.2 safe deserialization | met — JSON into typed structs; no gob, no XML into `any` |
+| V1.5.3 consistent parsers | met — one JSON library, one XML path, one URL parser |
+
+### The two places escaping is bypassed, and why both are safe
+
+`internal/httpapi/enrol.go` is the only file that constructs pre-trusted markup:
+
+**`template.HTML(qrSVG)`** — the TOTP enrolment QR code. The obvious worry is that
+the code encodes an `otpauth://` URI containing the user's own email address, so an
+address like `</svg><script>` would be attacker-controlled content going into the
+page unescaped.
+
+It cannot be. `qr.Code.SVG` emits **integers only** — `%d` for the viewBox, the
+rect, and every path segment. The payload lives in the QR modules, which are
+geometry, not text. No caller-supplied string reaches the markup at any point.
+That is safe by construction rather than by escaping, which is the stronger of the
+two.
+
+**`template.URL(uri)`** — the same `otpauth://` URI as a link. This bypasses
+`html/template`'s URL *protocol* filtering, which is the point (`otpauth:` is not
+on its safe list), but the value is still HTML-attribute escaped, so it cannot
+break out of the attribute. The scheme is a constant in our own code.
+
+### Chapter coverage after this pass
+
+**265 of 345.** V1 joins V3, V4, V6, V7, V8, V9, V10, V11, V14, V16 and V17.
+Still unswept: V2 Validation, V5 File, V12 Secure Communication, V13
+Configuration, V15 Secure Coding — **80 requirements**.
+
+Five chapters off the dismissed list, four defects. The dismissal was wrong four
+times out of five, and this fifth chapter is the one where it happened to be
+right — for a reason that is visible in the table above rather than assumed.

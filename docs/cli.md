@@ -1,10 +1,5 @@
 # `signari` — command reference
 
-> Related: [comparison-matrix.md](comparison-matrix.md) (how we compare, with
-> evidence markers), [benchmarks.md](benchmarks.md) (measured numbers and method),
-> [roadmap-standards.md](roadmap-standards.md) (what the working groups are doing).
-
-
 Every command the binary dispatches. Kept complete by a test
 (`TestEveryCommandIsDocumented`), because the usual failure is not a page that
 rots — it is a command that ships and is never written down, which nobody finds,
@@ -47,7 +42,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari invite create` / `invite list` | Invitations |
 | `signari signup enable` / `signup disable` / `signup show` | Self-service sign-up, and which email domains may use it |
 | `signari registration enable` / `registration token` | Dynamic client registration (RFC 7591) |
-| `signari delete` | Erasure. Crypto-shredding, see [erasure.md](erasure.md) |
+| `signari delete` | Erasure by crypto-shredding: the subject's data-encryption key is destroyed, so ciphertext in backups is unreadable without rewriting them |
 
 ## Clients
 

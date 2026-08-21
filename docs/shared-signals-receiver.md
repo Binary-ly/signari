@@ -290,8 +290,7 @@ receives holds.**
 Not implemented on the transmitter side, for the record:
 the section 8 stream management API, RISC events, and an opt-out legacy
 Apple SSE CAEP profile.
- The corrected picture is in
-[comparison-matrix.md](comparison-matrix.md).
+
 
 ## Second pass: §3 Subject Identifiers, and a wire-format defect (21 August 2026)
 

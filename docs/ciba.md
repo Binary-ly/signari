@@ -109,4 +109,3 @@ what it says.
 
 - [device-flow.md](device-flow.md) — the sibling flow, and where the polling
   discipline is documented
-- [protocol-review-device.md](protocol-review-device.md)

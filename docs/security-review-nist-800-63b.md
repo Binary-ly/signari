@@ -180,8 +180,8 @@ person the attacker names.
 So the honest statement is not "met" and not "missed": it is a **known deviation
 from a SHALL, taken to avoid a worse failure mode**, and it belongs in a
 conformance conversation rather than in a tick-box. A deployment that needs
-AAL2 conformance on paper needs to know about it, which is why it is now in
-[TODO-FOR-YOU.md](../TODO-FOR-YOU.md) as a decision rather than settled here.
+AAL2 conformance on paper needs to know about it, which is why it is recorded
+as an open decision rather than settled here.
 
 What would close it without the DoS: a very high consecutive-failure counter
 (100, reset on any success) that triggers a *step-up requirement* rather than a
@@ -283,7 +283,7 @@ mid-enrolment (refuse the binding, or bind and log?), and whether an SMS-enrolle
 account should be told by mail or by SMS. Getting that wrong makes enrolment
 fragile in a way users experience immediately.
 
-It is in [TODO-FOR-YOU.md](../TODO-FOR-YOU.md) as **9h**, and it is the first
+It is recorded as open decision **9h**, and it is the first
 NIST gap this review has found that is a plain **SHALL** with no deviation
 argument behind it — unlike §3.2.2's rate limiting, where the deviation is
 deliberate and defensible.

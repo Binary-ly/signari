@@ -42,6 +42,12 @@ type tokenFixture struct {
 	userID   string
 	clientID string
 	sid      string
+
+	// exchangeSecret is set by enableExchange. Token exchange requires a
+	// confidential client -- a public one cannot prove it is the client the
+	// permission was granted to -- so enabling exchange necessarily means giving
+	// the fixture a secret and using it.
+	exchangeSecret string
 }
 
 func newTokenFixture(t *testing.T) *tokenFixture {

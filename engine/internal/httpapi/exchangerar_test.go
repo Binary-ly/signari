@@ -27,11 +27,16 @@ const exchangeAudience = "https://downstream.example/api"
 
 func (f *tokenFixture) enableExchange(t *testing.T) {
 	t.Helper()
+	secret, hash := newTestSecret(t)
 	if _, err := f.pool.Exec(context.Background(),
-		`UPDATE core.clients SET may_exchange = true, exchange_audiences = $2
-		 WHERE client_id = $1`, f.clientID, []string{exchangeAudience}); err != nil {
+		`UPDATE core.clients
+		    SET may_exchange = true, exchange_audiences = $2,
+		        client_type = 'confidential', client_secret_hash = $3
+		  WHERE client_id = $1`,
+		f.clientID, []string{exchangeAudience}, hash); err != nil {
 		t.Fatal(err)
 	}
+	f.exchangeSecret = secret
 }
 
 // subjectTokenWithDetails runs a real authorization-code redemption so the
@@ -41,11 +46,20 @@ func (f *tokenFixture) subjectTokenWithDetails(t *testing.T, verifier string,
 
 	t.Helper()
 	code := f.issueCodeWithDetails(t, verifier, details)
-	status, body := f.post(t, url.Values{
+	form := url.Values{
 		"grant_type": {"authorization_code"}, "code": {code},
 		"client_id": {f.clientID}, "redirect_uri": {"https://rp.test/cb"},
 		"code_verifier": {verifier},
-	})
+	}
+	// enableExchange makes the fixture confidential, because token exchange is
+	// not available to a public client. That applies to THIS redemption too, so
+	// the secret is presented whenever one exists — otherwise the order in which
+	// a test calls enableExchange decides whether its subject token can be
+	// obtained at all.
+	if f.exchangeSecret != "" {
+		form.Set("client_secret", f.exchangeSecret)
+	}
+	status, body := f.post(t, form)
 	if status != http.StatusOK {
 		t.Fatalf("redemption gave %d: %v", status, body)
 	}
@@ -66,6 +80,7 @@ func TestExchangeCarriesTheSubjectTokensAuthorizationDetails(t *testing.T) {
 
 	status, body := f.post(t, url.Values{
 		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"client_secret":      {f.exchangeSecret},
 		"subject_token":      {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 		"audience":           {exchangeAudience},
@@ -98,6 +113,7 @@ func TestExchangeRefusesDetailsWiderThanTheSubjectTokenCarried(t *testing.T) {
 	// `cancel` was never granted to the subject token.
 	status, body := f.post(t, url.Values{
 		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"client_secret":      {f.exchangeSecret},
 		"subject_token":      {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 		"audience":           {exchangeAudience},
@@ -129,6 +145,7 @@ func TestExchangeAllowsNarrowingTheDetails(t *testing.T) {
 
 	status, body := f.post(t, url.Values{
 		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"client_secret":      {f.exchangeSecret},
 		"subject_token":      {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 		"audience":           {exchangeAudience},
@@ -164,6 +181,7 @@ func TestAnExchangedTokenIsBoundToTheCallersDPoPKey(t *testing.T) {
 
 	status, body := f.postDPoP(t, url.Values{
 		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"client_secret":      {f.exchangeSecret},
 		"subject_token":      {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 		"audience":           {exchangeAudience},
@@ -196,6 +214,7 @@ func TestAnExchangeWithoutAProofIsStillBearer(t *testing.T) {
 
 	status, body := f.post(t, url.Values{
 		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"client_secret":      {f.exchangeSecret},
 		"subject_token":      {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 		"audience":           {exchangeAudience},
@@ -239,6 +258,8 @@ func TestABoundSubjectTokenCannotBeExchangedByAnotherKey(t *testing.T) {
 		"grant_type": {"authorization_code"}, "code": {code},
 		"client_id": {f.clientID}, "redirect_uri": {"https://rp.test/cb"},
 		"code_verifier": {"verifier-exchange-bound-aaaaaaaaaaaaaaaaaaaa"},
+		// Confidential since enableExchange; see subjectTokenWithDetails.
+		"client_secret": {f.exchangeSecret},
 	}, victim.proof(t, "jti-bound-issue-1"))
 	if status != http.StatusOK {
 		t.Fatalf("redemption gave %d: %v", status, body)
@@ -250,6 +271,7 @@ func TestABoundSubjectTokenCannotBeExchangedByAnotherKey(t *testing.T) {
 
 	status, body = f.postDPoP(t, url.Values{
 		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"client_secret":      {f.exchangeSecret},
 		"subject_token":      {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 		"audience":           {exchangeAudience},
@@ -265,6 +287,7 @@ func TestABoundSubjectTokenCannotBeExchangedByAnotherKey(t *testing.T) {
 	// And with no proof at all.
 	status, body = f.post(t, url.Values{
 		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"client_secret":      {f.exchangeSecret},
 		"subject_token":      {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 		"audience":           {exchangeAudience},
@@ -301,6 +324,7 @@ func TestTheHolderOfABoundSubjectTokenCanStillExchangeIt(t *testing.T) {
 		"grant_type": {"authorization_code"}, "code": {code},
 		"client_id": {f.clientID}, "redirect_uri": {"https://rp.test/cb"},
 		"code_verifier": {"verifier-exchange-bound-bbbbbbbbbbbbbbbbbbbb"},
+		"client_secret": {f.exchangeSecret},
 	}, holder.proof(t, "jti-bound-issue-2"))
 	if status != http.StatusOK {
 		t.Fatalf("redemption gave %d: %v", status, body)
@@ -309,6 +333,7 @@ func TestTheHolderOfABoundSubjectTokenCanStillExchangeIt(t *testing.T) {
 
 	status, body = f.postDPoP(t, url.Values{
 		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"client_secret":      {f.exchangeSecret},
 		"subject_token":      {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 		"audience":           {exchangeAudience},
@@ -330,6 +355,7 @@ func TestAnUnboundSubjectTokenStillExchangesWithoutAProof(t *testing.T) {
 
 	status, body := f.post(t, url.Values{
 		"grant_type":         {oauth.GrantTypeTokenExchange},
+		"client_secret":      {f.exchangeSecret},
 		"subject_token":      {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 		"audience":           {exchangeAudience},

@@ -2297,7 +2297,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		return
 	}
 
-	granted, audience, terr := oauth.ValidateExchange(ex, c.MayExchange, c.ExchangeAudiences,
+	granted, audience, terr := oauth.ValidateExchange(ex, c.Type == "confidential", c.MayExchange, c.ExchangeAudiences,
 		c.ClientID, splitScopes(subject.Scope))
 	if terr != nil {
 		writeTokenError(w, terr)

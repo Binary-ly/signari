@@ -40,12 +40,13 @@ func (f *tokenFixture) txnToken(t *testing.T, subject, subjectType, scope string
 	t.Helper()
 	return f.post(t, url.Values{
 		"grant_type":           {oauth.GrantTypeTokenExchange},
+		"client_id":            {f.clientID},
+		"client_secret":        {f.exchangeSecret},
 		"requested_token_type": {txntoken.TokenType},
 		"subject_token":        {subject},
 		"subject_token_type":   {subjectType},
 		"audience":             {exchangeAudience},
 		"scope":                {scope},
-		"client_id":            {f.clientID},
 	})
 }
 

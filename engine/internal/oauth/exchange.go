@@ -90,9 +90,16 @@ func splitScope(s string) []string {
 // delegation". We gate per client rather than per subject token, which is
 // coarser and always on. If may_act is implemented later it belongs beside the
 // actor-token branch, not here.
-func ValidateExchange(req ExchangeRequest, mayExchange bool, allowedAudiences []string,
-	callerClientID string, subjectScopes []string) (granted []string, aud []string, e *TokenError) {
+func ValidateExchange(req ExchangeRequest, confidential, mayExchange bool,
+	allowedAudiences []string, callerClientID string,
+	subjectScopes []string) (granted []string, aud []string, e *TokenError) {
 
+	if !confidential {
+		return nil, nil, tokenErr("invalid_client",
+			"token exchange requires a confidential client; a public client cannot "+
+				"prove it is the client this permission was granted to, so anyone "+
+				"holding the subject token could exchange it")
+	}
 	if !mayExchange {
 		// Off by default. A client that was never granted exchange must not be
 		// able to discover it by trying.

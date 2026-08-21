@@ -26,14 +26,20 @@ func TestMayActIsEnforcedAtTheTokenEndpoint(t *testing.T) {
 	f := newTokenFixture(t)
 	ctx := context.Background()
 
+	// Confidential, because token exchange is not available to a public client:
+	// `may_exchange` says "this client may act for that user", and a public
+	// client cannot prove it is that client.
+	secret, hash := newTestSecret(t)
 	if _, err := f.pool.Exec(ctx, `
 		UPDATE core.clients
 		   SET may_exchange = true,
 		       exchange_audiences = ARRAY['https://api.example'],
+		       client_type = 'confidential', client_secret_hash = $2,
 		       grant_types = grant_types || ARRAY['urn:ietf:params:oauth:grant-type:token-exchange']
-		 WHERE client_id = $1`, f.clientID); err != nil {
+		 WHERE client_id = $1`, f.clientID, hash); err != nil {
 		t.Fatal(err)
 	}
+	f.exchangeSecret = secret
 
 	mint := func(t *testing.T, mayAct map[string]any) string {
 		t.Helper()
@@ -62,7 +68,8 @@ func TestMayActIsEnforcedAtTheTokenEndpoint(t *testing.T) {
 				"&subject_token=" + subjectToken +
 				"&subject_token_type=urn:ietf:params:oauth:token-type:access_token" +
 				"&audience=https://api.example" +
-				"&client_id=" + f.clientID)
+				"&client_id=" + f.clientID +
+				"&client_secret=" + f.exchangeSecret)
 		req := httptest.NewRequest(http.MethodPost, oidc.PathToken, form)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		rec := httptest.NewRecorder()

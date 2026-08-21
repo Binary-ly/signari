@@ -27,37 +27,46 @@ import (
 // test and name the wrong party as current in every multi-hop one.
 
 // secondExchangeClient registers another client permitted to exchange.
-func secondExchangeClient(t *testing.T, f *tokenFixture) string {
+// secondExchangeClient is a second client permitted to exchange, so the actor
+// chain has more than one link.
+//
+// Confidential, like the fixture: token exchange is not available to a public
+// client, which cannot prove it is the client the permission was granted to.
+func secondExchangeClient(t *testing.T, f *tokenFixture) (string, string) {
 	t.Helper()
 	id := f.clientID + "-b"
 	ctx := context.Background()
+	secret, hash := newTestSecret(t)
 	if _, err := f.pool.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 		                          client_secret_hash, grant_types, scopes,
 		                          require_pkce, may_exchange, exchange_audiences)
-		VALUES ($1,$2,'B','public','', ARRAY['authorization_code','refresh_token'],
+		VALUES ($1,$2,'B','confidential',$4, ARRAY['authorization_code','refresh_token'],
 		        ARRAY['openid','offline_access'], true, true, $3)`,
-		id, f.orgID, []string{exchangeAudience}); err != nil {
+		id, f.orgID, []string{exchangeAudience}, hash); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(context.Background(),
 			`DELETE FROM core.clients WHERE client_id = $1`, id)
 	})
-	return id
+	return id, secret
 }
 
 func TestTheActorChainNestsOldestDeepest(t *testing.T) {
 	f := newTokenFixture(t)
 	f.enableExchange(t)
-	clientB := secondExchangeClient(t, f)
+	clientB, clientBSecret := secondExchangeClient(t, f)
 
 	subject := f.mintAccessTokenWithScope(t, []string{"read"})
 
-	exchange := func(token, asClient string) string {
+	// Each client authenticates as itself: the whole point of the chain is that
+	// the parties are distinct, so they cannot share a secret.
+	exchange := func(token, asClient, asSecret string) string {
 		t.Helper()
 		status, body := f.post(t, url.Values{
 			"grant_type":         {oauth.GrantTypeTokenExchange},
+			"client_secret":      {asSecret},
 			"subject_token":      {token},
 			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 			"audience":           {exchangeAudience},
@@ -75,7 +84,7 @@ func TestTheActorChainNestsOldestDeepest(t *testing.T) {
 	}
 
 	// Hop one: the fixture's client acts for the subject.
-	first := exchange(subject, f.clientID)
+	first := exchange(subject, f.clientID, f.exchangeSecret)
 	claims := decodeJWTPayload(t, first)
 
 	act, ok := claims["act"].(map[string]any)
@@ -92,7 +101,7 @@ func TestTheActorChainNestsOldestDeepest(t *testing.T) {
 	}
 
 	// Hop two: a different client exchanges the result.
-	second := exchange(first, clientB)
+	second := exchange(first, clientB, clientBSecret)
 	claims = decodeJWTPayload(t, second)
 
 	act, ok = claims["act"].(map[string]any)

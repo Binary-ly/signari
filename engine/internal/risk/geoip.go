@@ -3,10 +3,13 @@ package risk
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/oschwald/maxminddb-golang/v2"
 )
 
 // Resolver turns an address into a coarse position.
@@ -78,25 +81,112 @@ func NewResolver() Resolver {
 		// and the check will report that it did not run, which is true.
 		return &missingResolver{path: path}
 	}
-	// A real MaxMind reader goes here. Deliberately not implemented against a
-	// database this repository cannot test with: a lookup written blind is a
-	// lookup nobody has ever seen return the right answer.
-	return &missingResolver{path: path}
+	db, err := maxminddb.Open(path)
+	if err != nil {
+		// Present but not a usable database: truncated, wrong format, or a
+		// different MaxMind product than expected. Same rule as above -- an
+		// optional file that is broken must not stop anybody signing in, and the
+		// operator is told the difference at startup.
+		return &missingResolver{path: path, reason: err.Error()}
+	}
+	return &mmdbResolver{db: db, path: path}
 }
+
+// mmdbResolver reads a MaxMind-format database.
+//
+// The reader is opened ONCE, at construction. Opening per lookup would put a
+// file open on the sign-in path, and the library's Reader is safe for concurrent
+// use, so there is nothing to gain by reopening it.
+//
+// Only three fields are decoded -- country, latitude, longitude. A GeoIP2-City
+// record carries a great deal more (postcode, subdivisions, accuracy radius,
+// city names in a dozen languages), and none of it is wanted here: the travel
+// check needs a position, and every extra field decoded is a field that ends up
+// somewhere it was not meant to go.
+type mmdbResolver struct {
+	db   *maxminddb.Reader
+	path string
+}
+
+// cityRecord is the minimum subset of the GeoIP2/GeoLite2 City schema.
+type cityRecord struct {
+	Country struct {
+		ISOCode string `maxminddb:"iso_code"`
+	} `maxminddb:"country"`
+	Location struct {
+		Latitude  float64 `maxminddb:"latitude"`
+		Longitude float64 `maxminddb:"longitude"`
+	} `maxminddb:"location"`
+}
+
+func (m *mmdbResolver) Resolve(ipStr string) Location {
+	ip, ok := ParseIP(ipStr)
+	if !ok {
+		return Location{Known: false}
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return Location{Known: false}
+	}
+	// Unmapped explicitly, and the honest note is that this is belt to the
+	// library's braces rather than a fix for a live bug.
+	//
+	// An earlier comment here claimed an IPv4 address arriving as ::ffff:a.b.c.d
+	// would miss an IPv4 network in the database. Checked, and that is not what
+	// happens: net.ParseIP returns SIXTEEN bytes for a dotted-quad too, so both
+	// spellings reach this point identically, and the reader resolves either form.
+	// Removing the Unmap changes no test.
+	//
+	// It stays because the intent should not depend on a library's normalisation
+	// staying the same, and it costs nothing. The claim that it fixes something
+	// does not stay, because a reason that does not hold is worth correcting even
+	// when the code it justifies is fine.
+	res := m.db.Lookup(addr.Unmap())
+	if !res.Found() {
+		return Location{Known: false}
+	}
+	var rec cityRecord
+	if err := res.Decode(&rec); err != nil {
+		// A record that will not decode is not a reason to fail a sign-in.
+		return Location{Known: false}
+	}
+	// A row with no coordinates is common -- anonymous proxies and satellite
+	// ranges resolve to a country and nothing else. Reporting 0,0 for those would
+	// place them in the Gulf of Guinea and make every one look like impossible
+	// travel, which is the same trap the static resolver refuses to fall into.
+	if rec.Location.Latitude == 0 && rec.Location.Longitude == 0 {
+		return Location{Known: false}
+	}
+	return Location{
+		Country:   rec.Country.ISOCode,
+		Latitude:  rec.Location.Latitude,
+		Longitude: rec.Location.Longitude,
+		Known:     true,
+	}
+}
+
+// Close releases the database. Used by tests; the process-lifetime resolver has
+// no need of it.
+func (m *mmdbResolver) Close() error { return m.db.Close() }
 
 // missingResolver reports the same "unknown" as the null one, and remembers why,
 // so an operator can be told the difference between "not configured" and
 // "configured and not working".
 type missingResolver struct {
-	path string
-	once sync.Once
+	path   string
+	reason string
+	once   sync.Once
 }
 
 func (m *missingResolver) Resolve(string) Location { return Location{Known: false} }
 
 // Why explains the resolver's state for a startup log.
 func (m *missingResolver) Why() string {
-	return "SIGNARI_GEOIP_DB is set to " + m.path + " but no reader is built in yet; " +
+	if m.reason != "" {
+		return "SIGNARI_GEOIP_DB is set to " + m.path + " but it could not be opened (" +
+			m.reason + "); impossible-travel checks will report that they did not run"
+	}
+	return "SIGNARI_GEOIP_DB is set to " + m.path + " but the file could not be read; " +
 		"impossible-travel checks will report that they did not run"
 }
 

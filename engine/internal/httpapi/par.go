@@ -60,21 +60,16 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 
 	// Duplicate parameters are REFUSED, not resolved by taking the first.
 	//
-	// RFC 6749 §3.1: a request must not include a parameter more than once. The
-	// tempting behaviour -- take the first, ignore the rest -- is parameter
-	// pollution: whether the first or the last wins differs between servers,
-	// proxies and libraries, so a request carrying two `redirect_uri` values can
-	// be validated against one and acted on with the other.
+	// The rule and its reasoning now live in dupeparams.go, because this was the
+	// only endpoint that had it -- and the two that issue a code and a token did
+	// not. Moving it also fixed the other half: this loop refused EVERY repeat,
+	// including `resource`, which RFC 8707 §2 explicitly permits more than once.
 	//
 	// Found while writing a test that accidentally sent two, and got a success
 	// because the valid one happened to come first.
-	for name, values := range r.PostForm {
-		if len(values) > 1 {
-			writeError(w, http.StatusBadRequest, "invalid_request",
-				fmt.Sprintf("the parameter %q appears %d times; each may appear at most once",
-					name, len(values)))
-			return
-		}
+	if err := refuseDuplicateParams(r.PostForm); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
 	}
 
 	// A `request_uri` in a PUSHED request would be a handle referring to another
@@ -173,7 +168,14 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Everything the client sent, kept verbatim.
-	params := map[string]string{}
+	//
+	// Every VALUE, not the first of each: this was `map[string]string` taking
+	// `v[0]`, which meant a repeatable parameter could not survive a push even in
+	// principle. With the duplicate rule above now allowing `resource` more than
+	// once, storing only the first would have turned an explicit refusal into a
+	// silent loss of an audience restriction the client asked for -- strictly
+	// worse than the refusal it replaced.
+	params := map[string][]string{}
 	for k, v := range r.PostForm {
 		switch k {
 		case "client_secret", "client_assertion", "client_assertion_type":
@@ -183,7 +185,7 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if len(v) > 0 {
-			params[k] = v[0]
+			params[k] = v
 		}
 	}
 
@@ -247,9 +249,13 @@ func (s *Server) consumePushedRequest(ctx context.Context, requestURI, clientID 
 		return nil, fmt.Errorf("this request_uri was issued to a different client")
 	}
 
-	var params map[string]string
+	var params map[string][]string
 	if err := json.Unmarshal(blob, &params); err != nil {
-		return nil, err
+		// A row written by an older build stored one string per name. Pushed
+		// requests live 90 seconds, so this can only be seen during a deploy, and
+		// refusing is right: the alternative is decoding a request whose shape we
+		// are guessing at.
+		return nil, fmt.Errorf("this request_uri was stored in an older format; push it again")
 	}
 	out := url.Values{}
 	// The thumbprint from the column wins over any in the stored parameters.
@@ -267,7 +273,7 @@ func (s *Server) consumePushedRequest(ctx context.Context, requestURI, clientID 
 		if k == "dpop_jkt" && out.Get("dpop_jkt") != "" {
 			continue
 		}
-		out.Set(k, v)
+		out[k] = append([]string(nil), v...)
 	}
 	return out, nil
 }

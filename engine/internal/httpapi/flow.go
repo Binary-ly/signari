@@ -46,6 +46,17 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	query := r.URL.Query()
 
+	// RFC 6749 §3.1, before anything reads a parameter.
+	//
+	// Rendered locally rather than redirected, and the ordering is the point: a
+	// request carrying two `redirect_uri` values must not be answered by
+	// redirecting to either of them. This is the endpoint the rule exists for --
+	// it was previously enforced only at PAR, which does not redirect at all.
+	if err := refuseDuplicateParams(query); err != nil {
+		s.renderAuthzFailure(w, r, err.Error())
+		return
+	}
+
 	// # Redeeming a pushed request
 	//
 	// When request_uri is present, the pushed parameters REPLACE the query
@@ -449,6 +460,14 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
 			Description: "malformed form body", Status: http.StatusBadRequest})
+		return
+	}
+
+	// RFC 6749 §3.1. Same rule as the authorization endpoint, applied here
+	// because this is where a duplicate `code` or `client_id` would be redeemed.
+	if err := refuseDuplicateParams(r.PostForm); err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: err.Error(), Status: http.StatusBadRequest})
 		return
 	}
 

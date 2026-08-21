@@ -1233,3 +1233,126 @@ Coding (21) — **47 requirements**.
 Seven chapters off the dismissed list, four defects. The last three chapters have
 each come back clean, which is worth as much as the earlier four coming back
 dirty: it says the sweep is discriminating rather than manufacturing findings.
+
+
+## V2, V5 and V15: the last three chapters (21 August 2026)
+
+Forty-seven requirements. **ASVS 5.0.0 is now swept end to end — 345 of 345.**
+
+### The finding: the duplicate-parameter rule was enforced at one endpoint
+
+RFC 6749 §3.1 — "Request and response parameters MUST NOT be included more than
+once" — is also ASVS V15.3.7's parameter-pollution defence.
+
+This codebase already knew why it mattered. The reasoning was written out at the
+PAR endpoint, and it is right:
+
+> "The tempting behaviour — take the first, ignore the rest — is parameter
+> pollution: whether the first or the last wins differs between servers, proxies
+> and libraries, so a request carrying two `redirect_uri` values can be validated
+> against one and acted on with the other."
+
+It was applied **at PAR and nowhere else**. The authorization endpoint and the
+token endpoint had no check — the two endpoints that actually issue a code and a
+token, and the two that sit behind a browser and a proxy. The endpoint where a
+duplicate `redirect_uri` matters most is the one that redirects, and PAR does not
+redirect at all.
+
+The mutation shows it plainly. With the guard removed, a request carrying
+`redirect_uri` twice is answered:
+
+```
+Location: https://rp.test/cb?error=invalid_request&...&iss=https://token-test.example
+```
+
+The server took the **first** value and redirected to it. A proxy that read the
+last would have seen `evil.test`, and that disagreement is the whole attack.
+
+### The same guard had the opposite flaw
+
+PAR refused **every** repeat — including `resource`, which RFC 8707 §2 explicitly
+permits more than once and which this server reads as a list everywhere else
+(`q["resource"]`, capped at eight). So a conformant client using two resource
+indicators through PAR was refused.
+
+The rule is now "at most once, unless a specification says otherwise", with the
+exceptions named (`resource`, RFC 8707 §2; `audience`, RFC 8693 §2.1) rather than
+inferred from whether the code happens to read a list.
+
+Allowing the repeat exposed a second layer: PAR stored `map[string]string` and
+kept `v[0]`, so a repeated parameter could not survive a push **even in
+principle**. Relaxing the guard without fixing that would have turned an explicit
+refusal into the silent loss of an audience restriction the client asked for —
+strictly worse than the refusal it replaced. Storage and replay are now
+multi-valued end to end.
+
+### V5 File Handling: thirteen requirements, none applicable
+
+Verified rather than assumed: `multipart`, `FormFile` and `ParseMultipartForm`
+appear **zero** times outside tests. There is no upload surface, so V5.2 through
+V5.4 have nothing to attach to. The files this engine reads — certificate
+bundles, the GeoIP database — are operator-supplied CLI paths, which V5.3.2
+addresses only for *user*-submitted names.
+
+### V2 Validation and Business Logic
+
+| Requirement | Verdict |
+|---|---|
+| V2.1.1–V2.1.3 documented validation rules and limits | partial — validation is enforced and commented at each site; there is no single document of every rule and limit |
+| V2.2.1 positive validation | met — scopes, response types, grant types, redirect URIs, client auth methods and stage names are all closed sets checked against allow lists |
+| V2.2.2 validation at a trusted service layer | met — no security decision depends on client-side checks; the sign-in form needs no JavaScript at all |
+| V2.2.3 related items reasonable together | met — e.g. `code_challenge_method` without `code_challenge` is refused, `prompt=none` with other values is refused (§3.1.2.1) |
+| V2.3.1 steps in order, none skipped | met, and it is the strongest item here: the flow engine refuses at parse a file that could reach a session without proving anything, or that changes a credential before checking one. `internal/flow/safety_test.go` proves it by exhaustive enumeration |
+| V2.3.2 documented business limits | met — device-code attempts, signup rate, registration rate, call-chain length, resource-indicator count |
+| V2.3.3 transactional | met — `pgx.Tx` around the code-to-token exchange; a partial redemption cannot leave a code spent and no token issued |
+| V2.3.4 locking on limited resources | met — single-use codes, `c_nonce`, invitations and `request_uri` handles are all claimed with `UPDATE ... WHERE used_at IS NULL RETURNING`, which is atomic. A concurrency test asserts exactly one credential is minted under a nonce race |
+| V2.3.5 multi-user approval for high-value flows | L3, not implemented |
+| V2.4.1 anti-automation | met — per-address and per-account limits, adaptive CAPTCHA, token buckets per endpoint with separate buckets so tuning one does not silently widen another |
+| V2.4.2 realistic human timing | L3, not implemented |
+
+### V15 Secure Coding and Architecture
+
+| Requirement | Verdict |
+|---|---|
+| V15.1.1 remediation time frames documented | **was not — now in `docs/dependencies.md`**, keyed on `govulncheck` reachability rather than CVSS alone |
+| V15.1.2 dependency inventory | **was not — now `docs/dependencies.md`**. Thirteen direct dependencies, fifty-seven modules total |
+| V15.1.3 resource-demanding functionality documented | partial — Argon2id is bounded by a concurrency semaphore, outbound work is queued through the outbox; not documented per function |
+| V15.1.4 risky components identified | **now named** — `go-jose`, `etree`+`goxmldsig`, `gokrb5`, and our own `radius` and `ldapd`, which parse hostile input from the network |
+| V15.1.5 dangerous functionality identified | as above |
+| V15.2.1 no components past their remediation window | met — `govulncheck` reports nothing affecting a called symbol |
+| V15.2.2 availability defences | met — semaphores, buckets, capped retries, parked deliveries |
+| V15.2.3 no test or sample code in production | met — the test harnesses are separate `main` packages, not routes; no sample endpoints are registered |
+| V15.2.4 dependency confusion | met — no `GOPRIVATE`, no `replace`, every module pinned in `go.sum` against the public checksum database |
+| V15.2.5 isolation around risky components | partial — the XML path refuses hostile constructs before either XML library sees them, which is encapsulation of the right kind; there is no sandboxing |
+| V15.3.1 minimum fields returned | met — claims released strictly by granted scope, and the same rule is applied at both userinfo and the ID token deliberately rather than assumed |
+| V15.3.2 do not follow redirects on backend calls | met, and with judgement: **refused outright** where a credential or signed token is sent ("would forward the user's password to wherever the redirect pointed"), bounded at three hops with a plaintext-downgrade refusal where following is the intended function |
+| V15.3.3 mass assignment | met — every request is decoded into a typed struct with named fields; no map is written straight to a row |
+| V15.3.4 original IP from trusted fields | met, deliberately — `clientIP` reads `r.RemoteAddr` and never `X-Forwarded-For`. The trade is recorded: behind a proxy this is the proxy's address, which is why the sensitive limits are per-account as well as per-address |
+| V15.3.5 correct types, strict comparison | met — Go, and secrets compare with `subtle.ConstantTimeCompare` |
+| V15.3.6 prototype pollution | n/a — the only JavaScript served is a passkey helper and the Guacamole client |
+| V15.3.7 HTTP parameter pollution | **was enforced at one endpoint of three — fixed**. Also: **zero** uses of `r.FormValue`, which merges query and body; everything reads `r.PostFormValue` or an explicit accessor |
+| V15.4.1–V15.4.4 safe concurrency | met where it applies — shared state is behind mutexes or atomics, and the resource claims in V2.3.4 are single atomic statements rather than check-then-act. The Go race detector runs clean |
+
+### ASVS 5.0.0, complete
+
+**345 of 345.** Ten chapters off the list this sweep started from, **six real
+defects**:
+
+| Chapter | Defect |
+|---|---|
+| V3 Web Frontend | five browser security headers absent, two at Level 1 |
+| V4 API | WebSocket origin checked after guacd was already dialled |
+| V14 Data Protection | six HTML responses with no policy, three with no cache header |
+| V16 Logging | no last-resort error handler anywhere |
+| V15 Secure Coding | duplicate-parameter rule enforced at one endpoint of three |
+| — | and the RFC 8707 half of the same rule, refusing a conformant request |
+
+Four chapters came back clean: V1, V2, V5, V12/V13. That matters as much as the
+six — a sweep that finds something everywhere is not discriminating, it is
+inventing.
+
+The original judgement that these chapters were "relevant to the product, not
+specific to it, and not where this engine's risk concentrates" was wrong in six
+places. What it got right is that none of the six was a critical, exploitable
+break; they are the defects of omission that accumulate where nobody is looking,
+which is exactly what a requirement-by-requirement sweep is for.

@@ -251,3 +251,84 @@ It finds sections nobody read. It does not find a section that was read and
 misjudged. The six passes that motivated this technique all failed the first
 way — but that is evidence about those six, not a proof that the second way
 never happens.
+
+## Second turns by a different method: prohibition extraction (21 August 2026)
+
+The section sweep above is one analytical pass. This is a second, deliberately
+unlike it: rather than asking "which sections has nobody opened", extract every
+**MUST NOT** in the document and check each prohibition against the code.
+
+Prohibitions are the right target for a second pass. A missing MUST usually
+breaks something and gets noticed; a violated MUST NOT is a thing that *works*,
+which is why it survives.
+
+### First, a check on the method itself
+
+The FAPI 2.0 pass had just shown that an uppercase RFC 2119 sweep returns **zero**
+against a specification using ISO Directive Part 2 lowercase keywords. Before
+trusting any extraction, every specification's own conventions statement was
+checked:
+
+| Standard | uppercase | lowercase | declares |
+|---|---:|---:|---|
+| SSF 1.0 | 172 | 0 | RFC 2119/8174 |
+| SD-JWT VC draft-18 | 137 | 2 | RFC 2119/8174 |
+| Transaction Tokens draft-11 | 102 | 6 | RFC 2119/8174 |
+| CIBA Core 1.0 | 107 | 22 | RFC 2119/8174 |
+| ABCA draft-10 | 93 | 16 | RFC 2119/8174 |
+| UMA 2.0 Grant | 81 | 8 | RFC 2119/8174 |
+| OpenID Federation 1.0 | 538 | 18 | RFC 2119/8174 |
+| OID4VCI 1.0 | 325 | 13 | RFC 2119/8174 |
+| RFC 9901 | 118 | 12 | RFC 2119/8174 |
+| **FAPI 2.0** | **0** | **94** | **ISO Directive Part 2** |
+
+FAPI is the sole outlier, and every earlier uppercase extraction in this
+repository was therefore valid. That is worth knowing rather than assuming: the
+alternative was nine reviews resting on a method that had already failed once.
+
+AuthZEN declares no conventions statement the search could find, but uses
+uppercase keywords normatively throughout, so an uppercase extraction is correct
+for it.
+
+### A correction to the AuthZEN figures above
+
+The AuthZEN sweep was run with a flattener that stripped `<script>` but not
+`<style>`, so CSS text was counted as document headings. Corrected: **89
+sections, 10 cited, 79 never cited** — against the 89 / 8 / 81 first reported.
+The conclusion is unchanged, and the error is recorded because a number nobody
+can reproduce is worse than no number.
+
+### The prohibitions, checked
+
+**Transaction Tokens** — 15 distinct MUST NOTs. Four bind us directly and all
+four hold:
+
+| Prohibition | Where it holds |
+|---|---|
+| "The Txn-Token Response MUST NOT include the `refresh_token` value" | never emitted; the response carries only RFC 8693's shape |
+| "Authorization header MUST NOT be used because that may be used by the workloads for other purposes" | `Header = "Txn-Token"`, and the constant's comment gives this exact reason |
+| "OAuth refresh tokens ... MUST NOT be used to request transaction tokens" | `CheckSubjectTokenType` refuses `SubjectRefreshToken`, citing §11.2 and §13.3 |
+| "the Txn-Token MUST NOT contain the access token presented to the external endpoint" | the `Claims` struct has no such field — `sub`, `txn`, `req_wl`, `scope`, `tctx`, `rctx`, `req_wl_chain` and nothing else |
+| §13.6 "MUST reject the Txn-Token Request and MUST NOT treat an unknown scope as unconstrained" | `ErrWiden` — "%q was not in the presented token" — an explicit refusal rather than a silent drop |
+
+**ABCA** — 2 MUST NOTs, one of which binds an issuer: "A server MUST NOT include
+a method it does not accept, and **the array MUST NOT be empty when the parameter
+is present**." Both attestation metadata arrays carry `omitempty`, so an empty
+list is absent rather than present-and-empty. Held by a struct tag, which is
+worth noticing: nothing would fail if the tag were removed.
+
+**SSF** — 13 MUST NOTs. The sharp one for a transmitter is "New event types MUST
+use the top-level `sub_id` claim and MUST NOT use the `subject` field in the
+events claim". We define no new event types; we emit the standard CAEP set, and
+for those our transmitter deliberately populates both keys with the same value
+for pre-1.0 receiver compatibility — which the same specification's §3.1.4
+permits, and which the receiver-side ambiguity check enforces cannot disagree.
+
+**UMA** — 9 MUST NOTs, most concerning claims-gathering redirection and PCTs,
+neither of which this deployment implements.
+
+### What this pass did not find
+
+No new defect. Recorded as a result rather than omitted: two independent methods
+on the same documents — unread sections, then prohibitions — now agree that the
+remaining exposure in these standards is not in what they forbid.

@@ -259,6 +259,15 @@ func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	if c.Type == "public" {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
+			Description: "introspection requires an authenticated client; public " +
+				"clients cannot authenticate and RFC 7662 section 2.1 requires " +
+				"authorization for this endpoint",
+			Status: http.StatusUnauthorized})
+		return
+	}
 	ctx := r.Context()
 
 	raw := r.PostForm.Get("token")

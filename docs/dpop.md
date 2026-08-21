@@ -118,6 +118,24 @@ with `invalid_dpop_proof` and HTTP 400 — including through the OID4VCI
 pre-authorized code grant, which resolves its client from the offer rather than
 from the request and so needs the check applied separately.
 
+A dynamically registered client pins itself at registration, which is where
+§5.2 puts the field — a DCR client has no operator to run a CLI command for it:
+
+```json
+POST /oauth2/register
+{
+  "redirect_uris": ["https://rp.example/cb"],
+  "client_name": "payments",
+  "dpop_bound_access_tokens": true
+}
+```
+
+The response echoes `dpop_bound_access_tokens`, per RFC 7591 §3.2.1 ("The
+authorization server MUST return all registered metadata about this client").
+That echo is load-bearing rather than decorative: a client that asked to be
+pinned and was silently not would believe it was sender-constrained while
+issuing bearer tokens, and the belief is what it acts on.
+
 To unpin:
 
 ```sh

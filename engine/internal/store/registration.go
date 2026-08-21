@@ -143,6 +143,11 @@ type NewClientRegistration struct {
 	Confidential bool
 	LogoutURI    string
 	TokenID      string
+
+	// DPoPBound is RFC 9449 §5.2's `dpop_bound_access_tokens`. A client may only
+	// ever set this on itself, and setting it can only cause its own requests to
+	// be refused, so it is safe to honour from open registration.
+	DPoPBound bool
 }
 
 // RegisteredClient is what came back.
@@ -211,10 +216,10 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 		INSERT INTO core.clients
 			(client_id, org_id, display_name, client_type, client_secret_hash,
 			 scopes, backchannel_logout_uri, dynamically_registered,
-			 registration_token_hash, registered_at)
-		VALUES ($1, $2::uuid, $3, $4, $5, $6, NULLIF($7,''), true, $8, now())`,
+			 registration_token_hash, registered_at, dpop_bound_access_tokens)
+		VALUES ($1, $2::uuid, $3, $4, $5, $6, NULLIF($7,''), true, $8, now(), $9)`,
 		out.ClientID, in.OrgID, in.DisplayName, kind, secretHash, in.Scopes,
-		in.LogoutURI, regHash[:]); err != nil {
+		in.LogoutURI, regHash[:], in.DPoPBound); err != nil {
 		return nil, fmt.Errorf("creating the client: %w", err)
 	}
 

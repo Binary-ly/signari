@@ -51,6 +51,17 @@ type registrationRequest struct {
 	// forever" — belongs at registration too, where the client is still able to
 	// act on being told.
 	BackchannelTokenDeliveryMode string `json:"backchannel_token_delivery_mode"`
+
+	// RFC 9449 §5.2 calls this client registration metadata, so this is where it
+	// belongs: "A boolean value specifying whether the client always uses DPoP
+	// for token requests ... If the value is true, the authorization server MUST
+	// reject token requests from the client that do not contain the DPoP
+	// header."
+	//
+	// Honoured from open registration because a client can only set it on itself,
+	// and the only effect is that its own unproofed requests are refused. It
+	// fails closed for the party that asked for it and touches nobody else.
+	DPoPBoundAccessTokens bool `json:"dpop_bound_access_tokens"`
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +174,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Confidential: confidential,
 		LogoutURI:    strings.TrimSpace(req.LogoutURI),
 		TokenID:      tokenID,
+		DPoPBound:    req.DPoPBoundAccessTokens,
 	})
 	if err != nil {
 		s.log.Error("registering a client", "err", err, "org_id", orgID)
@@ -187,6 +199,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// once, like every other credential here.
 		"registration_access_token": reg.RegistrationToken,
 		"registration_client_uri":   s.cfg.Issuer + "/oauth2/register/" + reg.ClientID,
+		// RFC 7591 §3.2.1: "The authorization server MUST return all registered
+		// metadata about this client." Echoed even when false, because the whole
+		// value of the field is the client being able to confirm that the server
+		// agreed to enforce it -- a client that asked to be pinned and was
+		// silently not would believe it was constrained when it was not.
+		"dpop_bound_access_tokens": req.DPoPBoundAccessTokens,
 	}
 	if confidential {
 		body["client_secret"] = reg.ClientSecret

@@ -2,8 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -114,5 +117,61 @@ func TestAPinnedClientCannotDowngradeViaThePreAuthorizedCodeGrant(t *testing.T) 
 	}
 	if body["error"] != "invalid_dpop_proof" {
 		t.Errorf("error is %v, want invalid_dpop_proof", body["error"])
+	}
+}
+
+// RFC 9449 §5.2 calls `dpop_bound_access_tokens` *client registration metadata*,
+// so a client must be able to pin itself at the moment it registers — not only
+// by an operator running a CLI command afterwards, which is not a thing a
+// dynamically registered client can ask anyone to do.
+//
+// The end-to-end shape is what matters: register pinned, then try to redeem
+// without a proof and be refused. Registering the flag and not enforcing it, or
+// enforcing it for CLI-created clients only, would both leave a client believing
+// it is sender-constrained when it is not — which is worse than not offering the
+// field, because the belief is what it acts on.
+func TestAClientCanPinItselfToDPoPAtRegistration(t *testing.T) {
+	f := newTokenFixture(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth2/register", strings.NewReader(
+		`{"redirect_uris":["https://rp.test/cb"],"client_name":"pinned",`+
+			`"dpop_bound_access_tokens":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+registrationToken(t, f))
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("registration gave %d: %s", rec.Code, truncate(rec.Body.String(), 200))
+	}
+	var reg map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &reg); err != nil {
+		t.Fatal(err)
+	}
+	clientID, _ := reg["client_id"].(string)
+	if clientID == "" {
+		t.Fatalf("no client_id: %v", reg)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(),
+			`DELETE FROM core.clients WHERE client_id = $1`, clientID)
+	})
+
+	// RFC 7591 §3.2.1: "The authorization server MUST return all registered
+	// metadata about this client." Without the echo the client cannot tell
+	// whether the server agreed to pin it or quietly ignored the field.
+	if reg["dpop_bound_access_tokens"] != true {
+		t.Errorf("the registration response does not confirm the pinning: %v",
+			reg["dpop_bound_access_tokens"])
+	}
+
+	var pinned bool
+	if err := f.pool.QueryRow(context.Background(),
+		`SELECT dpop_bound_access_tokens FROM core.clients WHERE client_id = $1`,
+		clientID).Scan(&pinned); err != nil {
+		t.Fatal(err)
+	}
+	if !pinned {
+		t.Fatalf("the client registered with dpop_bound_access_tokens=true was " +
+			"stored unpinned, so the field was accepted and dropped")
 	}
 }

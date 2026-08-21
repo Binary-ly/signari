@@ -1546,6 +1546,9 @@ func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) err
 func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect string,
 	public bool, launchURL, logoURL string, portalHidden bool) error {
 
+	if err := clients.ValidateClientID(clientID); err != nil && clientID != "" {
+		return err
+	}
 	if clientID == "" || redirect == "" {
 		return fmt.Errorf("-client-id and -redirect are both required")
 	}

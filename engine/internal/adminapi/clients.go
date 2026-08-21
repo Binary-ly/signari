@@ -49,6 +49,12 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if err := clients.ValidateClientID(req.ClientID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid_request", "detail": err.Error(),
+		})
+		return
+	}
 	// The organisation boundary, at the point the org is chosen.
 	if err := requireOrg(r.Context(), req.OrgID); err != nil {
 		writeCrossOrg(w, err)

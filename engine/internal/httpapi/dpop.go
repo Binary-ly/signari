@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -68,10 +69,16 @@ func bearerOrDPoP(jkt string) string {
 // caller decides whether a proof was required, because that depends on whether
 // the token being presented is bound.
 func (s *Server) verifyDPoPForRequest(r *http.Request, accessToken string) (string, error) {
-	header := r.Header.Get("DPoP")
-	if header == "" {
+	proofs := r.Header.Values("DPoP")
+	if len(proofs) > 1 {
+		return "", fmt.Errorf("there are %d DPoP header fields; RFC 9449 section 4.3 "+
+			"permits exactly one, because a request carrying two proofs has no "+
+			"single answer to which key it demonstrates possession of", len(proofs))
+	}
+	if len(proofs) == 0 || proofs[0] == "" {
 		return "", nil
 	}
+	header := proofs[0]
 
 	// The URI as WE saw it, rebuilt from the configured issuer rather than from
 	// request headers. Taking the host from the Host header would let a caller

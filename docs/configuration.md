@@ -122,6 +122,7 @@ See [CAPTCHA](captcha.md).
 | `SIGNARI_GEOIP_DB` | MaxMind database for impossible-travel checks. Not bundled and not downloaded — an identity provider that fetches a binary blob on startup has added a supply chain to the authentication path |
 | `SIGNARI_GEOIP_STATIC` | A fixed mapping, for testing |
 | `SIGNARI_CA_BUNDLE` | Roots for outbound calls |
+| `SIGNARI_ALLOW_PRIVATE_DELIVERY` | Permit logout and event delivery to private, loopback and link-local addresses. **Off by default.** A `backchannel_logout_uri` is chosen by the *client*, so without the check a registered client can have this server POST a signed logout token into your internal network on every sign-out. Set `1` only if your relying parties genuinely are internal. Trusting an internal CA (`SIGNARI_CA_BUNDLE`) is a different decision and does not imply this one. |
 | `SIGNARI_SCIM_CA_BUNDLE` | Roots for SCIM targets specifically |
 | `SIGNARI_ADMIN_TOKEN` | Bearer token for the admin API |
 

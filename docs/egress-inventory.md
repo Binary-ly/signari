@@ -65,12 +65,21 @@ and only when exactly one organisation has, because "open" plus several tenants
 has no answer to which one a stranger meant. It also has its own rate limiter,
 deliberately not shared with the device flow.
 
-**`internal/safedial` checks the address, not the name.** Every outbound
-connection from these paths refuses private, loopback, link-local and
-IPv4-mapped-IPv6 addresses **at dial time**, so a hostname that resolves to
-169.254.169.254 is refused even though the name looked fine — and each redirect
-hop is dialled through the same check, so a 302 into the private range is refused
-exactly like a direct attempt.
+**`internal/safedial` checks the address, not the name.** These paths refuse
+private, loopback, link-local and IPv4-mapped-IPv6 addresses **at dial time**, so
+a hostname that resolves to 169.254.169.254 is refused even though the name
+looked fine — and each redirect hop is dialled through the same check, so a 302
+into the private range is refused exactly like a direct attempt.
+
+> **This sentence was wrong when this document was written, and the correction is
+> the reason the document was worth writing.** It said "every outbound connection
+> from these paths", and back-channel logout delivery did not go through
+> `safedial` at all — `outbox/tls.go` built a plain `http.Client`. Webhooks had
+> the check at save time *and* in the dialler; logout, whose destination is chosen
+> by the **client** rather than by an operator, had neither. Fixed: logout
+> delivery now uses `safedial.Transport()`, with `SIGNARI_ALLOW_PRIVATE_DELIVERY`
+> as an explicit opt-out for deployments whose relying parties really are
+> internal.
 
 **It is a denylist, not an allowlist.** ASVS V13.2.4 asks for an allowlist of
 permitted external systems. This is stated plainly rather than argued away: at

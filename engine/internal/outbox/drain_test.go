@@ -66,6 +66,13 @@ func drainTestPool(t *testing.T) *pgxpool.Pool {
 }
 
 func drainWorker(t *testing.T, pool *pgxpool.Pool, batch int) *Worker {
+	// Delivery tests necessarily target a listener on loopback, which is exactly
+	// what the address check refuses. The opt-out is set here rather than the
+	// check being weakened: what these tests exercise is draining, batching and
+	// deduplication, and `ssrf_test.go` is where the address policy itself is
+	// tested.
+	t.Setenv(AllowPrivateDelivery, "1")
+
 	t.Helper()
 	k, err := keys.Generate(keys.NewKID(), keys.RS256)
 	if err != nil {

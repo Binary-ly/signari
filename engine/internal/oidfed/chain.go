@@ -96,6 +96,26 @@ type ChainResult struct {
 func ValidateChain(chain []Statement, trustAnchorID string, trustAnchorKeys json.RawMessage,
 	now time.Time) (*ChainResult, error) {
 
+	// An upper bound as well as a lower one.
+	//
+	// Every element costs a signature verification, so the length of a chain is
+	// the cost of validating it. Today the only caller is `Resolver.Resolve`,
+	// which builds the chain itself under `MaxChainDepth` with cycle detection —
+	// so nothing outside this package chooses the length and the bound below is
+	// defence in depth rather than a live guard.
+	//
+	// It is added now because of a door that is currently shut. OID4VCI Appendix
+	// F.1 defines a `trust_chain` JOSE header carrying an OpenID Federation trust
+	// chain, which this server refuses precisely because it does not evaluate one
+	// (see internal/oid4vci/proof.go). Implementing that header means accepting a
+	// chain **from the wallet** — a caller-supplied array whose length is
+	// attacker-chosen — and routing it here. The bound belongs in the function
+	// that validates, not in whichever caller happens to arrive next.
+	if len(chain) > MaxChainDepth+1 {
+		return nil, fmt.Errorf("the trust chain has %d statements, over the limit of "+
+			"%d: each element costs a signature verification, so an unbounded chain "+
+			"is unbounded work", len(chain), MaxChainDepth+1)
+	}
 	if len(chain) < 2 {
 		// A chain of one is an Entity Configuration with nothing vouching for
 		// it. It may be perfectly valid and it establishes no trust.

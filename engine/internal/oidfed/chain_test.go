@@ -363,3 +363,51 @@ func TestAnEntityConfigurationAboutSomebodyElseIsRefused(t *testing.T) {
 		t.Errorf("refused, but not as a malformed Entity Configuration: %v", err)
 	}
 }
+
+// A trust chain's length is the cost of validating it: every element is a
+// signature verification.
+//
+// `ValidateChain` had a lower bound and no upper one. That was safe, because its
+// only caller builds the chain itself under `MaxChainDepth` with cycle detection
+// — nothing outside this package chose the length.
+//
+// The bound exists for a door that is currently shut. OID4VCI Appendix F.1
+// defines a `trust_chain` JOSE header carrying a federation trust chain, which
+// this server refuses because it does not evaluate one. Implementing it means
+// accepting a chain **from the wallet** and routing it here, at which point the
+// length becomes attacker-chosen. Putting the bound in the validating function
+// rather than in whichever caller arrives next is what keeps that from being a
+// thing somebody has to remember.
+func TestAnOverlongTrustChainIsRefused(t *testing.T) {
+	// Longer than the walk could ever produce.
+	chain := make([]Statement, MaxChainDepth+2)
+	for i := range chain {
+		chain[i] = Statement{
+			Issuer: "https://a.test", Subject: "https://b.test",
+			IssuedAt: 1, Expiry: 1 << 40,
+		}
+	}
+	_, err := ValidateChain(chain, "https://anchor.test", nil, time.Unix(100, 0))
+	if err == nil {
+		t.Fatal("a chain longer than the depth limit was accepted; each element is a " +
+			"signature verification, so an unbounded chain is unbounded work")
+	}
+	if !strings.Contains(err.Error(), "over the limit") {
+		t.Errorf("refused, but not for its length: %v", err)
+	}
+}
+
+// The bound must not refuse a chain the resolver can legitimately build.
+func TestAChainAtTheDepthLimitIsNotRefusedForLength(t *testing.T) {
+	chain := make([]Statement, MaxChainDepth+1)
+	for i := range chain {
+		chain[i] = Statement{
+			Issuer: "https://a.test", Subject: "https://b.test",
+			IssuedAt: 1, Expiry: 1 << 40,
+		}
+	}
+	_, err := ValidateChain(chain, "https://anchor.test", nil, time.Unix(100, 0))
+	if err != nil && strings.Contains(err.Error(), "over the limit") {
+		t.Errorf("a chain at the depth limit was refused for its length: %v", err)
+	}
+}

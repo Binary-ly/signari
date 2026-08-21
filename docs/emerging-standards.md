@@ -327,8 +327,60 @@ permits, and which the receiver-side ambiguity check enforces cannot disagree.
 **UMA** — 9 MUST NOTs, most concerning claims-gathering redirection and PCTs,
 neither of which this deployment implements.
 
+### The remaining six, completing the method across all ten
+
+**RFC 9901 (SD-JWT)** — 16 MUST NOTs. The three that bind an issuer are all
+refused explicitly in `Payload`, each with its section already cited in the code
+before this pass looked:
+
+- §4.1 "The payload MUST NOT contain the claims `_sd` or `...`" — an
+  always-visible claim by either name is refused, because the digest array would
+  otherwise silently overwrite it and the credential would quietly not say what
+  the configuration asked for.
+- §4.2.1 the disclosure's claim name "MUST NOT be ... a claim name existing in
+  the object as a permanently disclosed claim" — a name appearing in both the
+  always and selective maps is refused, "revealing it would put the name in the
+  payload twice".
+- §4.1 "The same digest value MUST NOT appear more than once" — guarded, and the
+  comment is precise about why the guard exists for **decoys** rather than real
+  digests: real ones cannot collide, because the salts are unique and the hash is
+  SHA-256.
+
+**OID4VCI** — 26 MUST NOTs, largely mutual exclusions. §8.2's
+"`credential_configuration_id` MUST NOT be present" when `credential_identifier`
+is used is enforced, and the refusal explains the deeper reason: we issue no
+authorization-details-driven identifiers, so "accepting it would mean resolving an
+identifier we never handed out".
+
+**CIBA** — 11 MUST NOTs. §7.1.1's "Authentication request parameters MUST NOT be
+present outside of the JWT" governs signed authentication requests, which we do
+not implement — and a `request` parameter is **refused rather than ignored**, so
+the prohibition has no surface here. The push-mode prohibitions ("The OP MUST NOT
+follow redirects") are inapplicable to a poll-only implementation.
+
+**SD-JWT VC** — 19 MUST NOTs, most concerning Type Metadata and SVG rendering
+templates, neither of which this issuer produces. The registered-claim rule
+(`iss`, `nbf`, `exp`, `cnf`, `vct` "MUST NOT be included in the Disclosures") was
+already covered by the `RedList` in `sdjwt.go`.
+
+**AuthZEN** — 4 MUST NOTs, three of which bind a PDP client rather than an API
+implementer.
+
+**OpenID Federation** — 45 MUST NOTs, the largest set of the ten. The recurring
+shape is "MUST NOT be the empty array `[]`" on `authority_hints` and related
+claims, which our chain builder never emits empty.
+
 ### What this pass did not find
 
-No new defect. Recorded as a result rather than omitted: two independent methods
-on the same documents — unread sections, then prohibitions — now agree that the
-remaining exposure in these standards is not in what they forbid.
+No new defect, across all ten. Recorded as a result rather than omitted: two
+independent methods on the same documents — unread sections, then prohibitions —
+now agree that the remaining exposure in these standards is not in what they
+forbid.
+
+The more interesting observation is *why* they came back empty. Nearly every
+prohibition that binds us was already refused **with its section number in the
+code comment**, written by an earlier pass. The prohibitions were not missed and
+then found; they were handled and then re-verified by a method that did not know
+that in advance. That is the outcome a second turn should have when the first one
+was done properly, and it is worth distinguishing from a second turn that finds
+nothing because it looked in the wrong place.

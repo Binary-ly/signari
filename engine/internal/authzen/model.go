@@ -40,7 +40,7 @@ import (
 
 // Model is a parsed authorization model.
 type Model struct {
-	Types map[string]Type `yaml:"types" json:"types"`
+	Types    map[string]Type      `yaml:"types" json:"types"`
 	Policies map[string]Condition `yaml:"policies" json:"policies,omitempty"`
 	// Tests are run at parse time and are not optional.
 	Tests []ModelTest `yaml:"tests" json:"tests,omitempty"`
@@ -108,7 +108,7 @@ const (
 	StrategyUnanimous = "unanimous"
 	// StrategyAffirmative requires at least one.
 	StrategyAffirmative = "affirmative"
-	StrategyConsensus = "consensus"
+	StrategyConsensus   = "consensus"
 )
 
 // TimeWindow restricts an action to certain days and hours.
@@ -131,7 +131,7 @@ type Asserted struct {
 	// Resource matches on resource.properties from the request. Each key must
 	// be present and its value must be one of the listed ones.
 	Resource map[string][]string `yaml:"resource" json:"resource,omitempty"`
-	Context map[string][]string `yaml:"context" json:"context,omitempty"`
+	Context  map[string][]string `yaml:"context" json:"context,omitempty"`
 	// Networks requires context.ip to fall in one of these CIDR blocks.
 	Networks []string `yaml:"networks" json:"networks,omitempty"`
 }

@@ -17,7 +17,6 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
-
 // handleSCIMGroups is the collection: list, filter and create.
 func (s *Server) handleSCIMGroups(w http.ResponseWriter, r *http.Request) {
 	src, err := s.scimAuth(r)

@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-
 // GroupPatch is the set of changes a PATCH implies.
 type GroupPatch struct {
 	// DisplayName is set when the operation renames the group.

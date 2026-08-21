@@ -7,7 +7,6 @@ import (
 	"strings"
 )
 
-
 // Path is a parsed SCIM attribute path.
 type Path struct {
 	// Schema is the URN prefix when the path was fully qualified, without the

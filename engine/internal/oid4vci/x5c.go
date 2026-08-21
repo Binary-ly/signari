@@ -10,7 +10,6 @@ import (
 	"github.com/go-jose/go-jose/v4"
 )
 
-
 // ParseX5CChain decodes an `x5c` header value into certificates.
 //
 // RFC 7515 §4.1.6: each entry is the **base64** (not base64url) DER of a

@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-
 // checkSafety decides both properties for one flow.
 func (fl *Flow) checkSafety() error {
 	// create_user belongs to enrolment. Elsewhere it is an account-creation
@@ -132,10 +131,10 @@ func (fl *Flow) checkProof() error {
 // A stage that sets a credential must not run before one that checks a
 // credential. The flow this exists to refuse looks entirely reasonable:
 //
-//	- identify
-//	- enrol_mfa
-//	- mfa
-//	- session
+//   - identify
+//   - enrol_mfa
+//   - mfa
+//   - session
 //
 // Read quickly, it enrols a factor and then demands it -- two factors' worth of
 // words. What it does is let a stranger name an account, attach their own

@@ -7,7 +7,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-
 func mustModel(t *testing.T, doc string) *Model {
 	t.Helper()
 	var m Model

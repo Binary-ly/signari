@@ -500,7 +500,6 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, resp)
 }
 
-
 // releaseCIBAPing makes a parked ping notification eligible for delivery.
 //
 // Logged and not surfaced: the person approving has finished, and a failure to

@@ -231,11 +231,11 @@ func (g *GoogleSource) tokenForScope(ctx context.Context, scope string) (string,
 
 	now := time.Now()
 	claims := map[string]any{
-		"iss": g.Creds.ClientEmail,
-		"sub": g.Impersonate,
-		"aud": g.Creds.TokenURI,
-		"iat": now.Unix(),
-		"exp": now.Add(time.Hour).Unix(),
+		"iss":   g.Creds.ClientEmail,
+		"sub":   g.Impersonate,
+		"aud":   g.Creds.TokenURI,
+		"iat":   now.Unix(),
+		"exp":   now.Add(time.Hour).Unix(),
 		"scope": scope,
 	}
 

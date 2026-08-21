@@ -19,7 +19,6 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
-
 const scimContentType = "application/scim+json"
 
 // scimAuth resolves the bearer token to a source.

@@ -19,7 +19,6 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
-
 // flowRefresh matches the policy cache. A flow change should be live within half
 // a minute without every sign-in paying for a query.
 const flowRefresh = 30 * time.Second

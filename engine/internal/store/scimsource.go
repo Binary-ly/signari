@@ -12,7 +12,6 @@ import (
 	"signari.dev/engine/internal/scim"
 )
 
-
 // deactivatedStatus is the value core.users actually allows.
 //
 // Its check constraint permits active | deactivated | locked. The first version

@@ -16,7 +16,6 @@ import (
 	"signari.dev/engine/internal/jsonstrict"
 )
 
-
 // ErrNotVerified means the token failed a check before anything was acted on.
 var ErrNotVerified = fmt.Errorf("the security event token did not verify")
 

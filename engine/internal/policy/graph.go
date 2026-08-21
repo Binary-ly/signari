@@ -7,7 +7,6 @@ import (
 	"strings"
 )
 
-
 const (
 	gCol     = 300 // column width
 	gGap     = 24

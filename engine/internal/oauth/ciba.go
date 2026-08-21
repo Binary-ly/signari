@@ -362,7 +362,6 @@ func containsScopeValue(scope, want string) bool {
 	return false
 }
 
-
 const (
 	DeliveryPoll = "poll"
 	DeliveryPing = "ping"

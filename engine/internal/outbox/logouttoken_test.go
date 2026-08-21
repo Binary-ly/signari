@@ -11,7 +11,6 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
-
 func testWorker(t *testing.T) *Worker {
 	// Delivery tests necessarily target a listener on loopback, which is exactly
 	// what the address check refuses. The opt-out is set here rather than the

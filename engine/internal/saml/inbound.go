@@ -11,7 +11,6 @@ import (
 	"github.com/beevik/etree"
 )
 
-
 // refuseMultipleAssertions is always true outside the layering test.
 var refuseMultipleAssertions = true
 

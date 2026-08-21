@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-
 var ForbiddenRedirectParams = map[string]bool{
 	"code": true, "id_token": true, "access_token": true, "token_type": true,
 	"expires_in": true, "state": true, "scope": true, "iss": true,

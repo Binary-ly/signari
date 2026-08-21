@@ -13,7 +13,6 @@ import (
 	"time"
 )
 
-
 const (
 	// eapTLSMaxFragment bounds one EAP-TLS fragment.
 	//

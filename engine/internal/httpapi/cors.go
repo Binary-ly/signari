@@ -9,7 +9,6 @@ import (
 	"signari.dev/engine/internal/oidc"
 )
 
-
 // corsMode describes how much latitude an endpoint gets.
 type corsMode int
 

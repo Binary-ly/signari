@@ -14,7 +14,6 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
-
 // refreshWith exchanges a refresh token, optionally sending a scope.
 func (f *tokenFixture) refreshWith(t *testing.T, refreshToken, scope string) (int, map[string]any) {
 	t.Helper()

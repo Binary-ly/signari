@@ -23,7 +23,6 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
-
 type scimFixture struct {
 	srv    *Server
 	pool   *pgxpool.Pool

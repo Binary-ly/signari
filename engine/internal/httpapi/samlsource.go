@@ -11,7 +11,6 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
-
 // samlSourceRequestTTL bounds how long a sign-in may take.
 //
 // Ten minutes: long enough for a password, an MFA prompt and a slow upstream,

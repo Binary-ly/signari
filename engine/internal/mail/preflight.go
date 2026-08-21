@@ -7,7 +7,6 @@ import (
 	"strings"
 )
 
-
 // Severity ranks a finding by what it does to delivery.
 type Severity string
 

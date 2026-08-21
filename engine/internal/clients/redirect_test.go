@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-
 func TestValidateRedirectURIRefusesTheDangerousShapes(t *testing.T) {
 	for _, c := range []struct{ name, uri, want string }{
 		{

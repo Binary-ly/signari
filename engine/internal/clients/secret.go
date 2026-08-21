@@ -8,7 +8,6 @@ import (
 	"strings"
 )
 
-
 // FastSecretPrefix marks a secret hashed on the entropy assumption.
 const FastSecretPrefix = "sha256$"
 

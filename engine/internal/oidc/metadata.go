@@ -230,7 +230,7 @@ func Build(cfg Config) (*Metadata, error) {
 		// Ping is per-client: a client registered for poll experiences no change
 		// from this being advertised, and a client registered for ping is refused
 		// at the backchannel endpoint if it sends no notification token.
-		BackchannelTokenDeliveryModes:      []string{"poll", "ping"},
+		BackchannelTokenDeliveryModes: []string{"poll", "ping"},
 		// Advertised as false rather than omitted. §7.1 gates `user_code` on this
 		// being true, and a client reading an absent field has to guess; a client
 		// reading `false` knows not to send one, which is exactly what the

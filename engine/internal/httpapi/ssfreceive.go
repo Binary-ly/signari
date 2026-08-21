@@ -17,7 +17,6 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
-
 // handleSSFReceive accepts a pushed Security Event Token.
 func (s *Server) handleSSFReceive(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

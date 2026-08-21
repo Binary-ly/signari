@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-
 func parseOps(t *testing.T, body string) (*GroupPatch, error) {
 	t.Helper()
 	var req PatchRequest

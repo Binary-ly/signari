@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-
 // GrantType is RFC 8693's, because a Txn-Token request IS a token exchange.
 const GrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 

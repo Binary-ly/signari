@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-
 // TestModestClockSkewOnNotBeforeIsTolerated is the "shall accept" half.
 func TestModestClockSkewOnNotBeforeIsTolerated(t *testing.T) {
 	k := newKey(t, "k1")

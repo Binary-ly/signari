@@ -15,7 +15,6 @@ import (
 	"github.com/go-jose/go-jose/v4"
 )
 
-
 type ca struct {
 	cert *x509.Certificate
 	key  *ecdsa.PrivateKey

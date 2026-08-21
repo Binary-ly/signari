@@ -8,7 +8,6 @@ import (
 	"testing"
 )
 
-
 // loginPage renders the sign-in form.
 func renderedLoginPage(t *testing.T, s *Server) string {
 	t.Helper()

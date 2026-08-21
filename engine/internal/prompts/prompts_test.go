@@ -95,7 +95,10 @@ func TestOptionalFieldsMayBeBlank(t *testing.T) {
 }
 
 func TestDefinitionsAreValidated(t *testing.T) {
-	cases := []struct{ name, want string; p Prompt }{
+	cases := []struct {
+		name, want string
+		p          Prompt
+	}{
 		{"no title", "title", Prompt{Slug: "a", Fields: []Field{{Name: "x", Type: Text, Label: "X"}}}},
 		{"no fields", "no fields", Prompt{Slug: "a", Title: "T"}},
 		{"duplicate names", "two fields called", Prompt{Slug: "a", Title: "T", Fields: []Field{

@@ -282,8 +282,8 @@ var presets = map[Kind]Preset{
 	},
 
 	KindOIDC: {
-		Scopes: []string{"openid", "email", "profile"},
-		OIDC:   true,
+		Scopes:                  []string{"openid", "email", "profile"},
+		OIDC:                    true,
 		TrustsEmailVerification: false,
 		EmailNeedsSeparateCheck: false,
 		Note: "Verification is not trusted by default for an unknown provider. " +

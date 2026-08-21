@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-
 // Plan returns the stages that run under a fixed state.
 //
 // A snapshot: conditions are read once. That is right for a test case, which is

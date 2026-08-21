@@ -70,13 +70,13 @@ type Target struct {
 // stricter idea of what it accepts -- so this carries what is needed to create
 // a working account and nothing else.
 type User struct {
-	Schemas    []string `json:"schemas"`
-	ExternalID string   `json:"externalId,omitempty"`
-	UserName   string   `json:"userName"`
-	Active     bool     `json:"active"`
-	Name       *Name    `json:"name,omitempty"`
-	Emails     []Email  `json:"emails,omitempty"`
-	DisplayName string `json:"displayName,omitempty"`
+	Schemas     []string `json:"schemas"`
+	ExternalID  string   `json:"externalId,omitempty"`
+	UserName    string   `json:"userName"`
+	Active      bool     `json:"active"`
+	Name        *Name    `json:"name,omitempty"`
+	Emails      []Email  `json:"emails,omitempty"`
+	DisplayName string   `json:"displayName,omitempty"`
 
 	// ID is assigned BY THE TARGET and only ever read, never sent.
 	ID string `json:"id,omitempty"`

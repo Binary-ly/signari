@@ -131,6 +131,13 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	// The same §5.2 rule as the ordinary token path. This grant is dispatched
+	// before `handleToken` resolves a client, so it has to be applied again here
+	// against the client named by the offer.
+	if s.refuseUnboundTokenRequest(w, ctx, c) {
+		return
+	}
+
 	// The transaction code, compared in constant time against the stored hash.
 	//
 	// A wrong one charges an attempt and does NOT spend the offer. That ordering

@@ -91,3 +91,38 @@ claim, so any resource server that reads it can enforce the same thing.
 end to end — bound at issuance, enforced at the resource. Binding without
 enforcement would be worse than plain bearer tokens: a relying party reading
 `cnf` would believe a claim nothing checks.
+
+## Pinning a client to DPoP
+
+By default, whether a token comes out sender-constrained is decided per request,
+by whether a proof was attached. That is what RFC 9449 §5 intends — an
+authorization server "MAY elect to issue access tokens that are not DPoP bound",
+signalled by `token_type: Bearer` — but it leaves a client no way to say *I
+always use DPoP*, and one request that omits the header quietly yields an
+ordinary bearer token. The downgrade needs no attack on DPoP itself, only the
+absence of a proof.
+
+§5.2 defines the client registration metadata that closes it:
+
+> `dpop_bound_access_tokens`: A boolean value specifying whether the client
+> always uses DPoP for token requests. If omitted, the default value is false.
+> If the value is true, the authorization server **MUST reject token requests
+> from the client that do not contain the DPoP header**.
+
+```sh
+signari client set-dpop -client payments -dpop-bound
+```
+
+Every token request from `payments` that carries no DPoP proof is then refused
+with `invalid_dpop_proof` and HTTP 400 — including through the OID4VCI
+pre-authorized code grant, which resolves its client from the offer rather than
+from the request and so needs the check applied separately.
+
+To unpin:
+
+```sh
+signari client set-dpop -client payments
+```
+
+The default is `false` because §5.2 says it is, and because any other default
+would refuse every existing client's next token request.

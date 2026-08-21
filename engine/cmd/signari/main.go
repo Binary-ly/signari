@@ -267,6 +267,7 @@ func run(args []string) error {
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
+	dpopBound := fs.Bool("dpop-bound", false, "RFC 9449 §5.2: refuse token requests from this client that carry no DPoP proof")
 	promptFile := fs.String("prompt-file", "", "YAML defining a sign-in prompt")
 	configFile := fs.String("f", "", "declarative configuration file")
 	prune := fs.Bool("prune", false,
@@ -498,6 +499,8 @@ func run(args []string) error {
 	case "client set-tls":
 		return clientSetTLS(ctx, conn, *clientID, *tlsSubjectDN, *tlsSANDNS, *tlsSANURI,
 			*spCert, *tlsBound)
+	case "client set-dpop":
+		return clientSetDPoP(ctx, conn, *clientID, *dpopBound)
 	case "client set-hybrid":
 		return clientSetHybrid(ctx, conn, *clientID, *reviewBy)
 	case "client set-keys":
@@ -6719,4 +6722,37 @@ func warnUndriven(f *flow.File) {
 		"safety-checked and\n  tested, and nothing consults them at run time: "+
 		"sign-up and recovery are\n  hardcoded journeys. See item 9q in "+
 		"TODO-FOR-YOU.md.\n", flow.Authentication)
+}
+
+// clientSetDPoP pins a client to DPoP, per RFC 9449 §5.2.
+//
+//	"dpop_bound_access_tokens: A boolean value specifying whether the client
+//	always uses DPoP for token requests ... If the value is true, the
+//	authorization server MUST reject token requests from the client that do not
+//	contain the DPoP header."
+//
+// Without this, whether a token is sender-constrained is decided per request by
+// whether a proof happened to be attached. A client that means to be bound on
+// every request cannot say so, and one request that omits the header quietly
+// yields an ordinary bearer token -- a downgrade that needs no attack on DPoP,
+// only the absence of a proof.
+func clientSetDPoP(ctx context.Context, conn *pgx.Conn, clientID string, required bool) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client")
+	}
+	tag, err := conn.Exec(ctx, `
+		UPDATE core.clients SET dpop_bound_access_tokens = $2, updated_at = now()
+		WHERE client_id = $1`, clientID, required)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no client %q", clientID)
+	}
+	if required {
+		fmt.Printf("%s now requires a DPoP proof on every token request\n", clientID)
+	} else {
+		fmt.Printf("%s no longer requires DPoP; tokens are bound only when a proof is sent\n", clientID)
+	}
+	return nil
 }

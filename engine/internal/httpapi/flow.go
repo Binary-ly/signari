@@ -519,6 +519,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if s.refuseUnboundTokenRequest(w, ctx, c) {
+		return
+	}
+
 	// The client must be registered for the grant it is asking for.
 	//
 	// RFC 6749 §5.2 names the error for exactly this: `unauthorized_client` is

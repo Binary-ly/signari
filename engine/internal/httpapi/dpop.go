@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"time"
 
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/dpop"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
@@ -183,4 +185,43 @@ func (s *Server) requireSubjectTokenBinding(r *http.Request, subject *tokens.Acc
 			"than the subject token is bound to")
 	}
 	return nil
+}
+
+// refuseUnboundTokenRequest enforces RFC 9449 §5.2's client registration
+// metadata, reporting true when it has written a refusal.
+//
+//	"dpop_bound_access_tokens: A boolean value specifying whether the client
+//	always uses DPoP for token requests ... If the value is true, the
+//	authorization server MUST reject token requests from the client that do not
+//	contain the DPoP header."
+//
+// This is the mechanism by which a client pins itself to DPoP. Without it,
+// sender-constraining is decided per request by whether a proof happened to be
+// attached, so a client that means to be bound on every request cannot say so --
+// and one request that simply omits the header yields an ordinary bearer token.
+// The downgrade needs no attack on DPoP itself, only the absence of a proof.
+//
+// A function rather than an inline check because the token endpoint has two
+// places where a client becomes known: the ordinary path, and the OID4VCI
+// pre-authorized code grant, which is dispatched *before* the client is resolved
+// because §6.1 lets a wallet send no `client_id` and so resolves it from the
+// offer instead. A rule written out once and enforced in one of those two is a
+// rule with a hole, and the hole is invisible from the outside -- the client
+// receives a working bearer token, and nothing looks wrong until it is stolen.
+//
+// The proof itself is verified at the top of `handleToken`, so an empty
+// thumbprint here means no DPoP header arrived; a malformed one was already
+// refused there.
+func (s *Server) refuseUnboundTokenRequest(w http.ResponseWriter, ctx context.Context, c *clients.Client) bool {
+	if c == nil || !c.DPoPBoundAccessTokens || dpopThumbprintFrom(ctx) != "" {
+		return false
+	}
+	s.log.Info("token request without DPoP from a client registered as DPoP-bound",
+		"client_id", c.ClientID, "correlation_id", correlationID(ctx))
+	w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof"`)
+	writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
+		Description: "this client is registered with dpop_bound_access_tokens, " +
+			"so every token request must carry a DPoP proof",
+		Status: http.StatusBadRequest})
+	return true
 }

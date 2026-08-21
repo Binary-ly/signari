@@ -359,3 +359,78 @@ we already relied on 302 to choose.
 Nobody tried our way and reverted. Two of the three have not tried; the third
 wants to and is blocked by backward compatibility rather than by a defect. Ours
 is better here, and now for a reason that was checked instead of assumed.
+
+## Second turn: normative extraction, and the trap it started with (21 August 2026)
+
+The first pass read the profile section by section. This is a different method on
+the same document — extract every normative keyword mechanically, enumerate the
+requirements, and check them one at a time.
+
+### The extraction found zero requirements, and that was the finding
+
+An RFC 2119 extraction over this specification returns **nothing**. Not "few" —
+zero MUST, zero SHALL, zero SHOULD.
+
+FAPI 2.0 does not use RFC 2119. Its own notational conventions say so:
+
+> The keywords "shall", "shall not", "should", "should not", "may", and "can" in
+> this document are to be interpreted as described in **ISO Directive Part 2**.
+
+**Lowercase.** An uppercase-only sweep — the one that works on every RFC and
+every OpenID Foundation specification reviewed in this repository — silently
+reports a security profile as containing no requirements at all.
+
+Recorded because it is the fourth false negative from a search in this review
+cycle, and the most dangerous shape of one: not "the grep missed a file" but "the
+grep returned a clean, plausible, completely wrong zero". The earlier
+section-by-section pass was unaffected, because a human reading prose does not
+care about case — which is the argument for not replacing reading with tooling.
+
+Re-run with ISO keywords: **94 normative uses, 67 distinct "shall" sentences, 25
+of them naming the authorization server.**
+
+### The requirement I nearly reported as a gap
+
+> "if using DPoP, shall support the server provided nonce mechanism (as defined
+> in Section 8 of [RFC9449])"
+
+
+It is not. The bullet sits under **§5.3.3, "Requirements for clients"**, in a list
+beginning "Clients ¶ shall support sender-constrained access tokens...". It
+requires a FAPI *client* to handle a `use_dpop_nonce` challenge. It places no
+obligation on the authorization server to issue one.
+
+Checked by pulling 2,200 characters of preceding context rather than trusting the
+sentence in isolation. A requirement extracted without its heading is a
+requirement whose subject is unknown.
+
+### Four server requirements checked concretely
+
+| §5.3.2 requirement | Signari |
+|---|---|
+| "shall not use the HTTP 307 status code when redirecting a request that contains user credentials" | never used; `responsemode.go` cites the rule and uses 303 |
+| "shall issue authorization codes with a maximum lifetime of 60 seconds" | `codeTTL = 60s` — exactly at the ceiling |
+| "shall issue ... `request_uri` with `expires_in` values of less than 600 seconds" | `parLifetime` = 90s |
+| "shall support `nonce` parameter values up to 64 characters in length" | no length bound, so any length is accepted |
+
+The two lifetime ceilings were met by constants that **did not know they were
+FAPI requirements**. `codeTTL`'s comment reads "RFC 6749 recommends <= 10 minutes;
+short is free here" — true of RFC 6749, and one edit away from a silent
+conformance break by somebody taking the RFC at its word.
+
+`TestFAPILifetimeCeilingsHold` now connects the constants to the profile. The
+mutation that raises `codeTTL` to RFC 6749's allowance fails it with the profile
+quoted.
+
+```
+CAUGHT   raise codeTTL to RFC 6749's 10 minutes (FAPI §5.3.2.2 caps it at 60s)
+```
+
+### Scope, stated so the test is read correctly
+
+FAPI is a profile a deployment opts into. Most of §5.3.2 is *restrictions* —
+confidential clients only, PAR mandatory, sender-constrained tokens only — that a
+general-purpose IdP correctly does not apply by default, and those remain profile
+modes rather than defects. The two lifetime rules are different in kind: ceilings
+we already sit under, where holding them costs nothing and losing them would be
+invisible.

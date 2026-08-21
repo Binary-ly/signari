@@ -235,7 +235,12 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 // wrapper is not optional -- a route reachable without an id would be the one
 // nobody can trace.
 func (s *Server) Routes() http.Handler {
-	return s.withCorrelation(s.withSecurityHeaders(s.withCORS(s.mux())))
+	// Correlation is outermost so the recovery handler below it can name the
+	// request in its log entry and hand the caller a reference code. Recovery
+	// sits outside everything else, so a panic in any middleware -- not only in a
+	// route handler -- is still caught, logged in this server's format, and
+	// answered.
+	return s.withCorrelation(s.withRecovery(s.withSecurityHeaders(s.withCORS(s.mux()))))
 }
 
 func (s *Server) mux() *http.ServeMux {

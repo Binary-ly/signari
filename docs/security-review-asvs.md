@@ -779,3 +779,103 @@ are V1 Encoding, V2 Validation, V4 API, V5 File, V12 Secure Communication, V13
 Configuration, V14 Data Protection, V15 Secure Coding, V16 Logging and V17
 WebRTC — and after this pass, the claim that they are unlikely to matter should
 be treated as untested rather than as a finding. V3 was in that list yesterday.
+
+
+## V16 Security Logging and Error Handling: seventeen requirements (21 August 2026)
+
+The second chapter taken off the "relevant to the product, not specific to it"
+list. An identity provider's log *is* its product for anyone investigating an
+incident, and V16 is the chapter about it.
+
+### The finding: no last-resort error handler (V16.5.4)
+
+`recover()` appeared **nowhere** in the engine. The reason that was survivable —
+and the reason it stayed invisible — is that `net/http` recovers panics itself:
+`conn.serve` catches, logs, and closes the connection. Nothing crashed, so
+nothing complained.
+
+What was lost is everything around the panic:
+
+- It was written by Go's `log` package to stderr in Go's own format, while this
+  server logs through `slog`. **The one event an operator most needs to find was
+  the one entry their log processor could not parse** — V16.2.4.
+- No correlation id, so it could not be tied to the request that caused it, nor
+  to the audit rows for that request — V16.2.1.
+- The client got a dropped connection rather than a response. A relying party
+  sees a transport error and starts debugging the network.
+
+`withRecovery` now catches, logs `err`/`method`/`path`/`correlation_id`/`stack`
+through the configured handler, and answers a generic 500 carrying a reference
+code.
+
+Three details that are the requirement rather than decoration:
+
+**The panic value never reaches the client.** V16.5.1 forbids exposing "stack
+traces, queries, secret keys, and tokens", and a pgx error carries the SQL it was
+running. The caller gets the reference; the log gets the detail.
+
+**`http.ErrAbortHandler` is re-panicked.** It is `net/http`'s own signal to
+abandon a response silently. Swallowing it would log false panics and answer 500
+over a body already on the wire.
+
+**A panic after the response started writes nothing more.** The status is
+committed; appending a second body produces a response that parses as neither.
+
+**`path`, not the raw URL** — a query string here can hold `code`, `state` or
+`login_hint`, and V16.2.5 governs error paths too.
+
+### The wiring test, which is the one that matters
+
+Four mutations were killed by the unit tests. The fifth — removing `withRecovery`
+from `Routes()` — was killed by none of them, because each built the middleware
+chain by hand. A recovery handler that is correct and a recovery handler that is
+*reachable* are different claims. `TestRecoveryIsWiredIntoTheRouter` drives a real
+route through the real router, using a genuine unhandled panic (a server with no
+database panics loading the sign-in page's branding) rather than an injected one.
+
+This is the second time in two days that the "correct versus reachable"
+distinction has produced a test that nothing else would have caught. It is now a
+habit worth naming: **middleware needs a test that goes through the router.**
+
+### V16.1.1: met by writing the document it asks for
+
+The only requirement in this standard satisfied by prose. Nothing was broken and
+nothing failed, which is exactly why it was unmet — see `docs/logging-inventory.md`,
+which documents both layers (diagnostic `slog` to stderr, audit trail in
+`core.audit_events`), formats, the 54 audit event types, tamper evidence, access
+control and retention.
+
+Writing it surfaced one fact worth stating plainly: **`retention_class` is a
+classification, not an expiry.** No job deletes audit rows by age; rows are
+removed only by an erasure request acting on class. That is defensible, and it is
+now written down rather than assumed.
+
+### The rest of V16
+
+| Requirement | Verdict |
+|---|---|
+| V16.2.1 metadata for investigation | met — correlation id on every request, echoed to the client and stored on audit rows |
+| V16.2.2 UTC or explicit offset | met — `slog` emits RFC 3339 with offset; `occurred_at timestamptz` |
+| V16.2.3 log only to documented sinks | met — stderr and one table, both now inventoried |
+| V16.2.4 readable by the log processor | met — logfmt; **and now true for panics, which it was not** |
+| V16.2.5 sensitive data not logged | met — verified by inspection, including the two call sites that look like exceptions and are not |
+| V16.3.1 all authentication attempts | met — `login.succeeded` **and** `login.failed`; the second is the half usually missing |
+| V16.3.2 failed authorization logged | met — consent denials, impersonation refusals, UMA denials, admin scope refusals |
+| V16.3.3 bypass attempts | met — passkey counter regression, breached password, CIBA unknown subject, federation refusal |
+| V16.3.4 unexpected errors | met, and this is what V16.5.4 fixed |
+| V16.4.1 log injection | met — structured key/values throughout, **zero** `fmt.Sprintf` inside a log call |
+| V16.4.2 protected from modification | met as *detectable*: hash chain over ciphertext, and migration 0043 removed the foreign keys that silently rewrote history. Stated precisely because it is not a trigger refusing `UPDATE` |
+| V16.4.3 shipped to a separate system | **not met** — engine writes to stderr and its own database; forwarding is a deployment decision, recorded in the inventory as the operator's |
+| V16.5.1 generic error to the consumer | met, and now enforced on the panic path |
+| V16.5.2 graceful degradation | met — 12 explicit fail-closed sites |
+| V16.5.3 fails securely, no fail-open | met — repeatedly verified in the protocol reviews |
+| V16.5.4 last-resort handler | **was not met — fixed in this pass** |
+
+### Chapter coverage after this pass
+
+**194 of 345.** V16 joins V3, V6, V7, V8, V9, V10 and V11. Still unswept: V1
+Encoding, V2 Validation, V4 API, V5 File, V12 Secure Communication, V13
+Configuration, V14 Data Protection, V15 Secure Coding, V17 WebRTC.
+
+Two of the two chapters taken off the "not specific to us" list have now produced
+a real defect each. That list should be read as work not yet done.

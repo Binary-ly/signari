@@ -96,7 +96,7 @@ func (s *Server) handleConnectedApps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	htmlPageHeaders(w)
 	_ = connectedTmpl.Execute(w, map[string]any{
 		"Apps":    view,
 		"CSRF":    csrf,

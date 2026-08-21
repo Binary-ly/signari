@@ -302,8 +302,7 @@ func (s *Server) clientRequiresPAR(ctx context.Context, clientID string) (bool, 
 // html/template, because the reason can contain text derived from what the
 // caller supplied.
 func (s *Server) renderAuthzFailure(w http.ResponseWriter, r *http.Request, reason string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
+	htmlPageHeaders(w)
 	w.WriteHeader(http.StatusBadRequest)
 	_ = federationErrorPage.Execute(w, map[string]string{
 		"Reason":        reason,

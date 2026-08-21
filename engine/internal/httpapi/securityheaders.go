@@ -112,3 +112,35 @@ func setCSP(w http.ResponseWriter, policy string) {
 	p = strings.TrimSuffix(p, ";")
 	w.Header().Set("Content-Security-Policy", p+"; "+cspInvariants)
 }
+
+// htmlPageHeaders sets what every HTML response this server sends must carry.
+//
+// There were two ways to send HTML here. Pages going through `renderPage` or
+// `renderLogin` got a Content-Security-Policy, `Cache-Control: no-store` and a
+// framing refusal. Pages writing HTML directly got a Content-Type and, sometimes,
+// a cache header — six of them, every one an error or notice page:
+//
+//	handleConnectedApps        no policy, no cache header
+//	writeAuthzError            no policy, no cache header
+//	samlRefuse                 no policy, no cache header
+//	federationError            no policy
+//	renderLogoutConfirmation   no policy
+//	renderAuthzFailure         no policy
+//
+// The pattern is the giveaway. Nobody omitted these deliberately; they are the
+// pages written in the middle of handling a failure, where the author was
+// thinking about the failure. Several render text the caller supplied — a SAML
+// refusal reason, an OAuth error description — and `html/template` escapes it, so
+// a policy is the second line rather than the first. It is still the line that
+// matters when the first one has a bug.
+//
+// `handleConnectedApps` is the one that is not merely defence in depth: it lists
+// every application holding access to the person's account, and it was sent with
+// no `Cache-Control` at all (ASVS V14.3.2).
+func htmlPageHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	setCSP(w, `default-src 'none'; style-src 'unsafe-inline'; `+
+		`form-action 'self'; frame-ancestors 'none'`)
+	w.Header().Set("X-Frame-Options", "DENY")
+}

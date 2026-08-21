@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -112,6 +114,11 @@ func TestSignUpRefusesAnUnsolvedChallenge(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(cookie)
+	// Its own source address. `/signup` rate-limits ten attempts per hour per
+	// address, counted in the DATABASE, and httptest gives every request the same
+	// 192.0.2.1 -- so after ten runs of this test the eleventh is answered 429 and
+	// the assertion below passes or fails on the wrong thing. It did.
+	req.RemoteAddr = uniqueTestAddr(t) + ":54321"
 	rec := httptest.NewRecorder()
 	f.srv.Routes().ServeHTTP(rec, req)
 
@@ -232,4 +239,18 @@ func TestAnAdaptiveChallengeNotYetDueDoesNotWidenThePolicy(t *testing.T) {
 		t.Errorf("the policy permits the challenge provider on a page carrying no "+
 			"challenge: %q", csp)
 	}
+}
+
+// uniqueTestAddr returns an address from the documentation range that no other
+// run has used, so per-address limits counted in the database do not leak
+// between runs of the suite.
+func uniqueTestAddr(t *testing.T) string {
+	t.Helper()
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatal(err)
+	}
+	// 203.0.113.0/24 is TEST-NET-3; the last octet plus two more from the
+	// 198.51.100.0/24 space gives enough spread for a test suite.
+	return fmt.Sprintf("198.%d.%d.%d", b[0], b[1], b[2])
 }

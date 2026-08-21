@@ -1743,7 +1743,7 @@ func (s *Server) writeAuthzError(w http.ResponseWriter, r *http.Request,
 		}
 		s.log.Error("building error redirect", "err", err)
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	htmlPageHeaders(w)
 	w.WriteHeader(http.StatusBadRequest)
 	_ = errorPage.Execute(w, map[string]string{
 		"Code":        e.Code,
@@ -2029,8 +2029,7 @@ func (s *Server) renderLogoutConfirmation(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
+	htmlPageHeaders(w)
 	// The action is the current URL including its query, so the parameters are
 	// resubmitted rather than re-derived.
 	_ = logoutConfirmPage.Execute(w, map[string]string{

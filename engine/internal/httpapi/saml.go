@@ -479,6 +479,21 @@ var samlPostForm = template.Must(template.New("saml").Parse(`<!DOCTYPE html>
 </body></html>`))
 
 func (s *Server) postSAMLResponse(w http.ResponseWriter, acs, doc, relayState string) {
+	// NOT htmlPageHeaders, and this is the one HTML response here that must not
+	// use it.
+	//
+	// That helper sets `form-action 'self'`, which is right for every page whose
+	// form posts back to us and wrong for this one: this form posts the assertion
+	// to the service provider's ACS URL, on another origin, so `form-action
+	// 'self'` would block the delivery that is the entire purpose of the page.
+	// The page also auto-submits from an inline `onload`, which the absence of
+	// `default-src` and `script-src` here permits.
+	//
+	// So the policy is deliberately just the framing rule. Written out rather
+	// than layered over the helper: calling the helper and then overwriting its
+	// policy works only because of the order of two lines, and the next person to
+	// tidy that is one edit away from breaking SAML sign-in for every relying
+	// party.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	// The page contains an assertion, so it must not be framed: a framed
@@ -529,7 +544,7 @@ func (s *Server) postSAMLStatus(w http.ResponseWriter, r *http.Request, v *saml.
 func (s *Server) samlRefuse(w http.ResponseWriter, r *http.Request, reason string) {
 	s.log.Info("SAML request refused", "reason", reason,
 		"correlation_id", correlationID(r.Context()))
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	htmlPageHeaders(w)
 	w.WriteHeader(http.StatusBadRequest)
 	// The reason is rendered as text through the template package, never
 	// concatenated into HTML: much of it is attacker-controlled.

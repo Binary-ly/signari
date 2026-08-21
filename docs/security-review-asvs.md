@@ -968,3 +968,101 @@ Three chapters taken off the "relevant to the product, not specific to it" list,
 three defects — a missing header set, a missing panic handler, and an origin
 check positioned after the side effects it was meant to prevent. The dismissal
 has now been wrong three times out of three.
+
+
+## V14 Data Protection and V17 WebRTC (21 August 2026)
+
+### V17: twelve requirements, none applicable — checked rather than assumed
+
+V17 is TURN servers, DTLS-SRTP media and WebRTC signalling. A search for
+`webrtc|turn server|stun|dtls|srtp|RTCPeerConnection` across the engine returns
+seven matches, and **all seven are false positives**: one is a comment in
+`securityheaders.go` quoting this standard's own chapter list, and six are
+`MethodSelfSignedTLSClientAuth`, in which "Signe**dTLS**ClientAuth" contains the
+letters `dtls`.
+
+Worth doing rather than waving away, because browser remote access does exist
+here — `internal/rac` — and the reasonable guess is that it uses WebRTC. It does
+not: it proxies the Guacamole protocol over a WebSocket to `guacd`, which is why
+V4.4 applied and V17 does not.
+
+**Twelve requirements closed with evidence.**
+
+### V14: the finding was in the pages nobody revisits
+
+V14.3.2 asks for `Cache-Control: no-store` so sensitive data is not cached by
+browsers, and V3.4 asks for a Content-Security-Policy on every response. Both are
+satisfied by `renderPage` and `renderLogin`, which is how most HTML leaves this
+server.
+
+Six responses did not go through either. A scan of every site setting a
+`text/html` Content-Type found:
+
+| Handler | Policy | `no-store` |
+|---|---|---|
+| `handleConnectedApps` | **none** | **none** |
+| `writeAuthzError` | **none** | **none** |
+| `samlRefuse` | **none** | **none** |
+| `federationError` | **none** | yes |
+| `renderLogoutConfirmation` | **none** | yes |
+| `renderAuthzFailure` | **none** | yes |
+
+Every one is an error or a notice page. That is the whole finding: nobody omitted
+these deliberately, they are the pages written in the middle of handling a
+failure, when the author is thinking about the failure. Three of them render text
+the caller supplied — a SAML refusal reason, an OAuth error description — and
+`html/template` escapes it, so a policy is the second line rather than the first.
+It is still the line that matters when the first one has a bug.
+
+**`handleConnectedApps` is the one that is not merely defence in depth.** It
+lists every application holding access to a person's account and was sent with no
+cache header at all, so it is eligible for storage in any intermediary and in the
+browser's own cache — a V14.3.2 gap on a page whose entire content is a list of
+who can act as you.
+
+All six now call `htmlPageHeaders`.
+
+### The one page that must NOT use the helper, and why that is written down
+
+`postSAMLResponse` renders the auto-submitting form that delivers an assertion to
+a service provider's ACS URL — **on another origin**. `htmlPageHeaders` sets
+`form-action 'self'`, which would block exactly that delivery.
+
+The bulk edit initially caught this page too. It did not break, because the line
+after it overwrote the policy with the framing-only one — correct entirely by the
+order of two statements. That has been replaced with the headers written out in
+full and a comment saying why the helper is wrong here, because "it works because
+these two lines are in this order" is a thing somebody tidies up.
+
+### Pinned structurally
+
+`TestEveryHTMLResponseCarriesAPolicyAndNoStore` scans the package source rather
+than rendering pages. That is deliberate: the defect is not a wrong header on a
+known page, it is a NEW page written without one — and a test that renders each
+page has to know how to reach each page, which is precisely why this survived.
+`samlRefuse` is reachable only by a malformed SAML request of a particular shape,
+and nothing had ever sent one.
+
+### The rest of V14
+
+| Requirement | Verdict |
+|---|---|
+| V14.1.1 / V14.1.2 data classified, protection documented | partial — `retention_class` classifies audit data and `docs/logging-inventory.md` now documents the log layer, but there is no single inventory of every sensitive field and its protection level |
+| V14.2.1 no sensitive data in URLs | **partial, and deliberately** — invitation and password-reset links carry a token in the query string, which is how an emailed link works. Mitigated by single use, short expiry, and the `Referrer-Policy: no-referrer` added in the V3 pass |
+| V14.2.2 not cached in server components | met — `no-store` now on every HTML response and every token response |
+| V14.2.3 not sent to untrusted parties | met — no analytics, trackers or third-party scripts; the only external script permitted is a CAPTCHA provider an operator configured, and only when one is on the page |
+| V14.2.5 web cache deception | met — no static-file handler that could serve a different valid file for a non-existent path |
+| V14.2.6 minimum data returned | met — userinfo returns only granted scopes' claims |
+| V14.2.7 retention classification | partial — classified, not time-expired; see 9p |
+| V14.2.8 file metadata | n/a — no user file upload |
+| V14.3.1 client storage cleared | met by construction — `localStorage`, `sessionStorage` and `IndexedDB` appear **zero** times in anything this server serves |
+| V14.3.2 anti-caching headers | **six gaps, fixed** |
+| V14.3.3 no sensitive data in browser storage | met — nothing is stored client-side but the session cookie |
+
+### Chapter coverage after this pass
+
+**235 of 345.** V14 and V17 join V3, V4, V6, V7, V8, V9, V10, V11 and V16. Still
+unswept: V1 Encoding, V2 Validation, V5 File, V12 Secure Communication, V13
+Configuration, V15 Secure Coding.
+
+Four chapters taken off the dismissed list, four defects.

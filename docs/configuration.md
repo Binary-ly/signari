@@ -187,6 +187,7 @@ A third device posture source, feeding the same `device_managed` and
 | `SIGNARI_CHROME_CUSTOMER_ID` | **Required.** Your Workspace customer id. Without it a device managed by *any* customer counts as managed, which means nothing |
 | `SIGNARI_CHROME_IMPERSONATE` | Administrator the service account acts as, if delegation requires one |
 | `SIGNARI_CHROME_HEADER` | Where the browser puts its signed challenge response (default `X-Verified-Access-Challenge-Response`) |
+| `SIGNARI_CHROME_REQUIRE_FIREWALL` | `1` adds Google's `osFirewall` signal to the compliance verdict. Off by default: disk encryption and screen lock are near-universal on managed fleets, the host firewall is not, and requiring it unasked locks out estates that deliberately run without one. An absent signal counts as not satisfied, like every other signal |
 
 ## Kerberos (SPNEGO)
 

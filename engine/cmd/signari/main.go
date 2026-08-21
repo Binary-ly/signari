@@ -3898,6 +3898,12 @@ func postureFromEnv() (*posture.Config, error) {
 		impersonate := os.Getenv("SIGNARI_CHROME_IMPERSONATE")
 		cfg.Chrome = &posture.Chrome{
 			CustomerID: customer,
+			// Off unless asked for. Google reports `osFirewall` and we decode it,
+			// but requiring it by default would refuse every managed fleet that
+			// deliberately runs without a host firewall behind a network its own
+			// administrators control -- a lockout imposed by this server to enforce
+			// a policy nobody set here.
+			RequireOSFirewall: os.Getenv("SIGNARI_CHROME_REQUIRE_FIREWALL") == "1",
 			Token: func(ctx context.Context) (string, error) {
 				return directory.GoogleToken(ctx, creds, impersonate,
 					"https://www.googleapis.com/auth/verifiedaccess", nil)

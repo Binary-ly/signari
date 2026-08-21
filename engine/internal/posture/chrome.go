@@ -54,6 +54,23 @@ type Chrome struct {
 	// "a managed device" into "someone's managed device".
 	CustomerID string
 
+	// RequireOSFirewall adds Google's `osFirewall` signal to the compliance
+	// verdict.
+	//
+	// Off by default, and that default is a decision rather than an oversight.
+	// Disk encryption and screen lock are close to universal on managed fleets;
+	// the host firewall is not -- plenty of managed macOS and Linux estates run
+	// with it off deliberately, behind a network the operator already controls.
+	// Turning it on for everybody would lock those users out of an identity
+	// provider to enforce a policy their own administrators did not set.
+	//
+	// It exists because the signal was already being decoded and then dropped,
+	// which left an operator who *does* require a host firewall with no way to
+	// say so, and left the next reader unable to tell whether the omission was
+	// deliberate. Either answer is defensible; being unable to express one is
+	// not.
+	RequireOSFirewall bool
+
 	HTTP    *http.Client
 	BaseURL string // overridden in tests
 }
@@ -140,13 +157,22 @@ func (c *Chrome) Verify(ctx context.Context, challengeResponse string) (State, e
 	}
 
 	managed := out.DeviceSignal.DeviceEnrollmentDomain != ""
-	// Compliant means the posture signals Google reports are all satisfied.
-	// Absent signals are NOT treated as satisfied: a policy that has not been
-	// pushed to a device reports nothing, and reading that as compliance is how
-	// an unencrypted laptop passes a disk-encryption requirement.
+	// Compliant means the posture signals this deployment requires are all
+	// satisfied. Absent signals are NOT treated as satisfied: a policy that has
+	// not been pushed to a device reports nothing, and reading that as compliance
+	// is how an unencrypted laptop passes a disk-encryption requirement.
+	//
+	// "requires" rather than "Google reports", which is what this comment used to
+	// say and was not true: `osFirewall` was decoded from the response and left
+	// out of the verdict, so a device with its host firewall off was reported
+	// compliant by a rule that claimed to check everything reported. The signal
+	// is now opt-in -- see RequireOSFirewall for why it is not simply added.
 	compliant := managed &&
 		isTrue(out.DeviceSignal.DiskEncrypted) &&
 		isTrue(out.DeviceSignal.ScreenLockSecured)
+	if c.RequireOSFirewall {
+		compliant = compliant && isTrue(out.DeviceSignal.OSFirewall)
+	}
 
 	return State{Managed: managed, Compliant: compliant, Source: "chrome"}, nil
 }

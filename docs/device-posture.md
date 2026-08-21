@@ -117,3 +117,46 @@ chain or reads a header.
 
 With nothing configured, `posture` is nil and a rule requiring a device is simply
 never satisfied — visible, rather than silently permissive.
+
+## The firewall signal (21 August 2026)
+
+Found by sweeping the codebase for wire fields that are decoded and never read —
+the same sweep that found LDAP's `typesOnly` and `timeLimit`.
+
+`verifyResponse.DeviceSignal.OSFirewall` was parsed out of Google's Verified
+Access response and left out of the compliance verdict, under a comment claiming
+compliance meant *"the posture signals Google reports are all satisfied"*. It did
+not: a managed device with disk encryption and a screen lock but its host
+firewall switched off was reported **compliant**, by a rule whose own
+documentation said it checked everything reported.
+
+Either the code or the comment was wrong, and which one is not a question the
+specification answers — it is a policy question about the fleet.
+
+**Adding the signal unconditionally would have been the wrong fix**, and it is
+the fix that looks obviously right. Disk encryption and screen lock are close to
+universal on managed estates. The host firewall is not: plenty of managed macOS
+and Linux fleets run with it off deliberately, behind a network their
+administrators already control. Turning it on for everybody would have locked
+those users out of their identity provider to enforce a policy nobody set here —
+and the failure would have arrived as "logins stopped working after an upgrade",
+with nothing in the response saying which signal caused it.
+
+So it is opt-in, via `SIGNARI_CHROME_REQUIRE_FIREWALL=1`, with the default
+preserving current behaviour. What was actually broken was not the policy but the
+inability to express one: an operator who *did* require a host firewall had no
+way to say so, and the next person to read the file could not tell whether the
+omission was deliberate.
+
+An absent `osFirewall` counts as **not** satisfied when the signal is required,
+which is the rule the other signals already follow: a policy that has not reached
+a device reports nothing, and reading silence as compliance is how a requirement
+quietly stops applying to exactly the devices that are out of management.
+
+```
+CAUGHT   ignore the flag and never check the firewall (the state before this pass)
+CAUGHT   always check the firewall (the tempting one-line fix — locks out fleets)
+CAUGHT   treat an absent firewall signal as satisfied
+```
+
+The middle one is the reason this is three tests rather than one.

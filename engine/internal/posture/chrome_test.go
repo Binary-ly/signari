@@ -140,3 +140,88 @@ func TestChallengeComesFromGoogle(t *testing.T) {
 		t.Fatalf("challenge = %q, %v", ch, err)
 	}
 }
+
+// `osFirewall` was decoded from Google's response and left out of the verdict,
+// under a comment claiming compliance meant "the posture signals Google reports
+// are all satisfied". It did not: a device with its host firewall off was
+// reported compliant by a rule that said it checked everything reported.
+//
+// Adding it unconditionally would have been the wrong fix. Disk encryption and
+// screen lock are near-universal on managed fleets; the host firewall is not,
+// and plenty of managed estates run with it off deliberately behind a network
+// the operator already controls. Turning it on for everyone would lock those
+// users out of an identity provider to enforce a policy their own
+// administrators never set.
+//
+// So it is opt-in — and the point of these two tests is that both answers are
+// now reachable. Before, only one was, and not by choice.
+func TestTheFirewallSignalIsIgnoredUnlessRequired(t *testing.T) {
+	reply := map[string]any{
+		"customerId":    "C01abc",
+		"keyTrustLevel": "CHROME_BROWSER_HW_KEY",
+		"deviceSignal": map[string]any{
+			"deviceEnrollmentDomain": "acme.com",
+			"diskEncrypted":          "ENCRYPTED",
+			"screenLockSecured":      "SECURED",
+			"osFirewall":             "DISABLED",
+		},
+	}
+	c := chromeAgainst(t, reply, "C01abc")
+	st, err := c.Verify(context.Background(), "signed-response")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Compliant {
+		t.Errorf("a device with the firewall off was reported non-compliant on a "+
+			"deployment that never asked for the firewall signal; that is a lockout "+
+			"nobody configured: %+v", st)
+	}
+}
+
+func TestARequiredFirewallIsEnforced(t *testing.T) {
+	base := map[string]any{
+		"deviceEnrollmentDomain": "acme.com",
+		"diskEncrypted":          "ENCRYPTED",
+		"screenLockSecured":      "SECURED",
+	}
+	for _, tc := range []struct {
+		name     string
+		firewall any
+		want     bool
+	}{
+		{"enabled", "ENABLED", true},
+		{"disabled", "DISABLED", false},
+		// Absent is NOT satisfied — the same rule the other signals follow. A
+		// policy that has not reached a device reports nothing, and reading
+		// silence as compliance is how the requirement quietly stops applying.
+		{"absent", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			signal := map[string]any{}
+			for k, v := range base {
+				signal[k] = v
+			}
+			if tc.firewall != nil {
+				signal["osFirewall"] = tc.firewall
+			}
+			c := chromeAgainst(t, map[string]any{
+				"customerId":    "C01abc",
+				"keyTrustLevel": "CHROME_BROWSER_HW_KEY",
+				"deviceSignal":  signal,
+			}, "C01abc")
+			c.RequireOSFirewall = true
+
+			st, err := c.Verify(context.Background(), "signed-response")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.Compliant != tc.want {
+				t.Errorf("firewall=%v: compliant=%v, want %v", tc.firewall, st.Compliant, tc.want)
+			}
+			if !st.Managed {
+				t.Errorf("the device stopped being MANAGED, not just non-compliant; "+
+					"the firewall is a compliance signal, not an enrollment one: %+v", st)
+			}
+		})
+	}
+}

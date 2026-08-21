@@ -71,6 +71,20 @@ agree.
   can sign in to is worse than one that was refused out loud.
 - Everything that is not a user or a group. A dumpdata file contains tokens,
   flows and stages; those are authentik's model, not ours.
+- **`is_superuser` on a group.** Groups come across; the flag does not, because
+  there is nothing here for it to mean — Signari has no group-conferred
+  superuser. Capabilities attach to a group individually (see
+  `0070_impersonation.sql`: *"A capability on a group rather than a role
+  system"*), so there is no single switch that reproduces what authentik's flag
+  did.
+
+  Dropping it **fails closed** — an authentik admin group arrives as an ordinary
+  group and nobody gains privilege by being migrated. That is the safe direction
+  and it is deliberate, but it is worth stating out loud rather than leaving to
+  be discovered: **after a migration, nobody is an administrator by virtue of
+  their old group membership.** Grant whatever capabilities those groups need,
+  explicitly, before decommissioning the authentik instance you would otherwise
+  have to go back to in order to find out what they were.
 
 ## Migration state, and a bug that was fixed here
 

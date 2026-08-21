@@ -78,6 +78,19 @@ type Metadata struct {
 	ClientAttestationAlgs    []string `json:"client_attestation_signing_alg_values_supported,omitempty"`
 	ClientAttestationPoPAlgs []string `json:"client_attestation_pop_signing_alg_values_supported,omitempty"`
 
+	// §7.6, added in draft -10: "JSON array of case-sensitive strings, each
+	// identifying a Proof of Possession method that the server accepts". The
+	// registry it created holds three values -- `attestation_pop_jwt`,
+	// `dpop_combined` and `none`.
+	//
+	// OPTIONAL, and worth sending precisely because we support ONE of them. We
+	// implement the dedicated PoP JWT and not the combined DPoP mode, and
+	// omitting this parameter says nothing at all: the draft's default for an
+	// absent value is that presenting a Client Attestation is optional, which is
+	// not what we mean. Naming the single method we accept turns a gap a client
+	// would discover by being refused into something it can read up front.
+	ClientAttestationPoPMethods []string `json:"client_attestation_pop_methods_supported,omitempty"`
+
 	// §6.1: "it MUST signal support for the challenge endpoint by including the
 	// metadata entry challenge_endpoint containing the URL of the endpoint".
 	ChallengeEndpoint             string   `json:"challenge_endpoint,omitempty"`
@@ -202,7 +215,10 @@ func Build(cfg Config) (*Metadata, error) {
 		ChallengeEndpoint:        at(PathAttestationChallenge),
 		ClientAttestationAlgs:    abca.SigningAlgs(),
 		ClientAttestationPoPAlgs: abca.SigningAlgs(),
-		IntrospectionEndpoint:    at(PathIntrospection),
+		// Not `dpop_combined`: that mode is unimplemented, and this list is a
+		// statement about what will actually be accepted at the endpoint.
+		ClientAttestationPoPMethods: []string{abca.PoPMethodAttestationJWT},
+		IntrospectionEndpoint:       at(PathIntrospection),
 
 		// `groups` is advertised because it now works. Every scope and claim in
 		// this document is one the engine actually honours -- the rule this file

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"testing"
 
+	"signari.dev/engine/internal/abca"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
@@ -94,4 +95,30 @@ func buildHonestyMetadata(t *testing.T) *oidc.Metadata {
 		t.Fatal(err)
 	}
 	return md
+}
+
+// The attestation PoP methods we advertise must be ones we actually accept.
+//
+// draft-ietf-oauth-attestation-based-client-auth-10 §7.6 added
+// `client_attestation_pop_methods_supported` and a registry with three values.
+// We implement one of them. Advertising `dpop_combined` would be the same class
+// of lie this file exists to catch: a client reads the metadata, builds a DPoP
+// combined proof, and is refused by the endpoint that advertised it.
+func TestOnlyImplementedAttestationPoPMethodsAreAdvertised(t *testing.T) {
+	md := buildHonestyMetadata(t)
+
+	implemented := map[string]bool{abca.PoPMethodAttestationJWT: true}
+	for _, m := range md.ClientAttestationPoPMethods {
+		if !implemented[m] {
+			t.Errorf("discovery advertises attestation PoP method %q, which this "+
+				"engine does not implement", m)
+		}
+	}
+	// And the one that works must be there: an empty list means something
+	// specific in §7.6 -- that a Client Attestation is optional -- which is not
+	// what this engine means.
+	if len(md.ClientAttestationPoPMethods) == 0 {
+		t.Error("no attestation PoP method is advertised, which the draft reads as " +
+			"'attestation optional' rather than 'this one method'")
+	}
 }

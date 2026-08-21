@@ -358,3 +358,20 @@ func SigningAlgs() []string {
 	}
 	return out
 }
+
+// Proof-of-Possession method identifiers from the "OAuth Client Attestation
+// Proof-of-Possession Methods" registry created by draft -10 §7.6.
+//
+// Only the first is implemented here. `PoPMethodDPoPCombined` is named so the
+// gap has a name rather than being an absence -- and so that anything advertising
+// it has to reference a constant that does not appear in the accepted list.
+const (
+	// PoPMethodAttestationJWT is the dedicated Client Attestation PoP JWT.
+	PoPMethodAttestationJWT = "attestation_pop_jwt"
+	// PoPMethodDPoPCombined uses a DPoP proof as the combined PoP. NOT
+	// implemented: draft -10 also notes that `dpop_jkt` cannot be used with it,
+	// which is a rule with nowhere to live until the mode exists.
+	PoPMethodDPoPCombined = "dpop_combined"
+	// PoPMethodNone means no Client Attestation is required.
+	PoPMethodNone = "none"
+)

@@ -13,7 +13,7 @@ use Throwable;
  * asserting its own design. This asserts it from the consumer -- the runtime that
  * would actually benefit from cheating -- which is the side that matters.
  *
- * Three properties, from docs/adr/README.md:
+ * Three properties of that boundary:
  *
  *   ADR-004  the admin has NO privilege on schema core; the boundary is a GRANT,
  *            not a code-review rule, so "just this one direct read" is impossible

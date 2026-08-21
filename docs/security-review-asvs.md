@@ -287,7 +287,7 @@ Fixed, with `iat` bounded in the same direction and by the same ten seconds
 V9 complete (7/7). V10 OAuth and OIDC was swept earlier at 41 of 43 evidenced.
 V6 Authentication (47), V7 Session Management (19), V8 Authorization (13) and
 V11 Cryptography (24) have partial coverage from the protocol reviews but no
-requirement-by-requirement sweep — recorded in TODO-FOR-YOU.md as open rather
+requirement-by-requirement sweep — recorded as an open decision rather
 than claimed.
 
 ## V7 Session Management: nineteen requirements, one gap (21 August 2026)
@@ -305,7 +305,7 @@ than claimed.
 | **V7.3.1** inactivity timeout | **not met** — item 9f, unchanged |
 | **V7.3.2** absolute maximum lifetime | met — `not_after`, enforced in every lookup as well as by the sweep |
 | **V7.5.2** users can view and terminate their sessions | partial — the data exists; the page does not |
-| **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | partial — timeouts and deviations are documented here and in TODO-FOR-YOU.md; concurrent-session policy is not |
+| **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | partial — timeouts and deviations are documented here; concurrent-session policy is not |
 
 ### V7.2.4: the half that was missing
 

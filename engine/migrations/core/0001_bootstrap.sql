@@ -1,7 +1,7 @@
 -- 0001_bootstrap.sql
 -- Roles, schemas, and the privilege boundary between the Go engine and the Laravel admin.
 --
--- The boundary is enforced by GRANT/REVOKE, not by code review. See docs/adr/README.md ADR-004.
+-- The boundary is enforced by GRANT/REVOKE, not by code review (ADR-004).
 -- Run this as a superuser once per database. Everything after 0001 runs as signari_engine.
 
 -- ---------------------------------------------------------------------------

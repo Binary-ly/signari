@@ -311,5 +311,52 @@ func fingerprintTx(ctx context.Context, tx pgx.Tx) (string, error) {
 	if err := rows.Err(); err != nil {
 		return "", err
 	}
+
+	// Constraints, which this function claimed to cover and did not.
+	//
+	// The doc comment on Fingerprint has always promised "every column, its type,
+	// nullability and default, plus every table constraint", and only the columns
+	// were ever hashed. The gap is invisible in the ordinary upgrade path, because
+	// Verify checks the version counter first -- but the fingerprint exists for
+	// the case the counter cannot see, which the comment names exactly: "two
+	// databases can both claim version 7 and disagree, if someone hand-patched one
+	// of them". A hand-patch that drops a CHECK, a foreign key or a unique
+	// constraint leaves every column identical, so the digest was unchanged and
+	// the drift the fingerprint exists to catch went through it.
+	//
+	// Migration 0097 is a live example: it only widens a CHECK constraint, so
+	// before this it altered the schema without altering the fingerprint at all.
+	//
+	// pg_get_constraintdef rather than the constituent columns, because it is the
+	// canonical rendering and it moves when the meaning moves. Ordered by name so
+	// the digest does not depend on catalogue order.
+	crows, err := tx.Query(ctx, `
+		SELECT c.relname, con.conname, pg_get_constraintdef(con.oid)
+		FROM pg_constraint con
+		JOIN pg_class c ON c.oid = con.conrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'core' AND c.relkind = 'r'
+		ORDER BY c.relname, con.conname, pg_get_constraintdef(con.oid)`)
+	if err != nil {
+		return "", err
+	}
+	defer crows.Close()
+	for crows.Next() {
+		var table, name, def string
+		if err := crows.Scan(&table, &name, &def); err != nil {
+			return "", err
+		}
+		b.Reset()
+		b.WriteString(table)
+		b.WriteByte('.')
+		b.WriteString(name)
+		b.WriteByte('|')
+		b.WriteString(def)
+		b.WriteByte('\n')
+		h.Write([]byte(b.String()))
+	}
+	if err := crows.Err(); err != nil {
+		return "", err
+	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

@@ -65,4 +65,4 @@ plausible-looking ones.
 check, the key trust level and the tri-state signal handling are all tested
 against a fake Verified Access API. Nothing has been exchanged with Google.
 That needs a Workspace tenant with Chrome Enterprise, and it is in
-`TODO-FOR-YOU.md` rather than implied to be done.
+the open-decisions list rather than implied to be done.

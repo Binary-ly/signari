@@ -612,7 +612,7 @@ func reportErasure(r *Report, subjects int) {
 			"destroys a subject's data-encryption key. A deployment that receives "+
 			"an erasure request cannot honour it. Deciding what erasure should mean "+
 			"here -- immediate, delayed and cancellable, or requiring two "+
-			"administrators -- is item 9o in TODO-FOR-YOU.md, and it is deliberately "+
+			"administrators -- is open decision 9o, and it is deliberately "+
 			"left to the operator because a mistaken shred cannot be undone.")
 }
 

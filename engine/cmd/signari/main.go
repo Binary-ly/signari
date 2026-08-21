@@ -2789,7 +2789,7 @@ func flowTest(path string) error {
 		if !fl.On.Driven() {
 			fmt.Printf("    !!   this engine does not EXECUTE %s flows. The file "+
 				"parses, its\n         safety rules apply and its tests run -- and "+
-				"no endpoint consults\n         it. See item 9q in TODO-FOR-YOU.md.\n",
+				"no endpoint consults\n         it. This is a known scope limit (9q).\n",
 				fl.On)
 		}
 		for _, tc := range fl.Tests {
@@ -6830,8 +6830,8 @@ func warnUndriven(f *flow.File) {
 	}
 	fmt.Printf("  This engine drives %s flows only. The rest are parsed, "+
 		"safety-checked and\n  tested, and nothing consults them at run time: "+
-		"sign-up and recovery are\n  hardcoded journeys. See item 9q in "+
-		"TODO-FOR-YOU.md.\n", flow.Authentication)
+		"sign-up and recovery are\n  hardcoded journeys. This is a known scope "+
+		"limit (9q).\n", flow.Authentication)
 }
 
 // clientSetDPoP pins a client to DPoP, per RFC 9449 §5.2.

@@ -96,4 +96,4 @@ a provider's error message survives into ours.
 
 **Nothing has run against a real Google or Entra tenant.** That needs
 credentials nobody should hand to a test suite, and it is listed in
-`TODO-FOR-YOU.md` rather than implied to be done.
+the open-decisions list rather than implied to be done.

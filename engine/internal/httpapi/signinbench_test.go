@@ -56,7 +56,7 @@ import (
 //
 // Not localised. `attempt` measures a GET of the form (render plus CSRF mint)
 // and then the POST, so the ~46 ms is spread across two requests and whatever
-// middleware now sits in front of them. Recorded in TODO-FOR-YOU.md rather than
+// middleware now sits in front of them. Recorded as an open item rather than
 // guessed at.
 //
 // The decision costs ONE query, the same as the `if enrolled` it replaced. An

@@ -168,4 +168,4 @@ Kerberos is single factor. The access policy can require a second one:
 reporting and the SPNEGO challenge are all tested, and ticket validation is
 `gokrb5`'s, which is widely used. But no ticket from a real Active Directory has
 been through this. That needs a domain controller, and it is in
-`TODO-FOR-YOU.md` rather than implied to be done.
+the open-decisions list rather than implied to be done.

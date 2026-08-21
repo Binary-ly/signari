@@ -59,8 +59,8 @@ const (
 // this question and says the answer out loud. A promise that is unenforced is
 // worse than an absent feature, because the operator stops looking.
 //
-// See item 9q in TODO-FOR-YOU.md. Closing the gap properly -- driving enrolment,
-// then recovery -- is a scope decision rather than a technical one, and it is not
+// Open decision 9q. Closing the gap properly -- driving enrolment, then
+// recovery -- is a scope decision rather than a technical one, and it is not
 // this file's to make.
 func (d Designation) Driven() bool { return d == Authentication }
 

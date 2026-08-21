@@ -106,6 +106,14 @@ func (w *Worker) Run(ctx context.Context, interval time.Duration) {
 			} else if n > 0 {
 				w.log.Info("delivered security events", "count", n)
 			}
+			// CIBA ping notifications, same tick, same independence. Parked
+			// rows are invisible to the claim query, so only decided requests
+			// are drained here.
+			if n, err := w.drainCIBAPings(ctx); err != nil {
+				w.log.Error("draining CIBA pings", "err", err)
+			} else if n > 0 {
+				w.log.Info("delivered CIBA ping notifications", "count", n)
+			}
 			// Event subscriptions, on the same tick and equally independently.
 			if n, err := w.DrainWebhooks(ctx); err != nil {
 				w.log.Error("draining event subscriptions", "err", err)

@@ -310,11 +310,15 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		}
 		s.log.Info("device authorization approved", "client_id", d.ClientID,
 			"user_id", userID, "correlation_id", correlationID(ctx))
+		s.releaseCIBAPing(ctx, d.ID)
 		s.renderPage(w, r, devicePage, map[string]any{"Done": true})
 	case "deny":
 		if err := store.DenyDeviceAuthorization(ctx, s.db, d.ID); err != nil {
 			s.log.Error("denying a device authorization", "err", err)
 		}
+		// §10 notifies on the RESULT, not on approval. A ping client left
+		// polling after a refusal is exactly the wait this mode removes.
+		s.releaseCIBAPing(ctx, d.ID)
 		s.renderPage(w, r, devicePage, map[string]any{"Denied": true})
 	default:
 		// First POST: the code was right, so show what is being authorised and
@@ -494,4 +498,22 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 	s.log.Info("device grant redeemed", "client_id", d.ClientID, "user_id", d.UserID,
 		"correlation_id", correlationID(ctx))
 	writeJSON(w, http.StatusOK, resp)
+}
+
+
+// releaseCIBAPing makes a parked ping notification eligible for delivery.
+//
+// Logged and not surfaced: the person approving has finished, and a failure to
+// release is our problem to fix rather than theirs to see. A poll client has
+// nothing parked, so `released` is false for most requests and that is not an
+// error.
+func (s *Server) releaseCIBAPing(ctx context.Context, requestID string) {
+	released, err := store.ReleaseCIBAPing(ctx, s.db, requestID)
+	if err != nil {
+		s.log.Error("releasing a CIBA ping", "err", err, "request_id", requestID)
+		return
+	}
+	if released {
+		s.log.Info("CIBA ping released for delivery", "request_id", requestID)
+	}
 }

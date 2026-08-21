@@ -69,6 +69,25 @@ type Client struct {
 
 	ExchangeRequiresAudienceMatch bool
 
+	// BackchannelTokenDeliveryMode is "poll" or "ping" (CIBA Core 1.0 §7.3).
+	//
+	// Poll has the client ask repeatedly whether the person has approved. Ping
+	// has us call BackchannelClientNotificationEndpoint the moment the result
+	// exists, after which the client collects the token in one request.
+	//
+	// Per client rather than per deployment, because the two modes are a property
+	// of what the client can receive: a mobile app with no reachable endpoint
+	// cannot be pinged, and a backend service should not have to poll.
+	BackchannelTokenDeliveryMode string
+
+	// BackchannelClientNotificationEndpoint is where a ping is delivered.
+	//
+	// Required for ping and refused for poll, both in the schema and at
+	// registration. A ping client without one would be accepted and then have
+	// nowhere to deliver to -- the same silent success the logout worker refuses
+	// to mint a token for.
+	BackchannelClientNotificationEndpoint string
+
 	// TokenEndpointAuthMethod is how this client is REGISTERED to authenticate,
 	// as distinct from how a given request happened to present credentials.
 	//
@@ -129,7 +148,9 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       may_exchange, exchange_audiences,
 		       tls_subject_dn, tls_san_dns, tls_san_uri, tls_thumbprint, tls_bound_tokens,
 		       allow_hybrid, token_endpoint_auth_method, dpop_bound_access_tokens,
-		       exchange_requires_audience_match
+		       exchange_requires_audience_match,
+		       backchannel_token_delivery_mode,
+		       coalesce(backchannel_client_notification_endpoint, '')
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -138,7 +159,9 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.MayExchange, &c.ExchangeAudiences,
 			&tlsDN, &tlsDNS, &tlsURI, &c.TLSThumbprint, &c.TLSBoundTokens,
 			&c.AllowHybrid, &c.TokenEndpointAuthMethod, &c.DPoPBoundAccessTokens,
-			&c.ExchangeRequiresAudienceMatch)
+			&c.ExchangeRequiresAudienceMatch,
+			&c.BackchannelTokenDeliveryMode,
+			&c.BackchannelClientNotificationEndpoint)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

@@ -74,7 +74,8 @@ func ResolveCIBASubject(ctx context.Context, db *pgxpool.Pool, orgID, hint strin
 // the schema rather than of this function.
 func CreateBackchannelAuthentication(ctx context.Context, db *pgxpool.Pool,
 	orgID, clientID, userID, scope, bindingMessage string, acr []string,
-	authReqHash []byte, interval int, lifetime time.Duration) (string, error) {
+	authReqHash []byte, interval int, lifetime time.Duration,
+	notificationToken string) (string, error) {
 
 	// A nil slice marshals to SQL NULL, not to an empty array, so the column's
 	// DEFAULT '{}' never applies and the NOT NULL fires. Normalised here rather
@@ -89,12 +90,14 @@ func CreateBackchannelAuthentication(ctx context.Context, db *pgxpool.Pool,
 	err := db.QueryRow(ctx, `
 		INSERT INTO core.device_authorizations
 			(org_id, client_id, user_id, scope, device_code_hash, user_code_hash,
-			 flow, binding_message, requested_acr, interval_s, expires_at)
+			 flow, binding_message, requested_acr, interval_s, expires_at,
+			 client_notification_token)
 		VALUES ($1::uuid, $2, $3::uuid, $4, $5, NULL,
-		        'ciba', NULLIF($6,''), $7, $8, now() + $9::interval)
+		        'ciba', NULLIF($6,''), $7, $8, now() + $9::interval,
+		        NULLIF($10,''))
 		RETURNING id::text`,
 		orgID, clientID, userID, scope, authReqHash, bindingMessage, acr, interval,
-		fmt.Sprintf("%d seconds", int(lifetime.Seconds()))).Scan(&id)
+		fmt.Sprintf("%d seconds", int(lifetime.Seconds())), notificationToken).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("recording a backchannel authentication: %w", err)
 	}

@@ -92,7 +92,7 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, perr := oauth.ParseCIBARequest(r.PostForm, c.ClientID)
+	req, perr := oauth.ParseCIBARequest(r.PostForm, c.ClientID, c.BackchannelTokenDeliveryMode)
 	if perr != nil {
 		writeCIBAError(w, perr)
 		return
@@ -151,13 +151,32 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lifetime := req.Expiry()
-	if _, err := store.CreateBackchannelAuthentication(ctx, s.db, c.OrgID, c.ClientID,
+	requestID, err := store.CreateBackchannelAuthentication(ctx, s.db, c.OrgID, c.ClientID,
 		userID, req.Scope, req.BindingMessage, req.ACRValues,
-		store.HashToken(authReqID), oauth.CIBAMinPollInterval, lifetime); err != nil {
+		store.HashToken(authReqID), oauth.CIBAMinPollInterval, lifetime,
+		req.ClientNotificationToken)
+	if err != nil {
 		s.log.Error("recording a backchannel authentication", "err", err)
 		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
 			Code: "server_error", Description: "unavailable"})
 		return
+	}
+
+	// Ping delivery: park the notification now, while the auth_req_id still
+	// exists in plaintext. It is released when the person decides -- see
+	// store.QueueCIBAPing for why it cannot be built at that point instead.
+	if c.BackchannelTokenDeliveryMode == oauth.DeliveryPing {
+		if err := store.QueueCIBAPing(ctx, s.db, requestID, c.ClientID,
+			c.BackchannelClientNotificationEndpoint, req.ClientNotificationToken,
+			authReqID); err != nil {
+			// Refused rather than issued: a ping client that receives an
+			// auth_req_id and no notification waits forever, which is the failure
+			// poll mode does not have and the reason this mode is opt-in.
+			s.log.Error("parking a CIBA ping", "err", err, "client_id", c.ClientID)
+			writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
+				Code: "server_error", Description: "unavailable"})
+			return
+		}
 	}
 
 	s.auditDetached(ctx, audit.Event{

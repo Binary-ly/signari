@@ -36,10 +36,16 @@ type Metadata struct {
 	// RFC 9126 §5.
 	PushedAuthorizationRequestEndpoint string `json:"pushed_authorization_request_endpoint,omitempty"`
 	DeviceAuthorizationEndpoint        string `json:"device_authorization_endpoint,omitempty"`
-	// CIBA Core 1.0 §4 metadata. The delivery modes are listed explicitly and
-	// say only "poll", because ping and push would have us call an endpoint the
-	// client hosts and we do not. Advertising a mode that never delivers is the
-	// failure this whole file exists to prevent.
+	// CIBA Core 1.0 §4 metadata. The delivery modes are listed explicitly:
+	// "poll" and "ping". Push is absent because it hands the token itself to the
+	// notification endpoint, which needs a different security analysis from
+	// handing over an identifier the client must still authenticate to redeem.
+	//
+	// Ping is per-CLIENT, so advertising it changes nothing for a client
+	// registered to poll -- and a client registered for ping that sends no
+	// notification token is refused at the backchannel endpoint rather than
+	// issued an auth_req_id it would wait on forever. That is the rule this file
+	// exists to keep: the document may only claim what the server enforces.
 	// UMA 2.0 Federated Authorization §2: where a resource server asks for a
 	// permission ticket.
 	PermissionEndpoint                string   `json:"permission_endpoint,omitempty"`
@@ -221,7 +227,10 @@ func Build(cfg Config) (*Metadata, error) {
 		DeviceAuthorizationEndpoint:        at("/oauth2/device_authorization"),
 		PermissionEndpoint:                 at("/uma2/permission"),
 		BackchannelAuthenticationEndpoint:  at("/oauth2/backchannel"),
-		BackchannelTokenDeliveryModes:      []string{"poll"},
+		// Ping is per-client: a client registered for poll experiences no change
+		// from this being advertised, and a client registered for ping is refused
+		// at the backchannel endpoint if it sends no notification token.
+		BackchannelTokenDeliveryModes:      []string{"poll", "ping"},
 		// Advertised as false rather than omitted. §7.1 gates `user_code` on this
 		// being true, and a client reading an absent field has to guess; a client
 		// reading `false` knows not to send one, which is exactly what the

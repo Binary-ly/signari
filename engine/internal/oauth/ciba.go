@@ -137,7 +137,7 @@ func cibaErr(status int, code, desc string) *CIBAError {
 //
 // Everything §7.1 requires, and nothing that depends on knowing who the subject
 // is -- resolving the hint needs a database and belongs to the caller.
-func ParseCIBARequest(form url.Values, clientID string) (*CIBARequest, *CIBAError) {
+func ParseCIBARequest(form url.Values, clientID, deliveryMode string) (*CIBARequest, *CIBAError) {
 	// Duplicates first, as everywhere else. RFC 6749 §3.1 forbids a repeated
 	// parameter, and §13 names it: invalid_request covers a request that
 	// "includes any of the parameters more than once".
@@ -229,19 +229,32 @@ func ParseCIBARequest(form url.Values, clientID string) (*CIBARequest, *CIBAErro
 				"exactly one is permitted, and choosing between them is not defined")
 	}
 
-	// Ping and push modes deliver the result to a client endpoint instead of
-	// being polled, and require client_notification_token. We implement poll
-	// mode only, so its presence means the client expects a callback that will
-	// never arrive.
+	// §7.1: "client_notification_token REQUIRED if the Client is registered to
+	// use Ping or Push modes."
 	//
-	// Refused rather than ignored. A client that gets an auth_req_id back
-	// reasonably concludes the mode it asked for was accepted, and would then
-	// wait forever for a notification.
-	if req.ClientNotificationToken != "" {
-		return nil, cibaErr(400, "invalid_request",
-			"client_notification_token was supplied, which belongs to the ping and "+
-				"push delivery modes; this server implements poll mode only, and "+
-				"advertises exactly that in backchannel_token_delivery_modes_supported")
+	// Both directions are errors, and the second is the one implementations skip.
+	// A poll client that sends one expects a callback that will never arrive; a
+	// ping client that omits one leaves us with nowhere to authenticate the
+	// callback to, so the notification could be delivered to the endpoint but not
+	// proven to come from us.
+	switch deliveryMode {
+	case DeliveryPing:
+		if req.ClientNotificationToken == "" {
+			return nil, cibaErr(400, "invalid_request",
+				"client_notification_token is required: this client is registered "+
+					"for ping delivery, and section 7.1 makes the token the means by "+
+					"which the notification is authenticated to the client")
+		}
+		if err := validClientNotificationToken(req.ClientNotificationToken); err != nil {
+			return nil, cibaErr(400, "invalid_request", err.Error())
+		}
+	default:
+		if req.ClientNotificationToken != "" {
+			return nil, cibaErr(400, "invalid_request",
+				"client_notification_token was supplied, which belongs to the ping and "+
+					"push delivery modes; this client is registered for poll delivery, "+
+					"so no notification will be sent and the token has no use")
+		}
 	}
 
 	// §7.1: user_code is gated on the OP advertising support. We do not, so a
@@ -347,4 +360,48 @@ func containsScopeValue(scope, want string) bool {
 		}
 	}
 	return false
+}
+
+
+const (
+	DeliveryPoll = "poll"
+	DeliveryPing = "ping"
+)
+
+// maxClientNotificationToken is §7.1's ceiling, exactly.
+//
+// "The length of the token MUST NOT exceed 1024 characters and it MUST conform to
+// the syntax for Bearer credentials as defined in Section 2.1 of [RFC6750]."
+const maxClientNotificationToken = 1024
+
+// validClientNotificationToken enforces the two halves of §7.1 that are ours to
+// enforce.
+//
+// The third -- "Clients MUST ensure that it contains sufficient entropy (a
+// minimum of 128 bits while 160 bits is recommended)" -- is an obligation on the
+// CLIENT, and deliberately not checked here: entropy is not a property of a
+// string an OP can measure. A 128-bit random value and the word "password"
+// padded to the same length are indistinguishable from this side. Refusing short
+// tokens would be a proxy that rejects conformant clients using a compact
+// encoding while still accepting a long guessable one.
+func validClientNotificationToken(t string) error {
+	if len(t) > maxClientNotificationToken {
+		return fmt.Errorf("client_notification_token is %d characters; section 7.1 "+
+			"permits at most %d", len(t), maxClientNotificationToken)
+	}
+	// RFC 6750 §2.1: b64token = 1*( ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" ) *"="
+	trimmed := strings.TrimRight(t, "=")
+	if trimmed == "" {
+		return fmt.Errorf("client_notification_token is empty once padding is removed")
+	}
+	for _, r := range trimmed {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r == '-', r == '.', r == '_', r == '~', r == '+', r == '/':
+		default:
+			return fmt.Errorf("client_notification_token contains %q, which RFC 6750 "+
+				"section 2.1 does not permit in a bearer credential", r)
+		}
+	}
+	return nil
 }

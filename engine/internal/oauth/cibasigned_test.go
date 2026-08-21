@@ -19,7 +19,7 @@ func TestSignedCIBARequestIsRefused(t *testing.T) {
 			"login_hint": {"alice@example.test"},
 			param:        {"eyJhbGciOiJSUzI1NiJ9.e30.sig"},
 		}
-		_, err := ParseCIBARequest(form, "cli")
+		_, err := ParseCIBARequest(form, "cli", DeliveryPoll)
 		if err == nil {
 			t.Errorf("%s was accepted; the signed parameters would have been "+
 				"silently replaced by the unsigned form values beside them", param)
@@ -45,7 +45,7 @@ func TestASignedRequestBesideFormValuesDoesNotSilentlyUseTheFormValues(t *testin
 		"binding_message": {"attacker-supplied"},
 		"request":         {"eyJhbGciOiJSUzI1NiJ9.e30.sig"},
 	}
-	req, err := ParseCIBARequest(form, "cli")
+	req, err := ParseCIBARequest(form, "cli", DeliveryPoll)
 	if err == nil {
 		t.Fatalf("the request was accepted with binding_message %q taken from the "+
 			"form while a signed request object was present and discarded",
@@ -59,7 +59,7 @@ func TestAnOrdinaryCIBARequestStillWorks(t *testing.T) {
 		"scope":      {"openid"},
 		"login_hint": {"alice@example.test"},
 	}
-	req, err := ParseCIBARequest(form, "cli")
+	req, err := ParseCIBARequest(form, "cli", DeliveryPoll)
 	if err != nil {
 		t.Fatalf("an ordinary request was refused: %s", err.Description)
 	}

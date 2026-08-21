@@ -644,10 +644,23 @@ func TestDiscoveryDescribesTheCIBAWeActuallyImplement(t *testing.T) {
 	if md["backchannel_authentication_endpoint"] == nil {
 		t.Error("CIBA is implemented and the backchannel endpoint is not advertised")
 	}
+	// Poll and ping, and push deliberately absent. The rule this test enforces is
+	// not "advertise little" but "advertise exactly what is enforced": ping is
+	// backed by a parked outbox row released when the person decides, and a ping
+	// client that sends no notification token is refused rather than issued an
+	// auth_req_id it would wait on forever.
 	modes, _ := md["backchannel_token_delivery_modes_supported"].([]any)
-	if len(modes) != 1 || modes[0] != "poll" {
-		t.Errorf("delivery modes = %v; only poll is implemented, and advertising "+
-			"ping or push would leave a client waiting for a callback forever", modes)
+	got := map[string]bool{}
+	for _, m := range modes {
+		s, _ := m.(string)
+		got[s] = true
+	}
+	if !got["poll"] || !got["ping"] || len(modes) != 2 {
+		t.Errorf("delivery modes = %v, want exactly poll and ping", modes)
+	}
+	if got["push"] {
+		t.Error("push is advertised and not implemented; it hands the token itself " +
+			"to the notification endpoint and has no code path here")
 	}
 	if v, ok := md["backchannel_user_code_parameter_supported"].(bool); !ok || v {
 		t.Errorf("backchannel_user_code_parameter_supported = %v; the endpoint "+

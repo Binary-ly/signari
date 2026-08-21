@@ -1142,3 +1142,94 @@ Configuration, V15 Secure Coding — **80 requirements**.
 Five chapters off the dismissed list, four defects. The dismissal was wrong four
 times out of five, and this fifth chapter is the one where it happened to be
 right — for a reason that is visible in the table above rather than assumed.
+
+
+## V12 Secure Communication and V13 Configuration (21 August 2026)
+
+Thirty-three requirements across two chapters. **No defects** — the second clean
+result in a row — and one document written to satisfy a requirement that asked
+for one.
+
+### V12: the interesting answer is about cipher suites
+
+| Requirement | Verdict |
+|---|---|
+| V12.1.1 current TLS versions only | met — every `tls.Config` in the engine sets `MinVersion: tls.VersionTLS12`, and Go negotiates 1.3 in preference where the peer supports it |
+| V12.1.2 recommended suites, forward secrecy at L3 | **met, and the right action was to change nothing** — see below |
+| V12.1.3 mTLS client certificates validated before use | met — `SetClientCAs`, and a nil pool means `tls_client_auth` is refused rather than accepted unverified |
+| V12.1.4 OCSP stapling | L3, deployment concern; not configured by the engine |
+| V12.1.5 Encrypted Client Hello | L3, not enabled |
+| V12.2.1 TLS to external services, no fallback | met — see SMTP below |
+| V12.2.2 publicly trusted certificates | deployment |
+| V12.3.1 encrypted in and out, no insecure fallback | met |
+| V12.3.2 TLS clients validate certificates | met — **one** `InsecureSkipVerify` in the entire tree, in the `proxycheck` diagnostic, opt-in via a flag, and when it is on the report's first line reads "DISABLED by -insecure; nothing below says anything about TLS" |
+| V12.3.3 / V12.3.4 internal service TLS | met where applicable; `directory/ldapsource` pins `RootCAs` and its comment records that `InsecureSkipVerify` is deliberately absent |
+| V12.3.5 mutual authentication between services | L3, not implemented |
+
+**V12.1.2 is the one worth writing down.** The L3 requirement is "must only
+support cipher suites which provide forward secrecy", and no `tls.Config` here
+sets `CipherSuites` at all. The obvious conclusion — that we therefore inherit
+whatever Go offers, including RSA key exchange — is wrong, and checking rather
+than assuming is what settled it.
+
+`crypto/tls/defaults.go` in Go 1.26.6:
+
+```go
+func defaultCipherSuites(aesGCMPreferred bool) []uint16 {
+	cipherSuites := supportedCipherSuites(aesGCMPreferred)
+	return slices.DeleteFunc(cipherSuites, func(c uint16) bool {
+		return disabledCipherSuites[c] ||
+			tlsrsakex.Value() != "1" && rsaKexCiphers[c] ||
+			tls3des.Value() != "1" && tdesCiphers[c]
+	})
+}
+```
+
+RSA key exchange and 3DES are **removed from the default list** unless a GODEBUG
+setting puts them back. Everything that survives is ECDHE, which is forward
+secret. So the requirement is met, and **setting `CipherSuites` explicitly would
+make things worse**: it would freeze the list at today's opinion and opt out of
+whatever Go removes next. The correct implementation of this requirement is the
+absence of code, which is not a conclusion available to anyone who did not read
+the standard library.
+
+One caveat recorded for the operator: `GODEBUG=tlsrsakex=1` re-enables RSA key
+exchange process-wide and would undo this.
+
+**SMTP does not fall back.** The classic downgrade is a client that checks
+whether STARTTLS is advertised, finds it stripped by an active attacker, and
+continues in cleartext — sending `AUTH PLAIN` over the wire. Ours refuses:
+
+> "does not offer STARTTLS; refusing to send credentials or account links over
+> an unencrypted connection"
+
+### V13: closed by construction more often than by a check
+
+| Requirement | Verdict |
+|---|---|
+| V13.1.1 communication needs documented | **was not — now `docs/egress-inventory.md`** |
+| V13.1.2 / V13.1.3 connection limits and resource strategy documented | partial — timeouts and retry behaviour are now written down; database pool sizing is not, and that is stated in the document rather than implied |
+| V13.1.4 secret rotation schedule documented | partial — key rotation is implemented and documented; there is no written rotation schedule for the root key or admin tokens |
+| V13.2.1 backend auth: individual, short-term, not shared | met for the admin API — tokens are per-name rows, SHA-256 hashed, scoped, expiring, revocable, with `last_used_at`. The **break-glass environment token** is the exception the requirement warns about, and it is handled as one: constant-time compared, `ScopeAll`, and **logged at Warn on every single use** with the reason written beside it |
+| V13.2.2 least privilege | met — `signari_admin` holds no grants on `core`, reading 15 views in `core_v1` |
+| V13.2.3 no default credentials | met — no default admin token exists; `SIGNARI_ROOT_KEY` is required rather than generated, because "a generated-on-boot root key would silently" produce a different one per instance |
+| V13.2.4 / V13.2.5 outbound allowlist | **partial, stated plainly** — `safedial` is an address-level *denylist*; the effective allowlist is registration. See the egress inventory |
+| V13.3.1 secrets management solution | **partial** — the root key arrives base64 in `SIGNARI_ROOT_KEY`, not from a vault or HSM. An operator can inject it from one, which is the usual pattern, but the engine has no direct integration. `doctor` flags a short admin token as Critical |
+| V13.3.2 least privilege on secrets | met |
+| V13.3.3 / V13.3.4 HSM, rotation schedule | L3, not done |
+| V13.4.1 no source-control metadata served | met by construction — **no `http.FileServer`, no `http.Dir`, nothing serves a filesystem path**. The single static asset is `//go:embed`-ed and served by name |
+| V13.4.2 debug modes disabled | met — no pprof, no debug flag in the serving path |
+| V13.4.3 no directory listings | met by construction, same reason as V13.4.1 |
+| V13.4.4 TRACE unsupported | met by construction — every route is registered with an explicit method pattern, so TRACE is 405 everywhere |
+| V13.4.5 monitoring endpoints not exposed | met — `/healthz` is intentional and returns status plus the signing algorithms, which discovery already publishes by specification, so it discloses nothing new |
+| V13.4.6 no detailed version information | met — no version string is served |
+| V13.4.7 extension allowlist on the web tier | n/a — there is no file-serving tier to allowlist |
+
+### Chapter coverage after this pass
+
+**298 of 345.** Still unswept: V2 Validation (13) and V5 File (13) and V15 Secure
+Coding (21) — **47 requirements**.
+
+Seven chapters off the dismissed list, four defects. The last three chapters have
+each come back clean, which is worth as much as the earlier four coming back
+dirty: it says the sweep is discriminating rather than manufacturing findings.

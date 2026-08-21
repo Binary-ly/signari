@@ -388,7 +388,32 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 		limit = req.SizeLimit
 	}
 
+	// §4.5.1.5's client-requested time limit. Zero means none, and the server's
+	// own read deadline still applies on top -- "Servers may also enforce a
+	// maximum time limit for the Search." Honoured because a client that asks
+	// for two seconds has usually told its own caller the same thing, and a
+	// directory that overruns it turns one slow query into a stalled request
+	// somewhere the operator cannot see.
+	if req.TimeLimit > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.TimeLimit)*time.Second)
+		defer cancel()
+	}
+
 	entries, err := s.entriesFor(ctx, req, limit)
+	// `ctx.Err()` rather than `errors.Is(err, context.DeadlineExceeded)` alone:
+	// a backing store is free to report cancellation as its own error type, and
+	// several do -- pgx wraps, some drivers substitute. Asking the context
+	// whether the deadline passed is a question about our own state, and does not
+	// depend on a stranger's error-wrapping discipline.
+	if err != nil && ctx.Err() != nil && req.TimeLimit > 0 {
+		// §4.5.1.5's own result code, rather than `other`: a client that asked
+		// for a time limit and hit it should be told which limit it hit.
+		s.log.Info("ldap search exceeded the client's time limit",
+			"seconds", req.TimeLimit, "remote", c.RemoteAddr().String())
+		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
+			resultTimeLimitExceeded, "", "the search exceeded the requested timeLimit")))
+	}
 	if err != nil {
 		s.log.Error("ldap search", "err", err)
 		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
@@ -396,7 +421,7 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 	}
 
 	for _, e := range entries {
-		if !s.write(c, newMessage(messageID, newSearchEntry(e, req.Attrs))) {
+		if !s.write(c, newMessage(messageID, newSearchEntry(e, req.Attrs, req.TypesOnly))) {
 			return false
 		}
 	}
@@ -530,7 +555,7 @@ func (s *Server) writeRootDSE(c net.Conn, messageID int64, req *searchRequest) b
 		// and falls back to plaintext.
 		"vendorName": {"Signari"},
 	}}
-	if !s.write(c, newMessage(messageID, newSearchEntry(e, req.Attrs))) {
+	if !s.write(c, newMessage(messageID, newSearchEntry(e, req.Attrs, req.TypesOnly))) {
 		return false
 	}
 	return s.write(c, newMessage(messageID, newResult(appSearchResultDone, resultSuccess, "", "")))

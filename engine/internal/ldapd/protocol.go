@@ -55,6 +55,7 @@ const (
 const (
 	resultSuccess                = 0
 	resultProtocolError          = 2
+	resultTimeLimitExceeded      = 3
 	resultAuthMethodNotSupported = 7
 	resultNoSuchObject           = 32
 	resultInvalidCredentials     = 49
@@ -93,6 +94,21 @@ type searchRequest struct {
 	BaseDN    string
 	Scope     int
 	SizeLimit int
+
+	// TimeLimit is §4.5.1.5: "A time limit that restricts the maximum time (in
+	// seconds) allowed for a Search. A value of zero in this field indicates
+	// that no client-requested time limit restrictions are in effect."
+	TimeLimit int
+
+	// TypesOnly is §4.5.1.6: "Setting this field to TRUE causes only attribute
+	// descriptions (and not values) to be returned."
+	//
+	// Read rather than ignored because ignoring it means answering with values
+	// the client explicitly asked not to receive -- every name and mail address
+	// this shim exposes, sent to a caller that wanted the schema. For a directory
+	// whose whole posture is to return less than it could, silently returning
+	// more than was asked for is the wrong way round.
+	TypesOnly bool
 	Filter    *filter
 	Attrs     []string
 }
@@ -136,6 +152,8 @@ func decodeSearch(op *ber.Packet) (*searchRequest, error) {
 	base, _ := op.Children[0].Value.(string)
 	scope, _ := op.Children[1].Value.(int64)
 	sizeLimit, _ := op.Children[3].Value.(int64)
+	timeLimit, _ := op.Children[4].Value.(int64)
+	typesOnly, _ := op.Children[5].Value.(bool)
 
 	f, err := decodeFilter(op.Children[6])
 	if err != nil {
@@ -150,6 +168,7 @@ func decodeSearch(op *ber.Packet) (*searchRequest, error) {
 	}
 	return &searchRequest{
 		BaseDN: base, Scope: int(scope), SizeLimit: int(sizeLimit),
+		TimeLimit: int(timeLimit), TypesOnly: typesOnly,
 		Filter: f, Attrs: attrs,
 	}, nil
 }
@@ -337,7 +356,7 @@ func newResult(app ber.Tag, code int64, matchedDN, diagnostic string) *ber.Packe
 }
 
 // newSearchEntry builds a SearchResultEntry.
-func newSearchEntry(e *entry, requested []string) *ber.Packet {
+func newSearchEntry(e *entry, requested []string, typesOnly bool) *ber.Packet {
 	p := ber.Encode(ber.ClassApplication, ber.TypeConstructed, appSearchResultEntry, nil, "SearchResultEntry")
 	p.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, e.DN, "objectName"))
 
@@ -348,9 +367,15 @@ func newSearchEntry(e *entry, requested []string) *ber.Packet {
 		}
 		a := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "attribute")
 		a.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, name, "type"))
+		// §4.5.1.6: TRUE yields descriptions and no values. The attribute is still
+		// present -- the client asked which attributes exist, and an entry with
+		// the attribute omitted answers a different question -- but its value set
+		// is empty.
 		vals := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSet, nil, "vals")
-		for _, v := range values {
-			vals.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, v, "val"))
+		if !typesOnly {
+			for _, v := range values {
+				vals.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, v, "val"))
+			}
 		}
 		a.AppendChild(vals)
 		attrs.AppendChild(a)

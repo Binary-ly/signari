@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	ldapclient "github.com/go-ldap/ldap/v3"
 )
@@ -57,7 +58,19 @@ func startServer(t *testing.T, cfg Config) (addr string, auth *fakeAuth) {
 		cfg.BaseDN = baseDN
 	}
 	auth = &fakeAuth{}
-	s := New(cfg, auth, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	startServerWith(t, cfg, auth)
+	return lastAddr, auth
+}
+
+// lastAddr is set by startServerWith so startServer can keep its signature.
+var lastAddr string
+
+func startServerWith(t *testing.T, cfg Config, a Authenticator) string {
+	t.Helper()
+	if cfg.BaseDN == "" {
+		cfg.BaseDN = baseDN
+	}
+	s := New(cfg, a, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -66,7 +79,8 @@ func startServer(t *testing.T, cfg Config) (addr string, auth *fakeAuth) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = s.Serve(ctx, ln) }()
 	t.Cleanup(func() { cancel(); _ = ln.Close() })
-	return ln.Addr().String(), auth
+	lastAddr = ln.Addr().String()
+	return lastAddr
 }
 
 func dial(t *testing.T, addr string) *ldapclient.Conn {
@@ -501,5 +515,135 @@ func TestEscapedBindDNsAreRefusedRatherThanDecoded(t *testing.T) {
 	c := dial(t, addr)
 	if err := c.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
 		t.Fatalf("the ordinary DN stopped binding: %v", err)
+	}
+}
+
+// RFC 4511 §4.5.1.6:
+//
+//	"Setting this field to TRUE causes only attribute descriptions (and not
+//	values) to be returned."
+//
+// We parsed the SearchRequest and read fields 0, 1, 3, 6 and 7, leaving
+// `typesOnly` (field 5) on the wire and unread. A client asking which attributes
+// exist was answered with every value of every one of them — names, mail
+// addresses, whatever this shim exposes — and had no way to tell it had been
+// over-answered, because a correct response and this one differ only in content.
+//
+// The same objection this file already makes about attribute selection applies:
+// returning attributes nobody asked for is a disclosure, not a convenience. It
+// is sharper here, because typesOnly is what a client sends precisely when it
+// wants the shape and not the data.
+func TestTypesOnlyReturnsDescriptionsWithoutValues(t *testing.T) {
+	addr, _ := startServer(t, Config{})
+	c := dial(t, addr)
+	if err := c.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
+		t.Fatal(err)
+	}
+
+	// typesOnly = true is the sixth argument.
+	res, err := c.Search(ldapclient.NewSearchRequest(baseDN,
+		ldapclient.ScopeWholeSubtree, ldapclient.NeverDerefAliases, 0, 0, true,
+		"(uid=alice)", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Entries) == 0 {
+		t.Fatal("no entries came back, so the test proves nothing")
+	}
+	named := 0
+	for _, e := range res.Entries {
+		for _, a := range e.Attributes {
+			if a.Name == "" {
+				t.Errorf("an attribute came back with no description")
+			}
+			named++
+			if len(a.Values) != 0 {
+				t.Errorf("attribute %q came back with %d value(s) %v — the client "+
+					"asked for descriptions only, and RFC 4511 §4.5.1.6 says TRUE "+
+					"returns \"only attribute descriptions (and not values)\"",
+					a.Name, len(a.Values), a.Values)
+			}
+		}
+	}
+	if named == 0 {
+		t.Error("no attribute descriptions were returned either; typesOnly means " +
+			"fewer values, not fewer attributes — the client is asking what exists")
+	}
+}
+
+// The same search without typesOnly must still carry values, or the fix has
+// simply broken every ordinary search.
+func TestAnOrdinarySearchStillCarriesValues(t *testing.T) {
+	addr, _ := startServer(t, Config{})
+	c := dial(t, addr)
+	if err := c.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Search(ldapclient.NewSearchRequest(baseDN,
+		ldapclient.ScopeWholeSubtree, ldapclient.NeverDerefAliases, 0, 0, false,
+		"(uid=alice)", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := 0
+	for _, e := range res.Entries {
+		for _, a := range e.Attributes {
+			values += len(a.Values)
+		}
+	}
+	if values == 0 {
+		t.Fatal("an ordinary search returned no attribute values at all")
+	}
+}
+
+// slowAuth blocks in List until the context is done, standing in for a directory
+// query that is slower than the client is prepared to wait.
+type slowAuth struct{ fakeAuth }
+
+func (s *slowAuth) List(ctx context.Context, _ int) ([]*Identity, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// RFC 4511 §4.5.1.5:
+//
+//	"A time limit that restricts the maximum time (in seconds) allowed for a
+//	Search. A value of zero in this field indicates that no client-requested
+//	time limit restrictions are in effect for the Search."
+//
+// Field 4 of the SearchRequest was read off the wire and dropped, like
+// `typesOnly` beside it. A client that asked for a one-second search waited as
+// long as the directory took — and a client sends a time limit precisely because
+// it has promised the same bound to its own caller, so overrunning it turns one
+// slow directory query into a stalled request somewhere the operator of this
+// server cannot see.
+//
+// `timeLimitExceeded` (3) rather than `other` (80): a client that hit the limit
+// it set should be told it was that limit, not handed an unclassified failure it
+// has to guess about.
+func TestASearchIsCutOffAtTheClientsTimeLimit(t *testing.T) {
+	addr := startServerWith(t, Config{}, &slowAuth{})
+	c := dial(t, addr)
+	if err := c.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	_, err := c.Search(ldapclient.NewSearchRequest(baseDN,
+		ldapclient.ScopeWholeSubtree, ldapclient.NeverDerefAliases, 0, 1, false,
+		"(uid=alice)", nil, nil))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("a search against a backend that never returns came back successful")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("the search ran %v against a one-second limit; the client's "+
+			"timeLimit is not being honoured", elapsed)
+	}
+	var lerr *ldapclient.Error
+	if errors.As(err, &lerr) && lerr.ResultCode != 3 {
+		t.Errorf("result code is %d, want 3 (timeLimitExceeded) — the client set "+
+			"the limit it hit and should be told which one: %v", lerr.ResultCode, err)
 	}
 }

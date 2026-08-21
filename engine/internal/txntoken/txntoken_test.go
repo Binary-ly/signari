@@ -1,6 +1,7 @@
 package txntoken
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -517,5 +518,108 @@ func TestAReplacementNeverOutlivesWhatItCameFrom(t *testing.T) {
 		t.Errorf("replacement expires at %d, previous at %d; a chain that can extend "+
 			"its own life one hop at a time makes a five-minute token permanent",
 			got.Expiry, prevExp)
+	}
+}
+
+// The specification's own example token body, decoded by the type that serves
+// the endpoint.
+//
+// A third kind of check, after reading the sections and extracting the
+// prohibitions: neither of those notices a claim the wire carries and this struct
+// has no home for. `Claims` is mostly typed fields rather than a map, so a claim
+// draft-11 defines and we never declared would decode into nothing and the
+// endpoint would answer without it — silently, because Go's decoder ignores what
+// it does not recognise, which §9.2 requires of us and which is exactly what makes
+// the omission invisible.
+//
+// Transcribed from draft-ietf-oauth-transaction-tokens-11 §9.2.4 Figure 4, with
+// the illustrative `//` comments removed because the figure is not valid JSON.
+func TestTheSpecificationsExampleTokenBodyDecodesWhole(t *testing.T) {
+	const figure4 = `{
+	  "iat": 1686536226,
+	  "aud": "trust-domain.example",
+	  "exp": 1686536586,
+	  "txn": "97053963-771d-49cc-a4e3-20aad399c312",
+	  "sub": "d084sdrt234fsaw34tr23t",
+	  "req_wl": "apigateway.trust-domain.example",
+	  "rctx": {
+	    "req_ip": "69.151.72.123",
+	    "authn": "face"
+	  },
+	  "scope": "trade.stocks",
+	  "tctx": {
+	    "action": "BUY",
+	    "ticker": "MSFT",
+	    "quantity": "100",
+	    "customer_type": {
+	      "geo": "US",
+	      "level": "VIP"
+	    }
+	  }
+	}`
+
+	var c Claims
+	if err := json.Unmarshal([]byte(figure4), &c); err != nil {
+		t.Fatalf("§9.2.4's example did not decode: %v", err)
+	}
+
+	// Every REQUIRED claim in §9.2, by name, with the value the figure carries.
+	for _, tc := range []struct{ name, got, want string }{
+		{"aud", c.Audience, "trust-domain.example"},
+		{"txn", c.Transaction, "97053963-771d-49cc-a4e3-20aad399c312"},
+		{"sub", c.Subject, "d084sdrt234fsaw34tr23t"},
+		{"req_wl", c.RequestingWorkload, "apigateway.trust-domain.example"},
+		{"scope", c.Scope, "trade.stocks"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("§9.2 REQUIRED claim %s decoded as %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+	if c.IssuedAt != 1686536226 {
+		t.Errorf("iat = %d, want 1686536226", c.IssuedAt)
+	}
+	if c.Expiry != 1686536586 {
+		t.Errorf("exp = %d, want 1686536586", c.Expiry)
+	}
+	// §9.2 makes `iss` OPTIONAL and the figure omits it. If this stops being
+	// empty, the struct has started inventing one.
+	if c.Issuer != "" {
+		t.Errorf("iss = %q, but §9.2.4's example carries none", c.Issuer)
+	}
+
+	// The two RECOMMENDED context claims, including the nested object, because
+	// `customer_type` is the part of the figure that a flat map would lose.
+	if got := c.RequestContext["authn"]; got != "face" {
+		t.Errorf("rctx.authn = %v, want face", got)
+	}
+	if got := c.RequestContext["req_ip"]; got != "69.151.72.123" {
+		t.Errorf("rctx.req_ip = %v, want 69.151.72.123", got)
+	}
+	if got := c.TransactionContext["ticker"]; got != "MSFT" {
+		t.Errorf("tctx.ticker = %v, want MSFT", got)
+	}
+	nested, ok := c.TransactionContext["customer_type"].(map[string]any)
+	if !ok {
+		t.Fatalf("tctx.customer_type decoded as %T, not a nested object; §9.2.3 "+
+			"says a tctx field's value may itself be an object",
+			c.TransactionContext["customer_type"])
+	}
+	if nested["level"] != "VIP" || nested["geo"] != "US" {
+		t.Errorf("tctx.customer_type = %v, want geo=US level=VIP", nested)
+	}
+
+	// And the round trip: re-encoding must not drop what the figure carried.
+	out, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var orig, back map[string]any
+	_ = json.Unmarshal([]byte(figure4), &orig)
+	_ = json.Unmarshal(out, &back)
+	for k := range orig {
+		if _, present := back[k]; !present {
+			t.Errorf("claim %q survived §9.2.4's figure into the struct but not back "+
+				"out; a Txn-Token this service reissues would be missing it", k)
+		}
 	}
 }

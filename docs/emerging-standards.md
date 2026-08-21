@@ -628,3 +628,81 @@ passes a map test.
 
 Both die against the old list, with the message naming what a holder could
 withhold.
+
+## The remaining four: Transaction Tokens, ABCA, CIBA, UMA
+
+The corpus method transfers cleanly only where a specification ships examples and
+the implementation decodes them into typed fields. For the last four the question
+was put the same way — *what does the wire carry that our types have no home
+for* — but answered against each specification's normative claim list rather than
+its figures.
+
+No defects. Four requirements that could have been are recorded here because
+"checked and correct" and "never checked" are indistinguishable afterwards.
+
+### Transaction Tokens draft-11
+
+The claim list is §9.2 **"JWT Body Claims"** — not "Txn-Token Claims", which is
+what a first search looked for and did not find. Its REQUIRED members are `iat`,
+`aud`, `exp`, `txn`, `sub`, `scope`, `req_wl`, with `iss` OPTIONAL and
+`tctx`/`rctx` RECOMMENDED. All ten are on `Claims`, with the requirement level
+matching in every case.
+
+`req_wl_chain` is **not** a draft-11 claim — zero mentions — and the comment on it
+already says so: it is our own additional claim, permitted by §9.2 ("A Txn-Token
+MAY contain additional claims"), carrying the Call Chain that §13.15 makes a MUST
+while leaving the mechanism out of scope. The §13.15 quote was checked word for
+word against the draft, including the "out of scope" sentence, and is exact.
+
+Two receiver-side MUSTs verified rather than assumed:
+
+- *"A Txn-Token MUST NOT be accepted outside the Trust Domain identified by the
+  aud claim."* Enforced twice over: the client must be authorised for the
+  requested trust domain (`allowedAudience`), and a replacement's presented token
+  must carry that same domain. `Validate` only checks `aud` is **present**, which
+  is not the same rule and would not have been enough on its own.
+- *"Recipients of a Txn-Token MUST ignore any claims they do not understand."*
+  `VerifyTypedJSON` decodes through plain `json.Unmarshal`, which ignores unknown
+  members. Worth confirming rather than assuming: the same requirement in AuthZEN
+  §10.1.1 was a real defect here once, when a decoder called
+  `DisallowUnknownFields` — the exact inverse.
+
+`TestTheSpecificationsExampleTokenBodyDecodesWhole` now pins §9.2.4's Figure 4,
+including the nested `tctx.customer_type` object and a re-encode check. Renaming
+one JSON tag fails it twice, once by claim name and once as a claim that "survived
+into the struct but not back out".
+
+### ABCA draft-10
+
+A predicted defect that was not one. The Client Attestation PoP struct carries
+`aud`, `jti`, `iat`, `challenge` and **no `exp`**, which looked like the
+fail-open shape found in `verifyTxnToken` earlier this stretch — a guard whose
+condition is the missing field.
+
+§5.1 defines exactly four PoP claims: `aud` REQUIRED, `jti` REQUIRED, `iat`
+REQUIRED, `challenge` OPTIONAL. There is no `exp`, by design: freshness comes from
+`iat` "within an acceptable window" (§7.2 rule 6) and replay from `jti` (§11.1).
+Our struct matches the section exactly, and the hypothesis was wrong.
+
+§5.1's forward-compatibility rule — "All claims that are not understood by
+implementations MUST be ignored" — holds for the same reason as above. §7.1 and
+§7.2's rules 1–8 were already mapped to code in
+`attestation-based-client-auth.md`; this pass independently re-derived the claim
+set and reached the same place.
+
+### CIBA Core 1.0
+
+The backchannel response carries `auth_req_id`, `expires_in` and `interval`, which
+is §7.3's set. §7.1's *"one (and only one) of login_hint_token, id_token_hint or
+login_hint"* is enforced in both directions — none is an error and more than one is
+an error, the second being the half an implementation usually omits, with the
+error text naming why choosing between them "is not defined".
+
+### UMA 2.0
+
+§3.3.6's error codes carry the statuses the section assigns: `request_denied` at
+403 and final, `invalid_grant` at 400 meaning fetch a new ticket. `need_info` and
+`request_submitted` are **never emitted**, and that is written down at the top of
+the package rather than left to be discovered: they belong to interactive claims
+gathering, which is not implemented. An unimplemented branch that says so is a
+different thing from one that quietly cannot happen.

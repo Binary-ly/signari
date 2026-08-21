@@ -15,7 +15,6 @@ import (
 	"signari.dev/engine/internal/dpop"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oid4vci"
-	"signari.dev/engine/internal/sdjwt"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
@@ -269,8 +268,6 @@ func writeCredentialError(w http.ResponseWriter, status int, code, description s
 		"error": code, "error_description": description,
 	})
 }
-
-var _ = sdjwt.TypSDJWTVC
 
 // handleCredentialIssuerMetadata implements §12.2.
 //

@@ -79,27 +79,32 @@ Every one is a MUST in RFC 7523 §3:
 | `iss` | Required. Selects the trusted provider. |
 | `sub` | Required. Resolved against `(provider, subject)`, never `subject` alone. |
 | `aud` | Required, must **name this issuer** (§3.1), and must name **only** this issuer. Accepts either spelling (RFC 7519 §4.1.3). |
-| `exp` | Required, must be in the future, and must not be *"unreasonably far in the future"* — capped at one hour. |
-| `iat` age | When present, the assertion must have been issued **within the last hour**. Not just unexpired. |
+| `exp` | Required, in the future, and **`exp − iat` must not exceed one hour** — the ceiling is on total lifetime, not on remaining time. |
 | `nbf` | Optional. Binding when present. |
-| `iat` | Optional. Refused if in the future, or more than an hour old. |
+| `iat` | Optional. Refused if in the future. When present it is what the lifetime ceiling is measured from. |
 | `jti` | Optional per the RFC and **required here** — see below. |
 
 **The audience rule is the one worth understanding.** Without it, an assertion the
 platform minted for some *other* relying party can be forwarded here and spent —
 and the issuer, having done nothing wrong, cannot tell.
 
+Either spelling of "us" is accepted: the **issuer identifier** or the **token
+endpoint URL**. Two conventions grew up around RFC 7523's "a value that identifies
+the authorization server" — OpenID-shaped deployments use the issuer, while
+Google's service-account flow, which most RFC 7523 client libraries were written
+against, uses the token endpoint. Accepting either means a library written for
+either works here. Both values are this server, so nothing is widened.
+
 **The one-hour cap** is a ceiling on blast radius rather than a guess at issuer
 behaviour. An assertion valid for a year is a bearer credential valid for a year,
 whatever the issuer intended. No major platform needs longer: Google caps
 service-account assertions at an hour and CI tokens are minutes.
 
-**The age bound is separate from the expiry cap**, and it is the one people miss.
-The cap bounds how far ahead an assertion reaches; it says nothing about how long
-one may sit around before being spent. An assertion issued ninety minutes ago with
-five minutes left passes the cap — and is exactly the shape of an assertion
-recovered from a log or a crash report. So when `iat` is present, the assertion
-must also have been *minted* within the hour.
+**The ceiling is on total lifetime**, which is the part people miss. Bounding only
+the remaining time lets an assertion minted ninety minutes ago with five minutes
+left sail through — exactly the shape of one recovered from a log or a crash
+report. Measuring `exp − iat` bounds both ends at once: it cannot reach further
+than an hour, and it cannot have been sitting around longer than one either.
 
 **Only one audience.** This is stricter than the specification, which permits an
 array. An assertion carrying `aud: ["https://us", "https://partner"]` is a working

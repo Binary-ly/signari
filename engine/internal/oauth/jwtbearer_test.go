@@ -200,7 +200,7 @@ func TestAnAssertionIssuedLongAgoIsRefused(t *testing.T) {
 		t.Fatalf("an assertion issued %s ago was accepted because it had not expired yet",
 			MaxAssertionLifetime+30*time.Minute)
 	}
-	if !strings.Contains(err.Description, "issued more than") {
+	if !strings.Contains(err.Description, "counting from when it was issued") {
 		t.Errorf("refused for the wrong reason: %s", err.Description)
 	}
 
@@ -208,6 +208,33 @@ func TestAnAssertionIssuedLongAgoIsRefused(t *testing.T) {
 	c.IssuedAt = now.Add(-time.Minute).Unix()
 	if err := ValidateAssertionClaims(c, ourIssuers, now); err != nil {
 		t.Errorf("a freshly issued assertion was refused: %s", err.Description)
+	}
+}
+
+// The ceiling is on TOTAL lifetime, so neither end can be stretched alone.
+//
+// An earlier version bounded `exp - now` and `now - iat` separately, which
+// permitted a total of twice the ceiling: issued 45 minutes ago, valid for
+// another 45. Each half passed; the assertion lived 90 minutes.
+func TestTheLifetimeCeilingCannotBeSplitAcrossBothEnds(t *testing.T) {
+	now := time.Now()
+	half := MaxAssertionLifetime/2 + time.Minute
+
+	c := goodAssertion(now)
+	c.IssuedAt = now.Add(-half).Unix()
+	c.Expiry = now.Add(half).Unix()
+
+	if err := ValidateAssertionClaims(c, ourIssuers, now); err == nil {
+		t.Fatalf("an assertion issued %s ago and valid for another %s was accepted; "+
+			"its total life is %s, above the %s ceiling",
+			half, half, 2*half, MaxAssertionLifetime)
+	}
+
+	// Exactly at the ceiling is fine.
+	c.IssuedAt = now.Add(-30 * time.Minute).Unix()
+	c.Expiry = time.Unix(c.IssuedAt, 0).Add(MaxAssertionLifetime).Unix()
+	if err := ValidateAssertionClaims(c, ourIssuers, now); err != nil {
+		t.Errorf("an assertion exactly at the ceiling was refused: %s", err.Description)
 	}
 }
 

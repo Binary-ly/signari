@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
@@ -126,7 +128,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 			Description: assertionRefused, Status: http.StatusBadRequest})
 		return
 	}
-	if terr := oauth.ValidateAssertionClaims(claims, s.acceptedIssuers(), time.Now()); terr != nil {
+	if terr := oauth.ValidateAssertionClaims(claims, s.assertionAudiences(), time.Now()); terr != nil {
 		// The per-rule descriptions are precise and stay in the log. They are not
 		// returned: "the assertion names more than one audience" and "the
 		// assertion has no jti" describe the CALLER's own token, which is
@@ -277,4 +279,29 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		ExpiresIn:   int(tokens.DefaultAccessTokenTTL.Seconds()),
 		Scope:       joinScopes(scopes),
 	})
+}
+
+// assertionAudiences is every value an assertion may legitimately use to name
+// this deployment.
+//
+// The issuer identifier, its registered aliases, AND the token endpoint URL.
+//
+// The last one is interoperability rather than laxity. RFC 7523 §3 item 3 asks
+// for "a value that identifies the authorization server", and two conventions
+// grew up around that: OpenID-shaped deployments use the issuer, while Google's
+// service-account flow -- which is what most RFC 7523 client libraries were
+// written against -- uses the token endpoint URL. Ory's implementation matches on
+// the token endpoint only; matching on either means a client library written for
+// either convention works here without the operator discovering the difference
+// through a refusal that names no cause.
+//
+// Both values are this server's own identity, so accepting either does not widen
+// what the audience check protects: an assertion addressed to somebody else still
+// matches neither.
+func (s *Server) assertionAudiences() []string {
+	out := s.acceptedIssuers()
+	for _, base := range s.acceptedIssuers() {
+		out = append(out, strings.TrimSuffix(base, "/")+oidc.PathToken)
+	}
+	return out
 }

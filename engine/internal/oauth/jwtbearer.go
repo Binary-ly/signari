@@ -172,10 +172,30 @@ func ValidateAssertionClaims(c AssertionClaims, audiences []string, now time.Tim
 	if now.After(exp.Add(AssertionSkew)) {
 		return tokenErr("invalid_grant", "the assertion has expired")
 	}
-	if exp.After(now.Add(MaxAssertionLifetime)) {
+	// The ceiling is on TOTAL LIFETIME, measured from `iat` when the assertion
+	// carries one and from now when it does not.
+	//
+	// Two earlier versions of this got it wrong in opposite directions. The first
+	// bounded only `exp - now`, so an assertion minted ninety minutes ago with
+	// five minutes left sailed through -- the shape of one recovered from a log.
+	// The second added a separate age bound, which worked but allowed a total
+	// lifetime of twice the ceiling because each end was checked alone.
+	//
+	// One subtraction covers both, and it is the reading Ory's implementation
+	// arrived at too: their error message says "unreasonably far in the future,
+	// considering token issued at", which is exactly what RFC 7523 §3 item 4 means
+	// by unreasonable. An assertion cannot reach further than the ceiling, and
+	// cannot have been sitting around longer than it either, because
+	// `exp - iat <= ceiling` and `exp > now` together bound `now - iat`.
+	issued := now
+	if c.IssuedAt != 0 {
+		issued = time.Unix(c.IssuedAt, 0)
+	}
+	if exp.Sub(issued) > MaxAssertionLifetime {
 		return tokenErr("invalid_grant", fmt.Sprintf(
-			"the assertion expires more than %s from now; an assertion valid that long "+
-				"is a long-lived bearer credential", MaxAssertionLifetime))
+			"the assertion is valid for more than %s counting from when it was issued; "+
+				"an assertion valid that long is a long-lived bearer credential",
+			MaxAssertionLifetime))
 	}
 
 	// §3 item 5: nbf is a MAY, and when present "identifies the time before which
@@ -191,24 +211,6 @@ func ValidateAssertionClaims(c AssertionClaims, audiences []string, now time.Tim
 		iat := time.Unix(c.IssuedAt, 0)
 		if iat.After(now.Add(AssertionSkew)) {
 			return tokenErr("invalid_grant", "the assertion says it was issued in the future")
-		}
-		// And an upper bound on AGE, not just on remaining life.
-		//
-		// The exp ceiling above bounds how far into the future an assertion may
-		// reach. It says nothing about how long one may sit around before being
-		// spent: an assertion issued ninety minutes ago whose exp is five minutes
-		// away passes it, because only five minutes remain.
-		//
-		// That is the leaked-assertion case. Something that has been in a log, a
-		// crash report or a proxy trace for an hour should not still mint tokens
-		// merely because its issuer refreshed the window. Bounding from `iat`
-		// closes it, and this check was taken from reading a competitor's
-		// implementation, which does exactly this and which ours did not.
-		if now.After(iat.Add(MaxAssertionLifetime)) {
-			return tokenErr("invalid_grant", fmt.Sprintf(
-				"the assertion was issued more than %s ago; an assertion must be "+
-					"used near the time it was minted, not merely before it expires",
-				MaxAssertionLifetime))
 		}
 	}
 

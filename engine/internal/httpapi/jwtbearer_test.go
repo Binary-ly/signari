@@ -524,3 +524,39 @@ func TestFailuresAreIndistinguishableToTheCaller(t *testing.T) {
 			len(seen), len(causes), strings.Join(lines, "\n  "))
 	}
 }
+
+// An assertion addressed to our TOKEN ENDPOINT is accepted, not just one
+// addressed to our issuer.
+//
+// Two conventions grew up around RFC 7523 §3's "a value that identifies the
+// authorization server": OpenID-shaped deployments use the issuer, and Google's
+// service-account flow — which most RFC 7523 client libraries were written
+// against — uses the token endpoint URL. Ory's implementation matches the token
+// endpoint only; ours matched the issuer only, so a client library written for
+// the commoner convention was refused with a message naming no cause.
+func TestAnAssertionAddressedToTheTokenEndpointIsAccepted(t *testing.T) {
+	f := newAssertionFixture(t)
+
+	a := f.assert(t, func(c map[string]any) {
+		c["aud"] = "https://jb-test.example/oauth2/token"
+	})
+	code, body := f.grant(t, a, nil)
+	if code != http.StatusOK {
+		t.Fatalf("an assertion addressed to our token endpoint was refused: %d %v", code, body)
+	}
+}
+
+// And the widening must not have widened anything else.
+func TestAnAssertionForAnUnrelatedEndpointIsStillRefused(t *testing.T) {
+	f := newAssertionFixture(t)
+	for _, aud := range []string{
+		"https://someone-else.example/oauth2/token",
+		"https://jb-test.example.evil.test/oauth2/token",
+		"https://jb-test.example/oauth2/introspect",
+	} {
+		a := f.assert(t, func(c map[string]any) { c["aud"] = aud })
+		if code, _ := f.grant(t, a, nil); code == http.StatusOK {
+			t.Errorf("an assertion addressed to %q was accepted", aud)
+		}
+	}
+}

@@ -107,18 +107,35 @@ func buildHonestyMetadata(t *testing.T) *oidc.Metadata {
 func TestOnlyImplementedAttestationPoPMethodsAreAdvertised(t *testing.T) {
 	md := buildHonestyMetadata(t)
 
-	implemented := map[string]bool{abca.PoPMethodAttestationJWT: true}
+	// Written out rather than derived from the advertised list, which would make
+	// this test agree with itself. `none` is deliberately absent: it means no
+	// Client Attestation is required, and this engine requires one from clients
+	// registered for attestation-based authentication.
+	implemented := map[string]bool{
+		abca.PoPMethodAttestationJWT: true,
+		abca.PoPMethodDPoPCombined:   true,
+	}
 	for _, m := range md.ClientAttestationPoPMethods {
 		if !implemented[m] {
 			t.Errorf("discovery advertises attestation PoP method %q, which this "+
 				"engine does not implement", m)
 		}
 	}
-	// And the one that works must be there: an empty list means something
+	// And the ones that work must be there: an empty list means something
 	// specific in §7.6 -- that a Client Attestation is optional -- which is not
 	// what this engine means.
 	if len(md.ClientAttestationPoPMethods) == 0 {
 		t.Error("no attestation PoP method is advertised, which the draft reads as " +
-			"'attestation optional' rather than 'this one method'")
+			"'attestation optional' rather than 'these methods'")
+	}
+	advertised := map[string]bool{}
+	for _, m := range md.ClientAttestationPoPMethods {
+		advertised[m] = true
+	}
+	for m := range implemented {
+		if !advertised[m] {
+			t.Errorf("%q is implemented and not advertised, so no client can "+
+				"discover a mode that works", m)
+		}
 	}
 }

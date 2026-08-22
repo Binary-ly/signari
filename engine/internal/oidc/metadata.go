@@ -215,10 +215,13 @@ func Build(cfg Config) (*Metadata, error) {
 		ChallengeEndpoint:        at(PathAttestationChallenge),
 		ClientAttestationAlgs:    abca.SigningAlgs(),
 		ClientAttestationPoPAlgs: abca.SigningAlgs(),
-		// Not `dpop_combined`: that mode is unimplemented, and this list is a
-		// statement about what will actually be accepted at the endpoint.
-		ClientAttestationPoPMethods: []string{abca.PoPMethodAttestationJWT},
-		IntrospectionEndpoint:       at(PathIntrospection),
+		// Both, now that both work. This list is a statement about what will
+		// actually be accepted at the endpoint, so `dpop_combined` entered it in
+		// the same change that implemented §7.3 rather than ahead of it.
+		ClientAttestationPoPMethods: []string{
+			abca.PoPMethodAttestationJWT, abca.PoPMethodDPoPCombined,
+		},
+		IntrospectionEndpoint: at(PathIntrospection),
 
 		// `groups` is advertised because it now works. Every scope and claim in
 		// this document is one the engine actually honours -- the rule this file

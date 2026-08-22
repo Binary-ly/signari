@@ -101,6 +101,9 @@ type Proof struct {
 	AccessTokenHash string
 	// PublicKey is the key that signed it, for callers that need to record it.
 	PublicKey *jose.JSONWebKey
+	// Nonce is the proof's `nonce` claim, unchecked by this package. See
+	// proofClaims.Nonce for what it carries and who validates it.
+	Nonce string
 }
 
 type proofClaims struct {
@@ -110,19 +113,26 @@ type proofClaims struct {
 	IAT int64  `json:"iat"`
 	ATH string `json:"ath"`
 
-	// `nonce` is deliberately absent.
+	// Nonce is parsed and NOT checked here, which needs saying precisely because
+	// an earlier version of this file removed it for exactly that reason.
 	//
-	// RFC 9449 §8 makes the check conditional on the server having supplied one:
-	// "If the server provided a nonce value to the client, the nonce claim
-	// matches the server-provided nonce value". We never send a DPoP-Nonce
-	// header, so there is nothing to compare a nonce against and ignoring it is
-	// conformant.
+	// RFC 9449 §8 makes the DPoP nonce check conditional on the server having
+	// supplied one: "If the server provided a nonce value to the client, the
+	// nonce claim matches the server-provided nonce value". We never send a
+	// DPoP-Nonce header, so there is nothing here to compare it against and
+	// ignoring it remains conformant. That has not changed.
 	//
-	// It was previously parsed into a field that nothing read. A parsed claim
-	// reads like a checked one, and this is a file where every other field in
-	// this struct is load-bearing. If nonces are added, issuance and this check
-	// have to arrive together -- checking a nonce we never issued would refuse
-	// every honest client, and issuing one we never check would be theatre.
+	// What changed is that a DIFFERENT specification puts a different value in
+	// this claim. Attestation-based client authentication §5.2 defines a combined
+	// mode where one DPoP proof also serves as the Client Attestation PoP, and
+	// §7.3 requires the server's attestation challenge to be carried in the DPoP
+	// proof's `nonce`. That challenge is one this server issued and does check.
+	//
+	// So the claim is exposed rather than checked: this package does not know
+	// what the value means, and the caller that does -- the attestation path --
+	// validates it against the challenge store. A DPoP request that is not using
+	// combined mode still has nothing to compare it against and is unaffected.
+	Nonce string `json:"nonce"`
 }
 
 // Verify checks a DPoP proof against the request it accompanies.
@@ -242,6 +252,7 @@ func Verify(header, method, uri, accessToken string, now time.Time) (*Proof, err
 		IssuedAt:        issued,
 		AccessTokenHash: c.ATH,
 		PublicKey:       jwk,
+		Nonce:           c.Nonce,
 	}, nil
 }
 

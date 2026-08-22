@@ -26,6 +26,8 @@
 package abca
 
 import (
+	"bytes"
+	"crypto"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -368,10 +370,49 @@ func SigningAlgs() []string {
 const (
 	// PoPMethodAttestationJWT is the dedicated Client Attestation PoP JWT.
 	PoPMethodAttestationJWT = "attestation_pop_jwt"
-	// PoPMethodDPoPCombined uses a DPoP proof as the combined PoP. NOT
-	// implemented: draft -10 also notes that `dpop_jkt` cannot be used with it,
-	// which is a rule with nowhere to live until the mode exists.
+	// PoPMethodDPoPCombined uses one DPoP proof as both the sender-constraint and
+	// the Client Attestation PoP (§5.2, §7.3).
+	//
+	// §5.2 also notes that when authorization code binding is used, "this mode
+	// only works with the DPoP Proof header containing a proof of possession and
+	// not `dpop_jkt`". That holds structurally here rather than by a check:
+	// combined mode is selected by the presence of a DPoP proof header at the
+	// token endpoint, and `dpop_jkt` is an authorization-request parameter that
+	// is not a proof and cannot be presented as one.
 	PoPMethodDPoPCombined = "dpop_combined"
 	// PoPMethodNone means no Client Attestation is required.
 	PoPMethodNone = "none"
 )
+
+// SameKey reports whether two JWKs are the same public key.
+//
+// # Why thumbprints rather than field comparison
+//
+// §7.3 rule 4 of the combined mode requires that "the public key in the `jwk`
+// header parameter of the DPoP proof MUST be identical to the public key in the
+// `cnf` claim of the Client Attestation JWT". The two arrive from different
+// places, serialised by different parties, so "identical" cannot mean byte
+// equality of the JSON: member order, whitespace, an omitted `alg`, an added
+// `kid` or a `use` on one and not the other are all the same key written
+// differently, and every one of them would make a conformant client fail.
+//
+// RFC 7638 exists for exactly this. The thumbprint is computed over a canonical
+// subset — the required members only, lexicographically ordered — so two
+// spellings of one key produce one digest, and two different keys cannot.
+//
+// Constant time is not required and is not used: both values are public keys, and
+// which one differs is not a secret.
+func SameKey(a, b *jose.JSONWebKey) (bool, error) {
+	if a == nil || b == nil {
+		return false, fmt.Errorf("a key is missing")
+	}
+	ta, err := a.Thumbprint(crypto.SHA256)
+	if err != nil {
+		return false, fmt.Errorf("thumbprinting the attested key: %w", err)
+	}
+	tb, err := b.Thumbprint(crypto.SHA256)
+	if err != nil {
+		return false, fmt.Errorf("thumbprinting the presented key: %w", err)
+	}
+	return bytes.Equal(ta, tb), nil
+}

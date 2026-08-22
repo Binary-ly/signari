@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"signari.dev/engine/internal/clients"
 	"strings"
 	"testing"
 	"time"
@@ -346,5 +347,247 @@ func TestDiscoveryAdvertisesAttestationSupport(t *testing.T) {
 	}
 	if got := md["challenge_endpoint"]; got != tokenTestIssuer+oidc.PathAttestationChallenge {
 		t.Fatalf("challenge_endpoint is %v", got)
+	}
+}
+
+// Combined mode, §5.2 and §7.3: one DPoP proof serves as both the
+// sender-constraint and the Client Attestation PoP, so "a request using the
+// mechanism carries only one PoP, the DPoP proof, instead of two separate PoP
+// JWTs".
+
+// combinedProof builds a DPoP proof signed by `key`, carrying the attestation
+// challenge in `nonce` as §7.3 rule 5 requires.
+func (f *abcaFixture) combinedProof(t *testing.T, key *abcaKey, challenge, jti string) string {
+	t.Helper()
+	raw, err := key.jwk.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var embedded map[string]any
+	if err := json.Unmarshal(raw, &embedded); err != nil {
+		t.Fatal(err)
+	}
+	opts := (&jose.SignerOptions{}).
+		WithHeader(jose.HeaderType, "dpop+jwt").
+		WithHeader("jwk", embedded)
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key.priv}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := map[string]any{
+		"jti": jti,
+		"htm": http.MethodPost,
+		"htu": tokenTestIssuer + oidc.PathToken,
+		"iat": time.Now().Unix(),
+	}
+	if challenge != "" {
+		claims["nonce"] = challenge
+	}
+	payload, _ := json.Marshal(claims)
+	obj, err := signer.Sign(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := obj.CompactSerialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// postCombined sends the attestation and a DPoP proof, and NO attestation-PoP
+// header — which is how §7.3 rule 1 selects the mode.
+func (f *abcaFixture) postCombined(t *testing.T, form url.Values, att, proof string) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, oidc.PathToken, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if att != "" {
+		req.Header.Set(abca.HeaderAttestation, att)
+	}
+	if proof != "" {
+		req.Header.Set("DPoP", proof)
+	}
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, req)
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	return rec.Code, body
+}
+
+func TestCombinedModeAuthenticatesWithOneProof(t *testing.T) {
+	f := newABCAFixture(t)
+	challenge := f.fetchChallenge(t)
+	verifier := strings.Repeat("v", 43)
+
+	code, body := f.postCombined(t, f.codeRequest(t, verifier),
+		f.attestation(t), f.combinedProof(t, f.instance, challenge, "jti-combined-1"))
+	if code != http.StatusOK {
+		t.Fatalf("combined mode did not authenticate: %d %v", code, body)
+	}
+	if body["access_token"] == nil {
+		t.Fatal("no access token in the response")
+	}
+}
+
+// §7.3 rule 4, and the whole point of the mode: the proof must demonstrate
+// possession of the key the ATTESTER vouched for.
+//
+// Without it the client proves possession of some key and the attestation
+// vouches for another, and neither statement constrains the other — which is two
+// valid artefacts that say nothing together.
+func TestCombinedModeRefusesAProofForADifferentKey(t *testing.T) {
+	f := newABCAFixture(t)
+	challenge := f.fetchChallenge(t)
+	verifier := strings.Repeat("v", 43)
+
+	// A perfectly valid DPoP proof, signed by a key nobody attested to.
+	other := newABCAKey(t)
+	code, body := f.postCombined(t, f.codeRequest(t, verifier),
+		f.attestation(t), f.combinedProof(t, other, challenge, "jti-combined-2"))
+	if code == http.StatusOK {
+		t.Fatal("a DPoP proof for an unattested key authenticated the client")
+	}
+	if body["error"] == nil {
+		t.Errorf("no error in the response: %v", body)
+	}
+}
+
+// §6.1: we offer a challenge endpoint, so the challenge is required — and in
+// combined mode it travels in the DPoP proof's `nonce`.
+func TestCombinedModeRequiresTheChallengeInTheNonce(t *testing.T) {
+	f := newABCAFixture(t)
+	verifier := strings.Repeat("v", 43)
+
+	// An ABSENT challenge must produce use_attestation_challenge WITH a fresh
+	// challenge to retry with, not a generic refusal.
+	//
+	// Asserted on the header rather than only on the status, because mutation
+	// showed the weaker assertion proves nothing: with the explicit check removed
+	// an empty nonce still fails, at the store lookup, since "" matches no issued
+	// challenge. The outcome is the same and the client is left without the value
+	// §7.2 requires it be given — "MUST be accompanied by the
+	// OAuth-Client-Attestation-Challenge header field parameter".
+	req := httptest.NewRequest(http.MethodPost, oidc.PathToken,
+		strings.NewReader(f.codeRequest(t, verifier).Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(abca.HeaderAttestation, f.attestation(t))
+	req.Header.Set("DPoP", f.combinedProof(t, f.instance, "", "jti-combined-3"))
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatal("combined mode authenticated with no challenge in the proof")
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["error"] != abca.ErrUseChallenge {
+		t.Errorf("error = %v, want %s so the client knows to fetch a challenge",
+			body["error"], abca.ErrUseChallenge)
+	}
+	if rec.Header().Get(abca.HeaderChallenge) == "" {
+		t.Error("use_attestation_challenge was returned without a fresh challenge; " +
+			"telling a client to use one without giving it one is a loop")
+	}
+	// The message must say the challenge was ABSENT, not that it was rejected.
+	//
+	// Mutation showed why this assertion is the one that matters: with the
+	// explicit empty check removed, an empty nonce still fails — at the store
+	// lookup, since "" matches no issued challenge — and still returns
+	// use_attestation_challenge with a fresh value. Everything above passes. What
+	// changes is that a client sending no challenge is told its challenge was
+	// "unknown, expired, or has already been used", which is three wrong answers
+	// to debug instead of one right one.
+	desc, _ := body["error_description"].(string)
+	if !strings.Contains(desc, "must carry the challenge") {
+		t.Errorf("the refusal does not say the challenge was absent: %q", desc)
+	}
+
+	// And a challenge that was never issued.
+	code, _ := f.postCombined(t, f.codeRequest(t, verifier),
+		f.attestation(t), f.combinedProof(t, f.instance, "never-issued", "jti-combined-4"))
+	if code == http.StatusOK {
+		t.Fatal("combined mode accepted a challenge this server never issued")
+	}
+}
+
+// One proof, spent once. The challenge is already single-use; this covers the
+// case where a deployment later turns challenges off.
+func TestACombinedProofCannotBeReplayed(t *testing.T) {
+	f := newABCAFixture(t)
+	verifier := strings.Repeat("v", 43)
+
+	// Through the TOKEN ENDPOINT this proves the outcome and not the mechanism,
+	// and it is worth being precise about why.
+	//
+	// Two independent layers refuse a replay here: the challenge is single-use,
+	// and the token endpoint separately runs generic DPoP verification which marks
+	// the same `jti` under the proof's thumbprint. Mutation confirmed it —
+	// removing the attestation path's own replay check left this green.
+	//
+	// That check is NOT redundant, though, which is the part worth knowing:
+	// client authentication is reached from five endpoints and generic DPoP
+	// verification from four, and they are different sets. The CIBA backchannel
+	// and device authorization endpoints authenticate clients WITHOUT running it,
+	// so there the attestation path's own check is the only replay protection.
+	// TestCombinedReplayIsRefusedWhereNothingElseChecks covers that directly.
+	first := f.fetchChallenge(t)
+	if code, body := f.postCombined(t, f.codeRequest(t, verifier), f.attestation(t),
+		f.combinedProof(t, f.instance, first, "jti-combined-replay")); code != http.StatusOK {
+		t.Fatalf("the first use failed: %d %v", code, body)
+	}
+
+	second := f.fetchChallenge(t)
+	if second == first {
+		t.Fatal("the challenge endpoint returned the same value twice")
+	}
+	if code, _ := f.postCombined(t, f.codeRequest(t, strings.Repeat("w", 43)),
+		f.attestation(t),
+		f.combinedProof(t, f.instance, second, "jti-combined-replay")); code == http.StatusOK {
+		t.Fatal("a replayed proof identifier was accepted")
+	}
+}
+
+// The attestation path's own replay check, isolated.
+//
+// Called directly rather than through an endpoint, because every endpoint that
+// reaches it either also runs generic DPoP verification (which would refuse the
+// replay first, proving nothing about this check) or needs a great deal of
+// unrelated setup. Directly, nothing else can refuse the second call.
+func TestCombinedReplayIsRefusedWhereNothingElseChecks(t *testing.T) {
+	f := newABCAFixture(t)
+	ctx := context.Background()
+	c := &clients.Client{ClientID: f.clientID, OrgID: f.orgID}
+
+	call := func(challenge, jti string) error {
+		req := httptest.NewRequest(http.MethodPost, oidc.PathToken, nil)
+		req.Header.Set(abca.HeaderAttestation, f.attestation(t))
+		req.Header.Set("DPoP", f.combinedProof(t, f.instance, challenge, jti))
+		return f.srv.authenticateWithCombinedDPoP(ctx, req, c, f.attestation(t))
+	}
+
+	if err := call(f.fetchChallenge(t), "jti-isolated-replay"); err != nil {
+		t.Fatalf("the first use failed: %v", err)
+	}
+	// A fresh challenge, so the single-use challenge cannot be what refuses it.
+	err := call(f.fetchChallenge(t), "jti-isolated-replay")
+	if err == nil {
+		t.Fatal("the same proof identifier was accepted twice with nothing else " +
+			"checking; at the CIBA and device endpoints this is the only replay " +
+			"protection there is")
+	}
+	if !strings.Contains(err.Error(), "already been used") {
+		t.Errorf("refused for the wrong reason: %v", err)
+	}
+}
+
+// A request carrying neither PoP header is refused rather than falling through
+// to some other authentication.
+func TestAttestationWithNoProofOfAnyKindIsRefused(t *testing.T) {
+	f := newABCAFixture(t)
+	verifier := strings.Repeat("v", 43)
+
+	code, _ := f.postCombined(t, f.codeRequest(t, verifier), f.attestation(t), "")
+	if code == http.StatusOK {
+		t.Fatal("an attestation with no PoP of any kind authenticated the client")
 	}
 }

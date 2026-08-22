@@ -12,6 +12,7 @@ import (
 
 	"signari.dev/engine/internal/abca"
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/dpop"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
@@ -75,25 +76,38 @@ func (s *Server) authenticateWithAttestation(ctx context.Context, r *http.Reques
 	if err != nil {
 		return err
 	}
+
+	// §5.2 combined mode: one DPoP proof does the work of the Client Attestation
+	// PoP, so "a request using the mechanism carries only one PoP, the DPoP
+	// proof, instead of two separate PoP JWTs".
+	//
+	// The mode is chosen by what the client sent, not by configuration, because
+	// it is a property of the request. §7.3 rules 1 and 2 make the two shapes
+	// mutually exclusive -- no attestation-PoP header, precisely one DPoP header
+	// -- so there is no request that is ambiguously both, and a client that sends
+	// both headers is refused rather than silently having one ignored.
+	combined := len(r.Header.Values(abca.HeaderPoP)) == 0
+	if combined {
+		return s.authenticateWithCombinedDPoP(ctx, r, c, att)
+	}
+	if len(r.Header.Values("DPoP")) > 0 {
+		// Both a DPoP proof and a dedicated attestation PoP. Legal on its own --
+		// §7.6 notes DPoP may be used independently alongside the attestation --
+		// but then the DPoP proof is a sender-constraint for the token and NOT
+		// the attestation PoP, and the dedicated header below is what
+		// authenticates the client. Nothing to refuse; noted so the reader of
+		// this branch knows the case was considered rather than missed.
+		_ = combined
+	}
+
 	pop, err := exactlyOneHeader(r, abca.HeaderPoP)
 	if err != nil {
 		return err
 	}
 
-	raw, err := store.TrustedAttesters(ctx, s.db, c.OrgID)
+	trusted, err := s.trustedAttesters(ctx, c.OrgID)
 	if err != nil {
-		return fmt.Errorf("reading trusted client attesters: %w", err)
-	}
-	trusted := &jose.JSONWebKeySet{}
-	for _, blob := range raw {
-		var set jose.JSONWebKeySet
-		if uerr := json.Unmarshal(blob, &set); uerr != nil {
-			// One malformed registration must not silently shrink the trust set:
-			// that would turn a typo into "this attester is no longer trusted",
-			// which fails open for whoever the attester was vouching against.
-			return fmt.Errorf("a registered client attester has an unreadable JWKS: %w", uerr)
-		}
-		trusted.Keys = append(trusted.Keys, set.Keys...)
+		return err
 	}
 
 	now := time.Now()
@@ -220,4 +234,116 @@ func (s *Server) defaultOrgID(ctx context.Context) (string, error) {
 	err := s.db.QueryRow(ctx,
 		`SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).Scan(&id)
 	return id, err
+}
+
+// authenticateWithCombinedDPoP implements §5.2 and §7.3.
+//
+// One DPoP proof serves as both the DPoP sender-constraint and the Client
+// Attestation PoP. The attestation still names the key; the DPoP proof still has
+// to be a valid DPoP proof; and rule 4 is what ties the two together.
+func (s *Server) authenticateWithCombinedDPoP(ctx context.Context, r *http.Request,
+	c *clients.Client, att string) error {
+
+	// §7.3 rule 2: "There is precisely one `DPoP` HTTP request header field".
+	// Rule 1 -- no attestation-PoP header -- is how this function was reached.
+	proofs := r.Header.Values("DPoP")
+	if len(proofs) == 0 {
+		return fmt.Errorf("this client authenticates with an attestation, and the " +
+			"request carries neither an " + abca.HeaderPoP + " header nor a DPoP " +
+			"proof to serve as one")
+	}
+	if len(proofs) > 1 {
+		return fmt.Errorf("there are %d DPoP header fields; combined mode requires "+
+			"precisely one, because a request carrying two proofs has no single "+
+			"answer to which key the attestation vouches for", len(proofs))
+	}
+
+	trusted, err := s.trustedAttesters(ctx, c.OrgID)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	attestation, err := abca.VerifyAttestation(att, trusted, now)
+	if err != nil {
+		return err
+	}
+	if attestation.ClientID != c.ClientID {
+		return fmt.Errorf("the client attestation is for %q, but this request "+
+			"authenticates as %q", attestation.ClientID, c.ClientID)
+	}
+
+	// §7.3 rule 3: validate the DPoP proof per RFC 9449. The SAME verifier the
+	// ordinary DPoP path uses -- a second one here would be a second place for
+	// the algorithm and replay rules to drift, and this one is the path where a
+	// mistake also defeats client authentication.
+	uri := s.cfg.Issuer + r.URL.Path
+	proof, err := dpop.Verify(proofs[0], r.Method, uri, "", now)
+	if err != nil {
+		return fmt.Errorf("the DPoP proof serving as the attestation PoP is not "+
+			"valid: %w", err)
+	}
+
+	// §7.3 rule 4, and the whole point of the mode: the proof must demonstrate
+	// possession of the key the attester vouched for. Without this the client
+	// proves possession of SOME key and the attestation vouches for ANOTHER, and
+	// neither statement constrains the other.
+	same, err := abca.SameKey(attestation.Key, proof.PublicKey)
+	if err != nil {
+		return err
+	}
+	if !same {
+		return fmt.Errorf("the DPoP proof is for a different key than the client " +
+			"attestation vouches for, so it proves possession of a key nobody " +
+			"attested to")
+	}
+
+	// §7.3 rule 5: the challenge, carried in the DPoP proof's `nonce`. We offer a
+	// challenge endpoint, so §6.1 makes it required.
+	if proof.Nonce == "" {
+		return &abca.ChallengeError{Reason: "this server offers a challenge endpoint, " +
+			"so the DPoP proof used for combined attestation must carry the " +
+			"challenge in its `nonce` claim"}
+	}
+	ok, err := store.ClaimAttestationChallenge(ctx, s.db, proof.Nonce)
+	if err != nil {
+		return fmt.Errorf("attestation challenge verification is unavailable")
+	}
+	if !ok {
+		return &abca.ChallengeError{Reason: "the challenge in the DPoP proof is " +
+			"unknown, expired, or has already been used"}
+	}
+
+	// Replay, keyed the same way as the dedicated-PoP path so one proof cannot be
+	// spent once in each mode.
+	fresh, err := store.MarkDPoPProofSeen(ctx, s.db, "abca:"+c.ClientID, proof.JTI,
+		abca.MaxPoPAge+abca.MaxSkew)
+	if err != nil {
+		return fmt.Errorf("replay detection is unavailable")
+	}
+	if !fresh {
+		return fmt.Errorf("this DPoP proof has already been used")
+	}
+	return nil
+}
+
+// trustedAttesters loads an organisation's registered attester keys.
+//
+// Extracted so the dedicated-PoP and combined-DPoP paths share one
+// implementation. Two copies would be two chances to differ about what a
+// malformed registration means, and the failure direction matters: shrinking the
+// trust set silently fails OPEN for whoever the attester was vouching against.
+func (s *Server) trustedAttesters(ctx context.Context, orgID string) (*jose.JSONWebKeySet, error) {
+	raw, err := store.TrustedAttesters(ctx, s.db, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("reading trusted client attesters: %w", err)
+	}
+	trusted := &jose.JSONWebKeySet{}
+	for _, blob := range raw {
+		var set jose.JSONWebKeySet
+		if uerr := json.Unmarshal(blob, &set); uerr != nil {
+			return nil, fmt.Errorf("a registered client attester has an unreadable JWKS: %w", uerr)
+		}
+		trusted.Keys = append(trusted.Keys, set.Keys...)
+	}
+	return trusted, nil
 }

@@ -30,6 +30,7 @@ import (
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/posture"
+	"signari.dev/engine/internal/ratelimit"
 	"signari.dev/engine/internal/risk"
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/ssf"
@@ -41,7 +42,7 @@ import (
 type Server struct {
 	cfg  oidc.Config
 	log  *slog.Logger
-	jwks *bucket
+	jwks *ratelimit.Bucket
 	// ssfKeys caches transmitters' signing keys.
 	ssfKeys *ssf.KeyFetcher
 	// assertionKeys caches trusted issuers' signing keys for the RFC 7523
@@ -53,7 +54,7 @@ type Server struct {
 	jwksMu    sync.Mutex
 	jwksCache []byte
 	jwksETag  string
-	login     *bucket
+	login     *ratelimit.Bucket
 	// captcha is nil-safe: every method tolerates a nil receiver, so a
 	// deployment that has never configured one needs no branches elsewhere.
 	captcha *captcha.Verifier
@@ -67,7 +68,7 @@ type Server struct {
 	// handleDeviceVerification -- a shared bucket here was small enough to be
 	// the binding constraint, which let one address lock out every device in
 	// the deployment.
-	device *bucket
+	device *ratelimit.Bucket
 	// instanceID identifies this deployment's instance row.
 	instanceID string
 	// fedKeys are the OpenID Federation Entity Statement signing keys, kept
@@ -82,7 +83,7 @@ type Server struct {
 	// register throttles dynamic client registration, which is open to anybody
 	// and writes rows. Its own bucket: it shared `device` until widening the
 	// device backstop would have silently widened this too.
-	register *bucket
+	register *ratelimit.Bucket
 	db       *pgxpool.Pool
 	hasher   *passwords.Hasher
 	policies *policyCache
@@ -176,19 +177,19 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// exists only to stop an attacker with random `kid`s turning this into
 		// free bandwidth. Set far above what any real estate of relying parties
 		// produces, because throttling them breaks token verification.
-		jwks: newBucket(5000, 10000),
+		jwks: ratelimit.New(5000, 10000),
 		// The login endpoint is the expensive one: every attempt costs an Argon2
 		// evaluation. Rate limiting in FRONT of the hash is what keeps a flood
 		// from turning into memory exhaustion, independent of the semaphore.
 		// An overload guard, not the security limit: see allowSignInAttempt.
-		login: newBucket(50, 100),
+		login: ratelimit.New(50, 100),
 		// A backstop against a distributed attempt, not the primary limit --
 		// that is per-address in handleDeviceVerification. At 3/s this bucket
 		// was the primary limit by accident, and one address could hold it
 		// empty and lock out every legitimate device in the deployment.
-		device: newBucket(200, 400),
+		device: ratelimit.New(200, 400),
 		// Registration keeps the original tight rate.
-		register:  newBucket(3, 10),
+		register:  ratelimit.New(3, 10),
 		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
 		pwPolicy:  passwords.PolicyFromEnv(),
 		policies:  newPolicyCache(),
@@ -460,7 +461,7 @@ func (s *Server) rateLimitedLogin(w http.ResponseWriter, r *http.Request) {
 	// shared limits below cost a round trip each, and an unbounded flood of them
 	// is its own denial of service. Deliberately generous, so a real deployment
 	// never sees it and an attacker hits the keyed limits instead.
-	if !s.login.allow() {
+	if !s.login.Allow() {
 		w.Header().Set("Retry-After", "2")
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many sign-in attempts")
 		return
@@ -831,7 +832,7 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	if !s.jwks.allow() {
+	if !s.jwks.Allow() {
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many key set requests")
 		return
@@ -845,11 +846,29 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
+// handleHealth answers whether this process is up. Nothing else.
+//
+// # What this endpoint used to return, and why it stopped
+//
+// It also reported `algs`, the signing algorithms with an active key. That was
+// NOT a disclosure: the value came from `cfg.Keys.Algorithms()`, which is the
+// same call that fills `id_token_signing_alg_values_supported` in the discovery
+// document — a document OpenID Connect requires to be public and unauthenticated.
+// Anyone who could reach /healthz could already read the identical list from
+// /.well-known/openid-configuration. The ASVS review said exactly this and was
+// right; a later note calling it a leak was wrong.
+//
+// It is gone anyway, for a different and smaller reason. A liveness endpoint is
+// the one thing in a deployment most likely to be exposed on a port, a network or
+// a proxy path that the protocol endpoints are not — health checks get wired up
+// by infrastructure people who are not thinking about OIDC metadata. Everything
+// it returns should therefore be something that is true of the process rather
+// than something that describes the configuration, so that the blast radius of
+// somebody exposing it wrongly stays zero as this struct grows.
+//
+// "Is it up" needs one field.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status": "ok",
-		"algs":   s.cfg.Keys.Algorithms(),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -870,34 +889,6 @@ func writeError(w http.ResponseWriter, code int, err, desc string) {
 // bucket is a token bucket. Global rather than per-IP on purpose: the JWKS
 // endpoint is unauthenticated and typically sits behind a proxy, so per-IP
 // limiting mostly measures the proxy.
-type bucket struct {
-	mu       sync.Mutex
-	tokens   float64
-	capacity float64
-	rate     float64
-	last     time.Time
-}
-
-func newBucket(ratePerSec, capacity float64) *bucket {
-	return &bucket{tokens: capacity, capacity: capacity, rate: ratePerSec, last: time.Now()}
-}
-
-func (b *bucket) allow() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	now := time.Now()
-	b.tokens += now.Sub(b.last).Seconds() * b.rate
-	if b.tokens > b.capacity {
-		b.tokens = b.capacity
-	}
-	b.last = now
-	if b.tokens < 1 {
-		return false
-	}
-	b.tokens--
-	return true
-}
-
 // captchaOrigins returns the script and frame origins a provider needs.
 //
 // Enumerated rather than derived from the verify URL: the origin that serves a

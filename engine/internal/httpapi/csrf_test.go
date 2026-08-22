@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"signari.dev/engine/internal/ratelimit"
 	"strings"
 	"testing"
 )
@@ -16,7 +17,7 @@ import (
 func newCSRFServer() *Server {
 	return &Server{
 		log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		login: newBucket(5, 20),
+		login: ratelimit.New(5, 20),
 	}
 }
 
@@ -176,7 +177,7 @@ func TestForgedPostsDoNotExhaustTheLoginLimiter(t *testing.T) {
 		}
 	}
 
-	if !s.login.allow() {
+	if !s.login.Allow() {
 		t.Fatal("forged posts drained the login rate limiter; real users are locked out")
 	}
 }

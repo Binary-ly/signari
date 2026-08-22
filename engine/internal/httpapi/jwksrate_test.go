@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"signari.dev/engine/internal/ratelimit"
 	"testing"
 )
 
@@ -35,11 +36,11 @@ func TestTheJWKSLimitAbsorbsAnEstateRefetching(t *testing.T) {
 	)
 	burst := float64(relyingParties * instancesEachRP)
 
-	b := newBucket(5000, 10000) // must match the server's configuration
+	b := ratelimit.New(5000, 10000) // must match the server's configuration
 
 	refused := 0
 	for i := 0; i < int(burst); i++ {
-		if !b.allow() {
+		if !b.Allow() {
 			refused++
 		}
 	}
@@ -53,7 +54,7 @@ func TestTheJWKSLimitAbsorbsAnEstateRefetching(t *testing.T) {
 
 // The backstop must still exist. A limit removed entirely is an amplifier.
 func TestTheJWKSLimitStillStopsAmplification(t *testing.T) {
-	b := newBucket(5000, 10000)
+	b := ratelimit.New(5000, 10000)
 	// Drained until it refuses, rather than by a fixed count: the bucket refills
 	// while the loop runs, so "consume exactly capacity" leaves a few tokens and
 	// the assertion fails for a reason that has nothing to do with the limit.
@@ -61,7 +62,7 @@ func TestTheJWKSLimitStillStopsAmplification(t *testing.T) {
 	const ceiling = 200_000 // far beyond any real estate; a runaway guard
 	refusedAt := -1
 	for i := 0; i < ceiling; i++ {
-		if !b.allow() {
+		if !b.Allow() {
 			refusedAt = i
 			break
 		}

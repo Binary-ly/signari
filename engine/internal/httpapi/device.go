@@ -266,7 +266,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 
 	// The global bucket stays as a backstop against a distributed attempt, but
 	// widened so it is no longer reachable by one address on its own.
-	if !s.device.allow() {
+	if !s.device.Allow() {
 		render("", "Too many attempts just now. Wait a moment and try again.", nil)
 		return
 	}

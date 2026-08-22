@@ -1,6 +1,10 @@
 package httpapi
 
-import "testing"
+import (
+	"testing"
+
+	"signari.dev/engine/internal/ratelimit"
+)
 
 // Two endpoints must not share one limiter.
 //
@@ -16,20 +20,20 @@ import "testing"
 // for free without being told.
 func TestRateLimitersAreNotShared(t *testing.T) {
 	s := &Server{
-		device:   newBucket(200, 400),
-		register: newBucket(3, 10),
+		device:   ratelimit.New(200, 400),
+		register: ratelimit.New(3, 10),
 	}
 
 	// Drain registration completely.
 	for i := 0; i < 20; i++ {
-		s.register.allow()
+		s.register.Allow()
 	}
-	if s.register.allow() {
+	if s.register.Allow() {
 		t.Fatal("the registration bucket did not run out")
 	}
 
 	// The device backstop must be untouched by that.
-	if !s.device.allow() {
+	if !s.device.Allow() {
 		t.Fatal("draining the registration limiter also refused the device " +
 			"endpoint: the two share a bucket, so tuning either one silently " +
 			"retunes the other")
@@ -41,14 +45,14 @@ func TestRateLimitersAreNotShared(t *testing.T) {
 // bucket is ever tightened back to a rate one address can reach on its own, the
 // deployment-wide lockout comes back.
 func TestTheDeviceBackstopIsNotTheBindingConstraint(t *testing.T) {
-	s := &Server{device: newBucket(200, 400)}
+	s := &Server{device: ratelimit.New(200, 400)}
 
 	// deviceAttemptsPerWindow is what a single address may spend. The backstop
 	// has to absorb many addresses spending their full budget at once, or it
 	// becomes the real limit again and the per-address work is decorative.
 	const concurrentAddresses = 15
 	for i := 0; i < deviceAttemptsPerWindow*concurrentAddresses; i++ {
-		if !s.device.allow() {
+		if !s.device.Allow() {
 			t.Fatalf("the global backstop refused request %d, which is only %d "+
 				"addresses each spending their full per-address budget of %d. "+
 				"It is the binding constraint again, and one address can lock "+

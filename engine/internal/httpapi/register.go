@@ -76,7 +76,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// deployment, dynamic registration would have silently been widened with
 	// it. Sharing a limiter couples two unrelated decisions and the coupling is
 	// invisible at both call sites.
-	if !s.register.allow() {
+	if !s.register.Allow() {
 		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable",
 			"too many registrations just now")
 		return

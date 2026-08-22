@@ -30,6 +30,7 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/ratelimit"
 )
 
 // Server is the admin write API. It listens separately from the public protocol
@@ -47,6 +48,25 @@ type Server struct {
 	// pwPolicy is the SAME policy the sign-in paths enforce. An administrator
 	// setting a password must not be able to set one a user could not.
 	pwPolicy passwords.Policy
+
+	// arrivals bounds work done for callers who have not authenticated yet.
+	//
+	// Every request costs a SHA-256 and an indexed database probe before it can
+	// be refused, so an anonymous caller with no credential at all can generate
+	// unbounded database load on the administrative interface. That is the
+	// threat this answers, and it is a denial of service rather than a
+	// credential attack: `auth` already explains why guessing a 256-bit random
+	// token is not the risk, and a limiter does not change that either way.
+	arrivals *ratelimit.Bucket
+
+	// perToken keeps one caller from starving the others.
+	//
+	// A single shared bucket means the noisiest integration decides what
+	// everybody else gets -- a bulk provisioning script would throttle the
+	// console an operator is trying to use during the same incident. Keyed on
+	// the authenticated token, which is safe to evict from because the key had
+	// to exist and be unrevoked before the limiter is ever consulted.
+	perToken *ratelimit.Keyed
 }
 
 func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
@@ -59,10 +79,37 @@ func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
 	}
 	return &Server{db: db, log: log, token: token,
 		hasher:   passwords.NewHasher(passwords.MemoryBudgetMiB),
-		pwPolicy: passwords.PolicyFromEnv()}, nil
+		pwPolicy: passwords.PolicyFromEnv(),
+		// Generous on purpose. Administration is low-volume and bursty -- an
+		// operator paging through clients, a provisioning run creating a batch --
+		// so these bound the damage without being something a real deployment
+		// ever notices. A limit tight enough to interfere is a limit somebody
+		// raises to infinity during an incident.
+		arrivals: ratelimit.New(adminArrivalsPerSecond, adminArrivalsBurst),
+		perToken: ratelimit.NewKeyed(adminPerTokenPerSecond, adminPerTokenBurst,
+			adminTrackedTokens),
+	}, nil
 }
 
-func (s *Server) Routes() *http.ServeMux {
+// Rate limits for the administrative interface.
+const (
+	adminArrivalsPerSecond = 100
+	adminArrivalsBurst     = 200
+	adminPerTokenPerSecond = 50
+	adminPerTokenBurst     = 100
+	// adminTrackedTokens bounds the per-token map. Far above the number of
+	// credentials any deployment issues, because the map is only a memory bound
+	// and evicting an entry hands its key a fresh allowance.
+	adminTrackedTokens = 1024
+)
+
+// Routes returns the fully wrapped handler.
+//
+// It returns http.Handler rather than *http.ServeMux so that the global limiter
+// is part of what a caller receives. Exposing the bare mux and a separate
+// wrapper would leave two ways to serve this API, one of them unlimited -- and
+// the unlimited one is shorter to type.
+func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /admin/clients/{clientID}", s.auth(ScopeClientsWrite, s.patchClient))
 	mux.HandleFunc("POST /admin/users", s.auth(ScopeUsersWrite, s.createUser))
@@ -71,7 +118,31 @@ func (s *Server) Routes() *http.ServeMux {
 		s.auth(ScopeClientsWrite, s.rotateClientSecret))
 	mux.HandleFunc("PATCH /admin/users/{userID}", s.auth(ScopeUsersWrite, s.patchUser))
 	mux.HandleFunc("GET /admin/config-version", s.auth(ScopeConfigRead, s.configVersion))
-	return mux
+	return s.limitArrivals(mux)
+}
+
+// limitArrivals is the outermost wrapper: it runs before authentication, because
+// authentication is the work being protected.
+func (s *Server) limitArrivals(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.arrivals != nil && !s.arrivals.Allow() {
+			tooManyRequests(w)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// tooManyRequests answers a throttled caller.
+//
+// Retry-After is set for the same reason the JWKS endpoint sets it: a client
+// told only "no" retries immediately and makes the problem worse.
+func tooManyRequests(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{
+		"error":  "rate_limited",
+		"detail": "too many administrative requests",
+	})
 }
 
 // auth authenticates the caller and requires a scope.
@@ -106,6 +177,26 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 			unauthorized(w)
+			return
+		}
+
+		// Per-token, and placed HERE rather than earlier for a specific reason.
+		//
+		// The key has to be an authenticated identity. Keying a limiter on
+		// anything the caller supplies -- the raw bearer value, a header, an
+		// address behind a proxy -- lets them mint fresh keys at will, and since
+		// a new key starts with a full bucket, the limit becomes something the
+		// attacker resets rather than something they are subject to. By this
+		// point the token has been found, is unrevoked and is unexpired, so its
+		// name is a bounded value we chose.
+		//
+		// Its purpose is fairness, not defence: the global limiter above already
+		// bounds total work. This stops one integration's bulk run from consuming
+		// the whole allowance while an operator is trying to use the console.
+		if s.perToken != nil && !s.perToken.Allow(p.Name) {
+			s.log.Info("admin request throttled", "token", p.Name,
+				"method", r.Method, "path", r.URL.Path)
+			tooManyRequests(w)
 			return
 		}
 

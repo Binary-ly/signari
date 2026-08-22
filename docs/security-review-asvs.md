@@ -1222,7 +1222,7 @@ continues in cleartext — sending `AUTH PLAIN` over the wire. Ours refuses:
 | V13.4.2 debug modes disabled | met — no pprof, no debug flag in the serving path |
 | V13.4.3 no directory listings | met by construction, same reason as V13.4.1 |
 | V13.4.4 TRACE unsupported | met by construction — every route is registered with an explicit method pattern, so TRACE is 405 everywhere |
-| V13.4.5 monitoring endpoints not exposed | met — `/healthz` is intentional and returns status plus the signing algorithms, which discovery already publishes by specification, so it discloses nothing new |
+| V13.4.5 monitoring endpoints not exposed | met — `/healthz` returns liveness only. The reasoning here was right and is worth keeping: it also used to return the signing algorithms, and that was **not** a disclosure, because the same list comes from the same call that fills `id_token_signing_alg_values_supported` in the public discovery document. It was removed anyway, on the narrower ground that a liveness endpoint is the one most likely to be exposed by infrastructure not thinking about OIDC, so it should describe the process and never the deployment. Pinned by `TestHealthReturnsLivenessAndNothingElse` |
 | V13.4.6 no detailed version information | met — no version string is served |
 | V13.4.7 extension allowlist on the web tier | n/a — there is no file-serving tier to allowlist |
 

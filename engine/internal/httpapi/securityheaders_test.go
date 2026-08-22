@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"signari.dev/engine/internal/ratelimit"
 	"strings"
 	"testing"
 
@@ -26,7 +27,7 @@ func headerTestServer(t *testing.T, issuer string) *Server {
 	t.Helper()
 	return &Server{
 		log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		login: newBucket(5, 20),
+		login: ratelimit.New(5, 20),
 		cfg:   oidc.Config{Issuer: issuer},
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"signari.dev/engine/internal/ratelimit"
 	"strings"
 	"testing"
 
@@ -149,7 +150,7 @@ func TestAPanicAfterTheResponseStartedDoesNotAppendASecondBody(t *testing.T) {
 func TestRecoveryIsWiredIntoTheRouter(t *testing.T) {
 	s := &Server{
 		log:   slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		login: newBucket(5, 20),
+		login: ratelimit.New(5, 20),
 		cfg:   oidc.Config{Issuer: "https://recover.test"},
 	}
 

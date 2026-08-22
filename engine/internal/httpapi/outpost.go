@@ -26,6 +26,12 @@ func asOutpostIdentity(i *ldapd.Identity) outpostIdentity {
 	return outpostIdentity{
 		Username: i.Username, Email: i.Email, DisplayName: i.DisplayName,
 		Active: i.Active, Groups: i.Groups,
+		// sn and givenName travel too, so an outpost-served entry is as
+		// schema-valid as an in-process one. `sn` is a MUST attribute of
+		// `person`; without it here the outpost would fall back to guessing one
+		// from the display name for every account, including the ones where we
+		// know the real answer.
+		Surname: i.Surname, GivenName: i.GivenName,
 	}
 }
 
@@ -72,6 +78,11 @@ type outpostIdentity struct {
 	DisplayName string   `json:"display_name"`
 	Active      bool     `json:"active"`
 	Groups      []string `json:"groups"`
+	// omitempty on both, so an outpost built before these existed sees the same
+	// bytes it saw before and keeps working. They are optional in the schema and
+	// optional on the wire.
+	Surname   string `json:"sn,omitempty"`
+	GivenName string `json:"given_name,omitempty"`
 }
 
 // outpostAuth resolves the bearer token to an enabled outpost.

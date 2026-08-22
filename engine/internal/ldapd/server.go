@@ -42,6 +42,16 @@ type Identity struct {
 	// almost always gate on it, and one that cannot read groups falls back to
 	// giving everybody the same access.
 	Groups []string
+
+	// Surname and GivenName exist because RFC 4519 makes `sn` a MUST attribute
+	// of `person`, and every entry this directory returns claims that class.
+	//
+	// They were not stored before writes existed, so the read side was
+	// publishing entries that violated a class it declared -- a real defect
+	// found by working out what an Add would have to accept. See entryFor for
+	// what happens to rows that predate the column.
+	Surname   string
+	GivenName string
 }
 
 // Config is one LDAP listener.
@@ -58,6 +68,20 @@ type Config struct {
 	// MaxResults caps a single search.
 	MaxResults  int
 	ReadTimeout time.Duration
+
+	// WriteGroup names the group whose members may perform Add, Modify, Delete
+	// and Modify DN.
+	//
+	// EMPTY MEANS NOBODY. That is the fail-closed reading, and it is the right
+	// one here for the same reason the SSF stream `Allows` field takes it:
+	// reading an unset list as "everybody" is how a half-made configuration
+	// becomes a live grant, and this particular grant is the ability to rewrite
+	// the directory and then bind as anybody in it.
+	//
+	// A group rather than a list of DNs, so the people who hold it are visible in
+	// their own `memberOf` and are managed with `signari group member` like every
+	// other privilege.
+	WriteGroup string
 }
 
 func (c *Config) withDefaults() {
@@ -76,7 +100,10 @@ func (c *Config) withDefaults() {
 type Server struct {
 	cfg  Config
 	auth Authenticator
-	log  *slog.Logger
+	// writer is nil for a read-only directory, which is the default and what
+	// every deployment got before writes existed. See write.go.
+	writer Writer
+	log    *slog.Logger
 
 	mu    sync.Mutex
 	conns map[net.Conn]struct{}
@@ -85,6 +112,16 @@ type Server struct {
 func New(cfg Config, auth Authenticator, log *slog.Logger) *Server {
 	cfg.withDefaults()
 	return &Server{cfg: cfg, auth: auth, log: log, conns: map[net.Conn]struct{}{}}
+}
+
+// WithWriter returns a server that can be written to.
+//
+// A separate constructor rather than a field on Config, so that turning writes
+// on is a call somebody made rather than a struct literal somebody copied. The
+// write group still has to name people; a Writer with no group permits nobody.
+func (s *Server) WithWriter(w Writer) *Server {
+	s.writer = w
+	return s
 }
 
 // Serve accepts connections until the listener closes.
@@ -189,14 +226,19 @@ func (s *Server) dispatch(ctx context.Context, c net.Conn, sess *session, messag
 	case appExtendedRequest:
 		return s.handleExtended(c, sess, messageID, op)
 
-	case appAddRequest, appModifyRequest, appDelRequest, appModifyDNRequest:
-		// Refused, not stubbed. This is a read-only shim, and a write that
-		// silently does nothing is worse than one that fails: the caller believes
-		// the directory changed.
-		s.log.Info("ldap write operation refused", "tag", op.Tag,
-			"remote", c.RemoteAddr().String(), "bound_dn", sess.dn)
-		return s.write(c, newMessage(messageID, newResult(appBindResponse+op.Tag,
-			resultUnwillingToPerform, "", "this directory is read-only")))
+	// The four write operations, RFC 4511 §4.6 to §4.9.
+	//
+	// Each handler refuses first -- no Writer, or a bound identity outside the
+	// write group -- so a read-only deployment behaves exactly as it did before
+	// writes existed, down to the result code. See write.go.
+	case appAddRequest:
+		return s.handleAdd(ctx, c, sess, messageID, op)
+	case appModifyRequest:
+		return s.handleModify(ctx, c, sess, messageID, op)
+	case appDelRequest:
+		return s.handleDelete(ctx, c, sess, messageID, op)
+	case appModifyDNRequest:
+		return s.handleModifyDN(ctx, c, sess, messageID, op)
 
 	case appCompareRequest:
 		// Compare can be used as an oracle: ask whether userPassword equals X and
@@ -473,15 +515,29 @@ func (s *Server) entriesFor(ctx context.Context, req *searchRequest, limit int) 
 // else's code.
 func (s *Server) entryFor(id *Identity) *entry {
 	attrs := map[string][]string{
-		"objectClass":  {"top", "person", "organizationalPerson", "inetOrgPerson"},
+		"objectClass":  objectClasses,
 		s.cfg.UserAttr: {id.Username},
 		"cn":           {firstNonEmpty(id.DisplayName, id.Username)},
+		// `sn` is a MUST attribute of `person` (RFC 4519), and this entry claims
+		// that class four lines up. It was simply absent before writes existed,
+		// which made every entry here schema-invalid against a class it declared
+		// -- found by working out what an Add would have to require.
+		//
+		// The fallback matters as much as the column. Rows that predate the
+		// column have no surname, and returning no `sn` for them would leave the
+		// original defect in place for every existing account. A directory whose
+		// `cn` is a whole name and whose `sn` is derived from it is ordinary; an
+		// entry missing a MUST attribute is not.
+		"sn": {firstNonEmpty(id.Surname, surnameFrom(id.DisplayName), id.Username)},
 	}
 	if id.Email != "" {
 		attrs["mail"] = []string{id.Email}
 	}
 	if id.DisplayName != "" {
 		attrs["displayName"] = []string{id.DisplayName}
+	}
+	if id.GivenName != "" {
+		attrs["givenName"] = []string{id.GivenName}
 	}
 	if len(id.Groups) > 0 {
 		// Full DNs, which is what directory-aware software expects to match on --
@@ -578,4 +634,19 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// surnameFrom takes the last word of a display name.
+//
+// A guess, and labelled as one. It exists only for rows that predate the
+// surname column: the alternative for those is publishing a `person` entry with
+// no `sn`, which every schema-aware client is entitled to reject. A row written
+// through this directory carries the surname the client actually sent, and this
+// function is not consulted.
+func surnameFrom(displayName string) string {
+	fields := strings.Fields(displayName)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[len(fields)-1]
 }

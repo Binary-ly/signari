@@ -98,6 +98,7 @@ See [remote-access.md](remote-access.md).
 | `SIGNARI_LDAP_ORG_ID` | Required with more than one organisation |
 | `SIGNARI_LDAP_USER_ATTR` | Attribute carrying the username |
 | `SIGNARI_LDAP_ANONYMOUS_SEARCH` | Permit anonymous search. Off by default |
+| `SIGNARI_LDAP_WRITE_GROUP` | Group whose members may Add, Modify, Delete and Modify DN. **Empty means nobody**, and the directory stays read-only. Members can create accounts, set any password, and delete entries — see [ldap.md](ldap.md) |
 
 ## Device posture
 

@@ -43,8 +43,11 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari invite create` / `invite list` | Invitations |
 | `signari signup enable` / `signup disable` / `signup show` | Self-service sign-up, and which email domains may use it |
 | `signari registration enable` / `registration token` | Dynamic client registration (RFC 7591) |
-| `signari delete` | Remove a user record |
 | `signari erase subject` | Crypto-shred a subject: destroy their data-encryption key so ciphertext, including in backups, is permanently unreadable. See [erasure.md](erasure.md) |
+
+There is **no** `signari delete`. This page listed one for months; it has never
+existed, and the test that exists to catch exactly that could not see this table
+— see the note at the end of this page.
 
 ## Clients
 
@@ -85,7 +88,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari idp add-issuer` | Register a key-publishing issuer (GitHub Actions, Kubernetes) for the jwt-bearer grant |
 | `signari client set-assertion-issuers` | Which issuers' assertions a client may exchange. Empty permits none. See [jwt-bearer.md](jwt-bearer.md) |
 | `signari idp apple-secret` | Mint the client secret Apple requires (a signed JWT that expires) |
-| `signari google` / `signari entra` | Shorthands for the two most common ones |
+| `signari dir add -kind google` / `-kind entra` | Directory sync from the two most common sources. `google`, `entra` and `ldap` are values of `-kind`, not commands of their own |
 | `signari saml add-sp` / `saml list` | SAML service providers |
 | `signari scim-source add` / `scim-source list` | Inbound SCIM |
 | `signari kerberos check` / `kerberos principals` / `kerberos sync` | Kerberos/SPNEGO, keytab checking, principal import |
@@ -122,11 +125,11 @@ a class of failure that shows up as data corruption rather than an error.
 | | |
 |---|---|
 | `signari outpost create` / `outpost list` / `outpost run` | LDAP, RADIUS, proxy and desktop outposts |
-| `signari ldap` / `signari radius` | Run those protocol servers |
+| — | LDAP and RADIUS are **listeners inside `signari serve`**, not commands. Set `SIGNARI_LDAP_ADDR` or `SIGNARI_RADIUS_ADDR`; each is off unless its address is. See [ldap.md](ldap.md) and [radius.md](radius.md) |
 | `signari radius add-client` / `radius list` / `radius enable-client` / `radius disable-client` | RADIUS clients and their shared secrets |
 | `signari proxy check` | Check a forward-auth deployment **from outside** the network — which is why it dispatches before the database is required |
 | `signari rac add` / `rac list` | Remote access connections |
-| `signari rdp` / `signari vnc` / `signari ssh` | Start a remote session of that kind |
+| `signari rac add -protocol rdp` / `vnc` / `ssh` | The protocol is a value of `-protocol`, not a command. Sessions are started from `/rac` in a browser |
 
 ## Policy, prompts, branding
 
@@ -144,3 +147,25 @@ a class of failure that shows up as data corruption rather than an error.
 | | |
 |---|---|
 | `signari logout-test` | Prove back-channel logout actually terminates a relying party's session |
+
+## Why this page was wrong
+
+In August 2026 this table listed **eight** commands that do not exist:
+`delete`, `google`, `entra`, `ldap`, `radius`, `rdp`, `vnc`, `ssh`. Seven of them
+were argument *values* — `dir add -kind google`, `rac add -protocol rdp` — written
+up as though they were commands. The eighth was never anything.
+
+Two tests exist to prevent precisely this, and both missed it for the same
+reason and a different one:
+
+- `TestEveryDocumentedCommandExists` matched invocations **anchored at the start
+  of a line**, so every row of this table — which begins `` | `signari … `` —
+  was invisible to it. The page whose entire job is to list every command was the
+  one page the check could not read.
+- It also treated **every** `case "…"` in `main.go` as a command, including
+  switches on unrelated strings. `case "delete":` belongs to an `-on-deactivate`
+  flag, and that alone made `signari delete` look real.
+
+Both are fixed. The lesson is the one this repository already had written down
+about discovery documents, arriving somewhere new: a check that cannot see the
+thing it is checking passes for the same reason a correct one does.

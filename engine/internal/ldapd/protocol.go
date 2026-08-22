@@ -3,10 +3,19 @@
 //
 // # What this is, and what it deliberately is not
 //
-// It is a COMPATIBILITY SHIM. It answers bind and search, read-only, so that
-// software written against a directory can authenticate people who live in
-// Signari. It is not a directory: there is no write path, no schema, no
-// replication, no modify, no add, no delete. Those are refused rather than
+// It is a COMPATIBILITY SHIM that answers bind and search, so that software
+// written against a directory can authenticate people who live in Signari.
+//
+// Since August 2026 it can also be WRITTEN to: Add, Modify, Delete and Modify
+// DN (RFC 4511 §4.6–§4.9), against an explicit schema in schema.go. That is off
+// by default and needs two decisions to turn on -- a Writer, and a group naming
+// who may use it -- because a directory that can be written to is a much larger
+// surface than one that cannot, and because the LDAP outpost has no write path
+// back to the engine at all. See write.go.
+//
+// It is still not a directory. There is no replication, no subschema subentry,
+// no DIT structure rules, no aliases, no subordinate entries: the tree is flat
+// and holds `person` entries. Everything outside that is refused rather than
 // stubbed, because a half-implemented directory is one somebody eventually
 // depends on.
 //
@@ -52,16 +61,34 @@ const (
 )
 
 // Result codes (RFC 4511 §4.1.9 / Appendix A).
+//
+// The write codes are as specific as the specification allows, because a
+// directory client acts on them. `entryAlreadyExists` tells a provisioning run
+// to move on; `constraintViolation` tells it to fix the data; `notAllowedOnRDN`
+// tells it to use Modify DN instead. Collapsing all of them to
+// unwillingToPerform -- which is what a shim reaching for one code does -- turns
+// every one of those into "something went wrong, try again forever".
 const (
-	resultSuccess                = 0
-	resultProtocolError          = 2
-	resultTimeLimitExceeded      = 3
-	resultAuthMethodNotSupported = 7
-	resultNoSuchObject           = 32
-	resultInvalidCredentials     = 49
-	resultInsufficientAccess     = 50
-	resultUnwillingToPerform     = 53
-	resultOther                  = 80
+	resultSuccess                   = 0
+	resultProtocolError             = 2
+	resultTimeLimitExceeded         = 3
+	resultAuthMethodNotSupported    = 7
+	resultNoSuchAttribute           = 16
+	resultUndefinedAttributeType    = 17
+	resultConstraintViolation       = 19
+	resultAttributeOrValueExists    = 20
+	resultNoSuchObject              = 32
+	resultInvalidDNSyntax           = 34
+	resultInvalidCredentials        = 49
+	resultInsufficientAccess        = 50
+	resultUnwillingToPerform        = 53
+	resultNamingViolation           = 64
+	resultObjectClassViolation      = 65
+	resultNotAllowedOnNonLeaf       = 66
+	resultNotAllowedOnRDN           = 67
+	resultEntryAlreadyExists        = 68
+	resultObjectClassModsProhibited = 69
+	resultOther                     = 80
 )
 
 // Search scopes.

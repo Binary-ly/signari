@@ -25,33 +25,88 @@ import (
 //
 // Anchored at the start of a line so prose mentioning a command in passing is
 // not treated as an instruction, and tolerant of a shell prompt or `./` prefix.
+//
+// # The table-cell prefix, and why it is not cosmetic
+//
+// The leading `|` and backtick were added in August 2026, after finding that
+// `docs/cli.md` documented `signari delete` -- a command that does not exist and
+// never has. This test is supposed to catch exactly that, and it could not:
+// every row of cli.md begins `| `signari ...“, so the anchor never matched, so
+// THE ONE PAGE WHOSE JOB IS TO LIST EVERY COMMAND was the one page invisible to
+// the check. The other twenty-odd pages have their invocations in fenced blocks
+// and matched fine, which is why the guard below still saw enough commands to
+// think it was working.
 var docCommand = regexp.MustCompile(
-	`(?m)^\s*(?:\$\s*)?(?:sudo\s+)?(?:\./)?signari\s+([a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*)?)`)
+	"(?m)^\\s*(?:\\|\\s*)?(?:`)?(?:\\$\\s*)?(?:sudo\\s+)?(?:\\./)?" +
+		`signari\s+([a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*)?)`)
 
-func TestEveryDocumentedCommandExists(t *testing.T) {
-	root := repoRoot(t)
+// dispatchedCommands returns the commands main.go actually dispatches.
+//
+// # Only the switches on `cmd`
+//
+// This used to scan every `case "..."` in the file, which is wrong in the
+// dangerous direction: main.go has switches on plenty of other strings, and one
+// of them has `case "delete":` for an `-on-deactivate` flag. That made `signari
+// delete` look like a real command to this test, and `docs/cli.md` documented it
+// for months. It has never existed.
+//
+// So the scan is bounded to the two `switch cmd {` blocks. Bounding it is what
+// makes a documented-but-absent command detectable at all; before, the set of
+// "commands" was a superset large enough to absorb almost any mistake.
+//
+// Both forms are still read. Most commands are a `case`, but a few are
+// dispatched by an `if` before the database is required -- `outpost run` is,
+// deliberately, because it holds no database credentials. A check that knew only
+// about the switches would report those as missing, which is a false alarm that
+// teaches whoever hits it to distrust this test.
+func dispatchedCommands(t *testing.T, src string) map[string]bool {
+	t.Helper()
 
-	// What main.go dispatches.
-	//
-	// Both forms are read. Most commands are a `case` in the switch, but a few
-	// are dispatched by an `if` before the database is required -- `proxy check`
-	// is, deliberately, because it has to run from outside the network. A check
-	// that knew only about the switch would report those as missing, which is a
-	// false alarm that teaches whoever hits it to distrust this test.
-	src := readSource(t, filepath.Join(root, "engine", "cmd", "signari", "main.go"))
+	caseRe := regexp.MustCompile(`case\s+"([a-z][a-z0-9 -]*)":`)
 	dispatched := map[string]bool{}
-	for _, re := range []*regexp.Regexp{
-		regexp.MustCompile(`case\s+"([a-z][a-z0-9 -]*)":`),
-		regexp.MustCompile(`cmd\s*==\s*"([a-z][a-z0-9 -]*)"`),
-	} {
-		for _, m := range re.FindAllStringSubmatch(src, -1) {
+
+	// Each `switch cmd {` runs to the line that closes it at the same
+	// indentation. Every switch in this file is inside one function body, so the
+	// closing brace is a tab followed by `}` -- crude, and checked by the count
+	// guard below, which is the real defence against parsing this wrong.
+	blocks := 0
+	rest := src
+	for {
+		i := strings.Index(rest, "switch cmd {")
+		if i < 0 {
+			break
+		}
+		rest = rest[i:]
+		end := strings.Index(rest, "\n\t}\n")
+		if end < 0 {
+			end = len(rest)
+		}
+		for _, m := range caseRe.FindAllStringSubmatch(rest[:end], -1) {
 			dispatched[m[1]] = true
 		}
+		blocks++
+		rest = rest[end:]
+	}
+	if blocks < 2 {
+		t.Fatalf("found %d `switch cmd` blocks in main.go; this test is reading "+
+			"it wrong", blocks)
+	}
+
+	for _, m := range regexp.MustCompile(`cmd\s*==\s*"([a-z][a-z0-9 -]*)"`).
+		FindAllStringSubmatch(src, -1) {
+		dispatched[m[1]] = true
 	}
 	if len(dispatched) < 20 {
 		t.Fatalf("only %d commands were found in main.go, which means this test is "+
 			"reading it wrong rather than that the CLI shrank", len(dispatched))
 	}
+	return dispatched
+}
+
+func TestEveryDocumentedCommandExists(t *testing.T) {
+	root := repoRoot(t)
+	src := readSource(t, filepath.Join(root, "engine", "cmd", "signari", "main.go"))
+	dispatched := dispatchedCommands(t, src)
 
 	// The groups whose first word is followed by a verb.
 	//
@@ -163,20 +218,7 @@ func TestEveryDocumentedCommandExists(t *testing.T) {
 func TestEveryCommandIsDocumented(t *testing.T) {
 	root := repoRoot(t)
 	src := readSource(t, filepath.Join(root, "engine", "cmd", "signari", "main.go"))
-
-	dispatched := map[string]bool{}
-	for _, re := range []*regexp.Regexp{
-		regexp.MustCompile(`case\s+"([a-z][a-z0-9 -]*)":`),
-		regexp.MustCompile(`cmd\s*==\s*"([a-z][a-z0-9 -]*)"`),
-	} {
-		for _, m := range re.FindAllStringSubmatch(src, -1) {
-			dispatched[m[1]] = true
-		}
-	}
-	if len(dispatched) < 20 {
-		t.Fatalf("only %d commands found in main.go; this test is reading it wrong",
-			len(dispatched))
-	}
+	dispatched := dispatchedCommands(t, src)
 
 	// Everything the docs mention anywhere -- including inside a fenced block,
 	// which is where most invocations live. Looser than docCommand on purpose:

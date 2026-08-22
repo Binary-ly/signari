@@ -1337,14 +1337,33 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 			return fmt.Errorf("SIGNARI_LDAP_ADDR is set but SIGNARI_LDAP_BASE_DN is not; " +
 				"the base DN is what every bind DN must sit under and there is no safe default")
 		}
+		ldapHasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+		// SIGNARI_LDAP_WRITE_GROUP names who may Add, Modify, Delete and Modify
+		// DN. Empty means nobody, and the directory stays read-only exactly as it
+		// was -- see internal/ldapd/write.go for why that is two decisions rather
+		// than one.
+		ldapWriteGroup := os.Getenv("SIGNARI_LDAP_WRITE_GROUP")
 		ldapSrv := ldapd.New(ldapd.Config{
 			BaseDN:   baseDN,
 			UserAttr: envOr("SIGNARI_LDAP_USER_ATTR", "uid"),
 			// Anonymous search stays off unless asked for: it publishes a user
 			// directory to anyone who can reach the port.
 			AllowAnonymousSearch: os.Getenv("SIGNARI_LDAP_ANONYMOUS_SEARCH") == "1",
-		}, httpapi.NewLDAPAuthenticator(pool,
-			passwords.NewHasher(passwords.MemoryBudgetMiB), ldapOrgID, log), log)
+			WriteGroup:           ldapWriteGroup,
+		}, httpapi.NewLDAPAuthenticator(pool, ldapHasher, ldapOrgID, log), log)
+
+		if ldapWriteGroup != "" {
+			ldapSrv = ldapSrv.WithWriter(httpapi.NewLDAPWriter(pool, ldapHasher,
+				passwords.PolicyFromEnv(), ldapOrgID, log))
+			// Said out loud at startup, at Warn. This turns a read-only bind shim
+			// into something that can create accounts and set passwords, and the
+			// only other evidence an operator has is one environment variable they
+			// may not have set themselves.
+			log.Warn("LDAP writes are ENABLED",
+				"write_group", ldapWriteGroup,
+				"note", "members of this group may add, modify, rename and DELETE "+
+					"directory entries, and may set any password")
+		}
 
 		ln, err := net.Listen("tcp", ldapAddr)
 		if err != nil {

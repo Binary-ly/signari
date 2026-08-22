@@ -154,16 +154,25 @@ func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd
 	var id ldapd.Identity
 	err := a.db.QueryRow(ctx, `
 		SELECT COALESCE(NULLIF(u.username,''), u.email, u.id::text),
-		       COALESCE(u.email,''), u.status = 'active'
+		       COALESCE(u.email,''), u.status = 'active',
+		       COALESCE(u.display_name,''), COALESCE(u.surname,''),
+		       COALESCE(u.given_name,'')
 		FROM core.users u
 		WHERE u.org_id = $1::uuid
 		  AND (lower(u.username) = lower($2) OR lower(u.email) = lower($2))
 		  AND u.status = 'active'`, a.orgID, username).
-		Scan(&id.Username, &id.Email, &id.Active)
+		Scan(&id.Username, &id.Email, &id.Active,
+			&id.DisplayName, &id.Surname, &id.GivenName)
 	if err != nil {
 		return nil, nil
 	}
-	id.DisplayName = id.Username
+	// The username is the fallback, not the value. It used to be assigned
+	// unconditionally, which was fine while nothing could set a display name and
+	// is now the difference between reading back the `cn` a client wrote and
+	// reading back its own uid.
+	if id.DisplayName == "" {
+		id.DisplayName = id.Username
+	}
 
 	// Groups, unfiltered by any release policy: an LDAP listener is configured
 	// per organisation by an operator, unlike an OIDC client which asks for
@@ -186,13 +195,16 @@ func (a *LDAPAuthenticator) List(ctx context.Context, limit int) ([]*ldapd.Ident
 	// call repeatedly, which is a denial of service with a valid bind.
 	rows, err := a.db.Query(ctx, `
 		SELECT COALESCE(NULLIF(u.username,''), u.email, u.id::text), COALESCE(u.email,''),
+		       COALESCE(u.display_name,''), COALESCE(u.surname,''),
+		       COALESCE(u.given_name,''),
 		       COALESCE(array_agg(g.name ORDER BY g.name)
 		                FILTER (WHERE g.name IS NOT NULL), '{}')
 		FROM core.users u
 		LEFT JOIN core.group_members m ON m.user_id = u.id
 		LEFT JOIN core.groups g ON g.id = m.group_id
 		WHERE u.org_id = $1::uuid AND u.status = 'active'
-		GROUP BY u.id, u.username, u.email, u.created_at
+		GROUP BY u.id, u.username, u.email, u.display_name, u.surname,
+		         u.given_name, u.created_at
 		ORDER BY u.created_at
 		LIMIT $2`, a.orgID, limit)
 	if err != nil {
@@ -203,11 +215,14 @@ func (a *LDAPAuthenticator) List(ctx context.Context, limit int) ([]*ldapd.Ident
 	var out []*ldapd.Identity
 	for rows.Next() {
 		var id ldapd.Identity
-		if err := rows.Scan(&id.Username, &id.Email, &id.Groups); err != nil {
+		if err := rows.Scan(&id.Username, &id.Email, &id.DisplayName,
+			&id.Surname, &id.GivenName, &id.Groups); err != nil {
 			return nil, err
 		}
 		id.Active = true
-		id.DisplayName = id.Username
+		if id.DisplayName == "" {
+			id.DisplayName = id.Username
+		}
 		out = append(out, &id)
 	}
 	return out, rows.Err()

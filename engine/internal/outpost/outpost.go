@@ -116,12 +116,17 @@ type identityJSON struct {
 	DisplayName string   `json:"display_name"`
 	Active      bool     `json:"active"`
 	Groups      []string `json:"groups"`
+	// Absent from an engine that predates them, which is why the directory has a
+	// fallback for `sn` rather than requiring one here.
+	Surname   string `json:"sn"`
+	GivenName string `json:"given_name"`
 }
 
 func (i identityJSON) toLDAP() *ldapd.Identity {
 	return &ldapd.Identity{
 		Username: i.Username, Email: i.Email, DisplayName: i.DisplayName,
 		Active: i.Active, Groups: i.Groups,
+		Surname: i.Surname, GivenName: i.GivenName,
 	}
 }
 

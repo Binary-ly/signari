@@ -111,6 +111,19 @@ func Load(overrideDir string) (*Set, []error, error) {
 			return nil, nil, err
 		}
 		for name, body := range over {
+			// A file naming nothing is a typo, and accepting it is worse than
+			// refusing it: `logn.html` would otherwise become a thirty-fourth page
+			// that no route renders, while `theme list` and `doctor` both counted it
+			// as an override and reported success. `theme check` has always refused
+			// this; Load must agree with it, or the check passing in CI and the
+			// server accepting it mean different things.
+			if _, known := src[name]; !known && !partials[name] {
+				problems = append(problems, fmt.Errorf(
+					"%s does not correspond to any page this server renders, so it "+
+						"is being ignored; `signari theme list` prints every name",
+					filepath.Join(overrideDir, name+".html")))
+				continue
+			}
 			candidate := clone(src)
 			candidate[name] = body
 			if err := validateOne(candidate, name); err != nil {

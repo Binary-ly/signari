@@ -537,3 +537,45 @@ func TestADirectoryNamedLikeAPageIsSkipped(t *testing.T) {
 		t.Error("the built-in login page is not in force")
 	}
 }
+
+// A misspelled filename is the likeliest theming mistake there is, and the two
+// code paths that see it used to disagree: `theme check` refused it, while Load
+// -- the path the running server takes -- accepted it as a brand new page that
+// no route renders, leaving `theme list` and `doctor` both reporting "1
+// overridden" as though it had worked.
+//
+// A check that passes in CI and a server that accepts the same directory must
+// mean the same thing, or the check is worse than nothing: it teaches an
+// operator to trust a result that does not hold.
+func TestAFileNamingNoPageIsRefusedRatherThanBecomingOne(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "logn.html"),
+		[]byte(`{{define "content"}}<p>typo</p>{{end}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	set, problems, err := Load(dir)
+	if err != nil {
+		t.Fatalf("a misnamed file stopped the page set loading: %v", err)
+	}
+	if len(problems) != 1 {
+		t.Fatalf("a file naming no page produced %d refusal(s), want 1: %v",
+			len(problems), problems)
+	}
+	if !strings.Contains(problems[0].Error(), "logn.html") {
+		t.Errorf("the refusal does not name the file that is wrong: %v", problems[0])
+	}
+	if set.Has("logn") {
+		t.Error("the misnamed file became a page nothing renders, which is the " +
+			"defect: an operator sees it counted as an override and believes their " +
+			"theme is live")
+	}
+
+	// And the two paths must agree, which is the property that actually broke.
+	_, checked := Check(dir)
+	if len(checked) != len(problems) {
+		t.Errorf("theme check reports %d problem(s) and the server reports %d; "+
+			"a passing check must mean the server will accept it",
+			len(checked), len(problems))
+	}
+}

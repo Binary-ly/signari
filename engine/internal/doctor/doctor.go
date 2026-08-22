@@ -822,9 +822,10 @@ func checkTheme(r *Report) {
 		return
 	}
 	for _, p := range problems {
-		r.add(Warning, "theme",
-			"a page override was refused, and the built-in page is being served in "+
-				"its place: "+p.Error(),
+		// The error from Load already names the file, says the built-in is being
+		// used, and gives the reason. Restating any of that here produces a finding
+		// that says the same thing twice before it says anything.
+		r.add(Warning, "theme", p.Error(),
 			"Run `signari theme check -theme-dir "+dir+"` to see it in isolation. "+
 				"The page a user sees is correct and working -- it is simply not "+
 				"yours, and nothing on the page says so.")

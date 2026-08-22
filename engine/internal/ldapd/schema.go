@@ -32,10 +32,20 @@ type attrDef struct {
 	// Name is the canonical spelling. Comparison is case-insensitive, as LDAP
 	// attribute descriptions are, but this is what gets returned.
 	Name string
-	// Single is true for a SINGLE-VALUE attribute. Sending two values for one is
-	// a schema violation and is reported as such rather than silently keeping
-	// the first, which is how a client ends up believing it stored something it
-	// did not.
+	// Single is true for an attribute this directory holds one value of.
+	//
+	// # This is usually NARROWER than the standard, and that is a decision
+	//
+	// Checked against RFC 4519 rather than assumed: `uid`, `cn`, `sn`,
+	// `givenName` and `userPassword` are all MULTI-VALUED there, and `mail`
+	// (RFC 4524 §2.16) is too. Only `displayName` (RFC 2798 §2.3) is genuinely
+	// SINGLE-VALUE in its own definition.
+	//
+	// They are single here because the backing store holds one column each, and
+	// the honest thing to do about that is to say so and refuse the second value
+	// -- not to accept it and keep the first, which is how a client comes to
+	// believe it stored something it did not. An application that needs a person
+	// with three mail addresses needs a directory, and this is not one.
 	Single bool
 	// Writable is false for an attribute a client may read and not change.
 	//
@@ -46,8 +56,17 @@ type attrDef struct {
 	// cache of a fact stored somewhere else.
 	Writable bool
 	// RequiredForAdd is a MUST attribute of the object classes this directory
-	// publishes. RFC 4519 makes `cn` and `sn` MUST for `person`, and every entry
-	// here claims to be one.
+	// publishes.
+	//
+	// RFC 4519 §3.9 defines `person` as:
+	//
+	//	( 2.5.6.6 NAME 'person' SUP top STRUCTURAL
+	//	  MUST ( sn $ cn )
+	//	  MAY ( userPassword $ telephoneNumber $ seeAlso $ description ) )
+	//
+	// Every entry here claims that class, so both are required. `uid` is
+	// required for a different reason -- it is the naming attribute, so an entry
+	// without one has no DN.
 	RequiredForAdd bool
 	// Secret is never returned by a search, whatever was asked for.
 	Secret bool
@@ -64,16 +83,16 @@ var schema = []attrDef{
 	// used.
 	{Name: "uid", Single: true, Writable: false, RequiredForAdd: true},
 
-	// RFC 4519: `cn` and `sn` are MUST attributes of `person`, and every entry
-	// this directory returns claims that class. They were not stored before
+	// RFC 4519 §3.9: `cn` and `sn` are the MUST attributes of `person`, and every
+	// entry this directory returns claims that class. Neither was stored before
 	// writes existed, so the read side was publishing entries that violated a
 	// class it declared -- see entryFor for how existing rows are handled.
 	{Name: "cn", Single: true, Writable: true, RequiredForAdd: true},
 	{Name: "sn", Single: true, Writable: true, RequiredForAdd: true},
 
-	{Name: "givenName", Single: true, Writable: true},
-	{Name: "displayName", Single: true, Writable: true},
-	{Name: "mail", Single: true, Writable: true},
+	{Name: "givenName", Single: true, Writable: true},   // RFC 4519 §2.12
+	{Name: "displayName", Single: true, Writable: true}, // RFC 2798 §2.3
+	{Name: "mail", Single: true, Writable: true},        // RFC 4524 §2.16
 
 	// Write-only, in both directions. A search never returns it at any value --
 	// not a hash, not a placeholder -- because either teaches an application to
@@ -81,7 +100,12 @@ var schema = []attrDef{
 	// == in somebody else's code.
 	{Name: "userPassword", Single: true, Writable: true, Secret: true},
 
-	// Derived. See the Writable comment above.
+	// Derived, and not a standard attribute at all: `memberOf` comes from Active
+	// Directory and is provided as an overlay by OpenLDAP. It is published here
+	// because applications that bind to a directory almost always gate on it,
+	// and it is unwritable because it is a VIEW of group membership -- the
+	// writable side of that relationship is a group's `member`, and there is no
+	// group subtree here to write.
 	{Name: "memberOf", Writable: false},
 
 	// Structural, and fixed. A client may send it on Add and it must name the
@@ -91,6 +115,11 @@ var schema = []attrDef{
 }
 
 // objectClasses is what every entry here is, and the only set an Add may claim.
+//
+// `top`, `person` and `organizationalPerson` are RFC 4519 §3; `inetOrgPerson` is
+// RFC 2798 and is NOT in 4519, which is worth writing down because the MUST
+// attributes enforced above come from 4519's `person` and it is easy to cite the
+// wrong document for a class that only appears in the other one.
 //
 // Published in this order because clients display the last one and expect the
 // most specific.
@@ -310,8 +339,8 @@ func ApplyChanges(current *entry, changes []Change) (*Update, error) {
 		}
 		if len(working[strings.ToLower(def.Name)]) == 0 {
 			return nil, schemaErr(resultObjectClassViolation,
-				"the entry would be left with no %s, which `person` requires "+
-					"(RFC 4519)", def.Name)
+				"the entry would be left with no %s, which `person` makes a MUST "+
+					"attribute (RFC 4519 section 3.9)", def.Name)
 		}
 	}
 
@@ -360,11 +389,11 @@ func ValidateNewEntry(e *NewEntry, suppliedClasses []string) error {
 	// is contradictory, and the caller resolves that before getting here.
 	if e.CommonName == "" {
 		return schemaErr(resultObjectClassViolation,
-			"cn is required: `person` makes it a MUST attribute (RFC 4519)")
+			"cn is required: `person` makes it a MUST attribute (RFC 4519 section 3.9)")
 	}
 	if e.Surname == "" {
 		return schemaErr(resultObjectClassViolation,
-			"sn is required: `person` makes it a MUST attribute (RFC 4519)")
+			"sn is required: `person` makes it a MUST attribute (RFC 4519 section 3.9)")
 	}
 	if len(suppliedClasses) > 0 && !classesAcceptable(suppliedClasses) {
 		return schemaErr(resultObjectClassViolation,

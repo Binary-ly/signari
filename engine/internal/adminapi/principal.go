@@ -18,6 +18,12 @@ const (
 	ScopeUsersWrite   = "users:write"
 	ScopeClientsWrite = "clients:write"
 	ScopeConfigRead   = "config:read"
+	// ScopeSubjectsErase is its own scope rather than part of users:write.
+	//
+	// A token that may rename a user should not thereby be able to destroy one
+	// irreversibly, and most tokens that need the former do not need the latter.
+	// Erasure is the only operation in this API that nobody can undo.
+	ScopeSubjectsErase = "subjects:erase"
 	// ScopeAll is what the break-glass environment token carries. It is not
 	// grantable to a database token: a stored credential that can do everything
 	// is the thing this package exists to stop handing out.
@@ -25,7 +31,8 @@ const (
 )
 
 // KnownScopes is what `admin-token create` will accept.
-var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead}
+var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
+	ScopeSubjectsErase}
 
 // Principal is whoever is making an admin request.
 type Principal struct {

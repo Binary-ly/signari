@@ -42,7 +42,8 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari invite create` / `invite list` | Invitations |
 | `signari signup enable` / `signup disable` / `signup show` | Self-service sign-up, and which email domains may use it |
 | `signari registration enable` / `registration token` | Dynamic client registration (RFC 7591) |
-| `signari delete` | Erasure by crypto-shredding: the subject's data-encryption key is destroyed, so ciphertext in backups is unreadable without rewriting them |
+| `signari delete` | Remove a user record |
+| `signari erase subject` | Crypto-shred a subject: destroy their data-encryption key so ciphertext, including in backups, is permanently unreadable. See [erasure.md](erasure.md) |
 
 ## Clients
 

@@ -114,33 +114,38 @@ func TestEveryFindingCarriesAFix(t *testing.T) {
 	}
 }
 
-// A deployment holding subject keys and no way to erase one should be told.
+// A deployment holding subject keys is told how to erase one, and what that costs.
 //
-// `keys.EraseSubject` destroys a subject's data-encryption key and is tested;
-// a tree-wide search finds no caller outside its own tests. Every part of the
-// schema advertises erasure support — `erased_at`, a constraint that a shredded
+// This test used to assert the opposite. `keys.EraseSubject` was implemented,
+// tested, and called by nothing — a mechanism with no handle, in a schema that
+// advertised erasure support everywhere: `erased_at`, a constraint that a shredded
 // key holds no DEK, an audit chain hashed over ciphertext specifically so it
-// survives a shred — so an operator reading it would reasonably conclude the
-// capability is there. It is a mechanism with no handle.
+// survives a shred.
 //
-// The check reports rather than fixes, because what erasure should MEAN has
-// three defensible answers and is irreversible in a way account takeover is not.
-// That decision is the operator's (item 9o). Reporting it is not.
-func TestADeploymentIsToldItCannotErase(t *testing.T) {
+// The finding stayed Info and the check stayed, because the NUMBER is still worth
+// reporting: it says how much of this deployment is protected by subject keys and
+// therefore how much a single erasure destroys. What changed is the advice, which
+// now has to name a command that exists rather than a decision that was pending.
+func TestADeploymentIsToldHowToErase(t *testing.T) {
 	r := findingsFor(t, func(r *Report) { reportErasure(r, 42) })
 	if len(r.Findings) != 1 {
 		t.Fatalf("got %d findings, want 1", len(r.Findings))
 	}
 	f := r.Findings[0]
 	if f.Severity != Info {
-		t.Errorf("severity = %v, want Info: nothing is broken or unsafe today, and "+
-			"a deployment with no erasure obligations may ignore it", f.Severity)
+		t.Errorf("severity = %v, want Info: this reports scale, not a fault", f.Severity)
 	}
-	if !strings.Contains(f.Fix, "9o") {
-		t.Errorf("the fix does not point at the decision that unblocks it: %q", f.Fix)
+	// The command, so the advice is actionable rather than a description.
+	if !strings.Contains(f.Fix, "erase subject") {
+		t.Errorf("the fix does not name the command that does it: %q", f.Fix)
 	}
-	if !strings.Contains(f.Fix, "EraseSubject") {
-		t.Errorf("the fix does not name the mechanism that exists: %q", f.Fix)
+	// And the confirmation, because an operator who learns the command without
+	// learning that it is irreversible has been told the dangerous half only.
+	if !strings.Contains(f.Fix, "confirm") {
+		t.Errorf("the fix does not mention the confirmation: %q", f.Fix)
+	}
+	if !strings.Contains(f.Fix, "permanent") {
+		t.Errorf("the fix does not say the destruction is permanent: %q", f.Fix)
 	}
 }
 

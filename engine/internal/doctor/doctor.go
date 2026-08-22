@@ -556,9 +556,9 @@ func checkMTLS(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	return nil
 }
 
-// checkErasure reports that this deployment cannot honour an erasure request.
+// checkErasure reports how much of this deployment is protected by subject keys.
 //
-// # Why a diagnostic rather than a fix
+// # What this used to report, and what closed it
 //
 // The mechanism exists and works. `core.subject_keys` holds each subject's
 // data-encryption key wrapped by a root key that is not in the database, with an
@@ -566,23 +566,27 @@ func checkMTLS(ctx context.Context, conn *pgx.Conn, r *Report) error {
 // chain hashes ciphertext rather than plaintext precisely so it stays verifiable
 // after a shred. `keys.EraseSubject` performs the destruction and is tested.
 //
-// **Nothing calls it.** There is no admin API, CLI or console path that erases a
-// subject, so a deployment holding personal data has no way to destroy it on
-// request.
+// For a long time NOTHING CALLED IT. There was no admin API, CLI or console path
+// that erased a subject, so a deployment holding personal data had no way to
+// destroy it on request -- a mechanism with no handle, in a schema that advertised
+// the capability everywhere.
 //
-// What erasure should MEAN here is a decision with three defensible answers --
-// immediate, delay-and-notify like account recovery, or two-person -- and it is
-// irreversible in a way that account takeover is not: a mistaken shred cannot be
-// undone by anybody. Choosing on the operator's behalf is not a call this code
-// should make, which is why the gap is reported rather than closed.
+// That is closed. `signari erase subject` and `POST /admin/subjects/{id}/erase`
+// both invoke it, each requiring the subject identifier to be repeated as the
+// confirmation rather than a boolean, because which subject is the only mistake
+// here that nobody can undo.
 //
-// Reported at all, though, because the failure mode is silence. Every part of
-// this schema advertises erasure support, and an operator reading it would
-// reasonably conclude the capability is there. It is a mechanism with no handle.
+// The open question was never the mechanism but the SEMANTICS -- immediate,
+// delay-and-notify like account recovery, or two-person -- and this check said so
+// for good reason. The engine implements immediate and refuses to erase a still
+// active account unless the caller says what should happen to it, which is a
+// guard rather than a choice: an erased subject can never hold a key again, so an
+// account left active afterwards fails permanently rather than working with less
+// data.
 //
-// Info rather than Warning: nothing is broken or unsafe today, and a deployment
-// with no erasure obligations is entitled to ignore it. It stops being Info the
-// moment somebody asks to be forgotten.
+// The check stays because the number is still worth knowing: it says how much of
+// this deployment is protected by subject keys, and therefore how much a single
+// erasure destroys. Info, always -- it reports scale, not a fault.
 func checkErasure(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	r.ran("subject erasure")
 
@@ -606,15 +610,14 @@ func reportErasure(r *Report, subjects int) {
 		return
 	}
 	r.add(Info, "erasure",
-		fmt.Sprintf("%d subject key(s) are stored and this build has no way to erase one",
+		fmt.Sprintf("%d subject key(s) are stored; each one is what an erasure destroys",
 			subjects),
-		"The crypto-shredding mechanism is implemented (keys.EraseSubject) and "+
-			"nothing invokes it: there is no admin API, CLI or console path that "+
-			"destroys a subject's data-encryption key. A deployment that receives "+
-			"an erasure request cannot honour it. Deciding what erasure should mean "+
-			"here -- immediate, delayed and cancellable, or requiring two "+
-			"administrators -- is open decision 9o, and it is deliberately "+
-			"left to the operator because a mistaken shred cannot be undone.")
+		"Erasing one destroys the key its data is sealed with, permanently and "+
+			"including in every backup taken beforehand. Run it with `signari "+
+			"erase subject -subject-id <uuid> -confirm <uuid>` or POST to "+
+			"/admin/subjects/{id}/erase; both require the identifier to be "+
+			"repeated as the confirmation, because which subject is the only "+
+			"mistake here that nobody can undo. See docs/erasure.md.")
 }
 
 // checkCredentialLifetimes reports the credential configurations that hold

@@ -98,6 +98,7 @@ var twoWordCommands = map[string]bool{
 	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"invite": true, "signup": true, "outpost": true, "provision": true,
+	"erase":    true,
 	"prompt":   true,
 	"attester": true,
 	"flow":     true,
@@ -156,6 +157,7 @@ commands:
   dir add             register a Google Workspace or Entra ID directory source
   dir sync            reconcile users from a directory (preview unless -apply)
   export audit        write the audit trail as CSV, with its chain verified
+  erase subject       destroy a subject key, making their data unreadable forever
   registration enable turn on dynamic client registration (RFC 7591)
   registration token  mint an initial access token for registration
   ssf add-stream      register a Shared Signals receiver for CAEP events
@@ -216,6 +218,11 @@ func run(args []string) error {
 	jwksURL := fs.String("jwks-url", "", "`idp add-issuer`: URL publishing the issuer's signing keys")
 	assertionIssuers := fs.String("issuers", "",
 		"`client set-assertion-issuers`: comma-separated provider slugs, or empty to permit none")
+	eraseSubject := fs.String("subject-id", "", "`erase subject`: the subject uuid to erase")
+	eraseConfirm := fs.String("confirm", "",
+		"`erase subject`: repeat the subject uuid to confirm; erasure cannot be undone")
+	eraseDeactivate := fs.Bool("deactivate", false,
+		"`erase subject`: also deactivate the account, required when it is still active")
 	appURL := fs.String("app", "", "protected application URL, as the browser reaches it (proxy check)")
 	origin := fs.String("origin", "", "the application's own address, to test the bypass (proxy check)")
 	probePath := fs.String("path", "", "extra path to probe, repeatable as a comma-separated list (proxy check)")
@@ -510,6 +517,8 @@ func run(args []string) error {
 	case "client set-tls":
 		return clientSetTLS(ctx, conn, *clientID, *tlsSubjectDN, *tlsSANDNS, *tlsSANURI,
 			*tlsSANIP, *tlsSANEmail, *spCert, *tlsBound)
+	case "erase subject":
+		return eraseSubjectCmd(ctx, conn, *eraseSubject, *eraseConfirm, *eraseDeactivate)
 	case "client set-assertion-issuers":
 		return clientSetAssertionIssuers(ctx, conn, *clientID, *assertionIssuers)
 	case "client set-exchange-containment":
@@ -2275,6 +2284,101 @@ func idpList(ctx context.Context, conn *pgx.Conn) error {
 		fmt.Println("(none registered -- add one with `signari idp add`)")
 	}
 	return rows.Err()
+}
+
+// eraseSubjectCmd crypto-shreds a subject.
+//
+// # The confirmation carries information on purpose
+//
+// It is not a -yes or a -force. The operator has to repeat the subject uuid, so
+// the confirmation cannot be satisfied by muscle memory or by a flag pasted from
+// a runbook -- the thing being confirmed is WHICH subject, and that is the only
+// mistake this command can make that nobody can undo.
+//
+// The account's email address is printed before the destruction, for the same
+// reason: a prompt that cannot say whose data is at stake is a prompt people
+// learn to answer without reading.
+func eraseSubjectCmd(ctx context.Context, conn *pgx.Conn, subjectID, confirm string, deactivate bool) error {
+	if subjectID == "" {
+		return fmt.Errorf("-subject-id is required (the subject uuid to erase)")
+	}
+	if confirm == "" {
+		// Shown, not just refused. An operator who has to go and find the syntax
+		// reads it; one who is told "add -confirm" pastes it.
+		return fmt.Errorf("erasure is permanent and cannot be undone. To proceed, "+
+			"repeat the subject:\n  signari erase subject -subject-id %s -confirm %s",
+			subjectID, subjectID)
+	}
+	if confirm != subjectID {
+		return fmt.Errorf("-confirm does not match -subject-id, so this would have erased "+
+			"a different subject than the one confirmed:\n  -subject-id %s\n  -confirm %s",
+			subjectID, confirm)
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rep, err := store.EraseSubject(ctx, tx, subjectID, deactivate)
+	switch {
+	case errors.Is(err, store.ErrSubjectUnknown):
+		return fmt.Errorf("no subject key exists for %s. Nothing was erased -- and "+
+			"nothing of theirs was ever encrypted with a subject key, so there is "+
+			"nothing here to destroy", subjectID)
+	case errors.Is(err, store.ErrAlreadyErased):
+		// Not an error worth failing on in principle, but worth saying: an
+		// operator repeating an erasure wants to know it already happened rather
+		// than to be told "done" twice.
+		return fmt.Errorf("%s was already erased. The earlier erasure stands; "+
+			"nothing changed", subjectID)
+	case errors.Is(err, store.ErrSubjectStillActive):
+		return fmt.Errorf("%s (%s) is still active.\n\n"+
+			"An erased subject can never hold a key again, so an active account "+
+			"whose key is destroyed does not work with less data -- it fails, "+
+			"permanently, in ways that look like bugs.\n\n"+
+			"Either deactivate it first, or say so here:\n"+
+			"  signari erase subject -subject-id %s -confirm %s -deactivate",
+			subjectID, describeAccount(rep), subjectID, subjectID)
+	case err != nil:
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	fmt.Printf("erased %s%s\n", subjectID, func() string {
+		if rep.Email != "" {
+			return " (" + rep.Email + ")"
+		}
+		return ""
+	}())
+	fmt.Printf("  their data-encryption key is destroyed; everything sealed with it\n" +
+		"  is permanently unreadable, including from backups\n")
+	if rep.TOTPCredentials > 0 {
+		fmt.Printf("  %d TOTP credential(s) are now unreadable\n", rep.TOTPCredentials)
+	}
+	if rep.Deactivated {
+		fmt.Printf("  the account was deactivated in the same transaction\n")
+	}
+	if !rep.AccountFound {
+		fmt.Printf("  no account exists for this subject; the key outlived it, which is\n" +
+			"  why erasure is keyed on the subject rather than on the account\n")
+	}
+	fmt.Printf("  the subject_keys row survives with erased_at set: it is the evidence\n" +
+		"  that the erasure happened and when\n")
+	return nil
+}
+
+// describeAccount names an account for an error message without printing more
+// than is needed to identify it.
+func describeAccount(rep *store.ErasureReport) string {
+	if rep == nil || rep.Email == "" {
+		return "no email on record"
+	}
+	return rep.Email
 }
 
 // clientSetAssertionIssuers pairs a client with the issuers it may use.

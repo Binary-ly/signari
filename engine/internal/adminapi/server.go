@@ -118,6 +118,8 @@ func (s *Server) Routes() http.Handler {
 		s.auth(ScopeClientsWrite, s.rotateClientSecret))
 	mux.HandleFunc("PATCH /admin/users/{userID}", s.auth(ScopeUsersWrite, s.patchUser))
 	mux.HandleFunc("GET /admin/config-version", s.auth(ScopeConfigRead, s.configVersion))
+	mux.HandleFunc("POST /admin/subjects/{subjectID}/erase",
+		s.auth(ScopeSubjectsErase, s.eraseSubject))
 	return s.limitArrivals(mux)
 }
 

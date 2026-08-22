@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/migrate"
 )
 
 func findingsFor(t *testing.T, run func(*Report)) *Report {
@@ -218,5 +220,56 @@ func TestALongListSaysHowMuchItLeftOut(t *testing.T) {
 	}
 	if !strings.Contains(s, "7 more") {
 		t.Errorf("the list was truncated without saying by how much: %q", s)
+	}
+}
+
+// An unpinned binary must say so, because nothing else does.
+//
+// migrate.Verify checks the schema VERSION always and the schema FINGERPRINT only
+// when a pin was supplied at build time. Unpinned, it returns before reading the
+// live schema — so the check exists, is tested, and does nothing. The engine
+// starts normally either way, and the only symptom is that a hand-patched
+// database is accepted: exactly the case the fingerprint exists to catch and the
+// one where nobody is looking.
+//
+// Demonstrated rather than assumed: against one database at one version with a
+// column added by hand, a pinned binary refuses with "schema fingerprint
+// mismatch" and an unpinned one serves.
+func TestAnUnpinnedBinaryReportsThatItsDriftGateIsOff(t *testing.T) {
+	// The test binary is built without -X, so this is the unpinned case.
+	if migrate.ExpectedFingerprint != "" {
+		t.Skip("this test binary was built with a pin")
+	}
+	r := findingsFor(t, func(r *Report) { checkSchemaPin(r) })
+	if len(r.Findings) != 1 {
+		t.Fatalf("an unpinned binary produced %d findings, want 1", len(r.Findings))
+	}
+	f := r.Findings[0]
+	if f.Severity != Warning {
+		t.Errorf("severity = %v, want Warning: the version counter still gates "+
+			"ordinary upgrades, so this is not Critical", f.Severity)
+	}
+	// The advice has to be runnable, not a description of the problem.
+	if !strings.Contains(f.Fix, "build-release.sh") &&
+		!strings.Contains(f.Fix, "SIGNARI_SCHEMA_FINGERPRINT") {
+		t.Errorf("the fix names no way to pin it: %q", f.Fix)
+	}
+	// And the summary must say what is actually accepted, since "no pin" alone
+	// does not tell an operator what they are exposed to.
+	if !strings.Contains(f.Summary, "hand-patched") {
+		t.Errorf("the summary does not say what goes undetected: %q", f.Summary)
+	}
+}
+
+// A pinned binary must be silent. Asserted through the same function so the two
+// halves cannot drift apart.
+func TestAPinnedBinaryReportsNothing(t *testing.T) {
+	saved := migrate.ExpectedFingerprint
+	migrate.ExpectedFingerprint = strings.Repeat("a", 64)
+	defer func() { migrate.ExpectedFingerprint = saved }()
+
+	r := findingsFor(t, func(r *Report) { checkSchemaPin(r) })
+	if len(r.Findings) != 0 {
+		t.Errorf("a pinned binary was warned about pinning: %v", r.Findings)
 	}
 }

@@ -17,6 +17,7 @@ Most commands need `SIGNARI_DSN`. Anything touching sealed material also needs
 | `signari migrate up` | Apply 0002+ as `signari_engine`. The ordinary upgrade step |
 | `signari migrate all` | Bootstrap then up, in one invocation, for containers |
 | `signari migrate status` | Applied version, pending migrations, live fingerprint |
+| `signari migrate fingerprint` | Print **only** the schema fingerprint, for pinning a release build. See [schema-pinning.md](schema-pinning.md) |
 | `signari verify` | Run the startup schema gate and exit. Use in a deploy pipeline |
 
 The engine refuses to start when the database version and the binary disagree,

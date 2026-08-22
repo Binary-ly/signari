@@ -20,11 +20,27 @@ COPY . .
 # Set to "off" for a normal build.
 ARG GOFIPS140=off
 
+# The schema fingerprint this binary is pinned to.
+#
+# Empty means the drift gate is OFF: migrate.Verify returns before it ever reads
+# the live schema, so a container built without this checks the version counter
+# and nothing else. The variable's own comment calls that "acceptable during early
+# development, never in a release".
+#
+# It cannot be computed inside `docker build`, because the value is read from a
+# live schema and there is no database here. Compute it outside and pass it in:
+#
+#   docker build --build-arg \
+#     SIGNARI_SCHEMA_FINGERPRINT="$(scripts/schema-fingerprint.sh)" .
+ARG SIGNARI_SCHEMA_FINGERPRINT=
+
 # CGO off gives a static binary, so the runtime image can be distroless.
 # -trimpath keeps build paths out of the binary; they leak directory structure
 # and make builds non-reproducible.
 RUN CGO_ENABLED=0 GOFIPS140=${GOFIPS140} \
-    go build -trimpath -ldflags="-s -w" -o /out/signari ./cmd/signari
+    go build -trimpath \
+      -ldflags="-s -w -X signari.dev/engine/internal/migrate.ExpectedFingerprint=${SIGNARI_SCHEMA_FINGERPRINT}" \
+      -o /out/signari ./cmd/signari
 
 # Runtime stage.
 #
@@ -39,7 +55,12 @@ USER nonroot:nonroot
 
 EXPOSE 8080
 
-# The engine gates its own startup on the schema fingerprint, so a container that
-# starts at all has already verified it is talking to a database it understands.
+# The engine gates its own startup on the schema VERSION always, and on the schema
+# FINGERPRINT when SIGNARI_SCHEMA_FINGERPRINT was supplied at build time.
+#
+# The second half used to be stated unconditionally here and was not true: with no
+# pin the fingerprint check returns before reading anything, so an image built
+# without the build argument verifies the counter and nothing else. `signari
+# doctor` reports which of the two this binary does.
 ENTRYPOINT ["/signari"]
 CMD ["serve", "-addr", "0.0.0.0:8080"]

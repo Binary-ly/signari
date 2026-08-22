@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/migrate"
 	"sort"
 	"strings"
 	"time"
@@ -132,6 +133,7 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkMTLS(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	checkSchemaPin(r)
 
 	sort.SliceStable(r.Findings, func(i, j int) bool {
 		return r.Findings[i].Severity < r.Findings[j].Severity
@@ -743,4 +745,40 @@ func reportCredentialLifetimes(r *Report, over []string) {
 			"unverifiable. This is why a passive key may remain published for weeks "+
 			"or months -- run `signari keys retire -dry-run` to see the deadline and "+
 			"which configuration set it.")
+}
+
+// checkSchemaPin reports whether this binary actually performs the drift check it
+// is built to perform.
+//
+// # The failure this makes visible
+//
+// migrate.Verify compares the schema VERSION always, and the schema FINGERPRINT
+// only when ExpectedFingerprint was pinned at build time. Unpinned, it returns
+// before it ever reads the live schema -- so the check exists, is tested, and does
+// nothing.
+//
+// That is invisible from outside. Nothing logs it, no endpoint reports it, and the
+// engine starts normally either way; the only symptom is that a hand-patched
+// database is accepted, which is the exact situation the fingerprint exists to
+// catch and the one where nobody is watching. The variable's own comment has
+// always said the zero value is "acceptable during early development, never in a
+// release", and until now nothing checked.
+//
+// Warning rather than Critical: the version counter still gates every ordinary
+// upgrade, so a database that is simply behind is still refused. What is missing
+// is detection of drift WITHIN a version, which needs somebody to have edited the
+// schema by hand.
+func checkSchemaPin(r *Report) {
+	r.ran("schema fingerprint pinning")
+	if migrate.ExpectedFingerprint != "" {
+		return
+	}
+	r.add(Warning, "schema",
+		"this binary has no pinned schema fingerprint, so it accepts any database "+
+			"at the right version, including one that has been hand-patched",
+		"Build with the fingerprint pinned: `scripts/build-release.sh`, or pass "+
+			"--build-arg SIGNARI_SCHEMA_FINGERPRINT=\"$(scripts/schema-fingerprint.sh)\" "+
+			"to docker build. The version counter still gates upgrades either way; "+
+			"what is missing is noticing drift within a version, which is what the "+
+			"fingerprint is for.")
 }

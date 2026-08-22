@@ -119,6 +119,7 @@ commands:
   migrate up          apply 0002+ (tables, policies, views) as signari_engine
   migrate all         bootstrap then up, in one invocation (for containers)
   migrate status      show applied version, pending migrations, live fingerprint
+  migrate fingerprint print ONLY the schema fingerprint, for pinning a build
   verify              run the startup schema gate and exit
   instance create     create an instance and its first signing keys
   user create         create a user with a password
@@ -502,6 +503,8 @@ func run(args []string) error {
 		return up(ctx, conn, migrate.TierCore, *to)
 	case "migrate status":
 		return status(ctx, conn)
+	case "migrate fingerprint":
+		return printFingerprint(ctx, conn)
 	case "doctor":
 		return doctorCmd(ctx, conn, *issuer)
 	case "verify":
@@ -1449,6 +1452,28 @@ func up(ctx context.Context, conn *pgx.Conn, tier migrate.Tier, to int) error {
 	if len(applied) == 0 {
 		fmt.Println("nothing to apply")
 	}
+	return nil
+}
+
+// printFingerprint writes the live schema digest and nothing else.
+//
+// # Why this exists separately from `migrate status`
+//
+// It is for a build script, and a build script cannot parse prose. `migrate
+// status` prints the version, the pending list and the fingerprint in a layout
+// meant for a person; anything capturing the digest from it would be one cosmetic
+// change away from pinning a binary to the string "pending" -- and the failure
+// would be a fingerprint mismatch at every boot, which reads as schema drift
+// rather than as a broken build.
+//
+// One value, no label, no trailing prose. `$(signari migrate fingerprint)` is the
+// whole contract.
+func printFingerprint(ctx context.Context, conn *pgx.Conn) error {
+	fp, err := migrate.Fingerprint(ctx, conn)
+	if err != nil {
+		return err
+	}
+	fmt.Println(fp)
 	return nil
 }
 

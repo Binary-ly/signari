@@ -107,6 +107,7 @@ var twoWordCommands = map[string]bool{
 	"events":     true,
 	"authz":      true,
 	"federation": true,
+	"trust-mark": true,
 	"credential": true,
 	"rar":        true,
 }
@@ -168,6 +169,14 @@ commands:
   admin-token create  mint a scoped, revocable admin API token
   admin-token list    show admin tokens, their scopes and when each was last used
   admin-token revoke  revoke one immediately, with no restart
+  trust-mark issue    issue an OpenID Federation Trust Mark to an entity
+  trust-mark revoke   withdraw a Trust Mark this entity issued
+  trust-mark list     Trust Marks this entity issues and holds
+  trust-mark accept   publish a Trust Mark somebody granted this entity
+  trust-mark drop     stop publishing a Trust Mark
+  trust-mark delegate authorise another entity to issue a Trust Mark type we own
+  trust-mark issuers  set trust_mark_issuers (Trust Anchor only)
+  trust-mark owners   set trust_mark_owners (Trust Anchor only)
   federation enable   join an OpenID Federation: generate an Entity Statement key
                       and publish /.well-known/openid-federation
   federation show     print the Entity Configuration this instance publishes
@@ -321,6 +330,29 @@ func run(args []string) error {
 		"comma-separated Entity Identifiers of this entity's Immediate Superiors "+
 			"(federation enable). Leave empty only for a Trust Anchor with no superiors")
 	orgName := fs.String("organization-name", "", "organisation name published in the Entity Configuration")
+	// Every trust-mark flag carries the prefix. Names like -sub and -type would
+	// collide with flags this binary already registers, and Go's flag package
+	// panics on a duplicate registration -- which breaks EVERY command, not just
+	// the new one. (It has happened here before; TestNoTwoFlagsShareAName exists
+	// because of it.)
+	tmType := fs.String("trust-mark-type", "",
+		"Trust Mark type identifier, a URL that is collision-resistant across federations (section 7.1)")
+	tmSubject := fs.String("trust-mark-sub", "",
+		"Entity Identifier the Trust Mark is issued to")
+	tmLifetime := fs.Duration("trust-mark-lifetime", 0,
+		"how long the Trust Mark is valid. Zero issues one with no exp, which section 7.1 permits and which readers can only re-check at the status endpoint")
+	tmLogo := fs.String("trust-mark-logo", "", "https URL of a logo for the Trust Mark")
+	tmRef := fs.String("trust-mark-ref", "",
+		"https URL of human-readable information about the issuance")
+	tmFile := fs.String("trust-mark-file", "",
+		"file containing a Trust Mark JWT (trust-mark accept), or a JSON claim document (trust-mark issuers/owners)")
+	tmIssuer := fs.String("trust-mark-issuer", "",
+		"Entity Identifier of the Trust Mark issuer (trust-mark drop)")
+	tmDelegate := fs.String("trust-mark-delegate", "",
+		"Entity Identifier being authorised to issue on this owner's behalf")
+	tmDelegation := fs.String("trust-mark-delegation", "",
+		"file containing a Trust Mark Delegation JWT to embed in the issued mark")
+	tmReason := fs.String("trust-mark-reason", "", "why the Trust Mark is being revoked")
 	homepageURI := fs.String("homepage-uri", "", "homepage published in the Entity Configuration")
 	relSubject := fs.String("principal", "", "type:id, e.g. user:alice@example.com")
 	relRelation := fs.String("relation", "", "e.g. editor")
@@ -616,6 +648,23 @@ func run(args []string) error {
 			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL)
 	case "federation show":
 		return federationShow(ctx, conn)
+	case "trust-mark issue":
+		return trustMarkIssue(ctx, conn, *tmType, *tmSubject, *tmLogo, *tmRef,
+			*tmDelegation, *tmLifetime)
+	case "trust-mark revoke":
+		return trustMarkRevoke(ctx, conn, *tmType, *tmSubject, *tmReason)
+	case "trust-mark list":
+		return trustMarkList(ctx, conn)
+	case "trust-mark accept":
+		return trustMarkAccept(ctx, conn, *tmFile)
+	case "trust-mark drop":
+		return trustMarkDrop(ctx, conn, *tmType, *tmIssuer)
+	case "trust-mark delegate":
+		return trustMarkDelegate(ctx, conn, *tmType, *tmDelegate, *tmRef, *tmLifetime)
+	case "trust-mark issuers":
+		return trustMarkIssuers(ctx, conn, *tmFile)
+	case "trust-mark owners":
+		return trustMarkOwners(ctx, conn, *tmFile)
 	case "authz set-model":
 		return authzModelSet(ctx, conn, *orgID, *modelFile)
 	case "authz show-model":

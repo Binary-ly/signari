@@ -2,18 +2,22 @@
 //
 // # What is here and what is not
 //
-// The Entity Configuration only: the self-signed Entity Statement an entity
-// publishes about itself at its configuration endpoint. That is the foundation
-// everything else in the specification stands on — a Trust Chain is a sequence
-// of Entity Statements, and the leaf of every chain is a configuration like this
-// one.
+// The Entity Configuration: the self-signed Entity Statement an entity publishes
+// about itself at its configuration endpoint. That is the foundation everything
+// else in the specification stands on — a Trust Chain is a sequence of Entity
+// Statements, and the leaf of every chain is a configuration like this one.
 //
-// The federation endpoints (§8: fetch, subordinate listing, resolve, trust mark
-// status) are NOT implemented, and nothing here advertises them. That is
-// deliberate: this repository's rule is that an endpoint enters a metadata
-// document only once it works, and a `federation_fetch_endpoint` pointing at a
-// 404 is worse than its absence — a federation operator would configure us as an
-// Intermediate and discover the gap when a chain fails to resolve.
+// Trust Chain building and validation (§10), metadata policy (§6), constraints
+// (§6.2), and Trust Marks (§7, §8.4–§8.6) — issuing, validating, delegation, and
+// the status, listing and trust-mark endpoints. See trustmark.go and
+// trustmarkverify.go.
+//
+// The remaining §8 endpoints — fetch, subordinate listing, resolve — are NOT
+// implemented, and nothing here advertises them. That is deliberate: this
+// repository's rule is that an endpoint enters a metadata document only once it
+// works, and a `federation_fetch_endpoint` pointing at a 404 is worse than its
+// absence — a federation operator would configure us as an Intermediate and
+// discover the gap when a chain fails to resolve.
 //
 // # Why the signing key is separate
 //
@@ -85,6 +89,23 @@ type EntityConfiguration struct {
 
 	// Metadata declares the Entity Types this entity plays (§5.1).
 	Metadata map[string]any `json:"metadata,omitempty"`
+
+	// TrustMarks is §3.1.2's OPTIONAL array of Trust Marks issued to us.
+	//
+	// omitempty, so an entity with no accreditations publishes no claim rather
+	// than an empty array. The specification does not forbid `[]` here as it
+	// does for the hint claims, and an empty array would still be a reader
+	// asking "what does this entity claim to be certified for" and being handed
+	// a container instead of an absence.
+	TrustMarks []TrustMarkEntry `json:"trust_marks,omitempty"`
+
+	// TrustMarkIssuers and TrustMarkOwners are §3.1.2's Trust Anchor claims.
+	//
+	// "This Claim MUST be ignored if present in an Entity Configuration for an
+	// Entity that is not a Trust Anchor." Build refuses to emit them from a
+	// non-anchor rather than emitting something every reader discards.
+	TrustMarkIssuers TrustMarkIssuers `json:"trust_mark_issuers,omitempty"`
+	TrustMarkOwners  TrustMarkOwners  `json:"trust_mark_owners,omitempty"`
 }
 
 // Params is what a configuration is built from.
@@ -102,6 +123,12 @@ type Params struct {
 	Lifetime time.Duration
 	// Metadata is the per-Entity-Type metadata.
 	Metadata map[string]any
+	// TrustMarks are the marks this entity publishes about itself.
+	TrustMarks []TrustMarkEntry
+	// TrustMarkIssuers and TrustMarkOwners govern a federation and are only
+	// meaningful from a Trust Anchor.
+	TrustMarkIssuers TrustMarkIssuers
+	TrustMarkOwners  TrustMarkOwners
 }
 
 // Build assembles and validates an Entity Configuration.
@@ -144,6 +171,57 @@ func Build(p Params, now time.Time) (*EntityConfiguration, error) {
 		return nil, fmt.Errorf("an Entity Configuration needs a positive lifetime")
 	}
 
+	// §3.1.2's syntactic rule on `trust_marks`: the outer type identifier must
+	// equal the one inside the JWT. Applied when BUILDING as well as when
+	// reading, because this is the point at which a mis-recorded mark becomes a
+	// signed document -- and a reader that rejects it will reject the whole
+	// Entity Configuration, so every relying party in the federation loses us
+	// over one bad row.
+	if err := ValidateTrustMarksClaim(p.TrustMarks); err != nil {
+		return nil, err
+	}
+
+	// The Trust Anchor claims, refused from anything that has a Superior.
+	//
+	// §3.1.2 says a reader MUST ignore them there, so emitting them is not
+	// merely useless: it is a federation policy the operator believes is in
+	// force and that nothing anywhere applies.
+	if len(p.AuthorityHints) > 0 {
+		if p.TrustMarkIssuers != nil {
+			return nil, fmt.Errorf("trust_mark_issuers may only appear in the " +
+				"Entity Configuration of a Trust Anchor (section 3.1.2), and this " +
+				"entity has authority_hints, so it has a Superior")
+		}
+		if p.TrustMarkOwners != nil {
+			return nil, fmt.Errorf("trust_mark_owners may only appear in the " +
+				"Entity Configuration of a Trust Anchor (section 3.1.2), and this " +
+				"entity has authority_hints, so it has a Superior")
+		}
+	}
+	for id, o := range p.TrustMarkOwners {
+		if err := ValidateTrustMarkType(id); err != nil {
+			return nil, fmt.Errorf("trust_mark_owners: %w", err)
+		}
+		if err := ValidateEntityID(o.Subject); err != nil {
+			return nil, fmt.Errorf("the owner of %q: %w", id, err)
+		}
+		if len(o.JWKS) == 0 {
+			return nil, fmt.Errorf("the owner of %q has no jwks, which section "+
+				"3.1.2 makes REQUIRED: without it a delegation cannot be validated "+
+				"and section 7.3 would have to accept it unchecked", id)
+		}
+	}
+	for id, list := range p.TrustMarkIssuers {
+		if err := ValidateTrustMarkType(id); err != nil {
+			return nil, fmt.Errorf("trust_mark_issuers: %w", err)
+		}
+		for _, e := range list {
+			if err := ValidateEntityID(e); err != nil {
+				return nil, fmt.Errorf("a trusted issuer of %q: %w", id, err)
+			}
+		}
+	}
+
 	return &EntityConfiguration{
 		Issuer:           p.EntityID,
 		Subject:          p.EntityID,
@@ -153,6 +231,9 @@ func Build(p Params, now time.Time) (*EntityConfiguration, error) {
 		AuthorityHints:   p.AuthorityHints,
 		TrustAnchorHints: p.TrustAnchorHints,
 		Metadata:         p.Metadata,
+		TrustMarks:       p.TrustMarks,
+		TrustMarkIssuers: p.TrustMarkIssuers,
+		TrustMarkOwners:  p.TrustMarkOwners,
 	}, nil
 }
 

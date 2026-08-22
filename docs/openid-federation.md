@@ -9,17 +9,20 @@ Specification: OpenID Federation 1.0, **Final, 17 February 2026**.
 
 **Implemented.** The Entity Configuration (§9): the statement an entity publishes
 about itself at `/.well-known/openid-federation`. It is the leaf of every Trust
-Chain and the prerequisite for everything else in the specification.
+Chain and the prerequisite for everything else in the specification. Trust-chain
+building and validation (§10), metadata policy (§6) and constraints (§6.2). And
+**Trust Marks** (§7): issuing, delegation, validation, and the three Trust Mark
+Issuer endpoints of §8.4–§8.6 — see [trust-marks.md](trust-marks.md).
 
-**Not implemented.** The federation endpoints of §8 — fetch, subordinate listing,
-resolve, trust mark status — and trust-chain resolution. Signari can therefore be
-a **Leaf Entity** in a federation. It cannot yet be an Intermediate or a Trust
-Anchor for others, and it does not yet consume other entities' statements.
+**Not implemented.** The remaining §8 endpoints — fetch, subordinate listing,
+resolve. Signari can be a **Leaf Entity** and a **Trust Mark Issuer**. It cannot
+yet be an Intermediate or a Trust Anchor *for others*, because it cannot serve
+Subordinate Statements.
 
 Nothing advertises what is missing. The `federation_entity` metadata contains no
 `federation_fetch_endpoint`, because that endpoint does not exist — the same rule
-this repository applies to OIDC discovery. A federation operator reading our
-metadata will configure us as a Leaf, which is what we are.
+this repository applies to OIDC discovery. The three trust-mark endpoints are
+advertised only once this entity has actually issued a Trust Mark.
 
 ## Enabling it
 
@@ -401,11 +404,13 @@ permits, whose merges need not be commutative.
 
 ## Where it goes next
 
-- **The §8 endpoints** we would serve as an Intermediate or Trust Anchor: fetch,
-  subordinate listing, resolve, trust mark status. Signari is a Leaf Entity and
-  cannot yet vouch for anybody else.
-- **Trust marks** (§7) beyond carrying them: issuing, and the trust mark status
-  endpoint.
+- **The §8 endpoints** we would serve as an Intermediate: fetch and subordinate
+  listing. Signari cannot yet issue Subordinate Statements, so it cannot vouch
+  for another entity's keys — which is a different thing from vouching for its
+  conformance, and that second one is now covered by
+  [trust marks](trust-marks.md).
+- **The resolve endpoint** (§8.3), which would let others reuse chains we have
+  already validated.
 
 The resolution side — publish, fetch, build, validate, register — is complete and
 tested end to end against multi-entity federations over HTTP.

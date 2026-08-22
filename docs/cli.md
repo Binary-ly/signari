@@ -106,6 +106,10 @@ a class of failure that shows up as data corruption rather than an error.
 | | |
 |---|---|
 | `signari authz set-model` / `authz show-model` | The authorization model. Setting one **runs its own tests** — see [authorization.md](authorization.md) |
+| `signari trust-mark issue` / `trust-mark revoke` / `trust-mark list` | Issue, withdraw and inspect OpenID Federation Trust Marks. See [trust-marks.md](trust-marks.md) |
+| `signari trust-mark accept` / `trust-mark drop` | Publish, or stop publishing, a Trust Mark somebody granted this entity |
+| `signari trust-mark delegate` | Authorise another entity to issue a Trust Mark type this one owns (§7.2) |
+| `signari trust-mark issuers` / `trust-mark owners` | The Trust Anchor's two governing claims. Refused from anything with a Superior, because every reader is required to ignore them there |
 | `signari federation enable` / `federation show` | Join an OpenID Federation. Generates a **separate** Entity Statement signing key and publishes `/.well-known/openid-federation` — see [openid-federation.md](openid-federation.md) |
 | `signari authz grant` / `authz revoke` | Relations: `-principal user:alice -relation owner -object document:42` |
 | `signari authz check` | Answer a question from the command line, with the reason |

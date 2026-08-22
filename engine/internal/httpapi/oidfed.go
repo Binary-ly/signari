@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"signari.dev/engine/internal/keys"
@@ -20,11 +22,14 @@ import (
 // entity publishes about itself (§9). It is the leaf of every Trust Chain and
 // the prerequisite for everything else in the specification.
 //
-// The federation endpoints of §8 — fetch, subordinate listing, resolve, trust
-// mark status — are not implemented, and the `federation_entity` metadata below
-// therefore advertises none of them. That is the same rule this repository
-// applies to OIDC discovery: an endpoint enters a metadata document only once it
-// works. A `federation_fetch_endpoint` pointing at a 404 is worse than its
+// Plus, since August 2026, the three Trust Mark Issuer endpoints of §8.4 to
+// §8.6 — see trustmark.go. They are advertised only once this entity has
+// actually issued a Trust Mark, which is the same rule this repository applies
+// to OIDC discovery: an endpoint enters a metadata document only once it works.
+//
+// The remaining §8 endpoints — fetch, subordinate listing, resolve — are not
+// implemented, and the `federation_entity` metadata below advertises none of
+// them. A `federation_fetch_endpoint` pointing at a 404 is worse than its
 // absence, because a federation operator would configure us as an Intermediate
 // and find out when a chain fails to resolve for somebody else.
 //
@@ -70,13 +75,33 @@ func (s *Server) handleEntityConfiguration(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// The Trust Marks other issuers have granted us, §3.1.2. Expired ones are
+	// filtered out in SQL -- see store.PublishableTrustMarks -- because §7.3
+	// makes every reader reject them, so publishing one puts a claim in a signed
+	// document that the whole federation is required to discard while an
+	// operator reading their own configuration sees the accreditation listed.
+	held, err := store.PublishableTrustMarks(ctx, s.db, s.instanceID)
+	if err != nil {
+		s.log.Error("reading the trust marks this entity holds", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+
 	conf, err := oidfed.Build(oidfed.Params{
 		EntityID:         s.cfg.Issuer,
 		FederationJWKS:   fedJWKS,
 		AuthorityHints:   cfg.AuthorityHints,
 		TrustAnchorHints: cfg.TrustAnchorHints,
 		Lifetime:         time.Duration(cfg.LifetimeSeconds) * time.Second,
-		Metadata:         s.federationMetadata(cfg),
+		Metadata:         s.federationMetadata(ctx, cfg),
+		TrustMarks:       held,
+		// §3.1.2's Trust Anchor claims. A schema CHECK already keeps both NULL
+		// unless this instance is an anchor, and oidfed.Build refuses them from
+		// an entity with authority_hints -- two gates, because the claim is one
+		// every reader MUST ignore, so getting it wrong produces a federation
+		// policy that appears to be in force and is not.
+		TrustMarkIssuers: cfg.TrustMarkIssuers,
+		TrustMarkOwners:  cfg.TrustMarkOwners,
 	}, time.Now())
 	if err != nil {
 		s.log.Error("building the entity configuration", "err", err)
@@ -126,7 +151,7 @@ func (s *Server) handleEntityConfiguration(w http.ResponseWriter, r *http.Reques
 // discovery rather than restating them. Two documents describing the same server
 // is two documents that eventually disagree, and the one a federation reads is
 // the one nobody checks.
-func (s *Server) federationMetadata(cfg *store.FederationSettings) map[string]any {
+func (s *Server) federationMetadata(ctx context.Context, cfg *store.FederationSettings) map[string]any {
 	fedEntity := map[string]any{}
 	// Only what has been configured. §5.2.2's informational parameters are all
 	// optional, and an empty string in a published statement is worse than an
@@ -140,6 +165,35 @@ func (s *Server) federationMetadata(cfg *store.FederationSettings) map[string]an
 	}
 	if len(cfg.Contacts) > 0 {
 		fedEntity["contacts"] = cfg.Contacts
+	}
+
+	// §5.1.1's Trust Mark Issuer endpoints, advertised only once this entity has
+	// issued a Trust Mark.
+	//
+	// # Why issuance is the test, rather than a configuration flag
+	//
+	// "Trust Mark Issuers SHOULD publish a federation_trust_mark_status_endpoint"
+	// -- so the question the metadata answers is "is this a Trust Mark Issuer",
+	// and the honest evidence for that is whether it has ever issued one. A flag
+	// is a second copy of the same fact that an operator can set and then never
+	// act on, and the failure mode is a federation configuring us as an
+	// accreditation authority that has accredited nobody.
+	//
+	// It is a fact that only ever goes one way: rows here are revoked, never
+	// deleted, so an issuer that has withdrawn everything still advertises a
+	// status endpoint -- which is right, because "was this withdrawn" is exactly
+	// the question that entity will be asked.
+	issuer, err := store.IsTrustMarkIssuer(ctx, s.db, s.instanceID)
+	if err != nil {
+		// Logged and treated as "not an issuer". The alternative -- failing the
+		// whole Entity Configuration -- would take this entity out of its
+		// federation entirely over a claim that is OPTIONAL in §5.1.1.
+		s.log.Error("deciding whether to advertise the trust mark endpoints", "err", err)
+	} else if issuer {
+		base := strings.TrimRight(s.cfg.Issuer, "/")
+		fedEntity["federation_trust_mark_status_endpoint"] = base + trustMarkStatusPath
+		fedEntity["federation_trust_mark_list_endpoint"] = base + trustMarkListPath
+		fedEntity["federation_trust_mark_endpoint"] = base + trustMarkPath
 	}
 
 	md := map[string]any{"federation_entity": fedEntity}

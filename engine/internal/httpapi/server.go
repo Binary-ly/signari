@@ -84,9 +84,18 @@ type Server struct {
 	// and writes rows. Its own bucket: it shared `device` until widening the
 	// device backstop would have silently widened this too.
 	register *ratelimit.Bucket
-	db       *pgxpool.Pool
-	hasher   *passwords.Hasher
-	policies *policyCache
+	// federation throttles the unauthenticated OpenID Federation endpoints.
+	//
+	// §8.4 and §8.5 answer a stranger with a database query, and §19.2 already
+	// observes that an unauthenticated status endpoint is a discovery surface --
+	// "requests to validate Trust Marks may not necessarily indicate an actual
+	// interaction or relationship between Entities". Its own bucket rather than
+	// sharing `register`, because these are read-only and a federation resolving
+	// chains legitimately makes far more of them than anybody registers clients.
+	federation *ratelimit.Bucket
+	db         *pgxpool.Pool
+	hasher     *passwords.Hasher
+	policies   *policyCache
 	// flows holds the sign-in journey per organisation. Same shape and same
 	// refusal rule as policies: only a document that parsed, passed its own
 	// tests and cleared the static safety analysis is ever cached.
@@ -189,16 +198,22 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// empty and lock out every legitimate device in the deployment.
 		device: ratelimit.New(200, 400),
 		// Registration keeps the original tight rate.
-		register:  ratelimit.New(3, 10),
-		hasher:    passwords.NewHasher(passwords.MemoryBudgetMiB),
-		pwPolicy:  passwords.PolicyFromEnv(),
-		policies:  newPolicyCache(),
-		flows:     newFlowCache(),
-		ssfKeys:   &ssf.KeyFetcher{},
-		geo:       risk.NewResolver(),
-		mailer:    mailer,
-		texter:    texter,
-		guacdAddr: os.Getenv("SIGNARI_GUACD_ADDR"),
+		register: ratelimit.New(3, 10),
+		// Generous, because a working federation polls: every relying party
+		// validating a Trust Mark at sign-in reaches §8.4, and a limit tight
+		// enough to matter to an attacker would be tight enough to break the
+		// protocol it is protecting. This bounds the pathological case, not the
+		// busy one.
+		federation: ratelimit.New(200, 400),
+		hasher:     passwords.NewHasher(passwords.MemoryBudgetMiB),
+		pwPolicy:   passwords.PolicyFromEnv(),
+		policies:   newPolicyCache(),
+		flows:      newFlowCache(),
+		ssfKeys:    &ssf.KeyFetcher{},
+		geo:        risk.NewResolver(),
+		mailer:     mailer,
+		texter:     texter,
+		guacdAddr:  os.Getenv("SIGNARI_GUACD_ADDR"),
 		krbConfig: kerberos.Config{
 			KeytabPath:       os.Getenv("SIGNARI_KERBEROS_KEYTAB"),
 			Realm:            os.Getenv("SIGNARI_KERBEROS_REALM"),
@@ -332,6 +347,14 @@ func (s *Server) mux() *http.ServeMux {
 	// that nobody decided to make.
 	if s.fedKeys != nil {
 		mux.HandleFunc("GET "+oidfed.WellKnownPath, s.handleEntityConfiguration)
+		// §8.4, §8.5 and §8.6, the Trust Mark Issuer endpoints. Registered with
+		// the configuration endpoint because they need the same federation key
+		// set; ADVERTISED only once this entity has issued a Trust Mark, which is
+		// federationMetadata's job. A registered route that is not advertised
+		// answers 404 for every query and claims nothing.
+		mux.HandleFunc("POST "+trustMarkStatusPath, s.handleTrustMarkStatus)
+		mux.HandleFunc("GET "+trustMarkListPath, s.handleTrustMarkList)
+		mux.HandleFunc("GET "+trustMarkPath, s.handleTrustMark)
 	}
 	// UMA 2.0. The permission endpoint authenticates the resource server; the
 	// grant is dispatched from the token endpoint.

@@ -1,5 +1,4 @@
 {{define "title"}}Connect a device{{end}}
-{{define "style"}}<style>{{template "pagecss" .}}</style>{{end}}
 {{define "content"}}
 {{if .Done}}
 <h1>Device connected</h1>
@@ -17,8 +16,10 @@ of you. Nobody legitimate will ask you to enter a code they sent you.</p>
 <form method="POST" action="/device">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 <input type="hidden" name="user_code" value="{{.UserCode}}">
-<button type="submit" name="decision" value="approve">Allow</button>
+<div class="row">
 <button type="submit" name="decision" value="deny" class="secondary">Refuse</button>
+<button type="submit" name="decision" value="approve">Allow</button>
+</div>
 </form>
 {{else}}
 <h1>Connect a device</h1>

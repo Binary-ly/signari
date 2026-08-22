@@ -1,17 +1,435 @@
-{{define "pagecss"}}body{font-family:system-ui,sans-serif;max-width:30rem;margin:3rem auto;padding:0 1rem;
-  background:var(--brand-background,#fff);color:var(--brand-text,#000)}
-a{color:var(--brand-primary,#0645ad)}
-.brand{display:block;max-height:2.5rem;margin-bottom:1.5rem}
-code{background:#f4f4f5;padding:.2rem .4rem;border-radius:3px}
-.qr{margin:1rem 0;max-width:220px}
-.qr svg{width:100%;height:auto;display:block}
-details{margin:1rem 0}
-summary{cursor:pointer;font-size:.9rem}
-.secret{font-size:1.1rem;letter-spacing:.1em;display:block;padding:.75rem;background:#f4f4f5;
-  border-radius:4px;margin:.5rem 0;word-break:break-all}
-.err{color:#b00020}.hint{color:#666;font-size:.9rem}
-ol{columns:2;font-family:ui-monospace,monospace;line-height:1.9}
-button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;
-  background:var(--brand-primary,#efefef);color:var(--brand-on-primary,#000);
-  border:1px solid var(--brand-primary,#767676);border-radius:4px;cursor:pointer}
-input{padding:.5rem;font-size:1.25rem;letter-spacing:.2em;width:100%}{{end}}
+{{define "pagecss"}}
+/* Signari sign-in pages.
+   One stylesheet for all thirty-three, so a page cannot drift from the rest.
+
+   # How an operator's colours get in
+
+   `signari brand set` injects `:root{--brand-primary;--brand-on-primary;
+   --brand-background;--brand-text}` after this stylesheet, emitting only the
+   values that were actually set.
+
+   So every brand variable is folded in HERE, at the point a token is defined,
+   as `var(--brand-x, <our default>)`. Unset falls through to the default for
+   the current theme; set wins in both themes, because the operator chose it and
+   `signari brand check` is what verifies the pair for contrast.
+
+   Doing it once per token rather than at each use site is what keeps a branded
+   deployment coherent: --surface-2 and --border are then MIXED from the
+   operator's own background and text, so a custom palette produces a matching
+   set of greys instead of ours showing through underneath theirs. */
+
+:root{
+  color-scheme:light dark;
+
+  --page-w:23rem;          /* a wider page overrides this in its style block */
+  --radius:10px;
+  --radius-sm:7px;
+
+  --surface:var(--brand-background,#fff);
+  --bg:var(--brand-background,#f6f6f7);
+  --text:var(--brand-text,#18181b);
+  --accent:var(--brand-primary,#3e63dd);
+  --accent-hover:var(--brand-primary,#3358d4);
+
+  --btn-bg:var(--brand-primary,#18181b);
+  --btn-fg:var(--brand-on-primary,#fff);
+
+  --danger:#ce2c31;
+  --success:#2a7e3b;
+
+  --shadow:0 1px 2px rgba(24,24,27,.05),0 1px 3px rgba(24,24,27,.04);
+  --ring:rgba(62,99,221,.22);
+
+  --font:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",
+         Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,
+         "Liberation Mono",monospace;
+}
+
+/* Dark, in the two ways it can be asked for.
+   The media query is the ordinary case and steps aside for an explicit light
+   stamp; the attribute rule is for a deployment that pins one theme by putting
+   `data-theme` on <html> in its own layout override. Both carry the same
+   tokens, so a page cannot be dark in one and half-dark in the other. */
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --surface:var(--brand-background,#141417);
+    --bg:var(--brand-background,#09090b);
+    --text:var(--brand-text,#ededf0);
+    --accent:var(--brand-primary,#7c93f5);
+    --accent-hover:var(--brand-primary,#93a6f7);
+    --btn-bg:var(--brand-primary,#ededf0);
+    --btn-fg:var(--brand-on-primary,#18181b);
+    --danger:#ff6369;
+    --success:#57ab63;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 1px 3px rgba(0,0,0,.3);
+    --ring:rgba(124,147,245,.28);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --surface:var(--brand-background,#141417);
+  --bg:var(--brand-background,#09090b);
+  --text:var(--brand-text,#ededf0);
+  --accent:var(--brand-primary,#7c93f5);
+  --accent-hover:var(--brand-primary,#93a6f7);
+  --btn-bg:var(--brand-primary,#ededf0);
+  --btn-fg:var(--brand-on-primary,#18181b);
+  --danger:#ff6369;
+  --success:#57ab63;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 1px 3px rgba(0,0,0,.3);
+  --ring:rgba(124,147,245,.28);
+}
+:root[data-theme="light"]{color-scheme:light}
+
+/* Derived greys. Static first so an older browser still gets a usable page;
+   the mix then re-derives them from whatever surface and text actually are,
+   which is what makes a branded palette hold together. */
+:root{
+  --surface-2:#f4f4f5;
+  --border:#e4e4e7;
+  --border-strong:#d4d4d8;
+  --muted:#71717a;
+  --danger-bg:#fff5f5;
+
+  --surface-2:color-mix(in srgb,var(--surface) 95%,var(--text));
+  --border:color-mix(in srgb,var(--surface) 89%,var(--text));
+  --border-strong:color-mix(in srgb,var(--surface) 80%,var(--text));
+  --muted:color-mix(in srgb,var(--text) 62%,var(--surface));
+  --danger-bg:color-mix(in srgb,var(--danger) 7%,var(--surface));
+}
+
+*,*::before,*::after{box-sizing:border-box}
+
+body{
+  margin:0;
+  min-height:100vh;
+  padding:2.5rem 1rem 3rem;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  font-family:var(--font);
+  font-size:.9375rem;
+  line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+  background:var(--bg);
+  color:var(--text);
+}
+
+/* The logo, in the layout and nowhere else. */
+.brand{display:block;max-height:2rem;width:auto;margin:0 0 1.5rem}
+
+main{
+  width:100%;
+  max-width:var(--page-w);
+  padding:1.75rem;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow);
+}
+
+h1{
+  margin:0 0 1.25rem;
+  font-size:1.3125rem;
+  font-weight:600;
+  letter-spacing:-.022em;
+  line-height:1.3;
+  text-wrap:balance;
+}
+h1 strong{font-weight:600}
+h2{margin:1.5rem 0 .5rem;font-size:1rem;font-weight:600;letter-spacing:-.015em}
+p{margin:.75rem 0}
+p:last-child{margin-bottom:0}
+
+a{color:var(--accent);text-decoration:none}
+a:hover{color:var(--accent-hover);text-decoration:underline}
+
+/* ---- form ---- */
+
+label{
+  display:block;
+  margin:1rem 0 .375rem;
+  font-size:.8125rem;
+  font-weight:500;
+  letter-spacing:-.005em;
+  color:var(--text);
+}
+
+input,select,textarea{
+  width:100%;
+  padding:.5625rem .6875rem;
+  font-family:inherit;
+  font-size:.9375rem;
+  line-height:1.4;
+  color:var(--text);
+  background:var(--surface);
+  border:1px solid var(--border-strong);
+  border-radius:var(--radius-sm);
+  transition:border-color .12s ease,box-shadow .12s ease;
+}
+input::placeholder{color:var(--muted)}
+input:focus,select:focus,textarea:focus,button:focus-visible,a:focus-visible,
+summary:focus-visible{
+  outline:none;
+  border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--ring);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 24%,transparent);
+}
+a:focus-visible,summary:focus-visible{border-radius:4px}
+input[type=checkbox]{width:auto;margin-right:.5rem}
+
+/* One-time codes only. This used to sit on EVERY input, so a username field
+   was typeset like a six-digit code, letter-spaced and all. */
+input[autocomplete="one-time-code"],input[name="user_code"],input[name="code"]{
+  font-family:var(--mono);
+  font-size:1.125rem;
+  letter-spacing:.14em;
+}
+
+button,.btn{
+  display:block;
+  width:100%;
+  margin-top:1.25rem;
+  padding:.625rem 1rem;
+  font-family:inherit;
+  font-size:.9375rem;
+  font-weight:500;
+  letter-spacing:-.008em;
+  text-align:center;
+  color:var(--btn-fg);
+  background:var(--btn-bg);
+  border:1px solid transparent;
+  border-radius:var(--radius-sm);
+  cursor:pointer;
+  transition:opacity .12s ease,background .12s ease;
+}
+button:hover,.btn:hover{opacity:.88;text-decoration:none;color:var(--btn-fg)}
+
+button.secondary,button.deny,.secondary{
+  color:var(--text);
+  background:var(--surface);
+  border-color:var(--border-strong);
+}
+button.secondary:hover,button.deny:hover,.secondary:hover{
+  opacity:1;background:var(--surface-2);color:var(--text)}
+
+/* The consent pair sits side by side, Allow on the right where a confirm lives. */
+.row{display:flex;gap:.625rem;margin-top:1.5rem}
+.row button{flex:1;margin-top:0}
+
+/* An external identity provider is a link that behaves like a button. */
+.ext{
+  display:block;
+  margin-top:.5rem;
+  padding:.5625rem 1rem;
+  font-size:.9375rem;
+  font-weight:500;
+  text-align:center;
+  color:var(--text);
+  background:var(--surface);
+  border:1px solid var(--border-strong);
+  border-radius:var(--radius-sm);
+}
+.ext:hover{background:var(--surface-2);color:var(--text);text-decoration:none}
+
+/* A rule with breathing room, for "or sign in another way". */
+.alt{margin-top:1.5rem;padding-top:1.25rem;border-top:1px solid var(--border)}
+.alt p{margin:0}
+.alt button{margin-top:0}
+
+/* ---- messages ---- */
+
+.err{
+  margin:0 0 1rem;
+  padding:.625rem .75rem;
+  font-size:.875rem;
+  color:var(--danger);
+  background:var(--danger-bg);
+  border:1px solid var(--danger);
+  border-color:color-mix(in srgb,var(--danger) 28%,transparent);
+  border-radius:var(--radius-sm);
+}
+/* Secondary text: present, readable, and clearly not the main line. */
+.hint,.help,.muted,.meta,.ref,.scope,.none,.who{
+  color:var(--muted);
+  font-size:.8125rem;
+  line-height:1.5;
+}
+.hint,.help{margin:.5rem 0 0}
+.ref{margin:.5rem 0}
+
+/* A panel is something the page is TELLING you -- an administrator's reason for
+   forcing a password change, a warning that a factor is not active yet. The
+   panel is what marks it out, so the text inside stays full strength. Setting
+   these muted as well made an important sentence read like placeholder text in
+   a disabled field. */
+.note,.why,.notice{
+  margin:1rem 0 0;
+  padding:.625rem .75rem;
+  font-size:.875rem;
+  color:var(--text);
+  background:var(--surface-2);
+  border-radius:var(--radius-sm);
+}
+.support{margin-top:1rem;font-size:.8125rem}
+
+/* A checkbox and its label share a line; the label must not keep the block
+   margin it gets when it sits above a text input. */
+.check{display:flex;gap:.5rem;align-items:flex-start}
+.check input{width:auto;margin-top:.3125rem}
+.check label{margin:0;font-weight:400;font-size:.875rem}
+
+/* ---- code, secrets, recovery codes ---- */
+
+code{
+  font-family:var(--mono);
+  font-size:.8125em;
+  padding:.125rem .3125rem;
+  /* A reference code a person is comparing against another screen must not be
+     broken across two lines -- that is exactly when a character gets lost. */
+  white-space:nowrap;
+  background:var(--surface-2);
+  border:1px solid var(--border);
+  border-radius:4px;
+}
+
+hr{margin:1.25rem 0;border:0;border-top:1px solid var(--border)}
+hr:last-child{display:none}
+.secret{
+  display:block;
+  margin:.75rem 0;
+  padding:.75rem;
+  font-family:var(--mono);
+  font-size:1rem;
+  letter-spacing:.08em;
+  word-break:break-all;
+  background:var(--surface-2);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+}
+ol{
+  margin:1rem 0;
+  padding-left:1.25rem;
+  columns:2;
+  font-family:var(--mono);
+  font-size:.875rem;
+  line-height:2;
+}
+
+.qr{margin:1rem 0;max-width:200px}
+.qr svg,.qr img{width:100%;height:auto;display:block;border-radius:var(--radius-sm)}
+
+details{
+  margin:1rem 0 0;
+  padding:.625rem .75rem;
+  background:var(--surface-2);
+  border-radius:var(--radius-sm);
+}
+summary{cursor:pointer;font-size:.8125rem;font-weight:500;color:var(--muted)}
+details[open] summary{margin-bottom:.5rem}
+details p{font-size:.8125rem;margin:.5rem 0 0}
+
+/* ---- lists: consent scopes, connected apps, sessions ---- */
+
+ul{list-style:none;margin:1rem 0;padding:0}
+ul li{
+  padding:.625rem .75rem;
+  margin:.375rem 0;
+  font-size:.875rem;
+  background:var(--surface-2);
+  border-radius:var(--radius-sm);
+}
+.scope{display:block;margin-top:.125rem;font-family:var(--mono);font-size:.75rem}
+/* A secondary line inside a list row belongs under it, not trailing after it. */
+li .hint,li .meta,li .scopes{display:block;margin:.125rem 0 0}
+
+/* A rich authorization request: the specific operation being asked for. */
+.detail{
+  margin:.5rem 0;
+  padding:.75rem;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+}
+.dtype{
+  display:block;
+  margin-bottom:.5rem;
+  font-size:.6875rem;
+  font-weight:600;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.drow{display:flex;gap:.75rem;padding:.1875rem 0;font-size:.875rem}
+.dlabel{min-width:6.5rem;color:var(--muted)}
+.dval{font-weight:500;word-break:break-word;font-variant-numeric:tabular-nums}
+
+/* Tiles: the app portal and the remote-access index. */
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(11rem,1fr));
+  gap:.625rem;margin:1rem 0}
+.tile{
+  display:block;
+  padding:.875rem;
+  font-weight:500;
+  letter-spacing:-.01em;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  color:var(--text);
+}
+.tile:hover{border-color:var(--border-strong);background:var(--surface-2);
+  text-decoration:none;color:var(--text)}
+/* The tile's own text is the application name, so the weight sits on the tile
+   and everything nested inside it steps back down. */
+.tile .name{display:block}
+.tile .why,.tile .meta{display:block;margin-top:.25rem;font-weight:400;
+  font-size:.75rem;color:var(--muted)}
+
+.field{margin:1rem 0}
+.who{margin:0 0 1rem}
+.none{margin:1rem 0}
+
+table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.875rem}
+th{
+  padding:.375rem .5rem .375rem 0;
+  text-align:left;
+  font-size:.6875rem;
+  font-weight:600;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  color:var(--muted);
+  border-bottom:1px solid var(--border);
+}
+td{padding:.5rem .5rem .5rem 0;border-bottom:1px solid var(--border);
+  font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:0}
+
+/* An action inside a table row is a small inline control, not the full-width
+   primary button a form ends with. */
+td form{margin:0}
+td button,td .btn{
+  display:inline-block;
+  width:auto;
+  margin:0;
+  padding:.3125rem .625rem;
+  font-size:.8125rem;
+  color:var(--text);
+  background:var(--surface);
+  border-color:var(--border-strong);
+}
+td button:hover,td .btn:hover{background:var(--surface-2);opacity:1;color:var(--text)}
+
+img{max-width:100%}
+
+/* The entrance Laravel uses: slightly out of focus and low, resolving sharp.
+   One element, once, and off entirely for anyone who asked for less motion. */
+@media (prefers-reduced-motion:no-preference){
+  .brand,main{animation:rise .38s cubic-bezier(.22,1,.36,1) both}
+  .brand{animation-duration:.32s}
+}
+@keyframes rise{
+  from{opacity:0;filter:blur(6px);transform:translateY(10px)}
+  to{opacity:1;filter:blur(0);transform:none}
+}
+{{end}}

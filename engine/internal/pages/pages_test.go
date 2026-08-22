@@ -74,9 +74,18 @@ func TestEveryPageAPersonSeesCarriesTheBrand(t *testing.T) {
 	// The bridges a browser posts and nobody reads. Named individually rather
 	// than detected, so adding a page cannot quietly opt itself out of carrying
 	// the brand by looking like a bridge.
+	//
+	// fclogout is NOT one of them, though it was listed here at first. It has a
+	// heading, a sentence telling a person how many applications they are being
+	// signed out of, and a link to continue if one of those hangs. The hidden
+	// iframes are its machinery; the page around them is read, so it carries the
+	// brand like every other page a person sees.
+	//
+	// racview is bare for the opposite reason to the rest: it is looked at for a
+	// long time, and what fills it is somebody else's desktop. Chrome around that
+	// competes with the content, so it styles itself and carries no logo.
 	bridges := map[string]bool{
-		"saml": true, "formpost": true, "wsfed": true, "fclogout": true,
-		"racview": true,
+		"saml": true, "formpost": true, "wsfed": true, "racview": true,
 	}
 
 	for _, name := range set.Names() {
@@ -577,5 +586,59 @@ func TestAFileNamingNoPageIsRefusedRatherThanBecomingOne(t *testing.T) {
 		t.Errorf("theme check reports %d problem(s) and the server reports %d; "+
 			"a passing check must mean the server will accept it",
 			len(checked), len(problems))
+	}
+}
+
+// Presence is not the property; presence exactly once is.
+//
+// When the logo moved into the layout, login.html kept its own copy, so the
+// sign-in page -- the single most-looked-at page here -- rendered the logo
+// twice, one above the other. TestEveryPageAPersonSeesCarriesTheBrand passed
+// throughout, because it asked whether the logo was there and a page with two
+// of them answers yes.
+func TestTheLogoAppearsExactlyOnce(t *testing.T) {
+	set := loadOrFail(t, "")
+	data := probeVariants()[1]
+	data["BrandLogo"] = "https://brand.example/logo.svg"
+	data["BrandName"] = "Example Corporation"
+
+	for _, name := range set.Names() {
+		var sb strings.Builder
+		if err := set.Execute(&sb, name, data); err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if n := strings.Count(sb.String(), "https://brand.example/logo.svg"); n > 1 {
+			t.Errorf("%s renders the logo %d times. A page with the brand stacked on "+
+				"itself is not a branded page, it is a broken one", name, n)
+		}
+	}
+}
+
+// The layout emits the shared stylesheet. A page that also asks for it ships
+// every rule twice.
+//
+// Thirteen pages did exactly that after the move to files, because each one had
+// carried `<style>{{template "pagecss" .}}</style>` from when there was no
+// layout to put it in. Identical rules twice is not a rendering bug, which is
+// why nothing caught it -- it is just every sign-in page paying for a stylesheet
+// it already had.
+func TestNoPageShipsTheStylesheetTwice(t *testing.T) {
+	set := loadOrFail(t, "")
+	data := probeVariants()[1]
+
+	// A rule that appears once in the stylesheet and nowhere else in any page.
+	const marker = "-webkit-font-smoothing:antialiased"
+
+	for _, name := range set.Names() {
+		var sb strings.Builder
+		if err := set.Execute(&sb, name, data); err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if n := strings.Count(sb.String(), marker); n > 1 {
+			t.Errorf("%s includes the shared stylesheet %d times. The layout already "+
+				"emits it; the page should define only what is its own", name, n)
+		}
 	}
 }

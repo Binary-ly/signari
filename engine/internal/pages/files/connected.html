@@ -1,12 +1,23 @@
 {{define "title"}}Connected applications{{end}}
 {{define "style"}}<style>
- body{font-family:system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem}
- .app{border:1px solid #ddd;border-radius:.5rem;padding:1rem;margin:.75rem 0}
- .scopes{color:#555;font-size:.9rem;margin:.35rem 0}
- .meta{color:#777;font-size:.85rem}
- button{padding:.4rem .8rem}
- .none{color:#666}
- .note{background:#f6f6f6;border-radius:.5rem;padding:.75rem;font-size:.9rem;color:#444}
+:root{--page-w:34rem}
+/* Each grant is its own card, so "Remove access" is unambiguously attached to
+   the application named directly above it. */
+.app{
+  margin:.75rem 0;
+  padding:.875rem 1rem;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+}
+.app strong{font-weight:600;letter-spacing:-.01em}
+.app .scopes{margin:.25rem 0 0;font-size:.8125rem;color:var(--muted)}
+.app .meta{margin:.125rem 0 0;font-size:.8125rem}
+.app form{margin-top:.75rem}
+.app button{display:inline-block;width:auto;margin:0;padding:.3125rem .625rem;
+  font-size:.8125rem;color:var(--text);background:var(--surface);
+  border-color:var(--border-strong)}
+.app button:hover{background:var(--surface-2);opacity:1;color:var(--text)}
 </style>{{end}}
 {{define "content"}}<h1>Connected applications</h1>
 {{if .Message}}<p class="note">{{.Message}}</p>{{end}}

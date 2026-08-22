@@ -1,5 +1,4 @@
 {{define "title"}}Sign-in requests{{end}}
-{{define "style"}}<style>{{template "pagecss" .}}</style>{{end}}
 {{define "content"}}
 <h1>Sign-in requests</h1>
 {{if not .Requests}}
@@ -13,8 +12,10 @@
 <p><strong>{{.ClientName}}</strong> wants: {{.Scope}}</p>
 {{if .BindingMessage}}<p>Reference shown on the other device: <code>{{.BindingMessage}}</code></p>{{end}}
 <p>Expires in {{.Expires}}.</p>
+<div class="row">
+<button class="secondary" type="submit" name="decision" value="deny">Not me</button>
 <button type="submit" name="decision" value="approve">Approve</button>
-<button type="submit" name="decision" value="deny">Not me</button>
+</div>
 </form>
 <hr>
 {{end}}

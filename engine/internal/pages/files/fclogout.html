@@ -1,7 +1,10 @@
 {{define "title"}}Signing out&hellip;{{end}}
-{{define "style"}}<style>body{font-family:system-ui,sans-serif;max-width:24rem;margin:4rem auto;padding:0 1rem}
-iframe{display:none}p{color:#444}</style>{{end}}
-{{define "usebare"}}{{end}}
+{{define "style"}}<style>
+/* The iframes are the machinery of a front-channel logout, not something to
+   look at. The page around them IS read: it names how many applications are
+   being signed out of, and offers a way past if one of them hangs. */
+iframe{display:none}
+</style>{{end}}
 {{define "content"}}
 <h1>Signing you out</h1>
 <p>Signing you out of {{len .Targets}} application(s). This page will continue

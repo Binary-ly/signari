@@ -1,17 +1,32 @@
 {{define "title"}}{{.Name}}{{end}}
 {{define "style"}}<style>
-html,body{margin:0;height:100%;background:#18181b;color:#fafafa;
-font-family:system-ui,sans-serif;overflow:hidden}
-header{display:flex;align-items:center;gap:1rem;padding:.5rem .9rem;
-background:#27272a;font-size:.85rem}
-header .name{font-weight:600}
-header .hint{color:#a1a1aa}
-header button{margin-left:auto;font:inherit;padding:.3rem .7rem;border-radius:4px;
-border:1px solid #52525b;background:#3f3f46;color:#fafafa;cursor:pointer}
-#screen{position:relative;width:100%;height:calc(100% - 2.4rem);
+/* Self-contained, and deliberately dark in both themes: the content of this
+   page is somebody else's desktop, and a light chrome around it would compete
+   with whatever is actually on that screen. This is the one bare page a person
+   looks at for more than a moment, so it carries the same type and radii as
+   the rest even though it cannot share the stylesheet. */
+:root{--chrome:#141417;--chrome-2:#1c1c20;--line:#2e2e33;--fg:#ededf0;
+--muted:#a1a1aa;--radius:7px}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#09090b;color:var(--fg);
+font:.875rem/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+-webkit-font-smoothing:antialiased}
+header{display:flex;align-items:center;gap:.75rem;height:2.75rem;
+padding:0 .875rem;background:var(--chrome);border-bottom:1px solid var(--line)}
+header .name{font-weight:600;letter-spacing:-.012em}
+header .hint{font-size:.75rem;font-weight:500;letter-spacing:.05em;
+text-transform:uppercase;color:var(--muted);padding:.125rem .4375rem;
+background:var(--chrome-2);border:1px solid var(--line);border-radius:5px}
+header button{margin-left:auto;font:inherit;font-weight:500;padding:.3125rem .75rem;
+color:var(--fg);background:var(--chrome-2);border:1px solid var(--line);
+border-radius:var(--radius);cursor:pointer;transition:background .12s ease}
+header button:hover{background:#26262b}
+header button:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(124,147,245,.35)}
+#screen{position:relative;width:100%;height:calc(100% - 2.75rem);
 display:flex;align-items:center;justify-content:center}
-#status{position:absolute;padding:.6rem 1rem;border-radius:6px;background:#3f3f46}
-#status.err{background:#7f1d1d}
+#status{position:absolute;padding:.625rem 1rem;font-size:.875rem;
+background:var(--chrome-2);border:1px solid var(--line);border-radius:var(--radius)}
+#status.err{color:#ffc9cb;background:#2a1416;border-color:#5a2327}
 </style>{{end}}
 {{define "usebare"}}{{end}}
 {{define "content"}}

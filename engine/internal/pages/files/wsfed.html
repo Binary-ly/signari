@@ -1,6 +1,14 @@
 {{define "title"}}Signing you in…{{end}}
-{{define "style"}}<style>body{font-family:system-ui,sans-serif;max-width:22rem;margin:6rem auto;
-padding:0 1rem;text-align:center}button{padding:.6rem 1rem;font-size:1rem}</style>{{end}}
+{{define "style"}}<style>
+/* Self-contained: see formpost.html. */
+body{margin:0;padding:5rem 1rem;font:.9375rem/1.55 ui-sans-serif,system-ui,
+-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;color:#18181b}
+button{margin-top:1rem;padding:.625rem 1.25rem;font:inherit;font-weight:500;
+color:#fff;background:#18181b;border:0;border-radius:7px;cursor:pointer}
+@media (prefers-color-scheme:dark){
+body{background:#09090b;color:#ededf0}
+button{color:#18181b;background:#ededf0}}
+</style>{{end}}
 {{define "usebare"}}{{end}}
 {{define "content"}}
 <form method="POST" action="{{.Action}}">

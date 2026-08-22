@@ -148,19 +148,68 @@ Thirty-three, plus three shared fragments (`layout`, `pagecss`, `captcha`).
 | Signing in | `login` `mfa` `emailotp` `smsotp` `consent` `prompt` `done` `cancelled` |
 | Account | `account` `signup` `signupdone` `enrol` `changepw` `connected` `portal` |
 | Recovery | `recover` `recovery` `reset` `sent` |
-| Signing out | `logout` `backchannel` |
+| Signing out | `logout` `backchannel` `fclogout` |
 | Devices and access | `device` `racindex` |
 | Errors | `err` `federr` `samlerr` `umaclaimserr` |
 | UMA | `umaclaims` |
-| Bridges | `saml` `formpost` `wsfed` `fclogout` `racview` |
+| Bridges | `saml` `formpost` `wsfed` `racview` |
 
-The five bridges are the exception to everything above. They are auto-posting
-forms — the SAML POST binding, the `form_post` response mode, WS-Federation,
-front-channel logout, the remote-access viewer — that a browser submits inside a
-redirect and a person never reads. They render with no logo and no stylesheet on
-purpose: a logo there is two extra requests in the middle of a sign-on, and a
-stylesheet is one more thing that can fail to load and leave the redirect
-hanging. They keep their security headers.
+The four bridges are the exception to everything above, for two different
+reasons.
+
+`saml`, `formpost` and `wsfed` are auto-posting forms — the SAML POST binding,
+the `form_post` response mode, WS-Federation — that a browser submits inside a
+redirect. The only time a person sees one is with scripting off, which is why
+each carries a small self-contained stylesheet and nothing more: a logo there is
+two extra requests in the middle of a sign-on, and a shared stylesheet is one
+more thing that can fail to load and leave the redirect hanging.
+
+`racview` is bare for the opposite reason. It is looked at for a long time, and
+what fills it is somebody else's desktop; chrome around that competes with the
+content, so it styles itself, stays dark in both themes, and carries no logo.
+
+**`fclogout` is not a bridge**, though it was treated as one at first. It has a
+heading, a sentence telling you how many applications you are being signed out
+of, and a link to continue if one of them hangs. The hidden iframes are its
+machinery; the page around them is read, so it carries the brand like every
+other page a person sees.
+
+## The look, and changing it without touching a page
+
+All thirty-three share one stylesheet, `pagecss.html`, built on CSS custom
+properties. Overriding *that* alone re-colours everything without going near a
+form:
+
+```css
+:root{
+  --page-w:26rem;          /* how wide the card is */
+  --radius:10px;
+  --accent:#3e63dd;        /* links and focus rings */
+  --btn-bg:#18181b;        /* the primary button */
+}
+```
+
+Light and dark are both defined. A page follows the reader's system setting
+unless `<html>` carries `data-theme="light"` or `data-theme="dark"`, which a
+layout override can set to pin one.
+
+The greys — borders, panel fills, muted text — are **mixed from the surface and
+text colours** rather than being fixed. That is what makes `signari brand set`
+produce a coherent palette instead of the default greys showing through
+somebody else's colours.
+
+## Looking at what you changed
+
+Validation proves a page still carries its CSRF token. It cannot tell you the
+button is invisible against your new background.
+
+```sh
+SIGNARI_PAGE_PREVIEW_DIR=/tmp/pages go test ./internal/pages/ -run Preview
+```
+
+That writes every page rendered with realistic sample data, in four variants —
+your system setting, light, dark, and one carrying brand colours — with an
+`index.html` showing all of them at once. Serve the directory and open it.
 
 ## Reading, and when
 

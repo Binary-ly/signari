@@ -1,10 +1,9 @@
 {{define "title"}}Your account{{end}}
-{{define "style"}}<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}
-h1{font-size:1.4rem}table{width:100%;border-collapse:collapse;margin-top:1rem}
-td,th{text-align:left;padding:.5rem .25rem;border-bottom:1px solid #e4e4e7}
-.muted{color:#666;font-size:.85rem}button{padding:.35rem .7rem}
-a.btn{padding:.35rem .7rem;border:1px solid #d4d4d8;border-radius:.25rem;
-text-decoration:none;color:inherit}</style>{{end}}
+{{define "style"}}<style>
+/* A table of providers needs the width; the actions column must not wrap. */
+:root{--page-w:32rem}
+td:last-child{text-align:right;white-space:nowrap}
+</style>{{end}}
 {{define "content"}}
 <h1>Sign-in methods</h1>
 {{if .Providers}}

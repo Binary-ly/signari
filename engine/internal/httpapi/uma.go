@@ -21,6 +21,9 @@ import (
 //
 //	POST /uma2/permission    resource server authenticates -> ticket
 //	POST /oauth2/token       grant_type=urn:...:uma-ticket -> RPT
+//	GET  /uma2/claims        the requesting party identifies themselves
+//
+// See umaclaims.go for the interaction; this file is the grant.
 
 // handleUMAPermission issues a permission ticket to a resource server.
 //
@@ -109,13 +112,15 @@ func (s *Server) authenticateResourceServer(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clients.Client) {
 	ctx := r.Context()
 
-	// Not implemented, and refused rather than ignored. A client that pushes
-	// claims and receives a token concludes the claims were weighed.
-	for _, unsupported := range []string{"claim_token", "pct", "rpt"} {
+	// Still not implemented, and still refused rather than ignored. Both are
+	// optimisations -- a PCT saves gathering the same claims twice, an upgrade
+	// saves minting a second token -- and a client that sends one and receives a
+	// token concludes it was honoured.
+	for _, unsupported := range []string{"pct", "rpt"} {
 		if r.PostForm.Get(unsupported) != "" {
 			writeUMAError(w, uma.InvalidRequest(unsupported+" is not supported by this "+
-				"server; it answers from policy alone, so there is nothing for pushed "+
-				"claims, a persisted claims token or an RPT upgrade to affect"))
+				"server; there is no persisted claims token and no RPT upgrade, so "+
+				"nothing here would act on it"))
 			return
 		}
 	}
@@ -148,17 +153,42 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		return
 	}
 
-	// Who is asking. The UMA grant is a client credential exchange unless the
-	// client presents something identifying an end user, and we do not accept
-	// pushed claims -- so the requesting party is the client itself.
-	subject := c.ClientID
+	// A ticket that already carries an identity is bound to the client that
+	// gathered it. §3.3.2's interaction proved who the requesting party is TO
+	// ONE CLIENT; letting a second present the successor would hand it somebody
+	// else's proof, which is the whole value of the ticket.
+	if t.BoundClient != "" && t.BoundClient != c.ClientID {
+		writeUMAError(w, uma.InvalidGrant("this permission ticket was issued to a "+
+			"different client after claims gathering and cannot be presented by this one"))
+		return
+	}
+
+	// Who is asking.
+	//
+	// Three sources, in this order: the identity already bound to the ticket by
+	// the claims interaction endpoint, an identity pushed as a `claim_token`, or
+	// -- when neither is present -- the client itself, which is where every UMA
+	// flow starts.
+	party, uerr := s.requestingParty(ctx, r, c, t)
+	if uerr != nil {
+		writeUMAError(w, uerr)
+		return
+	}
+
+	subject := authzen.Subject{Type: "client", ID: c.ClientID}
+	if party.userID != "" {
+		// The person, not the client. This is the point of the whole exercise: a
+		// resource owner writes policy about somebody this server may never have
+		// seen before, and the grant now carries one.
+		subject = authzen.Subject{Type: "user", ID: party.ref}
+	}
 
 	// The decision comes from the SAME policy decision point that answers
 	// /access/v1/evaluation. One question, one answer.
 	for _, p := range t.Permissions {
 		for _, scope := range p.ResourceScopes {
 			resp, derr := s.decide(ctx, c.OrgID, authzen.Request{
-				Subject:  authzen.Subject{Type: "client", ID: subject},
+				Subject:  subject,
 				Resource: authzen.Resource{Type: p.ResourceType, ID: p.ResourceID},
 				Action:   authzen.Action{Name: scope},
 			})
@@ -169,18 +199,15 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 			}
 			if !resp.Decision {
 				s.auditDetached(ctx, audit.Event{
-					Type: "uma.denied", OrgID: c.OrgID,
-					CorrelationID: correlationID(ctx),
+					Type: "uma.denied", OrgID: c.OrgID, SubjectID: party.userID,
+					ClientID: c.ClientID, CorrelationID: correlationID(ctx),
 					Detail: map[string]any{
-						"client_id": c.ClientID, "resource_type": p.ResourceType,
-						"resource_id": p.ResourceID, "scope": scope,
+						"resource_type": p.ResourceType,
+						"resource_id":   p.ResourceID, "scope": scope,
+						"identified": party.userID != "",
 					},
 				})
-				// §3.3.6: request_denied, 403. Final -- the client should not retry
-				// with the same request, which is what distinguishes it from
-				// invalid_grant.
-				writeUMAError(w, uma.Denied("this client may not "+scope+" "+
-					p.ResourceType+":"+p.ResourceID))
+				s.refuseUMA(w, r, c, t, party, p, scope)
 				return
 			}
 		}
@@ -208,9 +235,21 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		return
 	}
 	scopes := uma.Scopes(t.Permissions)
+	// The RPT's subject is the REQUESTING PARTY when there is one.
+	//
+	// §1.2 defines an RPT as "unique to a requesting party, client, authorization
+	// server, resource server, and resource owner", and a resource server
+	// introspecting one has to be able to tell who it is about. Leaving the
+	// client id here once claims have been gathered would produce a token that
+	// says the application asked for itself, after this server went to the
+	// trouble of establishing that it did not.
+	rptSubject := c.ClientID
+	if party.userID != "" {
+		rptSubject = party.userID
+	}
 	rpt, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
 		Issuer:   s.cfg.Issuer,
-		Subject:  subject,
+		Subject:  rptSubject,
 		Audience: []string{t.ResourceServer},
 		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
 		IssuedAt: now.Unix(),
@@ -225,10 +264,12 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 	}
 
 	s.auditDetached(ctx, audit.Event{
-		Type: "uma.granted", OrgID: c.OrgID, CorrelationID: correlationID(ctx),
+		Type: "uma.granted", OrgID: c.OrgID, SubjectID: party.userID,
+		ClientID: c.ClientID, CorrelationID: correlationID(ctx),
 		Detail: map[string]any{
-			"client_id": c.ClientID, "resource_server": t.ResourceServer,
-			"scope": joinScopes(scopes),
+			"resource_server": t.ResourceServer,
+			"scope":           joinScopes(scopes),
+			"identified":      party.userID != "",
 		},
 	})
 
@@ -251,6 +292,15 @@ func writeUMAError(w http.ResponseWriter, e *uma.Error) {
 	body := map[string]any{"error": e.Code, "error_description": e.Description}
 	if e.Ticket != "" {
 		body["ticket"] = e.Ticket
+	}
+	if e.RedirectUser != "" {
+		body["redirect_user"] = e.RedirectUser
+	}
+	if len(e.RequiredClaims) > 0 {
+		body["required_claims"] = e.RequiredClaims
+	}
+	if e.Interval > 0 {
+		body["interval"] = e.Interval
 	}
 	writeJSON(w, status, body)
 }

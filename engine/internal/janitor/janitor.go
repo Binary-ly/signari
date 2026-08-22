@@ -157,6 +157,19 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	if _, err := store.PurgeExpiredPermissionTickets(ctx, tx); err != nil {
 		return st, fmt.Errorf("purging expired permission tickets: %w", err)
 	}
+	// Claims interactions that were shown and never confirmed. Each is a
+	// half-finished consent naming a person, a client and a resource; an
+	// abandoned browser tab should not leave one behind.
+	if _, err := store.PurgeExpiredInteractions(ctx, tx); err != nil {
+		return st, fmt.Errorf("purging expired claims interactions: %w", err)
+	}
+	// UMA requests nobody decided. A pending request is a STANDING OFFER to
+	// grant access -- unlike everything else swept here, letting it linger is a
+	// liability rather than merely clutter: somebody approving a month-old
+	// request is approving a context they cannot remember.
+	if _, err := store.PurgeExpiredPendingRequests(ctx, tx); err != nil {
+		return st, fmt.Errorf("purging expired UMA requests: %w", err)
+	}
 	// Recovery requests nobody can use any more. Each row holds two token hashes
 	// for a password reset, so keeping them past their expiry stores credentials
 	// that grant nothing -- all risk, no purpose.

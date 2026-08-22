@@ -108,6 +108,7 @@ var twoWordCommands = map[string]bool{
 	"authz":      true,
 	"federation": true,
 	"trust-mark": true,
+	"uma":        true,
 	"credential": true,
 	"rar":        true,
 }
@@ -169,6 +170,10 @@ commands:
   admin-token create  mint a scoped, revocable admin API token
   admin-token list    show admin tokens, their scopes and when each was last used
   admin-token revoke  revoke one immediately, with no restart
+  uma settings        offer, or stop offering, resource-owner intervention on refused UMA requests
+  uma requests        UMA requests waiting for a resource owner to decide
+  uma approve         grant a relation and let a submitted UMA request through
+  uma deny            close a submitted UMA request without granting anything
   trust-mark issue    issue an OpenID Federation Trust Mark to an entity
   trust-mark revoke   withdraw a Trust Mark this entity issued
   trust-mark list     Trust Marks this entity issues and holds
@@ -353,6 +358,13 @@ func run(args []string) error {
 	tmDelegation := fs.String("trust-mark-delegation", "",
 		"file containing a Trust Mark Delegation JWT to embed in the issued mark")
 	tmReason := fs.String("trust-mark-reason", "", "why the Trust Mark is being revoked")
+	umaIntervention := fs.Bool("owner-intervention", false,
+		"record refused UMA requests for a resource owner to decide (UMA 2.0 section 3.3.6 request_submitted). Off means a refusal is final")
+	umaPoll := fs.Duration("poll-interval", 30*time.Second,
+		"how often a client should poll a submitted UMA request, 5s to 1h")
+	umaRequestID := fs.String("uma-request", "", "identifier from `signari uma requests`")
+	claimsRedirects := fs.String("claims-redirect-uris", "",
+		"comma-separated https URIs a requesting party may be returned to after claims gathering (UMA 2.0 section 3.3.2). Empty registers none, which refuses claims gathering for this client")
 	homepageURI := fs.String("homepage-uri", "", "homepage published in the Entity Configuration")
 	relSubject := fs.String("principal", "", "type:id, e.g. user:alice@example.com")
 	relRelation := fs.String("relation", "", "e.g. editor")
@@ -665,6 +677,16 @@ func run(args []string) error {
 		return trustMarkIssuers(ctx, conn, *tmFile)
 	case "trust-mark owners":
 		return trustMarkOwners(ctx, conn, *tmFile)
+	case "uma settings":
+		return umaSettings(ctx, conn, *orgID, *umaIntervention, *umaPoll)
+	case "uma requests":
+		return umaRequests(ctx, conn, *orgID)
+	case "uma approve":
+		return umaApprove(ctx, conn, *umaRequestID, *relRelation)
+	case "uma deny":
+		return umaDeny(ctx, conn, *umaRequestID)
+	case "client set-claims-redirects":
+		return clientSetClaimsRedirects(ctx, conn, *clientID, *claimsRedirects)
 	case "authz set-model":
 		return authzModelSet(ctx, conn, *orgID, *modelFile)
 	case "authz show-model":

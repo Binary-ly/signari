@@ -27,16 +27,24 @@
 // # What is implemented, and what is not
 //
 // Implemented: the permission endpoint, the `uma-ticket` grant, single-use
-// tickets, and `request_denied` when policy refuses.
+// tickets, and `request_denied` when policy refuses. Since August 2026 also
+// pushed claims (`claim_token`, §3.3.1), the claims interaction endpoint (§3.3.2
+// and §3.3.3), and all four of §3.3.6's errors -- `need_info`, `request_denied`,
+// `request_submitted` and `invalid_grant`. See claims.go.
 //
-// NOT implemented, and therefore not advertised: pushed claims (`claim_token`),
-// persisted claims tokens (`pct`), RPT upgrade (`rpt`), and interactive claims
-// gathering -- which means `need_info` and `request_submitted` are never
-// returned. Those need a claims interaction endpoint and a notion of a pending
-// resource-owner decision; this server answers from policy alone, immediately.
-// A client sending `claim_token` is refused rather than ignored, because a
-// client that pushes claims and receives a token reasonably concludes the claims
-// were considered.
+// NOT implemented, and therefore not advertised: persisted claims tokens (`pct`,
+// §3.3.5) and RPT upgrade (`rpt`, §3.3.5.1). Both are optimisations -- a PCT
+// saves gathering the same claims twice, an upgrade saves minting a second token
+// -- and both are refused rather than ignored, because a client that sends one
+// and receives a token reasonably concludes it was honoured.
+//
+// # What changed about the requesting party
+//
+// This server used to answer from policy alone and treat the CLIENT as the
+// requesting party, which made the UMA grant a decorated client-credentials
+// exchange. It can now learn who is behind the request, which is the thing UMA
+// exists for: a resource owner writing policy about a person this server has
+// never provisioned.
 package uma
 
 import (
@@ -89,9 +97,15 @@ type Error struct {
 	Code        string
 	Description string
 	Status      int
-	// Ticket accompanies need_info and request_submitted. Unused today; the
-	// field exists so adding those does not change this type's shape.
+	// Ticket accompanies need_info and request_submitted, §3.3.6.
 	Ticket string
+	// RedirectUser is need_info's claims interaction endpoint hint.
+	RedirectUser string
+	// RequiredClaims is need_info's other hint.
+	RequiredClaims []RequiredClaim
+	// Interval is request_submitted's polling floor, in seconds. Zero omits it,
+	// which §3.3.6 permits -- the parameter is MAY, not MUST.
+	Interval int
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Description }

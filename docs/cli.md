@@ -56,6 +56,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari client set-dpop` | RFC 9449 §5.2: require a DPoP proof on every token request from this client |
 | `signari client set-exchange-containment` | RFC 8693: only exchange subject tokens this client holds or is named in the audience of |
 | `signari client set-hybrid` | Permit hybrid response types |
+| `signari client set-claims-redirects` | UMA 2.0 §3.3.2: where a requesting party may be returned after claims gathering. A separate list from `redirect_uris`, because the specification forbids reusing those. See [uma.md](uma.md) |
 | `signari client set-grants` | Which grant types this client may use (RFC 6749 §5.2) |
 
 ## Verifiable credentials
@@ -113,6 +114,8 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari federation enable` / `federation show` | Join an OpenID Federation. Generates a **separate** Entity Statement signing key and publishes `/.well-known/openid-federation` — see [openid-federation.md](openid-federation.md) |
 | `signari authz grant` / `authz revoke` | Relations: `-principal user:alice -relation owner -object document:42` |
 | `signari authz check` | Answer a question from the command line, with the reason |
+| `signari uma settings` | Offer, or stop offering, resource-owner intervention on refused UMA requests (§3.3.6 `request_submitted`). Off means a refusal is final. See [uma.md](uma.md) |
+| `signari uma requests` / `uma approve` / `uma deny` | Requests waiting for a resource owner. Approving **grants a relation** in the authorization model, so the access lives where all other access lives |
 
 ## Outposts and remote access
 

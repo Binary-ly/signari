@@ -357,8 +357,17 @@ func (s *Server) mux() *http.ServeMux {
 		mux.HandleFunc("GET "+trustMarkPath, s.handleTrustMark)
 	}
 	// UMA 2.0. The permission endpoint authenticates the resource server; the
-	// grant is dispatched from the token endpoint.
+	// grant is dispatched from the token endpoint; the claims interaction
+	// endpoint authenticates the REQUESTING PARTY, who is neither.
 	mux.HandleFunc("POST /uma2/permission", s.handleUMAPermission)
+	mux.HandleFunc("GET "+claimsInteractionPath, s.handleUMAClaims)
+	mux.HandleFunc("POST "+claimsInteractionPath, s.handleUMAClaims)
+	// UMA 2.0 §2: "The discovery document MUST be available at an endpoint
+	// formed by concatenating the string /.well-known/uma2-configuration to the
+	// issuer". Separate from the OIDC document because the specification says
+	// so, and built from the same source, because two descriptions of one server
+	// eventually disagree.
+	mux.HandleFunc("GET /.well-known/uma2-configuration", s.handleUMAMetadata)
 
 	// CIBA Core 1.0. The backchannel endpoint authenticates the client; the
 	// approval page authenticates the person.

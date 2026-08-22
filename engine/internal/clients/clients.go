@@ -113,7 +113,42 @@ type Client struct {
 	PKCEMethods  []string
 	IDTokenAlg   string
 	RedirectURIs []string
-	RefreshTTL   int
+
+	// ClaimsRedirectURIs is UMA 2.0 §3.3.2's separate list.
+	//
+	// Separate from RedirectURIs because the specification insists on it:
+	// "authorization servers MUST NOT redirect requesting parties to
+	// pre-registered redirection URIs defined in [RFC6749] unless such URIs are
+	// also pre-registered specifically as claims redirection URIs."
+	//
+	// The two are different trust boundaries even when they are the same host. An
+	// RFC 6749 redirect URI carries a resource OWNER back from authorizing their
+	// own resources; this one carries a REQUESTING PARTY -- a stranger to the
+	// resource owner -- back to a client that may be nobody's.
+	ClaimsRedirectURIs []string
+
+	RefreshTTL int
+}
+
+// HasClaimsRedirectURI reports whether a claims redirection URI is registered.
+//
+// §3.3.2: "If the URI is pre-registered, this URI MUST exactly match one of the
+// pre-registered claims redirection URIs, with the matching performed as
+// described in Section 6.2.1 of [RFC3986] (Simple String Comparison)."
+//
+// Simple String Comparison is named in the specification, so there is no
+// normalisation here at all -- and unlike HasRedirectURI there is no loopback
+// exception, because RFC 8252's ephemeral-port allowance is about native apps
+// receiving an authorization code and has nothing to say about this parameter.
+// Adding it "for consistency" would widen a redirect target on the strength of a
+// rule that does not apply to it.
+func (c *Client) HasClaimsRedirectURI(candidate string) bool {
+	for _, u := range c.ClaimsRedirectURIs {
+		if u == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 // RefreshTokenTTLSeconds is the client's configured refresh lifetime, with a
@@ -157,7 +192,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       allow_hybrid, token_endpoint_auth_method, dpop_bound_access_tokens,
 		       exchange_requires_audience_match,
 		       backchannel_token_delivery_mode,
-		       coalesce(backchannel_client_notification_endpoint, '')
+		       coalesce(backchannel_client_notification_endpoint, ''),
+		       coalesce(claims_redirect_uris, ARRAY[]::text[])
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -169,7 +205,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.AllowHybrid, &c.TokenEndpointAuthMethod, &c.DPoPBoundAccessTokens,
 			&c.ExchangeRequiresAudienceMatch,
 			&c.BackchannelTokenDeliveryMode,
-			&c.BackchannelClientNotificationEndpoint)
+			&c.BackchannelClientNotificationEndpoint,
+			&c.ClaimsRedirectURIs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

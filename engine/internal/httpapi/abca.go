@@ -86,18 +86,13 @@ func (s *Server) authenticateWithAttestation(ctx context.Context, r *http.Reques
 	// mutually exclusive -- no attestation-PoP header, precisely one DPoP header
 	// -- so there is no request that is ambiguously both, and a client that sends
 	// both headers is refused rather than silently having one ignored.
-	combined := len(r.Header.Values(abca.HeaderPoP)) == 0
-	if combined {
+	// A request carrying BOTH a DPoP proof and a dedicated attestation PoP is not
+	// combined mode and is not an error: draft -10 notes DPoP may be used
+	// independently alongside the attestation. There the DPoP proof is the token's
+	// sender-constraint and the dedicated header authenticates the client, so
+	// there is nothing extra to check and no branch for it below.
+	if len(r.Header.Values(abca.HeaderPoP)) == 0 {
 		return s.authenticateWithCombinedDPoP(ctx, r, c, att)
-	}
-	if len(r.Header.Values("DPoP")) > 0 {
-		// Both a DPoP proof and a dedicated attestation PoP. Legal on its own --
-		// §7.6 notes DPoP may be used independently alongside the attestation --
-		// but then the DPoP proof is a sender-constraint for the token and NOT
-		// the attestation PoP, and the dedicated header below is what
-		// authenticates the client. Nothing to refuse; noted so the reader of
-		// this branch knows the case was considered rather than missed.
-		_ = combined
 	}
 
 	pop, err := exactlyOneHeader(r, abca.HeaderPoP)

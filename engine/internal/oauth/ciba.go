@@ -238,12 +238,12 @@ func ParseCIBARequest(form url.Values, clientID, deliveryMode string) (*CIBARequ
 	// callback to, so the notification could be delivered to the endpoint but not
 	// proven to come from us.
 	switch deliveryMode {
-	case DeliveryPing:
+	case DeliveryPing, DeliveryPush:
 		if req.ClientNotificationToken == "" {
 			return nil, cibaErr(400, "invalid_request",
 				"client_notification_token is required: this client is registered "+
-					"for ping delivery, and section 7.1 makes the token the means by "+
-					"which the notification is authenticated to the client")
+					"for "+deliveryMode+" delivery, and section 7.1 makes the token "+
+					"the means by which the notification is authenticated to the client")
 		}
 		if err := validClientNotificationToken(req.ClientNotificationToken); err != nil {
 			return nil, cibaErr(400, "invalid_request", err.Error())
@@ -365,6 +365,10 @@ func containsScopeValue(scope, want string) bool {
 const (
 	DeliveryPoll = "poll"
 	DeliveryPing = "ping"
+	// DeliveryPush sends the tokens themselves to the notification endpoint
+	// (§10.3). §11 then forbids the client from calling the token endpoint at
+	// all, which is enforced where that grant is handled.
+	DeliveryPush = "push"
 )
 
 // maxClientNotificationToken is §7.1's ceiling, exactly.

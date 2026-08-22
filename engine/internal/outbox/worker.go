@@ -114,6 +114,14 @@ func (w *Worker) Run(ctx context.Context, interval time.Duration) {
 			} else if n > 0 {
 				w.log.Info("delivered CIBA ping notifications", "count", n)
 			}
+			// CIBA push deliveries. Separate from pings because they carry
+			// tokens rather than an identifier, and a failure in one topic must
+			// not stall the other.
+			if n, err := w.drainCIBAPushes(ctx); err != nil {
+				w.log.Error("draining CIBA pushes", "err", err)
+			} else if n > 0 {
+				w.log.Info("delivered CIBA token pushes", "count", n)
+			}
 			// Event subscriptions, on the same tick and equally independently.
 			if n, err := w.DrainWebhooks(ctx); err != nil {
 				w.log.Error("draining event subscriptions", "err", err)

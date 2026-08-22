@@ -76,6 +76,23 @@ type IDTokenClaims struct {
 	// channel can be paired with a code from a different authorization.
 	CodeHash string `json:"c_hash,omitempty"`
 
+	// The two claims CIBA push mode adds, both with URN names because they were
+	// registered by that specification rather than by OpenID Core.
+	//
+	// CIBA Core 1.0 §10.3.1 requires the ID token in a push callback to bind
+	// itself to the request and to every token delivered with it: the hash values
+	// "bind the ID Token, the Access Token, and the auth_req_id". In poll and ping
+	// the client asked for these tokens and knows which request they answer; in
+	// push they arrive unsolicited at an endpoint, so the binding is the only
+	// thing tying the payload to a request the client actually made.
+	//
+	// Emitted for push only. Adding them everywhere would be harmless and would
+	// also mean an ID token from an ordinary flow carrying an auth_req_id that
+	// never existed.
+	BackchannelAuthReqID string `json:"urn:openid:params:jwt:claim:auth_req_id,omitempty"`
+	// RefreshTokenHash is required "if a Refresh Token is issued" (§10.3.1).
+	RefreshTokenHash string `json:"urn:openid:params:jwt:claim:rt_hash,omitempty"`
+
 	// Actor, RFC 8693 section 4.1. Present when this session was started by an
 	// administrator acting as the user.
 	//
@@ -200,6 +217,17 @@ func CHash(alg keys.Algorithm, code string) (string, error) {
 // Getting the "left-most half" wrong is the classic at_hash bug: it is half the
 // HASH, not half the token, and it is the raw bytes that are halved, not the
 // base64 text.
+// RtHash computes CIBA Core 1.0 §10.3.1's rt_hash over a refresh token.
+//
+// The same construction as at_hash -- left half of the digest, base64url -- which
+// is what §10.3.1 means by "the hash value of [the Refresh Token]". Delegated
+// rather than repeated: two implementations of one hash is one that eventually
+// hashes the whole digest instead of half of it, and the failure is a claim every
+// conforming client rejects for a reason nobody can see.
+func RtHash(alg keys.Algorithm, refreshToken string) (string, error) {
+	return AtHash(alg, refreshToken)
+}
+
 func AtHash(alg keys.Algorithm, accessToken string) (string, error) {
 	var h crypto.Hash
 	switch alg {

@@ -311,6 +311,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		s.log.Info("device authorization approved", "client_id", d.ClientID,
 			"user_id", userID, "correlation_id", correlationID(ctx))
 		s.releaseCIBAPing(ctx, d.ID)
+		s.releaseCIBAPush(ctx, d)
 		s.renderPage(w, r, devicePage, map[string]any{"Done": true})
 	case "deny":
 		if err := store.DenyDeviceAuthorization(ctx, s.db, d.ID); err != nil {
@@ -319,6 +320,13 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		// §10 notifies on the RESULT, not on approval. A ping client left
 		// polling after a refusal is exactly the wait this mode removes.
 		s.releaseCIBAPing(ctx, d.ID)
+		// A denial has no tokens to push. §10.3 defines the push callback as a
+		// token delivery, so the parked row is dropped rather than delivered
+		// empty. A ping client is told about a refusal because it would otherwise
+		// poll forever; a push client is not waiting on anything it can stop.
+		if err := store.DiscardCIBAPush(ctx, s.db, d.ID); err != nil {
+			s.log.Error("discarding a denied CIBA push", "err", err, "request_id", d.ID)
+		}
 		s.renderPage(w, r, devicePage, map[string]any{"Denied": true})
 	default:
 		// First POST: the code was right, so show what is being authorised and
@@ -515,4 +523,68 @@ func (s *Server) releaseCIBAPing(ctx context.Context, requestID string) {
 	if released {
 		s.log.Info("CIBA ping released for delivery", "request_id", requestID)
 	}
+}
+
+// releaseCIBAPush mints the tokens a push client is owed and seals them into its
+// parked delivery.
+//
+// # Why the tokens are minted HERE and only once
+//
+// Delivery is retried, and minting per attempt would issue a different token set
+// each time -- so a client that received the third attempt would hold tokens
+// while the first two sets were live, valid, and reachable by nobody. Minting
+// once at the decision and keeping the result is the only version of retry that
+// does not leak working credentials into the void.
+//
+// Nothing is surfaced to the person approving: they have finished, and a failure
+// to mint is ours to fix rather than theirs to read. The row stays parked, which
+// is the safe direction -- a push client that receives nothing retries its
+// authentication request, where a client that received a half-built payload
+// would not.
+func (s *Server) releaseCIBAPush(ctx context.Context, d *store.DeviceAuthorization) {
+	c, err := s.lookupClient(ctx, d.ClientID)
+	if err != nil || c == nil {
+		s.log.Error("looking up a client for a CIBA push", "err", err,
+			"client_id", d.ClientID)
+		return
+	}
+	if c.BackchannelTokenDeliveryMode != oauth.DeliveryPush {
+		// Poll and ping clients have nothing parked on this topic. Not an error:
+		// this is called for every decision.
+		return
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		s.log.Error("beginning a CIBA push mint", "err", err, "request_id", d.ID)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	scopes := splitScopes(d.Scope)
+	if len(scopes) == 0 {
+		scopes = c.Scopes
+	}
+	resp, _, err := s.mintSet(ctx, tx, c, d.OrgID, d.UserID, d.SID, "", scopes,
+		d.Resource, nil, "")
+	if err != nil {
+		s.log.Error("minting tokens for a CIBA push", "err", err, "request_id", d.ID)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.log.Error("committing a CIBA push mint", "err", err, "request_id", d.ID)
+		return
+	}
+
+	released, err := store.ReleaseCIBAPush(ctx, s.db, s.cfg.Root, d.ID, resp)
+	if err != nil {
+		s.log.Error("releasing a CIBA push", "err", err, "request_id", d.ID)
+		return
+	}
+	if !released {
+		s.log.Warn("a CIBA push had nothing parked to release", "request_id", d.ID,
+			"client_id", d.ClientID)
+		return
+	}
+	s.log.Info("CIBA push released", "client_id", d.ClientID, "request_id", d.ID)
 }

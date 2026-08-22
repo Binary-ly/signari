@@ -165,6 +165,19 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 	// Ping delivery: park the notification now, while the auth_req_id still
 	// exists in plaintext. It is released when the person decides -- see
 	// store.QueueCIBAPing for why it cannot be built at that point instead.
+	if c.BackchannelTokenDeliveryMode == oauth.DeliveryPush {
+		// Push parks the same way and for the same reason. What differs is what
+		// the row eventually carries: the tokens, sealed, written when the person
+		// decides. See store.CIBAPush.Sealed.
+		if err := store.QueueCIBAPush(ctx, s.db, requestID, c.ClientID,
+			c.BackchannelClientNotificationEndpoint, req.ClientNotificationToken,
+			authReqID); err != nil {
+			s.log.Error("parking a CIBA push", "err", err, "client_id", c.ClientID)
+			writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
+				Code: "server_error", Description: "unavailable"})
+			return
+		}
+	}
 	if c.BackchannelTokenDeliveryMode == oauth.DeliveryPing {
 		if err := store.QueueCIBAPing(ctx, s.db, requestID, c.ClientID,
 			c.BackchannelClientNotificationEndpoint, req.ClientNotificationToken,
@@ -210,6 +223,25 @@ func (s *Server) handleCIBAGrant(w http.ResponseWriter, r *http.Request, clientI
 	if authReqID == "" {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
 			Description: "auth_req_id is required", Status: http.StatusBadRequest})
+		return
+	}
+
+	// §11: "If the Client is registered to use the Push Mode then it MUST NOT
+	// call the Token Endpoint with the CIBA Grant Type."
+	//
+	// Refused rather than served. Serving it would deliver the tokens twice --
+	// once here and once to the notification endpoint -- from one authentication,
+	// which is two live credential sets for a request the person approved once.
+	// The client is also told plainly, because a client doing this has a
+	// configuration mistake and a generic invalid_grant would send it looking in
+	// the wrong place.
+	if c, cerr := s.lookupClient(ctx, clientID); cerr == nil && c != nil &&
+		c.BackchannelTokenDeliveryMode == oauth.DeliveryPush {
+		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
+			Description: "this client is registered for push delivery, so section 11 " +
+				"forbids it from calling the token endpoint with the CIBA grant; the " +
+				"tokens are delivered to its notification endpoint",
+			Status: http.StatusBadRequest})
 		return
 	}
 

@@ -644,23 +644,24 @@ func TestDiscoveryDescribesTheCIBAWeActuallyImplement(t *testing.T) {
 	if md["backchannel_authentication_endpoint"] == nil {
 		t.Error("CIBA is implemented and the backchannel endpoint is not advertised")
 	}
-	// Poll and ping, and push deliberately absent. The rule this test enforces is
-	// not "advertise little" but "advertise exactly what is enforced": ping is
-	// backed by a parked outbox row released when the person decides, and a ping
-	// client that sends no notification token is refused rather than issued an
-	// auth_req_id it would wait on forever.
+	// All three, and the rule this test enforces has not changed: not "advertise
+	// little" but "advertise exactly what is enforced".
+	//
+	// Push was deliberately absent here until it existed. It is backed now by the
+	// same parked-outbox machinery as ping, with the differences §10.3 requires:
+	// the row carries the token response, sealed under the root key because it is
+	// a live credential sitting in a queue table; the tokens are minted ONCE at
+	// the decision, because minting per retry would leave earlier live token sets
+	// unreachable; and §11 is enforced at the token endpoint, which refuses a push
+	// client outright rather than delivering the same authentication twice.
 	modes, _ := md["backchannel_token_delivery_modes_supported"].([]any)
 	got := map[string]bool{}
 	for _, m := range modes {
 		s, _ := m.(string)
 		got[s] = true
 	}
-	if !got["poll"] || !got["ping"] || len(modes) != 2 {
-		t.Errorf("delivery modes = %v, want exactly poll and ping", modes)
-	}
-	if got["push"] {
-		t.Error("push is advertised and not implemented; it hands the token itself " +
-			"to the notification endpoint and has no code path here")
+	if !got["poll"] || !got["ping"] || !got["push"] || len(modes) != 3 {
+		t.Errorf("delivery modes = %v, want poll, ping and push", modes)
 	}
 	if v, ok := md["backchannel_user_code_parameter_supported"].(bool); !ok || v {
 		t.Errorf("backchannel_user_code_parameter_supported = %v; the endpoint "+

@@ -38,16 +38,17 @@ import (
 const jwtBearerIssuer = "https://platform.test"
 
 type assertionFixture struct {
-	srv        *Server
-	pool       *pgxpool.Pool
-	orgID      string
-	userID     string
-	providerID string
-	clientID   string
-	secret     string
-	signKey    *rsa.PrivateKey
-	jwksServer *httptest.Server
-	issuer     string
+	srv          *Server
+	pool         *pgxpool.Pool
+	orgID        string
+	userID       string
+	providerID   string
+	providerSlug string
+	clientID     string
+	secret       string
+	signKey      *rsa.PrivateKey
+	jwksServer   *httptest.Server
+	issuer       string
 }
 
 func newAssertionFixture(t *testing.T) *assertionFixture {
@@ -127,7 +128,8 @@ func newAssertionFixture(t *testing.T) *assertionFixture {
 			 enabled, allow_jwt_bearer)
 		VALUES ($1::uuid, 'p'||substr(gen_random_uuid()::text,1,8), 'Platform', 'oidc',
 		        'unused', $2, $3, true, true)
-		RETURNING id::text`, f.orgID, f.issuer, f.jwksServer.URL).Scan(&f.providerID); err != nil {
+		RETURNING id::text, slug`, f.orgID, f.issuer, f.jwksServer.URL).
+		Scan(&f.providerID, &f.providerSlug); err != nil {
 		t.Fatalf("fixture provider: %v", err)
 	}
 	// And the link that makes the assertion's subject mean somebody here.
@@ -147,11 +149,12 @@ func newAssertionFixture(t *testing.T) *assertionFixture {
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
-		                          client_secret_hash, grant_types, scopes, require_pkce)
+		                          client_secret_hash, grant_types, scopes, require_pkce,
+		                          jwt_bearer_providers)
 		VALUES ($1,$2::uuid,'T','confidential',$3,
 		        ARRAY['authorization_code','urn:ietf:params:oauth:grant-type:jwt-bearer'],
-		        ARRAY['api.read','api.write'], false)`,
-		f.clientID, f.orgID, hash); err != nil {
+		        ARRAY['api.read','api.write'], false, ARRAY[$4::text])`,
+		f.clientID, f.orgID, hash, f.providerSlug); err != nil {
 		t.Fatalf("fixture client: %v", err)
 	}
 
@@ -558,5 +561,88 @@ func TestAnAssertionForAnUnrelatedEndpointIsStillRefused(t *testing.T) {
 		if code, _ := f.grant(t, a, nil); code == http.StatusOK {
 			t.Errorf("an assertion addressed to %q was accepted", aud)
 		}
+	}
+}
+
+// A client may only present assertions from providers it is paired with.
+//
+// # The gap this closes
+//
+// Two gates already existed and neither related the two: the provider must be
+// opted in to the grant, and the client must be registered for it. In an
+// organisation trusting both a CI platform and a Kubernetes cluster, a client
+// that exists to let one pipeline reach one API could spend a pod's
+// service-account token instead. Nothing crosses a tenant boundary and it is
+// still authority nobody granted.
+//
+// Found by reading the competitor's implementation, which has the same list.
+func TestAClientCannotUseAProviderItIsNotPairedWith(t *testing.T) {
+	f := newAssertionFixture(t)
+
+	// It works while paired — otherwise this test passes for the wrong reason.
+	if code, body := f.grant(t, f.assert(t, nil), nil); code != http.StatusOK {
+		t.Fatalf("the paired fixture does not work: %d %v", code, body)
+	}
+
+	// Unpair it, leaving the grant registration and the provider opt-in intact.
+	if _, err := f.pool.Exec(context.Background(),
+		`UPDATE core.clients SET jwt_bearer_providers = '{}' WHERE client_id = $1`,
+		f.clientID); err != nil {
+		t.Fatal(err)
+	}
+	code, body := f.grant(t, f.assert(t, nil), nil)
+	if code == http.StatusOK {
+		t.Fatal("a client paired with no provider still spent an assertion; the " +
+			"grant registration alone is not supposed to be sufficient")
+	}
+	if body["error"] != "invalid_grant" {
+		t.Errorf("error = %v, want invalid_grant", body["error"])
+	}
+
+	// Paired with a DIFFERENT provider is also a refusal — this is the real
+	// shape of the gap, not merely the unconfigured case.
+	if _, err := f.pool.Exec(context.Background(),
+		`UPDATE core.clients SET jwt_bearer_providers = ARRAY['some-other-issuer']
+		 WHERE client_id = $1`, f.clientID); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := f.grant(t, f.assert(t, nil), nil); code == http.StatusOK {
+		t.Fatal("a client paired with another provider spent this provider's assertion")
+	}
+
+	// And restoring the pairing restores the grant, so the refusals above are
+	// the pairing and not something else that broke along the way.
+	if _, err := f.pool.Exec(context.Background(),
+		`UPDATE core.clients SET jwt_bearer_providers = ARRAY[$2::text] WHERE client_id = $1`,
+		f.clientID, f.providerSlug); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := f.grant(t, f.assert(t, nil), nil); code != http.StatusOK {
+		t.Fatalf("re-pairing did not restore the grant: %d %v", code, body)
+	}
+}
+
+// The refusal must not confirm that the issuer is trusted here.
+//
+// A distinct "this client may not use that provider" would tell a caller that the
+// issuer they named IS configured — and tell it to the one caller who has just
+// been refused. That is the enumeration the shared message exists to prevent.
+func TestAPairingRefusalIsIndistinguishableFromAnUnknownIssuer(t *testing.T) {
+	f := newAssertionFixture(t)
+	if _, err := f.pool.Exec(context.Background(),
+		`UPDATE core.clients SET jwt_bearer_providers = '{}' WHERE client_id = $1`,
+		f.clientID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, paired := f.grant(t, f.assert(t, nil), nil)
+	_, unknown := f.grant(t, f.assert(t, func(c map[string]any) {
+		c["iss"] = "https://not-trusted-at-all.example"
+	}), nil)
+
+	if paired["error_description"] != unknown["error_description"] ||
+		paired["error"] != unknown["error"] {
+		t.Errorf("a pairing refusal is distinguishable from an unknown issuer:\n  "+
+			"paired:  %v\n  unknown: %v", paired, unknown)
 	}
 }

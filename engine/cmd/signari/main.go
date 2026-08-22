@@ -124,6 +124,7 @@ commands:
   client create       register an OAuth client
   client set-keys     switch a client to private_key_jwt with its public JWKS
   client set-tls      authenticate a client by TLS certificate (RFC 8705)
+  client set-assertion-issuers  which issuers' assertions a client may exchange
   janitor once        run one maintenance pass (serve runs this continuously)
   import keycloak     import users and clients from a Keycloak realm export
   import authentik    import users and groups from an authentik dumpdata export
@@ -213,6 +214,8 @@ func run(args []string) error {
 	promoteNow := fs.Bool("now", false, "promote without waiting for the publication dwell -- key compromise only")
 	allowAssertions := fs.Bool("allow-assertions", false, "`idp assertions`: let this provider's JWTs be exchanged for tokens (RFC 7523)")
 	jwksURL := fs.String("jwks-url", "", "`idp add-issuer`: URL publishing the issuer's signing keys")
+	assertionIssuers := fs.String("issuers", "",
+		"`client set-assertion-issuers`: comma-separated provider slugs, or empty to permit none")
 	appURL := fs.String("app", "", "protected application URL, as the browser reaches it (proxy check)")
 	origin := fs.String("origin", "", "the application's own address, to test the bypass (proxy check)")
 	probePath := fs.String("path", "", "extra path to probe, repeatable as a comma-separated list (proxy check)")
@@ -507,6 +510,8 @@ func run(args []string) error {
 	case "client set-tls":
 		return clientSetTLS(ctx, conn, *clientID, *tlsSubjectDN, *tlsSANDNS, *tlsSANURI,
 			*tlsSANIP, *tlsSANEmail, *spCert, *tlsBound)
+	case "client set-assertion-issuers":
+		return clientSetAssertionIssuers(ctx, conn, *clientID, *assertionIssuers)
 	case "client set-exchange-containment":
 		return clientSetExchangeContainment(ctx, conn, *clientID, *exchangeAudMatch)
 	case "client set-dpop":
@@ -2270,6 +2275,93 @@ func idpList(ctx context.Context, conn *pgx.Conn) error {
 		fmt.Println("(none registered -- add one with `signari idp add`)")
 	}
 	return rows.Err()
+}
+
+// clientSetAssertionIssuers pairs a client with the issuers it may use.
+//
+// # Why this exists separately from registering the grant
+//
+// Registering a client for `urn:ietf:params:oauth:grant-type:jwt-bearer` says it
+// may use the grant. It does not say WHOSE assertions it may use, and in an
+// organisation that trusts more than one issuer those are different questions: a
+// client that exists to let one CI pipeline reach one API should not be able to
+// spend a Kubernetes pod's service-account token because both issuers happen to
+// be configured in the same organisation.
+//
+// An empty list permits NOTHING, which is why this command exists at all -- a
+// client registered for the grant and paired with nobody cannot use it, and that
+// is the intended default for every client that predates this.
+func clientSetAssertionIssuers(ctx context.Context, conn *pgx.Conn, clientID, list string) error {
+	if clientID == "" {
+		return fmt.Errorf("-client-id is required")
+	}
+
+	// Non-nil, and that is load-bearing rather than style. A nil slice is
+	// encoded as SQL NULL, and the column is NOT NULL -- so clearing the list,
+	// which is the one operation an operator reaches for in a hurry, failed with
+	// a constraint violation. The unit tests never saw it because they set the
+	// column through SQL directly; only running the command did.
+	slugs := []string{}
+	for _, sl := range strings.Split(list, ",") {
+		if sl = strings.TrimSpace(sl); sl != "" {
+			slugs = append(slugs, sl)
+		}
+	}
+
+	// The client's organisation, so the slugs can be checked against providers
+	// that actually exist in it. A typo here produces a client that is refused at
+	// runtime with a message that deliberately explains nothing -- the grant's
+	// refusals are uniform so they cannot be used to enumerate issuers -- so the
+	// mistake has to be caught here or not at all.
+	var orgID string
+	if err := conn.QueryRow(ctx,
+		`SELECT org_id::text FROM core.clients WHERE client_id = $1`, clientID).Scan(&orgID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no client %q", clientID)
+		}
+		return err
+	}
+
+	for _, sl := range slugs {
+		var enabled, allowed bool
+		err := conn.QueryRow(ctx, `
+			SELECT enabled, allow_jwt_bearer FROM core.identity_providers
+			WHERE org_id = $1::uuid AND slug = $2`, orgID, sl).Scan(&enabled, &allowed)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no identity provider %q in this client's organisation; "+
+				"`signari idp list` shows the registered ones", sl)
+		}
+		if err != nil {
+			return err
+		}
+		// Reported, not refused. The operator may legitimately be pairing ahead
+		// of enabling, and refusing would force them to do it in an order the
+		// tool chose.
+		if !allowed {
+			fmt.Printf("NOTE: %s does not accept assertions yet. Allow it with:\n"+
+				"  signari idp assertions -slug %s -allow-assertions\n", sl, sl)
+		}
+		if !enabled {
+			fmt.Printf("NOTE: %s is disabled, so nothing from it will be accepted.\n", sl)
+		}
+	}
+
+	tag, err := conn.Exec(ctx, `
+		UPDATE core.clients SET jwt_bearer_providers = $2, updated_at = now()
+		WHERE client_id = $1`, clientID, slugs)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no client %q", clientID)
+	}
+
+	if len(slugs) == 0 {
+		fmt.Printf("%s may no longer exchange assertions from any issuer.\n", clientID)
+		return nil
+	}
+	fmt.Printf("%s may exchange assertions from: %s\n", clientID, strings.Join(slugs, ", "))
+	return nil
 }
 
 // idpAddIssuer registers an issuer that only publishes signing keys.

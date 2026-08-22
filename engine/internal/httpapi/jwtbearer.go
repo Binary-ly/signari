@@ -95,6 +95,29 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		return
 	}
 
+	// Step one-and-a-half: may THIS client use THIS provider?
+	//
+	// Two gates already passed — the provider is opted in to the grant, and the
+	// client is registered for it — and neither relates the two. In an
+	// organisation trusting both a CI platform and a Kubernetes cluster, a client
+	// that exists to let one pipeline reach one API could otherwise spend a pod's
+	// service-account token. Nothing crosses a tenant boundary and it is still
+	// authority nobody granted.
+	//
+	// Refused with the SAME sentence as every other failure, deliberately. A
+	// distinct "this client may not use that provider" would confirm that the
+	// named issuer is trusted here, which is the enumeration the shared message
+	// exists to prevent — and it would confirm it to a caller who has just been
+	// told they may not use it.
+	if !c.MayUseAssertionsFrom(provider.Slug) {
+		s.log.Info("jwt-bearer: client is not paired with this provider",
+			"client_id", c.ClientID, "provider", provider.Slug,
+			"permitted", c.JWTBearerProviders, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: assertionRefused, Status: http.StatusBadRequest})
+		return
+	}
+
 	// Step two: the signature, against that provider's published keys only.
 	hc := &http.Client{Timeout: federationTimeout}
 	payload, err := federation.VerifyAssertion(ctx, hc, &s.assertionKeys, *provider, assertion)

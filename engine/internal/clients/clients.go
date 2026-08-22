@@ -49,13 +49,17 @@ type Client struct {
 
 	// Mutual-TLS, RFC 8705. Exactly one of the first four is set; the database
 	// enforces that with a CHECK constraint.
-	TLSSubjectDN   string
-	TLSSANDNS      string
-	TLSSANURI      string
-	TLSSANIP       string
-	TLSSANEmail    string
-	TLSThumbprint  []byte
-	TLSBoundTokens bool
+	TLSSubjectDN string
+	TLSSANDNS    string
+	TLSSANURI    string
+	TLSSANIP     string
+	TLSSANEmail  string
+	// JWTBearerProviders are the identity-provider slugs whose assertions this
+	// client may exchange (RFC 7523 §2.1). EMPTY PERMITS NONE -- see
+	// MayUseAssertionsFrom.
+	JWTBearerProviders []string
+	TLSThumbprint      []byte
+	TLSBoundTokens     bool
 
 	// DPoPBoundAccessTokens is RFC 9449 §5.2's client registration metadata:
 	// "A boolean value specifying whether the client always uses DPoP for token
@@ -147,7 +151,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce, pkce_methods,
 		       id_token_signed_alg, refresh_token_ttl_s, first_party, issuer_alias,
-		       may_exchange, exchange_audiences,
+		       may_exchange, exchange_audiences, jwt_bearer_providers,
 		       tls_subject_dn, tls_san_dns, tls_san_uri, tls_san_ip, tls_san_email,
 		       tls_thumbprint, tls_bound_tokens,
 		       allow_hybrid, token_endpoint_auth_method, dpop_bound_access_tokens,
@@ -159,7 +163,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
 			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE, &c.PKCEMethods,
 			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias,
-			&c.MayExchange, &c.ExchangeAudiences,
+			&c.MayExchange, &c.ExchangeAudiences, &c.JWTBearerProviders,
 			&tlsDN, &tlsDNS, &tlsURI, &tlsIP, &tlsEmail,
 			&c.TLSThumbprint, &c.TLSBoundTokens,
 			&c.AllowHybrid, &c.TokenEndpointAuthMethod, &c.DPoPBoundAccessTokens,
@@ -348,6 +352,32 @@ func contains(hay []string, needle string) bool {
 }
 
 var _ = Store{}
+
+// MayUseAssertionsFrom reports whether this client may present an assertion from
+// a given provider.
+//
+// # An empty list permits nothing
+//
+// This is the rule most likely to be "simplified" later, because a column that
+// defaults to empty invites reading empty as "unset, so allow". It is not unset:
+// it is every client that has never been configured for this, which is precisely
+// the population the pairing exists to constrain.
+//
+// The same reasoning is already written down for SSF event sources in this
+// codebase -- "reading that as 'everything' is how a half-made configuration
+// becomes a live grant" -- and it applies more sharply here, because this list
+// gates a credential that mints tokens for a user with nobody present.
+func (c *Client) MayUseAssertionsFrom(slug string) bool {
+	if slug == "" {
+		return false
+	}
+	for _, s := range c.JWTBearerProviders {
+		if s == slug {
+			return true
+		}
+	}
+	return false
+}
 
 // TLSExpectation is what this client's certificate must satisfy, if any.
 func (c *Client) TLSExpectation() clientauth.TLSExpectation {

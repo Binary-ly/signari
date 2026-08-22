@@ -6,6 +6,8 @@ signari idp add-issuer -org <uuid> -slug github-actions \
     -jwks-url https://token.actions.githubusercontent.com/.well-known/jwks
 
 signari idp assertions -slug github-actions -allow-assertions
+
+signari client set-assertion-issuers -client-id ci-deploy -issuers github-actions
 ```
 
 Two commands because they are two decisions: the first records that an issuer
@@ -49,8 +51,9 @@ to everything granted for the other.
 
 ## What has to be true for a grant to succeed
 
-1. The client is **confidential** and registered for
-   `urn:ietf:params:oauth:grant-type:jwt-bearer`.
+1. The client is **confidential**, registered for
+   `urn:ietf:params:oauth:grant-type:jwt-bearer`, and **paired with this specific
+   issuer** — see below.
 2. A provider **in the client's organisation** is enabled, opted in, and its
    effective issuer equals the assertion's `iss`.
 3. The signature verifies against that provider's published JWKS.
@@ -69,6 +72,31 @@ client credentials enumerate a deployment's trusted issuers using assertions tha
 are not signed at all. Separating "subject not linked" from "account disabled"
 would enumerate accounts. A test asserts that seven different causes produce one
 identical response.
+
+## Pairing, and why registering the grant is not enough
+
+Two gates are not sufficient on their own, because they do not relate to each
+other: the provider must be opted in, and the client must hold the grant. In an
+organisation that trusts both a CI platform and a Kubernetes cluster, a client
+that exists to let one pipeline reach one API could otherwise spend a pod's
+service-account token. Nothing crosses a tenant boundary, and it is still
+authority nobody granted.
+
+So a client also carries the list of issuers it may use:
+
+```sh
+signari client set-assertion-issuers -client-id ci-deploy -issuers github-actions
+```
+
+**An empty list permits nothing** — not everything. That is the default for every
+client, including ones registered before this existed, which is the population the
+pairing is for. The same rule is written down elsewhere in this engine for SSF
+event sources: reading an empty list as "everything" is how a half-made
+configuration becomes a live grant.
+
+A refusal here returns the same sentence as every other refusal. A distinct "this
+client may not use that provider" would confirm that the named issuer *is* trusted
+here — to the one caller who has just been told they may not use it.
 
 ## The claim rules
 

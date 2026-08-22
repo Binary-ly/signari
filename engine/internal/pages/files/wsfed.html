@@ -1,0 +1,16 @@
+{{define "title"}}Signing you in…{{end}}
+{{define "style"}}<style>body{font-family:system-ui,sans-serif;max-width:22rem;margin:6rem auto;
+padding:0 1rem;text-align:center}button{padding:.6rem 1rem;font-size:1rem}</style>{{end}}
+{{define "usebare"}}{{end}}
+{{define "content"}}
+<form method="POST" action="{{.Action}}">
+<input type="hidden" name="wa" value="wsignin1.0">
+<input type="hidden" name="wresult" value="{{.WResult}}">
+{{if .WCtx}}<input type="hidden" name="wctx" value="{{.WCtx}}">{{end}}
+<noscript>
+<p>Continue to finish signing in.</p>
+<button type="submit">Continue</button>
+</noscript>
+</form>
+<script nonce="{{.Nonce}}">document.forms[0].submit();</script>
+{{end}}

@@ -323,7 +323,7 @@ func (s *Server) clientRequiresPAR(ctx context.Context, clientID string) (bool, 
 func (s *Server) renderAuthzFailure(w http.ResponseWriter, r *http.Request, reason string) {
 	htmlPageHeaders(w)
 	w.WriteHeader(http.StatusBadRequest)
-	_ = federationErrorPage.Execute(w, map[string]string{
+	s.renderPage(w, r, "federr", map[string]any{
 		"Reason":        reason,
 		"CorrelationID": correlationID(r.Context()),
 	})

@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"html/template"
 	"net/http"
 	"net/url"
 )
@@ -112,7 +111,7 @@ func (s *Server) renderFrontChannelLogout(w http.ResponseWriter, r *http.Request
 	if continueTo == "" {
 		continueTo = "/"
 	}
-	_ = frontChannelPage.Execute(w, map[string]any{
+	s.renderBare(w, "fclogout", map[string]any{
 		"Targets":    targets,
 		"ContinueTo": continueTo,
 		// Seconds before the page moves on regardless. A relying party that never
@@ -127,16 +126,3 @@ func (s *Server) renderFrontChannelLogout(w http.ResponseWriter, r *http.Request
 // A meta refresh, not a script: the CSP on this page forbids script entirely,
 // and adding 'unsafe-inline' to allow one would weaken the page that renders
 // third-party URLs. The frames still load; only the continuation is declarative.
-var frontChannelPage = template.Must(template.New("fclogout").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="{{.WaitSeconds}};url={{.ContinueTo}}">
-<title>Signing out&hellip;</title>
-<style>body{font-family:system-ui,sans-serif;max-width:24rem;margin:4rem auto;padding:0 1rem}
-iframe{display:none}p{color:#444}</style></head>
-<body>
-<h1>Signing you out</h1>
-<p>Signing you out of {{len .Targets}} application(s). This page will continue
-automatically.</p>
-{{range .Targets}}<iframe src="{{.URL}}" title="logout"></iframe>{{end}}
-<p><a href="{{.ContinueTo}}">Continue now</a></p>
-</body></html>`))

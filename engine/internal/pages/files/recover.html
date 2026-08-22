@@ -1,0 +1,14 @@
+{{define "title"}}Reset your password{{end}}
+{{define "style"}}<style>{{template "pagecss" .}}</style>{{end}}
+{{define "content"}}
+<h1>Reset your password</h1>
+<p class="hint">We will email every address on the account, and the reset will
+only become usable after a short delay &mdash; so a request you did not make
+cannot go through without you having a chance to stop it.</p>
+<form method="POST" action="/recover">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="u">Username or email</label>
+<input id="u" name="username" autocomplete="username" autocapitalize="none" autofocus required>
+<button type="submit">Send reset instructions</button>
+</form>
+{{end}}

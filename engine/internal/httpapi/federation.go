@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
-	"html/template"
 	"io"
 	"net/http"
 	"net/url"
@@ -386,17 +385,8 @@ func randomToken() (string, error) {
 func (s *Server) federationError(w http.ResponseWriter, r *http.Request, reason string) {
 	htmlPageHeaders(w)
 	w.WriteHeader(http.StatusBadRequest)
-	_ = federationErrorPage.Execute(w, map[string]string{
+	s.renderPage(w, r, "federr", map[string]any{
 		"Reason":        reason,
 		"CorrelationID": correlationID(r.Context()),
 	})
 }
-
-var federationErrorPage = template.Must(template.New("federr").Parse(`<!DOCTYPE html>
-<html><head><title>Sign-in could not be completed</title></head>
-<body>
-<h1>Sign-in could not be completed</h1>
-<p>{{.Reason}}</p>
-<p><a href="/login">Back to sign in</a></p>
-<p>Reference: <code>{{.CorrelationID}}</code></p>
-</body></html>`))

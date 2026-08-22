@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html/template"
 	"net/http"
 	"strings"
 	"time"
@@ -34,7 +33,7 @@ func (s *Server) handleRecoverGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	s.renderPage(w, r, recoverPage, map[string]any{"CSRF": csrf, "CSRFField": csrfFormField})
+	s.renderPage(w, r, "recover", map[string]any{"CSRF": csrf, "CSRFField": csrfFormField})
 }
 
 // handleRecoverPost creates a request and notifies the account.
@@ -61,7 +60,7 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.renderPage(w, r, recoverSentPage, map[string]any{})
+	s.renderPage(w, r, "sent", map[string]any{})
 }
 
 // beginRecovery does the work for an identifier that may not exist.
@@ -183,7 +182,7 @@ func (s *Server) handleRecoverCancel(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	_, hash, err := hashRecoveryToken(r.URL.Query().Get("token"))
 	if err != nil {
-		s.renderPage(w, r, recoverCancelledPage, map[string]any{})
+		s.renderPage(w, r, "cancelled", map[string]any{})
 		return
 	}
 
@@ -216,7 +215,7 @@ func (s *Server) handleRecoverCancel(w http.ResponseWriter, r *http.Request) {
 	// twice, sometimes by a scanner that prefetches it; "already cancelled" would
 	// alarm someone who did exactly the right thing, and confirming a token was
 	// real would help someone guessing.
-	s.renderPage(w, r, recoverCancelledPage, map[string]any{})
+	s.renderPage(w, r, "cancelled", map[string]any{})
 }
 
 // handleResetGet shows the new-password form once the delay has elapsed.
@@ -224,7 +223,7 @@ func (s *Server) handleResetGet(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	_, hash, err := hashRecoveryToken(token)
 	if err != nil {
-		s.renderPage(w, r, resetPage, map[string]any{"Error": "That link is not valid."})
+		s.renderPage(w, r, "reset", map[string]any{"Error": "That link is not valid."})
 		return
 	}
 
@@ -246,15 +245,15 @@ func (s *Server) handleResetGet(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(lerr, store.ErrRecoveryPending):
 		// Told exactly when, because "try again later" with no time is advice
 		// nobody can act on.
-		s.renderPage(w, r, resetPage, map[string]any{
+		s.renderPage(w, r, "reset", map[string]any{
 			"Pending": true,
 			"When":    req.EffectiveAt.UTC().Format("15:04 MST on 2 January"),
 			"Wait":    time.Until(req.EffectiveAt).Round(time.Minute).String(),
 		})
 	case lerr != nil:
-		s.renderPage(w, r, resetPage, map[string]any{"Error": "That link is not valid or has expired."})
+		s.renderPage(w, r, "reset", map[string]any{"Error": "That link is not valid or has expired."})
 	default:
-		s.renderPage(w, r, resetPage, map[string]any{
+		s.renderPage(w, r, "reset", map[string]any{
 			"Ready": true, "Token": token, "CSRF": csrf, "CSRFField": csrfFormField,
 		})
 	}
@@ -276,7 +275,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 
 	_, hash, err := hashRecoveryToken(r.PostForm.Get("token"))
 	if err != nil {
-		s.renderPage(w, r, resetPage, map[string]any{"Error": "That link is not valid."})
+		s.renderPage(w, r, "reset", map[string]any{"Error": "That link is not valid."})
 		return
 	}
 
@@ -291,7 +290,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Pending and invalid are shown the same way here. By the time a form is
 		// being submitted, the difference only matters to someone probing.
-		s.renderPage(w, r, resetPage, map[string]any{"Error": "That link is not valid or has expired."})
+		s.renderPage(w, r, "reset", map[string]any{"Error": "That link is not valid or has expired."})
 		return
 	}
 
@@ -309,7 +308,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	}
 	identity, _ := store.EmailForUser(ctx, tx, req.UserID)
 	if res, cerr := s.pwPolicy.Check(ctx, password, identity, previous, s.hasher); cerr != nil {
-		s.renderPage(w, r, resetPage, map[string]any{
+		s.renderPage(w, r, "reset", map[string]any{
 			"Ready": true, "Token": r.PostForm.Get("token"), "Error": cerr.Error(),
 		})
 		return
@@ -334,7 +333,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := store.ConsumeRecovery(ctx, tx, req.ID, req.UserID, newHash); err != nil {
 		s.log.Error("consuming recovery", "err", err)
-		s.renderPage(w, r, resetPage, map[string]any{"Error": "That link is not valid or has expired."})
+		s.renderPage(w, r, "reset", map[string]any{"Error": "That link is not valid or has expired."})
 		return
 	}
 	if err := audit.Write(ctx, tx, audit.Event{
@@ -364,7 +363,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	s.renderPage(w, r, resetDonePage, map[string]any{})
+	s.renderPage(w, r, "done", map[string]any{})
 }
 
 // newRecoveryToken returns the token and its hash.
@@ -383,78 +382,5 @@ func hashRecoveryToken(token string) (string, []byte, error) {
 	return token, store.HashToken(token), nil
 }
 
-var recoverPage = template.Must(template.New("recover").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Reset your password</title><style>` + pageCSS + `</style></head>
-<body>
-<h1>Reset your password</h1>
-<p class="hint">We will email every address on the account, and the reset will
-only become usable after a short delay &mdash; so a request you did not make
-cannot go through without you having a chance to stop it.</p>
-<form method="POST" action="/recover">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="u">Username or email</label>
-<input id="u" name="username" autocomplete="username" autocapitalize="none" autofocus required>
-<button type="submit">Send reset instructions</button>
-</form>
-</body></html>`))
-
 // One page for every outcome. Saying "we sent it" only when the account exists
 // turns this form into an account enumerator.
-var recoverSentPage = template.Must(template.New("sent").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Check your email</title><style>` + pageCSS + `</style></head>
-<body>
-<h1>Check your email</h1>
-<p>If an account matches what you entered, we have emailed reset instructions to
-every address on it.</p>
-<p class="hint">The email includes a link to cancel, in case the request was not
-yours. Cancelling needs no sign-in.</p>
-</body></html>`))
-
-var recoverCancelledPage = template.Must(template.New("cancelled").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Reset cancelled</title><style>` + pageCSS + `</style></head>
-<body>
-<h1>That reset has been cancelled</h1>
-<p>The link will not work. Nothing about your account has changed.</p>
-<p class="hint">If you did not request the reset, your password is still safe,
-but somebody knows your address. Consider turning on two-factor authentication.</p>
-</body></html>`))
-
-var resetPage = template.Must(template.New("reset").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Choose a new password</title><style>` + pageCSS + `</style></head>
-<body>
-<h1>Choose a new password</h1>
-{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-{{if .Pending}}
-<p>This reset is not usable yet. It becomes available at <strong>{{.When}}</strong>
-&mdash; about {{.Wait}} from now.</p>
-<p class="hint">The wait is deliberate: it is the window in which a reset you did
-not ask for can still be cancelled from the link in your email.</p>
-{{end}}
-{{if .Ready}}
-<form method="POST" action="/recover/reset">
-<input type="hidden" name="token" value="{{.Token}}">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="p">New password</label>
-<input id="p" name="password" type="password" autocomplete="new-password" autofocus required minlength="8">
-<button type="submit">Set password and sign out everywhere</button>
-</form>
-{{end}}
-</body></html>`))
-
-var resetDonePage = template.Must(template.New("done").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Password changed</title><style>` + pageCSS + `</style></head>
-<body>
-<h1>Your password has been changed</h1>
-<p>Every signed-in session was ended, on every device.</p>
-<p><a href="/login">Sign in</a></p>
-</body></html>`))

@@ -1,0 +1,65 @@
+{{/*
+  The chrome every page is rendered inside.
+
+  Three hooks, and a page fills whichever it needs by redefining them. Go allows
+  a template to be redefined by a later Parse, and each page is parsed into its
+  own clone of this set, so a page's "title" is that page's and nothing else's.
+
+    title   the <title>, and nothing else
+    style   a <style> block for rules only this page needs
+    foot    anything after the content
+
+  The defaults below exist so a page that fills none of them still renders.
+  Declared HERE rather than with {{block}} inside each layout, because {{block}}
+  is define-and-invoke: writing it in both layouts would define "title" twice in
+  one namespace, which is a parse error rather than a fallback.
+*/}}
+{{define "title"}}{{if .BrandName}}{{.BrandName}}{{else}}Sign in{{end}}{{end}}
+{{define "style"}}{{end}}
+{{define "foot"}}{{end}}
+
+{{/*
+  layout is the chrome a PERSON sees.
+
+  The logo is here and only here. It used to be in the login page's own markup,
+  which is why it appeared on sign-in and on nothing else -- including the
+  consent screen and the two-factor challenge, the two pages where somebody is
+  most explicitly being asked to check where they are.
+
+  The shared stylesheet comes first and a page's own rules come second, so a page
+  that wants a narrower column or a different button simply says so and wins on
+  source order without needing to out-specify anything.
+*/}}
+{{define "layout"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{template "title" .}}</title>
+<style>{{template "pagecss" .}}</style>
+{{template "style" .}}</head>
+<body>
+{{if .BrandLogo}}<img class="brand" src="{{.BrandLogo}}" alt="{{.BrandName}}">{{end}}
+{{template "content" .}}
+{{template "foot" .}}
+</body></html>
+{{end}}
+
+{{/*
+  bare is the chrome a BROWSER sees.
+
+  For the auto-posting bridges: the SAML POST binding, the form_post response
+  mode, WS-Federation, front-channel logout, and the remote-access viewer. A
+  browser submits these within a redirect or a frame and a person never reads
+  one, so a logo is two requests in the middle of a sign-on and a stylesheet is
+  one more thing that can fail to load and leave the redirect hanging.
+
+  They keep the security headers -- see renderBare -- because they still carry an
+  assertion and an error message.
+*/}}
+{{define "bare"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>{{template "title" .}}</title>
+{{template "style" .}}</head>
+<body>
+{{template "content" .}}
+</body></html>
+{{end}}

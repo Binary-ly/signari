@@ -1,0 +1,10 @@
+{{define "title"}}Signing in&hellip;{{end}}
+{{define "usebare"}}{{end}}
+{{define "content"}}
+<noscript><p>JavaScript is disabled. Continue to complete signing in.</p></noscript>
+<form method="post" action="{{.ACS}}">
+<input type="hidden" name="SAMLResponse" value="{{.Response}}">
+{{if .RelayState}}<input type="hidden" name="RelayState" value="{{.RelayState}}">{{end}}
+<noscript><button type="submit">Continue</button></noscript>
+</form>
+{{end}}

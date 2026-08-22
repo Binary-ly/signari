@@ -1,0 +1,21 @@
+{{define "title"}}Choose a new password{{end}}
+{{define "style"}}<style>{{template "pagecss" .}}</style>{{end}}
+{{define "content"}}
+<h1>Choose a new password</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+{{if .Pending}}
+<p>This reset is not usable yet. It becomes available at <strong>{{.When}}</strong>
+&mdash; about {{.Wait}} from now.</p>
+<p class="hint">The wait is deliberate: it is the window in which a reset you did
+not ask for can still be cancelled from the link in your email.</p>
+{{end}}
+{{if .Ready}}
+<form method="POST" action="/recover/reset">
+<input type="hidden" name="token" value="{{.Token}}">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="p">New password</label>
+<input id="p" name="password" type="password" autocomplete="new-password" autofocus required minlength="8">
+<button type="submit">Set password and sign out everywhere</button>
+</form>
+{{end}}
+{{end}}

@@ -1,0 +1,11 @@
+{{define "title"}}Your recovery codes{{end}}
+{{define "style"}}<style>{{template "pagecss" .}}</style>{{end}}
+{{define "content"}}
+<h1>Two-factor authentication is on</h1>
+<p><strong>Save these recovery codes now.</strong> Each one works once, and this is
+the only time they can be shown &mdash; only hashes are stored, so nobody can
+retrieve them for you later.</p>
+<ol>{{range .Codes}}<li>{{.}}</li>{{end}}</ol>
+<p class="hint">Keep them somewhere other than the device with your authenticator app.
+If you lose both, you lose the account.</p>
+{{end}}

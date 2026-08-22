@@ -138,6 +138,12 @@ See [CAPTCHA](captcha.md).
 | `SIGNARI_SCIM_CA_BUNDLE` | Roots for SCIM targets specifically |
 | `SIGNARI_ADMIN_TOKEN` | Bearer token for the admin API |
 
+## Appearance
+
+| | |
+|---|---|
+| `SIGNARI_THEME_DIR` | A directory of `.html` files replacing the built-in sign-in pages. Read **once, at startup** — a half-written file is a normal state for a directory somebody is editing, and these are the pages people sign in through. A page here that fails validation is refused *individually*: that page falls back to the built-in one and a warning is logged, so a mistyped filename cannot lock every user out of every application. Validate before deploying with `signari theme check`, which exits non-zero. See [theming.md](theming.md) |
+
 ## Duo
 
 | | |

@@ -1,0 +1,25 @@
+{{define "title"}}{{.Name}}{{end}}
+{{define "style"}}<style>
+html,body{margin:0;height:100%;background:#18181b;color:#fafafa;
+font-family:system-ui,sans-serif;overflow:hidden}
+header{display:flex;align-items:center;gap:1rem;padding:.5rem .9rem;
+background:#27272a;font-size:.85rem}
+header .name{font-weight:600}
+header .hint{color:#a1a1aa}
+header button{margin-left:auto;font:inherit;padding:.3rem .7rem;border-radius:4px;
+border:1px solid #52525b;background:#3f3f46;color:#fafafa;cursor:pointer}
+#screen{position:relative;width:100%;height:calc(100% - 2.4rem);
+display:flex;align-items:center;justify-content:center}
+#status{position:absolute;padding:.6rem 1rem;border-radius:6px;background:#3f3f46}
+#status.err{background:#7f1d1d}
+</style>{{end}}
+{{define "usebare"}}{{end}}
+{{define "content"}}
+<header>
+<span class="name">{{.Name}}</span>
+<span class="hint">{{.Protocol}}</span>
+<button id="disconnect" type="button">Disconnect</button>
+</header>
+<div id="screen"><div id="status" hidden></div></div>
+<script type="module" src="/rac.js"></script>
+{{end}}

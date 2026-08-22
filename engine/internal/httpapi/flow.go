@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -1804,7 +1803,7 @@ func (s *Server) writeAuthzError(w http.ResponseWriter, r *http.Request,
 	}
 	htmlPageHeaders(w)
 	w.WriteHeader(http.StatusBadRequest)
-	_ = errorPage.Execute(w, map[string]string{
+	s.renderPage(w, r, "err", map[string]any{
 		"Code":        e.Code,
 		"Description": e.Description,
 	})
@@ -1865,10 +1864,6 @@ func splitFields(s string) []string {
 	}
 	return out
 }
-
-var errorPage = template.Must(template.New("err").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Sign-in error</title></head>
-<body><h1>Sign-in error</h1><p><strong>{{.Code}}</strong></p><p>{{.Description}}</p></body></html>`))
 
 func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -2091,23 +2086,12 @@ func (s *Server) renderLogoutConfirmation(w http.ResponseWriter, r *http.Request
 	htmlPageHeaders(w)
 	// The action is the current URL including its query, so the parameters are
 	// resubmitted rather than re-derived.
-	_ = logoutConfirmPage.Execute(w, map[string]string{
+	s.renderPage(w, r, "logout", map[string]any{
 		"Action": r.URL.RequestURI(),
 		"CSRF":   tok,
 		"Field":  csrfFormField,
 	})
 }
-
-var logoutConfirmPage = template.Must(template.New("logout").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Sign out?</title></head>
-<body>
-<h1>Sign out?</h1>
-<p>An application asked to sign you out. Confirm that this is what you want.</p>
-<form method="post" action="{{.Action}}">
-<input type="hidden" name="{{.Field}}" value="{{.CSRF}}">
-<button type="submit">Sign out</button>
-</form>
-</body></html>`))
 
 // stepUpErrorCode maps a step-up reason to the OIDC error a client can act on.
 //

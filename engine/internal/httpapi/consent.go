@@ -3,7 +3,6 @@ package httpapi
 import (
 	"strings"
 
-	"html/template"
 	"net/http"
 	"net/url"
 	"signari.dev/engine/internal/rar"
@@ -172,7 +171,7 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request,
 	// user grants access they never saw.
 	w.Header().Set("X-Frame-Options", "DENY")
 
-	_ = consentPage.Execute(w, map[string]any{
+	s.renderPage(w, r, "consent", map[string]any{
 		"Client": c.DisplayName, "ClientID": c.ClientID,
 		"Scopes": items, "Details": describeDetails(details), "Authz": authzQuery,
 		"CSRF": csrf, "CSRFField": csrfFormField,
@@ -296,50 +295,6 @@ func parseQuery(q string) url.Values {
 	}
 	return vals
 }
-
-var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Authorize {{.Client}}</title>
-<style>body{font-family:system-ui,sans-serif;max-width:26rem;margin:3rem auto;padding:0 1rem}
-h1{font-size:1.3rem}ul{list-style:none;padding:0}
-li{padding:.6rem .75rem;background:#f4f4f5;border-radius:4px;margin:.4rem 0}
-.scope{color:#666;font-size:.8rem;display:block}
-.detail{background:#fff;border:1px solid #d4d4d8;border-radius:4px;padding:.7rem .75rem;margin:.4rem 0}
-.dtype{font-size:.8rem;color:#666;display:block;margin-bottom:.35rem}
-.drow{display:flex;gap:.5rem;font-size:.9rem;padding:.1rem 0}
-.dlabel{color:#666;min-width:6.5rem}
-.dval{font-weight:500;word-break:break-word}
-.row{display:flex;gap:.75rem;margin-top:1.5rem}
-button{flex:1;padding:.7rem 1rem;font-size:1rem}
-.allow{background:#18181b;color:#fff;border:0;border-radius:4px}
-.deny{background:#fff;border:1px solid #d4d4d8;border-radius:4px}</style></head>
-<body>
-<h1><strong>{{.Client}}</strong> wants access to your account</h1>
-{{if .Scopes}}
-<p>It is asking to:</p>
-<ul>
-{{range .Scopes}}<li>{{.Description}}<span class="scope">{{.Name}}</span></li>{{end}}
-</ul>
-{{end}}
-{{if .Details}}
-<p>And to perform this specific operation:</p>
-{{range .Details}}<div class="detail">
-<span class="dtype">{{.Type}}</span>
-{{range .Rows}}<div class="drow"><span class="dlabel">{{.Label}}</span><span class="dval">{{.Value}}</span></div>{{end}}
-</div>{{end}}
-{{end}}
-<form method="POST" action="/consent">
-<input type="hidden" name="authz" value="{{.Authz}}">
-<input type="hidden" name="client_id" value="{{.ClientID}}">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-{{range .Scopes}}<input type="hidden" name="scope" value="{{.Name}}">{{end}}
-<div class="row">
-<button class="deny" type="submit" name="decision" value="deny">Deny</button>
-<button class="allow" type="submit" name="decision" value="allow">Allow</button>
-</div>
-</form>
-</body></html>`))
 
 // clientFromAuthz reads the client id out of a parked authorization query.
 func clientFromAuthz(authzQuery string) string {

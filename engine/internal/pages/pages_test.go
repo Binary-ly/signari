@@ -1,0 +1,539 @@
+package pages
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// The page set, its layout, and what an override is allowed to do to it.
+//
+// Two things are being defended here and they pull in opposite directions. An
+// operator must be able to change what a page says, or they will fork the
+// repository and run a binary nobody audited. And an operator must NOT be able
+// to drop a CSRF token by accident, because the page still looks finished
+// afterwards.
+
+func loadOrFail(t *testing.T, dir string) *Set {
+	t.Helper()
+	set, problems, err := Load(dir)
+	if err != nil {
+		t.Fatalf("loading pages: %v", err)
+	}
+	if len(problems) > 0 {
+		t.Fatalf("unexpected refusals: %v", problems)
+	}
+	return set
+}
+
+// Every built-in page renders, under every branch, with nothing missing.
+//
+// The probe drives each page through all fourteen datasets -- every branch off,
+// every branch on, and one per boolean -- so a page whose form hides behind
+// `{{else if .Confirm}}` is exercised rather than skipped.
+func TestEveryBuiltInPageRenders(t *testing.T) {
+	src, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := loadOrFail(t, "")
+	if len(set.Names()) < 30 {
+		t.Fatalf("only %d pages loaded; the embedded directory is not complete",
+			len(set.Names()))
+	}
+	for _, name := range set.Names() {
+		if _, err := requirementsOf(src, name); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// The defect this package exists for.
+//
+// `signari brand set` reached the twenty pages rendered through renderPage and
+// not the thirteen that called Execute directly -- including the consent screen
+// and the two-factor challenge. Those are the two pages where a person is most
+// explicitly asked to check they are where they think they are, and they were
+// the ones with no logo on them.
+//
+// The logo now lives in the layout, so the only way to lose it on one page is to
+// lose it on all of them.
+func TestEveryPageAPersonSeesCarriesTheBrand(t *testing.T) {
+	src, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := loadOrFail(t, "")
+
+	data := probeVariants()[1] // every branch on
+	data["BrandLogo"] = "https://brand.example/logo.svg"
+	data["BrandName"] = "Example Corporation"
+
+	// The bridges a browser posts and nobody reads. Named individually rather
+	// than detected, so adding a page cannot quietly opt itself out of carrying
+	// the brand by looking like a bridge.
+	bridges := map[string]bool{
+		"saml": true, "formpost": true, "wsfed": true, "fclogout": true,
+		"racview": true,
+	}
+
+	for _, name := range set.Names() {
+		var sb strings.Builder
+		if err := set.Execute(&sb, name, data); err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		got := strings.Contains(sb.String(), "https://brand.example/logo.svg")
+		if bridges[name] {
+			if got {
+				t.Errorf("%s is an auto-posting bridge and should carry no logo: a "+
+					"person never reads it, and the image is an extra request in the "+
+					"middle of a sign-on", name)
+			}
+			continue
+		}
+		if !got {
+			t.Errorf("%s does not render the configured logo. An operator who sets "+
+				"one sees it on some pages and not others, which reads as a "+
+				"tampered-with deployment rather than a missing feature", name)
+		}
+	}
+	// The guard against this test passing vacuously: at least one bridge and a
+	// good many ordinary pages must have been examined.
+	if len(set.Names())-len(bridges) < 20 {
+		t.Fatalf("only %d non-bridge pages; this test is not covering the set",
+			len(set.Names())-len(bridges))
+	}
+	_ = src
+}
+
+// writeTheme puts files in a temporary directory and returns its path.
+func writeTheme(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name+".html"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// A theme that changes wording is accepted. This is the whole point.
+func TestAThemeMayChangeWhatAPageSays(t *testing.T) {
+	built, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Take the real login page and change only its heading.
+	themed := strings.Replace(built["login"], "<h1>Sign in</h1>",
+		"<h1>Welcome back to Example Corporation</h1>", 1)
+	if themed == built["login"] {
+		t.Fatal("the heading was not found, so this test would pass without " +
+			"testing anything")
+	}
+	dir := writeTheme(t, map[string]string{"login": themed})
+
+	set, problems, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) > 0 {
+		t.Fatalf("a theme that only changed a heading was refused: %v", problems)
+	}
+	var sb strings.Builder
+	if err := set.Execute(&sb, "login", probeVariants()[1]); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sb.String(), "Welcome back to Example Corporation") {
+		t.Error("the themed heading is not in the rendered page")
+	}
+	if set.Origin("login") == "built-in" {
+		t.Error("Origin still reports the built-in page")
+	}
+}
+
+// The refusals. Each drops exactly one thing from an otherwise working page.
+func TestAThemeMayNotDropWhatMakesThePageSafe(t *testing.T) {
+	built, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrfLine := regexp.MustCompile(`<input type="hidden" name="\{\{\.CSRFField\}\}"[^>]*>`)
+
+	cases := []struct {
+		name    string
+		page    string
+		spoil   func(string) string
+		mustSay string
+	}{
+		{
+			name: "the CSRF token", page: "login",
+			spoil:   func(s string) string { return csrfLine.ReplaceAllString(s, "") },
+			mustSay: "CSRF",
+		},
+		{
+			name: "the parked authorization request", page: "login",
+			spoil: func(s string) string {
+				return strings.Replace(s,
+					`<input type="hidden" name="authz" value="{{.Authz}}">`, "", 1)
+			},
+			mustSay: "Authz",
+		},
+		{
+			name: "where the form posts", page: "login",
+			spoil: func(s string) string {
+				return strings.Replace(s, `action="/login"`, `action="#"`, 1)
+			},
+			mustSay: "/login",
+		},
+		{
+			name: "the SAML response", page: "saml",
+			spoil: func(s string) string {
+				return strings.Replace(s,
+					`<input type="hidden" name="SAMLResponse" value="{{.Response}}">`, "", 1)
+			},
+			mustSay: "Response",
+		},
+		{
+			// The form_post response mode builds its hidden inputs from data, so
+			// there is no field name to look for -- only that the loop is still
+			// there. A theme that drops it renders a form that posts nothing.
+			name: "the loop that emits the response parameters", page: "formpost",
+			spoil: func(s string) string {
+				return regexp.MustCompile(`(?s)\{\{range \.Fields\}\}.*?\{\{end\}\}`).
+					ReplaceAllString(s, "")
+			},
+			mustSay: "hidden input",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spoiled := tc.spoil(built[tc.page])
+			if spoiled == built[tc.page] {
+				t.Fatal("the page was not modified, so this test proves nothing")
+			}
+			dir := writeTheme(t, map[string]string{tc.page: spoiled})
+
+			set, problems, err := Load(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(problems) == 0 {
+				t.Fatalf("a theme that dropped %s was accepted", tc.name)
+			}
+			if msg := problems[0].Error(); !strings.Contains(msg, tc.mustSay) {
+				t.Errorf("the refusal does not name what was lost (%q): %s",
+					tc.mustSay, msg)
+			}
+			// And the built-in is serving, so the deployment is not broken.
+			if set.Origin(tc.page) != "built-in" {
+				t.Errorf("the refused override is live; Origin says %q",
+					set.Origin(tc.page))
+			}
+			var sb strings.Builder
+			if err := set.Execute(&sb, tc.page, probeVariants()[1]); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(sb.String(), "action=\"#\"") {
+				t.Error("the refused markup is being rendered")
+			}
+		})
+	}
+}
+
+// Overriding the LAYOUT is the common case and must not need a page rewritten.
+func TestOverridingTheLayoutRestylesEveryPage(t *testing.T) {
+	built, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	themed := strings.Replace(built["layout"], "<body>",
+		`<body><div id="example-corp-chrome">`, 1)
+	themed = strings.Replace(themed, "</body>", "</div></body>", 1)
+	dir := writeTheme(t, map[string]string{"layout": themed})
+
+	set, problems, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) > 0 {
+		t.Fatalf("a layout that only added a wrapper was refused: %v", problems)
+	}
+	for _, name := range []string{"login", "consent", "mfa", "device"} {
+		var sb strings.Builder
+		if err := set.Execute(&sb, name, probeVariants()[1]); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(sb.String(), "example-corp-chrome") {
+			t.Errorf("%s did not pick up the overridden layout", name)
+		}
+	}
+}
+
+// A layout that drops the content is refused, and refused for every page.
+func TestALayoutThatSwallowsTheContentIsRefused(t *testing.T) {
+	built, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	themed := strings.Replace(built["layout"], `{{template "content" .}}`, "", 1)
+	if themed == built["layout"] {
+		t.Fatal("the content hook was not found")
+	}
+	dir := writeTheme(t, map[string]string{"layout": themed})
+	_, problems, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) == 0 {
+		t.Fatal("a layout that renders no page content was accepted; every form " +
+			"in the product would have vanished")
+	}
+}
+
+// A file naming a page this server does not have is reported, not ignored.
+func TestCheckReportsAFileThatWouldDoNothing(t *testing.T) {
+	dir := writeTheme(t, map[string]string{
+		"lgoin": `{{define "content"}}<p>typo</p>{{end}}`,
+	})
+	_, problems := Check(dir)
+	if len(problems) == 0 {
+		t.Fatal("a misnamed theme file was accepted silently, which is how " +
+			"somebody spends an afternoon wondering why their theme does nothing")
+	}
+	if !strings.Contains(problems[0].Error(), "lgoin") {
+		t.Errorf("the report does not name the file: %v", problems[0])
+	}
+}
+
+// Only the base name of a theme file is used, so nothing can reach outside.
+func TestOverridesCannotEscapeTheirDirectory(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(dir, "theme")
+	if err := os.MkdirAll(inner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "login.html"),
+		[]byte(`{{define "content"}}ESCAPED{{end}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A directory inside the theme dir is skipped, not descended into.
+	if err := os.MkdirAll(filepath.Join(inner, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inner, "nested", "login.html"),
+		[]byte(`{{define "content"}}NESTED{{end}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	set := loadOrFail(t, inner)
+	var sb strings.Builder
+	if err := set.Execute(&sb, "login", probeVariants()[1]); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sb.String(), "ESCAPED") || strings.Contains(sb.String(), "NESTED") {
+		t.Error("a file outside the theme directory was loaded")
+	}
+}
+
+// criticalFields must not fall behind the pages.
+//
+// The requirement is derived from the built-in, which means a NEW field is
+// protected the moment it appears -- but only if the field is on the list. This
+// is what keeps the list from rotting: every value the built-in pages put in a
+// hidden input has to be here, or explicitly waived below.
+func TestCriticalFieldsCoversEveryHiddenInput(t *testing.T) {
+	src, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// name="..." value="{{.X}}" — the fields a form carries invisibly.
+	hidden := regexp.MustCompile(
+		`<input[^>]*type="hidden"[^>]*value="\{\{\s*\$?\.([A-Za-z][A-Za-z0-9_]*)\s*\}\}"`)
+
+	// Values that are deliberately not critical, with the reason.
+	// Only the two loop variables. Everything else that reaches a hidden input
+	// is critical -- see criticalFields, which this test grew by six.
+	waived := map[string]string{
+		// `{{range .Fields}}<input name="{{.Name}}" value="{{.Value}}">` in the
+		// form_post, SAML and WS-Federation bridges. These are the loop's own
+		// variables rather than fields of the page, so there is no fixed value to
+		// require; the hidden-input COUNT is what protects the loop itself.
+		"Name":  "the response-parameter loop's own variable, not a page field",
+		"Value": "the response-parameter loop's own variable, not a page field",
+	}
+
+	missing := map[string]string{}
+	for name, body := range src {
+		if partials[name] {
+			continue
+		}
+		for _, m := range hidden.FindAllStringSubmatch(body, -1) {
+			f := m[1]
+			if contains(criticalFields, f) || waived[f] != "" {
+				continue
+			}
+			missing[f] = name
+		}
+	}
+	if len(missing) > 0 {
+		var lines []string
+		for f, page := range missing {
+			lines = append(lines, f+" (on the "+page+" page)")
+		}
+		t.Errorf("%d hidden field(s) are neither in criticalFields nor waived:\n  %s\n\n"+
+			"A theme could drop these and the override would still be accepted. Add "+
+			"each to criticalFields, or to the waived map with the reason it does "+
+			"not matter.", len(missing), strings.Join(lines, "\n  "))
+	}
+}
+
+// Origin tells an operator which file is live.
+func TestOriginNamesTheFileInForce(t *testing.T) {
+	built, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := writeTheme(t, map[string]string{"consent": built["consent"]})
+	set := loadOrFail(t, dir)
+	if got := set.Origin("consent"); !strings.HasSuffix(got, "consent.html") {
+		t.Errorf("Origin(consent) = %q, want the override path", got)
+	}
+	if got := set.Origin("login"); got != "built-in" {
+		t.Errorf("Origin(login) = %q, want built-in", got)
+	}
+}
+
+// A partial cannot be rendered as though it were a page.
+func TestPartialsAreNotPages(t *testing.T) {
+	set := loadOrFail(t, "")
+	for name := range partials {
+		if set.Has(name) {
+			t.Errorf("%q is reachable as a page", name)
+		}
+		var sb strings.Builder
+		if err := set.Execute(&sb, name, probeVariants()[0]); err == nil {
+			t.Errorf("%q rendered as a page", name)
+		}
+	}
+}
+
+// A nil Set answers rather than panicking.
+func TestANilSetAnswersInsteadOfPanicking(t *testing.T) {
+	var s *Set
+	var sb strings.Builder
+	if err := s.Execute(&sb, "login", nil); err == nil {
+		t.Fatal("a nil Set rendered something")
+	}
+}
+
+// A critical field read INSIDE a range is protected too.
+//
+// The backchannel approval page loops over pending requests and puts each one's
+// id in a hidden input, so the sentinel has to reach the loop element -- not
+// just the top-level data -- or no requirement is derived and the field could be
+// dropped freely.
+func TestAFieldInsideALoopIsStillProtected(t *testing.T) {
+	built, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The input STAYS and only its value is emptied, so the hidden-input count is
+	// unchanged. Deleting the whole line would be caught by the count rule and
+	// this test would pass with the sentinel machinery removed -- which is what
+	// it did until mutation said so.
+	spoiled := strings.Replace(built["backchannel"],
+		`<input type="hidden" name="id" value="{{.ID}}">`,
+		`<input type="hidden" name="id" value="">`, 1)
+	if spoiled == built["backchannel"] {
+		t.Fatal("the id field was not found, so this test proves nothing")
+	}
+	_, problems, err := Load(writeTheme(t, map[string]string{"backchannel": spoiled}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) == 0 {
+		t.Fatal("a theme that dropped the id of the request being approved was " +
+			"accepted: the approval form would post without saying what it approves")
+	}
+}
+
+// A branch that only renders in the middle of an if/else-if chain is probed.
+//
+// The device page hides its approval form behind `{{else if .Confirm}}`. Probed
+// only with everything true it never renders, and a requirement derived from
+// that would let a theme drop the form entirely.
+func TestAFormInAMiddleBranchIsStillProtected(t *testing.T) {
+	built, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spoiled := strings.Replace(built["device"],
+		`<input type="hidden" name="user_code" value="{{.UserCode}}">`, "", 1)
+	if spoiled == built["device"] {
+		t.Fatal("the user_code field was not found, so this test proves nothing")
+	}
+	_, problems, err := Load(writeTheme(t, map[string]string{"device": spoiled}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) == 0 {
+		t.Fatal("a theme that dropped the code identifying the device being " +
+			"approved was accepted, because the branch it lives in was never probed")
+	}
+}
+
+// A theme that only works when there is data to show is refused.
+//
+// This is what the all-branches-off probe is for. An empty list is an ordinary
+// state -- nobody has connected an application yet, there are no pending
+// requests -- and a theme that reaches into one is a page that breaks for
+// exactly the people who have not used the product yet.
+func TestAThemeThatBreaksOnEmptyDataIsRefused(t *testing.T) {
+	built, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spoiled := strings.Replace(built["connected"], `{{define "content"}}`,
+		`{{define "content"}}<p>First: {{(index .Apps 0).Name}}</p>`, 1)
+	if spoiled == built["connected"] {
+		t.Fatal("the content block was not found, so this test proves nothing")
+	}
+	_, problems, err := Load(writeTheme(t, map[string]string{"connected": spoiled}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) == 0 {
+		t.Fatal("a theme that indexes an empty list was accepted; it renders for " +
+			"anybody with a connected application and fails for everybody else")
+	}
+}
+
+// A DIRECTORY named like a page does not take the whole set down.
+//
+// os.ReadFile on a directory is an error, and overrideSources returning one
+// makes Load fail entirely -- so a stray `login.html/` would stop the server
+// rather than being skipped.
+func TestADirectoryNamedLikeAPageIsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "login.html"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	set, problems, err := Load(dir)
+	if err != nil {
+		t.Fatalf("a directory named login.html stopped the page set loading: %v", err)
+	}
+	if len(problems) > 0 {
+		t.Errorf("unexpected refusals: %v", problems)
+	}
+	if set.Origin("login") != "built-in" {
+		t.Error("the built-in login page is not in force")
+	}
+}

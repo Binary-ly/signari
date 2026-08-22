@@ -1,0 +1,6 @@
+{{define "title"}}Sign-in request refused{{end}}
+{{define "content"}}
+<h1>This sign-in request was refused</h1>
+<p>{{.Reason}}</p>
+<p>Reference: <code>{{.CorrelationID}}</code></p>
+{{end}}

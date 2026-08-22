@@ -109,6 +109,7 @@ var twoWordCommands = map[string]bool{
 	"federation": true,
 	"trust-mark": true,
 	"uma":        true,
+	"theme":      true,
 	"credential": true,
 	"rar":        true,
 }
@@ -170,6 +171,9 @@ commands:
   admin-token create  mint a scoped, revocable admin API token
   admin-token list    show admin tokens, their scopes and when each was last used
   admin-token revoke  revoke one immediately, with no restart
+  theme eject         write the built-in HTML pages out so they can be edited
+  theme check         validate a theme directory; non-zero if anything is refused
+  theme list          which page is built-in and which is overridden
   uma settings        offer, or stop offering, resource-owner intervention on refused UMA requests
   uma requests        UMA requests waiting for a resource owner to decide
   uma approve         grant a relation and let a submitted UMA request through
@@ -358,6 +362,10 @@ func run(args []string) error {
 	tmDelegation := fs.String("trust-mark-delegation", "",
 		"file containing a Trust Mark Delegation JWT to embed in the issued mark")
 	tmReason := fs.String("trust-mark-reason", "", "why the Trust Mark is being revoked")
+	themeDir := fs.String("theme-dir", "",
+		"directory of .html page overrides. Defaults to SIGNARI_THEME_DIR")
+	themeOnly := fs.String("theme-page", "", "eject only this page")
+	themeForce := fs.Bool("theme-force", false, "overwrite files that already exist (theme eject)")
 	umaIntervention := fs.Bool("owner-intervention", false,
 		"record refused UMA requests for a resource owner to decide (UMA 2.0 section 3.3.6 request_submitted). Off means a refusal is final")
 	umaPoll := fs.Duration("poll-interval", 30*time.Second,
@@ -480,6 +488,15 @@ func run(args []string) error {
 		return flowPaths(*flowFile, *flowName)
 	case "flow show":
 		return flowShow()
+	// The theme commands read files and nothing else. Dispatched here, before a
+	// DSN is required, because validating a theme is something you do in CI --
+	// where there is no database to reach and no reason to need one.
+	case "theme check":
+		return themeCheck(*themeDir)
+	case "theme eject":
+		return themeEject(*themeDir, *themeOnly, *themeForce)
+	case "theme list":
+		return themeList(*themeDir)
 	}
 
 	// `outpost run` is the whole point of an outpost: it holds NO database

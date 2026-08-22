@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"net/http"
 	"strings"
 	"time"
@@ -327,30 +326,6 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 	return nil, false, nil
 }
 
-var mfaPage = template.Must(template.New("mfa").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Two-factor authentication</title>
-<style>body{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem}
-label{display:block;margin:.75rem 0 .25rem}input{width:100%;padding:.5rem;font-size:1.25rem;letter-spacing:.2em}
-button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;width:100%}
-.err{color:#b00020;margin:.5rem 0}.hint{color:#666;font-size:.85rem}
-.ref{color:#666;font-size:.85rem;margin:.25rem 0}</style></head>
-<body>
-<h1>Two-factor authentication</h1>
-{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-{{if .Reference}}<p class="ref">Reference: <code>{{.Reference}}</code></p>{{end}}
-<form method="POST" action="/login/mfa">
-<input type="hidden" name="authz" value="{{.Authz}}">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="c">Code from your authenticator app</label>
-<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code"
-       autofocus required pattern="[0-9A-Za-z\- ]+">
-<p class="hint">Lost your device? Enter one of your recovery codes instead.</p>
-<button type="submit">Continue</button>
-</form>
-</body></html>`))
-
 func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, authzQuery, msg string) {
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
@@ -370,7 +345,7 @@ func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, authzQuery, m
 		ref = shortCode(correlationID(r.Context()))
 	}
 	w.WriteHeader(status)
-	_ = mfaPage.Execute(w, map[string]string{
+	s.renderPage(w, r, "mfa", map[string]any{
 		"Authz": authzQuery, "Error": msg, "CSRF": csrf,
 		"CSRFField": csrfFormField, "Reference": ref,
 	})

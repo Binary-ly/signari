@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"html/template"
 	"io"
 	"net/http"
 	"strings"
@@ -73,7 +72,7 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 			// Said now rather than after a password has been chosen. Refusing on
 			// submission means filling in a form to be told the link was dead
 			// before it was opened.
-			s.renderPage(w, r, signupPage, s.captchaFields(r, map[string]any{
+			s.renderPage(w, r, "signup", s.captchaFields(r, map[string]any{
 				"Error": "That invitation link is not valid. It may have been used " +
 					"already, or expired. Ask whoever invited you for a new one.",
 			}))
@@ -84,7 +83,7 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 		// A bound invitation fixes the address; showing it editable invites
 		// someone to change it and then be refused for no visible reason.
 		data["EmailFixed"] = inv.Email != ""
-		s.renderPage(w, r, signupPage, data)
+		s.renderPage(w, r, "signup", data)
 		return
 	}
 
@@ -99,7 +98,7 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 	if len(rule.AllowedDomains) > 0 {
 		data["Domains"] = strings.Join(rule.AllowedDomains, ", ")
 	}
-	s.renderPage(w, r, signupPage, data)
+	s.renderPage(w, r, "signup", data)
 }
 
 // handleSignupPost creates the account.
@@ -136,7 +135,7 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 			s.log.Info("captcha refused at sign-up", "err", cerr,
 				"correlation_id", correlationID(ctx))
 			csrf, _ := s.csrfToken(w, r)
-			s.renderPage(w, r, signupPage, s.captchaFields(r, map[string]any{
+			s.renderPage(w, r, "signup", s.captchaFields(r, map[string]any{
 				"Error":  "That challenge was not completed. Please try again.",
 				"Email":  strings.ToLower(strings.TrimSpace(r.PostFormValue("email"))),
 				"Invite": r.PostFormValue("invite"),
@@ -155,7 +154,7 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 		// The widget is re-rendered on failure. Without it the form comes back
 		// with no challenge, the next submission has nothing to send, and the
 		// person is refused for a reason the page does not show them.
-		s.renderPage(w, r, signupPage, s.captchaFields(r, map[string]any{
+		s.renderPage(w, r, "signup", s.captchaFields(r, map[string]any{
 			"Error": msg, "Email": email, "Invite": token,
 			"CSRF": csrf, "CSRFField": csrfFormField,
 		}))
@@ -251,7 +250,7 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	s.renderPage(w, r, signupDonePage, map[string]any{"Email": email})
+	s.renderPage(w, r, "signupdone", map[string]any{"Email": email})
 }
 
 // createAccount makes the user, the password credential and the memberships.
@@ -332,41 +331,3 @@ func (s *Server) signupRule(ctx context.Context) (*store.SignupRule, error) {
 	}
 	return store.LoadSignupRule(ctx, s.db, orgID)
 }
-
-var signupPage = template.Must(template.New("signup").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Create your account</title><style>` + pageCSS + `</style></head>
-<body>
-<h1>Create your account</h1>
-{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-{{if .CSRF}}
-<form method="POST" action="/signup">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-{{if .Invite}}<input type="hidden" name="invite" value="{{.Invite}}">{{end}}
-<label for="e">Email</label>
-{{if .EmailFixed}}
-<input id="e" name="email" type="email" value="{{.Email}}" readonly>
-<p class="hint">This invitation is for this address.</p>
-{{else}}
-<input id="e" name="email" type="email" value="{{.Email}}" autocomplete="username" required autofocus>
-{{if .Domains}}<p class="hint">Addresses at: {{.Domains}}</p>{{end}}
-{{end}}
-<label for="p">Password</label>
-<input id="p" name="password" type="password" autocomplete="new-password" required
-  minlength="8">
-<p class="hint">At least 8 characters. You can add a passkey once you are in.</p>
-` + captchaWidget + `<button type="submit">Create account</button>
-</form>
-{{end}}
-</body></html>`))
-
-var signupDonePage = template.Must(template.New("signupdone").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Account created</title><style>` + pageCSS + `</style></head>
-<body>
-<h1>Account created</h1>
-<p>{{.Email}} can now sign in.</p>
-<p><a href="/login">Sign in</a></p>
-</body></html>`))

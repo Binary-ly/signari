@@ -3,7 +3,6 @@ package httpapi
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"html/template"
 	"io"
 	"net/http"
 	"net/url"
@@ -149,7 +148,7 @@ func (s *Server) postAuthzResponse(w http.ResponseWriter, redirectURI string, p 
 	setCSP(w, "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
 		"form-action "+formActionOrigin(redirectURI)+"; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
-	_ = formPostPage.Execute(w, map[string]any{
+	s.renderBare(w, "formpost", map[string]any{
 		"Action": redirectURI, "Fields": fields, "Nonce": nonce,
 	})
 }
@@ -165,23 +164,6 @@ func formActionOrigin(redirectURI string) string {
 	}
 	return u.Scheme + "://" + u.Host
 }
-
-var formPostPage = template.Must(template.New("formpost").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<title>Signing you in…</title>
-<style>body{font-family:system-ui,sans-serif;max-width:22rem;margin:6rem auto;
-padding:0 1rem;text-align:center}button{padding:.6rem 1rem;font-size:1rem}</style>
-</head>
-<body>
-<form method="POST" action="{{.Action}}">
-{{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
-{{end}}<noscript>
-<p>Continue to finish signing in.</p>
-<button type="submit">Continue</button>
-</noscript>
-</form>
-<script nonce="{{.Nonce}}">document.forms[0].submit();</script>
-</body></html>`))
 
 // newCSPNonce mints a per-response nonce for an inline script.
 //

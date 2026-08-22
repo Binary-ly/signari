@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"html/template"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,42 +27,6 @@ type connectedApp struct {
 	Granted      string
 	ActiveTokens int
 }
-
-var connectedTmpl = template.Must(template.New("connected").Parse(`<!doctype html>
-<meta charset="utf-8"><title>Connected applications</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
- body{font-family:system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem}
- .app{border:1px solid #ddd;border-radius:.5rem;padding:1rem;margin:.75rem 0}
- .scopes{color:#555;font-size:.9rem;margin:.35rem 0}
- .meta{color:#777;font-size:.85rem}
- button{padding:.4rem .8rem}
- .none{color:#666}
- .note{background:#f6f6f6;border-radius:.5rem;padding:.75rem;font-size:.9rem;color:#444}
-</style>
-<h1>Connected applications</h1>
-{{if .Message}}<p class="note">{{.Message}}</p>{{end}}
-{{if not .Apps}}
-  <p class="none">No application has been granted access to your account.</p>
-{{else}}
-  {{range .Apps}}
-  <div class="app">
-    <strong>{{.Name}}</strong>
-    <div class="scopes">Can see: {{range $i, $s := .Scopes}}{{if $i}}, {{end}}{{$s}}{{end}}</div>
-    <div class="meta">
-      Granted {{.Granted}}.
-      {{if gt .ActiveTokens 0}}{{.ActiveTokens}} active session(s).{{else}}No active session.{{end}}
-    </div>
-    <form method="post" action="/account/connected/revoke" style="margin-top:.6rem">
-      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-      <input type="hidden" name="client_id" value="{{.ClientID}}">
-      <button type="submit">Remove access</button>
-    </form>
-  </div>
-  {{end}}
-{{end}}
-<p class="meta"><a href="/account">Back to your account</a></p>
-`))
 
 // handleConnectedApps lists what the user has granted.
 func (s *Server) handleConnectedApps(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +60,7 @@ func (s *Server) handleConnectedApps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	htmlPageHeaders(w)
-	_ = connectedTmpl.Execute(w, map[string]any{
+	s.renderPage(w, r, "connected", map[string]any{
 		"Apps":    view,
 		"CSRF":    csrf,
 		"Message": r.URL.Query().Get("m"),

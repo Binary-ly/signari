@@ -1,0 +1,22 @@
+{{define "title"}}Sign-in requests{{end}}
+{{define "style"}}<style>{{template "pagecss" .}}</style>{{end}}
+{{define "content"}}
+<h1>Sign-in requests</h1>
+{{if not .Requests}}
+<p>Nothing is waiting for you.</p>
+{{else}}
+<p>An application has asked to sign in as you. Approve it only if you started it.</p>
+{{range .Requests}}
+<form method="POST" action="/account/requests">
+<input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<p><strong>{{.ClientName}}</strong> wants: {{.Scope}}</p>
+{{if .BindingMessage}}<p>Reference shown on the other device: <code>{{.BindingMessage}}</code></p>{{end}}
+<p>Expires in {{.Expires}}.</p>
+<button type="submit" name="decision" value="approve">Approve</button>
+<button type="submit" name="decision" value="deny">Not me</button>
+</form>
+<hr>
+{{end}}
+{{end}}
+{{end}}

@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"html/template"
 	"net/http"
 	"net/url"
 	"strings"
@@ -467,17 +466,6 @@ func samlAuthnContext(acr string, amr []string) string {
 // happens to be safe" is not a property to rely on in a page we render --
 // crewjam/saml GHSA-267v-3v32-g6q5 was cross-site scripting through exactly
 // this surface.
-var samlPostForm = template.Must(template.New("saml").Parse(`<!DOCTYPE html>
-<html><head><title>Signing in&hellip;</title></head>
-<body onload="document.forms[0].submit()">
-<noscript><p>JavaScript is disabled. Continue to complete signing in.</p></noscript>
-<form method="post" action="{{.ACS}}">
-<input type="hidden" name="SAMLResponse" value="{{.Response}}">
-{{if .RelayState}}<input type="hidden" name="RelayState" value="{{.RelayState}}">{{end}}
-<noscript><button type="submit">Continue</button></noscript>
-</form>
-</body></html>`))
-
 func (s *Server) postSAMLResponse(w http.ResponseWriter, acs, doc, relayState string) {
 	// NOT htmlPageHeaders, and this is the one HTML response here that must not
 	// use it.
@@ -502,13 +490,11 @@ func (s *Server) postSAMLResponse(w http.ResponseWriter, acs, doc, relayState st
 	w.Header().Set("X-Frame-Options", "DENY")
 	setCSP(w, "frame-ancestors 'none'")
 
-	if err := samlPostForm.Execute(w, map[string]string{
+	s.renderBare(w, "saml", map[string]any{
 		"ACS":        acs,
 		"Response":   base64Std(doc),
 		"RelayState": relayState,
-	}); err != nil {
-		s.log.Error("rendering the SAML POST form", "err", err)
-	}
+	})
 }
 
 // postSAMLStatus sends a non-success status to the service provider.
@@ -548,19 +534,11 @@ func (s *Server) samlRefuse(w http.ResponseWriter, r *http.Request, reason strin
 	w.WriteHeader(http.StatusBadRequest)
 	// The reason is rendered as text through the template package, never
 	// concatenated into HTML: much of it is attacker-controlled.
-	_ = samlErrorPage.Execute(w, map[string]string{
+	s.renderPage(w, r, "samlerr", map[string]any{
 		"Reason":        reason,
 		"CorrelationID": correlationID(r.Context()),
 	})
 }
-
-var samlErrorPage = template.Must(template.New("samlerr").Parse(`<!DOCTYPE html>
-<html><head><title>Sign-in request refused</title></head>
-<body>
-<h1>This sign-in request was refused</h1>
-<p>{{.Reason}}</p>
-<p>Reference: <code>{{.CorrelationID}}</code></p>
-</body></html>`))
 
 func base64Std(s string) string {
 	return base64.StdEncoding.EncodeToString([]byte(s))

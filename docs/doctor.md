@@ -99,6 +99,16 @@ reasons to block a release tonight.
 | federation | generic OIDC provider allows sign-up with untrusted email verification | info — sign-up will always refuse |
 | outbox | notices parked after exhausting retries | critical — sessions may still be live downstream |
 | policy | none in force | info — everything is open, which may be correct |
+| theme | `SIGNARI_THEME_DIR` unreadable | critical — every page is silently the built-in one |
+| theme | a page override was refused | warning — that page is correct and working, and is not yours |
+| theme | the directory overrides nothing | warning — usually a filename that does not match a page |
+| theme | not configured | *not a finding* — most deployments never theme anything |
+
+The theme checks exist because a refused override's symptom is a page that looks
+*normal*. The server does not stop for one — it serves the built-in and logs —
+so without this the only evidence scrolled past at startup, and an operator
+staring at a stock sign-in form cannot tell "refused" from "wrong directory"
+from "I edited the wrong file". `signari theme check` catches it earlier still.
 
 The three tables that arrived in later migrations (`saml_providers`,
 `identity_providers`, `access_policies`) are probed first and skipped if absent,

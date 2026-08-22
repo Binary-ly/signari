@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/jcmturner/gokrb5/v8/keytab"
-	"html/template"
 	"log/slog"
 	"net/http"
 	"os"
@@ -28,6 +27,7 @@ import (
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/oidfed"
+	"signari.dev/engine/internal/pages"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/ratelimit"
@@ -84,6 +84,15 @@ type Server struct {
 	// and writes rows. Its own bucket: it shared `device` until widening the
 	// device backstop would have silently widened this too.
 	register *ratelimit.Bucket
+	// pages is every HTML page this server renders, loaded by New from the
+	// embedded filesystem and any SIGNARI_THEME_DIR override.
+	//
+	// Read through pageSet(), never directly. A Server built as a struct literal
+	// -- which fifteen tests and any future caller may reasonably do -- has none,
+	// and the built-in pages need no configuration to be usable, so the accessor
+	// supplies them rather than making every such Server a nil dereference on
+	// its first render.
+	pages *pages.Set
 	// federation throttles the unauthenticated OpenID Federation endpoints.
 	//
 	// §8.4 and §8.5 answer a stranger with a database query, and §19.2 already
@@ -176,7 +185,25 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 	// one -- the same shape of bug the sign-in rate limiter had.
 	cap = cap.WithCounter(&sharedCaptchaCounter{db: db, log: log})
 
+	// The HTML pages, from the embedded filesystem, with SIGNARI_THEME_DIR
+	// layered over them when one is set.
+	//
+	// A page whose override fails validation is REFUSED and its built-in is used
+	// instead -- see internal/pages. Refusing to start would let a mistyped
+	// filename lock every user out of every application, which is a worse
+	// failure than an unthemed sign-in form. Each refusal is logged at Warn
+	// with the file and the reason, `signari doctor` repeats it, and
+	// `signari theme check` exits non-zero so a pipeline catches it first.
+	pageSet, themeProblems, err := pages.Load(os.Getenv("SIGNARI_THEME_DIR"))
+	if err != nil {
+		return nil, fmt.Errorf("loading the HTML pages: %w", err)
+	}
+	for _, p := range themeProblems {
+		log.Warn("a themed page was refused and the built-in is being used", "err", p)
+	}
+
 	srv := &Server{
+		pages:   pageSet,
 		cfg:     cfg,
 		captcha: cap,
 		log:     log,
@@ -714,53 +741,13 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		data["BrandLogo"] = b.LogoURL
 		data["BrandSupport"] = b.SupportURL
 	}
-	writeBranded(w, loginPage, data, b)
+	s.writeBranded(w, "login", data, b)
 }
 
 // loginPage is deliberately minimal and server-rendered: no JavaScript, so it
 // works with autofill, password managers, and screen readers by default.
 // html/template escapes every interpolation, so the parked query string cannot
 // break out of the value attribute.
-var loginPage = template.Must(template.New("login").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign in</title>
-<style>body{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem}
-label{display:block;margin:.75rem 0 .25rem}input{width:100%;padding:.5rem;font-size:1rem}
-button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;width:100%}
-.err{color:#b00020;margin:.5rem 0}
-.ref{color:#666;font-size:.85rem;margin:.25rem 0}
-.alt{margin-top:1.25rem;border-top:1px solid #e4e4e7;padding-top:1rem}
-.ext{display:block;padding:.6rem 1rem;border:1px solid #d4d4d8;border-radius:.25rem;
-text-align:center;text-decoration:none;color:inherit}
-body{background:var(--brand-background,#fff);color:var(--brand-text,#000)}
-button{background:var(--brand-primary,#efefef);color:var(--brand-on-primary,#000);
-border:1px solid var(--brand-primary,#767676);border-radius:4px;cursor:pointer}
-.brand{display:block;max-height:2.5rem;margin:0 auto 1.5rem}
-.support{margin-top:1.25rem;font-size:.85rem}
-.support a{color:var(--brand-primary,#0645ad)}</style></head>
-<body>
-{{if .BrandLogo}}<img class="brand" src="{{.BrandLogo}}" alt="{{.BrandName}}">{{end}}
-<h1>Sign in</h1>
-{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-{{if .Reference}}<p class="ref">Reference: <code>{{.Reference}}</code></p>{{end}}
-{{if and .Error .BrandSupport}}<p class="support"><a href="{{.BrandSupport}}">Get help signing in</a></p>{{end}}
-<form method="POST" action="/login">
-<input type="hidden" name="authz" value="{{.Authz}}">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="u">Username or email</label>
-<input id="u" name="username" autocomplete="username webauthn" autocapitalize="none" autofocus required>
-<label for="p">Password</label>
-<input id="p" name="password" type="password" autocomplete="current-password" required>
-` + captchaWidget + `<button type="submit">Sign in</button>
-</form>
-<p class="alt" id="passkey-row" hidden><button type="button" id="passkey-signin">Sign in with a passkey</button></p>
-{{if .Providers}}<div class="alt">
-{{range .Providers}}<p><a class="ext" href="/login/with/{{.Slug}}">Continue with {{.Name}}</a></p>{{end}}
-</div>{{end}}
-<script src="/passkey.js"></script>
-</body></html>`))
-
 // captchaWidget is the challenge markup, shared by every page that shows one.
 //
 // One copy, because there were two pages that needed it and the second was
@@ -768,20 +755,6 @@ border:1px solid var(--brand-primary,#767676);border-radius:4px;cursor:pointer}
 // sign-in form and not on the sign-up form, so the control existed on the
 // endpoint that checks a password and not on the endpoint that creates accounts
 // and sends mail.
-const captchaWidget = `{{if .Captcha}}
-{{if eq .CaptchaProvider "turnstile"}}
-<div class="cf-turnstile" data-sitekey="{{.CaptchaSiteKey}}"></div>
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
-{{else if eq .CaptchaProvider "hcaptcha"}}
-<div class="h-captcha" data-sitekey="{{.CaptchaSiteKey}}"></div>
-<script src="https://hcaptcha.com/1/api.js" async defer></script>
-{{else}}
-<div class="g-recaptcha" data-sitekey="{{.CaptchaSiteKey}}"></div>
-<script src="https://www.google.com/recaptcha/api.js" async defer></script>
-{{end}}
-{{end}}
-`
-
 // captchaFields adds the widget's template data when a challenge is due.
 //
 // `Required` rather than `Enabled`: the challenge is adaptive, and asking every

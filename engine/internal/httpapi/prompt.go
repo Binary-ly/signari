@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"html/template"
 	"net/http"
 	"time"
 
@@ -39,7 +38,7 @@ func (s *Server) beginPrompt(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	s.renderPage(w, r, promptPage, map[string]any{
+	s.renderPage(w, r, "prompt", map[string]any{
 		"Slug": p.Slug, "Title": p.Title, "Body": p.Body, "Fields": p.Fields,
 		"CSRF": csrf, "CSRFField": csrfFormField,
 	})
@@ -108,7 +107,7 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 	answers, verr := p.ValidateAnswers(submitted)
 	if verr != nil {
 		csrf, _ := s.csrfToken(w, r)
-		s.renderPage(w, r, promptPage, map[string]any{
+		s.renderPage(w, r, "prompt", map[string]any{
 			"Slug": p.Slug, "Title": p.Title, "Body": p.Body, "Fields": p.Fields,
 			"Error": verr.Error(), "CSRF": csrf, "CSRFField": csrfFormField,
 		})
@@ -142,52 +141,3 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 	// so several in sequence need no special handling.
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, pending.AMR, pending.Authz)
 }
-
-var promptPage = template.Must(template.New("prompt").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{.Title}}</title><style>` + pageCSS + `
-.field{margin:1rem 0}
-.field label{display:block;margin-bottom:.25rem}
-.field .help{color:#666;font-size:.85rem}
-.check{display:flex;gap:.5rem;align-items:flex-start}
-.check input{width:auto;margin-top:.25rem}
-.notice{background:#f4f4f5;padding:.75rem;border-radius:4px;margin:1rem 0}
-</style></head>
-<body>
-<h1>{{.Title}}</h1>
-{{if .Body}}<p>{{.Body}}</p>{{end}}
-{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-<form method="POST" action="/login/prompt">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<input type="hidden" name="prompt" value="{{.Slug}}">
-{{range .Fields}}
-  {{if eq .Type "notice"}}
-    <div class="notice">{{.Label}}</div>
-  {{else if eq .Type "checkbox"}}
-    <div class="field check">
-      <input type="checkbox" id="{{.Name}}" name="{{.Name}}" value="on"{{if .Required}} required{{end}}>
-      <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
-    </div>
-    {{if .Help}}<p class="help">{{.Help}}</p>{{end}}
-  {{else if eq .Type "select"}}
-    <div class="field">
-      <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
-      <select id="{{.Name}}" name="{{.Name}}"{{if .Required}} required{{end}}>
-        <option value="">Choose…</option>
-        {{$opts := .Options}}{{range $opts}}<option value="{{.}}">{{.}}</option>{{end}}
-      </select>
-      {{if .Help}}<p class="help">{{.Help}}</p>{{end}}
-    </div>
-  {{else}}
-    <div class="field">
-      <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
-      <input type="{{if eq .Type "email"}}email{{else}}text{{end}}"
-             id="{{.Name}}" name="{{.Name}}"{{if .Required}} required{{end}}>
-      {{if .Help}}<p class="help">{{.Help}}</p>{{end}}
-    </div>
-  {{end}}
-{{end}}
-<button type="submit">Continue</button>
-</form>
-</body></html>`))

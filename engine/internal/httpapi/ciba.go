@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"errors"
-	"html/template"
 	"net/http"
 	"time"
 
@@ -334,7 +333,7 @@ func (s *Server) handleBackchannelRequests(w http.ResponseWriter, r *http.Reques
 			Expires:        time.Until(p.ExpiresAt).Round(time.Second).String(),
 		})
 	}
-	s.renderPage(w, r, backchannelPage, map[string]any{
+	s.renderPage(w, r, "backchannel", map[string]any{
 		"Requests": rows, "CSRF": csrf, "CSRFField": csrfFormField,
 	})
 }
@@ -388,28 +387,3 @@ func writeCIBAError(w http.ResponseWriter, e *oauth.CIBAError) {
 		"error": e.Code, "error_description": e.Description,
 	})
 }
-
-var backchannelPage = template.Must(template.New("backchannel").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign-in requests</title><style>` + pageCSS + `</style></head>
-<body>
-<h1>Sign-in requests</h1>
-{{if not .Requests}}
-<p>Nothing is waiting for you.</p>
-{{else}}
-<p>An application has asked to sign in as you. Approve it only if you started it.</p>
-{{range .Requests}}
-<form method="POST" action="/account/requests">
-<input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRF}}">
-<input type="hidden" name="id" value="{{.ID}}">
-<p><strong>{{.ClientName}}</strong> wants: {{.Scope}}</p>
-{{if .BindingMessage}}<p>Reference shown on the other device: <code>{{.BindingMessage}}</code></p>{{end}}
-<p>Expires in {{.Expires}}.</p>
-<button type="submit" name="decision" value="approve">Approve</button>
-<button type="submit" name="decision" value="deny">Not me</button>
-</form>
-<hr>
-{{end}}
-{{end}}
-</body></html>`))

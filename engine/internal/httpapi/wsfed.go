@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"html/template"
 	"net/http"
 	"time"
 
@@ -231,29 +230,10 @@ func (s *Server) wsFedPost(w http.ResponseWriter, dest, wresult, wctx string) {
 	setCSP(w, "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
 		"form-action "+formActionOrigin(dest)+"; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
-	_ = wsFedPage.Execute(w, map[string]any{
+	s.renderBare(w, "wsfed", map[string]any{
 		"Action": dest, "WResult": wresult, "WCtx": wctx, "Nonce": nonce,
 	})
 }
-
-var wsFedPage = template.Must(template.New("wsfed").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<title>Signing you in…</title>
-<style>body{font-family:system-ui,sans-serif;max-width:22rem;margin:6rem auto;
-padding:0 1rem;text-align:center}button{padding:.6rem 1rem;font-size:1rem}</style>
-</head>
-<body>
-<form method="POST" action="{{.Action}}">
-<input type="hidden" name="wa" value="wsignin1.0">
-<input type="hidden" name="wresult" value="{{.WResult}}">
-{{if .WCtx}}<input type="hidden" name="wctx" value="{{.WCtx}}">{{end}}
-<noscript>
-<p>Continue to finish signing in.</p>
-<button type="submit">Continue</button>
-</noscript>
-</form>
-<script nonce="{{.Nonce}}">document.forms[0].submit();</script>
-</body></html>`))
 
 // extractAssertion lifts the assertion out of a SAML Response document.
 //

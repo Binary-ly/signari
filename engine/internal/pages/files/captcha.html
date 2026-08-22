@@ -1,0 +1,13 @@
+{{define "captcha"}}{{if .Captcha}}
+{{if eq .CaptchaProvider "turnstile"}}
+<div class="cf-turnstile" data-sitekey="{{.CaptchaSiteKey}}"></div>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+{{else if eq .CaptchaProvider "hcaptcha"}}
+<div class="h-captcha" data-sitekey="{{.CaptchaSiteKey}}"></div>
+<script src="https://hcaptcha.com/1/api.js" async defer></script>
+{{else}}
+<div class="g-recaptcha" data-sitekey="{{.CaptchaSiteKey}}"></div>
+<script src="https://www.google.com/recaptcha/api.js" async defer></script>
+{{end}}
+{{end}}
+{{end}}

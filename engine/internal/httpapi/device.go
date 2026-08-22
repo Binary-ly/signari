@@ -195,7 +195,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 			data["ClientName"] = s.clientDisplayName(ctx, d.ClientID)
 			data["Scopes"] = strings.Fields(d.Scope)
 		}
-		s.renderPage(w, r, devicePage, data)
+		s.renderPage(w, r, "device", data)
 	}
 
 	if r.Method == http.MethodGet {
@@ -312,7 +312,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 			"user_id", userID, "correlation_id", correlationID(ctx))
 		s.releaseCIBAPing(ctx, d.ID)
 		s.releaseCIBAPush(ctx, d)
-		s.renderPage(w, r, devicePage, map[string]any{"Done": true})
+		s.renderPage(w, r, "device", map[string]any{"Done": true})
 	case "deny":
 		if err := store.DenyDeviceAuthorization(ctx, s.db, d.ID); err != nil {
 			s.log.Error("denying a device authorization", "err", err)
@@ -327,7 +327,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		if err := store.DiscardCIBAPush(ctx, s.db, d.ID); err != nil {
 			s.log.Error("discarding a denied CIBA push", "err", err, "request_id", d.ID)
 		}
-		s.renderPage(w, r, devicePage, map[string]any{"Denied": true})
+		s.renderPage(w, r, "device", map[string]any{"Denied": true})
 	default:
 		// First POST: the code was right, so show what is being authorised and
 		// ask. The confirmation step is the only place a phished user is told
@@ -400,44 +400,6 @@ func (s *Server) handleDeviceCodeGrant(w http.ResponseWriter, r *http.Request, c
 
 	s.issueDeviceTokens(w, r, d)
 }
-
-var devicePage = template.Must(template.New("device").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connect a device</title><style>` + pageCSS + `</style></head>
-<body>
-{{if .Done}}
-<h1>Device connected</h1>
-<p>You can put this away and go back to the device.</p>
-{{else if .Denied}}
-<h1>Request refused</h1>
-<p>Nothing was granted. If you did not start this, somebody else may have asked
-you to enter that code &mdash; it is worth telling whoever runs your systems.</p>
-{{else if .Confirm}}
-<h1>Allow this device?</h1>
-<p><strong>{{.ClientName}}</strong> is asking to sign in as you on a device.</p>
-{{if .Scopes}}<p>It will be able to:</p><ul>{{range .Scopes}}<li>{{.}}</li>{{end}}</ul>{{end}}
-<p class="hint">Only continue if you started this yourself, on a device in front
-of you. Nobody legitimate will ask you to enter a code they sent you.</p>
-<form method="POST" action="/device">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<input type="hidden" name="user_code" value="{{.UserCode}}">
-<button type="submit" name="decision" value="approve">Allow</button>
-<button type="submit" name="decision" value="deny" class="secondary">Refuse</button>
-</form>
-{{else}}
-<h1>Connect a device</h1>
-{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-<p>Enter the code shown on your device.</p>
-<form method="POST" action="/device">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="uc">Code</label>
-<input id="uc" name="user_code" value="{{.UserCode}}" autocomplete="off"
-       autocapitalize="characters" spellcheck="false" autofocus required>
-<button type="submit">Continue</button>
-</form>
-{{end}}
-</body></html>`))
 
 // clientDisplayName is what the person is asked to trust. Falls back to the id,
 // never to something invented.

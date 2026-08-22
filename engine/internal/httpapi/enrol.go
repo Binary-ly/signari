@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"signari.dev/engine/internal/mail"
 	"strings"
+	"sync"
 	"time"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/brand"
 	"signari.dev/engine/internal/mfa"
+	"signari.dev/engine/internal/pages"
 	"signari.dev/engine/internal/qr"
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/store"
@@ -113,7 +115,7 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	s.renderPage(w, r, enrolPage, map[string]any{
+	s.renderPage(w, r, "enrol", map[string]any{
 		"Secret": grouped(encoded),
 		// template.URL, because html/template's URL sanitiser only permits known
 		// schemes and silently rewrites otpauth:// to "#ZgotmplZ" -- producing a
@@ -168,7 +170,7 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		// wrong, and locking someone out of enrolment for mistyping would be a
 		// self-inflicted denial of service.
 		csrf, _ := s.csrfToken(w, r)
-		s.renderPage(w, r, enrolPage, map[string]any{
+		s.renderPage(w, r, "enrol", map[string]any{
 			"Secret": "", "URI": "", "CSRF": csrf, "CSRFField": csrfFormField,
 			"Error": "That code did not match. Check your authenticator app and try again.",
 		})
@@ -209,7 +211,7 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	// Shown ONCE. Only hashes are stored, so this page cannot be reproduced --
 	// which is the point: a system that can show a user their recovery codes
 	// again can show them to whoever reads the database.
-	s.renderPage(w, r, recoveryPage, map[string]any{"Codes": codes})
+	s.renderPage(w, r, "recovery", map[string]any{"Codes": codes})
 }
 
 func (s *Server) orgLabel(ctx context.Context, orgID string) string {
@@ -257,8 +259,12 @@ func grouped(s string) string {
 // missed. A sign-in page that ignores the brand while the consent page honours
 // it does not look like a missing feature -- it looks like the deployment has
 // been tampered with, which is the opposite of what branding is for.
+// It takes the page's NAME rather than a *template.Template, because the
+// template a name resolves to is now a property of the loaded page set -- it may
+// be the built-in or an operator's override, and no handler should have to know
+// or care which.
 func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
-	t *template.Template, data map[string]any) {
+	name string, data map[string]any) {
 
 	b := s.brandNow(r.Context())
 
@@ -291,7 +297,55 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 		data["BrandSupport"] = b.SupportURL
 	}
 
-	writeBranded(w, t, data, b)
+	s.writeBranded(w, name, data, b)
+}
+
+// builtinPages is the embedded set, built once, for any Server that did not go
+// through New.
+//
+// Load("") reads only the embedded filesystem, so this cannot pick up an
+// operator's theme by accident -- a Server that was never configured renders
+// what shipped in the binary, which is the only answer that is right without
+// knowing what the caller intended.
+var builtinPages struct {
+	once sync.Once
+	set  *pages.Set
+}
+
+// pageSet is the page set to render from.
+func (s *Server) pageSet() *pages.Set {
+	if s.pages != nil {
+		return s.pages
+	}
+	builtinPages.once.Do(func() {
+		set, _, err := pages.Load("")
+		if err != nil {
+			// Nothing can render. Left nil deliberately: Set.Execute answers a nil
+			// receiver with an error, so the caller logs "no page" once per request
+			// instead of the process dying on a template problem.
+			return
+		}
+		builtinPages.set = set
+	})
+	return builtinPages.set
+}
+
+// renderBare writes a page with no brand chrome and no stylesheet.
+//
+// For the auto-posting bridges only: the SAML POST binding, the form_post
+// response mode, WS-Federation and front-channel logout. A browser reads those
+// and submits them within a frame or a redirect; a person never looks at one. A
+// logo on a page nobody sees is two extra requests in the middle of a sign-on,
+// and a stylesheet on it is one more thing that can fail to load and stall a
+// redirect.
+//
+// They still get the security headers -- htmlPageHeaders -- because they still
+// carry an assertion and an error message.
+func (s *Server) renderBare(w http.ResponseWriter, name string, data map[string]any) {
+	htmlPageHeaders(w)
+	if err := s.pageSet().Execute(w, name, data); err != nil {
+		s.log.Error("rendering a bridge page", "page", name, "err", err)
+	}
 }
 
 // writeBranded renders a template and injects the brand's colours.
@@ -301,17 +355,20 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 // followed by a consent page in the customer's colours does not read as a
 // missing feature -- it reads as though one of the two pages is not really
 // ours, which is the opposite of what branding is for.
-func writeBranded(w io.Writer, t *template.Template, data map[string]any, b *brand.Brand) {
+func (s *Server) writeBranded(w io.Writer, name string, data map[string]any, b *brand.Brand) {
 	css := ""
 	if b != nil {
 		css = b.CSS()
 	}
 	if css == "" {
-		_ = t.Execute(w, data)
+		if err := s.pageSet().Execute(w, name, data); err != nil {
+			s.log.Error("rendering a page", "page", name, "err", err)
+		}
 		return
 	}
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, data); err != nil {
+	if err := s.pageSet().Execute(&buf, name, data); err != nil {
+		s.log.Error("rendering a page", "page", name, "err", err)
 		return
 	}
 	page := buf.Bytes()
@@ -357,64 +414,6 @@ func (s *Server) brandNow(ctx context.Context) *brand.Brand {
 	return b
 }
 
-const pageCSS = `body{font-family:system-ui,sans-serif;max-width:30rem;margin:3rem auto;padding:0 1rem;
-  background:var(--brand-background,#fff);color:var(--brand-text,#000)}
-a{color:var(--brand-primary,#0645ad)}
-.brand{display:block;max-height:2.5rem;margin-bottom:1.5rem}
-code{background:#f4f4f5;padding:.2rem .4rem;border-radius:3px}
-.qr{margin:1rem 0;max-width:220px}
-.qr svg{width:100%;height:auto;display:block}
-details{margin:1rem 0}
-summary{cursor:pointer;font-size:.9rem}
-.secret{font-size:1.1rem;letter-spacing:.1em;display:block;padding:.75rem;background:#f4f4f5;
-  border-radius:4px;margin:.5rem 0;word-break:break-all}
-.err{color:#b00020}.hint{color:#666;font-size:.9rem}
-ol{columns:2;font-family:ui-monospace,monospace;line-height:1.9}
-button{margin-top:1rem;padding:.6rem 1rem;font-size:1rem;
-  background:var(--brand-primary,#efefef);color:var(--brand-on-primary,#000);
-  border:1px solid var(--brand-primary,#767676);border-radius:4px;cursor:pointer}
-input{padding:.5rem;font-size:1.25rem;letter-spacing:.2em;width:100%}`
-
-var enrolPage = template.Must(template.New("enrol").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Set up two-factor authentication</title><style>` + pageCSS + `</style></head>
-<body>
-<h1>Set up two-factor authentication</h1>
-{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-{{if .Secret}}
-<p>Scan this with your authenticator app:</p>
-<div class="qr">{{.QR}}</div>
-<details>
-<summary>Can&rsquo;t scan it?</summary>
-<p>Type this key into your authenticator app instead:</p>
-<code class="secret">{{.Secret}}</code>
-<p class="hint">Or open <a href="{{.URI}}">this link</a> on the device with your
-authenticator app.</p>
-</details>
-{{end}}
-<form method="POST" action="/account/mfa/totp">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="c">Enter the 6-digit code it shows</label>
-<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
-<button type="submit">Turn on two-factor authentication</button>
-</form>
-</body></html>`))
-
-var recoveryPage = template.Must(template.New("recovery").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Your recovery codes</title><style>` + pageCSS + `</style></head>
-<body>
-<h1>Two-factor authentication is on</h1>
-<p><strong>Save these recovery codes now.</strong> Each one works once, and this is
-the only time they can be shown &mdash; only hashes are stored, so nobody can
-retrieve them for you later.</p>
-<ol>{{range .Codes}}<li>{{.}}</li>{{end}}</ol>
-<p class="hint">Keep them somewhere other than the device with your authenticator app.
-If you lose both, you lose the account.</p>
-</body></html>`))
-
 // handleEmailOTPEnrol turns on email as a second factor.
 //
 // Enrolment requires proving control of the address by entering a code sent to
@@ -436,7 +435,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	render := func(stage, addr, msg string) {
-		s.renderPage(w, r, emailOTPPage, map[string]any{
+		s.renderPage(w, r, "emailotp", map[string]any{
 			"Stage": stage, "Address": addr, "Error": msg,
 			"CSRF": csrf, "CSRFField": csrfFormField,
 		})
@@ -542,46 +541,6 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-var emailOTPPage = template.Must(template.New("emailotp").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Email sign-in codes</title><style>` + pageCSS + `</style></head>
-<body>
-{{if eq .Stage "done"}}
-<h1>Email codes are on</h1>
-<p>You will be asked for a code from this address when you sign in.</p>
-<p class="hint">This is the weakest of the second factors we offer, because
-account recovery already goes to your email &mdash; anybody with your mailbox can
-do both. An authenticator app or a passkey is stronger, and you can add one at
-any time.</p>
-{{else if eq .Stage "code"}}
-<h1>Check your email</h1>
-{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-<p>We sent a code to <strong>{{.Address}}</strong>.</p>
-<form method="POST" action="/account/mfa/email">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<input type="hidden" name="step" value="verify">
-<input type="hidden" name="address" value="{{.Address}}">
-<label for="c">Code</label>
-<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
-<button type="submit">Confirm</button>
-</form>
-{{else}}
-<h1>Email sign-in codes</h1>
-{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-<p>We will send a code to this address each time you sign in.</p>
-<form method="POST" action="/account/mfa/email">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="a">Email address</label>
-<input id="a" name="address" type="email" value="{{.Address}}" autofocus required>
-<button type="submit">Send a code</button>
-</form>
-<p class="hint">An authenticator app is stronger: your email is also how your
-account is recovered, so a code sent there protects you from a stolen password
-but not from a stolen mailbox.</p>
-{{end}}
-</body></html>`))
-
 // handleSMSOTPEnrol turns on a text message as a second factor.
 //
 // Two steps, and the second is not optional: a number is enrolled, a code is
@@ -603,7 +562,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	render := func(stage, number, msg string) {
-		s.renderPage(w, r, smsOTPPage, map[string]any{
+		s.renderPage(w, r, "smsotp", map[string]any{
 			"Stage": stage, "Number": number, "Error": msg,
 			"CSRF": csrf, "CSRFField": csrfFormField,
 			"Configured": s.texter != nil,
@@ -758,54 +717,3 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		render("verify", sms.RedactNumber(number), "")
 	}
 }
-
-var smsOTPPage = template.Must(template.New("smsotp").Parse(`<!doctype html>
-<meta charset="utf-8"><title>Text message codes</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>` + pageCSS + `</style>
-<h1>Text message codes</h1>
-{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-
-{{if eq .Stage "enrolled"}}
-  <p>Codes are sent to <strong>{{.Number}}</strong>.</p>
-  <p class="note">A text message is the weakest second factor available here:
-  moving a phone number to a new SIM needs no technical attack, only a
-  convincing phone call to a mobile operator. An authenticator app or a passkey
-  is stronger, and you can have both.</p>
-  <form method="post">
-    <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-    <input type="hidden" name="step" value="remove">
-    <button type="submit">Remove this factor</button>
-  </form>
-
-{{else if eq .Stage "verify"}}
-  <p>A code was sent to <strong>{{.Number}}</strong>. Enter it to finish.</p>
-  <p class="note">This factor is not active until the code comes back. That is
-  what proves the number is yours and not a typo.</p>
-  <form method="post">
-    <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-    <input type="hidden" name="step" value="verify">
-    <label for="code">Code</label>
-    <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code"
-           pattern="[0-9]*" autofocus required>
-    <button type="submit">Confirm</button>
-  </form>
-
-{{else}}
-  {{if .Configured}}
-  <form method="post">
-    <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-    <input type="hidden" name="step" value="send">
-    <label for="number">Mobile number, with the country code</label>
-    <input id="number" name="number" type="tel" value="{{.Number}}"
-           placeholder="+44 7700 900123" autocomplete="tel" autofocus required>
-    <button type="submit">Send a code</button>
-  </form>
-  <p class="note">Start with a + and the country code. Without it the number
-  cannot be dialled, and guessing wrong sends your codes to somebody else.</p>
-  {{else}}
-  <p class="note">Text messages are not available on this server.</p>
-  {{end}}
-{{end}}
-<p class="note"><a href="/account">Back to your account</a></p>
-`))

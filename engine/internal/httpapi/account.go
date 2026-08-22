@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"html/template"
 	"net/http"
 )
 
@@ -105,7 +104,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	setCSP(w, `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
 	w.Header().Set("X-Frame-Options", "DENY")
-	_ = accountPage.Execute(w, map[string]any{
+	s.renderPage(w, r, "account", map[string]any{
 		"Providers": providers, "CSRF": csrf, "CSRFField": csrfFormField,
 	})
 }
@@ -165,37 +164,3 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/account", http.StatusSeeOther)
 }
-
-var accountPage = template.Must(template.New("account").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Your account</title>
-<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}
-h1{font-size:1.4rem}table{width:100%;border-collapse:collapse;margin-top:1rem}
-td,th{text-align:left;padding:.5rem .25rem;border-bottom:1px solid #e4e4e7}
-.muted{color:#666;font-size:.85rem}button{padding:.35rem .7rem}
-a.btn{padding:.35rem .7rem;border:1px solid #d4d4d8;border-radius:.25rem;
-text-decoration:none;color:inherit}</style></head>
-<body>
-<h1>Sign-in methods</h1>
-{{if .Providers}}
-<table>
-<tr><th>Provider</th><th>Account</th><th></th></tr>
-{{range .Providers}}
-<tr>
-<td>{{.Name}}</td>
-<td>{{if .Linked}}{{if .Email}}{{.Email}}{{if not .Verified}} <span class="muted">(unverified)</span>{{end}}{{else}}linked{{end}}{{else}}<span class="muted">not linked</span>{{end}}</td>
-<td>{{if .Linked}}
-<form method="POST" action="/account/unlink/{{.Slug}}" style="margin:0">
-<input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRF}}">
-<button type="submit">Remove</button></form>
-{{else}}<a class="btn" href="/account/link/{{.Slug}}">Add</a>{{end}}</td>
-</tr>
-{{end}}
-</table>
-<p class="muted">Adding a provider here is the only way to link one to this
-account. We never link on a matching email address alone.</p>
-{{else}}
-<p class="muted">No external sign-in providers are configured.</p>
-{{end}}
-</body></html>`))

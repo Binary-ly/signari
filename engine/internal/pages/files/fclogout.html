@@ -1,0 +1,11 @@
+{{define "title"}}Signing out&hellip;{{end}}
+{{define "style"}}<style>body{font-family:system-ui,sans-serif;max-width:24rem;margin:4rem auto;padding:0 1rem}
+iframe{display:none}p{color:#444}</style>{{end}}
+{{define "usebare"}}{{end}}
+{{define "content"}}
+<h1>Signing you out</h1>
+<p>Signing you out of {{len .Targets}} application(s). This page will continue
+automatically.</p>
+{{range .Targets}}<iframe src="{{.URL}}" title="logout"></iframe>{{end}}
+<p><a href="{{.ContinueTo}}">Continue now</a></p>
+{{end}}

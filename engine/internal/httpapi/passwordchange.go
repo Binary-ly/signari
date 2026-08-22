@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"html/template"
 	"net/http"
 
 	"signari.dev/engine/internal/audit"
@@ -46,7 +45,7 @@ func (s *Server) beginPasswordChange(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	s.renderPage(w, r, changePasswordPage, map[string]any{
+	s.renderPage(w, r, "changepw", map[string]any{
 		"Reason": reason, "CSRF": csrf, "CSRFField": csrfFormField,
 	})
 }
@@ -72,7 +71,7 @@ func (s *Server) handlePasswordChangePost(w http.ResponseWriter, r *http.Request
 	_, reason, _ := store.PasswordChangeRequired(ctx, s.db, pending.Subject)
 	again := func(msg string) {
 		csrf, _ := s.csrfToken(w, r)
-		s.renderPage(w, r, changePasswordPage, map[string]any{
+		s.renderPage(w, r, "changepw", map[string]any{
 			"Reason": reason, "Error": msg,
 			"CSRF": csrf, "CSRFField": csrfFormField,
 		})
@@ -151,27 +150,3 @@ func (s *Server) handlePasswordChangePost(w http.ResponseWriter, r *http.Request
 	// Back into the funnel. The flag is now clear, so this step does not repeat.
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, pending.AMR, pending.Authz)
 }
-
-var changePasswordPage = template.Must(template.New("changepw").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Choose a new password</title><style>` + pageCSS + `
-.why{background:#f4f4f5;padding:.75rem;border-radius:4px;margin:1rem 0}
-</style></head>
-<body>
-<h1>Choose a new password</h1>
-{{if .Reason}}<p class="why">{{.Reason}}</p>{{end}}
-{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-<form method="POST" action="/login/password-change">
-<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="password">New password</label>
-<input type="password" id="password" name="password" required
-       autocomplete="new-password" autofocus>
-<label for="confirm">Repeat it</label>
-<input type="password" id="confirm" name="confirm" required
-       autocomplete="new-password">
-<button type="submit">Change password and continue</button>
-</form>
-<p class="help">A few unrelated words make a password that is easy to remember
-and hard to guess. Length does more than symbols do.</p>
-</body></html>`))

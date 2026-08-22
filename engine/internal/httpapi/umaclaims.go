@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"html/template"
 	"net/http"
 	"net/url"
 	"strings"
@@ -185,7 +184,7 @@ func (s *Server) beginUMAClaims(w http.ResponseWriter, r *http.Request) {
 			Scopes:   strings.Join(p.ResourceScopes, ", "),
 		})
 	}
-	s.renderPage(w, r, umaClaimsPage, map[string]any{
+	s.renderPage(w, r, "umaclaims", map[string]any{
 		"ClientName":     c.DisplayName,
 		"ResourceServer": t.ResourceServer,
 		"Asks":           asks,
@@ -367,48 +366,10 @@ func appendQuery(raw string, add func(url.Values)) (string, error) {
 // origin -- never by redirecting.
 func (s *Server) renderClaimsError(w http.ResponseWriter, r *http.Request, title, detail string) {
 	w.WriteHeader(http.StatusBadRequest)
-	s.renderPage(w, r, umaClaimsErrorPage, map[string]any{
+	s.renderPage(w, r, "umaclaimserr", map[string]any{
 		"Title": title, "Detail": detail,
 	})
 }
-
-var umaClaimsPage = template.Must(template.New("umaclaims").Parse(`<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Confirm this request</title>
-<style>
- body{font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem}
- h1{font-size:1.25rem;margin:0 0 .5rem}
- p{margin:.5rem 0}
- ul{padding-left:1.2rem}
- .who{color:#444}
- button{font:inherit;padding:.6rem 1.1rem;border:1px solid #333;background:#111;color:#fff;border-radius:.3rem;cursor:pointer}
-</style>
-<h1>{{.ClientName}} is asking on your behalf</h1>
-<p class="who">It wants access held by <strong>{{.ResourceServer}}</strong>:</p>
-<ul>
-{{range .Asks}}<li><strong>{{.Resource}}</strong> — {{.Scopes}}</li>{{end}}
-</ul>
-<p>Confirming tells {{.ResourceServer}} who you are. It does not grant access on
-its own: whoever owns this decides that.</p>
-<form method="post" action="/uma2/claims">
- <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
- <input type="hidden" name="handle" value="{{.Handle}}">
- <button type="submit">Confirm</button>
-</form>
-`))
-
-var umaClaimsErrorPage = template.Must(template.New("umaclaimserr").Parse(`<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Title}}</title>
-<style>
- body{font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem}
- h1{font-size:1.25rem;margin:0 0 .5rem}
-</style>
-<h1>{{.Title}}</h1>
-<p>{{.Detail}}</p>
-`))
 
 // --- the requesting party ---------------------------------------------------
 

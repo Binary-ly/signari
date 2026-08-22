@@ -1,0 +1,25 @@
+{{define "title"}}Create your account{{end}}
+{{define "style"}}<style>{{template "pagecss" .}}</style>{{end}}
+{{define "content"}}
+<h1>Create your account</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+{{if .CSRF}}
+<form method="POST" action="/signup">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+{{if .Invite}}<input type="hidden" name="invite" value="{{.Invite}}">{{end}}
+<label for="e">Email</label>
+{{if .EmailFixed}}
+<input id="e" name="email" type="email" value="{{.Email}}" readonly>
+<p class="hint">This invitation is for this address.</p>
+{{else}}
+<input id="e" name="email" type="email" value="{{.Email}}" autocomplete="username" required autofocus>
+{{if .Domains}}<p class="hint">Addresses at: {{.Domains}}</p>{{end}}
+{{end}}
+<label for="p">Password</label>
+<input id="p" name="password" type="password" autocomplete="new-password" required
+  minlength="8">
+<p class="hint">At least 8 characters. You can add a passkey once you are in.</p>
+{{template "captcha" .}}<button type="submit">Create account</button>
+</form>
+{{end}}
+{{end}}

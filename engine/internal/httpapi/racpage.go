@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"html/template"
 	"net/http"
 	"strings"
 
@@ -90,32 +89,8 @@ func (s *Server) handleRACIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.renderPage(w, r, racIndexPage, map[string]any{
+	s.renderPage(w, r, "racindex", map[string]any{
 		"Connections": conns,
 		"Configured":  s.guacdAddr != "",
 	})
 }
-
-var racIndexPage = template.Must(template.New("racindex").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Remote access</title><style>` + pageCSS + `</style></head>
-<body>
-<h1>Remote access</h1>
-{{if not .Configured}}
-<p class="err" role="alert">Remote access is not configured on this server.
-No <code>SIGNARI_GUACD_ADDR</code> is set, so nothing can be connected to.</p>
-{{end}}
-{{if .Connections}}
-<ul>
-{{range .Connections}}
-<li><a href="/rac/view/{{.Slug}}">{{.DisplayName}}</a>
-<span class="hint">{{.Protocol}} &middot; {{.Hostname}}</span></li>
-{{end}}
-</ul>
-{{else}}
-<p>There are no machines you can reach.</p>
-<p class="hint">If you expect to see something here, ask an administrator
-whether the connection requires a group you are not in.</p>
-{{end}}
-</body></html>`))

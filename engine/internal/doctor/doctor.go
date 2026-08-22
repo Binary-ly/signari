@@ -26,6 +26,7 @@ import (
 	"os"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/migrate"
+	"signari.dev/engine/internal/pages"
 	"sort"
 	"strings"
 	"time"
@@ -134,6 +135,7 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 		return nil, err
 	}
 	checkSchemaPin(r)
+	checkTheme(r)
 
 	sort.SliceStable(r.Findings, func(i, j int) bool {
 		return r.Findings[i].Severity < r.Findings[j].Severity
@@ -781,4 +783,67 @@ func checkSchemaPin(r *Report) {
 			"to docker build. The version counter still gates upgrades either way; "+
 			"what is missing is noticing drift within a version, which is what the "+
 			"fingerprint is for.")
+}
+
+// checkTheme reports whether an operator's page overrides are actually in force.
+//
+// # The failure this makes visible
+//
+// A theme whose page fails validation is refused and the built-in is served in
+// its place. That is the right behaviour for a running server -- the alternative
+// is a mistyped filename locking every user out of every application -- but it
+// means the symptom of a broken theme is a page that looks *normal*. An operator
+// who wrote a theme, deployed it, and sees the stock sign-in form has no way to
+// tell "the theme was refused" from "I set the wrong directory" or "I edited the
+// wrong file", and the warning that would have said so scrolled past at startup.
+//
+// So this reports both halves: what was refused, and -- when nothing is
+// configured at all -- that nothing is.
+//
+// Warning rather than Critical for a refusal: the deployment is serving correct,
+// working pages. What it is not doing is what the operator asked for.
+func checkTheme(r *Report) {
+	r.ran("page theme")
+
+	dir := os.Getenv("SIGNARI_THEME_DIR")
+	if dir == "" {
+		// Not a finding. Most deployments never theme anything, and reporting the
+		// absence of an optional feature on every run is how a report stops being
+		// read.
+		return
+	}
+
+	set, problems, err := pages.Load(dir)
+	if err != nil {
+		r.add(Critical, "theme",
+			"SIGNARI_THEME_DIR is set to "+dir+" and cannot be read: "+err.Error(),
+			"Point it at a readable directory, or unset it to serve the built-in "+
+				"pages. Every sign-in page is currently coming from the binary.")
+		return
+	}
+	for _, p := range problems {
+		r.add(Warning, "theme",
+			"a page override was refused, and the built-in page is being served in "+
+				"its place: "+p.Error(),
+			"Run `signari theme check -theme-dir "+dir+"` to see it in isolation. "+
+				"The page a user sees is correct and working -- it is simply not "+
+				"yours, and nothing on the page says so.")
+	}
+	if set == nil {
+		return
+	}
+	var overridden int
+	for _, n := range set.Names() {
+		if set.Origin(n) != "built-in" {
+			overridden++
+		}
+	}
+	if overridden == 0 && len(problems) == 0 {
+		r.add(Warning, "theme",
+			"SIGNARI_THEME_DIR is set to "+dir+" but no page there overrides "+
+				"anything, so every page is the built-in one",
+			"Check the filenames: a page is overridden by a file named exactly "+
+				"after it, such as `login.html` or `layout.html`. "+
+				"`signari theme list` prints every name and where it is coming from.")
+	}
 }

@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/i18n"
 )
 
 // The page set, its layout, and what an override is allowed to do to it.
@@ -136,8 +138,10 @@ func TestAThemeMayChangeWhatAPageSays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Take the real login page and change only its heading.
-	themed := strings.Replace(built["login"], "<h1>Sign in</h1>",
+	// Take the real login page and change only its heading, replacing the
+	// message call with a literal. Still supported, and still a fork of the
+	// page: see the catalogue test below for the cheaper way to do this.
+	themed := strings.Replace(built["login"], `<h1>{{T "login.heading"}}</h1>`,
 		"<h1>Welcome back to Example Corporation</h1>", 1)
 	if themed == built["login"] {
 		t.Fatal("the heading was not found, so this test would pass without " +
@@ -161,6 +165,41 @@ func TestAThemeMayChangeWhatAPageSays(t *testing.T) {
 	}
 	if set.Origin("login") == "built-in" {
 		t.Error("Origin still reports the built-in page")
+	}
+}
+
+// Rewording without forking a page.
+//
+// The reason the catalogue is worth having beyond translation: changing one
+// sentence used to mean copying a whole page into a theme directory, where it
+// stopped receiving upstream fixes -- including security fixes to the form it
+// contains. Now it is three lines of JSON, and the page stays ours.
+func TestAnOperatorCanRewordAPageWithoutForkingIt(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "locales"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "locales", "en.json"),
+		[]byte(`{"login.heading": "Welcome back to Example Corporation"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	set := loadOrFail(t, dir)
+
+	var sb strings.Builder
+	if err := set.Execute(&sb, "login", probeVariants()[1]); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sb.String(), "Welcome back to Example Corporation") {
+		t.Error("the operator's wording is not in the rendered page")
+	}
+	// The page itself was never overridden, so it still receives upstream fixes.
+	if got := set.Origin("login"); got != "built-in" {
+		t.Errorf("rewording should not fork the page, but Origin says %q", got)
+	}
+	// And nothing else on the page changed.
+	if !strings.Contains(sb.String(), "Username or email") {
+		t.Error("an untouched message on the same page changed")
 	}
 }
 
@@ -663,8 +702,11 @@ func TestEveryPageIsServedBySomething(t *testing.T) {
 
 	// The call sites that put a page in front of a person. A page named in any
 	// of them is served; a page named in none of them is not.
-	render := regexp.MustCompile(`(?:renderPage|renderBare|writeBranded|Execute)\(` +
-		`[^)]*?"([a-z]+)"`)
+	// Bounded to one line and to a short distance, rather than "anything but a
+	// closing paren": an argument may itself be a call -- s.langFor(r) -- and a
+	// pattern that stopped at the first ')' reported those pages as dead.
+	render := regexp.MustCompile(`(?:renderPage|renderBare|writeBranded|Execute|ExecuteIn)\(` +
+		`[^\n]{0,80}?"([a-z]+)"`)
 
 	// Only the server counts, and internal/httpapi is the whole of it.
 	//
@@ -706,6 +748,247 @@ func TestEveryPageIsServedBySomething(t *testing.T) {
 				"it overridden, but nothing puts it in front of anybody", name)
 		}
 	}
+}
+
+// The pages and the catalogue agree, in both directions.
+//
+// A key a page asks for and the catalogue does not have renders as the key --
+// `login.heading` in place of "Sign in" -- which is visible but only to whoever
+// loads that page in that state. A key the catalogue has and no page asks for
+// is a message a translator will be asked to translate for nothing, and a
+// signal that a page was reworded without anyone tidying up after it.
+//
+// Both directions, because each failure is silent in its own way.
+func TestEveryMessageKeyIsUsedAndEveryUsedKeyExists(t *testing.T) {
+	src, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, _, err := i18n.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// {{T "key"}} and {{N "key" ...}} in a template.
+	call := regexp.MustCompile(`\{\{\s*[TN]\s+"([^"]+)"`)
+
+	used := map[string]bool{}
+	for name, body := range src {
+		for _, m := range call.FindAllStringSubmatch(body, -1) {
+			used[m[1]] = true
+			if !bundle.HasKey(m[1]) {
+				t.Errorf("%s.html asks for %q, which is not in "+
+					"internal/i18n/locales/en.json, so the page renders the key",
+					name, m[1])
+			}
+		}
+	}
+
+	// Not every message lives in a template. "That code did not match" is a
+	// branch in a handler, so the Go that renders into a page counts as a user
+	// of a key just as much as the page does -- and a check that only read
+	// templates would call every one of those an orphan.
+	goCall := regexp.MustCompile(`\.[TN]\("([^"]+)"`)
+	for _, key := range keysUsedInGo(t, goCall) {
+		used[key] = true
+		if !bundle.HasKey(key) {
+			t.Errorf("Go asks for the message %q, which is not in "+
+				"internal/i18n/locales/en.json", key)
+		}
+	}
+
+	// A third way a key gets used, and the one that is easiest to lose track
+	// of: written as a bare literal because it is STORED and resolved later.
+	// The password-change reasons are keys in a database column, looked up by
+	// value when the page renders, so no .T("reason.breached") ever appears.
+	//
+	// Any dotted lowercase literal counts. Loose, deliberately: the cost of a
+	// false "used" is one orphan going unreported, and the cost of a false
+	// orphan is somebody deleting a message the product depends on.
+	bare := regexp.MustCompile(`"([a-z][a-z0-9]*(?:\.[a-z0-9_]+)+)"`)
+	for _, key := range keysUsedInGo(t, bare) {
+		used[key] = true
+	}
+
+	// Some keys are composed rather than written out: the consent screen looks
+	// up "scope."+name, so no literal "scope.profile" appears anywhere. Finding
+	// the PREFIX in the source is what keeps those from reading as orphans
+	// without having to hand-maintain an exemption list that goes stale.
+	prefixes := dynamicKeyPrefixes(t)
+
+	for _, key := range bundle.Keys() {
+		if used[key] {
+			continue
+		}
+		composed := false
+		for _, p := range prefixes {
+			if strings.HasPrefix(key, p) {
+				composed = true
+				break
+			}
+		}
+		if composed {
+			continue
+		}
+		t.Errorf("%q is in en.json and no page uses it. Delete it, or find "+
+			"the page that should be asking for it", key)
+	}
+
+	// The guard against this passing because nothing was scanned.
+	if len(used) < 50 {
+		t.Fatalf("only %d keys found in the pages; this test is not covering "+
+			"the set", len(used))
+	}
+}
+
+// Scope descriptions are translated, and unknown scopes are not invented.
+//
+// The consent screen is the one page where the TEXT is the decision. A screen
+// whose chrome is in the reader's language and whose list of what is being
+// granted is in English asks somebody to approve something they cannot read --
+// which is the exact situation consent exists to prevent.
+//
+// The second half matters as much: a scope a client registered is that
+// client's words, and we neither translate nor gloss it. Showing "invoices.read"
+// verbatim is honest; guessing at it would not be.
+func TestScopeDescriptionsAreTranslatedAndUnknownOnesAreLeftAlone(t *testing.T) {
+	bundle, _, err := i18n.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, lang := range bundle.Languages() {
+		p := bundle.For(lang)
+
+		// Every scope the server describes must be describable in every
+		// language it ships, or the consent screen is half-translated.
+		for _, scope := range []string{
+			"profile", "email", "offline_access", "address", "phone",
+		} {
+			if !p.Has("scope." + scope) {
+				t.Errorf("%s has no description for the %q scope, so a consent "+
+					"screen in that language lists it in English", lang, scope)
+			}
+		}
+
+		// And one nobody registered stays exactly as it was written.
+		const registered = "invoices.read"
+		if p.Has("scope." + registered) {
+			t.Errorf("%q has a built-in description, but a client-registered "+
+				"scope is the client's words to choose", registered)
+		}
+	}
+}
+
+// No page has English written into it.
+//
+// The whole catalogue is worthless if one page keeps its sentences inline: that
+// page renders English inside an otherwise translated flow, which is worse than
+// an untranslated product because it looks like a bug in the translation rather
+// than a missing feature.
+//
+// Text NODES only -- what sits between tags. Attributes are checked separately
+// below, because most of them are machine-facing and a rule that flagged
+// autocomplete="one-time-code" would be turned off within a week.
+func TestNoPageHasEnglishWrittenIntoIt(t *testing.T) {
+	src, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two or more words made of letters. One word is usually a symbol, a unit,
+	// or something like "OK" that a translator would leave alone anyway; two in
+	// a row is a sentence somebody wrote.
+	prose := regexp.MustCompile(`[A-Za-z][a-z]{2,}\s+[A-Za-z][a-z]{2,}`)
+
+	for name, body := range src {
+		if name == "pagecss" {
+			continue // A stylesheet. No text nodes at all.
+		}
+		for _, text := range textNodes(body) {
+			if m := prose.FindString(text); m != "" {
+				t.Errorf("%s.html has English in it: %q\n"+
+					"    Move it to internal/i18n/locales/en.json and render it "+
+					"with {{T \"%s.something\"}}", name, trim(text), name)
+				break // One report per page is enough to act on.
+			}
+		}
+	}
+}
+
+// dynamicKeyPrefixes finds key prefixes the server concatenates at runtime.
+//
+// Matches `"scope." + something`, which is how a family of keys gets asked for
+// without any one of them appearing as a literal.
+func dynamicKeyPrefixes(t *testing.T) []string {
+	t.Helper()
+
+	concat := regexp.MustCompile(`"([a-z][a-z0-9]*\.)"\s*\+`)
+	var out []string
+	for _, key := range keysUsedInGo(t, concat) {
+		out = append(out, key)
+	}
+	return out
+}
+
+// keysUsedInGo finds message keys asked for from handler code.
+func keysUsedInGo(t *testing.T, call *regexp.Regexp) []string {
+	t.Helper()
+
+	var out []string
+	// adminapi as well as httpapi: the Admin API sets a password-change reason,
+	// and that reason is a message key rendered on a page this package owns.
+	for _, pkg := range []string{"httpapi", "adminapi"} {
+		dir := filepath.Join("..", pkg)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("reading internal/%s: %v", pkg, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") ||
+				strings.HasSuffix(e.Name(), "_test.go") {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatalf("reading %s: %v", e.Name(), err)
+			}
+			for _, m := range call.FindAllSubmatch(b, -1) {
+				out = append(out, string(m[1]))
+			}
+		}
+	}
+	return out
+}
+
+// textNodes returns what a reader sees, with everything else removed.
+func textNodes(body string) []string {
+	// Order matters: comments first, because a commented-out tag would
+	// otherwise leave its text behind.
+	body = regexp.MustCompile(`(?s)\{\{/\*.*?\*/\}\}`).ReplaceAllString(body, " ")
+	body = regexp.MustCompile(`(?s)<style.*?</style>`).ReplaceAllString(body, " ")
+	body = regexp.MustCompile(`(?s)<script.*?</script>`).ReplaceAllString(body, " ")
+	body = regexp.MustCompile(`(?s)<!--.*?-->`).ReplaceAllString(body, " ")
+	// Template actions are not text: {{T "x"}} and {{.Error}} both render
+	// something, and neither is a string written into this file.
+	body = regexp.MustCompile(`(?s)\{\{.*?\}\}`).ReplaceAllString(body, " ")
+	body = regexp.MustCompile(`(?s)<[^>]*>`).ReplaceAllString(body, "\n")
+
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func trim(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 60 {
+		return s[:60] + "..."
+	}
+	return s
 }
 
 // No page fetches anything from another origin.

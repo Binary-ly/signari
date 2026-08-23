@@ -16,9 +16,18 @@ class EngineClientResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedCubeTransparent;
 
-    protected static ?string $modelLabel = 'client';
+    // Accessors rather than static properties: PHP cannot call __() in a
+    // property initialiser. See AccessPolicyResource.
 
-    protected static ?string $navigationLabel = 'Clients';
+    public static function getModelLabel(): string
+    {
+        return __('client');
+    }
+
+    public static function getNavigationLabel(): string
+    {
+        return __('Clients');
+    }
 
     protected static ?int $navigationSort = 2;
 

@@ -1,15 +1,15 @@
-{{define "title"}}Two-factor authentication{{end}}
+{{define "title"}}{{T "mfa.title"}}{{end}}
 {{define "content"}}
-<h1>Two-factor authentication</h1>
+<h1>{{T "mfa.heading"}}</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-{{if .Reference}}<p class="ref">Reference: <code>{{.Reference}}</code></p>{{end}}
+{{if .Reference}}<p class="ref">{{T "common.reference"}} <code>{{.Reference}}</code></p>{{end}}
 <form method="POST" action="/login/mfa">
 <input type="hidden" name="authz" value="{{.Authz}}">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="c">Code from your authenticator app</label>
+<label for="c">{{T "mfa.code"}}</label>
 <input id="c" name="code" inputmode="numeric" autocomplete="one-time-code"
        autofocus required pattern="[0-9A-Za-z\- ]+">
-<p class="hint">Lost your device? Enter one of your recovery codes instead.</p>
-<button type="submit">Continue</button>
+<p class="hint">{{T "mfa.lostdevice"}}</p>
+<button type="submit">{{T "common.continue"}}</button>
 </form>
 {{end}}

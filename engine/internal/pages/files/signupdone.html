@@ -1,6 +1,6 @@
-{{define "title"}}Account created{{end}}
+{{define "title"}}{{T "signupdone.title"}}{{end}}
 {{define "content"}}
-<h1>Account created</h1>
-<p>{{.Email}} can now sign in.</p>
-<p><a href="/login">Sign in</a></p>
+<h1>{{T "signupdone.title"}}</h1>
+<p>{{T "signupdone.body" .}}</p>
+<p><a href="/login">{{T "common.signin"}}</a></p>
 {{end}}

@@ -253,7 +253,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.postSAMLResponse(w, acs, doc, relayState)
+	s.postSAMLResponse(w, r, acs, doc, relayState)
 }
 
 // sessionAuthedAfter reports whether this session was authenticated after t.
@@ -466,7 +466,10 @@ func samlAuthnContext(acr string, amr []string) string {
 // happens to be safe" is not a property to rely on in a page we render --
 // crewjam/saml GHSA-267v-3v32-g6q5 was cross-site scripting through exactly
 // this surface.
-func (s *Server) postSAMLResponse(w http.ResponseWriter, acs, doc, relayState string) {
+// r is carried only so the bridge's <noscript> text can be rendered in the
+// language the request asked for; see postAuthzResponse.
+func (s *Server) postSAMLResponse(w http.ResponseWriter, r *http.Request,
+	acs, doc, relayState string) {
 	// NOT htmlPageHeaders, and this is the one HTML response here that must not
 	// use it.
 	//
@@ -490,7 +493,7 @@ func (s *Server) postSAMLResponse(w http.ResponseWriter, acs, doc, relayState st
 	w.Header().Set("X-Frame-Options", "DENY")
 	setCSP(w, "frame-ancestors 'none'")
 
-	s.renderBare(w, "saml", map[string]any{
+	s.renderBare(w, r, "saml", map[string]any{
 		"ACS":        acs,
 		"Response":   base64Std(doc),
 		"RelayState": relayState,
@@ -518,7 +521,7 @@ func (s *Server) postSAMLStatus(w http.ResponseWriter, r *http.Request, v *saml.
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.postSAMLResponse(w, v.ACSURL, doc, relayState)
+	s.postSAMLResponse(w, r, v.ACSURL, doc, relayState)
 }
 
 // samlRefuse answers the BROWSER, not the service provider.

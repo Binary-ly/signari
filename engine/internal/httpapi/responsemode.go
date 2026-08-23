@@ -76,7 +76,7 @@ func (s *Server) deliverAuthzResponse(w http.ResponseWriter, r *http.Request,
 	}
 
 	if mode == "form_post" {
-		s.postAuthzResponse(w, redirectURI, p)
+		s.postAuthzResponse(w, r, redirectURI, p)
 		return
 	}
 
@@ -126,7 +126,11 @@ func (s *Server) deliverAuthzResponse(w http.ResponseWriter, r *http.Request,
 }
 
 // postAuthzResponse renders the self-submitting form.
-func (s *Server) postAuthzResponse(w http.ResponseWriter, redirectURI string, p responseParams) {
+// r is carried only so the bridge's <noscript> text can be rendered in the
+// language the request asked for. It is the one thing on the page a person ever
+// reads, and only when scripting is off.
+func (s *Server) postAuthzResponse(w http.ResponseWriter, r *http.Request,
+	redirectURI string, p responseParams) {
 	nonce, err := newCSPNonce()
 	if err != nil {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
@@ -148,7 +152,7 @@ func (s *Server) postAuthzResponse(w http.ResponseWriter, redirectURI string, p 
 	setCSP(w, "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
 		"form-action "+formActionOrigin(redirectURI)+"; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
-	s.renderBare(w, "formpost", map[string]any{
+	s.renderBare(w, r, "formpost", map[string]any{
 		"Action": redirectURI, "Fields": fields, "Nonce": nonce,
 	})
 }

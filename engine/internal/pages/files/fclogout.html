@@ -1,4 +1,4 @@
-{{define "title"}}Signing out&hellip;{{end}}
+{{define "title"}}{{T "fclogout.title"}}{{end}}
 {{define "style"}}<style>
 /* The iframes are the machinery of a front-channel logout, not something to
    look at. The page around them IS read: it names how many applications are
@@ -6,9 +6,10 @@
 iframe{display:none}
 </style>{{end}}
 {{define "content"}}
-<h1>Signing you out</h1>
-<p>Signing you out of {{len .Targets}} application(s). This page will continue
-automatically.</p>
-{{range .Targets}}<iframe src="{{.URL}}" title="logout"></iframe>{{end}}
-<p><a href="{{.ContinueTo}}">Continue now</a></p>
+<h1>{{T "fclogout.heading"}}</h1>
+{{/* N, not a literal: this said "application(s)", which is wrong in English at
+     one and unsayable in Arabic, which has six forms for this. */}}
+<p>{{N "fclogout.progress" (len .Targets)}}</p>
+{{range .Targets}}<iframe src="{{.URL}}" title="{{T "fclogout.frame"}}"></iframe>{{end}}
+<p><a href="{{.ContinueTo}}">{{T "fclogout.continue"}}</a></p>
 {{end}}

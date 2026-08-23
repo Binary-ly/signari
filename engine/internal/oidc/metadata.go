@@ -97,6 +97,15 @@ type Metadata struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported"`
 	ClaimsSupported               []string `json:"claims_supported"`
 
+	// OIDC Core §3.1.2.1 defines ui_locales as a request parameter, and the
+	// Discovery spec defines this as the list a relying party may choose from.
+	//
+	// Built from the catalogues that are actually loaded, including an
+	// operator's, rather than from a constant -- advertising a language whose
+	// messages are not present would be the same lie as advertising an endpoint
+	// that 404s, which this file already argues against at length.
+	UILocalesSupported []string `json:"ui_locales_supported,omitempty"`
+
 	// RFC 9207. Cheap, and it closes the mix-up attack, so it is on by default.
 	AuthorizationResponseIssParamSupported bool `json:"authorization_response_iss_parameter_supported"`
 
@@ -144,6 +153,19 @@ type Config struct {
 	AllowInsecureIssuer bool
 
 	RefuseClonedAuthenticators bool
+
+	// UILocalesSupported is the languages the sign-in pages can be rendered in.
+	// Supplied by the caller because the catalogue lives with the pages, and
+	// this package must not reach into them.
+	UILocalesSupported []string
+}
+
+// multiple returns the list only when there is a genuine choice in it.
+func multiple(langs []string) []string {
+	if len(langs) < 2 {
+		return nil
+	}
+	return langs
 }
 
 // Paths are fixed relative to the issuer so that discovery, the routes the server
@@ -333,6 +355,11 @@ func Build(cfg Config) (*Metadata, error) {
 		// S256 only, and the authorize endpoint enforces it. `plain` is not
 		// listed because it is not accepted.
 		CodeChallengeMethodsSupported: []string{"S256"},
+
+		// Omitted entirely when only one language is loaded: a list containing
+		// just "en" tells a relying party nothing it did not assume, and
+		// omitempty is the honest way to say "there is no choice here".
+		UILocalesSupported: multiple(cfg.UILocalesSupported),
 
 		ClaimsSupported: []string{
 			"groups",

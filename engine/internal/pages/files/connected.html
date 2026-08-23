@@ -1,4 +1,4 @@
-{{define "title"}}Connected applications{{end}}
+{{define "title"}}{{T "connected.title"}}{{end}}
 {{define "style"}}<style>
 :root{--page-w:34rem}
 /* Each grant is its own card, so "Remove access" is unambiguously attached to
@@ -19,26 +19,27 @@
   border-color:var(--border-strong)}
 .app button:hover{background:var(--surface-2);opacity:1;color:var(--text)}
 </style>{{end}}
-{{define "content"}}<h1>Connected applications</h1>
+{{define "content"}}<h1>{{T "connected.title"}}</h1>
 {{if .Message}}<p class="note">{{.Message}}</p>{{end}}
 {{if not .Apps}}
-  <p class="none">No application has been granted access to your account.</p>
+  <p class="none">{{T "connected.none"}}</p>
 {{else}}
   {{range .Apps}}
   <div class="app">
     <strong>{{.Name}}</strong>
-    <div class="scopes">Can see: {{range $i, $s := .Scopes}}{{if $i}}, {{end}}{{$s}}{{end}}</div>
+    <div class="scopes">{{T "connected.cansee"}} {{range $i, $s := .Scopes}}{{if $i}}, {{end}}{{$s}}{{end}}</div>
     <div class="meta">
-      Granted {{.Granted}}.
-      {{if gt .ActiveTokens 0}}{{.ActiveTokens}} active session(s).{{else}}No active session.{{end}}
+      {{T "connected.granted" .}}
+      {{/* N, not "session(s)": the same defect front-channel logout had. */}}
+      {{N "connected.sessions" .ActiveTokens .}}
     </div>
     <form method="post" action="/account/connected/revoke" style="margin-top:.6rem">
       <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
       <input type="hidden" name="client_id" value="{{.ClientID}}">
-      <button type="submit">Remove access</button>
+      <button type="submit">{{T "connected.remove"}}</button>
     </form>
   </div>
   {{end}}
 {{end}}
-<p class="meta"><a href="/account">Back to your account</a></p>
+<p class="meta"><a href="/account">{{T "common.backtoaccount"}}</a></p>
 {{end}}

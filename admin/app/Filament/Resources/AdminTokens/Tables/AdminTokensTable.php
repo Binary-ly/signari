@@ -13,7 +13,9 @@ class AdminTokensTable
         return $table
             ->columns([
                 TextColumn::make('state')
+                    ->label(__('State'))
                     ->badge()
+                    ->formatStateUsing(fn (string $state): string => __($state))
                     ->color(fn (string $state): string => match ($state) {
                         'active'        => 'success',
                         'expiring soon' => 'warning',
@@ -23,47 +25,50 @@ class AdminTokensTable
                     ->sortable(),
 
                 TextColumn::make('name')
+                    ->label(__('Name'))
                     ->searchable()
                     ->sortable(),
 
                 TextColumn::make('scopes')
+                    ->label(__('Scopes'))
                     ->badge()
                     ->separator(',')
-                    ->tooltip('What this credential may do. A token holding fewer scopes is '
-                        .'less to lose if it leaks'),
+                    ->tooltip(__('What this credential may do. A token holding fewer scopes is less to lose if it leaks')),
 
                 // "Is anyone still using this" is the question you ask before
                 // revoking, and it is the only reason this column exists.
                 TextColumn::make('last_used_at')
-                    ->label('Last used')
+                    ->label(__('Last used'))
                     ->since()
-                    ->placeholder('never')
+                    ->placeholder(__('never'))
                     ->sortable(),
 
                 TextColumn::make('expires_at')
-                    ->label('Expires')
+                    ->label(__('Expires'))
                     ->dateTime()
-                    ->placeholder('never')
+                    ->placeholder(__('never'))
                     ->color(fn ($record): string => $record->state === 'expiring soon' ? 'warning' : 'gray')
                     ->sortable(),
 
                 TextColumn::make('created_at')
+                    ->label(__('Created'))
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
-                SelectFilter::make('state')->options([
-                    'active'        => 'active',
-                    'expiring soon' => 'expiring soon',
-                    'never used'    => 'never used',
-                    'expired'       => 'expired',
-                    'revoked'       => 'revoked',
+                // The KEYS stay English because they are the stored values the
+                // filter matches on; only what an operator reads is translated.
+                SelectFilter::make('state')->label(__('State'))->options([
+                    'active'        => __('active'),
+                    'expiring soon' => __('expiring soon'),
+                    'never used'    => __('never used'),
+                    'expired'       => __('expired'),
+                    'revoked'       => __('revoked'),
                 ]),
             ])
             ->defaultSort('created_at', 'desc')
-            ->emptyStateHeading('No admin tokens for this organisation')
-            ->emptyStateDescription('Mint one with `signari admin-token create -org <uuid>`. '
-                .'Deployment-wide tokens are not listed here.');
+            ->emptyStateHeading(__('No admin tokens for this organisation'))
+            ->emptyStateDescription(__('Mint one with `signari admin-token create -org <uuid>`. Deployment-wide tokens are not listed here.'));
     }
 }

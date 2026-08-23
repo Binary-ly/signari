@@ -1,7 +1,7 @@
-{{define "title"}}Sign-in could not be completed{{end}}
+{{define "title"}}{{T "federr.title"}}{{end}}
 {{define "content"}}
-<h1>Sign-in could not be completed</h1>
+<h1>{{T "federr.title"}}</h1>
 <p>{{.Reason}}</p>
-<p><a href="/login">Back to sign in</a></p>
-<p>Reference: <code>{{.CorrelationID}}</code></p>
+<p><a href="/login">{{T "common.backtosignin"}}</a></p>
+<p>{{T "common.reference"}} <code>{{.CorrelationID}}</code></p>
 {{end}}

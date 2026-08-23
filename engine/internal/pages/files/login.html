@@ -1,21 +1,21 @@
-{{define "title"}}Sign in{{end}}
+{{define "title"}}{{T "login.title"}}{{end}}
 {{define "content"}}
-<h1>Sign in</h1>
+<h1>{{T "login.heading"}}</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-{{if .Reference}}<p class="ref">Reference: <code>{{.Reference}}</code></p>{{end}}
-{{if and .Error .BrandSupport}}<p class="support"><a href="{{.BrandSupport}}">Get help signing in</a></p>{{end}}
+{{if .Reference}}<p class="ref">{{T "common.reference"}} <code>{{.Reference}}</code></p>{{end}}
+{{if and .Error .BrandSupport}}<p class="support"><a href="{{.BrandSupport}}">{{T "login.gethelp"}}</a></p>{{end}}
 <form method="POST" action="/login">
 <input type="hidden" name="authz" value="{{.Authz}}">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="u">Username or email</label>
+<label for="u">{{T "login.username"}}</label>
 <input id="u" name="username" autocomplete="username webauthn" autocapitalize="none" autofocus required>
-<label for="p">Password</label>
+<label for="p">{{T "login.password"}}</label>
 <input id="p" name="password" type="password" autocomplete="current-password" required>
-{{template "captcha" .}}<button type="submit">Sign in</button>
+{{template "captcha" .}}<button type="submit">{{T "login.submit"}}</button>
 </form>
-<p class="alt" id="passkey-row" hidden><button type="button" id="passkey-signin">Sign in with a passkey</button></p>
+<p class="alt" id="passkey-row" hidden><button type="button" id="passkey-signin">{{T "login.passkey"}}</button></p>
 {{if .Providers}}<div class="alt">
-{{range .Providers}}<p><a class="ext" href="/login/with/{{.Slug}}">Continue with {{.Name}}</a></p>{{end}}
+{{range .Providers}}<p><a class="ext" href="/login/with/{{.Slug}}">{{T "login.continuewith" .}}</a></p>{{end}}
 </div>{{end}}
 <script src="/passkey.js"></script>
 {{end}}

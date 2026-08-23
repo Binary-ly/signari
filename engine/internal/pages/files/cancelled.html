@@ -1,7 +1,6 @@
-{{define "title"}}Reset cancelled{{end}}
+{{define "title"}}{{T "cancelled.title"}}{{end}}
 {{define "content"}}
-<h1>That reset has been cancelled</h1>
-<p>The link will not work. Nothing about your account has changed.</p>
-<p class="hint">If you did not request the reset, your password is still safe,
-but somebody knows your address. Consider turning on two-factor authentication.</p>
+<h1>{{T "cancelled.heading"}}</h1>
+<p>{{T "cancelled.body"}}</p>
+<p class="hint">{{T "cancelled.hint"}}</p>
 {{end}}

@@ -19,7 +19,7 @@
     <div class="field">
       <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
       <select id="{{.Name}}" name="{{.Name}}"{{if .Required}} required{{end}}>
-        <option value="">Choose…</option>
+        <option value="">{{T "prompt.choose"}}</option>
         {{$opts := .Options}}{{range $opts}}<option value="{{.}}">{{.}}</option>{{end}}
       </select>
       {{if .Help}}<p class="help">{{.Help}}</p>{{end}}
@@ -33,6 +33,6 @@
     </div>
   {{end}}
 {{end}}
-<button type="submit">Continue</button>
+<button type="submit">{{T "common.continue"}}</button>
 </form>
 {{end}}

@@ -31,7 +31,10 @@
   source order without needing to out-specify anything.
 */}}
 {{define "layout"}}<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+{{/* lang and dir come from the negotiated language, not from a literal. dir is
+     decided by the SCRIPT, so Arabic and Hebrew lay out right-to-left without
+     anything here having to know which languages those are. */}}
+<html lang="{{lang}}" dir="{{dir}}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{template "title" .}}</title>
 <style>{{template "pagecss" .}}</style>
@@ -64,7 +67,7 @@
   own, because it is the only one that needs a script-src.
 */}}
 {{define "bare"}}<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="{{lang}}" dir="{{dir}}"><head><meta charset="utf-8">
 <title>{{template "title" .}}</title>
 {{template "style" .}}</head>
 <body>

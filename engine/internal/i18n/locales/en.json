@@ -1,0 +1,215 @@
+{
+  "common.reference": "Reference:",
+  "common.continue": "Continue",
+  "common.confirm": "Confirm",
+  "common.code": "Code",
+  "common.email": "Email",
+  "common.emailaddress": "Email address",
+  "common.newpassword": "New password",
+  "common.sendcode": "Send a code",
+  "common.signin": "Sign in",
+  "common.backtosignin": "Back to sign in",
+  "common.backtoaccount": "Back to your account",
+
+  "login.title": "Sign in",
+  "login.heading": "Sign in",
+  "login.username": "Username or email",
+  "login.password": "Password",
+  "login.submit": "Sign in",
+  "login.passkey": "Sign in with a passkey",
+  "login.gethelp": "Get help signing in",
+  "login.continuewith": "Continue with {Name}",
+
+  "mfa.title": "Two-factor authentication",
+  "mfa.heading": "Two-factor authentication",
+  "mfa.code": "Code from your authenticator app",
+  "mfa.lostdevice": "Lost your device? Enter one of your recovery codes instead.",
+
+  "emailotp.title": "Email sign-in codes",
+  "emailotp.done.heading": "Email codes are on",
+  "emailotp.done.body": "You will be asked for a code from this address when you sign in.",
+  "emailotp.done.hint": "This is the weakest of the second factors we offer, because account recovery already goes to your email &mdash; anybody with your mailbox can do both. An authenticator app or a passkey is stronger, and you can add one at any time.",
+  "emailotp.check.heading": "Check your email",
+  "emailotp.check.sent": "We sent a code to <strong>{Address}</strong>.",
+  "emailotp.start.body": "We will send a code to this address each time you sign in.",
+  "emailotp.start.hint": "An authenticator app is stronger: your email is also how your account is recovered, so a code sent there protects you from a stolen password but not from a stolen mailbox.",
+
+  "smsotp.title": "Text message codes",
+  "smsotp.enrolled.to": "Codes are sent to <strong>{Number}</strong>.",
+  "smsotp.enrolled.note": "A text message is the weakest second factor available here: moving a phone number to a new SIM needs no technical attack, only a convincing phone call to a mobile operator. An authenticator app or a passkey is stronger, and you can have both.",
+  "smsotp.remove": "Remove this factor",
+  "smsotp.sent": "A code was sent to <strong>{Number}</strong>. Enter it to finish.",
+  "smsotp.verify.note": "This factor is not active until the code comes back. That is what proves the number is yours and not a typo.",
+  "smsotp.number.label": "Mobile number, with the country code",
+  "smsotp.number.note": "Start with a + and the country code. Without it the number cannot be dialled, and guessing wrong sends your codes to somebody else.",
+  "smsotp.unavailable": "Text messages are not available on this server.",
+
+  "enrol.title": "Set up two-factor authentication",
+  "enrol.scan": "Scan this with your authenticator app:",
+  "enrol.cannotscan": "Can&rsquo;t scan it?",
+  "enrol.typekey": "Type this key into your authenticator app instead:",
+  "enrol.openlink": "Or open <a href=\"{URI}\">this link</a> on the device with your authenticator app.",
+  "enrol.entercode": "Enter the 6-digit code it shows",
+  "enrol.submit": "Turn on two-factor authentication",
+
+  "recovery.title": "Your recovery codes",
+  "recovery.heading": "Two-factor authentication is on",
+  "recovery.save": "<strong>Save these recovery codes now.</strong> Each one works once, and this is the only time they can be shown &mdash; only hashes are stored, so nobody can retrieve them for you later.",
+  "recovery.hint": "Keep them somewhere other than the device with your authenticator app. If you lose both, you lose the account.",
+
+  "done.title": "Password changed",
+  "done.heading": "Your password has been changed",
+  "done.body": "Every signed-in session was ended, on every device.",
+
+  "cancelled.title": "Reset cancelled",
+  "cancelled.heading": "That reset has been cancelled",
+  "cancelled.body": "The link will not work. Nothing about your account has changed.",
+  "cancelled.hint": "If you did not request the reset, your password is still safe, but somebody knows your address. Consider turning on two-factor authentication.",
+
+  "recover.title": "Reset your password",
+  "recover.hint": "We will email every address on the account, and the reset will only become usable after a short delay &mdash; so a request you did not make cannot go through without you having a chance to stop it.",
+  "recover.submit": "Send reset instructions",
+
+  "sent.title": "Check your email",
+  "sent.body": "If an account matches what you entered, we have emailed reset instructions to every address on it.",
+  "sent.hint": "The email includes a link to cancel, in case the request was not yours. Cancelling needs no sign-in.",
+
+  "reset.title": "Choose a new password",
+  "reset.pending": "This reset is not usable yet. It becomes available at <strong>{When}</strong> &mdash; about {Wait} from now.",
+  "reset.pending.hint": "The wait is deliberate: it is the window in which a reset you did not ask for can still be cancelled from the link in your email.",
+  "reset.submit": "Set password and sign out everywhere",
+
+  "changepw.title": "Choose a new password",
+  "changepw.repeat": "Repeat it",
+  "changepw.submit": "Change password and continue",
+  "changepw.help": "A few unrelated words make a password that is easy to remember and hard to guess. Length does more than symbols do.",
+
+  "signup.title": "Create your account",
+  "signup.invitefixed": "This invitation is for this address.",
+  "signup.domains": "Addresses at: {Domains}",
+  "signup.passwordhint": "At least 8 characters. You can add a passkey once you are in.",
+  "signup.submit": "Create account",
+
+  "signupdone.title": "Account created",
+  "signupdone.body": "{Email} can now sign in.",
+
+  "logout.title": "Sign out?",
+  "logout.heading": "Sign out?",
+  "logout.body": "An application asked to sign you out. Confirm that this is what you want.",
+  "logout.submit": "Sign out",
+
+  "fclogout.title": "Signing out&hellip;",
+  "fclogout.heading": "Signing you out",
+  "fclogout.progress": {
+    "one": "Signing you out of {n} application. This page will continue automatically.",
+    "other": "Signing you out of {n} applications. This page will continue automatically."
+  },
+  "fclogout.frame": "logout",
+  "fclogout.continue": "Continue now",
+
+  "backchannel.title": "Sign-in requests",
+  "backchannel.empty": "Nothing is waiting for you.",
+  "backchannel.intro": "An application has asked to sign in as you. Approve it only if you started it.",
+  "backchannel.wants": "<strong>{ClientName}</strong> wants: {Scope}",
+  "backchannel.binding": "Reference shown on the other device:",
+  "backchannel.expires": "Expires in {Expires}.",
+  "backchannel.deny": "Not me",
+  "backchannel.approve": "Approve",
+
+  "consent.title": "Authorize {Client}",
+  "consent.heading": "<strong>{Client}</strong> wants access to your account",
+  "consent.asking": "It is asking to:",
+  "consent.operation": "And to perform this specific operation:",
+  "consent.deny": "Deny",
+  "consent.allow": "Allow",
+
+  "device.title": "Connect a device",
+  "device.done.heading": "Device connected",
+  "device.done.body": "You can put this away and go back to the device.",
+  "device.denied.heading": "Request refused",
+  "device.denied.body": "Nothing was granted. If you did not start this, somebody else may have asked you to enter that code &mdash; it is worth telling whoever runs your systems.",
+  "device.confirm.heading": "Allow this device?",
+  "device.confirm.body": "<strong>{ClientName}</strong> is asking to sign in as you on a device.",
+  "device.confirm.able": "It will be able to:",
+  "device.confirm.warning": "Only continue if you started this yourself, on a device in front of you. Nobody legitimate will ask you to enter a code they sent you.",
+  "device.refuse": "Refuse",
+  "device.allow": "Allow",
+  "device.enter": "Enter the code shown on your device.",
+
+  "connected.title": "Connected applications",
+  "connected.none": "No application has been granted access to your account.",
+  "connected.cansee": "Can see:",
+  "connected.granted": "Granted {Granted}.",
+  "connected.sessions": {
+    "zero": "No active session.",
+    "one": "{n} active session.",
+    "other": "{n} active sessions."
+  },
+  "connected.remove": "Remove access",
+
+  "portal.title": "Your applications",
+  "portal.empty": "No applications have been set up yet.",
+  "portal.empty.hint": "An administrator registers one with <code>signari client create</code>.",
+  "portal.nolaunch": "You can use this, but no launch address is configured. Ask an administrator to set <code>-launch-url</code>.",
+  "portal.blocked.heading": "Not available to you",
+  "portal.blocked.hint": "Listed with the reason, so you know what to ask for rather than having to open a ticket to find out.",
+  "portal.accountlink": "Your account and sign-in methods",
+
+  "account.title": "Your account",
+  "account.heading": "Sign-in methods",
+  "account.col.provider": "Provider",
+  "account.col.account": "Account",
+  "account.unverified": "(unverified)",
+  "account.linked": "linked",
+  "account.notlinked": "not linked",
+  "account.remove": "Remove",
+  "account.add": "Add",
+  "account.note": "Adding a provider here is the only way to link one to this account. We never link on a matching email address alone.",
+  "account.none": "No external sign-in providers are configured.",
+
+  "racindex.title": "Remote access",
+  "racindex.notconfigured": "Remote access is not configured on this server. No <code>SIGNARI_GUACD_ADDR</code> is set, so nothing can be connected to.",
+  "racindex.none": "There are no machines you can reach.",
+  "racindex.none.hint": "If you expect to see something here, ask an administrator whether the connection requires a group you are not in.",
+
+  "umaclaims.title": "Confirm this request",
+  "umaclaims.heading": "{ClientName} is asking on your behalf",
+  "umaclaims.wants": "It wants access held by <strong>{ResourceServer}</strong>:",
+  "umaclaims.note": "Confirming tells {ResourceServer} who you are. It does not grant access on its own: whoever owns this decides that.",
+
+  "prompt.choose": "Choose&hellip;",
+
+  "err.title": "Sign-in error",
+  "federr.title": "Sign-in could not be completed",
+  "samlerr.title": "Sign-in request refused",
+  "samlerr.heading": "This sign-in request was refused",
+
+  "common.minutes": {
+    "one": "{n} minute",
+    "other": "{n} minutes"
+  },
+  "common.seconds": {
+    "one": "{n} second",
+    "other": "{n} seconds"
+  },
+
+  "reason.breached": "Your password has appeared in a known data breach since you chose it, so it needs to be changed before you continue.",
+  "reason.migratedbreach": "The password you brought from your previous provider appears in a known data breach, so it needs to be changed before you continue.",
+  "reason.administrator": "An administrator has asked you to choose a new password.",
+
+  "scope.profile": "See your name and username",
+  "scope.email": "See your email address",
+  "scope.offline_access": "Stay signed in and access your account while you are away",
+  "scope.address": "See your postal address",
+  "scope.phone": "See your phone number",
+
+  "error.totp.mismatch": "That code did not match. Check your authenticator app and try again.",
+  "error.reset.invalid": "That link is not valid.",
+  "error.reset.expired": "That link is not valid or has expired.",
+  "error.invite.invalid": "That invitation link is not valid. It may have been used already, or expired. Ask whoever invited you for a new one.",
+  "error.captcha.incomplete": "That challenge was not completed. Please try again.",
+
+  "bridge.title": "Signing you in&hellip;",
+  "bridge.continueprompt": "Continue to finish signing in.",
+  "bridge.noscript": "JavaScript is disabled. Continue to complete signing in."
+}

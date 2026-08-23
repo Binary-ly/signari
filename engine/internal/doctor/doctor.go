@@ -24,6 +24,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"signari.dev/engine/internal/i18n"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/migrate"
 	"signari.dev/engine/internal/pages"
@@ -839,12 +841,64 @@ func checkTheme(r *Report) {
 			overridden++
 		}
 	}
-	if overridden == 0 && len(problems) == 0 {
+	if overridden == 0 && len(problems) == 0 && !hasLocaleOverrides(dir) {
 		r.add(Warning, "theme",
 			"SIGNARI_THEME_DIR is set to "+dir+" but no page there overrides "+
 				"anything, so every page is the built-in one",
 			"Check the filenames: a page is overridden by a file named exactly "+
 				"after it, such as `login.html` or `layout.html`. "+
 				"`signari theme list` prints every name and where it is coming from.")
+	}
+
+	checkLanguages(r, set.Bundle())
+}
+
+// hasLocaleOverrides reports whether a theme directory carries a catalogue.
+//
+// A directory holding only locales/ is a complete and normal theme -- rewording
+// without forking a page is the cheapest thing an operator can do -- so it must
+// not be reported as one that overrides nothing.
+func hasLocaleOverrides(dir string) bool {
+	entries, err := os.ReadDir(filepath.Join(dir, "locales"))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			return true
+		}
+	}
+	return false
+}
+
+// checkLanguages reports catalogues that are loaded but incomplete.
+//
+// A half-translated language is the finding worth making, because it is the one
+// that looks fine from here: the page renders, the fallback fills the gaps in
+// English, and the only person who sees the result is somebody signing in who
+// now has a page half in their language and half in another. On a screen asking
+// for a password, that reads as a tampered-with site.
+func checkLanguages(r *Report, b *i18n.Bundle) {
+	if b == nil {
+		return
+	}
+	for _, lang := range b.Languages() {
+		if lang == i18n.Default {
+			continue
+		}
+		missing := b.Missing(lang)
+		if len(missing) == 0 {
+			continue
+		}
+		shown := missing[0]
+		if len(missing) > 1 {
+			shown = fmt.Sprintf("%s and %d more", shown, len(missing)-1)
+		}
+		r.add(Warning, "theme",
+			fmt.Sprintf("the %s pages are missing %d message(s) -- %s -- and "+
+				"fall back to English", lang, len(missing), shown),
+			"Run `signari i18n status` for the full list. Until they are "+
+				"translated, anybody whose browser asks for "+lang+" gets a "+
+				"sign-in page in two languages at once.")
 	}
 }

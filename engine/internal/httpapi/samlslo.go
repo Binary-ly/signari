@@ -205,7 +205,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 	// receives a form POST instead and has nothing to parse. Verified on the wire
 	// before it was changed, because reading the code had not made it obvious.
 	if respBinding == bindingPOST {
-		s.postSAMLResponse(w, sloURL, doc, relayState)
+		s.postSAMLResponse(w, r, sloURL, doc, relayState)
 		return
 	}
 

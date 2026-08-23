@@ -182,6 +182,25 @@ of, and a link to continue if one of them hangs. The hidden iframes are its
 machinery; the page around them is read, so it carries the brand like every
 other page a person sees.
 
+## Changing what a page SAYS without touching a page
+
+A theme directory has a `locales/` subdirectory, and a file in it overrides
+messages key by key:
+
+```json
+{ "login.heading": "Sign in to Example Corporation" }
+```
+
+That is a complete `locales/en.json`. `login.html` stays ours, so it keeps
+receiving upstream fixes, and everything you did not mention keeps coming from
+the built-in catalogue.
+
+**Wording goes here. Structure goes in a page override.** Overriding a whole
+page to change one sentence is a fork of that page's form — including its CSRF
+field — and this is the cheaper thing that does not have that cost. It is also
+how a language is added; [i18n.md](i18n.md) covers plurals, text direction and
+how `ui_locales` is honoured.
+
 ## The look, and changing it without touching a page
 
 All thirty-three share one stylesheet, `pagecss.html`, built on CSS custom

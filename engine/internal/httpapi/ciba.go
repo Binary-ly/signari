@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/i18n"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
@@ -323,19 +324,39 @@ func (s *Server) handleBackchannelRequests(w http.ResponseWriter, r *http.Reques
 	}
 	type row struct {
 		ID, ClientName, Scope, BindingMessage string
-		Expires                               string
+		Expires                               any
 	}
+	printer := s.tr(r)
 	rows := make([]row, 0, len(pending))
 	for _, p := range pending {
 		rows = append(rows, row{
 			ID: p.ID, ClientName: p.ClientName, Scope: p.Scope,
 			BindingMessage: p.BindingMessage,
-			Expires:        time.Until(p.ExpiresAt).Round(time.Second).String(),
+			Expires:        expiresIn(printer, time.Until(p.ExpiresAt)),
 		})
 	}
 	s.renderPage(w, r, "backchannel", map[string]any{
 		"Requests": rows, "CSRF": csrf, "CSRFField": csrfFormField,
 	})
+}
+
+// expiresIn says how long is left, in the reader's language.
+//
+// This rendered `time.Duration.String()` -- "4m0s" -- which is a Go value, not
+// a sentence, and is the same nine characters in every language. Minutes and
+// seconds go through N so the count picks the plural form the language actually
+// uses, which for Arabic is one of six.
+//
+// Rounded up, and never below one second: "expires in 0 seconds" on a request
+// that is still live reads as broken.
+func expiresIn(p *i18n.Printer, d time.Duration) any {
+	if d < time.Second {
+		d = time.Second
+	}
+	if d < time.Minute {
+		return p.N("common.seconds", int(d.Round(time.Second).Seconds()))
+	}
+	return p.N("common.minutes", int(d.Round(time.Minute).Minutes()))
 }
 
 // decideBackchannel records an approval or a refusal.

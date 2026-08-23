@@ -1,22 +1,21 @@
-{{define "title"}}Set up two-factor authentication{{end}}
+{{define "title"}}{{T "enrol.title"}}{{end}}
 {{define "content"}}
-<h1>Set up two-factor authentication</h1>
+<h1>{{T "enrol.title"}}</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 {{if .Secret}}
-<p>Scan this with your authenticator app:</p>
+<p>{{T "enrol.scan"}}</p>
 <div class="qr">{{.QR}}</div>
 <details>
-<summary>Can&rsquo;t scan it?</summary>
-<p>Type this key into your authenticator app instead:</p>
+<summary>{{T "enrol.cannotscan"}}</summary>
+<p>{{T "enrol.typekey"}}</p>
 <code class="secret">{{.Secret}}</code>
-<p class="hint">Or open <a href="{{.URI}}">this link</a> on the device with your
-authenticator app.</p>
+<p class="hint">{{T "enrol.openlink" .}}</p>
 </details>
 {{end}}
 <form method="POST" action="/account/mfa/totp">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="c">Enter the 6-digit code it shows</label>
+<label for="c">{{T "enrol.entercode"}}</label>
 <input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
-<button type="submit">Turn on two-factor authentication</button>
+<button type="submit">{{T "enrol.submit"}}</button>
 </form>
 {{end}}

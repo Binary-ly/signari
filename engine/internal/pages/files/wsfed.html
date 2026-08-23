@@ -1,4 +1,4 @@
-{{define "title"}}Signing you in…{{end}}
+{{define "title"}}{{T "bridge.title"}}{{end}}
 {{define "style"}}<style>
 /* Self-contained: see formpost.html. */
 body{margin:0;padding:5rem 1rem;font:.9375rem/1.55 ui-sans-serif,system-ui,
@@ -16,8 +16,8 @@ button{color:#18181b;background:#ededf0}}
 <input type="hidden" name="wresult" value="{{.WResult}}">
 {{if .WCtx}}<input type="hidden" name="wctx" value="{{.WCtx}}">{{end}}
 <noscript>
-<p>Continue to finish signing in.</p>
-<button type="submit">Continue</button>
+<p>{{T "bridge.continueprompt"}}</p>
+<button type="submit">{{T "common.continue"}}</button>
 </noscript>
 </form>
 <script nonce="{{.Nonce}}">document.forms[0].submit();</script>

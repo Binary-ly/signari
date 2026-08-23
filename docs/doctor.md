@@ -103,6 +103,7 @@ reasons to block a release tonight.
 | theme | a page override was refused | warning — that page is correct and working, and is not yours |
 | theme | the directory overrides nothing | warning — usually a filename that does not match a page |
 | theme | not configured | *not a finding* — most deployments never theme anything |
+| theme | a loaded language is incomplete | warning — that language's pages render half in English |
 
 The theme checks exist because a refused override's symptom is a page that looks
 *normal*. The server does not stop for one — it serves the built-in and logs —

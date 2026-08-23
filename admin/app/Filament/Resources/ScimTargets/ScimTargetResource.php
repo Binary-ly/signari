@@ -23,13 +23,28 @@ class ScimTargetResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedArrowPath;
 
-    protected static string|\UnitEnum|null $navigationGroup = 'Configuration';
+    // Accessors rather than static properties: PHP cannot call __() in a
+    // property initialiser. See AccessPolicyResource.
 
-    protected static ?string $navigationLabel = 'Provisioning';
+    public static function getNavigationGroup(): ?string
+    {
+        return __('Configuration');
+    }
 
-    protected static ?string $modelLabel = 'SCIM target';
+    public static function getNavigationLabel(): string
+    {
+        return __('Provisioning');
+    }
 
-    protected static ?string $pluralModelLabel = 'Provisioning';
+    public static function getModelLabel(): string
+    {
+        return __('SCIM target');
+    }
+
+    public static function getPluralModelLabel(): string
+    {
+        return __('Provisioning');
+    }
 
     /**
      * The count of MISCONFIGURED rows, not of all rows. A badge showing the total

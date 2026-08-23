@@ -23,13 +23,28 @@ class AdminTokenResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedKey;
 
-    protected static string|\UnitEnum|null $navigationGroup = 'Configuration';
+    // Accessors rather than static properties: PHP cannot call __() in a
+    // property initialiser. See AccessPolicyResource.
 
-    protected static ?string $navigationLabel = 'Admin tokens';
+    public static function getNavigationGroup(): ?string
+    {
+        return __('Configuration');
+    }
 
-    protected static ?string $modelLabel = 'admin token';
+    public static function getNavigationLabel(): string
+    {
+        return __('Admin tokens');
+    }
 
-    protected static ?string $pluralModelLabel = 'Admin tokens';
+    public static function getModelLabel(): string
+    {
+        return __('admin token');
+    }
+
+    public static function getPluralModelLabel(): string
+    {
+        return __('Admin tokens');
+    }
 
     /**
      * The count of MISCONFIGURED rows, not of all rows. A badge showing the total

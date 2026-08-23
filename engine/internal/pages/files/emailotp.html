@@ -1,36 +1,31 @@
-{{define "title"}}Email sign-in codes{{end}}
+{{define "title"}}{{T "emailotp.title"}}{{end}}
 {{define "content"}}
 {{if eq .Stage "done"}}
-<h1>Email codes are on</h1>
-<p>You will be asked for a code from this address when you sign in.</p>
-<p class="hint">This is the weakest of the second factors we offer, because
-account recovery already goes to your email &mdash; anybody with your mailbox can
-do both. An authenticator app or a passkey is stronger, and you can add one at
-any time.</p>
+<h1>{{T "emailotp.done.heading"}}</h1>
+<p>{{T "emailotp.done.body"}}</p>
+<p class="hint">{{T "emailotp.done.hint"}}</p>
 {{else if eq .Stage "code"}}
-<h1>Check your email</h1>
+<h1>{{T "emailotp.check.heading"}}</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-<p>We sent a code to <strong>{{.Address}}</strong>.</p>
+<p>{{T "emailotp.check.sent" .}}</p>
 <form method="POST" action="/account/mfa/email">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 <input type="hidden" name="step" value="verify">
 <input type="hidden" name="address" value="{{.Address}}">
-<label for="c">Code</label>
+<label for="c">{{T "common.code"}}</label>
 <input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
-<button type="submit">Confirm</button>
+<button type="submit">{{T "common.confirm"}}</button>
 </form>
 {{else}}
-<h1>Email sign-in codes</h1>
+<h1>{{T "emailotp.title"}}</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
-<p>We will send a code to this address each time you sign in.</p>
+<p>{{T "emailotp.start.body"}}</p>
 <form method="POST" action="/account/mfa/email">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="a">Email address</label>
+<label for="a">{{T "common.emailaddress"}}</label>
 <input id="a" name="address" type="email" value="{{.Address}}" autofocus required>
-<button type="submit">Send a code</button>
+<button type="submit">{{T "common.sendcode"}}</button>
 </form>
-<p class="hint">An authenticator app is stronger: your email is also how your
-account is recovered, so a code sent there protects you from a stolen password
-but not from a stolen mailbox.</p>
+<p class="hint">{{T "emailotp.start.hint"}}</p>
 {{end}}
 {{end}}

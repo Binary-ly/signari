@@ -6,6 +6,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+
+	"signari.dev/engine/internal/i18n"
 )
 
 // Validating an override.
@@ -242,10 +245,36 @@ func (r Requirements) Empty() bool {
 	return len(r.Fields) == 0 && len(r.Actions) == 0 && r.Hidden == 0
 }
 
+// validationBundle is the built-in catalogue, loaded once.
+//
+// Validation runs in ONE language on purpose. What it checks — that a CSRF
+// token, a form target and a hidden input survived — is a property of the
+// markup, and markup does not change between translations. Rendering an
+// override once per language would multiply the work by the number of
+// languages to re-derive the same answer.
+//
+// The built-in catalogue rather than the operator's, because a theme that
+// reworded a message must still be judged against what the page structurally
+// contains.
+func validationBundle() *i18n.Bundle {
+	validationBundleOnce.Do(func() {
+		// Only the embedded catalogues, so this cannot fail on anything an
+		// operator wrote. An error here would mean the binary itself is broken,
+		// and every caller already reports the parse failure that follows.
+		validationBundleValue, _, _ = i18n.Load("")
+	})
+	return validationBundleValue
+}
+
+var (
+	validationBundleOnce  sync.Once
+	validationBundleValue *i18n.Bundle
+)
+
 // requirementsOf renders a page against every probe variant and unions what a
 // theme must not lose.
 func requirementsOf(src map[string]string, name string) (Requirements, error) {
-	set, err := build(src)
+	set, err := build(src, validationBundle())
 	if err != nil {
 		return Requirements{}, err
 	}

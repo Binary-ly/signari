@@ -22,12 +22,15 @@ class EngineUsersTable
         return $table
             ->columns([
                 TextColumn::make('email')
+                    ->label(__('Email'))
                     ->searchable()
                     ->sortable()
                     ->description(fn ($record) => $record->username),
 
                 TextColumn::make('status')
+                    ->label(__('Status'))
                     ->badge()
+                    ->formatStateUsing(fn (string $state): string => __($state))
                     ->color(fn (string $state): string => match ($state) {
                         'active'      => 'success',
                         'deactivated' => 'danger',
@@ -37,50 +40,54 @@ class EngineUsersTable
                     ->sortable(),
 
                 TextColumn::make('passkey_count')
-                    ->label('Passkeys')
+                    ->label(__('Passkeys'))
                     ->badge()
                     // Two is the threshold for passwordless, not one: with a
                     // single passkey, losing the device locks the account out.
                     ->color(fn (int $state): string => $state >= 2 ? 'success' : ($state === 1 ? 'warning' : 'gray'))
                     ->tooltip(fn (int $state): string => $state >= 2
-                        ? 'Can go passwordless'
-                        : 'Needs 2+ passkeys before passwords can be removed')
+                        ? __('Can go passwordless')
+                        : __('Needs 2+ passkeys before passwords can be removed'))
                     ->sortable(),
 
-                IconColumn::make('totp_enabled')->label('TOTP')->boolean(),
+                IconColumn::make('totp_enabled')->label(__('TOTP'))->boolean(),
 
                 // The migration signal. During an import from another provider the
                 // number that matters is how many users have NOT yet signed in --
                 // each of those is still carrying a foreign hash.
                 IconColumn::make('password_is_current')
-                    ->label('Hash current')
+                    ->label(__('Hash current'))
                     ->boolean()
                     ->tooltip(fn ($record): ?string => $record->needsRehash()
-                        ? 'Imported hash, not yet rehashed. Rehashes silently on next sign-in.'
+                        ? __('Imported hash, not yet rehashed. Rehashes silently on next sign-in.')
                         : null),
 
                 TextColumn::make('migration_state')
+                    ->label(__('Migration'))
                     ->badge()
+                    ->formatStateUsing(fn (string $state): string => __($state))
                     ->color(fn (string $state): string => $state === 'pending' ? 'warning' : 'gray')
                     ->toggleable(isToggledHiddenByDefault: true),
 
-                TextColumn::make('created_at')->dateTime()->sortable()
+                TextColumn::make('created_at')->label(__('Created'))->dateTime()->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
-                SelectFilter::make('status')->options([
-                    'active'      => 'Active',
-                    'deactivated' => 'Deactivated',
-                    'locked'      => 'Locked',
+                // The KEYS stay English because they are the stored values the
+                // filter matches on; only what an operator reads is translated.
+                SelectFilter::make('status')->label(__('Status'))->options([
+                    'active'      => __('Active'),
+                    'deactivated' => __('Deactivated'),
+                    'locked'      => __('Locked'),
                 ]),
 
                 Filter::make('needs_rehash')
-                    ->label('Imported hash not yet upgraded')
+                    ->label(__('Imported hash not yet upgraded'))
                     ->query(fn (Builder $q): Builder => $q->where('has_password', true)
                         ->where('password_is_current', false)),
 
                 Filter::make('passwordless_ready')
-                    ->label('Ready for passwordless (2+ passkeys)')
+                    ->label(__('Ready for passwordless (2+ passkeys)'))
                     ->query(fn (Builder $q): Builder => $q->where('passkey_count', '>=', 2)),
             ])
             // No row actions and no bulk actions: every one of them would be a
@@ -94,10 +101,9 @@ class EngineUsersTable
             ])
             ->toolbarActions([])
             ->defaultSort('created_at', 'desc')
-            ->emptyStateHeading('No users in scope')
+            ->emptyStateHeading(__('No users in scope'))
             ->emptyStateDescription(
-                'Rows are scoped to your organisation by PostgreSQL row-level security. '.
-                'An empty table means no organisation context, not an empty database.'
+                __('Rows are scoped to your organisation by PostgreSQL row-level security. An empty table means no organisation context, not an empty database.')
             );
     }
 
@@ -112,15 +118,15 @@ class EngineUsersTable
     private static function createUserAction(): Action
     {
         return Action::make('createUser')
-            ->label('New user')
+            ->label(__('New user'))
             ->icon('heroicon-m-user-plus')
             ->schema([
-                TextInput::make('email')->email()->label('Email')
-                    ->helperText('Email or username is required.'),
-                TextInput::make('username')->label('Username'),
+                TextInput::make('email')->email()->label(__('Email'))
+                    ->helperText(__('Email or username is required.')),
+                TextInput::make('username')->label(__('Username')),
                 TextInput::make('password')->password()->revealable()->minLength(8)
-                    ->label('Password (optional)')
-                    ->helperText('Leave blank to invite them: they set their own via recovery.'),
+                    ->label(__('Password (optional)'))
+                    ->helperText(__('Leave blank to invite them: they set their own via recovery.')),
             ])
             ->action(function (array $data): void {
                 // The organisation comes from the OPERATOR's own record, never
@@ -128,8 +134,8 @@ class EngineUsersTable
                 // tenant boundary -- the same rule ScopeToOrganisation enforces.
                 $orgId = auth()->user()?->org_id;
                 if (blank($orgId)) {
-                    Notification::make()->title('You are not assigned to an organisation')
-                        ->body('An operator with no organisation cannot create users in one.')
+                    Notification::make()->title(__('You are not assigned to an organisation'))
+                        ->body(__('An operator with no organisation cannot create users in one.'))
                         ->danger()->send();
 
                     return;
@@ -140,12 +146,12 @@ class EngineUsersTable
                         filled($data['password'] ?? null) ? $data['password'] : null
                     );
                 } catch (RuntimeException $e) {
-                    Notification::make()->title('User not created')->body($e->getMessage())
+                    Notification::make()->title(__('User not created'))->body($e->getMessage())
                         ->danger()->persistent()->send();
 
                     return;
                 }
-                Notification::make()->title('User created')->success()->send();
+                Notification::make()->title(__('User created'))->success()->send();
             });
     }
 
@@ -157,28 +163,30 @@ class EngineUsersTable
     private static function toggleActiveAction(): Action
     {
         return Action::make('toggleActive')
-            ->label(fn ($record): string => $record->status === 'active' ? 'Deactivate' : 'Reactivate')
+            ->label(fn ($record): string => $record->status === 'active' ? __('Deactivate') : __('Reactivate'))
             ->icon(fn ($record): string => $record->status === 'active'
                 ? 'heroicon-m-no-symbol' : 'heroicon-m-check-circle')
             ->color(fn ($record): string => $record->status === 'active' ? 'danger' : 'success')
             ->requiresConfirmation()
             ->modalDescription(fn ($record): string => $record->status === 'active'
-                ? 'They will be signed out of every application immediately, not just prevented from signing in again.'
-                : 'They will be able to sign in again. Existing sessions were already ended and do not come back.')
+                ? __('They will be signed out of every application immediately, not just prevented from signing in again.')
+                : __('They will be able to sign in again. Existing sessions were already ended and do not come back.'))
             ->action(function ($record): void {
                 try {
                     $r = EngineAdminApi::fromConfig()
                         ->setUserActive($record->id, $record->status !== 'active');
                 } catch (RuntimeException $e) {
-                    Notification::make()->title('Nothing was changed')->body($e->getMessage())
+                    Notification::make()->title(__('Nothing was changed'))->body($e->getMessage())
                         ->danger()->persistent()->send();
 
                     return;
                 }
                 $ended = (int) ($r['sessions_ended'] ?? 0);
                 Notification::make()
-                    ->title($record->status === 'active' ? 'User deactivated' : 'User reactivated')
-                    ->body($ended > 0 ? "{$ended} session(s) ended." : 'No sessions were open.')
+                    ->title($record->status === 'active' ? __('User deactivated') : __('User reactivated'))
+                    // trans_choice, not "session(s)": the same defect the
+                    // front-channel logout page had, and wrong in English at one.
+                    ->body($ended > 0 ? self::endedSessions($ended) : __('No sessions were open.'))
                     ->success()->send();
             });
     }
@@ -186,25 +194,33 @@ class EngineUsersTable
     private static function setPasswordAction(): Action
     {
         return Action::make('setPassword')
-            ->label('Set password')
+            ->label(__('Set password'))
             ->icon('heroicon-m-key')
             ->requiresConfirmation()
-            ->modalDescription('Every existing session is ended: they all predate this credential.')
+            ->modalDescription(__('Every existing session is ended: they all predate this credential.'))
             ->schema([
-                TextInput::make('password')->password()->revealable()->required()->minLength(8),
+                TextInput::make('password')->label(__('Password'))
+                    ->password()->revealable()->required()->minLength(8),
             ])
             ->action(function ($record, array $data): void {
                 try {
                     $r = EngineAdminApi::fromConfig()->setUserPassword($record->id, $data['password']);
                 } catch (RuntimeException $e) {
-                    Notification::make()->title('Password not changed')->body($e->getMessage())
+                    Notification::make()->title(__('Password not changed'))->body($e->getMessage())
                         ->danger()->persistent()->send();
 
                     return;
                 }
-                Notification::make()->title('Password set')
-                    ->body(((int) ($r['sessions_ended'] ?? 0)).' session(s) ended.')
+                Notification::make()->title(__('Password set'))
+                    ->body(self::endedSessions((int) ($r['sessions_ended'] ?? 0)))
                     ->success()->send();
             });
+    }
+
+    /** How many sessions were ended, in a form that reads correctly at one. */
+    private static function endedSessions(int $n): string
+    {
+        return trans_choice('{0}No sessions were open.|{1}:count session ended.|[2,*]:count sessions ended.',
+            $n, ['count' => $n]);
     }
 }

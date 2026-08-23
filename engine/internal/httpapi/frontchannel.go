@@ -111,7 +111,7 @@ func (s *Server) renderFrontChannelLogout(w http.ResponseWriter, r *http.Request
 	if continueTo == "" {
 		continueTo = "/"
 	}
-	s.renderBare(w, "fclogout", map[string]any{
+	s.renderBare(w, r, "fclogout", map[string]any{
 		"Targets":    targets,
 		"ContinueTo": continueTo,
 		// Seconds before the page moves on regardless. A relying party that never

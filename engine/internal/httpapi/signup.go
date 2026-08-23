@@ -73,8 +73,7 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 			// submission means filling in a form to be told the link was dead
 			// before it was opened.
 			s.renderPage(w, r, "signup", s.captchaFields(r, map[string]any{
-				"Error": "That invitation link is not valid. It may have been used " +
-					"already, or expired. Ask whoever invited you for a new one.",
+				"Error": s.tr(r).T("error.invite.invalid"),
 			}))
 			return
 		}
@@ -136,7 +135,7 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 				"correlation_id", correlationID(ctx))
 			csrf, _ := s.csrfToken(w, r)
 			s.renderPage(w, r, "signup", s.captchaFields(r, map[string]any{
-				"Error":  "That challenge was not completed. Please try again.",
+				"Error":  s.tr(r).T("error.captcha.incomplete"),
 				"Email":  strings.ToLower(strings.TrimSpace(r.PostFormValue("email"))),
 				"Invite": r.PostFormValue("invite"),
 				"CSRF":   csrf, "CSRFField": csrfFormField,

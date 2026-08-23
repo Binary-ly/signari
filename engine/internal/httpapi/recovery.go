@@ -223,7 +223,7 @@ func (s *Server) handleResetGet(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	_, hash, err := hashRecoveryToken(token)
 	if err != nil {
-		s.renderPage(w, r, "reset", map[string]any{"Error": "That link is not valid."})
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.invalid")})
 		return
 	}
 
@@ -251,7 +251,7 @@ func (s *Server) handleResetGet(w http.ResponseWriter, r *http.Request) {
 			"Wait":    time.Until(req.EffectiveAt).Round(time.Minute).String(),
 		})
 	case lerr != nil:
-		s.renderPage(w, r, "reset", map[string]any{"Error": "That link is not valid or has expired."})
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
 	default:
 		s.renderPage(w, r, "reset", map[string]any{
 			"Ready": true, "Token": token, "CSRF": csrf, "CSRFField": csrfFormField,
@@ -275,7 +275,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 
 	_, hash, err := hashRecoveryToken(r.PostForm.Get("token"))
 	if err != nil {
-		s.renderPage(w, r, "reset", map[string]any{"Error": "That link is not valid."})
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.invalid")})
 		return
 	}
 
@@ -290,7 +290,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Pending and invalid are shown the same way here. By the time a form is
 		// being submitted, the difference only matters to someone probing.
-		s.renderPage(w, r, "reset", map[string]any{"Error": "That link is not valid or has expired."})
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
 		return
 	}
 
@@ -333,7 +333,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := store.ConsumeRecovery(ctx, tx, req.ID, req.UserID, newHash); err != nil {
 		s.log.Error("consuming recovery", "err", err)
-		s.renderPage(w, r, "reset", map[string]any{"Error": "That link is not valid or has expired."})
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
 		return
 	}
 	if err := audit.Write(ctx, tx, audit.Event{

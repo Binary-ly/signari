@@ -13,44 +13,43 @@ class IdentityProvidersTable
         return $table
             ->columns([
                 TextColumn::make('config_state')
-                    ->label('State')
+                    ->label(__('State'))
                     ->badge()
                     ->color(fn (string $state): string => $state === 'ok' ? 'success'
                         : ($state === 'disabled' ? 'gray' : 'danger'))
                     ->sortable(),
 
                 TextColumn::make('display_name')
-                    ->label('Provider')
+                    ->label(__('Provider'))
                     ->description(fn ($record) => $record->slug)
                     ->searchable(['display_name', 'slug'])
                     ->sortable(),
 
-                TextColumn::make('kind')->badge()->sortable(),
+                TextColumn::make('kind')->label(__('Kind'))->badge()->sortable(),
 
                 IconColumn::make('allow_signup')
-                    ->label('Sign-up')
+                    ->label(__('Sign-up'))
                     ->boolean()
-                    ->tooltip('Whether a person with no account here can create one through this provider'),
+                    ->tooltip(__('Whether a person with no account here can create one through this provider')),
 
                 IconColumn::make('allow_linking')
-                    ->label('Linking')
+                    ->label(__('Linking'))
                     ->boolean()
-                    ->tooltip('Whether an existing account can attach this provider. Linking is by '
-                        .'(provider, subject) only — there is no email-matching path at any setting'),
+                    ->tooltip(__('Whether an existing account can attach this provider. Linking is by (provider, subject) only — there is no email-matching path at any setting')),
 
                 IconColumn::make('trust_email_verification')
-                    ->label('Trusts email')
+                    ->label(__('Trusts email'))
                     ->boolean()
-                    ->tooltip('Only turn this on for a provider you know verifies addresses. '
-                        .'Sign-up refuses without it'),
+                    ->tooltip(__('Only turn this on for a provider you know verifies addresses. Sign-up refuses without it')),
 
                 TextColumn::make('issuer')
+                    ->label(__('Issuer'))
                     ->limit(40)
                     ->placeholder('—')
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->defaultSort('config_state')
-            ->emptyStateHeading('No external sign-in providers')
-            ->emptyStateDescription('Add one with `signari idp add`.');
+            ->emptyStateHeading(__('No external sign-in providers'))
+            ->emptyStateDescription(__('Add one with `signari idp add`.'));
     }
 }

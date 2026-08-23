@@ -1,17 +1,16 @@
-{{define "title"}}Confirm this request{{end}}
+{{define "title"}}{{T "umaclaims.title"}}{{end}}
 {{define "style"}}<style>
 :root{--page-w:30rem}
 </style>{{end}}
-{{define "content"}}<h1>{{.ClientName}} is asking on your behalf</h1>
-<p class="who">It wants access held by <strong>{{.ResourceServer}}</strong>:</p>
+{{define "content"}}<h1>{{T "umaclaims.heading" .}}</h1>
+<p class="who">{{T "umaclaims.wants" .}}</p>
 <ul>
 {{range .Asks}}<li><strong>{{.Resource}}</strong> — {{.Scopes}}</li>{{end}}
 </ul>
-<p>Confirming tells {{.ResourceServer}} who you are. It does not grant access on
-its own: whoever owns this decides that.</p>
+<p>{{T "umaclaims.note" .}}</p>
 <form method="post" action="/uma2/claims">
  <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
  <input type="hidden" name="handle" value="{{.Handle}}">
- <button type="submit">Confirm</button>
+ <button type="submit">{{T "common.confirm"}}</button>
 </form>
 {{end}}

@@ -202,6 +202,11 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		log.Warn("a themed page was refused and the built-in is being used", "err", p)
 	}
 
+	// Discovery advertises the languages the pages actually loaded with,
+	// including any an operator added. Set after Load rather than by the caller
+	// so the advertised list and the renderable list cannot drift.
+	cfg.UILocalesSupported = pageSet.Bundle().Languages()
+
 	srv := &Server{
 		pages:   pageSet,
 		cfg:     cfg,
@@ -741,7 +746,7 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		data["BrandLogo"] = b.LogoURL
 		data["BrandSupport"] = b.SupportURL
 	}
-	s.writeBranded(w, "login", data, b)
+	s.writeBranded(w, s.langFor(r), "login", data, b)
 }
 
 // loginPage is deliberately minimal and server-rendered: no JavaScript, so it

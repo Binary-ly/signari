@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/i18n"
 )
 
 // A rendered copy of every page, for looking at.
@@ -35,7 +37,13 @@ func TestPreview(t *testing.T) {
 	}
 
 	set := loadOrFail(t, "")
-	samples := previewData()
+	bundle := set.Bundle()
+	// One set of sample data per language, because some of what a handler puts
+	// into a page is itself translated -- the scope descriptions on the consent
+	// screen most of all. Rendering one English dataset in Arabic would show a
+	// half-translated consent screen that the real server never produces.
+	samples := previewData(bundle.For("en"))
+	samplesAr := previewData(bundle.For("ar"))
 
 	// Every page must have sample data, or the preview quietly covers less than
 	// it appears to and a page nobody looked at ships unreviewed.
@@ -68,8 +76,15 @@ func TestPreview(t *testing.T) {
 			}
 		}
 	}
+	// Arabic gets its own directory rather than a theme attribute: it is a
+	// different render, not a restyle of the same one.
+	if err := os.MkdirAll(filepath.Join(out, "ar"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	var wrote []previewEntry
+	const openTag = `<html lang="en" dir="ltr">`
+
 	for _, name := range set.Names() {
 		var sb strings.Builder
 		if err := set.Execute(&sb, name, samples[name]); err != nil {
@@ -77,14 +92,14 @@ func TestPreview(t *testing.T) {
 			continue
 		}
 		page := sb.String()
-		if !strings.Contains(page, `<html lang="en">`) {
-			t.Errorf("%s does not open with <html lang=\"en\">, so the preview cannot "+
-				"pin a theme on it and it would be reviewed in only one", name)
+		if !strings.Contains(page, openTag) {
+			t.Errorf("%s does not open with %s, so the preview cannot pin a theme "+
+				"on it and it would be reviewed in only one", name, openTag)
 			continue
 		}
 		for _, th := range themes {
-			body := strings.Replace(page, `<html lang="en">`,
-				`<html lang="en"`+th.attr+`>`, 1)
+			body := strings.Replace(page, openTag,
+				`<html lang="en" dir="ltr"`+th.attr+`>`, 1)
 			if th.dir == "brand" {
 				body = brandedLikeTheServer(body)
 			}
@@ -93,6 +108,20 @@ func TestPreview(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+
+		// The same page in Arabic, which is the only variant that exercises
+		// right-to-left layout and the plural forms English cannot reach. A
+		// translation nobody looks at is a translation nobody has checked.
+		var ar strings.Builder
+		if err := set.ExecuteIn(&ar, "ar", name, samplesAr[name]); err != nil {
+			t.Errorf("%s in Arabic: %v", name, err)
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(out, "ar", name+".html"),
+			[]byte(ar.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
 		wrote = append(wrote, previewEntry{name, name + ".html"})
 	}
 	sort.Slice(wrote, func(i, j int) bool { return wrote[i].Name < wrote[j].Name })
@@ -114,8 +143,12 @@ func TestPreview(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Logf("wrote %d page(s) x 4 variants to %s (index.html, light/, dark/, "+
-		"brand/)", len(wrote), out)
+	if err := os.WriteFile(filepath.Join(out, "ar", "index.html"),
+		[]byte(contactSheet(wrote, "Arabic, right-to-left", "", "ar")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("wrote %d page(s) x 5 variants to %s (index.html, light/, dark/, "+
+		"brand/, ar/)", len(wrote), out)
 }
 
 type previewEntry struct{ Name, File string }
@@ -217,6 +250,9 @@ func themeLinks(dir string) string {
 		{"/light/index.html", "Light", "light"},
 		{"/dark/index.html", "Dark", "dark"},
 		{"/brand/index.html", "Branded", "brand"},
+		// The only variant that shows right-to-left layout and the plural forms
+		// English has no way to reach.
+		{"/ar/index.html", "العربية", "ar"},
 	}
 	var b strings.Builder
 	for _, l := range links {
@@ -229,7 +265,20 @@ func themeLinks(dir string) string {
 	return b.String()
 }
 
-func previewData() map[string]map[string]any {
+// describeScopeLikeTheServer mirrors httpapi.describeScope.
+//
+// Mirrored rather than imported because internal/httpapi imports this package,
+// so reaching back into it would be a cycle. The pairing is held by
+// TestThePreviewDescribesScopesTheWayTheServerDoes, which fails if the two
+// drift -- which is the actual risk, and worth a test rather than a comment.
+func describeScopeLikeTheServer(p *i18n.Printer, scope string) string {
+	if key := "scope." + scope; p.Has(key) {
+		return string(p.T(key))
+	}
+	return scope
+}
+
+func previewData(p *i18n.Printer) map[string]map[string]any {
 	// Shared by every page that posts a form back.
 	csrf := func(m map[string]any) map[string]any {
 		m["CSRF"] = "8f2c1d94a7be4e0f9c3a5b6d8e1f2a3b"
@@ -258,10 +307,20 @@ func previewData() map[string]map[string]any {
 		}),
 		"consent": csrf(map[string]any{
 			"Client": "Northwind Analytics", "ClientID": "northwind-analytics", "Authz": authz,
+			// Descriptions looked up rather than written here, because the
+			// server looks them up too. Inventing them once produced a preview
+			// showing wording the product does not actually use -- and, once
+			// the catalogue existed, a consent screen whose scope list stayed
+			// English in every language while the rest of the page translated.
+			//
+			// invoices.read is deliberately not in the catalogue: it stands for
+			// a client-registered scope, which we cannot translate and show
+			// verbatim. Seeing that in the review is the point.
 			"Scopes": []map[string]any{
-				{"Name": "openid", "Description": "Confirm who you are"},
-				{"Name": "profile", "Description": "See your name and profile picture"},
-				{"Name": "invoices.read", "Description": "Read your invoices"},
+				{"Name": "profile", "Description": describeScopeLikeTheServer(p, "profile")},
+				{"Name": "email", "Description": describeScopeLikeTheServer(p, "email")},
+				{"Name": "offline_access", "Description": describeScopeLikeTheServer(p, "offline_access")},
+				{"Name": "invoices.read", "Description": describeScopeLikeTheServer(p, "invoices.read")},
 			},
 			"Details": []map[string]any{{
 				"Type": "payment_initiation",
@@ -298,8 +357,12 @@ func previewData() map[string]map[string]any {
 				"91ba-6c40", "cc25-71ef", "38d9-04b7", "a5e1-8f33",
 			},
 		},
-		"recover":  csrf(map[string]any{}),
-		"changepw": csrf(map[string]any{"Reason": "Your administrator requires a new password.", "Error": ""}),
+		"recover": csrf(map[string]any{}),
+		// The reason is a message KEY in the database, resolved at render time --
+		// see httpapi.renderChangeReason. Written as the key here so the preview
+		// shows what the product does rather than an English sentence that would
+		// stay English in every language.
+		"changepw": csrf(map[string]any{"Reason": p.T("reason.administrator"), "Error": ""}),
 		"reset": csrf(map[string]any{
 			"Ready": true, "Pending": false, "Wait": "", "When": "",
 			"Token": "0a94c1f7-6b2e-4d38-9f05-71c8ea4b2d63", "Error": "",
@@ -369,7 +432,9 @@ func previewData() map[string]map[string]any {
 				"ID": "8c1f0a2b", "ClientName": "Point-of-sale terminal 14",
 				"Scope": "openid payments.authorize", "BindingMessage": "W7-42",
 				// The page says "Expires in {{.Expires}}", so this is the duration.
-				"Expires": "4 minutes",
+				// Through N, the way the handler builds it: a duration is a
+				// count, and the form it takes is the language's business.
+				"Expires": p.N("common.minutes", 4),
 			}},
 		}),
 		"racindex": map[string]any{

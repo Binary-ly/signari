@@ -23,13 +23,28 @@ class GroupResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedUserGroup;
 
-    protected static string|\UnitEnum|null $navigationGroup = 'Configuration';
+    // Accessors rather than static properties: PHP cannot call __() in a
+    // property initialiser. See AccessPolicyResource.
 
-    protected static ?string $navigationLabel = 'Groups';
+    public static function getNavigationGroup(): ?string
+    {
+        return __('Configuration');
+    }
 
-    protected static ?string $modelLabel = 'group';
+    public static function getNavigationLabel(): string
+    {
+        return __('Groups');
+    }
 
-    protected static ?string $pluralModelLabel = 'Groups';
+    public static function getModelLabel(): string
+    {
+        return __('group');
+    }
+
+    public static function getPluralModelLabel(): string
+    {
+        return __('Groups');
+    }
 
 
     public static function table(Table $table): Table

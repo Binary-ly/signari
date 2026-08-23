@@ -58,6 +58,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"signari.dev/engine/internal/i18n"
 )
 
 //go:embed files
@@ -79,10 +81,22 @@ var partials = map[string]bool{
 // Immutable once built. Load returns a new Set; nothing mutates one afterwards,
 // so it is safe to share across every request without a lock.
 type Set struct {
-	tmpl   map[string]*template.Template
+	// tmpl is language -> page -> template.
+	//
+	// One parsed tree per language rather than one shared tree, because Go
+	// resolves a template function's NAME at parse time and its implementation
+	// from the template it was parsed into. A single tree would mean rebinding
+	// T on every request, which is a data race across concurrent sign-ins.
+	//
+	// The cost is bounded: a page's tree is proportional to how many actions it
+	// has, not how long it is, so the 13KB stylesheet every page carries is one
+	// text node in each copy.
+	tmpl   map[string]map[string]*template.Template
 	origin map[string]string
 	// order is the page names, sorted, for anything that lists them.
 	order []string
+	// bundle is what T and N resolve against, and what discovery advertises.
+	bundle *i18n.Bundle
 }
 
 // Load reads the built-in pages and, when overrideDir is not empty, replaces any
@@ -137,12 +151,39 @@ func Load(overrideDir string) (*Set, []error, error) {
 		}
 	}
 
-	set, err := build(src)
+	// The catalogue lives in the SAME directory as the pages, under locales/.
+	//
+	// One directory and one environment variable, because they are one thing to
+	// an operator: what this deployment's sign-in pages say. Splitting them
+	// would mean a theme that renders the right words in the wrong markup, or
+	// the reverse, depending on which of two settings somebody remembered.
+	var localeDir string
+	if overrideDir != "" {
+		localeDir = filepath.Join(overrideDir, "locales")
+	}
+	bundle, langProblems, err := i18n.Load(localeDir)
+	if err != nil {
+		return nil, problems, err
+	}
+	problems = append(problems, langProblems...)
+
+	set, err := build(src, bundle)
 	if err != nil {
 		return nil, problems, err
 	}
 	set.origin = origin
 	return set, problems, nil
+}
+
+// Bundle is the message catalogue these pages render against.
+//
+// Exposed so discovery can advertise ui_locales_supported from what is actually
+// loaded rather than from a list somebody maintains alongside it.
+func (s *Set) Bundle() *i18n.Bundle {
+	if s == nil {
+		return nil
+	}
+	return s.bundle
 }
 
 func clone(m map[string]string) map[string]string {
@@ -215,34 +256,68 @@ func overrideSources(dir string) (map[string]string, error) {
 // its own "content", and in a single namespace the last one parsed would win for
 // all of them. Cloning the partials per page is what keeps `{{define "content"}}`
 // meaning this page's content.
-func build(src map[string]string) (*Set, error) {
-	base := template.New("base")
-	for name, body := range src {
-		if !partials[name] {
-			continue
+func build(src map[string]string, bundle *i18n.Bundle) (*Set, error) {
+	set := &Set{
+		tmpl:   map[string]map[string]*template.Template{},
+		bundle: bundle,
+	}
+
+	for _, lang := range bundle.Languages() {
+		printer := bundle.For(lang)
+
+		base := template.New("base").Funcs(funcsFor(printer))
+		for name, body := range src {
+			if !partials[name] {
+				continue
+			}
+			if _, err := base.Parse(body); err != nil {
+				return nil, fmt.Errorf("the %s partial does not parse: %w", name, err)
+			}
 		}
-		if _, err := base.Parse(body); err != nil {
-			return nil, fmt.Errorf("the %s partial does not parse: %w", name, err)
+
+		set.tmpl[lang] = map[string]*template.Template{}
+		for name, body := range src {
+			if partials[name] {
+				continue
+			}
+			t, err := base.Clone()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := t.New(name).Parse(body); err != nil {
+				return nil, fmt.Errorf("the %s page does not parse: %w", name, err)
+			}
+			set.tmpl[lang][name] = t
 		}
 	}
 
-	set := &Set{tmpl: map[string]*template.Template{}}
-	for name, body := range src {
-		if partials[name] {
-			continue
+	for name := range src {
+		if !partials[name] {
+			set.order = append(set.order, name)
 		}
-		t, err := base.Clone()
-		if err != nil {
-			return nil, err
-		}
-		if _, err := t.New(name).Parse(body); err != nil {
-			return nil, fmt.Errorf("the %s page does not parse: %w", name, err)
-		}
-		set.tmpl[name] = t
-		set.order = append(set.order, name)
 	}
 	sort.Strings(set.order)
 	return set, nil
+}
+
+// funcsFor is what a page may call, bound to one language.
+//
+// Deliberately small. Every function here is one an operator's override can
+// also call, so each is a piece of API that has to keep working; a template
+// function that reaches into request state or the database would make a theme
+// able to do things a theme should not.
+func funcsFor(p *i18n.Printer) template.FuncMap {
+	return template.FuncMap{
+		// T renders a message. `{{T "login.heading"}}`, or with the page's data
+		// available for {Placeholder} substitution: `{{T "smsotp.sent" .}}`.
+		"T": p.T,
+		// N renders a message that counts something, choosing the plural form
+		// CLDR specifies for this language. `{{N "fclogout.progress" (len .Targets)}}`
+		"N": p.N,
+		// The language being rendered and its direction, for <html lang dir>.
+		"lang": p.Lang,
+		"dir":  p.Dir,
+	}
 }
 
 // Execute renders a page.
@@ -251,13 +326,27 @@ func build(src map[string]string) (*Set, error) {
 // actually invoked -- the page itself, or a layout the page fills -- stays an
 // implementation detail this package can change without touching a call site.
 func (s *Set) Execute(w io.Writer, name string, data any) error {
+	return s.ExecuteIn(w, i18n.Default, name, data)
+}
+
+// ExecuteIn renders a page in one language.
+//
+// An unknown language renders the default rather than failing. The language
+// comes from a request parameter and an HTTP header, so it is a stranger's
+// input reaching a code path that has to work: a person whose browser asks for
+// something we do not have needs a sign-in page, not an error.
+func (s *Set) ExecuteIn(w io.Writer, lang, name string, data any) error {
 	// A nil Set has no pages. Answered rather than dereferenced, so a caller that
 	// never loaded one logs "no page" per request instead of taking the process
 	// down on the first sign-in.
 	if s == nil {
 		return fmt.Errorf("no pages are loaded, so %q cannot be rendered", name)
 	}
-	t, ok := s.tmpl[name]
+	byPage, ok := s.tmpl[lang]
+	if !ok {
+		byPage = s.tmpl[i18n.Default]
+	}
+	t, ok := byPage[name]
 	if !ok {
 		return fmt.Errorf("there is no page named %q", name)
 	}

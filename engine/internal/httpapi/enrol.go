@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"net/url"
 	"signari.dev/engine/internal/mail"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/brand"
+	"signari.dev/engine/internal/i18n"
 	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/pages"
 	"signari.dev/engine/internal/qr"
@@ -172,7 +174,7 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		csrf, _ := s.csrfToken(w, r)
 		s.renderPage(w, r, "enrol", map[string]any{
 			"Secret": "", "URI": "", "CSRF": csrf, "CSRFField": csrfFormField,
-			"Error": "That code did not match. Check your authenticator app and try again.",
+			"Error": s.tr(r).T("error.totp.mismatch"),
 		})
 		return
 	}
@@ -297,7 +299,68 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 		data["BrandSupport"] = b.SupportURL
 	}
 
-	s.writeBranded(w, name, data, b)
+	s.writeBranded(w, s.langFor(r), name, data, b)
+}
+
+// langFor decides which language a request is answered in.
+//
+// See i18n.Negotiate for the order. What this adds is finding `ui_locales`
+// after the authorize request itself: the sign-in flow round-trips the original
+// authorization query through a hidden `authz` field, so the parameter the
+// relying party sent is still there on the POST that follows, and on the
+// consent screen after that. Without this the first page would honour it and
+// every page after would quietly fall back to the browser's setting.
+func (s *Server) langFor(r *http.Request) string {
+	bundle := s.pageSet().Bundle()
+	if bundle == nil || r == nil {
+		return i18n.Default
+	}
+	return bundle.Negotiate(uiLocalesFrom(r), r.Header.Get("Accept-Language")).Lang()
+}
+
+// tr is a message printer for the language this request is being answered in.
+//
+// Handlers need it because some of what a person reads is decided in Go rather
+// than in a template -- "that code did not match" is a branch, not a paragraph.
+// A page translated everywhere except its error messages is a page that speaks
+// the reader's language right up until something goes wrong, which is the
+// moment it matters most.
+func (s *Server) tr(r *http.Request) *i18n.Printer {
+	return s.pageSet().Bundle().For(s.langFor(r))
+}
+
+// uiLocalesFrom digs the OIDC ui_locales parameter out of a request.
+func uiLocalesFrom(r *http.Request) string {
+	query := r.URL.Query()
+	if v := query.Get("ui_locales"); v != "" {
+		return v
+	}
+	// r.PostForm rather than FormValue: this runs while rendering, and
+	// FormValue would parse the body of a request whose handler may have read
+	// it already. Nil until something parsed it, which is the safe reading.
+	if r.PostForm != nil {
+		if v := r.PostForm.Get("ui_locales"); v != "" {
+			return v
+		}
+	}
+	for _, raw := range []string{query.Get("authz"), postForm(r, "authz")} {
+		if raw == "" {
+			continue
+		}
+		if parked, err := url.ParseQuery(raw); err == nil {
+			if v := parked.Get("ui_locales"); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+func postForm(r *http.Request, key string) string {
+	if r.PostForm == nil {
+		return ""
+	}
+	return r.PostForm.Get(key)
 }
 
 // builtinPages is the embedded set, built once, for any Server that did not go
@@ -341,9 +404,11 @@ func (s *Server) pageSet() *pages.Set {
 //
 // They still get the security headers -- htmlPageHeaders -- because they still
 // carry an assertion and an error message.
-func (s *Server) renderBare(w http.ResponseWriter, name string, data map[string]any) {
+func (s *Server) renderBare(w http.ResponseWriter, r *http.Request,
+	name string, data map[string]any) {
+
 	htmlPageHeaders(w)
-	if err := s.pageSet().Execute(w, name, data); err != nil {
+	if err := s.pageSet().ExecuteIn(w, s.langFor(r), name, data); err != nil {
 		s.log.Error("rendering a bridge page", "page", name, "err", err)
 	}
 }
@@ -355,19 +420,19 @@ func (s *Server) renderBare(w http.ResponseWriter, name string, data map[string]
 // followed by a consent page in the customer's colours does not read as a
 // missing feature -- it reads as though one of the two pages is not really
 // ours, which is the opposite of what branding is for.
-func (s *Server) writeBranded(w io.Writer, name string, data map[string]any, b *brand.Brand) {
+func (s *Server) writeBranded(w io.Writer, lang, name string, data map[string]any, b *brand.Brand) {
 	css := ""
 	if b != nil {
 		css = b.CSS()
 	}
 	if css == "" {
-		if err := s.pageSet().Execute(w, name, data); err != nil {
+		if err := s.pageSet().ExecuteIn(w, lang, name, data); err != nil {
 			s.log.Error("rendering a page", "page", name, "err", err)
 		}
 		return
 	}
 	var buf bytes.Buffer
-	if err := s.pageSet().Execute(&buf, name, data); err != nil {
+	if err := s.pageSet().ExecuteIn(&buf, lang, name, data); err != nil {
 		s.log.Error("rendering a page", "page", name, "err", err)
 		return
 	}

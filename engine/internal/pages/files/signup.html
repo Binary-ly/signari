@@ -1,24 +1,24 @@
-{{define "title"}}Create your account{{end}}
+{{define "title"}}{{T "signup.title"}}{{end}}
 {{define "content"}}
-<h1>Create your account</h1>
+<h1>{{T "signup.title"}}</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 {{if .CSRF}}
 <form method="POST" action="/signup">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 {{if .Invite}}<input type="hidden" name="invite" value="{{.Invite}}">{{end}}
-<label for="e">Email</label>
+<label for="e">{{T "common.email"}}</label>
 {{if .EmailFixed}}
 <input id="e" name="email" type="email" value="{{.Email}}" readonly>
-<p class="hint">This invitation is for this address.</p>
+<p class="hint">{{T "signup.invitefixed"}}</p>
 {{else}}
 <input id="e" name="email" type="email" value="{{.Email}}" autocomplete="username" required autofocus>
-{{if .Domains}}<p class="hint">Addresses at: {{.Domains}}</p>{{end}}
+{{if .Domains}}<p class="hint">{{T "signup.domains" .}}</p>{{end}}
 {{end}}
-<label for="p">Password</label>
+<label for="p">{{T "login.password"}}</label>
 <input id="p" name="password" type="password" autocomplete="new-password" required
   minlength="8">
-<p class="hint">At least 8 characters. You can add a passkey once you are in.</p>
-{{template "captcha" .}}<button type="submit">Create account</button>
+<p class="hint">{{T "signup.passwordhint"}}</p>
+{{template "captcha" .}}<button type="submit">{{T "signup.submit"}}</button>
 </form>
 {{end}}
 {{end}}

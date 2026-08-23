@@ -1,30 +1,26 @@
-{{define "title"}}Text message codes{{end}}
-{{define "content"}}<h1>Text message codes</h1>
+{{define "title"}}{{T "smsotp.title"}}{{end}}
+{{define "content"}}<h1>{{T "smsotp.title"}}</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 
 {{if eq .Stage "enrolled"}}
-  <p>Codes are sent to <strong>{{.Number}}</strong>.</p>
-  <p class="note">A text message is the weakest second factor available here:
-  moving a phone number to a new SIM needs no technical attack, only a
-  convincing phone call to a mobile operator. An authenticator app or a passkey
-  is stronger, and you can have both.</p>
+  <p>{{T "smsotp.enrolled.to" .}}</p>
+  <p class="note">{{T "smsotp.enrolled.note"}}</p>
   <form method="post">
     <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
     <input type="hidden" name="step" value="remove">
-    <button type="submit">Remove this factor</button>
+    <button type="submit">{{T "smsotp.remove"}}</button>
   </form>
 
 {{else if eq .Stage "verify"}}
-  <p>A code was sent to <strong>{{.Number}}</strong>. Enter it to finish.</p>
-  <p class="note">This factor is not active until the code comes back. That is
-  what proves the number is yours and not a typo.</p>
+  <p>{{T "smsotp.sent" .}}</p>
+  <p class="note">{{T "smsotp.verify.note"}}</p>
   <form method="post">
     <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
     <input type="hidden" name="step" value="verify">
-    <label for="code">Code</label>
+    <label for="code">{{T "common.code"}}</label>
     <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code"
            pattern="[0-9]*" autofocus required>
-    <button type="submit">Confirm</button>
+    <button type="submit">{{T "common.confirm"}}</button>
   </form>
 
 {{else}}
@@ -32,16 +28,15 @@
   <form method="post">
     <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
     <input type="hidden" name="step" value="send">
-    <label for="number">Mobile number, with the country code</label>
+    <label for="number">{{T "smsotp.number.label"}}</label>
     <input id="number" name="number" type="tel" value="{{.Number}}"
            placeholder="+44 7700 900123" autocomplete="tel" autofocus required>
-    <button type="submit">Send a code</button>
+    <button type="submit">{{T "common.sendcode"}}</button>
   </form>
-  <p class="note">Start with a + and the country code. Without it the number
-  cannot be dialled, and guessing wrong sends your codes to somebody else.</p>
+  <p class="note">{{T "smsotp.number.note"}}</p>
   {{else}}
-  <p class="note">Text messages are not available on this server.</p>
+  <p class="note">{{T "smsotp.unavailable"}}</p>
   {{end}}
 {{end}}
-<p class="hint"><a href="/account">Back to your account</a></p>
+<p class="hint"><a href="/account">{{T "common.backtoaccount"}}</a></p>
 {{end}}

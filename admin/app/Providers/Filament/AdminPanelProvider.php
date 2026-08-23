@@ -2,6 +2,7 @@
 
 namespace App\Providers\Filament;
 
+use App\Http\Middleware\NegotiateLocale;
 use App\Http\Middleware\ScopeToOrganisation;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
@@ -83,6 +84,14 @@ class AdminPanelProvider extends PanelProvider
                 AccountWidget::class,
             ])
             ->middleware([
+                /*
+                 * Before anything renders, so every label, notification and
+                 * validation message in the request is resolved in one
+                 * language. Registered in the outer stack rather than
+                 * authMiddleware because the SIGN-IN page needs it too, and
+                 * that page is reached by definition without a session.
+                 */
+                NegotiateLocale::class,
                 EncryptCookies::class,
                 AddQueuedCookiesToResponse::class,
                 StartSession::class,

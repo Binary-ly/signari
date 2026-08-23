@@ -9,6 +9,7 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/i18n"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/store"
@@ -32,21 +33,22 @@ import (
 // A screen listing `openid profile email offline_access` asks the user to
 // approve strings they have no way to evaluate. If we cannot say plainly what a
 // scope grants, we have no business asking anyone to consent to it.
-var scopeDescriptions = map[string]string{
-	"profile":        "See your name and username",
-	"email":          "See your email address",
-	"offline_access": "Stay signed in and access your account while you are away",
-	"address":        "See your postal address",
-	"phone":          "See your phone number",
-}
-
-func describeScope(s string) string {
-	if d, ok := scopeDescriptions[s]; ok {
-		return d
+// The descriptions live in the message catalogue as scope.<name>, because this
+// is the text a person is actually consenting to. A consent screen translated
+// everywhere except the list of what is being granted is the worst possible
+// half: the chrome speaks the reader's language and the decision does not.
+func describeScope(p *i18n.Printer, scope string) string {
+	if key := "scope." + scope; p.Has(key) {
+		return string(p.T(key))
 	}
 	// An unknown scope is shown verbatim rather than hidden or glossed. A user
 	// approving something we cannot describe should at least see its name.
-	return s
+	//
+	// Client-registered scopes land here, and translating them is not ours to
+	// do -- the words are the client's. RFC 7591 §2.2 defines how a client can
+	// register localised metadata; until that is honoured, this is the honest
+	// behaviour rather than a machine translation of somebody else's product.
+	return scope
 }
 
 type scopeItem struct{ Name, Description string }
@@ -158,9 +160,10 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	printer := s.tr(r)
 	items := make([]scopeItem, 0, len(d.Missing))
 	for _, sc := range d.Missing {
-		items = append(items, scopeItem{Name: sc, Description: describeScope(sc)})
+		items = append(items, scopeItem{Name: sc, Description: describeScope(printer, sc)})
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

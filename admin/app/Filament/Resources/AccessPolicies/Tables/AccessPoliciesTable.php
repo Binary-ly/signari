@@ -12,31 +12,29 @@ class AccessPoliciesTable
         return $table
             ->columns([
                 TextColumn::make('applied_at')
-                    ->label('Applied')
+                    ->label(__('Applied'))
                     ->dateTime()
-                    ->description(fn ($record) => $record->line_count.' lines')
+                    ->description(fn ($record) => trans_choice('{1}:count line|[2,*]:count lines', $record->line_count, ['count' => $record->line_count]))
                     ->sortable(),
 
                 // Whether the file closes by default is the first thing to check,
                 // and it is not obvious from reading a long document. An absent
                 // `default` key means allow.
                 TextColumn::make('denies_by_default')
-                    ->label('Default')
+                    ->label(__('Default'))
                     ->badge()
-                    ->formatStateUsing(fn (bool $state): string => $state ? 'deny' : 'allow')
+                    ->formatStateUsing(fn (bool $state): string => $state ? __('deny') : __('allow'))
                     ->color(fn (bool $state): string => $state ? 'success' : 'warning')
-                    ->tooltip('What happens to a request no rule matched. Absent means allow'),
+                    ->tooltip(__('What happens to a request no rule matched. Absent means allow')),
 
                 TextColumn::make('document')
-                    ->label('Policy')
+                    ->label(__('Policy'))
                     ->limit(90)
                     ->wrap()
-                    ->tooltip('Applied verbatim with `signari policy apply`, which runs the '
-                        .'document’s own tests before installing it'),
+                    ->tooltip(__('Applied verbatim with `signari policy apply`, which runs the document’s own tests before installing it')),
             ])
             ->paginated(false)
-            ->emptyStateHeading('No access policy is in force')
-            ->emptyStateDescription('Every client is open to every user. That may be correct — '
-                .'if not, write one and apply it with `signari policy apply`.');
+            ->emptyStateHeading(__('No access policy is in force'))
+            ->emptyStateDescription(__('Every client is open to every user. That may be correct — if not, write one and apply it with `signari policy apply`.'));
     }
 }

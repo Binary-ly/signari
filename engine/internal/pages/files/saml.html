@@ -1,4 +1,4 @@
-{{define "title"}}Signing in&hellip;{{end}}
+{{define "title"}}{{T "bridge.title"}}{{end}}
 {{define "style"}}<style>
 /* Self-contained: see formpost.html. */
 body{margin:0;padding:5rem 1rem;font:.9375rem/1.55 ui-sans-serif,system-ui,
@@ -11,10 +11,10 @@ button{color:#18181b;background:#ededf0}}
 </style>{{end}}
 {{define "usebare"}}{{end}}
 {{define "content"}}
-<noscript><p>JavaScript is disabled. Continue to complete signing in.</p></noscript>
+<noscript><p>{{T "bridge.noscript"}}</p></noscript>
 <form method="post" action="{{.ACS}}">
 <input type="hidden" name="SAMLResponse" value="{{.Response}}">
 {{if .RelayState}}<input type="hidden" name="RelayState" value="{{.RelayState}}">{{end}}
-<noscript><button type="submit">Continue</button></noscript>
+<noscript><button type="submit">{{T "common.continue"}}</button></noscript>
 </form>
 {{end}}

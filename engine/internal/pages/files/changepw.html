@@ -1,18 +1,17 @@
-{{define "title"}}Choose a new password{{end}}
+{{define "title"}}{{T "changepw.title"}}{{end}}
 {{define "content"}}
-<h1>Choose a new password</h1>
+<h1>{{T "changepw.title"}}</h1>
 {{if .Reason}}<p class="why">{{.Reason}}</p>{{end}}
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 <form method="POST" action="/login/password-change">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
-<label for="password">New password</label>
+<label for="password">{{T "common.newpassword"}}</label>
 <input type="password" id="password" name="password" required
        autocomplete="new-password" autofocus>
-<label for="confirm">Repeat it</label>
+<label for="confirm">{{T "changepw.repeat"}}</label>
 <input type="password" id="confirm" name="confirm" required
        autocomplete="new-password">
-<button type="submit">Change password and continue</button>
+<button type="submit">{{T "changepw.submit"}}</button>
 </form>
-<p class="help">A few unrelated words make a password that is easy to remember
-and hard to guess. Length does more than symbols do.</p>
+<p class="help">{{T "changepw.help"}}</p>
 {{end}}

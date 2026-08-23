@@ -1,9 +1,9 @@
-{{define "title"}}Sign out?{{end}}
+{{define "title"}}{{T "logout.title"}}{{end}}
 {{define "content"}}
-<h1>Sign out?</h1>
-<p>An application asked to sign you out. Confirm that this is what you want.</p>
+<h1>{{T "logout.heading"}}</h1>
+<p>{{T "logout.body"}}</p>
 <form method="post" action="{{.Action}}">
 <input type="hidden" name="{{.Field}}" value="{{.CSRF}}">
-<button type="submit">Sign out</button>
+<button type="submit">{{T "logout.submit"}}</button>
 </form>
 {{end}}

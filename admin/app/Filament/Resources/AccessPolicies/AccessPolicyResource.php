@@ -22,13 +22,32 @@ class AccessPolicyResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedDocumentText;
 
-    protected static string|\UnitEnum|null $navigationGroup = 'Configuration';
+    /*
+     * Methods rather than static properties, because PHP will not evaluate a
+     * function call in a property initialiser -- so a label written as
+     * `= 'Access policy'` can never be translated. Filament reads these
+     * accessors, which is what makes the difference invisible to it.
+     */
 
-    protected static ?string $navigationLabel = 'Access policy';
+    public static function getNavigationGroup(): ?string
+    {
+        return __('Configuration');
+    }
 
-    protected static ?string $modelLabel = 'access policy';
+    public static function getNavigationLabel(): string
+    {
+        return __('Access policy');
+    }
 
-    protected static ?string $pluralModelLabel = 'Access policy';
+    public static function getModelLabel(): string
+    {
+        return __('access policy');
+    }
+
+    public static function getPluralModelLabel(): string
+    {
+        return __('Access policy');
+    }
 
 
     public static function table(Table $table): Table

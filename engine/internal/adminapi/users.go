@@ -262,8 +262,11 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		// setting a temporary password and requiring it be changed must end up
 		// with the flag set, and the two orders give opposite answers.
 		if req.RequirePasswordChange != nil && *req.RequirePasswordChange {
+			// A message KEY, not a sentence: this is written now and rendered on
+			// a page that may be in another language later. See
+			// httpapi.renderChangeReason.
 			if err := store.RequirePasswordChange(ctx, tx, userID,
-				"An administrator has asked you to choose a new password."); err != nil {
+				"reason.administrator"); err != nil {
 				return fmt.Errorf("requiring a password change: %w", err)
 			}
 		}

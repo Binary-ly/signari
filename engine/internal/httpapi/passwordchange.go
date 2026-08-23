@@ -46,8 +46,32 @@ func (s *Server) beginPasswordChange(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	s.renderPage(w, r, "changepw", map[string]any{
-		"Reason": reason, "CSRF": csrf, "CSRFField": csrfFormField,
+		"Reason": s.renderChangeReason(r, reason), "CSRF": csrf, "CSRFField": csrfFormField,
 	})
+}
+
+// renderChangeReason turns a stored reason into text for this request.
+//
+// `must_change_reason` holds one of two things, and they are handled
+// differently on purpose:
+//
+//   - One of OUR keys, written when the flag was set. Translated here, at
+//     render time, which is the only moment the reader's language is known. A
+//     sentence stored in that column would be frozen in whatever language the
+//     server happened to be speaking when a breach check ran months earlier.
+//   - Anything an operator wrote, through the Admin API. Shown verbatim,
+//     because those are their words and this is not the place to guess at them.
+//
+// The two are told apart by asking the catalogue, so an operator's sentence can
+// never collide with a key unless they write one exactly.
+func (s *Server) renderChangeReason(r *http.Request, stored string) any {
+	if stored == "" {
+		return ""
+	}
+	if p := s.tr(r); p.Has(stored) {
+		return p.T(stored)
+	}
+	return stored
 }
 
 // handlePasswordChangePost sets the new password and resumes the sign-in.
@@ -72,7 +96,7 @@ func (s *Server) handlePasswordChangePost(w http.ResponseWriter, r *http.Request
 	again := func(msg string) {
 		csrf, _ := s.csrfToken(w, r)
 		s.renderPage(w, r, "changepw", map[string]any{
-			"Reason": reason, "Error": msg,
+			"Reason": s.renderChangeReason(r, reason), "Error": msg,
 			"CSRF": csrf, "CSRFField": csrfFormField,
 		})
 	}

@@ -1,8 +1,6 @@
-{{define "title"}}Check your email{{end}}
+{{define "title"}}{{T "sent.title"}}{{end}}
 {{define "content"}}
-<h1>Check your email</h1>
-<p>If an account matches what you entered, we have emailed reset instructions to
-every address on it.</p>
-<p class="hint">The email includes a link to cancel, in case the request was not
-yours. Cancelling needs no sign-in.</p>
+<h1>{{T "sent.title"}}</h1>
+<p>{{T "sent.body"}}</p>
+<p class="hint">{{T "sent.hint"}}</p>
 {{end}}

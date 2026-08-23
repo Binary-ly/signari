@@ -137,7 +137,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request) {
 		Detail:        map[string]any{"wtrealm": realm, "wreply": dest},
 	})
 
-	s.wsFedPost(w, dest, rstr, q.Get("wctx"))
+	s.wsFedPost(w, r, dest, rstr, q.Get("wctx"))
 }
 
 // wsFedDestination validates wreply against the registered ACS URLs.
@@ -219,7 +219,10 @@ func wsFedRSTR(assertion *etree.Element, realm string, now time.Time,
 }
 
 // wsFedPost renders the form that delivers the token.
-func (s *Server) wsFedPost(w http.ResponseWriter, dest, wresult, wctx string) {
+// r is carried only so the bridge's <noscript> text can be rendered in the
+// language the request asked for; see postAuthzResponse.
+func (s *Server) wsFedPost(w http.ResponseWriter, r *http.Request,
+	dest, wresult, wctx string) {
 	nonce, err := newCSPNonce()
 	if err != nil {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
@@ -230,7 +233,7 @@ func (s *Server) wsFedPost(w http.ResponseWriter, dest, wresult, wctx string) {
 	setCSP(w, "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
 		"form-action "+formActionOrigin(dest)+"; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
-	s.renderBare(w, "wsfed", map[string]any{
+	s.renderBare(w, r, "wsfed", map[string]any{
 		"Action": dest, "WResult": wresult, "WCtx": wctx, "Nonce": nonce,
 	})
 }

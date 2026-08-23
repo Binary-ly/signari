@@ -1,4 +1,4 @@
-{{define "title"}}Authorize {{.Client}}{{end}}
+{{define "title"}}{{T "consent.title" .}}{{end}}
 {{define "style"}}<style>
 /* A little wider than a sign-in form: this page lists what is being asked for,
    and a person deciding whether to allow it should not have to scroll to see
@@ -6,15 +6,15 @@
 :root{--page-w:26rem}
 </style>{{end}}
 {{define "content"}}
-<h1><strong>{{.Client}}</strong> wants access to your account</h1>
+<h1>{{T "consent.heading" .}}</h1>
 {{if .Scopes}}
-<p>It is asking to:</p>
+<p>{{T "consent.asking"}}</p>
 <ul>
 {{range .Scopes}}<li>{{.Description}}<span class="scope">{{.Name}}</span></li>{{end}}
 </ul>
 {{end}}
 {{if .Details}}
-<p>And to perform this specific operation:</p>
+<p>{{T "consent.operation"}}</p>
 {{range .Details}}<div class="detail">
 <span class="dtype">{{.Type}}</span>
 {{range .Rows}}<div class="drow"><span class="dlabel">{{.Label}}</span><span class="dval">{{.Value}}</span></div>{{end}}
@@ -26,8 +26,8 @@
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 {{range .Scopes}}<input type="hidden" name="scope" value="{{.Name}}">{{end}}
 <div class="row">
-<button class="deny" type="submit" name="decision" value="deny">Deny</button>
-<button class="allow" type="submit" name="decision" value="allow">Allow</button>
+<button class="deny" type="submit" name="decision" value="deny">{{T "consent.deny"}}</button>
+<button class="allow" type="submit" name="decision" value="allow">{{T "consent.allow"}}</button>
 </div>
 </form>
 {{end}}

@@ -12,13 +12,13 @@ class GroupsTable
         return $table
             ->columns([
                 TextColumn::make('display_name')
-                    ->label('Group')
+                    ->label(__('Group'))
                     ->description(fn ($record) => $record->name)
                     ->searchable(['name', 'display_name'])
                     ->sortable(),
 
                 TextColumn::make('member_count')
-                    ->label('Members')
+                    ->label(__('Members'))
                     ->numeric()
                     ->sortable(),
 
@@ -26,28 +26,29 @@ class GroupsTable
                 // before renaming one: a rename silently drops the group from
                 // every allow-list that mentioned it, and nothing errors.
                 TextColumn::make('released_to_clients')
-                    ->label('OIDC clients')
+                    ->label(__('OIDC clients'))
                     ->numeric()
-                    ->tooltip('Applications allowed to see this membership. Releases match on '
-                        .'the group NAME, so renaming the group removes it from these lists'),
+                    ->tooltip(__('Applications allowed to see this membership. Releases match on the group NAME, so renaming the group removes it from these lists')),
 
                 TextColumn::make('released_to_saml')
-                    ->label('SAML providers')
+                    ->label(__('SAML providers'))
                     ->numeric()
-                    ->tooltip('Same, for SAML service providers'),
+                    ->tooltip(__('Same, for SAML service providers')),
 
                 TextColumn::make('description')
+                    ->label(__('Description'))
                     ->limit(50)
                     ->placeholder('—')
                     ->toggleable(),
 
                 TextColumn::make('created_at')
+                    ->label(__('Created'))
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->defaultSort('member_count', 'desc')
-            ->emptyStateHeading('No groups')
-            ->emptyStateDescription('Create one with `signari group create`.');
+            ->emptyStateHeading(__('No groups'))
+            ->emptyStateDescription(__('Create one with `signari group create`.'));
     }
 }

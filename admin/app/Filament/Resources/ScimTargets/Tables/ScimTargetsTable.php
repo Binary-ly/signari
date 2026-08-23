@@ -12,7 +12,7 @@ class ScimTargetsTable
         return $table
             ->columns([
                 TextColumn::make('config_state')
-                    ->label('State')
+                    ->label(__('State'))
                     ->badge()
                     ->color(fn (string $state): string => match (true) {
                         $state === 'ok'       => 'success',
@@ -22,36 +22,35 @@ class ScimTargetsTable
                     ->sortable(),
 
                 TextColumn::make('display_name')
-                    ->label('Target')
+                    ->label(__('Target'))
                     ->description(fn ($record) => $record->base_url)
                     ->searchable(['display_name', 'slug', 'base_url'])
                     ->sortable(),
 
                 TextColumn::make('linked_users')
-                    ->label('Users')
+                    ->label(__('Users'))
                     ->numeric()
                     ->sortable(),
 
                 // The number that means something is wrong downstream: people who
                 // should be gone from this application and are not.
                 TextColumn::make('pending_deactivations')
-                    ->label('Still active')
+                    ->label(__('Still active'))
                     ->numeric()
                     ->color(fn ($state): string => $state > 0 ? 'danger' : 'gray')
-                    ->tooltip('Users deactivated here who are still active at the target. '
-                        .'`signari scim verify` reads each one back to confirm'),
+                    ->tooltip(__('Users deactivated here who are still active at the target. `signari scim verify` reads each one back to confirm')),
 
                 TextColumn::make('on_deactivate')
-                    ->label('On deactivate')
+                    ->label(__('On deactivate'))
                     ->badge(),
 
                 TextColumn::make('last_synced_at')
-                    ->label('Last sync')
+                    ->label(__('Last sync'))
                     ->since()
-                    ->placeholder('never'),
+                    ->placeholder(__('never')),
             ])
             ->defaultSort('config_state')
-            ->emptyStateHeading('No provisioning targets')
-            ->emptyStateDescription('Add one with `signari scim add`.');
+            ->emptyStateHeading(__('No provisioning targets'))
+            ->emptyStateDescription(__('Add one with `signari scim add`.'));
     }
 }

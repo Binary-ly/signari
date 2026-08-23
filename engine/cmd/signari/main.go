@@ -110,6 +110,7 @@ var twoWordCommands = map[string]bool{
 	"trust-mark": true,
 	"uma":        true,
 	"theme":      true,
+	"i18n":       true,
 	"credential": true,
 	"rar":        true,
 }
@@ -497,6 +498,14 @@ func run(args []string) error {
 		return themeEject(*themeDir, *themeOnly, *themeForce)
 	case "theme list":
 		return themeList(*themeDir)
+	// Same reasoning as the theme commands: files only, no database, so a
+	// pipeline can refuse a half-translated catalogue before it is deployed.
+	case "i18n list":
+		return i18nList(*themeDir)
+	case "i18n status":
+		return i18nStatus(*themeDir)
+	case "i18n keys":
+		return i18nKeys(*themeDir)
 	}
 
 	// `outpost run` is the whole point of an outpost: it holds NO database

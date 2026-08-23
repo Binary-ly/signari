@@ -1,9 +1,8 @@
-{{define "title"}}Remote access{{end}}
+{{define "title"}}{{T "racindex.title"}}{{end}}
 {{define "content"}}
-<h1>Remote access</h1>
+<h1>{{T "racindex.title"}}</h1>
 {{if not .Configured}}
-<p class="err" role="alert">Remote access is not configured on this server.
-No <code>SIGNARI_GUACD_ADDR</code> is set, so nothing can be connected to.</p>
+<p class="err" role="alert">{{T "racindex.notconfigured"}}</p>
 {{end}}
 {{if .Connections}}
 <ul>
@@ -13,8 +12,7 @@ No <code>SIGNARI_GUACD_ADDR</code> is set, so nothing can be connected to.</p>
 {{end}}
 </ul>
 {{else}}
-<p>There are no machines you can reach.</p>
-<p class="hint">If you expect to see something here, ask an administrator
-whether the connection requires a group you are not in.</p>
+<p>{{T "racindex.none"}}</p>
+<p class="hint">{{T "racindex.none.hint"}}</p>
 {{end}}
 {{end}}

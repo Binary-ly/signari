@@ -22,13 +22,28 @@ class RadiusClientResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedWifi;
 
-    protected static string|\UnitEnum|null $navigationGroup = 'Configuration';
+    // Accessors rather than static properties: PHP cannot call __() in a
+    // property initialiser. See AccessPolicyResource.
 
-    protected static ?string $navigationLabel = 'RADIUS clients';
+    public static function getNavigationGroup(): ?string
+    {
+        return __('Configuration');
+    }
 
-    protected static ?string $modelLabel = 'RADIUS client';
+    public static function getNavigationLabel(): string
+    {
+        return __('RADIUS clients');
+    }
 
-    protected static ?string $pluralModelLabel = 'RADIUS clients';
+    public static function getModelLabel(): string
+    {
+        return __('RADIUS client');
+    }
+
+    public static function getPluralModelLabel(): string
+    {
+        return __('RADIUS clients');
+    }
 
     /** Counts what needs attention, not what exists. */
     public static function getNavigationBadge(): ?string

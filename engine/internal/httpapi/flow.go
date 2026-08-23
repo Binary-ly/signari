@@ -1475,9 +1475,12 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 				s.log.Error("recording a breach check", "err", err)
 			}
 			if berr == nil && bad {
+				// A KEY, not a sentence. The reason is written now and read on a
+				// page rendered later, possibly in another language -- a sentence
+				// stored here is frozen in whatever language the server was
+				// speaking when the flag was set. See renderChangeReason.
 				if ferr := store.RequirePasswordChange(ctx, s.db, userID,
-					"Your password has appeared in a known data breach since you "+
-						"chose it, so it needs to be changed before you continue."); ferr != nil {
+					"reason.breached"); ferr != nil {
 					s.log.Error("flagging a breached password", "err", ferr)
 				}
 				s.auditDetached(ctx, audit.Event{
@@ -2158,9 +2161,8 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 	migratedBreach := ""
 	if s.pwPolicy.Breach != nil {
 		if bad, berr := s.pwPolicy.Breach.Breached(ctx, password); berr == nil && bad {
-			migratedBreach = "The password you brought from your previous " +
-				"provider appears in a known data breach, so it needs to be " +
-				"changed before you continue."
+			// A key rather than a sentence; see renderChangeReason.
+			migratedBreach = "reason.migratedbreach"
 		}
 	}
 

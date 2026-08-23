@@ -73,7 +73,7 @@ func (s *Server) handleRACView(w http.ResponseWriter, r *http.Request) {
 	// The page set, not renderBare: renderBare would call htmlPageHeaders and
 	// replace the policy set just above with `default-src 'none'` and no
 	// script-src, which is a viewer that loads no viewer.
-	if err := s.pageSet().Execute(w, "racview", map[string]any{
+	if err := s.pageSet().ExecuteIn(w, s.langFor(r), "racview", map[string]any{
 		"Slug": conn.Slug, "Name": conn.DisplayName, "Protocol": conn.Protocol,
 	}); err != nil {
 		s.log.Error("rendering the remote-access viewer", "err", err)

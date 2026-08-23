@@ -16,9 +16,18 @@ class LogoutDeliveryResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedArrowRightStartOnRectangle;
 
-    protected static ?string $navigationLabel = 'Logout delivery';
+    // Accessors rather than static properties: PHP cannot call __() in a
+    // property initialiser. See AccessPolicyResource.
 
-    protected static ?string $modelLabel = 'logout delivery';
+    public static function getNavigationLabel(): string
+    {
+        return __('Logout delivery');
+    }
+
+    public static function getModelLabel(): string
+    {
+        return __('logout delivery');
+    }
 
     /**
      * The count of PARKED deliveries, not of all rows. A badge showing "1,204

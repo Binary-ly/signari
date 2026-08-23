@@ -28,11 +28,20 @@ class EngineUserResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedUsers;
 
-    protected static ?string $modelLabel = 'user';
-
-    protected static ?string $navigationLabel = 'Users';
-
     protected static ?int $navigationSort = 1;
+
+    // Accessors rather than static properties: PHP cannot call __() in a
+    // property initialiser. See AccessPolicyResource.
+
+    public static function getModelLabel(): string
+    {
+        return __('user');
+    }
+
+    public static function getNavigationLabel(): string
+    {
+        return __('Users');
+    }
 
     public static function table(Table $table): Table
     {

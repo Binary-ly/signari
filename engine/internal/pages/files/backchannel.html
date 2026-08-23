@@ -1,20 +1,20 @@
-{{define "title"}}Sign-in requests{{end}}
+{{define "title"}}{{T "backchannel.title"}}{{end}}
 {{define "content"}}
-<h1>Sign-in requests</h1>
+<h1>{{T "backchannel.title"}}</h1>
 {{if not .Requests}}
-<p>Nothing is waiting for you.</p>
+<p>{{T "backchannel.empty"}}</p>
 {{else}}
-<p>An application has asked to sign in as you. Approve it only if you started it.</p>
+<p>{{T "backchannel.intro"}}</p>
 {{range .Requests}}
 <form method="POST" action="/account/requests">
 <input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{.ID}}">
-<p><strong>{{.ClientName}}</strong> wants: {{.Scope}}</p>
-{{if .BindingMessage}}<p>Reference shown on the other device: <code>{{.BindingMessage}}</code></p>{{end}}
-<p>Expires in {{.Expires}}.</p>
+<p>{{T "backchannel.wants" .}}</p>
+{{if .BindingMessage}}<p>{{T "backchannel.binding"}} <code>{{.BindingMessage}}</code></p>{{end}}
+<p>{{T "backchannel.expires" .}}</p>
 <div class="row">
-<button class="secondary" type="submit" name="decision" value="deny">Not me</button>
-<button type="submit" name="decision" value="approve">Approve</button>
+<button class="secondary" type="submit" name="decision" value="deny">{{T "backchannel.deny"}}</button>
+<button type="submit" name="decision" value="approve">{{T "backchannel.approve"}}</button>
 </div>
 </form>
 <hr>

@@ -12,7 +12,7 @@ class RadiusClientsTable
         return $table
             ->columns([
                 TextColumn::make('config_state')
-                    ->label('State')
+                    ->label(__('State'))
                     ->badge()
                     ->color(fn (string $state): string => match ($state) {
                         'ok'       => 'success',
@@ -22,7 +22,7 @@ class RadiusClientsTable
                     ->sortable(),
 
                 TextColumn::make('name')
-                    ->label('Device')
+                    ->label(__('Device'))
                     ->searchable()
                     ->sortable(),
 
@@ -30,21 +30,19 @@ class RadiusClientsTable
                 // and no certificate, so the source range and the shared secret
                 // are the only two things that identify a device.
                 TextColumn::make('network')
-                    ->label('Source range')
+                    ->label(__('Source range'))
                     ->badge()
                     ->color('gray')
-                    ->tooltip('Requests from outside this range get no reply at all — '
-                        .'answering would confirm a RADIUS server is here'),
+                    ->tooltip(__('Requests from outside this range get no reply at all — answering would confirm a RADIUS server is here')),
 
                 TextColumn::make('created_at')
+                    ->label(__('Created'))
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->defaultSort('config_state')
-            ->emptyStateHeading('No RADIUS clients')
-            ->emptyStateDescription('Register one with `signari radius add-client`. The '
-                .'listener refuses to start without any: a server that trusts everybody is '
-                .'an authentication oracle for the whole network.');
+            ->emptyStateHeading(__('No RADIUS clients'))
+            ->emptyStateDescription(__('Register one with `signari radius add-client`. The listener refuses to start without any: a server that trusts everybody is an authentication oracle for the whole network.'));
     }
 }

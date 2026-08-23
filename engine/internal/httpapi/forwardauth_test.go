@@ -49,6 +49,41 @@ func TestProxyVerifyStripsCallerIdentityHeaders(t *testing.T) {
 	}
 }
 
+// TestAMalformedProxyCookieIsDeniedNotPassedThrough pins the one answer a
+// forward-auth failure against our endpoint.
+//
+// forward-auth endpoint may give to a cookie that does not verify: a proxy
+// outpost pass the request through with none of the identity headers set, so
+// whether the application was protected depended on how it treated an absent
+// header. The only acceptable answers to a cookie that does not verify are 401
+// and nothing else -- never a 200 whose emptiness the application must notice.
+func TestAMalformedProxyCookieIsDeniedNotPassedThrough(t *testing.T) {
+	s := newProxyServer()
+
+	for _, hostile := range []string{
+		"not-a-jwt",
+		"..",                    // three empty JWT segments
+		"e30.e30.",              // {} header, {} payload, empty signature
+		string(make([]byte, 8)), // NULs
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/proxy/verify", nil)
+		req.AddCookie(&http.Cookie{Name: ProxyCookieName, Value: hostile})
+		rec := httptest.NewRecorder()
+
+		s.handleProxyVerify(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("cookie %q: got %d, want 401 -- a malformed credential must "+
+				"deny, not pass through for the application to judge", hostile, rec.Code)
+		}
+		for _, h := range []string{"X-Forwarded-User", "X-Forwarded-Email", "X-Forwarded-Sub"} {
+			if got := rec.Header().Get(h); got != "" {
+				t.Errorf("cookie %q: %s = %q on a denial", hostile, h, got)
+			}
+		}
+	}
+}
+
 // TestProxyVerifyDenyPointsAtStart checks the 401 carries somewhere to go, and
 // that the return URL is the one the PROXY reported rather than anything the
 // caller could smuggle past it.

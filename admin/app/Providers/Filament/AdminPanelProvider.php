@@ -6,6 +6,7 @@ use App\Http\Middleware\ScopeToOrganisation;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
+use Filament\FontProviders\LocalFontProvider;
 use Filament\Http\Middleware\DispatchServingFilamentEvent;
 use Filament\Pages\Dashboard;
 use Filament\Panel;
@@ -29,6 +30,25 @@ class AdminPanelProvider extends PanelProvider
             ->path('admin')
             ->login()
             ->brandName('Signari')
+            /*
+             * Laravel's own face, served from this deployment.
+             *
+             * LocalFontProvider, not the default: Filament's default provider
+             * resolves a font name against the Bunny Fonts CDN, which would put
+             * a third-party request on the console's sign-in page. Nothing an
+             * operator signs in through should tell somebody else that they
+             * did. public/fonts/instrument-sans/index.css says the rest.
+             *
+             * The latin file is preloaded because it is needed for the first
+             * paint of every page; latin-ext is not, because unicode-range
+             * means most deployments never fetch it at all.
+             */
+            ->font(
+                'Instrument Sans',
+                url: asset('fonts/instrument-sans/index.css'),
+                provider: LocalFontProvider::class,
+                preload: [asset('fonts/instrument-sans/instrument-sans-latin-wght-normal.woff2')],
+            )
             /*
              * The engine's accent, so the console and the pages people sign in
              * through are recognisably the same product. An operator moves

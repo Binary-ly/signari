@@ -707,3 +707,65 @@ func TestEveryPageIsServedBySomething(t *testing.T) {
 		}
 	}
 }
+
+// No page fetches anything from another origin.
+//
+// A font, a script or an image loaded from somebody else's host tells that host
+// the IP address of every person signing in here, and when. An egress firewall
+// does not touch it, because the connection is the browser's rather than ours.
+// It is also a page that stops rendering correctly when a CDN has a bad day, on
+// the one screen that has to work while other things are broken.
+//
+// The captcha partial is the documented exception and the reason this checks
+// for an allowed set rather than for zero: a captcha script IS the service, so
+// a copy served from here would produce a challenge nothing could verify.
+// docs/egress-inventory.md carries the same list.
+//
+// Sources rather than rendered output on purpose. Pages legitimately DISPLAY
+// absolute URLs -- a logout page names the applications being signed out of --
+// and those are content. Only attributes that make the browser fetch something
+// are asset references.
+func TestNoPageLoadsAnythingFromAnotherOrigin(t *testing.T) {
+	src, err := builtinSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Only the attributes that cause a fetch, plus CSS url().
+	asset := regexp.MustCompile(`(?i)(?:<script[^>]+src|<link[^>]+href|` +
+		`<img[^>]+src|<iframe[^>]+src|@import\s+|url\()\s*=?\s*["']?([a-z]+:)?//([^"')\s>]+)`)
+
+	// The captcha providers, and nothing else.
+	allowed := map[string]bool{
+		"challenges.cloudflare.com": true,
+		"hcaptcha.com":              true,
+		"www.google.com":            true,
+	}
+
+	for name, body := range src {
+		for _, m := range asset.FindAllStringSubmatch(body, -1) {
+			host := m[2]
+			if i := strings.IndexAny(host, "/?"); i >= 0 {
+				host = host[:i]
+			}
+			// A template action rather than a literal host -- a brand logo is
+			// operator-supplied and cannot be judged here.
+			if strings.Contains(host, "{{") {
+				continue
+			}
+			if allowed[host] {
+				if name != "captcha" {
+					t.Errorf("%s loads %s. The captcha providers belong only in "+
+						"the captcha partial, where the exception is documented",
+						name, host)
+				}
+				continue
+			}
+			t.Errorf("%s loads an asset from %s. Every page here is same-origin "+
+				"on purpose: an off-origin fetch tells that host who is signing "+
+				"in and when, and breaks the page when the host is down. Vendor "+
+				"it, or add it to docs/egress-inventory.md and to this test",
+				name, host)
+		}
+	}
+}

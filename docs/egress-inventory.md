@@ -28,6 +28,41 @@ change reaches them.
 
 Each is optional: none is contacted unless an operator configures the feature.
 
+## Destinations the BROWSER reaches — not the server
+
+Everything above is this server opening a connection. This section is different:
+it is the **end user's browser** fetching something from a third party while
+they are on one of our pages. That is a separate exposure and a worse one. A
+server-to-vendor call reveals the deployment; a browser-to-vendor call reveals
+the person — their IP address, and the fact that they were signing in to this
+provider at that moment. An egress firewall does not touch it.
+
+| Destination | Page | Why it is there |
+|---|---|---|
+| `challenges.cloudflare.com/turnstile/v0/api.js` | any page with a captcha | Turnstile's challenge |
+| `hcaptcha.com/1/api.js` | as above | hCaptcha's challenge |
+| `www.google.com/recaptcha/api.js` | as above | reCAPTCHA's challenge |
+
+**These are the one thing here that cannot be self-hosted**, and the reason is
+worth being precise about: the script *is* the service. A captcha works by the
+provider forming a judgement about the visitor and signing it, which the server
+then verifies against the same provider. Serving a copy of the script from this
+origin would produce a challenge nothing could verify. It is not an asset we
+have declined to vendor; there is no version of it that lives here.
+
+What bounds it: a captcha is **off unless an operator configures one**, it is
+never on the sign-in path by default, and the provider is the operator's choice
+— including the choice not to have one. `docs/captcha.md` has the CSP each
+provider needs, which is also the list of who is being let in.
+
+**Nothing else on any page is off-origin.** No fonts, no analytics, no CDN
+scripts, no remote images. The thirty-three engine pages use a system font
+stack; the admin console serves Instrument Sans from
+`admin/public/fonts/instrument-sans/` specifically so that Filament's default
+font provider — which resolves to the Bunny Fonts CDN — is not used. That is a
+property worth re-checking rather than assuming: render a page and look for any
+`src` or `href` with a scheme in it.
+
 ## Operator-configured destinations
 
 An operator names these. They are trusted to the same degree as the binary's own

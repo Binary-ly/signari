@@ -44,6 +44,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"signari.dev/engine/internal/pages"
 	"signari.dev/engine/internal/rac"
 )
 
@@ -66,6 +67,14 @@ func main() {
 	}()
 	log.Printf("fake guacd on %s", guacd.Addr())
 
+	// The real page set, for the same reason the harness runs the real proxy:
+	// a harness that carries its own copy of the markup agrees with itself
+	// while production is broken.
+	set, _, err := pages.Load("")
+	if err != nil {
+		log.Fatalf("loading pages: %v", err)
+	}
+
 	var seen input
 	mux := http.NewServeMux()
 
@@ -76,7 +85,7 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Security-Policy", rac.ViewCSP)
-		_ = rac.ViewPage.Execute(w, map[string]any{
+		_ = set.Execute(w, "racview", map[string]any{
 			"Slug": "harness", "Name": "Harness", "Protocol": "fake",
 		})
 	})

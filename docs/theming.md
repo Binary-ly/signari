@@ -168,6 +168,14 @@ more thing that can fail to load and leave the redirect hanging.
 what fills it is somebody else's desktop; chrome around that competes with the
 content, so it styles itself, stays dark in both themes, and carries no logo.
 
+It also has a contract no other page has. `/rac.js` reads three element ids from
+it — `screen`, `status`, `disconnect` — and the machine to connect to from
+`data-slug` on `#screen`. The validator cannot see any of that: to it, those are
+divs with no hidden input in them. Renaming one leaves a page that renders,
+validates, and shows a black rectangle. If you override `racview`, keep the ids
+and keep `data-slug`; `rac.ViewContract` is the list, and a test holds the
+built-in page to it.
+
 **`fclogout` is not a bridge**, though it was treated as one at first. It has a
 heading, a sentence telling you how many applications you are being signed out
 of, and a link to continue if one of them hangs. The hidden iframes are its

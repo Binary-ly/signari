@@ -46,14 +46,22 @@
 {{/*
   bare is the chrome a BROWSER sees.
 
-  For the auto-posting bridges: the SAML POST binding, the form_post response
-  mode, WS-Federation, front-channel logout, and the remote-access viewer. A
-  browser submits these within a redirect or a frame and a person never reads
-  one, so a logo is two requests in the middle of a sign-on and a stylesheet is
-  one more thing that can fail to load and leave the redirect hanging.
+  For the auto-posting bridges -- the SAML POST binding, the form_post response
+  mode, WS-Federation -- and for the remote-access viewer.
 
-  They keep the security headers -- see renderBare -- because they still carry an
-  assertion and an error message.
+  A browser submits the bridges within a redirect or a frame and a person only
+  ever sees one with scripting off, so a logo is two requests in the middle of a
+  sign-on and a stylesheet is one more thing that can fail to load and leave the
+  redirect hanging. The viewer is bare for the opposite reason: it is looked at
+  for a long time, and what fills it is somebody else's desktop.
+
+  Front-channel logout is NOT here. It has a heading, a sentence addressed to
+  the person and a link to continue if a frame hangs, so it is read and carries
+  the brand like every other page a person reads.
+
+  These keep the security headers -- see renderBare -- because they still carry
+  an assertion and an error message. The viewer is the exception and sets its
+  own, because it is the only one that needs a script-src.
 */}}
 {{define "bare"}}<!doctype html>
 <html lang="en"><head><meta charset="utf-8">

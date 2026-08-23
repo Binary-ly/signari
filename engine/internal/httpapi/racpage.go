@@ -70,9 +70,14 @@ func (s *Server) handleRACView(w http.ResponseWriter, r *http.Request) {
 	// display decodes image streams into both.
 	setCSP(w, rac.ViewCSP)
 	w.Header().Set("X-Frame-Options", "DENY")
-	_ = rac.ViewPage.Execute(w, map[string]any{
+	// The page set, not renderBare: renderBare would call htmlPageHeaders and
+	// replace the policy set just above with `default-src 'none'` and no
+	// script-src, which is a viewer that loads no viewer.
+	if err := s.pageSet().Execute(w, "racview", map[string]any{
 		"Slug": conn.Slug, "Name": conn.DisplayName, "Protocol": conn.Protocol,
-	})
+	}); err != nil {
+		s.log.Error("rendering the remote-access viewer", "err", err)
+	}
 }
 
 // handleRACIndex lists the machines a user may reach.

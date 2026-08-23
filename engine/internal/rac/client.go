@@ -2,7 +2,6 @@ package rac
 
 import (
 	_ "embed"
-	"html/template"
 	"io"
 	"strings"
 )
@@ -40,9 +39,12 @@ func LibraryJS() io.ReadSeeker { return strings.NewReader(libraryJS) }
 const ClientJS = `"use strict";
 import Guacamole from "/static/guacamole-common.js";
 
-const slug = document.body.dataset.slug;
+// The slug rides on #screen rather than on <body>, because the viewer's markup
+// lives in the shared page set now and the layout there owns the <body> tag.
+// An element the content block owns is the only place a page can put it.
 const screen = document.getElementById("screen");
 const status = document.getElementById("status");
+const slug = screen.dataset.slug;
 
 // A visible reason for everything.
 //
@@ -127,37 +129,19 @@ client.connect(
   "&dpi=" + Math.round(96 * (window.devicePixelRatio || 1)));
 `
 
-// ViewPage is the viewer's markup.
+// The viewer's markup is internal/pages/files/racview.html, not a literal here.
 //
-// The element ids here are the contract ClientJS depends on, which is why the
-// two are in the same file: a rename in one is a blank screen from the other.
-var ViewPage = template.Must(template.New("racview").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{.Name}}</title>
-<style>
-html,body{margin:0;height:100%;background:#18181b;color:#fafafa;
-font-family:system-ui,sans-serif;overflow:hidden}
-header{display:flex;align-items:center;gap:1rem;padding:.5rem .9rem;
-background:#27272a;font-size:.85rem}
-header .name{font-weight:600}
-header .hint{color:#a1a1aa}
-header button{margin-left:auto;font:inherit;padding:.3rem .7rem;border-radius:4px;
-border:1px solid #52525b;background:#3f3f46;color:#fafafa;cursor:pointer}
-#screen{position:relative;width:100%;height:calc(100% - 2.4rem);
-display:flex;align-items:center;justify-content:center}
-#status{position:absolute;padding:.6rem 1rem;border-radius:6px;background:#3f3f46}
-#status.err{background:#7f1d1d}
-</style></head>
-<body data-slug="{{.Slug}}">
-<header>
-<span class="name">{{.Name}}</span>
-<span class="hint">{{.Protocol}}</span>
-<button id="disconnect" type="button">Disconnect</button>
-</header>
-<div id="screen"><div id="status" hidden></div></div>
-<script type="module" src="/rac.js"></script>
-</body></html>`))
+// The element ids in it -- screen, status, disconnect -- and its data-slug are
+// the contract ClientJS above depends on: a rename on either side is a blank
+// screen from the other. Keeping the markup with the other pages is what makes
+// the viewer themeable and what lets `signari theme check` see it at all; the
+// cost is that the contract now spans two files, so ViewContract names the ids
+// and a test holds the page to them.
+
+// ViewContract is what racview.html must contain for ClientJS to work.
+//
+// It exists because the markup and the script are no longer in the same file.
+var ViewContract = []string{`id="screen"`, `id="status"`, `id="disconnect"`, "data-slug"}
 
 // ViewCSP is the policy the viewer needs, and no more.
 //

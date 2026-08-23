@@ -642,3 +642,68 @@ func TestNoPageShipsTheStylesheetTwice(t *testing.T) {
 		}
 	}
 }
+
+// Every page in the set is reached by a handler.
+//
+// The defect: racview.html was written, validated, restyled, listed by
+// `theme list` and emitted by `theme eject` -- and rendered by nothing. The
+// handler still executed a template literal in internal/rac, so the viewer an
+// operator themed was not the viewer anybody saw, and the theme surface
+// reported an override that could not take effect.
+//
+// A page nothing serves is worse than a missing one. A missing page is a
+// compile error or a 404; this one answers every question about itself
+// correctly while being dead, which is the failure mode the whole theming
+// system exists to remove.
+//
+// Scanning source is crude, and it is the only place the fact lives: which
+// template a handler renders is not visible from inside this package.
+func TestEveryPageIsServedBySomething(t *testing.T) {
+	set := loadOrFail(t, "")
+
+	// The call sites that put a page in front of a person. A page named in any
+	// of them is served; a page named in none of them is not.
+	render := regexp.MustCompile(`(?:renderPage|renderBare|writeBranded|Execute)\(` +
+		`[^)]*?"([a-z]+)"`)
+
+	// Only the server counts, and internal/httpapi is the whole of it.
+	//
+	// Scanning the tree broadly instead looks safer and is not: internal/rac's
+	// browser harness renders racview deliberately, so a dev tool nobody
+	// deploys was enough to vouch for the dead page. Verified by mutation --
+	// with the scan widened, pointing the real handler at another template
+	// leaves this test passing.
+	//
+	// If handlers ever live somewhere else, this fails loudly and gets a second
+	// directory. That is the right direction to fail in.
+	served := map[string]bool{}
+	dir := filepath.Join("..", "httpapi")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading the server package: %v", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") ||
+			strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("reading %s: %v", e.Name(), err)
+		}
+		for _, m := range render.FindAllSubmatch(b, -1) {
+			served[string(m[1])] = true
+		}
+	}
+	if len(served) == 0 {
+		t.Fatal("found no render call sites at all; the scan is broken, not the code")
+	}
+
+	for _, name := range set.Names() {
+		if !served[name] {
+			t.Errorf("no handler renders %q, so the page is dead: `theme eject` "+
+				"writes it, `theme check` validates it and `theme list` will call "+
+				"it overridden, but nothing puts it in front of anybody", name)
+		}
+	}
+}

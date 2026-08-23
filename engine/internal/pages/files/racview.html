@@ -35,6 +35,9 @@ background:var(--chrome-2);border:1px solid var(--line);border-radius:var(--radi
 <span class="hint">{{.Protocol}}</span>
 <button id="disconnect" type="button">Disconnect</button>
 </header>
-<div id="screen"><div id="status" hidden></div></div>
+{{/* data-slug is read by /rac.js to know which machine to connect to. It sits
+     here rather than on <body> because the layout owns that tag. Dropping it
+     renders a viewer that connects to nothing. */}}
+<div id="screen" data-slug="{{.Slug}}"><div id="status" hidden></div></div>
 <script type="module" src="/rac.js"></script>
 {{end}}

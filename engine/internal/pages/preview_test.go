@@ -379,7 +379,9 @@ func previewData() map[string]map[string]any {
 				{"Slug": "win-lab", "DisplayName": "Windows lab", "Protocol": "RDP", "Hostname": "win-lab.internal"},
 			},
 		},
-		"racview": map[string]any{"Name": "Windows lab", "Protocol": "RDP"},
+		"racview": map[string]any{
+			"Name": "Windows lab", "Protocol": "RDP", "Slug": "windows-lab",
+		},
 		"umaclaims": csrf(map[string]any{
 			"ClientName": "Northwind Analytics", "ResourceServer": "Contoso Documents",
 			"Handle": "c9f1a7d3",

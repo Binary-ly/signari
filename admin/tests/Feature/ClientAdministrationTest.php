@@ -95,7 +95,9 @@ class ClientAdministrationTest extends TestCase
                 'client_id' => 'newapp', 'display_name' => 'New App', 'public' => false,
                 'redirect_uris' => "https://app.test/cb\nhttps://app.test/cb2",
             ])
-            ->assertNotified();
+            // The TITLE, not just any toast: the failure path also notifies, so
+            // a bare assertNotified() passes when the client was never created.
+            ->assertNotified(__('Client created'));
     }
 
     public function test_rotation_is_offered_only_for_confidential_clients(): void
@@ -114,7 +116,8 @@ class ClientAdministrationTest extends TestCase
             $test = Livewire::test(ListEngineClients::class);
 
             if ($client->client_type === 'confidential') {
-                $test->callAction(TestAction::make('rotateSecret')->table($client))->assertNotified();
+                $test->callAction(TestAction::make('rotateSecret')->table($client))
+                    ->assertNotified(__('Secret rotated'));
                 Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/rotate-secret'));
             } else {
                 // A public client has no secret; offering the action would hand

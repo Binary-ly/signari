@@ -112,7 +112,9 @@ class UserAdministrationTest extends TestCase
 
         Livewire::test(ListEngineUsers::class)
             ->callAction(TestAction::make('createUser')->table(), data: ['email' => 'dupe@example.test'])
-            ->assertNotified();
+            // The refusal's own title: any toast would also match the success
+            // path, and a misconfigured client fails with a toast too.
+            ->assertNotified(__('User not created'));
     }
 
     private function seededUser(): ?EngineUser

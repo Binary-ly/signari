@@ -40,6 +40,15 @@
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>
+        <!--
+            Every test that reaches the engine's Admin API fakes HTTP, so this
+            value is never sent anywhere. It must merely EXIST: EngineAdminApi's
+            constructor refuses an empty token, and without one the action under
+            test fails before making the request the assertion wants to observe.
+            That failure surfaces as a danger toast, which a bare
+            assertNotified() cannot tell from success.
+        -->
+        <env name="SIGNARI_ADMIN_TOKEN" value="test-suite-token"/>
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>

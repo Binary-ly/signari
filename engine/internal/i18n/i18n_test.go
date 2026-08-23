@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/text/language"
 )
 
 func load(t *testing.T, dir string) *Bundle {
@@ -79,7 +81,7 @@ func TestPluralFormSelectionFollowsCLDRRatherThanEnglishIntuition(t *testing.T) 
 		// For() falls back to English for a language with no catalogue, so the
 		// tag is taken directly: the rule is a property of the language, not of
 		// whether somebody has translated anything into it yet.
-		p := &Printer{b: b, lang: tc.lang, tag: mustTag(tc.lang)}
+		p := &Printer{b: b, lang: tc.lang, tag: language.Make(tc.lang)}
 		got := formName[cardinalForm(p, tc.n)]
 		if got != tc.form {
 			t.Errorf("%s n=%d: CLDR says %q, this package chose %q",
@@ -111,6 +113,26 @@ func TestAnArgumentCannotInjectMarkup(t *testing.T) {
 	// The message's OWN markup must survive, or the split is pointless.
 	if !strings.Contains(got, "<strong>") {
 		t.Errorf("the message's own markup was escaped away, got %q", got)
+	}
+}
+
+// An argument of a type substitution cannot render stays visible as its
+// placeholder rather than becoming an empty hole.
+//
+// The two failure shapes look very different on a page: {Number} in the middle
+// of a sentence is obviously wrong and names the field to fix; a blank where
+// the number belonged reads as a finished sentence about nothing, and on a
+// page asking somebody to confirm WHICH number a code went to, a hole is the
+// worse failure. A float64 stands in for any type stringify does not know.
+func TestAnUnsupportedArgumentTypeStaysVisible(t *testing.T) {
+	b := load(t, "")
+
+	got := string(b.For("en").T("smsotp.sent", map[string]any{
+		"Number": 3.14,
+	}))
+
+	if !strings.Contains(got, "{Number}") {
+		t.Errorf("an unrenderable argument should leave its placeholder visible, got %q", got)
 	}
 }
 
@@ -378,7 +400,7 @@ func TestDirectionFollowsTheScript(t *testing.T) {
 		"en": "ltr", "fr": "ltr", "ja": "ltr",
 		"ar": "rtl", "he": "rtl", "fa": "rtl", "ur": "rtl",
 	} {
-		p := &Printer{b: b, lang: lang, tag: mustTag(lang)}
+		p := &Printer{b: b, lang: lang, tag: language.Make(lang)}
 		if got := p.Dir(); got != want {
 			t.Errorf("%s: got dir=%q, want %q", lang, got, want)
 		}

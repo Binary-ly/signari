@@ -459,6 +459,23 @@ func TestOriginNamesTheFileInForce(t *testing.T) {
 	}
 }
 
+// Has answers about pages, not about the languages the set renders them in.
+//
+// tmpl was re-keyed by language when the message catalogues arrived, and Has
+// kept indexing the top level -- so it answered "is this a language?", true
+// for "en" and false for "login". Every existing caller only asserted the
+// false half, which is exactly how that survives: nothing ever asked Has for
+// a page that exists.
+func TestHasAnswersForPagesNotLanguages(t *testing.T) {
+	set := loadOrFail(t, "")
+	if !set.Has("login") {
+		t.Error(`Has("login") = false; the login page exists`)
+	}
+	if set.Has("en") {
+		t.Error(`Has("en") = true; a language is not a page`)
+	}
+}
+
 // A partial cannot be rendered as though it were a page.
 func TestPartialsAreNotPages(t *testing.T) {
 	set := loadOrFail(t, "")

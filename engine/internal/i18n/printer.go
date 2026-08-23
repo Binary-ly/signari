@@ -156,13 +156,6 @@ func cardinalForm(p *Printer, n int) plural.Form {
 	return plural.Cardinal.MatchPlural(p.tag, n, 0, 0, 0, 0)
 }
 
-// mustTag parses a language tag, falling back to English.
-//
-// language.Make never fails -- it returns Und for nonsense -- which is what is
-// wanted here: an unrecognised tag should render English, not panic on a page
-// somebody is trying to sign in through.
-func mustTag(lang string) language.Tag { return language.Make(lang) }
-
 var formName = map[plural.Form]string{
 	plural.Other: "other", plural.Zero: "zero", plural.One: "one",
 	plural.Two: "two", plural.Few: "few", plural.Many: "many",
@@ -207,7 +200,7 @@ func (p *Printer) render(key, text string, extra map[string]string, data ...any)
 		}
 		for _, d := range data {
 			if v, ok := field(d, name); ok {
-				return stringify(v), true
+				return stringify(v)
 			}
 		}
 		return "", false
@@ -398,25 +391,33 @@ func field(v any, name string) (any, bool) {
 	return nil, false
 }
 
-func stringify(v any) string {
+// stringify renders a value as text, or reports that it cannot.
+//
+// The false half matters. A type this switch does not know is a programming
+// error at the call site, and rendering it as an empty string would be a hole
+// in a sentence that still looks finished. False leaves the {placeholder}
+// visible instead -- the same answer a missing key gets, for the same reason.
+func stringify(v any) (string, bool) {
 	switch s := v.(type) {
 	case string:
-		return s
+		return s, true
 	case template.HTML:
 		// Deliberately treated as text. A caller that has already decided
 		// something is safe HTML does not get to smuggle it through a message
 		// argument, because the message may be an operator's.
-		return string(s)
+		return string(s), true
 	case int:
-		return strconv.Itoa(s)
+		return strconv.Itoa(s), true
 	case int64:
-		return strconv.FormatInt(s, 10)
+		return strconv.FormatInt(s, 10), true
 	case bool:
-		return strconv.FormatBool(s)
+		return strconv.FormatBool(s), true
 	case nil:
-		return ""
+		// Legitimately empty rather than mistyped: an optional field that is
+		// simply not set renders as nothing.
+		return "", true
 	}
-	return ""
+	return "", false
 }
 
 // Keys lists every message key the default catalogue defines, sorted.

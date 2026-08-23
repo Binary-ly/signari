@@ -375,7 +375,17 @@ func layoutFor(t *template.Template) string {
 }
 
 // Has reports whether a page exists.
-func (s *Set) Has(name string) bool { _, ok := s.tmpl[name]; return ok }
+//
+// The default language's map specifically: tmpl is keyed language -> page, and
+// every language is built from the same page sources, so the default answers
+// for all of them. Indexing the top level would answer "is this a language?".
+func (s *Set) Has(name string) bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.tmpl[i18n.Default][name]
+	return ok
+}
 
 // Names lists every page, sorted.
 func (s *Set) Names() []string { return append([]string(nil), s.order...) }

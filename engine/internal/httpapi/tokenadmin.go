@@ -28,6 +28,21 @@ func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.
 		return nil, false
 	}
 
+	// RFC 6749 §3.1: no parameter more than once. The authorize, token and PAR
+	// endpoints refuse duplicates; revoke and introspect flow through here and
+	// were the two token-endpoint-family handlers that did not -- found by
+	// applying the rule where the traffic later grew, rather than only where it
+	// ours. It matters for the same reason as everywhere else: `token` twice is
+	// answered about the first while a proxy or audit shipper reading the last
+	// records a different token, so the decision and the record of it describe
+	// different requests. ParseTokenRequest takes Get(), so without this the
+	// duplicate is silent.
+	if err := refuseDuplicateParams(r.PostForm); err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: err.Error(), Status: http.StatusBadRequest})
+		return nil, false
+	}
+
 	req, perr := oauth.ParseTokenRequest(r.Header, r.PostForm)
 	if perr != nil {
 		writeTokenError(w, perr)

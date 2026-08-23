@@ -59,6 +59,25 @@ import (
 // middleware now sits in front of them. Recorded as an open item rather than
 // guessed at.
 //
+// # Re-measured 24 August 2026 — the regression was transient, and it is closed
+//
+// Three consecutive runs at the documented `-benchtime 30x`, same machine:
+//
+//	BenchmarkFullSignIn-8         44.7, 46.5, 43.9 ms   (was 76 on 21 Aug)
+//	BenchmarkFlowMFADecision-8    228 us
+//	BenchmarkArgon2Verify         35.6 ms (now a PERMANENT benchmark, see
+//	                              internal/passwords/argon2bench_test.go)
+//
+// So the path is ~45 ms and a single Argon2id verify is ~35.6 ms of it -- **~79%,
+// Argon2-bound again, exactly as the design intends.** The 76 ms on 21 Aug was a
+// machine-load artifact, not a code change: nothing on the sign-in path changed
+// between then and now (the only commits since are i18n, theming, and the
+// revocation/introspection/response-mode reviews, none of which touch this path),
+// and the number came back below the original 59.8 ms baseline. The lesson from
+// 21 Aug stands -- re-run before believing a single reading -- but the open item
+// (TODO 9w) is closed: there is no regression to localise. The Argon2 share is
+// now pinned by its own benchmark rather than a throwaway measurement.
+//
 // The decision costs ONE query, the same as the `if enrolled` it replaced. An
 // earlier version of this code cost three, and then six; see
 // TestTheSecondFactorDecisionCostsOneQuery, which pins it.

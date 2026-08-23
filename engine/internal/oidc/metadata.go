@@ -375,9 +375,21 @@ func Build(cfg Config) (*Metadata, error) {
 		BackchannelLogoutSupported:        true,
 		BackchannelLogoutSessionSupported: true,
 
-		// Advertised as false until JAR is actually implemented. Claiming support
-		// here and rejecting the parameter in practice is exactly the Config OP
-		// failure this file exists to avoid.
+		// Both false, for two different reasons that must not be conflated.
+		//
+		// request_parameter_supported: we accept no inline `request` JWT (RFC 9101
+		// JAR). Advertising true and rejecting it is the Config OP failure this
+		// file exists to avoid.
+		//
+		// request_uri_parameter_supported: we fetch no remote request object from
+		// a `request_uri` URL -- that is an SSRF surface we deliberately do not
+		// open. This is NOT a statement about PAR: RFC 9126 §5 says "a request_uri
+		// value obtained from the PAR endpoint is usable at the authorization
+		// endpoint regardless of other authorization server metadata such as
+		// request_uri_parameter_supported", and PAR support is advertised by
+		// pushed_authorization_request_endpoint above. So a PAR client is not
+		// misled by this false, and flipping it to true would falsely claim we
+		// fetch remote request objects.
 		RequestParameterSupported:    false,
 		RequestURIParameterSupported: false,
 	}, nil

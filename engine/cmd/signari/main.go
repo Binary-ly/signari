@@ -50,6 +50,7 @@ import (
 
 	"signari.dev/engine/internal/adminapi"
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/auditsink"
 	"signari.dev/engine/internal/authzen"
 	"signari.dev/engine/internal/brand"
 	"signari.dev/engine/internal/directory"
@@ -1305,6 +1306,15 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 	// jobs it runs are the ones whose absence is invisible until it matters:
 	// relying parties never told a session ended, and a table that only grows.
 	go janitor.Run(workerCtx, pool, log, janitor.DefaultInterval)
+
+	// Audit streaming to a logically separate system (ASVS V16.4.3), off unless a
+	// destination is configured. Forwarding authentication events off the box is a
+	// data-residency decision, so it happens only when an operator names where.
+	if sink, serr := auditsink.NewFromEnv(os.Getenv, log); serr != nil {
+		return fmt.Errorf("audit streaming: %w", serr)
+	} else if sink != nil {
+		go auditsink.NewPump(pool, sink, log).Run(workerCtx, 10*time.Second)
+	}
 
 	// The admin API listens on its OWN address, and is off unless one is given.
 	// It is the write surface for the entire identity provider; exposing it on

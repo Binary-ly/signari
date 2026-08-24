@@ -69,6 +69,19 @@ See [SMS](sms.md), including why it is the weakest factor offered here.
 | `SIGNARI_SMS_TWILIO_SID`, `SIGNARI_SMS_TWILIO_TOKEN` | Twilio credentials |
 | `SIGNARI_SMS_WEBHOOK_URL`, `SIGNARI_SMS_WEBHOOK_AUTH` | For any other provider. Must be https: the body carries a live code |
 
+## Audit streaming
+
+Forwarding the audit trail to a logically separate system (ASVS V16.4.3). Off
+unless a destination is set; see [audit-streaming.md](audit-streaming.md).
+
+| Variable | Meaning |
+|---|---|
+| `SIGNARI_AUDIT_WEBHOOK_URL` | POST events as NDJSON to a SIEM endpoint. Refused if it resolves into the private network |
+| `SIGNARI_AUDIT_WEBHOOK_TOKEN` | Optional bearer token sent as `Authorization` to the webhook |
+| `SIGNARI_AUDIT_SYSLOG_ADDR` | `host:port` of a syslog collector (TCP). Ignored if a webhook URL is also set |
+| `SIGNARI_AUDIT_SYSLOG_TLS` | `1` to wrap the syslog connection in TLS |
+| `SIGNARI_AUDIT_SYSLOG_HOSTNAME` | Hostname stamped into each RFC 5424 line (default `signari`) |
+
 ## RADIUS and EAP-TLS
 
 See [EAP-TLS](eap-tls.md).

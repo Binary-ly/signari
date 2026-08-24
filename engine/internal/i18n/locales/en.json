@@ -165,6 +165,17 @@
   "accountpw.submit": "Change password",
   "accountpw.endsothers": "Changing your password ends every session, so you will sign in again with the new one.",
 
+  "reccodes.title": "Recovery codes",
+  "reccodes.nofactor": "Recovery codes back up a second factor, and you have not set one up yet.",
+  "reccodes.remaining": {
+    "zero": "You have no unused recovery codes left.",
+    "one": "You have {n} unused recovery code left.",
+    "other": "You have {n} unused recovery codes left."
+  },
+  "reccodes.explain": "Each code works once. Keep them somewhere other than the device with your authenticator app.",
+  "reccodes.regenerate": "Generate new codes",
+  "reccodes.replaces": "Generating new codes cancels your current ones, so any you have written down will stop working.",
+
   "portal.title": "Your applications",
   "portal.empty": "No applications have been set up yet.",
   "portal.empty.hint": "An administrator registers one with <code>signari client create</code>.",

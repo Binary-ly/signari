@@ -1,0 +1,16 @@
+{{define "title"}}{{T "reccodes.title"}}{{end}}
+{{define "content"}}
+<h1>{{T "reccodes.title"}}</h1>
+{{if not .HasFactor}}
+  <p class="none">{{T "reccodes.nofactor"}}</p>
+{{else}}
+  <p>{{N "reccodes.remaining" .Remaining}}</p>
+  <p class="help">{{T "reccodes.explain"}}</p>
+  <form method="POST" action="/account/recovery">
+    <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+    <button type="submit">{{T "reccodes.regenerate"}}</button>
+  </form>
+  <p class="help">{{T "reccodes.replaces"}}</p>
+{{end}}
+<p class="meta"><a href="/account">{{T "common.backtoaccount"}}</a></p>
+{{end}}

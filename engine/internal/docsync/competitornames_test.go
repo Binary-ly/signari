@@ -17,18 +17,19 @@ import (
 // design is better.
 //
 // This test exists because all three had already happened, and none was caught by
-// review:
+// review. Four shapes, each found in this tree:
 //
-//	httpapi/forwardauth_test.go   "authentik's a published advisory ... made their proxy"
-//	httpapi/tokenadmin.go         "found by reading Keycloak's TokenRevocation..."
-//	docs/par.md                   "### Ahead of authentik, parity with Keycloak"
-//	docs/jwt-bearer.md            "The most deployed competitor made the other choice"
+//   - a rival named in a test's doc comment, alongside their advisory number
+//   - a rival's internal class name cited as where a fix came from
+//   - a feature page headed "Ahead of X, parity with Y"
+//   - prose carefully avoiding the name -- "the most deployed competitor" --
+//     while citing the advisory number in the same sentence
 //
-// The last one shows why matching on names alone is not enough on its own, and
-// why the CVE rule below matters: "the most deployed competitor shipped
-// a published advisory" identifies the vendor exactly as well as writing the name,
-// because a CVE identifier belongs to one vendor. Anonymising the prose while
-// keeping the number anonymises nothing.
+// The fourth shape is why the name check below is not sufficient alone. A CVE
+// identifier belongs to exactly one vendor, so anonymising the prose around it
+// anonymises nothing. The examples above are described rather than quoted for
+// the same reason: this file is committed, and quoting them would reintroduce
+// what it exists to remove.
 //
 // Where the comparison belongs is a local-only review document — the
 // docs/protocol-review-*.md and docs/competitor-review-*.md families, which
@@ -47,11 +48,12 @@ func TestNoCompetitorIsNamedInAPublishedFile(t *testing.T) {
 	// the SAML comment-truncation family (CVE-2017-11427), the Go LDAP parser
 	// (CVE-2017-14623) -- affect everyone including us and are cited freely.
 	//
-	// Add to this list whenever a competitor advisory is read. The name check
-	// above will not catch it: the first version of this test passed a tree in
-	// which seven files cited these four identifiers, because every one had been
-	// carefully written WITHOUT the vendor's name -- "the most deployed
-	// implementation of this grant shipped a published advisory" names them precisely.
+	// Add to this list whenever a rival's advisory is read. The name check above
+	// will not catch it: the first version of this test passed a tree in which
+	// seven files cited identifiers from this list, because every one of them had
+	// been carefully written WITHOUT the vendor's name. Naming the failure class
+	// -- algorithm confusion, CWE-347 -- says everything the identifier said and
+	// belongs to nobody.
 	competitorCVE := regexp.MustCompile(`\bCVE-2026-(11800|1486|1609|25748|9793|15573|16443|16442|57580|25922)\b`)
 
 	// A line naming a product purely as something we migrate FROM. Narrow on

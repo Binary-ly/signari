@@ -82,6 +82,21 @@ unless a destination is set; see [audit-streaming.md](audit-streaming.md).
 | `SIGNARI_AUDIT_SYSLOG_TLS` | `1` to wrap the syslog connection in TLS |
 | `SIGNARI_AUDIT_SYSLOG_HOSTNAME` | Hostname stamped into each RFC 5424 line (default `signari`) |
 
+## Authenticator models (FIDO metadata)
+
+Resolves a passkey's AAGUID to a device model — "YubiKey 5 NFC" rather than the
+nickname a user typed — on the passkey-added and passkey-removed notices. Off
+unless a source is set, and **display only**: it never decides whether a passkey
+may enrol, so a missing or unknown entry costs a nicer label, never a sign-in.
+The BLOB must be signed by the FIDO production root, wherever it comes from; an
+unsigned or wrongly signed one is refused.
+
+| Variable | Meaning |
+|---|---|
+| `SIGNARI_FIDO_MDS_PATH` | Path to a mounted copy of the FIDO Metadata Service BLOB. Best for air-gapped or pinned deployments. Wins over the URL if both are set |
+| `SIGNARI_FIDO_MDS_URL` | Fetch the BLOB from this URL (e.g. an internal mirror) instead of a file |
+| `SIGNARI_FIDO_MDS_FETCH` | `1` fetches from the official FIDO endpoint. An explicit opt-in, because otherwise the engine would reach out to fidoalliance.org unasked |
+
 ## RADIUS and EAP-TLS
 
 See [EAP-TLS](eap-tls.md).

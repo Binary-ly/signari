@@ -61,7 +61,9 @@ func TestBindingAnAuthenticatorNotifiesTheSubscriber(t *testing.T) {
 	cap := &captureMailer{}
 	f.srv.mailer = cap
 
-	f.srv.notifyAuthenticatorBound(ctx, f.userID, f.orgID, "Work Laptop")
+	// nil AAGUID: no metadata resolver is configured, so the notice names the
+	// passkey by its nickname alone -- the model suffix is exercised separately.
+	f.srv.notifyAuthenticatorBound(ctx, f.userID, f.orgID, "Work Laptop", nil)
 
 	msgs := cap.messages()
 	if len(msgs) != 1 {
@@ -106,7 +108,7 @@ func TestAFailedNoticeIsAuditedRatherThanSwallowed(t *testing.T) {
 	f.srv.mailer = &captureMailer{err: os.ErrDeadlineExceeded}
 
 	// Must not panic and must return; the registration stands.
-	f.srv.notifyAuthenticatorBound(ctx, f.userID, f.orgID, "Doomed Key")
+	f.srv.notifyAuthenticatorBound(ctx, f.userID, f.orgID, "Doomed Key", nil)
 
 	var n int
 	if err := f.pool.QueryRow(ctx, `

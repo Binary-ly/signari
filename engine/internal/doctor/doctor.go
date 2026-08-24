@@ -100,6 +100,7 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	checkRootKey(r)
 	checkAdminToken(r)
 	checkMail(r)
+	checkAuthenticatorModels(r)
 	if err := checkSigningKeys(ctx, conn, r); err != nil {
 		return nil, err
 	}
@@ -219,6 +220,29 @@ func checkMail(r *Report) {
 // channel is the email address, where a compromised mailbox means a security
 // notice reaches nobody who can act on it. It is Info, not Warning, because
 // forcing a second channel is a lockout risk that is the operator's call.
+// checkAuthenticatorModels validates a configured FIDO metadata source.
+//
+// The feature is off by default and purely cosmetic -- it turns a stored AAGUID
+// into "YubiKey 5 NFC" on a passkey notice -- so an unconfigured source is not a
+// finding. But a PATH that points at a file the process cannot read is a silent
+// misconfiguration: the operator asked for model names and will never see them,
+// with nothing to say why. That is worth surfacing here, cheaply and locally,
+// without the network fetch the running resolver does.
+func checkAuthenticatorModels(r *Report) {
+	r.ran("authenticator models")
+	path := os.Getenv("SIGNARI_FIDO_MDS_PATH")
+	if path == "" {
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		r.add(Warning, "authenticator models",
+			"SIGNARI_FIDO_MDS_PATH is set but the file cannot be read: "+err.Error(),
+			"point SIGNARI_FIDO_MDS_PATH at a readable copy of the FIDO Metadata "+
+				"Service BLOB, or unset it and use SIGNARI_FIDO_MDS_FETCH=1 to fetch "+
+				"it. Until then passkeys are named by their nickname only")
+	}
+}
+
 func checkNotificationChannels(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	r.ran("notification channels")
 

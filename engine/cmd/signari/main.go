@@ -57,6 +57,7 @@ import (
 	"signari.dev/engine/internal/doctor"
 	"signari.dev/engine/internal/duo"
 	"signari.dev/engine/internal/federation"
+	"signari.dev/engine/internal/fidomds"
 	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/httpapi"
 	"signari.dev/engine/internal/importer"
@@ -1314,6 +1315,16 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 		return fmt.Errorf("audit streaming: %w", serr)
 	} else if sink != nil {
 		go auditsink.NewPump(pool, sink, log).Run(workerCtx, 10*time.Second)
+	}
+
+	// Authenticator model resolution (AAGUID -> "YubiKey 5 NFC"), off unless a
+	// FIDO metadata source is configured. Display only, so a nil resolver is a
+	// silent fall-back to passkey nicknames rather than a startup failure; when
+	// present it refreshes in the background like the other singletons.
+	models := fidomds.NewFromEnv(os.Getenv, log)
+	srv.SetAuthenticatorModels(models)
+	if models != nil {
+		go models.Run(workerCtx, fidomds.DefaultRefresh)
 	}
 
 	// The admin API listens on its OWN address, and is off unless one is given.

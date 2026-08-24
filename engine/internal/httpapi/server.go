@@ -23,6 +23,7 @@ import (
 	"signari.dev/engine/internal/captcha"
 	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/federation"
+	"signari.dev/engine/internal/fidomds"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/oidc"
@@ -122,6 +123,12 @@ type Server struct {
 	// delegator verifies credentials against a provider being migrated from.
 	delegator *delegated.Verifier
 
+	// models resolves an authenticator's AAGUID to a model name for display, or
+	// is nil when no FIDO metadata source is configured. Display only: it never
+	// gates enrolment, so a nil resolver just means a passkey is named by its
+	// nickname rather than "YubiKey 5 NFC".
+	models *fidomds.Resolver
+
 	// guacdAddr is where guacd listens. Empty disables remote access entirely
 	// rather than failing per connection: an operator who has not configured it
 	// has not asked for browser-based remote desktop, and an endpoint that
@@ -151,6 +158,13 @@ func (s *Server) SetPosture(p *posture.Config) { s.posture = p }
 
 // SetInstance supplies the instance row's id.
 func (s *Server) SetInstance(id string) { s.instanceID = id }
+
+// SetAuthenticatorModels supplies the FIDO metadata resolver, or nil for none.
+//
+// Set after construction, like the other optional collaborators: it is built and
+// refreshed by the serve command, and a deployment that has not configured a
+// metadata source passes nil and shows nicknames only.
+func (s *Server) SetAuthenticatorModels(r *fidomds.Resolver) { s.models = r }
 
 // SetFederationKeys supplies the OpenID Federation Entity Statement keys.
 //

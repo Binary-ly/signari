@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/store"
 )
@@ -109,7 +110,9 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rate limited on the address, because this endpoint creates rows and sends
-	// mail. Without it, one script fills the users table and the mail queue.
+	// mail. Without it, one script fills the users table and the mail queue. This
+	// is a gate on the endpoint, not a stage of the flow -- it runs whatever the
+	// operator's enrolment sequence is.
 	if res, err := store.AllowRate(ctx, s.db, "signup:ip:"+clientIP(r),
 		signupsPerWindow, signupWindow); err == nil && !res.Allowed {
 		writeError(w, http.StatusTooManyRequests, "slow_down",
@@ -117,33 +120,124 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The challenge, checked before anything is created.
+	// Drive the enrolment flow (9q option 2). Which stages run, and in what order
+	// -- captcha before create_user, no captcha at all, a prompt in between -- is
+	// the operator's flow file, not a sequence fixed in Go. The shipped
+	// default-sign-up flow reproduces exactly the old behaviour, so a deployment
+	// that has written nothing sees no change.
 	//
-	// `internal/flow`'s shipped enrolment flow has declared
-	// `{stage: captcha, when: captcha_required}` since it was written, and this
-	// endpoint had no challenge at all -- the only `captcha.Verify` in the engine
-	// was on the sign-in path. So an operator who configured a provider got it on
-	// the endpoint that checks a password and not on the endpoint that writes
-	// rows and sends mail, while the flow file told them otherwise.
-	//
-	// A failure is recorded, like the sign-in path, so adaptive mode escalates
-	// rather than being held still by a stream of blank submissions.
-	if s.captcha.Required(ctx, r.RemoteAddr) {
-		if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
-			s.captcha.RecordFailure(ctx, r.RemoteAddr)
-			s.log.Info("captcha refused at sign-up", "err", cerr,
-				"correlation_id", correlationID(ctx))
-			csrf, _ := s.csrfToken(w, r)
-			s.renderPage(w, r, "signup", s.captchaFields(r, map[string]any{
-				"Error":  s.tr(r).T("error.captcha.incomplete"),
-				"Email":  strings.ToLower(strings.TrimSpace(r.PostFormValue("email"))),
-				"Invite": r.PostFormValue("invite"),
-				"CSRF":   csrf, "CSRFField": csrfFormField,
-			}))
+	// The flow is looked up under the default organisation because the enrolment
+	// sequence is an instance-level policy and the account's own org is not known
+	// until the create_user stage resolves the invitation or signup rule. flowFor
+	// falls back to the built-in flow, and if even that is unavailable the fixed
+	// sequence below runs so a configuration read cannot stop anyone signing up.
+	orgID, _ := s.defaultOrg(ctx)
+	fl := s.flowFor(ctx, orgID, flow.Enrolment)
+	state := flow.State{
+		// Presence of the captcha stage in the plan already encodes "a challenge is
+		// required": the default stage is `{stage: captcha, when: captcha_required}`,
+		// so Plan includes it exactly when it would have run before.
+		string(flow.CondCaptchaRequired): s.captcha.Required(ctx, r.RemoteAddr),
+		// No account exists yet, so no subject has a pending prompt. An enrolment
+		// `prompt` stage is visited and passes, as the sign-in walker does when
+		// nothing is outstanding.
+		string(flow.CondPromptsPending): false,
+	}
+
+	plan := []flow.StageName{flow.StageCaptcha, flow.StageCreateUser, flow.StageDone}
+	if fl != nil {
+		plan = fl.Plan(state)
+	}
+
+	created := false
+	for _, stage := range plan {
+		switch stage {
+		case flow.StageCaptcha:
+			// In the plan means required (see the state note above), so this
+			// verifies unconditionally rather than re-asking whether a challenge is
+			// needed.
+			if !s.enrolCaptcha(w, r) {
+				return // the challenge failed; the form was re-rendered with a fresh one
+			}
+		case flow.StagePrompt:
+			// Nothing to put to a subject who does not exist yet. Passing is honest:
+			// the walk visited the stage and found nothing outstanding.
+			continue
+		case flow.StageCreateUser:
+			s.enrolCreateUser(w, r) // writes the terminal response, success or failure
+			created = true
+		case flow.StageDeny:
+			// An operator closing sign-up through their flow. Refused plainly.
+			writeError(w, http.StatusForbidden, "signup_closed",
+				"sign-up is not open here")
+			return
+		case flow.StageDone:
+			// The ordinary terminal. When it follows create_user the response is
+			// already written; reaching it with nothing created is caught below.
+		default:
+			// A stage this engine cannot execute at enrolment. enrol_mfa -- forced
+			// second-factor enrolment, 9q option 3 -- is the realistic one. Refusing
+			// is the honest answer: creating the account while skipping a stage the
+			// operator put there on purpose is the "a written flow governs nothing"
+			// bug wearing a driver, and for enrol_mfa specifically it would make an
+			// account WITHOUT the second factor the operator required. Fail closed.
+			s.log.Error("the enrolment flow requires a stage this engine does not drive",
+				"stage", stage, "flow", flowNameOf(fl), "correlation_id", correlationID(ctx))
+			writeError(w, http.StatusNotImplemented, "not_implemented",
+				"sign-up is unavailable: the configured enrolment flow uses a step this "+
+					"engine cannot yet run")
+			return
+		}
+		if created {
 			return
 		}
 	}
+	if !created {
+		// A flow that never reaches create_user makes no account. Safety permits it,
+		// but it is not a sign-up, and silently returning the form would loop.
+		s.log.Error("the enrolment flow has no create_user stage", "flow", flowNameOf(fl),
+			"correlation_id", correlationID(ctx))
+		writeError(w, http.StatusInternalServerError, "server_error",
+			"sign-up is misconfigured: the enrolment flow creates no account")
+	}
+}
 
+// flowNameOf names a flow for a log line, tolerating the built-in fallback.
+func flowNameOf(fl *flow.Flow) string {
+	if fl == nil {
+		return "(built-in)"
+	}
+	return fl.Name
+}
+
+// enrolCaptcha runs the captcha stage: it verifies the challenge and, on failure,
+// re-renders the form with a fresh one and reports false so the caller stops.
+//
+// A failure is recorded, like the sign-in path, so adaptive mode escalates rather
+// than being held still by a stream of blank submissions.
+func (s *Server) enrolCaptcha(w http.ResponseWriter, r *http.Request) bool {
+	ctx := r.Context()
+	if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
+		s.captcha.RecordFailure(ctx, r.RemoteAddr)
+		s.log.Info("captcha refused at sign-up", "err", cerr,
+			"correlation_id", correlationID(ctx))
+		csrf, _ := s.csrfToken(w, r)
+		s.renderPage(w, r, "signup", s.captchaFields(r, map[string]any{
+			"Error":  s.tr(r).T("error.captcha.incomplete"),
+			"Email":  strings.ToLower(strings.TrimSpace(r.PostFormValue("email"))),
+			"Invite": r.PostFormValue("invite"),
+			"CSRF":   csrf, "CSRFField": csrfFormField,
+		}))
+		return false
+	}
+	return true
+}
+
+// enrolCreateUser runs the create_user stage: it validates the submission,
+// resolves the invitation or signup rule, creates the account, and writes the
+// terminal response.
+func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	email := strings.ToLower(strings.TrimSpace(r.PostFormValue("email")))
 	password := r.PostFormValue("password")
 	token := r.PostFormValue("invite")

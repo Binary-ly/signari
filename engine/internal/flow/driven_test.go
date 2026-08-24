@@ -2,22 +2,27 @@ package flow
 
 import "testing"
 
-// The flow language defines four designations and this engine executes one.
+// The flow language defines four designations and this engine executes two:
+// authentication (always) and enrolment (9q option 2 -- /signup walks the flow).
 //
-// `flowFor` has exactly two callers and both pass Authentication. `/signup` and
-// `/recover` are hardcoded journeys that never read a flow document. So an
+// `/recover` is still a hardcoded journey that never reads a flow document, so an
 // operator can write a recovery flow, have it parsed, have safety rules written
 // specifically for it applied, watch its tests pass, install it — and it governs
 // nothing.
 //
-// This test does not assert that the gap is closed. It asserts that the
+// This test does not assert that the whole gap is closed. It asserts that the
 // codebase's own answer to "is this executed?" stays truthful, so that the
-// warnings built on it cannot quietly become wrong in either direction.
-func TestOnlyAuthenticationIsDriven(t *testing.T) {
-	if !Authentication.Driven() {
-		t.Error("Authentication is reported as not driven; flowFor passes it")
+// warnings built on it cannot quietly become wrong in either direction: if a
+// driver is added without updating Driven(), operators keep being warned about a
+// flow that now runs; if Driven() is widened without a driver, they stop being
+// warned about one that does not.
+func TestDrivenReportsAuthenticationAndEnrolment(t *testing.T) {
+	for _, d := range []Designation{Authentication, Enrolment} {
+		if !d.Driven() {
+			t.Errorf("%s is reported as not driven, but the engine executes it", d)
+		}
 	}
-	for _, d := range []Designation{Enrolment, Recovery, Unenrolment} {
+	for _, d := range []Designation{Recovery, Unenrolment} {
 		if d.Driven() {
 			t.Errorf("%s is reported as driven. If a driver was added, this test "+
 				"and item 9q both need updating -- and if one was NOT added, the "+

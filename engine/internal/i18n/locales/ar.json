@@ -154,6 +154,19 @@
   },
   "connected.remove": "إزالة الوصول",
 
+  "sessions.title": "جلساتك",
+  "sessions.none": "ليس لديك أي جلسات نشطة أخرى.",
+  "sessions.current": "هذه الجلسة",
+  "sessions.signedin": "تم تسجيل الدخول",
+  "sessions.unknownbrowser": "متصفح غير معروف",
+  "sessions.how.passkey": "تم تسجيل الدخول بمفتاح مرور",
+  "sessions.how.mfa": "تم تسجيل الدخول بكلمة مرور وعامل ثانٍ",
+  "sessions.how.multifactor": "تم تسجيل الدخول بأكثر من عامل واحد",
+  "sessions.how.password": "تم تسجيل الدخول بكلمة مرور",
+  "sessions.end": "إنهاء هذه الجلسة",
+  "sessions.endcurrent": "إنهاء هذه الجلسة (سيتم تسجيل خروجك هنا)",
+  "sessions.endall": "تسجيل الخروج من كل مكان، بما في ذلك هنا",
+
   "portal.title": "تطبيقاتك",
   "portal.empty": "لم يُعدّ أي تطبيق بعد.",
   "portal.empty.hint": "يسجّل المسؤول تطبيقًا باستخدام <code>signari client create</code>.",
@@ -173,6 +186,7 @@
   "account.add": "إضافة",
   "account.note": "الإضافة من هنا هي الطريقة الوحيدة لربط مزوّد بهذا الحساب. ولا نربط أبدًا بمجرد تطابق عنوان البريد الإلكتروني.",
   "account.none": "لم يُضبط أي مزوّد خارجي لتسجيل الدخول.",
+  "account.manage": "إدارة حسابك",
 
   "racindex.title": "الوصول عن بُعد",
   "racindex.notconfigured": "الوصول عن بُعد غير مضبوط على هذا الخادم. لم يُضبط <code>SIGNARI_GUACD_ADDR</code>، فلا يوجد ما يمكن الاتصال به.",

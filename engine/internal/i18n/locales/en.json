@@ -147,6 +147,19 @@
   },
   "connected.remove": "Remove access",
 
+  "sessions.title": "Your sessions",
+  "sessions.none": "You have no other active sessions.",
+  "sessions.current": "this session",
+  "sessions.signedin": "Signed in",
+  "sessions.unknownbrowser": "An unknown browser",
+  "sessions.how.passkey": "Signed in with a passkey",
+  "sessions.how.mfa": "Signed in with a password and a second factor",
+  "sessions.how.multifactor": "Signed in with more than one factor",
+  "sessions.how.password": "Signed in with a password",
+  "sessions.end": "End this session",
+  "sessions.endcurrent": "End this session (signs you out here)",
+  "sessions.endall": "Sign out everywhere, including here",
+
   "portal.title": "Your applications",
   "portal.empty": "No applications have been set up yet.",
   "portal.empty.hint": "An administrator registers one with <code>signari client create</code>.",
@@ -166,6 +179,7 @@
   "account.add": "Add",
   "account.note": "Adding a provider here is the only way to link one to this account. We never link on a matching email address alone.",
   "account.none": "No external sign-in providers are configured.",
+  "account.manage": "Manage your account",
 
   "racindex.title": "Remote access",
   "racindex.notconfigured": "Remote access is not configured on this server. No <code>SIGNARI_GUACD_ADDR</code> is set, so nothing can be connected to.",

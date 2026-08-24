@@ -1,0 +1,50 @@
+{{define "title"}}{{T "sessions.title"}}{{end}}
+{{define "style"}}<style>
+:root{--page-w:34rem}
+/* Each session is its own card so "End this session" is unambiguously attached
+   to the device named above it. */
+.sess{
+  margin:.75rem 0;
+  padding:.875rem 1rem;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+}
+.sess .ua{font-weight:600;letter-spacing:-.01em}
+.sess .meta{margin:.125rem 0 0;font-size:.8125rem;color:var(--muted)}
+.sess .current{display:inline-block;margin-left:.4rem;padding:.05rem .4rem;
+  font-size:.75rem;border-radius:var(--radius-sm);background:var(--surface-2);
+  color:var(--text)}
+.sess form{margin-top:.75rem}
+.sess button{display:inline-block;width:auto;margin:0;padding:.3125rem .625rem;
+  font-size:.8125rem;color:var(--text);background:var(--surface);
+  border-color:var(--border-strong)}
+.sess button:hover{background:var(--surface-2);opacity:1;color:var(--text)}
+.everywhere{margin-top:1.25rem}
+</style>{{end}}
+{{define "content"}}<h1>{{T "sessions.title"}}</h1>
+{{if .Message}}<p class="note">{{.Message}}</p>{{end}}
+{{if not .Sessions}}
+  <p class="none">{{T "sessions.none"}}</p>
+{{else}}
+  {{range .Sessions}}
+  <div class="sess">
+    <span class="ua">{{if .UserAgent}}{{.UserAgent}}{{else}}{{T "sessions.unknownbrowser"}}{{end}}</span>
+    {{if .Current}}<span class="current">{{T "sessions.current"}}</span>{{end}}
+    <div class="meta">{{T .How}}</div>
+    <div class="meta">{{T "sessions.signedin"}} {{.Signed}}</div>
+    <form method="post" action="/account/sessions/revoke">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <input type="hidden" name="sid" value="{{.SID}}">
+      <button type="submit">{{if .Current}}{{T "sessions.endcurrent"}}{{else}}{{T "sessions.end"}}{{end}}</button>
+    </form>
+  </div>
+  {{end}}
+  <form method="post" action="/account/sessions/revoke" class="everywhere">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <input type="hidden" name="sid" value="all">
+    <button type="submit">{{T "sessions.endall"}}</button>
+  </form>
+{{end}}
+<p class="meta"><a href="/account">{{T "common.backtoaccount"}}</a></p>
+{{end}}

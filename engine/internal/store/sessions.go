@@ -36,6 +36,10 @@ const (
 	// out. Distinct from logout so an audit reader can tell the two apart.
 	ReasonImpersonationEnded TerminationReason = "impersonation_ended"
 	ReasonSharedSignal       TerminationReason = "shared_signal"
+	// ReasonUserRevoke is a session the user ended themselves from the
+	// self-service account console (ASVS V7.5.2). Distinct from ReasonLogout
+	// because the session being ended is usually not the one making the request.
+	ReasonUserRevoke TerminationReason = "user_revoke"
 )
 
 // LogoutNotice is one queued back-channel logout delivery.
@@ -196,6 +200,52 @@ func IsSessionLive(ctx context.Context, q interface {
 		return false, err
 	}
 	return live, nil
+}
+
+// SessionInfo is one live session as the account owner sees it.
+//
+// No IP address and no raw fingerprint: ASVS V7.5.2 asks that a user can see and
+// end their sessions, not that the console builds a location dossier on them.
+// The user agent is shown because "Firefox on macOS" is what lets somebody
+// recognise which session is which; the acr/amr say how it signed in.
+type SessionInfo struct {
+	SID       string
+	UserAgent string
+	ACR       string
+	AMR       []string
+	AuthTime  time.Time
+	CreatedAt time.Time
+	NotAfter  time.Time
+	Current   bool
+}
+
+// ListUserSessions returns a user's live sessions, newest first, marking the one
+// that owns currentSID as the current session so the console never offers to end
+// the browser the person is looking at without saying so.
+func ListUserSessions(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, userID, currentSID string) ([]SessionInfo, error) {
+	rows, err := q.Query(ctx, `
+		SELECT sid, COALESCE(user_agent,''), acr, amr, auth_time, created_at, not_after
+		FROM core.sessions
+		WHERE user_id = $1::uuid AND revoked_at IS NULL AND not_after > now()
+		ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SessionInfo
+	for rows.Next() {
+		var s SessionInfo
+		if err := rows.Scan(&s.SID, &s.UserAgent, &s.ACR, &s.AMR,
+			&s.AuthTime, &s.CreatedAt, &s.NotAfter); err != nil {
+			return nil, err
+		}
+		s.Current = s.SID == currentSID
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 func ResolveSessionCookie(ctx context.Context, q interface {

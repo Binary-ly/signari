@@ -83,7 +83,8 @@ var criticalFields = []string{
 	//	Address    which address the emailed code was sent to
 	//	Invite     which invitation a signup is redeeming
 	//	UserCode   which device authorization is being approved
-	"Token", "ClientID", "ID", "Slug", "Address", "Invite", "UserCode",
+	//	SID        which session is being ended on the self-service page
+	"Token", "ClientID", "ID", "Slug", "Address", "Invite", "UserCode", "SID",
 }
 
 // sentinel is what a critical field is set to while probing.
@@ -111,7 +112,7 @@ var (
 	probeLists = []string{
 		"Scopes", "Providers", "Fields", "Codes", "Apps", "Rows", "Connections",
 		"Requests", "Targets", "Details", "Domains", "Asks", "ActiveTokens",
-		"Open", "Blocked", "Pending", "Linked",
+		"Open", "Blocked", "Pending", "Linked", "Sessions",
 	}
 )
 
@@ -126,6 +127,9 @@ func probeElem() map[string]any {
 		"Hostname": "probe", "LaunchURL": "probe", "DisplayName": "probe",
 		"Resource": "probe", "BindingMessage": "probe",
 		"ClientName": "probe", "When": "probe", "Rows": []any{},
+		// The sessions page reads these off each session element.
+		"UserAgent": "probe", "How": "sessions.how.password", "Signed": "probe",
+		"Current": false,
 		// The two that gate markup INSIDE a range -- the account page puts an
 		// unlink form, CSRF token and all, behind `{{if .Linked}}`.
 		"Linked": true, "Verified": true, "Email": "probe@example.test",

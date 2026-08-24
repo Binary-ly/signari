@@ -424,6 +424,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /rac/connections", s.handleRACList)
 	mux.HandleFunc("GET /rac/connect/{slug}", s.handleRACConnect)
 	mux.HandleFunc("POST /account/connected/revoke", s.handleConnectedRevoke)
+	mux.HandleFunc("GET /account/sessions", s.handleSessions)
+	mux.HandleFunc("POST /account/sessions/revoke", s.handleSessionsRevoke)
 	mux.HandleFunc("GET /account/link/{slug}", s.handleFederatedLink)
 	mux.HandleFunc("POST /account/unlink/{slug}", s.handleAccountUnlink)
 	mux.HandleFunc("GET /saml/metadata", s.handleSAMLMetadata)

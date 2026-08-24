@@ -1,0 +1,22 @@
+{{define "title"}}{{T "accountpw.title"}}{{end}}
+{{define "content"}}
+<h1>{{T "accountpw.title"}}</h1>
+{{if .Message}}<p class="note">{{.Message}}</p>{{end}}
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+<form method="POST" action="/account/password">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="current">{{T "accountpw.current"}}</label>
+<input type="password" id="current" name="current" required
+       autocomplete="current-password" autofocus>
+<label for="password">{{T "common.newpassword"}}</label>
+<input type="password" id="password" name="password" required
+       autocomplete="new-password">
+<label for="confirm">{{T "changepw.repeat"}}</label>
+<input type="password" id="confirm" name="confirm" required
+       autocomplete="new-password">
+<button type="submit">{{T "accountpw.submit"}}</button>
+</form>
+<p class="help">{{T "changepw.help"}}</p>
+<p class="help">{{T "accountpw.endsothers"}}</p>
+<p class="meta"><a href="/account">{{T "common.backtoaccount"}}</a></p>
+{{end}}

@@ -160,6 +160,11 @@
   "sessions.endcurrent": "End this session (signs you out here)",
   "sessions.endall": "Sign out everywhere, including here",
 
+  "accountpw.title": "Change your password",
+  "accountpw.current": "Current password",
+  "accountpw.submit": "Change password",
+  "accountpw.endsothers": "Changing your password ends every session, so you will sign in again with the new one.",
+
   "portal.title": "Your applications",
   "portal.empty": "No applications have been set up yet.",
   "portal.empty.hint": "An administrator registers one with <code>signari client create</code>.",

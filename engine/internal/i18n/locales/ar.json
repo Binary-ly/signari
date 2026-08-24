@@ -167,6 +167,11 @@
   "sessions.endcurrent": "إنهاء هذه الجلسة (سيتم تسجيل خروجك هنا)",
   "sessions.endall": "تسجيل الخروج من كل مكان، بما في ذلك هنا",
 
+  "accountpw.title": "تغيير كلمة المرور",
+  "accountpw.current": "كلمة المرور الحالية",
+  "accountpw.submit": "تغيير كلمة المرور",
+  "accountpw.endsothers": "تغيير كلمة المرور يُنهي كل الجلسات، لذا ستسجّل الدخول مجددًا بالكلمة الجديدة.",
+
   "portal.title": "تطبيقاتك",
   "portal.empty": "لم يُعدّ أي تطبيق بعد.",
   "portal.empty.hint": "يسجّل المسؤول تطبيقًا باستخدام <code>signari client create</code>.",

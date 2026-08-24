@@ -18,10 +18,10 @@ import (
 // picks HS256 and uses the issuer's PUBLIC key as the HMAC secret -- which is
 // public, so anybody can forge with it.
 //
-// Production identity software has shipped exactly that in this grant
-// (a published advisory, CVSS 8.1, CWE-347), where it let anyone holding client
-// credentials "impersonate any federated user linked to the affected Identity
-// Provider".
+// This is not hypothetical. Production identity software has shipped exactly
+// that in this grant (CWE-347, algorithm confusion), where it let anyone holding
+// client credentials impersonate any federated user linked to the affected
+// provider.
 //
 // No HMAC family appears here and none ever should. An assertion is signed by a
 // party we do not share a secret with; if verification ever succeeds with a

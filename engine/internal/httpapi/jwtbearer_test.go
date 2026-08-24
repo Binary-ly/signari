@@ -245,8 +245,9 @@ func TestAValidAssertionMintsATokenForTheLinkedUser(t *testing.T) {
 	}
 }
 
-// a published advisory. Disabling a provider is how an administrator revokes trust. If
-// the grant does not honour it, decommissioning does nothing.
+// Disabling a provider is how an administrator revokes trust. If the grant does
+// not honour it, decommissioning does nothing -- a bug this grant has shipped
+// with elsewhere.
 func TestADisabledProviderCannotMintTokens(t *testing.T) {
 	f := newAssertionFixture(t)
 	// Prove it works first, or this test passes for the wrong reason.
@@ -280,7 +281,8 @@ func TestAProviderNotOptedInCannotMintTokens(t *testing.T) {
 	}
 }
 
-// a published advisory. Deactivating a user must mean it here too.
+// Deactivating a user must mean it here too, and an implementation that resolves
+// the account without rechecking its status is how that gets missed.
 func TestADeactivatedUserCannotBeImpersonated(t *testing.T) {
 	f := newAssertionFixture(t)
 	if code, _ := f.grant(t, f.assert(t, nil), nil); code != http.StatusOK {

@@ -27,14 +27,13 @@ import (
 //
 //   - Trust that had been withdrawn still worked: the issuer lookup did not
 //     filter providers an administrator had disabled, so decommissioning a
-//     provider did not decommission it (a published advisory, and the lookup this file
-//     hands off to is the answer).
+//     provider did not decommission it. The lookup this file hands off to is the
+//     answer.
 //   - A disabled user could still be impersonated, because the grant resolved the
-//     account without checking whether it was still allowed to sign in
-//     (a published advisory).
+//     account without checking whether it was still allowed to sign in.
 //   - Signature verification could be bypassed by algorithm confusion, which let
 //     anyone with client credentials impersonate any federated user of that
-//     provider (a published advisory, CVSS 8.1).
+//     provider.
 //
 // None of the three is a subtle protocol point. All three are checks that a
 // reasonable reading of the RFC does not require you to write down, which is

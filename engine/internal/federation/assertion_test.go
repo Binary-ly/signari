@@ -80,7 +80,7 @@ func TestAGenuineAssertionVerifies(t *testing.T) {
 	}
 }
 
-// a published advisory's class. The attacker takes the issuer's PUBLIC key -- which is
+// Algorithm confusion, CWE-347. The attacker takes the issuer's PUBLIC key -- which is
 // public -- and uses it as an HMAC secret, then claims alg HS256. An
 // implementation that lets the header choose the algorithm verifies it happily.
 func TestAnHMACForgedWithThePublicKeyIsRefused(t *testing.T) {

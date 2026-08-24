@@ -218,7 +218,7 @@ func ActiveTrustMark(ctx context.Context, db TrustMarkDB, instanceID, markType,
 // filtered to only the Entity matching this value."
 //
 // The expiry and revocation guards are in SQL rather than applied to the result,
-// which is the same rule a published advisory was about elsewhere in this engine: a
+// which is the same rule the jwt-bearer issuer lookup follows in this engine: a
 // filter applied after the query is one a later refactor moves, drops, or
 // short-circuits, and the failure is a listing that publishes withdrawn
 // accreditations.

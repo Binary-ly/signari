@@ -38,10 +38,10 @@ var ErrAssertionReplayed = errors.New("assertion identifier has already been use
 // # The filter is in the SQL on purpose
 //
 // `enabled` and `allow_jwt_bearer` are conditions of the query rather than
-// checks performed on the result. That is not a style preference. The most
-// identity software has shipped a high-severity bug in this grant because its
-// issuer lookup "omits filtering logic to exclude disabled IdPs from the lookup
-// results" -- an administrator disabled a provider to revoke trust, and the grant
+// checks performed on the result. That is not a style preference. Production
+// identity software has shipped a high-severity bug in this exact grant because
+// its issuer lookup omitted the filter that excludes disabled providers from the
+// results -- an administrator disabled a provider to revoke trust, and the grant
 // kept working. LoadIdentityProvider, in this same package, has exactly that
 // shape: it selects the row and then tests `enabled` in Go afterwards, which
 // works and is one deleted line away from not working.
@@ -138,9 +138,10 @@ func LoadJWTBearerProvider(ctx context.Context, db *pgxpool.Pool, orgID, issuer 
 // same subject-confusion shape found in the Shared Signals receiver earlier in
 // this codebase, and it is structural here rather than remembered.
 //
-// The join requires `users.status = 'active'`. a published advisory is precisely its
-// absence: the grant "fails to validate the user's disabled status", so an
-// assertion could still obtain tokens for an account an administrator had
+// The join requires `users.status = 'active'`. A shipped vulnerability in this
+// grant elsewhere was precisely its absence: the grant failed to validate the
+// user's disabled status, so an assertion could still obtain tokens for an
+// account an administrator had
 // disabled. Deactivating a user has to mean it everywhere, and this is one of the
 // everywheres.
 func FindActiveFederatedUser(ctx context.Context, db *pgxpool.Pool, providerID, subject string) (userID, orgID string, err error) {

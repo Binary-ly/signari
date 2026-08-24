@@ -41,6 +41,19 @@ func TestNoCompetitorIsNamedInAPublishedFile(t *testing.T) {
 	// library names, and neither has appeared in this repository.
 	competitor := regexp.MustCompile(`(?i)\b(keycloak|authentik|zitadel|fusionauth|fosite|oathkeeper|workos|stytch|rauthy|kanidm|ssoready|boxyhq|auth0|okta)\b`)
 
+	// A CVE identifier belongs to exactly one vendor, so citing one is naming
+	// them. This list is the rivals' advisories we have studied; it is NOT a list
+	// of all CVEs, because protocol-level ones -- Blast-RADIUS (CVE-2024-3596),
+	// the SAML comment-truncation family (CVE-2017-11427), the Go LDAP parser
+	// (CVE-2017-14623) -- affect everyone including us and are cited freely.
+	//
+	// Add to this list whenever a competitor advisory is read. The name check
+	// above will not catch it: the first version of this test passed a tree in
+	// which seven files cited these four identifiers, because every one had been
+	// carefully written WITHOUT the vendor's name -- "the most deployed
+	// implementation of this grant shipped a published advisory" names them precisely.
+	competitorCVE := regexp.MustCompile(`\bCVE-2026-(11800|1486|1609|25748|9793|15573|16443|16442|57580|25922)\b`)
+
 	// A line naming a product purely as something we migrate FROM. Narrow on
 	// purpose: it matches the migrate-from page names and the import verbs, and
 	// nothing else, so it cannot be used to smuggle a comparison through.
@@ -125,6 +138,10 @@ func TestNoCompetitorIsNamedInAPublishedFile(t *testing.T) {
 			}
 			if m := competitor.FindString(line); m != "" {
 				found = append(found, rel+":"+itoa(i+1)+"  "+m+"  |  "+strings.TrimSpace(line))
+				continue
+			}
+			if m := competitorCVE.FindString(line); m != "" {
+				found = append(found, rel+":"+itoa(i+1)+"  "+m+" (a rival's advisory)  |  "+strings.TrimSpace(line))
 			}
 		}
 		return nil

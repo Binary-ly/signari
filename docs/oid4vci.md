@@ -333,10 +333,22 @@ The access token was obtained by redeeming a pre-authorized code **with no
 - **Deferred issuance** (§9) and the **notification endpoint** (§11).
 - **Credential response encryption** (§10) and encrypted requests.
 - The **authorization code flow** variant (`issuer_state`).
-- **Key attestation** (Appendix D) and the `kid`/`x5c` proof forms — a proof must
-  carry its key inline as `jwk`. `kid` names a key we would have to resolve and
-  `x5c` a chain we would have to trust; accepting either without doing that work
-  would be accepting a proof we did not verify.
+- **`x5c` proof form** — a certificate chain we would have to trust. Accepting one
+  without doing that work is accepting a proof we did not verify.
+
+## Key attestation (Appendix D) — built
+
+A key proof says "I hold this key". A **key attestation** adds "and a party you
+trust vouches for how it is stored". `internal/oid4vci/attestation.go` accepts
+`key_attestation` JWTs (`typ: key-attestation+jwt`) and resolves a proof's `kid`
+against the attested key set.
+
+The attester's signature is **required**: with no trusted attesters configured the
+header is refused rather than ignored. Accepting an unverified attestation is
+taking the wallet's word about its own security, and a wallet that sends one and
+receives a credential concludes the attestation was checked.
+
+Register one with `signari attester add`.
 
 
 ## Harsh review of SD-JWT against RFC 9901 (August 2026)

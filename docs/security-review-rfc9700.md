@@ -277,3 +277,53 @@ is the only one worth making about a MUST.
 constant PKCE challenge or nonce values across requests. It is "encouraged"
 rather than a MUST, it needs cross-request state we do not keep, and it is
 recorded as absent rather than quietly omitted.
+
+---
+
+## Three structural properties, re-confirmed — 24 August 2026
+
+Requirement sweeps find what a checklist thought to ask about. These three were
+re-derived from the code instead, because each closes off a whole family of
+published attacks by construction rather than by a check that could be forgotten.
+
+- **No request objects are accepted, at all.** `request_parameter_supported` is
+  false and nothing parses an inline `request` JWT.
+  `request_uri_parameter_supported` is also false, because we fetch no remote
+  request object — an SSRF surface we decline to open. The only `request_uri`
+  accepted is a PAR handle, which is an opaque database reference and not a URL.
+  RFC 9126 §5 confirms `false` is the correct advertisement for a PAR-supporting
+  server; the metadata comment now says so, rather than misattributing the flag
+  to JAR. With no request object there is no signing-algorithm enforcement left
+  to bypass.
+- **Authorization compares relation tuples for exact identity**
+  (`internal/authzen`), never URI paths by prefix. There is no path to normalize,
+  so trailing-slash and matrix-parameter normalisation bypasses have nothing to
+  act on. Forward auth does no path-based authorization whatsoever: it verifies a
+  session-bound cookie and sets identity headers, and the protected application
+  authorizes for itself.
+- **SAML source trust keys are explicit PEM configuration**
+  (`internal/delegated`, `internal/saml/inbound.go`), never lifted from imported
+  metadata where a `use` attribute could quietly disable verification. Unsolicited
+  IdP-initiated responses are refused unless `AllowUnsolicited` is set for that
+  provider.
+
+---
+
+## RFC 9700 §2 re-verified against current code — 24 August 2026
+
+Point 4 asks that "every point is covered for real". Re-run this session by
+reading the code now, not trusting the earlier table:
+
+| §2 requirement | code | status |
+|---|---|---|
+| §2.1 code injection defence: PKCE S256 | `authorize.go:203` requires `code_challenge`; `:215` refuses any method but S256 | met |
+| §2.1.1 PKCE downgrade | `token.go:314` biconditional — `code_verifier` present iff `code_challenge` was; **both** halves are failures (`:315` verifier-missing, `:332` verifier-without-challenge) | met, both halves |
+| §2.2 exact redirect matching, no open redirect | `authorize.go` exact match; `redirect_uri` never pattern-matched | met |
+| §2.2.2 refresh rotation + reuse detection | `refresh.go` rotates via `consumed_at`, revokes the family on reuse, and bounds the family with an absolute expiry ("a family without one would rotate forever") | met |
+| §2.3 no resource-owner password grant | `token.go:427` refuses it explicitly and says it will not be supported | met |
+| §2.6 CORS MUST NOT be at the authorization endpoint | `cors.go` is an explicit allow-list: `*` only for discovery/JWKS, origin-echo for token/userinfo/revocation/introspection/PAR/device — the authorization endpoint is absent by construction, not by a prefix rule that could drift | met |
+
+Every §2 requirement checked is met, confirmed by reading the current code rather
+than the prior review. The CORS one is the sharpest: an allow-list `switch` means
+adding a new endpoint does not silently grant it CORS, and the authorization
+endpoint can never be added to the `*` arm without someone writing the line.

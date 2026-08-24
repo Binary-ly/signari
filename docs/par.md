@@ -92,3 +92,15 @@ it was actually calling — was refused. The endpoint being called is now
 accepted too. Every value in that list names this server and nobody else, which
 is what the audience check is for; being strict about *which* of our own URLs
 was used buys nothing and breaks real clients.
+
+---
+
+## Two properties worth knowing
+
+- **The `request_uri` lifetime is a fixed 90 seconds**, not configurable. RFC 9126
+  §2.2 says only "short-lived" and names no value; a fixed short default is
+  conformant and removes the footgun of an operator setting it long enough to
+  matter.
+- **Duplicate parameters are refused** (`dupeparams.go`), while the repeats
+  RFC 8707 and RFC 8693 legitimately permit — `resource`, `audience` — are
+  preserved as lists through the push.

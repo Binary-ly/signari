@@ -148,3 +148,25 @@ Deleting these breaks no test, and should not:
 Each is caught by an adjacent check, so a mutation to it leaves the system
 correct. Treating every surviving mutant as a finding would be as wrong as
 ignoring them; what matters is whether the property still holds by some route.
+
+---
+
+## What is implemented, against draft-10 — 24 August 2026
+
+`internal/abca/abca.go` tracks
+`draft-ietf-oauth-attestation-based-client-auth-10` (6 July 2026), re-verified
+against the draft text on this date. Implemented in full:
+
+- the §6.1 **challenge endpoint**, and both header artefacts
+- every §7.1 check, and §7.2 rules 1–8 — including rule 5, refusing a `cnf` that
+  carries a private key
+- **single-use challenges**, swept by the janitor
+- the three §7.4 error codes (`use_attestation_challenge`,
+  `use_fresh_attestation`, `invalid_client_attestation`)
+- `client_attestation_pop_methods_supported` in discovery
+
+The check the whole mechanism rests on is the **challenge match**: parsing the
+`challenge` claim without verifying it against a value the server issued reduces
+attestation to a signed assertion the client chose the inputs for, and replay
+becomes free. That check, the `jti` replay guard, and the `iat` freshness bound
+are each tested individually rather than assumed to follow from the others.

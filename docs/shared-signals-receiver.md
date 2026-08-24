@@ -162,8 +162,8 @@ verification.
 |---|---|
 | §4.1 SET format, explicit typing, `iss`, forbidden `exp`/`sub` | implemented, and reviewed above |
 | §6.1.1 Push delivery over HTTP | implemented, both directions |
-| §6.1.2 Poll delivery | **not implemented** |
-| §7.1 / §7.2 Transmitter configuration metadata | **not implemented** |
+| §6.1.2 Poll delivery | implemented **as transmitter** (`POST /ssf/poll`); this receiver does not pull from an upstream queue |
+| §7.1 / §7.2 Transmitter configuration metadata | implemented — served at `/.well-known/ssf-configuration` |
 | §8.1.1 Stream Configuration Endpoint | **not implemented** — streams are configured by an operator |
 | §8.1.4 Verification (the verification event and its `state` echo) | **not implemented** |
 
@@ -173,11 +173,15 @@ verification. That is a scope statement rather than an excuse: a deployment that
 expects to negotiate a stream with us over the wire, or to verify one, will find
 those endpoints absent, and until now nothing here said so.
 
-This is the same rule the rest of this project follows for CIBA (poll mode only,
-and discovery says exactly that) and UMA (no claims gathering, so `need_info` is
-never returned). An unimplemented half of a framework is only safe when it is
-written down; the failure mode otherwise is an integrator discovering it against
-a live deployment.
+This is the same rule the rest of this project follows: advertise exactly what is
+built, and say plainly what is not. UMA does it too — no claims gathering, so
+`need_info` is never returned. An unimplemented half of a framework is only safe
+when it is written down; the failure mode otherwise is an integrator discovering
+it against a live deployment.
+
+The converse failure is just as real and this page had it: a table that still said
+"not implemented" for two sections that had since been built, which costs a reader
+a capability they already have.
 
 
 Re-checked August 2026: `Profile.java:177` carries
@@ -281,16 +285,22 @@ plausible path that 404s — is one a receiver otherwise finds at the moment it
 tries to verify its first event.
 
 
-Their SSF tree is `ssf/{core,transmitter,services,tests}`. There is no receiver
-package. The two files whose names contain "Receiver" —
-`SsfTransmitterGetReceiverClientTest` and `SsfUtilReceiverTest` — are transmitter
-tests about the receiver they push *to*. **Our claim to be the only one that
-receives holds.**
+### What this receiver does not do yet
 
-Not implemented on the transmitter side, for the record:
-the section 8 stream management API, RISC events, and an opt-out legacy
-Apple SSE CAEP profile.
+Stated here so the gaps are visible rather than discovered:
 
+- **The §8 stream management API** — creating, updating and deleting streams over
+  HTTP. Streams here are created by the operator instead, which is a deliberate
+  choice about who may subscribe to events rather than a missing endpoint. See
+  [ssf-caep.md](ssf-caep.md).
+- **RISC events** — the risk-and-incident event family. CAEP is implemented; RISC
+  shares the SET envelope, so this is event modelling rather than new plumbing.
+- **The legacy Apple SSE CAEP profile**, which predates the final specification.
+
+- **Polling an upstream transmitter.** RFC 8936 poll delivery is implemented on
+  the *transmitter* side — a firewalled receiver can pull queued events from us
+  and acknowledge them (`POST /ssf/poll`). This receiver takes pushed events at
+  `POST /ssf/receive` and does not pull from anyone else's queue.
 
 ## Second pass: §3 Subject Identifiers, and a wire-format defect (21 August 2026)
 

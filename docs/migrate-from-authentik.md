@@ -130,5 +130,22 @@ destructive. Run it without `-apply` first.
 `import authentik` moves people and groups. Applications still need registering,
 because an OAuth client's redirect URIs and secrets are a decision rather than a
 translation — and `client create` accepts a verbatim `client_id` and secret, so
-downstream applications need no change. See the issuer-aliasing note in
-`roadmap-total-parity.md`.
+downstream applications need no change.
+
+## Issuer aliasing, for the applications you cannot reconfigure
+
+A relying party verifies the `iss` claim it was configured with. Pointing DNS at
+Signari changes that string, and every such application breaks at once.
+
+A client may instead carry an **issuer alias**: a legacy issuer this deployment
+also claims. Its tokens are minted under that old value rather than under the
+deployment's own issuer, so the application moves with a DNS change instead of a
+code change. Signari's own userinfo and introspection accept both, and the alias
+is validated at write time by a database trigger against the instance's
+registered aliases — a value that reaches the token path has already been proven
+to be one this deployment legitimately claims.
+
+It is for cutover, not for permanent multi-tenancy. The alias set is read once at
+startup, which [high-availability.md](high-availability.md) records as a
+deliberate limit: changing it belongs to a migration plan, not to an operational
+action.

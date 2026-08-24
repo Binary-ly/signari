@@ -80,3 +80,55 @@ script disabled still completes the sign-in one click later.
 `response_modes_supported` lists all three. `response_types_supported` stays
 `["code"]`: hybrid is per-client and off by default, and advertising it globally
 would invite every client to try something nearly all of them are refused for.
+
+---
+
+## Full pass — 24 August 2026
+
+`responsemode.go` and the `response_mode`/`response_type` validation in
+`oauth/authorize.go` read line by line, with the git history (`4bd9436` added
+form_post + fragment + per-client hybrid; `5f63363` moved to 303 for FAPI 2.0
+§5.3.2.2).
+
+### One defect, and it was a stale comment
+
+The `response_mode` validation block still carried the pre-hybrid comment: "`query`
+only", "form_post is REFUSED", "removed from discovery too". Every clause was
+false as of `4bd9436` — the code directly below it accepts `fragment` and
+`form_post`, and discovery advertises all three. In this codebase, where the
+comment carries the argument, a comment contradicting the code is worse than none:
+a reviewer cannot tell which is the bug. Rewritten to state the actual rules. No
+behaviour change; the behaviour was already correct.
+
+### Verified correct and, where checked, ahead
+
+- **`iss` on every response** (RFC 9207), across query, fragment and form_post.
+- **303, never 302 or 307** (FAPI 2.0 §5.3.2.2) — a POSTed credential cannot be
+  replayed to the redirect target.
+- **No access token in the front channel, structurally**: `responseParams` has no
+  access-token field, so hybrid *cannot* leak one regardless of how it is called.
+  A hybrid implementation that merely *declines* to put a token in the fragment
+  is one refactor away from doing it; this one has nowhere to put it.
+- **form_post CSP is a per-response nonce**, not `'unsafe-inline'`, with
+  `form-action` narrowed to the redirect origin and `default-src 'none'` — so even
+  with a code and a signed assertion on the page, there is no injection point and
+  no exfiltration channel (CSS background loads fall back to `default-src 'none'`).
+- **`query` + id_token is refused** (OIDC MUST); unknown modes are refused rather
+  than silently treated as query.
+
+### One deliberate posture worth recording
+
+Discovery advertises `response_types_supported: ["code"]` while authorize accepts
+`code id_token` for clients with `AllowHybrid`. This is intentional, not an
+under-advertisement: hybrid is a per-client migration escape hatch, off by
+default, and a client without it that asks for `code id_token` gets a clear
+`unsupported_response_type`. The operator who enables it with
+`signari client set-hybrid` is configuring deliberately, not discovering. A server
+whose hybrid support is general would advertise the hybrid types; this one is
+code-first by design, and advertising them would invite their use.
+
+### Verdict
+
+Sound and conformant. One stale comment fixed; the behaviour was already correct,
+and on front-channel token safety it is enforced by the shape of the type rather
+than by a rule that has to be remembered.

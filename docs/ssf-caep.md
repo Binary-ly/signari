@@ -22,9 +22,13 @@ continuously instead of once.
 ## Registering a receiver
 
 ```sh
+# Push (RFC 8935): we POST each event to the receiver's endpoint.
 signari ssf add-stream -org <org-uuid> -client-id <client> \
   -endpoint https://receiver.example.com/events \
   -receiver-token "<bearer token the receiver issued us>"
+
+# Poll (RFC 8936): the receiver pulls from us instead. No endpoint.
+signari ssf add-stream -org <org-uuid> -client-id <client> -poll
 
 signari ssf list
 ```
@@ -32,6 +36,40 @@ signari ssf list
 There was no way to do this until recently: a stream could only be created by
 hand-written SQL, which is how it was first tested. A feature nobody can
 configure is one nobody uses.
+
+## Poll delivery (RFC 8936)
+
+Push assumes the receiver can accept an inbound HTTPS POST. A receiver behind a
+firewall, or an agent with no public address, cannot — and those are often the
+receivers that most want continuous signals. Poll inverts the direction: the
+receiver makes an authenticated request to `POST /ssf/poll`, we hand back the
+Security Event Tokens waiting for it, and it acknowledges the ones it has stored
+so we drop them.
+
+A stream is push **or** poll, set when it is registered. A poll stream has no
+endpoint, so `-endpoint` and `-receiver-token` are refused with `-poll`: the
+receiver authenticates to us as its own OAuth client (HTTP Basic or mutual-TLS),
+which is a credential we already verify, rather than a token we would have pushed.
+
+The exchange, per §2.4:
+
+```
+POST /ssf/poll                       -> { "sets": { "<jti>": "<signed SET>" },
+Authorization: Basic <client creds>       "moreAvailable": false }
+{ "maxEvents": 10, "ack": ["<jti>"] }
+```
+
+`ack` names SETs from a previous poll; naming one deletes it. A SET handed over
+but not acknowledged is **redelivered** on the next poll — a receiver that
+crashed before storing an event does not lose it. Set `returnImmediately: false`
+to have us hold the connection briefly and return as soon as an event is queued,
+rather than answering with an empty set straight away.
+
+The same event is minted the same way whichever direction it travels: one builder
+(`ssf.RevocationEvent`) is shared by the push worker and the poll handler, so a
+receiver that later switches from push to poll sees no change in what a SET says.
+An abandoned poll stream cannot grow without bound — the janitor drops events that
+have waited far longer than any live receiver would leave them (30 days).
 
 ## The token that was never sent
 
@@ -295,3 +333,44 @@ The other 93 `MUST` sentences were checked and are met, including the ones most
 often skipped: explicit `typ` of `secevent+jwt` (§4.1.1), `iss` matching the
 stream configuration (§4.1), audience checking, and refusing a SET with no `jti`
 — without which there is no replay guard at all.
+
+---
+
+## Re-verified against current SSF 1.0 — 24 August 2026
+
+A deep pass on Shared Signals, the highest-consequence subsystem here: the worst
+defect ever found in this codebase lived in it — a `session-revoked` SET that
+verified perfectly and named nobody. `internal/ssf/receive.go` re-read against
+SSF 1.0 Final (29 August 2025, current).
+
+### All three subject shapes are read
+
+The specification allows a subject to arrive three ways, and a receiver that
+handles only one silently ignores events about people it should be acting on.
+
+- **Top-level `sub_id`** (§3.1). Reading only the inside of the event object was
+  the defect above; a conformant transmitter putting the subject at the top level
+  had every event accepted and applied to nobody. Fixed in `beedd83`/`bbe776c`.
+- **Complex subjects** (§3.3), resolved through the `user` member.
+- **`iss_sub`**, compared issuer-scoped — so "user-42 at transmitter.test" and
+  "user-42 at evil.test" are two different principals, not one.
+
+Verified by decoding real transmitted tokens, not only fixtures of our own
+making — a receiver tested solely against its own encoder agrees with itself
+about a wire format both halves may be reading wrongly.
+
+### Receiver rules re-verified against the current spec text
+
+- §4.1.2 `sub` MUST NOT be present, §4.1.7 `exp` MUST NOT — both refused, both for
+  the stated defence-in-depth against JWT confusion (a SET carrying `sub`+`exp` is
+  shaped like an ID token).
+- §3.1.4 a subject MUST refer to exactly one principal — refused both within an
+  event and across the top-level `sub_id`-vs-event-`subject` levels.
+- §3.6 a Critical member the receiver cannot interpret → discard rather than act
+  on a scope we are ignoring.
+- Per-type source authorization: a source allowed one event type may not smuggle
+  another alongside it.
+
+**Verdict:** no new defect. The subsystem where the worst defect was found now
+reads all three subject shapes the specification defines, and every receiver-side
+MUST has been re-verified against the current SSF 1.0 text.

@@ -1407,3 +1407,52 @@ restores the layer that was actually missing rather than adding a fourth.
 state-changing form" was written from the pattern rather than from the call
 sites. Counting them took one script and found four exceptions. A verdict in a
 compliance table is worth exactly as much as the enumeration behind it.
+
+---
+
+## Point-4 re-verification against current code — 24 August 2026
+
+ASVS 5.0.0 was swept end to end (345/345) in a prior session. This pass did the
+thing that sweep could not: re-verify the highest-risk controls **against current
+code, after the theming/i18n rework that landed later** — because a control that
+was present when swept can be dropped by a subsequent refactor of the pages and
+the server wiring. Read fresh, not trusted from the prior tally.
+
+### The controls most at risk from the page/server rework — all held
+
+- **V3.4 browser security headers.** `withSecurityHeaders` sets
+  `X-Content-Type-Options: nosniff` (V3.4.4, L1), `Referrer-Policy: no-referrer`
+  (V3.4.5), and `Strict-Transport-Security` (V3.4.1) — and it is wired into the
+  live chain: `Routes()` returns
+  `withCorrelation(withRecovery(withSecurityHeaders(withCORS(mux))))`, so every
+  response carries them regardless of which handler ran. Survived the rework.
+- **V3.4.3 CSP invariants.** `setCSP` appends `base-uri 'none'; object-src 'none'`
+  to every policy, and `htmlPageHeaders` gives every directly-written HTML response
+  a CSP + `Cache-Control: no-store` + framing refusal. The `form_post` bridge keeps
+  its per-response nonce. Intact.
+- **V6/login CSRF.** `POST /login` is `rateLimitedLogin`, which calls `checkCSRF(r)`
+  **before** the rate limiter (so a forged cross-site post cannot spend a victim's
+  rate budget), and `renderLoginStatus` mints the token into the form. The gate is
+  in the caller, not `handleLoginPost` — verified after a false alarm from reading
+  the inner function alone. Survived the page externalization; the theme validator
+  additionally refuses any override that drops the CSRF field.
+
+### Core security standards re-confirmed in current code
+
+- **NIST SP 800-63B-4 §3.1.1.2:** password floor **15** (revision 4's raised
+  number), composition rules refused (SHALL NOT), both cited to revision 4.
+- **RFC 9700 §2** (prior turn): PKCE S256 + downgrade biconditional, exact redirect
+  matching, refresh rotation with reuse revocation, ROPC refused, CORS excluded
+  from the authorization endpoint by allow-list.
+- **FAPI 2.0** (prior turn): `codeTTL = 60s`, 10s clock-skew bounds, key-strength
+  floors, sender-constraining via `cnf`.
+- **The 2026 crop of published identity-provider vulnerabilities**, replayed
+  against our code as adversarial tests rather than read as a list. None applies,
+  and in every case the reason is structural — a mechanism we do not have, or one
+  whose unsafe shape is unrepresentable — rather than a patch we happened to
+  carry. The specific findings are in the local-only review notes.
+
+**Verdict:** the ASVS controls most exposed to the recent rework are confirmed
+present in current code, and the four Aug-2026 security standards (ASVS 5.0.0,
+NIST 800-63B-4, RFC 9700, FAPI 2.0) are re-verified against current code and
+current text. No defect found in this pass.

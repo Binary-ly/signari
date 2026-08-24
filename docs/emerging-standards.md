@@ -706,3 +706,89 @@ error text naming why choosing between them "is not defined".
 the package rather than left to be discovered: they belong to interactive claims
 gathering, which is not implemented. An unimplemented branch that says so is a
 different thing from one that quietly cannot happen.
+
+---
+
+## In-session re-verification against fetched text — 24 August 2026
+
+Point 3 re-run against the *published draft text*, not against notes, for the two
+standards most likely to have moved and the one whose failure is worst.
+
+**SD-JWT VC — draft-18, fetched and diffed. Clean.**
+- §2.2.2.3 non-selectively-disclosable list fetched from the archived draft:
+  `iss, nbf, exp, cnf, vct, vct#integrity, aka_vcts, status`. Our `RedList`
+  (`internal/sdjwt/sdjwt.go`) carries exactly these eight plus our own documented
+  extras `aud, iat`. Exact.
+- §2.2.1 `typ` = `dc+sd-jwt`. We issue exactly that and never the deprecated
+  `vc+sd-jwt`.
+- §3.1 key discovery: the well-known URI is formed by inserting
+  `/.well-known/jwt-vc-issuer` between host and path. `jwtVCIssuerPath`
+  (`internal/httpapi/jwtvcissuer.go`) does exactly that, trims a terminating `/`
+  per §3.1, and §3.3's `issuer`-must-equal-`iss` check is served verbatim. A
+  conformant verifier that has never spoken to us before can resolve our signing
+  key — the property whose absence the earlier §2.5 finding was about, now
+  confirmed present against the actual text rather than against the earlier fix.
+- **Watch item:** draft-18 is at IESG with `AD Evaluation::Revised I-D Needed`,
+  so a draft-19 is expected. Nothing in the requested revisions is known to touch
+  the issuer-side rules above, but the citation should be re-checked when -19
+  lands rather than assumed.
+
+**SSF 1.0 — the two subject-shape defects remain fixed.** `sub_id` is read at the
+top level (§3.1), the §3.3 complex subject resolves through its `user` member, and
+`critical_subject_members` (§7.1) is decoded and enforced. Confirmed still present
+in `internal/ssf/receive.go`; these are the worst-consequence paths in the tree
+(a session-revocation naming nobody), so they are re-checked every pass.
+
+**Currency of all ten** was re-verified against publishers in the prior turn:
+SD-JWT VC -18, Transaction Tokens -11, ABCA -10, OID4VCI 1.0 (1.1 unpublished,
+Q3/Q4 2026 target), OpenID Federation 1.0, SSF 1.0, AuthZEN 1.0 Final, plus
+WebAuthn L3 (advanced to Proposed Recommendation 20 July 2026) and RFC 9901.
+No standard we cite has been superseded since the last pass.
+
+---
+
+## Point 3 completed — the last two standards re-verified against current text (24 August 2026)
+
+The remaining two of the ten, deep-dived this session so every emerging standard
+has had a fresh pass:
+
+### RFC 9901 SD-JWT (core) — issuer-side exact, verifier rejections present
+
+We are an issuer plus a verifier *library* (nothing here consumes a presentation).
+Re-verified against RFC 9901 (Standards Track, Nov 2025, current, no successor):
+
+- **Digest construction (§4.2.3):** `DigestOf` hashes the base64url-**encoded**
+  disclosure string, not the decoded bytes — the subtlety §4.2.3 warns about
+  twice. Disclosures are JSON-encoded with HTML escaping **off** (`SetEscapeHTML(false)`),
+  because Go's default encoder would rewrite `<`/`>`/`&` and change the bytes being
+  hashed.
+- **Salt entropy (§9.3):** 128 bits, cryptographically random.
+- **Reserved names (§4.2.1):** `_sd` and `...` refused as disclosable claim names.
+- **Verifier rejections (§7.1.4):** the library refuses unreferenced disclosures,
+  duplicate presentation, non-string `_sd` entries, and reserved-name collisions —
+  every rejection a MUST.
+
+The earlier section sweep (70 sections, 45 uncited) came back clean because the
+uncited sections bind a *Verifier* and we are issuer-only; re-confirmed.
+
+### FAPI 2.0 Security Profile — load-bearing requirements re-confirmed in current code
+
+Final, 22 Feb 2025, no errata (current). All 14 authorization-server requirements
+were tabled in `security-review-fapi2.md`; the load-bearing ones re-checked against
+current code this pass:
+
+- **§5.3.2.2** authorization-code lifetime ceiling: `codeTTL = 60s` (flow.go:32).
+- **§5.3.2.1 / §5.4.1** client-assertion clock skew: `MaxClockSkew = 10s`, an `iat`
+  more than 10s in the future rejected, and a max-assertion-lifetime bound — the
+  two MUSTs an earlier pass found broken in both directions and fixed.
+- **§5.4.1** client key-strength floors (RSA and EC minimums).
+- Sender-constraining conveyed via `cnf` (`jkt` for DPoP, `x5t#S256` for mTLS).
+
+FAPI is a profile a deployment opts into: its restrictions (confidential-only, PAR
+mandatory, sender-constrained-only) are profile modes a general-purpose IdP
+correctly does not force by default; the two lifetime rules are ceilings we sit
+under where holding them costs nothing.
+
+**All ten emerging standards now have a fresh deep pass this session.** No new
+defect in either of these two; both current, both conformant on the parts that
+apply to the roles we play.

@@ -136,6 +136,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkMTLS(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkNotificationChannels(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	checkSchemaPin(r)
 	checkTheme(r)
 
@@ -203,6 +206,44 @@ func checkMail(r *Report) {
 				"are written to the log, which is fine for development and means nobody "+
 				"can recover an account in production")
 	}
+}
+
+// checkNotificationChannels surfaces NIST SP 800-63B-4's two-notification-address
+// SHALL per deployment.
+//
+// The engine SUPPORTS two channels (an account email and a verified SMS number,
+// fanned out by internal/httpapi/notify.go), which is what the SHALL asks a CSP
+// to do. What it cannot do is make a given account HAVE two -- that depends on
+// whether users have enrolled and verified an SMS number. So the finding is
+// informational and counts the exposure: active accounts whose only notification
+// channel is the email address, where a compromised mailbox means a security
+// notice reaches nobody who can act on it. It is Info, not Warning, because
+// forcing a second channel is a lockout risk that is the operator's call.
+func checkNotificationChannels(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("notification channels")
+
+	var oneChannel int
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*) FROM core.users u
+		WHERE u.status = 'active' AND u.email IS NOT NULL AND u.email <> ''
+		  AND NOT EXISTS (
+		    SELECT 1 FROM core.sms_otp_credentials s
+		    WHERE s.user_id = u.id AND s.verified_at IS NOT NULL)`).Scan(&oneChannel); err != nil {
+		return err
+	}
+	if oneChannel > 0 {
+		r.add(Info, "notifications",
+			fmt.Sprintf("%d active account(s) have only one notification channel (email)",
+				oneChannel),
+			"NIST SP 800-63B-4 asks a CSP to support at least two independent "+
+				"notification addresses per account, so a security notice reaches the "+
+				"owner even if their mailbox is taken over. This engine supports a "+
+				"second channel -- a verified SMS number -- and uses it automatically "+
+				"when present; these accounts have not enrolled one. Nothing is broken; "+
+				"the exposure is that for these accounts a passkey-added or "+
+				"reset-requested notice reaches only the email address")
+	}
+	return nil
 }
 
 func checkSigningKeys(ctx context.Context, conn *pgx.Conn, r *Report) error {

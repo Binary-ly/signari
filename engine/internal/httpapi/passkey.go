@@ -14,7 +14,6 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/keys"
-	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/passkeys"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -679,39 +678,28 @@ func (s *Server) defaultOrg(ctx context.Context) (string, error) {
 // a styled button they should click, which is the shape of the attack it is
 // warning them about.
 func (s *Server) notifyAuthenticatorBound(ctx context.Context, userID, orgID, name string) {
-	var email string
-	if err := s.db.QueryRow(ctx,
-		`SELECT COALESCE(email,'') FROM core.users WHERE id = $1::uuid`, userID).
-		Scan(&email); err != nil {
-		s.log.Error("looking up an address for an authenticator-bound notice",
-			"err", err, "correlation_id", correlationID(ctx))
-		return
-	}
-	if email == "" {
-		// NIST also requires at least two notification addresses per account,
-		// which this server does not yet model -- see item 9l. With none at all
-		// there is nothing to send to, and that is worth an operator seeing
-		// rather than passing in silence.
-		s.log.Warn("a passkey was registered for an account with no notification "+
-			"address; NIST SP 800-63B-4 requires the subscriber to be told",
-			"user_id", userID, "correlation_id", correlationID(ctx))
-		return
-	}
-
 	support := s.cfg.Issuer
-	if err := s.mailer.Send(ctx, mail.Message{
-		To:      email,
-		Subject: "A new passkey was added to your account",
-		Body: fmt.Sprintf("A passkey named %q was added to your account on %s.\n\n"+
-			"If you added it, there is nothing to do.\n\n"+
-			"If you did NOT add it, someone else may have had access to your "+
-			"account. Sign in, remove the passkey you do not recognise, and "+
-			"change your password. If you cannot sign in, contact support at %s.\n",
-			name, time.Now().UTC().Format("2 January 2006 at 15:04 UTC"), support),
-	}); err != nil {
-		// Logged AND audited. A required notification that did not go out is an
-		// operational fact somebody has to be able to find later, and a log line
-		// alone is not durable enough for that.
+	when := time.Now().UTC().Format("2 January 2006 at 15:04 UTC")
+	emailBody := fmt.Sprintf("A passkey named %q was added to your account on %s.\n\n"+
+		"If you added it, there is nothing to do.\n\n"+
+		"If you did NOT add it, someone else may have had access to your "+
+		"account. Sign in, remove the passkey you do not recognise, and "+
+		"change your password. If you cannot sign in, contact support at %s.\n",
+		name, when, support)
+	smsBody := fmt.Sprintf("A new passkey (%q) was just added to your account. "+
+		"If this was not you, sign in and remove it, then change your password.", name)
+
+	// Fans out to every notification channel (email AND a verified SMS number),
+	// which is the second half of NIST SP 800-63B-4's requirement here: the
+	// subscriber is told a new authenticator was bound, on an address a momentary
+	// account-taker may not also control.
+	err := s.notifyAccount(ctx, userID, "A new passkey was added to your account",
+		emailBody, smsBody)
+	if err != nil {
+		// Logged AND audited. A required notification that did not go out -- to any
+		// channel, or because the account has none -- is an operational fact
+		// somebody has to be able to find later, and a log line alone is not
+		// durable enough for that.
 		s.log.Error("sending an authenticator-bound notice", "err", err,
 			"user_id", userID, "correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
@@ -830,28 +818,21 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 // notifyAuthenticatorRemoved is the §4.5 counterpart to
 // notifyAuthenticatorBound.
 func (s *Server) notifyAuthenticatorRemoved(ctx context.Context, userID, orgID, name string) {
-	var email string
-	if err := s.db.QueryRow(ctx,
-		`SELECT COALESCE(email,'') FROM core.users WHERE id = $1::uuid`, userID).
-		Scan(&email); err != nil || email == "" {
-		if err != nil {
-			s.log.Error("looking up an address for an authenticator-removed notice", "err", err)
-		}
-		return
-	}
 	if name == "" {
 		name = "Passkey"
 	}
-	if err := s.mailer.Send(ctx, mail.Message{
-		To:      email,
-		Subject: "A passkey was removed from your account",
-		Body: fmt.Sprintf("The passkey %q was removed from your account on %s.\n\n"+
-			"If you removed it, there is nothing to do.\n\n"+
-			"If you did NOT remove it, someone else may have access to your "+
-			"account. Sign in, check the passkeys listed there, and change your "+
-			"password. If you cannot sign in, contact support at %s.\n",
-			name, time.Now().UTC().Format("2 January 2006 at 15:04 UTC"), s.cfg.Issuer),
-	}); err != nil {
+	when := time.Now().UTC().Format("2 January 2006 at 15:04 UTC")
+	emailBody := fmt.Sprintf("The passkey %q was removed from your account on %s.\n\n"+
+		"If you removed it, there is nothing to do.\n\n"+
+		"If you did NOT remove it, someone else may have access to your "+
+		"account. Sign in, check the passkeys listed there, and change your "+
+		"password. If you cannot sign in, contact support at %s.\n",
+		name, when, s.cfg.Issuer)
+	smsBody := fmt.Sprintf("The passkey %q was just removed from your account. "+
+		"If this was not you, sign in and change your password.", name)
+
+	if err := s.notifyAccount(ctx, userID, "A passkey was removed from your account",
+		emailBody, smsBody); err != nil {
 		s.log.Error("sending an authenticator-removed notice", "err", err,
 			"user_id", userID, "correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{

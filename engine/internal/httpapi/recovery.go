@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/audit"
-	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/store"
 )
 
@@ -113,18 +112,17 @@ func (s *Server) beginRecovery(ctx context.Context, identifier string) error {
 	return s.notifyRecovery(ctx, userID, token, cancelTok, req.EffectiveAt)
 }
 
-// notifyRecovery tells every channel on the account.
+// notifyRecovery tells every notification channel on the account.
+//
+// Fans out through notifyAccount (see notify.go), so the notice reaches the
+// account email AND a verified SMS number when one exists -- the two independent
+// channels NIST SP 800-63B-4 asks a CSP to support. The email carries the
+// actionable links; the SMS is a short alert pointing at the email, because two
+// long tokenised URLs do not belong in a 160-character message -- and alerting
+// the independent channel is the point regardless of where the action lives.
 func (s *Server) notifyRecovery(ctx context.Context, userID, token, cancelTok string, effective time.Time) error {
-	addresses, err := s.recoveryChannels(ctx, userID)
-	if err != nil {
-		return err
-	}
-	if len(addresses) == 0 {
-		return fmt.Errorf("user %s has no channel to notify", userID)
-	}
-
 	wait := time.Until(effective).Round(time.Minute)
-	body := fmt.Sprintf(`Someone asked to reset the password for your account.
+	emailBody := fmt.Sprintf(`Someone asked to reset the password for your account.
 
 If this was you, the reset becomes available in %s:
 
@@ -141,39 +139,10 @@ This message was sent to every address on the account, including ones the
 request did not come from.`,
 		wait, s.cfg.Issuer, token, s.cfg.Issuer, cancelTok)
 
-	var firstErr error
-	for _, addr := range addresses {
-		if err := s.mailer.Send(ctx, mail.Message{
-			To:      addr,
-			Subject: "Password reset requested",
-			Body:    body,
-		}); err != nil {
-			// One failing address must not stop the others: notifying the OTHER
-			// channels is the entire defence when the requester controls one.
-			s.log.Error("sending recovery notice", "err", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	return firstErr
-}
+	smsBody := "A password reset was requested on your account. If this was not " +
+		"you, check your email now for a one-tap link to cancel it -- no sign-in needed."
 
-// recoveryChannels lists every address that must be told.
-func (s *Server) recoveryChannels(ctx context.Context, userID string) ([]string, error) {
-	var email string
-	if err := s.db.QueryRow(ctx,
-		`SELECT COALESCE(email,'') FROM core.users WHERE id = $1::uuid AND status = 'active'`,
-		userID).Scan(&email); err != nil {
-		return nil, err
-	}
-	if email == "" {
-		return nil, nil
-	}
-	// One address today. The signature returns a slice because the design depends
-	// on notifying ALL channels, and a secondary-address feature must not have to
-	// rediscover that.
-	return []string{email}, nil
+	return s.notifyAccount(ctx, userID, "Password reset requested", emailBody, smsBody)
 }
 
 // handleRecoverCancel kills a pending request. No sign-in required, by design:
@@ -351,18 +320,14 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Told after the fact, on every channel: a completed reset is exactly what a
-	// victim needs to know about immediately.
-	if addrs, err := s.recoveryChannels(ctx, req.UserID); err == nil {
-		for _, a := range addrs {
-			_ = s.mailer.Send(ctx, mail.Message{
-				To:      a,
-				Subject: "Your password was changed",
-				Body: "Your account password has just been changed, and every signed-in " +
-					"session was ended.\n\nIf this was not you, reset it again immediately " +
-					"and contact your administrator.",
-			})
-		}
-	}
+	// victim needs to know about immediately, on an address the attacker may not
+	// hold.
+	_ = s.notifyAccount(ctx, req.UserID, "Your password was changed",
+		"Your account password has just been changed, and every signed-in "+
+			"session was ended.\n\nIf this was not you, reset it again immediately "+
+			"and contact your administrator.",
+		"Your account password was just changed and all sessions ended. If this "+
+			"was not you, reset it again now and contact your administrator.")
 	s.renderPage(w, r, "done", map[string]any{})
 }
 

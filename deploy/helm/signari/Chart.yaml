@@ -1,0 +1,17 @@
+apiVersion: v2
+name: signari
+description: The Signari OIDC identity provider engine
+type: application
+# The chart is versioned independently of the engine. appVersion tracks the
+# container image the chart deploys by default; bumping the image is a chart
+# change, so this and values.image.tag move together.
+version: 0.1.0
+appVersion: "latest"
+home: https://signari.dev
+sources:
+  - https://github.com/binary-ly/signari
+keywords:
+  - oidc
+  - oauth2
+  - identity-provider
+  - sso

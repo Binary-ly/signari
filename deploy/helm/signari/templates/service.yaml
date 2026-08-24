@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "signari.fullname" . }}
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "signari.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+{{- if .Values.adminApi.enabled }}
+---
+# The admin API on a SEPARATE, ClusterIP-only service. It is the write surface
+# for the whole IdP; it must never be reachable through the public ingress, so it
+# gets its own service that nothing routes to from outside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "signari.fullname" . }}-admin
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "signari.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: admin
+      port: {{ .Values.adminApi.port }}
+      targetPort: admin
+{{- end }}

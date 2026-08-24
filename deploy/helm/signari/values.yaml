@@ -1,0 +1,113 @@
+# Default values for the Signari chart. Everything here is overridable; the
+# comments say what is safe to leave and what MUST be set for a real deployment.
+
+image:
+  repository: ghcr.io/binary-ly/signari
+  # Pinning a digest is the production-safe choice; a tag is convenient for dev.
+  tag: ""            # defaults to .Chart.AppVersion when empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 2
+
+# The issuer is the `iss` claim in every token and the entity id in SAML.
+# Changing it later breaks every relying party, so set it once and correctly.
+# It MUST be the public https URL browsers and clients reach the engine at.
+issuer: ""           # e.g. https://auth.example.com  (REQUIRED)
+
+# Secrets. In production, prefer an existing Secret you manage (existingSecret)
+# over inlining values here, so they never sit in a values file or Helm release.
+secret:
+  # When set, the chart uses this Secret and ignores the inline values below.
+  # It must contain keys: SIGNARI_DSN, SIGNARI_ROOT_KEY, and optionally
+  # SIGNARI_ADMIN_TOKEN.
+  existingSecret: ""
+  # Inline values, used only when existingSecret is empty. Leaving dsn or rootKey
+  # empty makes the chart refuse to render (see _helpers.tpl) rather than deploy
+  # an engine that cannot start or one whose root key regenerates on restart.
+  dsn: ""            # postgres://user:pass@host:5432/signari?sslmode=require
+  rootKey: ""        # 32 random bytes, base64: head -c 32 /dev/urandom | base64
+  rootKeyRef: "k8s"  # a label for the key, for rotation bookkeeping
+  adminToken: ""     # optional; enables the admin API when set
+
+# Database migrations run as a pre-install/pre-upgrade Job, never on engine boot.
+# N replicas migrating on startup would race, and rollback would be ambiguous
+# about which version the schema is at. The Job runs `migrate all` once, and the
+# engine pods wait for it via the Helm hook ordering.
+migrations:
+  enabled: true
+  # The migrate Job needs a DSN with rights to create roles/schemas (bootstrap).
+  # If empty, it uses the same SIGNARI_DSN as the engine, which works when that
+  # user is a superuser; give a separate superuser DSN here otherwise.
+  superuserDsnSecretKey: ""   # a key in the Secret holding the bootstrap DSN
+  backoffLimit: 3
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# The admin API listens on its own address and is off unless enabled. It is the
+# write surface for the whole IdP; never expose it on the public service.
+adminApi:
+  enabled: false
+  port: 8090
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""           # defaults to the issuer's host when empty
+  tls:
+    enabled: true
+    secretName: ""   # the TLS Secret for the host
+
+# The engine serves HTTPS itself when given a cert; more commonly TLS terminates
+# at the ingress and the engine speaks HTTP behind it. When TLS terminates
+# upstream, the issuer is still https and __Host- cookies still work, because the
+# browser only sees the https ingress.
+tls:
+  # Mount a cert into the pod and have the engine serve HTTPS directly.
+  certSecretName: ""   # a Secret with tls.crt and tls.key
+
+# Extra environment for optional features (SMTP, SMS, GeoIP, audit streaming...).
+# See docs/configuration.md for the full list.
+extraEnv: {}
+  # SIGNARI_SMTP_HOST: smtp.example.com
+  # SIGNARI_AUDIT_WEBHOOK_URL: https://siem.example.com/ingest
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    # Argon2id is memory-hard (19 MiB per concurrent hash by default); a limit
+    # too low will OOM under sign-in load rather than queue. 512Mi is the floor
+    # for a small deployment.
+    memory: 512Mi
+
+# Run as the non-root user the distroless image ships with, read-only root
+# filesystem, no privilege escalation, all capabilities dropped.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# A PodDisruptionBudget keeps at least one replica during voluntary disruptions.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70

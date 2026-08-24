@@ -1,0 +1,30 @@
+Signari is deploying as release {{ .Release.Name }}.
+
+Issuer:   {{ .Values.issuer }}
+Image:    {{ include "signari.image" . }}
+Replicas: {{ if .Values.autoscaling.enabled }}{{ .Values.autoscaling.minReplicas }}–{{ .Values.autoscaling.maxReplicas }} (autoscaling){{ else }}{{ .Values.replicaCount }}{{ end }}
+
+1. Migrations ran as a pre-upgrade Job ({{ include "signari.fullname" . }}-migrate).
+   Check it succeeded:
+     kubectl logs job/{{ include "signari.fullname" . }}-migrate
+
+2. Reach the engine:
+{{- if .Values.ingress.enabled }}
+     https://{{ .Values.ingress.host | default (urlParse .Values.issuer).host }}/.well-known/openid-configuration
+{{- else }}
+     kubectl port-forward svc/{{ include "signari.fullname" . }} 8080:{{ .Values.service.port }}
+     curl http://localhost:8080/.well-known/openid-configuration
+{{- end }}
+
+{{- if .Values.adminApi.enabled }}
+
+3. The admin API is on a SEPARATE ClusterIP service ({{ include "signari.fullname" . }}-admin)
+   and is NOT exposed through the ingress. Reach it only from inside the cluster.
+{{- end }}
+
+{{- if not .Values.secret.existingSecret }}
+
+NOTE: secrets were rendered from values. For production, manage a Secret yourself
+and set secret.existingSecret, so the root key and DSN never sit in a values file
+or Helm release history.
+{{- end }}

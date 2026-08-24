@@ -1,0 +1,109 @@
+{{- include "signari.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "signari.fullname" . }}
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "signari.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "signari.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pods when the secret changes, so a rotated root key or DSN is
+        # picked up without a manual restart.
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: engine
+          image: {{ include "signari.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: 8080
+            {{- if .Values.adminApi.enabled }}
+            - name: admin
+              containerPort: {{ .Values.adminApi.port }}
+            {{- end }}
+          env:
+            - name: SIGNARI_ISSUER
+              value: {{ .Values.issuer | quote }}
+            {{- if .Values.adminApi.enabled }}
+            - name: SIGNARI_ADMIN_ADDR
+              value: {{ printf ":%d" (int .Values.adminApi.port) | quote }}
+            {{- end }}
+            {{- if .Values.tls.certSecretName }}
+            - name: SIGNARI_TLS_CERT
+              value: /tls/tls.crt
+            - name: SIGNARI_TLS_KEY
+              value: /tls/tls.key
+            {{- end }}
+            {{- range $k, $v := .Values.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "signari.secretName" . }}
+          {{- if .Values.tls.certSecretName }}
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+          {{- end }}
+          # /healthz is liveness only -- it describes the process, never the
+          # deployment. Readiness gates traffic until the engine can serve.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              {{- if .Values.tls.certSecretName }}
+              scheme: HTTPS
+              {{- end }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              {{- if .Values.tls.certSecretName }}
+              scheme: HTTPS
+              {{- end }}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.tls.certSecretName }}
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.certSecretName }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

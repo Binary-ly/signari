@@ -1,0 +1,56 @@
+{{- if .Values.migrations.enabled }}
+{{- include "signari.validate" . -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "signari.fullname" . }}-migrate
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+  annotations:
+    # A Helm hook, not a plain manifest: migrations run ONCE per install/upgrade,
+    # before the engine pods, and are deleted before the next run rather than
+    # accumulating. Running migrations here rather than on engine boot is
+    # deliberate -- N replicas migrating on startup race, and rollback becomes
+    # ambiguous about which version the schema is at.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "signari.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "signari.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # `migrate all` bootstraps roles/schemas then applies tables. It needs a
+          # DSN with rights to create roles; superuserDsnSecretKey names a Secret
+          # key holding that DSN, falling back to SIGNARI_DSN when the engine's own
+          # user is a superuser.
+          {{- if .Values.migrations.superuserDsnSecretKey }}
+          command: ["migrate", "all"]
+          env:
+            - name: SIGNARI_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "signari.secretName" . }}
+                  key: {{ .Values.migrations.superuserDsnSecretKey }}
+          {{- else }}
+          command: ["migrate", "all"]
+          envFrom:
+            - secretRef:
+                name: {{ include "signari.secretName" . }}
+          {{- end }}
+{{- end }}

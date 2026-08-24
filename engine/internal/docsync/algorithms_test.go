@@ -20,9 +20,9 @@ import (
 // If a symmetric algorithm is ever accepted alongside those, the "secret" becomes
 // the public key — which is public. Anyone can then forge a token. That is
 // algorithm confusion (CWE-347), and it is not hypothetical: it has shipped in
-// production identity software as recently as 2026, in a jwt-bearer
-// grant, where it let anyone with client credentials impersonate any federated
-// user linked to the affected provider.
+// production identity software as recently as 2026, in a jwt-bearer grant, where
+// it let anyone holding client credentials impersonate any federated user linked
+// to the affected provider.
 //
 // Eleven separate call sites in this engine parse a JWS. Each passes its own
 // algorithm list. A per-package test would check the list it knows about and say

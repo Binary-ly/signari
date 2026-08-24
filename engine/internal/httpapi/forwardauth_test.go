@@ -50,13 +50,15 @@ func TestProxyVerifyStripsCallerIdentityHeaders(t *testing.T) {
 }
 
 // TestAMalformedProxyCookieIsDeniedNotPassedThrough pins the one answer a
-// forward-auth failure against our endpoint.
+// forward-auth endpoint may give to a cookie that does not verify.
 //
-// forward-auth endpoint may give to a cookie that does not verify: a proxy
-// outpost pass the request through with none of the identity headers set, so
-// whether the application was protected depended on how it treated an absent
-// header. The only acceptable answers to a cookie that does not verify are 401
-// and nothing else -- never a 200 whose emptiness the application must notice.
+// The failure mode this guards against: a malformed cookie is treated as "no
+// identity" rather than as "denied", and the request is passed through with none
+// of the identity headers set. Whether the application is protected then depends
+// on how it treats an absent header -- which is a decision the proxy has silently
+// delegated to something that does not know it is making one. The only acceptable
+// answers are 401 and nothing else, never a 200 whose emptiness the application
+// must notice.
 func TestAMalformedProxyCookieIsDeniedNotPassedThrough(t *testing.T) {
 	s := newProxyServer()
 

@@ -45,9 +45,14 @@ github-actions: assertions allowed. JWTs it signs may now be exchanged for our t
   account each assertion's subject is linked to.
 ```
 
-Sharing one provider list between browser sign-in and this grant looks like reuse
-and is not: the two trusts are different, and merging them silently widens one
-to everything granted for the other.
+The assertion list is deliberately **separate** from the browser sign-in provider
+list, which is why `idp assertions` exists as its own command rather than being
+implied by `idp add`. Sharing one list between the two looks like reuse and is
+not: a provider trusted to authenticate a human — behind a redirect, a consent
+screen and a session — is not thereby trusted to mint assertions that become
+tokens with no human present at all. Merging them silently widens the second
+trust to everything granted for the first, and this feature has a track record
+across the industry of exactly that mistake.
 
 ## What has to be true for a grant to succeed
 

@@ -9,16 +9,16 @@ import (
 	"testing"
 )
 
-// TestRevokeAndIntrospectRefuseDuplicateParameters pins RFC 6749 3.1 at the
-// TokenRevocationEndpoint.checkParameterDuplicated against our two
-// token-endpoint-family handlers.
+// TestRevokeAndIntrospectRefuseDuplicateParameters pins RFC 6749 §3.1 at the two
+// token-endpoint-family handlers that did not enforce it.
 //
-// RFC 6749 §3.1 forbids a parameter appearing twice. The authorize, token and
-// PAR endpoints refuse it; revoke and introspect flow through the shared
+// §3.1 forbids a parameter appearing twice. The authorize, token and PAR
+// endpoints refuse it; revoke and introspect flow through the shared
 // authenticateTokenEndpointClient, which took the first value via Get() and so
 // accepted `token=A&token=B` silently -- answering about A while a proxy or
-// audit shipper reading B records a different token. The gap was closed at
-// revoke; we did not until this was found by reading their endpoint beside ours.
+// audit shipper reading B records a different token. The decision and the record
+// of the decision then describe different requests, which is the property that
+// makes this worth a test rather than a note.
 func TestRevokeAndIntrospectRefuseDuplicateParameters(t *testing.T) {
 	f := newTokenFixture(t)
 	secret := revocableClient(t, f)

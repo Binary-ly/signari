@@ -17,20 +17,23 @@ import (
 //	POST /oauth2/token            grant_type=urn:openid:params:grant-type:ciba
 //	GET  /account/requests        the person approves or refuses
 //
-// # Poll mode only, and said so in discovery
+// # All three delivery modes, chosen per client
 //
-// §7.3 defines three delivery modes. Ping and push have us call an endpoint the
-// client hosts, which means outbound HTTP to a client-supplied URL from inside
-// the authorization server -- a request forgery surface that has to be defended
-// with an allow-list, and a delivery guarantee that has to be retried and parked
-// when it fails. We have that machinery for back-channel logout
-// (internal/outbox), so it is buildable; it is not built here, and
-// `backchannel_token_delivery_modes_supported` says `["poll"]` rather than
-// listing modes that would silently never deliver.
+// §7.3 defines three. `backchannel_token_delivery_modes_supported` lists all
+// three, and the mode is a property of the registered client rather than of the
+// request.
 //
-// A client that sends `client_notification_token` is refused rather than served,
-// because a client that receives an auth_req_id concludes the mode it asked for
-// was accepted, and would wait forever.
+// Ping and push have us call an endpoint the client hosts: outbound HTTP to a
+// client-supplied URL from inside the authorization server, which is a request
+// forgery surface and a delivery that has to be retried and parked when it
+// fails. Both ride the existing internal/outbox machinery rather than opening a
+// second delivery path, so they inherit its private-address refusal, its retry
+// schedule and its parked-failure queue.
+//
+// `client_notification_token` is refused in BOTH directions. A poll client that
+// sends one concluded a mode it did not get and would wait forever for a
+// callback; a ping or push client that omits one leaves the callback with
+// nothing to authenticate it, so it could be delivered but not proven to be ours.
 
 // handleBackchannelAuth is the backchannel authentication endpoint, §7.
 func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {

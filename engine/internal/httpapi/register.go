@@ -39,7 +39,8 @@ type registrationRequest struct {
 	LogoutURI               string   `json:"backchannel_logout_uri"`
 
 	// CIBA §4 makes this REQUIRED client metadata for a client registering to
-	// use CIBA, and this server implements poll mode only.
+	// use CIBA. This server implements all three modes, but DYNAMIC registration
+	// is narrowed to poll -- see the check in the handler for why.
 	//
 	// Read so that a mismatch is refused rather than dropped. RFC 7591 §2 permits
 	// ignoring unrecognised metadata, and ignoring THIS one has a specific
@@ -101,16 +102,29 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CIBA §4: poll mode only, and discovery says so. A client asking for a mode
-	// we do not implement is told now, while it can still act on being told.
+	// CIBA §4: this server implements all three delivery modes, and discovery
+	// advertises all three -- but DYNAMIC registration may only take `poll`.
+	//
+	// Ping and push make the authorization server POST to a URL the client chose.
+	// For a client an operator registered, that URL was vetted by a human. A
+	// dynamic registrant vetted nothing: it arrived, asked, and would be handing
+	// us an outbound request target. The outbox refuses private, loopback and
+	// link-local addresses, so this is not an open redirector -- but "the IdP will
+	// POST to any public URL you name" is still a capability to grant
+	// deliberately rather than by self-service.
+	//
+	// So the refusal is a narrowing of THIS registration path, not a missing
+	// feature, and the message says so: a client told "unsupported" would
+	// reasonably conclude the mode does not exist and stop asking.
 	//
 	// After authorisation deliberately: metadata feedback to a caller who may not
 	// register here would let them probe what this issuer validates.
 	if m := req.BackchannelTokenDeliveryMode; m != "" && m != "poll" {
 		writeError(w, http.StatusBadRequest, "invalid_client_metadata",
-			"backchannel_token_delivery_mode "+m+" is not supported by this issuer; "+
-				"backchannel_token_delivery_modes_supported lists poll, and a client "+
-				"registered for ping or push would wait for a delivery that never comes")
+			"backchannel_token_delivery_mode "+m+" is supported by this issuer but "+
+				"not through dynamic registration, which may only take poll; ping and "+
+				"push have us deliver to a URL you supply, so an operator registers "+
+				"those clients. Ask your administrator to register this client for "+m)
 		return
 	}
 

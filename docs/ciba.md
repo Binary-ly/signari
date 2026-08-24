@@ -19,21 +19,31 @@ POST /oauth2/token                → authorization_pending
 
 The person answers at **`/account/requests`**.
 
-## Poll mode only, and discovery says so
+## All three delivery modes
 
-§7.3 defines three delivery modes. We implement `poll`, and
-`backchannel_token_delivery_modes_supported` is exactly `["poll"]`.
+§7.3 defines three, and `backchannel_token_delivery_modes_supported` lists all
+three: `["poll", "ping", "push"]`. The mode is **per client**, set when the client
+is registered.
 
-Ping and push have the authorization server call an endpoint the *client* hosts.
-That is outbound HTTP to a client-supplied URL from inside the IdP — a request
-forgery surface needing an allow-list, plus a delivery guarantee needing retries
-and a parked-failure queue. We have that machinery for back-channel logout
-(`internal/outbox`), so it is buildable. It is not built, so it is not
-advertised.
+- **`poll`** — the client polls the token endpoint with its `auth_req_id`. The
+  default, and the only one that needs nothing from the client's network.
+- **`ping`** — we call an endpoint the client hosts to say "it is ready"; the
+  client then collects at the token endpoint as it would when polling.
+- **`push`** — we deliver the tokens to the client's endpoint directly.
 
-A client sending `client_notification_token` is **refused**, not ignored: a
-client that receives an `auth_req_id` concludes the mode it asked for was
-accepted, and would wait forever for a callback.
+Ping and push mean outbound HTTP from inside the identity provider to a
+client-supplied URL — a request-forgery surface, and a delivery that has to be
+retried and parked when it fails. Both go through the same `internal/outbox`
+machinery as back-channel logout, so they inherit its private-address refusal,
+its retry schedule and its parked-failure queue rather than opening a second
+delivery path with its own bugs.
+
+`client_notification_token` is checked **in both directions**, and the second is
+the one implementations skip. A `poll` client that sends one is refused — it
+expects a callback that will never arrive. A `ping` or `push` client that omits
+one is also refused: §7.1 makes that token the means by which the notification is
+authenticated to the client, so without it the callback could be delivered but
+never proven to have come from us.
 
 Likewise `backchannel_user_code_parameter_supported` is an explicit `false`
 rather than an omitted field, and the endpoint refuses a `user_code`. A client

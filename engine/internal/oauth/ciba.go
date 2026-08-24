@@ -103,8 +103,9 @@ type CIBARequest struct {
 	BindingMessage  string
 	ACRValues       []string
 	RequestedExpiry time.Duration
-	// ClientNotificationToken belongs to ping and push mode, which we do not
-	// implement. Parsed only so its presence can be refused rather than ignored.
+	// ClientNotificationToken belongs to ping and push mode. Required for a
+	// client registered for either (§7.1), and refused for a poll client, which
+	// would otherwise wait for a callback that is never sent.
 	ClientNotificationToken string
 	UserCode                string
 }

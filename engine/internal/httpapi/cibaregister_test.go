@@ -11,9 +11,11 @@ import (
 	"testing"
 )
 
-// CIBA §4 makes `backchannel_token_delivery_mode` REQUIRED client metadata, and
-// this issuer implements poll mode only — `backchannel_token_delivery_modes_supported`
-// advertises `["poll"]`.
+// CIBA §4 makes `backchannel_token_delivery_mode` REQUIRED client metadata. This
+// issuer implements all three modes and advertises all three, but **dynamic**
+// registration may only take `poll`: ping and push have us POST to a URL the
+// client supplies, which is a capability an operator grants deliberately rather
+// than one a self-registering client helps itself to.
 //
 // RFC 7591 §2 permits a server to ignore metadata it does not recognise, and
 // dynamic registration did exactly that. Ignoring THIS parameter has a specific

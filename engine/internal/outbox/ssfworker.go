@@ -88,16 +88,13 @@ func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
 	if err != nil {
 		return err
 	}
-	token, err := ssf.Mint(tokens.NewSigner(key), w.issuer, p.ClientID, jti, ssf.Event{
-		Type: p.Event,
-		Subject: ssf.Subject{
-			Format: "iss_sub", Issuer: w.issuer, Sub: p.Subject,
-		},
-		EventTime:        time.Now(),
-		ReasonAdmin:      "The session was revoked: " + p.Reason,
-		ReasonUser:       "You were signed out.",
-		InitiatingEntity: initiatingEntityFor(p.Reason),
-	}, time.Now())
+	// EventTime is time.Now() here rather than the revoke time: push delivers
+	// within seconds of the event, so the two are the same moment for a receiver's
+	// purposes. Poll, which can hand over an event hours later, passes the queued
+	// time instead -- see the shared builder.
+	event := ssf.RevocationEvent(w.issuer, p.Subject, p.Reason, time.Now())
+	event.Type = p.Event
+	token, err := ssf.Mint(tokens.NewSigner(key), w.issuer, p.ClientID, jti, event, time.Now())
 	if err != nil {
 		return err
 	}
@@ -146,26 +143,6 @@ func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
 		return fmt.Errorf("the receiver answered %d", resp.StatusCode)
 	}
 	return nil
-}
-
-// initiatingEntityFor maps a termination reason to the CAEP vocabulary.
-//
-// Reported honestly: a receiver may treat an administrator revoking a session
-// differently from a user signing out, and collapsing them into "system" throws
-// away the distinction it would act on.
-func initiatingEntityFor(reason string) string {
-	switch reason {
-	case "logout":
-		return "user"
-	case "admin_revoke", "user_deactivated", "user_deleted":
-		return "admin"
-	case "password_change", "mfa_reset":
-		return "user"
-	case "reuse_detected":
-		return "policy"
-	default:
-		return "system"
-	}
 }
 
 // streamAuthToken unseals the bearer token a receiver issued for this stream.

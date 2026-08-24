@@ -86,10 +86,14 @@ type TransmitterMetadata struct {
 // scheme."
 func Metadata(issuer, jwksURI string) TransmitterMetadata {
 	return TransmitterMetadata{
-		SpecVersion:              SpecVersion,
-		Issuer:                   issuer,
-		JWKSURI:                  jwksURI,
-		DeliveryMethodsSupported: []string{DeliveryPush},
+		SpecVersion: SpecVersion,
+		Issuer:      issuer,
+		JWKSURI:     jwksURI,
+		// Both delivery methods are offered: push (RFC 8935) for a receiver that
+		// can accept inbound HTTPS, poll (RFC 8936) for one that pulls instead. A
+		// method enters this list once its endpoint works, which is the rule that
+		// kept push here alone until poll was built.
+		DeliveryMethodsSupported: []string{DeliveryPush, DeliveryPoll},
 
 		// default_subjects is deliberately absent.
 		//

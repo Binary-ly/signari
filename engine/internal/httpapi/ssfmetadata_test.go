@@ -52,8 +52,15 @@ func TestSSFConfigurationIsServedAtTheWellKnownPath(t *testing.T) {
 		t.Error("jwks_uri is missing; §7.1 requires it of a transmitter that signs")
 	}
 	methods, _ := doc["delivery_methods_supported"].([]any)
-	if len(methods) != 1 || methods[0] != ssf.DeliveryPush {
-		t.Errorf("delivery_methods_supported = %v, want [%s]", methods, ssf.DeliveryPush)
+	got := map[string]bool{}
+	for _, m := range methods {
+		if s, ok := m.(string); ok {
+			got[s] = true
+		}
+	}
+	if len(methods) != 2 || !got[ssf.DeliveryPush] || !got[ssf.DeliveryPoll] {
+		t.Errorf("delivery_methods_supported = %v, want push and poll (%s, %s)",
+			methods, ssf.DeliveryPush, ssf.DeliveryPoll)
 	}
 }
 

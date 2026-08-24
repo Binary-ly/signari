@@ -293,6 +293,7 @@ func run(args []string) error {
 	ssfEndpoint := fs.String("endpoint", "", "https URL to push Security Event Tokens to")
 	ssfToken := fs.String("receiver-token", "", "bearer token the Shared Signals receiver issued us (optional)")
 	ssfEvents := fs.String("events", "", "comma-separated event types the receiver asked for")
+	ssfPoll := fs.Bool("poll", false, "create a poll stream (RFC 8936): the receiver pulls from /ssf/poll instead of us pushing")
 	radiusNet := fs.String("network", "", "CIDR the RADIUS device sends from, e.g. 10.0.0.0/24")
 	radiusSecret := fs.String("secret", "", "shared secret configured on the RADIUS device")
 	tokenScopes := fs.String("scopes", "",
@@ -642,7 +643,7 @@ func run(args []string) error {
 	case "ssf received":
 		return ssfReceived(ctx, conn, *orgID)
 	case "ssf add-stream":
-		return ssfAddStream(ctx, conn, *orgID, *clientID, *ssfEndpoint, *ssfToken, *ssfEvents)
+		return ssfAddStream(ctx, conn, *orgID, *clientID, *ssfEndpoint, *ssfToken, *ssfEvents, *ssfPoll)
 	case "ssf list":
 		return ssfListStreams(ctx, conn)
 	case "radius add-client":
@@ -3776,19 +3777,38 @@ func loadRADIUSClients(ctx context.Context, pool *pgxpool.Pool, orgID string,
 // verified, and a stream could only be created by hand-written SQL. A feature
 // nobody can configure is one nobody uses.
 func ssfAddStream(ctx context.Context, conn *pgx.Conn, orgID, clientID, endpoint,
-	token, events string) error {
+	token, events string, poll bool) error {
 
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this receiver belongs to")
 	case clientID == "":
 		return fmt.Errorf("give -client, the relying party this stream is for")
-	case endpoint == "":
-		return fmt.Errorf("give -endpoint, the https URL to push Security Event Tokens to")
 	}
-	if !strings.HasPrefix(endpoint, "https://") {
-		return fmt.Errorf("the endpoint must be https: %q would carry security events "+
-			"about real users across the network in the clear", endpoint)
+	// A poll stream is pulled, not pushed: it has no endpoint of ours to POST to,
+	// and the receiver authenticates to us as its OAuth client rather than with a
+	// token we would push. So the two push-only flags are refused here rather than
+	// silently ignored -- a stored endpoint nobody reads is a misconfiguration
+	// waiting to look like a delivery bug.
+	if poll {
+		if endpoint != "" {
+			return fmt.Errorf("a -poll stream has no -endpoint: the receiver pulls from " +
+				"POST /ssf/poll, authenticating as its client. Drop -endpoint")
+		}
+		if token != "" {
+			return fmt.Errorf("a -poll stream has no -receiver-token: the receiver " +
+				"authenticates to us with its client credentials when it polls. Drop " +
+				"-receiver-token")
+		}
+	} else {
+		if endpoint == "" {
+			return fmt.Errorf("give -endpoint, the https URL to push Security Event " +
+				"Tokens to (or -poll for a stream the receiver pulls from)")
+		}
+		if !strings.HasPrefix(endpoint, "https://") {
+			return fmt.Errorf("the endpoint must be https: %q would carry security events "+
+				"about real users across the network in the clear", endpoint)
+		}
 	}
 
 	// The events a receiver actually asked for. An allow-list, because sending
@@ -3823,18 +3843,34 @@ func ssfAddStream(ctx context.Context, conn *pgx.Conn, orgID, clientID, endpoint
 		}
 	}
 
+	method := "push"
+	var endpointCol any = endpoint
+	if poll {
+		method = "poll"
+		endpointCol = nil
+	}
+
 	var id string
 	err := conn.QueryRow(ctx, `
-		INSERT INTO core.ssf_streams (org_id, client_id, endpoint_url, auth_token,
-		                              events_requested)
-		VALUES ($1::uuid, $2, $3, $4, $5)
-		RETURNING id::text`, orgID, clientID, endpoint, sealed, list).Scan(&id)
+		INSERT INTO core.ssf_streams (org_id, client_id, delivery_method, endpoint_url,
+		                              auth_token, events_requested)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6)
+		RETURNING id::text`, orgID, clientID, method, endpointCol, sealed, list).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return fmt.Errorf("client %q already has a stream; one receiver per relying "+
 				"party", clientID)
 		}
 		return err
+	}
+
+	if poll {
+		fmt.Printf("registered a POLL stream for %s\n  events   : %s\n",
+			clientID, strings.Join(list, ", "))
+		fmt.Println("\n  The receiver pulls its events from POST /ssf/poll, authenticating\n" +
+			"  as this client (HTTP Basic or mutual-TLS), and acknowledges each one\n" +
+			"  so it can be dropped from the queue.")
+		return nil
 	}
 
 	fmt.Printf("registered a stream for %s\n  endpoint : %s\n  events   : %s\n",
@@ -3851,8 +3887,8 @@ func ssfAddStream(ctx context.Context, conn *pgx.Conn, orgID, clientID, endpoint
 
 func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
 	rows, err := conn.Query(ctx, `
-		SELECT s.client_id, s.endpoint_url, s.status, (s.auth_token IS NOT NULL),
-		       cardinality(s.events_requested)
+		SELECT s.client_id, s.delivery_method, COALESCE(s.endpoint_url, ''),
+		       s.status, (s.auth_token IS NOT NULL), cardinality(s.events_requested)
 		FROM core.ssf_streams s ORDER BY s.client_id`)
 	if err != nil {
 		return err
@@ -3860,12 +3896,12 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
 	defer rows.Close()
 
 	n := 0
-	fmt.Printf("\n  %-24s %-44s %-10s %s\n", "CLIENT", "ENDPOINT", "STATUS", "AUTH")
+	fmt.Printf("\n  %-24s %-6s %-40s %-10s %s\n", "CLIENT", "MODE", "ENDPOINT", "STATUS", "AUTH")
 	for rows.Next() {
-		var client, endpoint, status string
+		var client, method, endpoint, status string
 		var hasToken bool
 		var events int
-		if err := rows.Scan(&client, &endpoint, &status, &hasToken, &events); err != nil {
+		if err := rows.Scan(&client, &method, &endpoint, &status, &hasToken, &events); err != nil {
 			return err
 		}
 		n++
@@ -3873,8 +3909,14 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
 		if hasToken {
 			auth = "bearer"
 		}
-		fmt.Printf("  %-24s %-44s %-10s %s (%d event types)\n",
-			truncate(client, 24), truncate(endpoint, 44), status, auth, events)
+		if method == "poll" {
+			// A poll stream has no endpoint, and the receiver authenticates as its
+			// client when it pulls, so "auth" here would only ever be a token that
+			// does not apply.
+			endpoint, auth = "(pulled from /ssf/poll)", "client"
+		}
+		fmt.Printf("  %-24s %-6s %-40s %-10s %s (%d event types)\n",
+			truncate(client, 24), method, truncate(endpoint, 40), status, auth, events)
 	}
 	if n == 0 {
 		fmt.Println("\n  No Shared Signals receivers. Register one with `signari ssf add-stream`.")

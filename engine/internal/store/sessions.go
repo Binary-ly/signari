@@ -149,11 +149,42 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 		  AND ($1::text IS NULL OR s.sid = $1)
 		  AND ($2::uuid IS NULL OR s.user_id = $2)
 		  AND st.status = 'enabled'
+		  AND st.delivery_method = 'push'
 		  AND $3::text = ANY(st.events_requested)`,
 		nullIf(sid), nullIf(userID),
 		"https://schemas.openid.net/secevent/caep/event-type/session-revoked",
 		string(reason)); err != nil {
 		return nil, fmt.Errorf("queuing CAEP session-revoked events: %w", err)
+	}
+
+	// 2c. The same events, for POLL streams (RFC 8936), into the poll queue rather
+	// than the push outbox: a poll receiver pulls these instead of us POSTing them.
+	// A jti is assigned here so the value the receiver acknowledges is stable
+	// across redeliveries, and the SET is minted from the payload at poll time.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.ssf_poll_queue (stream_id, jti, event_type, payload)
+		SELECT d.stream_id, gen_random_uuid()::text, $3::text, d.payload
+		FROM (
+			SELECT DISTINCT st.id AS stream_id,
+				jsonb_build_object(
+					'client_id', st.client_id,
+					'subject',   s.user_id::text,
+					'sid',       s.sid,
+					'reason',    $4::text) AS payload
+			FROM core.sessions s
+			JOIN core.session_clients sc ON sc.sid = s.sid
+			JOIN core.ssf_streams st     ON st.client_id = sc.client_id
+			WHERE s.revoked_at IS NULL
+			  AND ($1::text IS NULL OR s.sid = $1)
+			  AND ($2::uuid IS NULL OR s.user_id = $2)
+			  AND st.status = 'enabled'
+			  AND st.delivery_method = 'poll'
+			  AND $3::text = ANY(st.events_requested)
+		) d`,
+		nullIf(sid), nullIf(userID),
+		"https://schemas.openid.net/secevent/caep/event-type/session-revoked",
+		string(reason)); err != nil {
+		return nil, fmt.Errorf("queuing CAEP session-revoked events for poll: %w", err)
 	}
 
 	// 3. Destroy. Only now, once delivery is durably queued in the same

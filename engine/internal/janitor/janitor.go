@@ -58,6 +58,13 @@ const (
 	// stay live. The row is tiny; the detection window is worth far more than
 	// the storage.
 	codeRetention = 24 * time.Hour
+
+	// pollEventRetention is how long an undelivered SET waits on a poll stream
+	// before the janitor drops it. Generous on purpose: dropping a security event
+	// the receiver has not yet collected is a real loss, so this is a backstop for
+	// an ABANDONED receiver, not a delivery deadline for a slow one. A receiver
+	// polling even once a fortnight keeps its queue drained.
+	pollEventRetention = 30 * 24 * time.Hour
 )
 
 // Stats is one pass's result, for logging and for tests.
@@ -96,7 +103,10 @@ type Stats struct {
 	RateWindowsPurged int64
 	// DuoChallengesSwept are Duo prompts the user abandoned.
 	DuoChallengesSwept int64
-	Parked             []string
+	// PollEventsPurged are SETs queued for a poll stream whose receiver stopped
+	// collecting them, dropped after a long retention.
+	PollEventsPurged int64
+	Parked           []string
 	// Skipped means another node held the lock. Not an error, and deliberately
 	// distinguished from "nothing to do" so a misconfigured cluster where every
 	// pass is skipped is visible rather than looking idle.
@@ -239,6 +249,15 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	// computed from the clock.
 	if st.RateWindowsPurged, err = store.PurgeRateLimits(ctx, tx); err != nil {
 		return st, fmt.Errorf("purging rate limit windows: %w", err)
+	}
+
+	// Security Event Tokens queued for a poll stream whose receiver stopped
+	// collecting them. A very long retention -- an abandoned stream is the only
+	// thing this catches, and a live one drains itself.
+	if n, perr := store.PurgeStalePollEvents(ctx, tx, pollEventRetention); perr != nil {
+		return st, fmt.Errorf("purging stale poll events: %w", perr)
+	} else {
+		st.PollEventsPurged = int64(n)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

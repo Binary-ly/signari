@@ -117,10 +117,21 @@ func TestDeliveryMethodsAreTheSpecifiedURIs(t *testing.T) {
 		t.Errorf("poll URI = %q, want urn:ietf:rfc:8936", DeliveryPoll)
 	}
 	md := Metadata("https://idp.example", "https://idp.example/oauth2/jwks")
-	if len(md.DeliveryMethodsSupported) != 1 || md.DeliveryMethodsSupported[0] != DeliveryPush {
-		t.Errorf("delivery_methods_supported = %v; this engine pushes and does not "+
-			"implement RFC 8936 poll, so it must advertise push alone",
+	// The engine now implements both, so both are advertised -- and only these
+	// two. A method appears here once its endpoint works.
+	want := map[string]bool{DeliveryPush: true, DeliveryPoll: true}
+	if len(md.DeliveryMethodsSupported) != len(want) {
+		t.Fatalf("delivery_methods_supported = %v; want push and poll",
 			md.DeliveryMethodsSupported)
+	}
+	for _, m := range md.DeliveryMethodsSupported {
+		if !want[m] {
+			t.Errorf("delivery_methods_supported advertises %q, which is not implemented", m)
+		}
+		delete(want, m)
+	}
+	for m := range want {
+		t.Errorf("delivery_methods_supported is missing %q, which is implemented", m)
 	}
 }
 

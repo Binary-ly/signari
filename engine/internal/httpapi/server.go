@@ -372,6 +372,11 @@ func (s *Server) mux() *http.ServeMux {
 	// signature is the credential. See internal/httpapi/ssfreceive.go.
 	mux.HandleFunc("POST /ssf/receive", s.handleSSFReceive)
 
+	// Shared Signals, outbound POLL delivery (RFC 8936). The receiver pulls its
+	// queued SETs here and acknowledges them, authenticating as the stream's
+	// client. See internal/httpapi/ssfpoll.go.
+	mux.HandleFunc("POST /ssf/poll", s.handleSSFPoll)
+
 	mux.HandleFunc("GET /.well-known/authzen-configuration", s.handleAuthzMetadata)
 
 	// SSF §7.2. The bare path is correct for an issuer with no path component,

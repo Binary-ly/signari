@@ -3,6 +3,7 @@ package i18n
 import (
 	"html/template"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -445,5 +446,160 @@ func (b *Bundle) Missing(lang string) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// Extra lists keys this language has and the default catalogue does not.
+//
+// A translation of something that no longer exists, which is almost always a key
+// renamed in the default catalogue while the translation kept the old name.
+//
+// It matters for a reason that is not obvious: a stale key makes a catalogue look
+// MORE complete than it is. Counting keys, or checking only for missing ones,
+// reports such a file as finished while the key that replaced it is untranslated
+// and falling back to English on a live page. Missing() alone cannot see that.
+func (b *Bundle) Extra(lang string) []string {
+	if b == nil || lang == Default {
+		return nil
+	}
+	var out []string
+	for k := range b.msgs[lang] {
+		if _, ok := b.msgs[Default][k]; !ok {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// PlaceholderMismatch is one message whose substitutions do not match the
+// default catalogue's.
+type PlaceholderMismatch struct {
+	Key string
+	// Form is the CLDR plural category the mismatch is in ("other" for a message
+	// with no plural). Named because a message can be correct in most forms and
+	// wrong in one, and "which one" is the difference between a five-second fix
+	// and re-reading the whole message.
+	Form string
+	// Dropped are placeholders the default has and this form does not. The value
+	// they stand for simply never appears -- "your code expires at" with no time
+	// after it.
+	Dropped []string
+	// Added are placeholders this form has and the default does not. Nothing
+	// substitutes a name the caller never passes, so they render literally: a
+	// user sees `{Expires}` on the page.
+	Added []string
+}
+
+// placeholderRE matches this catalogue's substitution style: {Name}, {n}.
+var placeholderRE = regexp.MustCompile(`\{[A-Za-z][A-Za-z0-9]*\}`)
+
+// countPlaceholder is the substitution carrying the number a plural selects on.
+const countPlaceholder = "{n}"
+
+// fixedCountForm are the CLDR categories chosen by an exact value, where the
+// count is therefore already known and a language may leave it unwritten. Every
+// other category covers a range, so the number is variable and must appear.
+var fixedCountForm = map[string]bool{"zero": true, "one": true, "two": true}
+
+// PlaceholderMismatches reports messages whose substitutions were not carried
+// through translation.
+//
+// Neither failure is visible to a completeness check: the key is present and the
+// sentence reads naturally in isolation. It is only wrong on screen, in that
+// language, at the moment a value should have appeared.
+func (b *Bundle) PlaceholderMismatches(lang string) []PlaceholderMismatch {
+	if b == nil || lang == Default {
+		return nil
+	}
+	var out []PlaceholderMismatch
+	for key, ref := range b.msgs[Default] {
+		got, ok := b.msgs[lang][key]
+		if !ok {
+			continue // Missing() reports this
+		}
+		// EACH plural form is checked separately, and that is the whole point.
+		//
+		// The obvious implementation takes the union of placeholders across a
+		// message's forms and compares the two sets. It is wrong, and quietly:
+		// a translation carrying {n} in its singular and dropping it from its
+		// plural has the same union as the original, so the check passes -- while
+		// the sentence read by a user with three of something has a hole where the
+		// number belongs. Whichever form the renderer selects has to be able to
+		// substitute every value the caller passes, so every form is measured
+		// against the reference.
+		want := placeholdersIn(ref)
+
+		for form, text := range got.forms {
+			have := placeholdersInText(text)
+
+			var m PlaceholderMismatch
+			for p := range want {
+				if !have[p] {
+					if p == countPlaceholder && fixedCountForm[form] {
+						// Exempt, and the exemption is linguistic rather than a
+						// loosening to make a catalogue pass.
+						//
+						// `zero`, `one` and `two` are selected by an exact value, so the
+						// number is already known to the reader and repeating it reads
+						// badly or is simply wrong: English's own `connected.sessions`
+						// says "No active session." for zero, and Arabic's dual
+						// "تطبيقين" MEANS "two applications" -- writing "{n} تطبيقين"
+						// would render "2 two-applications".
+						//
+						// `few`, `many` and `other` cover a RANGE, so the count is
+						// genuinely variable there and dropping it leaves a hole. Those
+						// are still required, which is the case that matters.
+						continue
+					}
+					m.Dropped = append(m.Dropped, p)
+				}
+			}
+			for p := range have {
+				if !want[p] {
+					m.Added = append(m.Added, p)
+				}
+			}
+			if len(m.Dropped) > 0 || len(m.Added) > 0 {
+				m.Key, m.Form = key, form
+				sort.Strings(m.Dropped)
+				sort.Strings(m.Added)
+				out = append(out, m)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Key != out[j].Key {
+			return out[i].Key < out[j].Key
+		}
+		return out[i].Form < out[j].Form
+	})
+	return out
+}
+
+// placeholdersIn collects every substitution the REFERENCE message uses, across
+// its forms.
+//
+// The union is correct here and only here: it is the set of values the caller
+// passes, and a translation's every form must be able to substitute all of them.
+func placeholdersIn(e *entry) map[string]bool {
+	out := map[string]bool{}
+	if e == nil {
+		return out
+	}
+	for _, form := range e.forms {
+		for _, p := range placeholderRE.FindAllString(form, -1) {
+			out[p] = true
+		}
+	}
+	return out
+}
+
+// placeholdersInText collects the substitutions in one plural form.
+func placeholdersInText(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, p := range placeholderRE.FindAllString(s, -1) {
+		out[p] = true
+	}
 	return out
 }

@@ -54,27 +54,71 @@ func i18nStatus(dir string) error {
 	}
 	reportCatalogueProblems(problems)
 
-	incomplete := 0
+	// Three checks, not one. Reporting only missing keys passes a catalogue whose
+	// key was RENAMED (the translation keeps the old name, so it looks finished
+	// while the new key falls back), and passes one whose translation dropped a
+	// substitution (the sentence reads naturally and has a hole where a value
+	// belongs). Both are invisible to a count.
+	incomplete, stale, broken := 0, 0, 0
 	for _, lang := range b.Languages() {
 		if lang == i18n.Default {
 			continue
 		}
 		missing := b.Missing(lang)
-		if len(missing) == 0 {
+		extra := b.Extra(lang)
+		mismatched := b.PlaceholderMismatches(lang)
+
+		if len(missing) == 0 && len(extra) == 0 && len(mismatched) == 0 {
 			fmt.Printf("OK       %s\n", lang)
 			continue
 		}
-		incomplete++
-		fmt.Printf("PARTIAL  %s -- %d message(s) fall back to %s:\n",
-			lang, len(missing), i18n.Default)
-		for _, key := range missing {
-			fmt.Printf("           %s\n", key)
+		if len(missing) > 0 {
+			incomplete++
+			fmt.Printf("PARTIAL  %s -- %d message(s) fall back to %s:\n",
+				lang, len(missing), i18n.Default)
+			for _, key := range missing {
+				fmt.Printf("           %s\n", key)
+			}
+		}
+		if len(extra) > 0 {
+			stale++
+			fmt.Printf("STALE    %s -- %d message(s) translate a key %s no longer has.\n"+
+				"           Usually the key was renamed and this file kept the old name,\n"+
+				"           which means the NEW key is untranslated:\n",
+				lang, len(extra), i18n.Default)
+			for _, key := range extra {
+				fmt.Printf("           %s\n", key)
+			}
+		}
+		if len(mismatched) > 0 {
+			broken++
+			fmt.Printf("SUBST    %s -- %d message(s) do not carry the same substitutions:\n",
+				lang, len(mismatched))
+			for _, m := range mismatched {
+				if len(m.Dropped) > 0 {
+					fmt.Printf("           %s drops %s (the value never appears)\n",
+						m.Key, strings.Join(m.Dropped, ", "))
+				}
+				if len(m.Added) > 0 {
+					fmt.Printf("           %s adds %s (renders literally on screen)\n",
+						m.Key, strings.Join(m.Added, ", "))
+				}
+			}
 		}
 	}
 
 	if incomplete > 0 {
 		return fmt.Errorf("%d language(s) are incomplete; anybody whose browser "+
 			"asks for one gets a sign-in page in two languages at once", incomplete)
+	}
+	if stale > 0 {
+		return fmt.Errorf("%d language(s) carry messages for keys that no longer "+
+			"exist, so they look more complete than they are", stale)
+	}
+	if broken > 0 {
+		return fmt.Errorf("%d language(s) have messages whose substitutions do not "+
+			"match; each one renders a sentence with a hole in it, or a literal "+
+			"placeholder, in that language only", broken)
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("%d catalogue file(s) were refused", len(problems))

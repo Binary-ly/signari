@@ -79,6 +79,20 @@ for n in 1 2; do
   run client create -client-id "conformance-$n" -redirect "$CALLBACK" -require-pkce=false
 done
 
+# A THIRD client, for client_secret_post.
+#
+# oidcc-server-client-secret-post declares `client_secret_post.client_id` and
+# `.client_secret` as required configuration fields and its configureClient()
+# does `config.add("client", config.get("client_secret_post"))`. With that block
+# absent the substitution puts null in `client`, and the module dies on
+# GetStaticClientConfiguration -- "the test configuration must contain a client
+# configuration" -- while the logged config plainly contains one, because the
+# copy happens before the check.
+#
+# The suite asks for a separate client rather than reusing the first because
+# most servers restrict a client to a single authentication method.
+run client create -client-id "conformance-post" -redirect "$CALLBACK" -require-pkce=false
+
 # The second callback carries query parameters on purpose: the suite tests that a
 # redirect URI with a query is matched exactly, and implementations that
 # normalise or strip it fail. `client create` registers one URI, and there is no

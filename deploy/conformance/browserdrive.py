@@ -132,6 +132,50 @@ def drive_url(sess, url, log):
     return False
 
 
+# A 1x1 transparent PNG. The suite validates the prefix and the type, not the
+# picture, and what it is really recording is "a human confirmed they saw this".
+BLANK_PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf"
+             "FcSJAAAADUlEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=")
+
+
+def fill_placeholders(api, mid, log):
+    """Answer any screenshot placeholder the module is waiting on.
+
+    The tests that end at the OP's OWN error page -- an unregistered
+    redirect_uri, a request object sent to a server that refuses them -- never
+    reach the callback, so nothing in the front channel can advance them. They
+    call createPlaceholder() and wait for a human to upload a screenshot proving
+    the error page appeared.
+
+    Nothing else finishes them. `POST /runner/browser/{id}/visit` only moves the
+    URL from `urls` to `visited` (BrowserControl.urlVisited) and does not touch
+    the module, so a driver that marks the visit and waits will wait for ever --
+    which is exactly what these modules did, stopping at ~40 log entries with
+    zero failures.
+
+    The placeholder id is the `upload` field of a log entry; filling it unsets
+    that field (DBImageService.fillPlaceholder), so this is idempotent.
+    """
+    try:
+        r = api.get(f"{SUITE}/api/log/{mid}", verify=False, timeout=20)
+        if r.status_code != 200:
+            return
+        entries = r.json()
+    except Exception:
+        return
+    for e in entries:
+        ph = e.get("upload")
+        if not ph:
+            continue
+        try:
+            resp = api.post(f"{SUITE}/api/log/{mid}/images/{ph}", data=BLANK_PNG,
+                            headers={"Content-Type": "text/plain"},
+                            verify=False, timeout=20)
+            log(f"      placeholder {ph[:12]} -> {resp.status_code}")
+        except Exception as ex:
+            log(f"      placeholder error: {type(ex).__name__}: {ex}")
+
+
 def module_status(api, mid):
     # /api/info/{id} carries the status; /api/runner/{id} has no status key at
     # all, so reading it returns None forever and every module looks live.
@@ -184,6 +228,11 @@ def drive_module(api, mid, log, budget=320):
                              params={"url": u}, verify=False, timeout=15)
                 except Exception:
                     pass
+                fill_placeholders(api, mid, log)
+            # Also poll for placeholders with no new URL to visit: a module can
+            # create one at any point, and the error-page tests create theirs
+            # without ever publishing a second URL.
+            fill_placeholders(api, mid, log)
             time.sleep(1)
         return module_status(api, mid)
     finally:

@@ -17,21 +17,8 @@
     "client_secret": "REPLACE-WITH-THE-SECRET-setup.sh-PRINTED"
   },
   "consent": {},
-  "browser": [
-    {
-      "match": "https://signari-engine:8080/oauth2/authorize*",
-      "tasks": [
-        {
-          "task": "Sign in",
-          "match": "https://signari-engine:8080/oauth2/authorize*",
-          "optional": true,
-          "commands": [
-            ["text", "id", "u", "conformance@test.local", "optional"],
-            ["text", "id", "p", "Tr0ubad0ur-Marmalade-7719", "optional"],
-            ["click", "css", "button[type='submit']", "optional"]
-          ]
-        }
-      ]
-    }
-  ]
+  "client_secret_post": {
+    "client_id": "conformance-post",
+    "client_secret": "REPLACE-WITH-THE-SECRET-setup.sh-PRINTED"
+  }
 }

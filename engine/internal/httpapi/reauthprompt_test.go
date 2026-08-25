@@ -97,6 +97,42 @@ func TestConsumingThePromptPreservesEveryOtherParameter(t *testing.T) {
 	}
 }
 
+// Granting consent must not leave prompt=consent in the resumed request.
+//
+// The same defect as prompt=login, on the other resume path, and found the same
+// way (oidcc-refresh-token sends prompt=consent). The branch that honours
+// prompt=consent deliberately ignores the stored grant and re-lists every scope,
+// because the client asked the user to look again -- so replaying the query
+// after the decision commits renders the identical page, and pressing Allow
+// never gets anywhere.
+func TestGrantingConsentConsumesThePromptThatDemandedIt(t *testing.T) {
+	base := "client_id=app&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb" +
+		"&response_type=code&scope=openid+offline_access&state=s&nonce=n"
+
+	for _, tc := range []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{"consent alone is consumed", "consent", ""},
+		// login is NOT consumed here: this path proves consent was answered, not
+		// that anybody re-authenticated. Dropping it would satisfy a client's
+		// demand for a fresh sign-in with a consent click.
+		{"login survives the consent step", "login consent", "login"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := base + "&prompt=" + url.QueryEscape(tc.prompt)
+			got, err := url.ParseQuery(consumePrompt(q, "consent"))
+			if err != nil {
+				t.Fatalf("resumed query does not parse: %v", err)
+			}
+			if got.Get("prompt") != tc.want {
+				t.Errorf("prompt after consent = %q, want %q", got.Get("prompt"), tc.want)
+			}
+		})
+	}
+}
+
 // A parked non-OIDC return path is untouched: forward auth and SAML park
 // `return=<local path>`, which has no prompt to consume and must not be rewritten
 // into an authorization request.

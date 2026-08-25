@@ -272,7 +272,18 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, oidc.PathAuthorize+"?"+authzQuery, http.StatusSeeOther)
+	// `prompt=consent` is consumed, because it has just been answered.
+	//
+	// Replaying it re-enters the branch above that forces the screen -- which
+	// deliberately ignores the stored grant and re-lists every scope, since the
+	// client asked the user to look again. So the decision commits, the browser
+	// returns here, and the same page is rendered: an infinite loop in which
+	// pressing Allow never gets anywhere.
+	//
+	// Found by the conformance suite (oidcc-refresh-token, which sends
+	// prompt=consent), and the same defect that made prompt=login loop.
+	http.Redirect(w, r, oidc.PathAuthorize+"?"+consumePrompt(authzQuery, oauth.PromptConsent),
+		http.StatusSeeOther)
 }
 
 // denyToClient returns access_denied to the client's redirect_uri.

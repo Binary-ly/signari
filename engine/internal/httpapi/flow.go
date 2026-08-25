@@ -2556,13 +2556,32 @@ func resumeAfterSignIn(authzQuery string) string {
 // asking for `prompt=login consent` wants both, and answering only the first
 // would grant scopes the person was never shown.
 func consumeReauthPrompt(authzQuery string) string {
+	return consumePrompt(authzQuery, oauth.PromptLogin, oauth.PromptSelectAccount)
+}
+
+// consumePrompt removes prompt values that have just been satisfied.
+//
+// Shared by the two resume paths because they have the same shape and the same
+// failure. Each `prompt` value is unconditional at the authorization endpoint --
+// that is what makes it a prompt rather than a preference -- so replaying the
+// query verbatim asks again for whatever was just done, and the browser bounces
+// between the same two pages for ever.
+//
+// Safe on both paths and nowhere else: each runs only after the thing it
+// consumes has actually happened and been committed, and the query arrives from
+// server-held state rather than from the browser.
+func consumePrompt(authzQuery string, consumed ...string) string {
 	values, err := url.ParseQuery(authzQuery)
 	if err != nil || values.Get("prompt") == "" {
 		return authzQuery
 	}
+	drop := make(map[string]bool, len(consumed))
+	for _, c := range consumed {
+		drop[c] = true
+	}
 	var kept []string
 	for _, p := range strings.Fields(values.Get("prompt")) {
-		if p != oauth.PromptLogin && p != oauth.PromptSelectAccount {
+		if !drop[p] {
 			kept = append(kept, p)
 		}
 	}

@@ -110,8 +110,12 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 	if req.Public {
 		kind = "public"
 	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
 
-	version, err := s.mutate(ctx, func(tx pgx.Tx) error {
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 			                          client_secret_hash, enabled, grant_types, scopes,
@@ -136,6 +140,8 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 	})
 
 	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
 	case err != nil && strings.Contains(err.Error(), "clients_pkey"):
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": "already_exists", "detail": "a client with that id already exists",
@@ -146,6 +152,7 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
+	setETag(w, version)
 
 	s.log.Info("client created", "client_id", req.ClientID, "type", kind, "config_version", version)
 
@@ -185,8 +192,13 @@ func (s *Server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	pre, preOK := s.readPrecondition(w, r)
+	if !preOK {
+		return
+	}
+
 	var orgID, kind string
-	version, err := s.mutate(ctx, func(tx pgx.Tx) error {
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
 			`SELECT org_id::text, client_type FROM core.clients WHERE client_id = $1`,
 			clientID).Scan(&orgID, &kind); err != nil {
@@ -216,6 +228,8 @@ func (s *Server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
 	})
 
 	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
 	case errors.Is(err, errCrossOrg):
 		writeCrossOrg(w, err)
 		return
@@ -232,6 +246,7 @@ func (s *Server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
+	setETag(w, version)
 
 	s.log.Warn("client secret rotated; the previous secret stopped working immediately",
 		"client_id", clientID, "config_version", version)

@@ -87,8 +87,13 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	pre, preOK := s.readPrecondition(w, r)
+	if !preOK {
+		return
+	}
+
 	var userID string
-	version, err := s.mutate(ctx, func(tx pgx.Tx) error {
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		// The 64-byte user_handle is generated HERE and never derived from the
 		// email. WebAuthn requires it to be opaque: a handle derived from an
 		// address would leak that address to any authenticator holding a
@@ -124,6 +129,8 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	})
 
 	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
 	case err != nil && strings.Contains(err.Error(), "users_org_email_key"),
 		err != nil && strings.Contains(err.Error(), "users_org_username_key"):
 		writeJSON(w, http.StatusConflict, map[string]string{
@@ -135,6 +142,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
+	setETag(w, version)
 
 	s.log.Info("user created", "user_id", userID, "org_id", req.OrgID, "config_version", version)
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -180,9 +188,14 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	pre, preOK := s.readPrecondition(w, r)
+	if !preOK {
+		return
+	}
+
 	var orgID string
 	var sessionsEnded int
-	version, err := s.mutate(ctx, func(tx pgx.Tx) error {
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
 			`SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -283,6 +296,8 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	})
 
 	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
 	case errors.Is(err, errCrossOrg):
 		writeCrossOrg(w, err)
 		return
@@ -294,6 +309,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
+	setETag(w, version)
 
 	s.log.Info("user updated", "user_id", userID, "sessions_ended", sessionsEnded,
 		"config_version", version)

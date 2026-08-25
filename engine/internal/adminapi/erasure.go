@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/store"
 )
@@ -49,15 +51,53 @@ func (s *Server) eraseSubject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "unavailable"})
+	pre, preOK := s.readPrecondition(w, r)
+	if !preOK {
 		return
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
 
-	rep, err := store.EraseSubject(ctx, tx, subjectID, req.Deactivate)
+	// Routed through mutateIf, and that is a FIX rather than tidying.
+	//
+	// This handler used to open its own transaction and commit it directly, so an
+	// erasure -- which destroys a subject's data-encryption key and, with
+	// `deactivate: true`, ends their account -- never bumped core.config_version.
+	// That is precisely the failure this package's own doc comment describes: the
+	// write is durable and INVISIBLE, and running engine nodes carry on with the
+	// previous configuration until some unrelated write happens to bump the
+	// version for it.
+	//
+	// It was the only mutating handler not using the shared helper, which is how
+	// it drifted. A test now walks every mutating route and fails if any of them
+	// leaves the version unchanged.
+	var rep *store.ErasureReport
+	actor := ""
+	if p, ok := principalFrom(ctx); ok {
+		actor = p.Name
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		var eerr error
+		rep, eerr = store.EraseSubject(ctx, tx, subjectID, req.Deactivate)
+		if eerr != nil {
+			return eerr
+		}
+		// Audited INSIDE the same transaction, so the record and the destruction
+		// cannot diverge. An erasure with no audit entry is indistinguishable from
+		// data loss, and the surviving subject_keys row exists to show it happened.
+		return audit.Write(ctx, tx, audit.Event{
+			Type: "admin.subject_erased", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: rep.OrgID, SubjectID: subjectID,
+			Detail: map[string]any{
+				"deactivated":      rep.Deactivated,
+				"totp_credentials": rep.TOTPCredentials,
+				"account_found":    rep.AccountFound,
+				"actor":            actor,
+			},
+		})
+	})
+
 	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
 	case errors.Is(err, store.ErrSubjectUnknown):
 		writeJSON(w, http.StatusNotFound, map[string]string{
 			"error":  "unknown_subject",
@@ -87,43 +127,15 @@ func (s *Server) eraseSubject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Audited BEFORE the commit, inside the same transaction, so the record and
-	// the destruction cannot diverge. An erasure with no audit entry is
-	// indistinguishable from data loss.
-	actor := ""
-	if p, ok := principalFrom(ctx); ok {
-		actor = p.Name
-	}
-	if err := audit.Write(ctx, tx, audit.Event{
-		Type: "admin.subject_erased", AdminTokenID: TokenIDFrom(ctx),
-		OrgID: rep.OrgID, SubjectID: subjectID,
-		Detail: map[string]any{
-			"deactivated":      rep.Deactivated,
-			"totp_credentials": rep.TOTPCredentials,
-			"account_found":    rep.AccountFound,
-			"actor":            actor,
-		},
-	}); err != nil {
-		// Refused rather than logged and continued. An erasure with no audit
-		// record is indistinguishable from data loss, and the whole reason the
-		// subject_keys row survives is to be able to show that this happened.
-		s.log.Error("auditing an erasure", "err", err, "subject", subjectID)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
-		return
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("committing an erasure", "err", err, "subject", subjectID)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
-		return
-	}
+	setETag(w, version)
 	s.log.Warn("subject erased", "subject", subjectID, "actor", actor,
-		"deactivated", rep.Deactivated)
+		"deactivated", rep.Deactivated, "config_version", version)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"subject_id":       subjectID,
 		"erased":           true,
 		"deactivated":      rep.Deactivated,
 		"totp_credentials": rep.TOTPCredentials,
+		"config_version":   version,
 	})
 }

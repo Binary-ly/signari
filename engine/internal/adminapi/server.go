@@ -118,6 +118,15 @@ func (s *Server) Routes() http.Handler {
 		s.auth(ScopeClientsWrite, s.rotateClientSecret))
 	mux.HandleFunc("PATCH /admin/users/{userID}", s.auth(ScopeUsersWrite, s.patchUser))
 	mux.HandleFunc("GET /admin/config-version", s.auth(ScopeConfigRead, s.configVersion))
+
+	// Reads. These complete the conditional-write protocol: a caller GETs the
+	// resource, takes the ETag from the response, and sends it back as If-Match.
+	// Without them the only readable endpoint was the version counter, so the
+	// precondition had nothing to be a precondition ON.
+	mux.HandleFunc("GET /admin/clients", s.auth(ScopeClientsRead, s.listClients))
+	mux.HandleFunc("GET /admin/clients/{clientID}", s.auth(ScopeClientsRead, s.getClient))
+	mux.HandleFunc("GET /admin/users", s.auth(ScopeUsersRead, s.listUsers))
+	mux.HandleFunc("GET /admin/users/{userID}", s.auth(ScopeUsersRead, s.getUser))
 	mux.HandleFunc("POST /admin/subjects/{subjectID}/erase",
 		s.auth(ScopeSubjectsErase, s.eraseSubject))
 	return s.limitArrivals(mux)
@@ -252,8 +261,12 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
 
-	version, err := s.mutate(ctx, func(tx pgx.Tx) error {
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		// This handler previously changed a client without ever reading which
 		// organisation it belonged to, so there was nothing for the boundary to
 		// check against. The lookup exists for that reason.
@@ -293,6 +306,8 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	})
 
 	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
 	case errors.Is(err, errCrossOrg):
 		writeCrossOrg(w, err)
 		return
@@ -304,6 +319,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
+	setETag(w, version)
 
 	// Disabling is a security-relevant action, so it is logged at a level an
 	// operator will actually see, with the version needed to confirm propagation.
@@ -315,6 +331,13 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// configVersion reports the current configuration version.
+//
+// It is also the READ half of the conditional-write protocol: the ETag it
+// returns is what a caller sends back as If-Match. Without an ETag here a client
+// would have to construct the header from the JSON body, and the whole point of
+// using RFC 7232 rather than a bespoke scheme is that ordinary HTTP clients,
+// proxies and generated SDKs already understand it.
 func (s *Server) configVersion(w http.ResponseWriter, r *http.Request) {
 	var v int64
 	if err := s.db.QueryRow(r.Context(),
@@ -322,6 +345,7 @@ func (s *Server) configVersion(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
+	setETag(w, v)
 	writeJSON(w, http.StatusOK, map[string]any{"config_version": v})
 }
 
@@ -344,12 +368,29 @@ func writeCrossOrg(w http.ResponseWriter, err error) {
 // fn succeeds -- it is part of the same transaction, so a rollback takes the
 // version with it. A write that commits while the bump rolls back would leave
 // every engine node serving stale config with no signal that anything changed.
+//
+// Unconditional. Handlers that honour RFC 7232 preconditions call mutateIf.
 func (s *Server) mutate(ctx context.Context, fn func(pgx.Tx) error) (int64, error) {
+	return s.mutateIf(ctx, precondition{}, fn)
+}
+
+// mutateIf is mutate with an optional If-Match precondition.
+//
+// The check runs INSIDE the transaction, before fn, holding a row lock on
+// config_version (see precondition.go for why anything else races). A failed
+// precondition returns before fn has written anything, so a refused conditional
+// write leaves the database exactly as it was -- which is the property that makes
+// it worth offering rather than a status code that arrives too late.
+func (s *Server) mutateIf(ctx context.Context, p precondition, fn func(pgx.Tx) error) (int64, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := checkPrecondition(ctx, tx, p); err != nil {
+		return 0, err
+	}
 
 	if err := fn(tx); err != nil {
 		return 0, err

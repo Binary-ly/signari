@@ -18,6 +18,12 @@ const (
 	ScopeUsersWrite   = "users:write"
 	ScopeClientsWrite = "clients:write"
 	ScopeConfigRead   = "config:read"
+	// Read scopes, so a token can be granted the ability to LIST and GET without
+	// the ability to change anything. An integration that renders an operator
+	// console, or a reconciliation loop that diffs before it writes, needs
+	// exactly this and previously had to be given write access to get it.
+	ScopeUsersRead   = "users:read"
+	ScopeClientsRead = "clients:read"
 	// ScopeSubjectsErase is its own scope rather than part of users:write.
 	//
 	// A token that may rename a user should not thereby be able to destroy one
@@ -32,7 +38,18 @@ const (
 
 // KnownScopes is what `admin-token create` will accept.
 var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
-	ScopeSubjectsErase}
+	ScopeSubjectsErase, ScopeUsersRead, ScopeClientsRead}
+
+// impliedBy says which scope a write scope satisfies on its own.
+//
+// A token that may CHANGE a client can obviously read one, and requiring both to
+// be granted would mean every existing write-scoped token silently lost the
+// ability to read the thing it edits the moment read endpoints existed. The
+// implication runs one way only: a read scope never grants a write.
+var impliedBy = map[string]string{
+	ScopeUsersRead:   ScopeUsersWrite,
+	ScopeClientsRead: ScopeClientsWrite,
+}
 
 // Principal is whoever is making an admin request.
 type Principal struct {
@@ -49,9 +66,17 @@ type Principal struct {
 }
 
 // Can reports whether this principal holds a scope.
+//
+// A write scope satisfies the matching read scope (see impliedBy). Without that,
+// adding read endpoints would have quietly broken every token already issued with
+// `clients:write`, which would have been an upgrade that removed access.
 func (p *Principal) Can(scope string) bool {
+	implied := impliedBy[scope]
 	for _, s := range p.Scopes {
 		if s == scope || s == ScopeAll {
+			return true
+		}
+		if implied != "" && s == implied {
 			return true
 		}
 	}
@@ -181,6 +206,30 @@ func requireOrg(ctx context.Context, orgID string) error {
 		return fmt.Errorf("%w: %s", errCrossOrg, err)
 	}
 	return nil
+}
+
+// orgFilter is the organisation a LIST must be restricted to, or nil for a
+// principal that may see every organisation.
+//
+// Returned as a *string so it can be passed straight to a query as a nullable
+// parameter -- `($n::uuid IS NULL OR org_id = $n::uuid)` -- which keeps the
+// restriction in the WHERE clause rather than in a filter applied to the result.
+// A filter applied afterwards is one a later refactor moves or drops, and the
+// failure is one tenant enumerating another's users.
+//
+// Fails CLOSED: a request with no principal (a handler registered without
+// auth()) gets an organisation that matches nothing rather than everything.
+func orgFilter(ctx context.Context) *string {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		none := "00000000-0000-0000-0000-000000000000"
+		return &none
+	}
+	if p.OrgID == "" {
+		return nil
+	}
+	org := p.OrgID
+	return &org
 }
 
 // TokenIDFrom returns the acting token's id for the audit trail, empty when the

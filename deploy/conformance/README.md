@@ -12,26 +12,49 @@ protocol and judge the answers.
 | Plan | Result |
 |---|---|
 | **Config OP** (`oidcc-config-certification-test-plan`) | **PASSED** — 39 conditions, 0 failures, 0 warnings, runner exit 0. Reproduced twice. |
-| **Basic OP** (`oidcc-basic-certification-test-plan`) | All 36 modules run. 1628 conditions passed, 3 failures, 6 warnings. 22 modules PASSED, 3 SKIPPED (address/phone scopes, not supported), the rest as noted below. |
+| **Basic OP** (`oidcc-basic-certification-test-plan`) | All 36 modules run. **1607 conditions passed, 1 failure, 5 warnings.** 20 PASSED, 4 SKIPPED (unsupported optional features), 5 WARNING, 5 incomplete, 1 FAILED. |
 
 Neither is a vacuous green. The Config OP plan, run against the same engine over
 plaintext HTTP, produced **7 failures**; it detects real problems and stopped
-finding them once the real problems were fixed. The Basic OP plan found a
-genuine defect in this engine — see below — and the count moved from *no module
-completing at all* to 1628 passing conditions as each cause was fixed.
+finding them once the real problems were fixed.
 
-### What Basic OP found in the engine
+The Basic OP number moved as each cause was fixed, which is the useful part:
 
-`oidcc-prompt-login` exposed an infinite re-authentication loop. `prompt=login`
-made `SessionSufficient` return `StepUpForced` unconditionally, and the sign-in
-handler resumed by replaying the authorization query verbatim — `prompt=login`
-included. So a correct password produced the sign-in form again, forever, and no
-relying party using `prompt=login` could ever complete authentication.
+| | conditions passed | failures |
+|---|---|---|
+| with the suite's own browser automation | 0 modules completed at all | — |
+| front channel driven externally | 1472 | 10 |
+| one session per module, consent answered | 1628 | 3 |
+| `prompt=login` fixed | 1581 | 3 |
+| request objects refused | **1607** | **1** |
 
-Invisible to every test in this repository, because they all sign in first. Fixed
-in `resumeAfterSignIn`, which now consumes the prompt values that the sign-in has
-just satisfied (`login`, `select_account`) while leaving `consent` alone. Locked
-down by `TestSignInConsumesTheReauthPromptItSatisfied`.
+(Totals vary by a few dozen between runs: modules that need two authorization
+rounds sometimes lose the shared `alias` to the next module. The failure count
+does not move with it.)
+
+### Two genuine defects it found in the engine
+
+**`prompt=login` looped forever.** `SessionSufficient` returned `StepUpForced`
+for it unconditionally, and the sign-in handler resumed by replaying the
+authorization query verbatim — `prompt=login` included. A correct password
+produced the sign-in form again, and again. No relying party using `prompt=login`
+could ever complete authentication. Fixed in `resumeAfterSignIn`, which consumes
+the prompt values the sign-in has just satisfied (`login`, `select_account`) and
+leaves `consent` alone. Locked down by
+`TestSignInConsumesTheReauthPromptItSatisfied`.
+
+**A request object was ignored rather than refused.** Discovery advertises
+`request_parameter_supported: false`, but nothing read or rejected the parameter,
+so an authorization carrying a `request` object proceeded on the query parameters
+instead — silently discarding the integrity protection the client had asked for.
+The suite reported it as a missing `state` and a mismatched nonce, several steps
+from the cause. `ValidateAuthz` now answers `request_not_supported` /
+`request_uri_not_supported` over the redirect, per OIDC Core 6.1/6.2, and the
+module reports SKIPPED with zero failures because the feature is now honestly
+declined. Locked down by `TestARequestObjectIsRefusedRatherThanIgnored`.
+
+Both were invisible to every test in this repository: they all sign in first, and
+none of them sends a parameter the server does not implement.
 
 ## What the plans actually test
 

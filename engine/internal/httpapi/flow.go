@@ -2533,7 +2533,45 @@ func resumeAfterSignIn(authzQuery string) string {
 	if dest, ok := parkedReturn(authzQuery); ok {
 		return dest
 	}
-	return oidc.PathAuthorize + "?" + authzQuery
+	return oidc.PathAuthorize + "?" + consumeReauthPrompt(authzQuery)
+}
+
+// consumeReauthPrompt drops the prompt values that this sign-in has just
+// satisfied.
+//
+// `prompt=login` is unconditional at the authorization endpoint: SessionSufficient
+// returns StepUpForced for it however fresh the session is, which is right on the
+// way in and fatal on the way back. Replaying the query verbatim re-asks for a
+// re-authentication that has this instant been performed, so the sign-in form is
+// rendered again, and again -- an infinite loop in which no correct password ever
+// completes the request. `prompt=select_account` loops for the same reason.
+//
+// It is safe to consume them here and only here. This runs on the single path
+// where the session has already been committed and the login audited, and the
+// query itself arrives from the SIGNED pending token rather than from the
+// browser, so neither the marker nor the moment can be forged by a caller who
+// did not actually authenticate.
+//
+// Everything else in `prompt` survives. `consent` in particular must: a client
+// asking for `prompt=login consent` wants both, and answering only the first
+// would grant scopes the person was never shown.
+func consumeReauthPrompt(authzQuery string) string {
+	values, err := url.ParseQuery(authzQuery)
+	if err != nil || values.Get("prompt") == "" {
+		return authzQuery
+	}
+	var kept []string
+	for _, p := range strings.Fields(values.Get("prompt")) {
+		if p != oauth.PromptLogin && p != oauth.PromptSelectAccount {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		values.Del("prompt")
+	} else {
+		values.Set("prompt", strings.Join(kept, " "))
+	}
+	return values.Encode()
 }
 
 // parkLogin builds the URL that sends a browser to sign in and come back.

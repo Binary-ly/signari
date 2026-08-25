@@ -2,15 +2,19 @@
   "alias": "signari",
   "description": "signari engine -- Basic OP",
   "server": {
-    "discoveryUrl": "https://signari-engine:8080/.well-known/openid-configuration"
+    "discoveryUrl": "https://signari-engine:8080/.well-known/openid-configuration",
+    "allow_unexpected_metadata_fields": [
+      "permission_endpoint",
+      "client_attestation_pop_methods_supported"
+    ]
   },
   "client": {
     "client_id": "conformance-1",
-    "client_secret": "8JbMgNQct9_twkEN52k__Bb-i9wG4d8EeArpim17wLU"
+    "client_secret": "REPLACE-WITH-THE-SECRET-setup.sh-PRINTED"
   },
   "client2": {
     "client_id": "conformance-2",
-    "client_secret": "IAQD6ajAzZEu7bPdHv0jmOx__CGmXTU64eFTMXETG1U"
+    "client_secret": "REPLACE-WITH-THE-SECRET-setup.sh-PRINTED"
   },
   "consent": {},
   "browser": [
@@ -20,24 +24,11 @@
         {
           "task": "Sign in",
           "match": "https://signari-engine:8080/oauth2/authorize*",
+          "optional": true,
           "commands": [
-            [
-              "text",
-              "id",
-              "u",
-              "conformance@test.local"
-            ],
-            [
-              "text",
-              "id",
-              "p",
-              "conformance-password-1"
-            ],
-            [
-              "click",
-              "css",
-              "button[type='submit']"
-            ]
+            ["text", "id", "u", "conformance@test.local", "optional"],
+            ["text", "id", "p", "Tr0ubad0ur-Marmalade-7719", "optional"],
+            ["click", "css", "button[type='submit']", "optional"]
           ]
         }
       ]

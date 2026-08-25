@@ -46,6 +46,24 @@ type AuthzRequest struct {
 	// OPTIONAL per §10. A code issued without one is redeemable by any
 	// correctly-proofed key, which is the behaviour that existed before.
 	DPoPJKT string
+
+	// RequestObject and RequestURI are RFC 9101 `request` / `request_uri`, kept
+	// only so they can be REFUSED.
+	//
+	// Discovery advertises `request_parameter_supported: false`, and until this
+	// existed the parameters were simply not read -- which is not the same thing
+	// as saying no. A client that puts state, nonce, scope or redirect_uri inside
+	// a request object and has it ignored gets an authorization that proceeded on
+	// the unprotected query parameters instead, with no indication that the
+	// integrity protection it asked for was never applied. That is a silent
+	// downgrade of the one guarantee a request object exists to provide.
+	//
+	// Found by the conformance suite
+	// (oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported),
+	// which reported it as a missing `state` and a mismatched nonce -- the
+	// symptoms of the object being dropped, several steps from the cause.
+	RequestObject string
+	RequestURI    string
 }
 
 // ParseAuthz reads the query parameters. It does no validation: parsing and
@@ -75,6 +93,8 @@ func ParseAuthz(q url.Values) AuthzRequest {
 		// unparsed text so nothing downstream has to fetch it from the query
 		// again and risk reading a different value than the one validated.
 		RawAuthorizationDetails: q.Get(rar.Param),
+		RequestObject:           q.Get("request"),
+		RequestURI:              q.Get("request_uri"),
 	}
 }
 
@@ -196,6 +216,27 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	}
 	if !c.AllowsGrantType("authorization_code") {
 		return redirectErr("unauthorized_client", "client may not use the authorization_code grant")
+	}
+
+	// 5a. Request objects, refused rather than ignored.
+	//
+	// Discovery says `request_parameter_supported: false` and
+	// `request_uri_parameter_supported: false`. OIDC Core 6.1/6.2 gives the
+	// matching error codes for exactly this case, and sending one is the whole
+	// point: a client whose request object is silently dropped proceeds on the
+	// query parameters believing the signed copy was authoritative, so every
+	// value it protected -- state, nonce, redirect_uri, scope -- is quietly
+	// taken from the unprotected side instead.
+	//
+	// Refused AFTER the client and redirect_uri are known, so the error can go
+	// back over the redirect rather than being rendered at our own origin.
+	if req.RequestObject != "" {
+		return redirectErr("request_not_supported",
+			"this server does not accept a request object; send the parameters directly")
+	}
+	if req.RequestURI != "" {
+		return redirectErr("request_uri_not_supported",
+			"this server does not fetch remote request objects; send the parameters directly")
 	}
 
 	// 6. PKCE. Required for every client, public and confidential alike, per

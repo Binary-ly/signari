@@ -25,14 +25,33 @@ matters:
 
 ## Scopes
 
-Deliberately three. A permission model nobody can hold in their head gets granted
+Deliberately few. A permission model nobody can hold in their head gets granted
 wholesale, which is exactly the situation being replaced.
 
 | scope | endpoints |
 | --- | --- |
-| `users:write` | `POST /admin/users`, `PATCH /admin/users/{id}` |
+| `users:read` | `GET /admin/users`, `GET /admin/users/{id}`, and a user's sessions |
+| `users:write` | `POST /admin/users`, `PATCH /admin/users/{id}`, and ending sessions |
+| `clients:read` | `GET /admin/clients`, `GET /admin/clients/{id}` |
 | `clients:write` | `POST /admin/clients`, `PATCH /admin/clients/{id}`, rotate-secret |
+| `groups:read` | `GET /admin/groups`, one group, and its members |
+| `groups:write` | Create, rename, delete a group; add and remove members |
 | `config:read` | `GET /admin/config-version` |
+| `subjects:erase` | `POST /admin/subjects/{id}/erase` |
+
+**A write scope implies the matching read scope.** `clients:write` can read a
+client without also being granted `clients:read` — a token that may change a
+thing can obviously see it, and requiring both would have silently removed access
+from every token already issued the day read endpoints appeared. The implication
+runs one way only: a read scope never grants a write.
+
+**Groups get their own pair rather than riding on `users:*`.** A group decides
+which applications its members reach, so granting the ability to edit membership
+is granting application access — a different decision from being able to reset a
+password.
+
+**`subjects:erase` is separate from `users:write`** because a token that may
+rename a user should not thereby be able to destroy one irreversibly.
 
 A missing scope is **403 with the scope named**, not a bare "forbidden". This is
 an operator-facing API; an opaque refusal turns a one-line fix into an afternoon.

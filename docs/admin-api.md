@@ -100,6 +100,48 @@ Every mutation returns `config_version` in its body and `ETag` in its headers.
 | `POST /admin/users` | Create |
 | `PATCH /admin/users/{userID}` | Activate, deactivate, set a password, require a change |
 
+### Groups
+
+| | |
+|---|---|
+| `GET /admin/groups` | List, paged |
+| `GET /admin/groups/{groupID}` | One group |
+| `POST /admin/groups` | Create |
+| `PATCH /admin/groups/{groupID}` | Rename, or change the description |
+| `DELETE /admin/groups/{groupID}` | Delete, taking its memberships with it |
+| `GET /admin/groups/{groupID}/members` | List members, paged |
+| `PUT /admin/groups/{groupID}/members/{userID}` | Add a member |
+| `DELETE /admin/groups/{groupID}/members/{userID}` | Remove a member |
+
+**`may_impersonate` is reported and cannot be set here.** It grants members the
+ability to act as other users, so exposing it would let a `groups:write` token
+grant itself impersonation by flagging a group its own operator belongs to — the
+greater privilege obtained from the lesser credential. It stays a CLI operation,
+where the person running it is on the host. There is a test asserting a request
+body carrying it has no effect.
+
+A membership may not cross organisations: a group decides application access, so
+joining a user from another tenant is refused with 400 even when the token could
+act on both.
+
+### Sessions
+
+| | |
+|---|---|
+| `GET /admin/users/{userID}/sessions` | Live sessions for a user |
+| `DELETE /admin/users/{userID}/sessions` | End all of them |
+| `DELETE /admin/sessions/{sid}` | End one |
+
+Revocation goes through the engine's single termination path, so every relying
+party the person reached is sent a back-channel logout. Setting `revoked_at`
+directly would end the session here and leave them signed in everywhere that
+matters while this API reported success; the response returns `notices_queued` so
+a caller can see the notices were raised.
+
+The listing reports the user agent and whether an address is on file, never the
+address. `ip_hash` is a hash by deliberate choice, and returning it would undo
+that decision from the other side.
+
 ### Subjects
 
 | | |

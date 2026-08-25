@@ -127,6 +127,29 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/clients/{clientID}", s.auth(ScopeClientsRead, s.getClient))
 	mux.HandleFunc("GET /admin/users", s.auth(ScopeUsersRead, s.listUsers))
 	mux.HandleFunc("GET /admin/users/{userID}", s.auth(ScopeUsersRead, s.getUser))
+
+	// Groups. Their own scope pair: editing membership grants application
+	// access, which is a different decision from resetting a password.
+	mux.HandleFunc("GET /admin/groups", s.auth(ScopeGroupsRead, s.listGroups))
+	mux.HandleFunc("GET /admin/groups/{groupID}", s.auth(ScopeGroupsRead, s.getGroup))
+	mux.HandleFunc("POST /admin/groups", s.auth(ScopeGroupsWrite, s.createGroup))
+	mux.HandleFunc("PATCH /admin/groups/{groupID}", s.auth(ScopeGroupsWrite, s.patchGroup))
+	mux.HandleFunc("DELETE /admin/groups/{groupID}", s.auth(ScopeGroupsWrite, s.deleteGroup))
+	mux.HandleFunc("GET /admin/groups/{groupID}/members",
+		s.auth(ScopeGroupsRead, s.listGroupMembers))
+	mux.HandleFunc("PUT /admin/groups/{groupID}/members/{userID}",
+		s.auth(ScopeGroupsWrite, s.addGroupMember))
+	mux.HandleFunc("DELETE /admin/groups/{groupID}/members/{userID}",
+		s.auth(ScopeGroupsWrite, s.removeGroupMember))
+
+	// Sessions. Reading is part of seeing a user; ending one is acting on them,
+	// so the scopes follow users:* rather than getting a third pair.
+	mux.HandleFunc("GET /admin/users/{userID}/sessions",
+		s.auth(ScopeUsersRead, s.listUserSessions))
+	mux.HandleFunc("DELETE /admin/users/{userID}/sessions",
+		s.auth(ScopeUsersWrite, s.revokeUserSessions))
+	mux.HandleFunc("DELETE /admin/sessions/{sid}",
+		s.auth(ScopeUsersWrite, s.revokeSession))
 	mux.HandleFunc("POST /admin/subjects/{subjectID}/erase",
 		s.auth(ScopeSubjectsErase, s.eraseSubject))
 	return s.limitArrivals(mux)

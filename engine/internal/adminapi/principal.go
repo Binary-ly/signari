@@ -24,6 +24,12 @@ const (
 	// exactly this and previously had to be given write access to get it.
 	ScopeUsersRead   = "users:read"
 	ScopeClientsRead = "clients:read"
+	// Groups get their own pair rather than riding on users:*. A group decides
+	// which applications its members reach, so granting somebody the ability to
+	// edit group membership is granting application access -- a different
+	// decision from being able to reset a password.
+	ScopeGroupsRead  = "groups:read"
+	ScopeGroupsWrite = "groups:write"
 	// ScopeSubjectsErase is its own scope rather than part of users:write.
 	//
 	// A token that may rename a user should not thereby be able to destroy one
@@ -38,7 +44,8 @@ const (
 
 // KnownScopes is what `admin-token create` will accept.
 var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
-	ScopeSubjectsErase, ScopeUsersRead, ScopeClientsRead}
+	ScopeSubjectsErase, ScopeUsersRead, ScopeClientsRead,
+	ScopeGroupsRead, ScopeGroupsWrite}
 
 // impliedBy says which scope a write scope satisfies on its own.
 //
@@ -49,6 +56,7 @@ var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
 var impliedBy = map[string]string{
 	ScopeUsersRead:   ScopeUsersWrite,
 	ScopeClientsRead: ScopeClientsWrite,
+	ScopeGroupsRead:  ScopeGroupsWrite,
 }
 
 // Principal is whoever is making an admin request.

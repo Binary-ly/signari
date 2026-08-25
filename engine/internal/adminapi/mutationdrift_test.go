@@ -90,7 +90,96 @@ func allMutatingRoutes() []mutatingRoute {
 				return fmt.Sprintf(`{"confirm_subject_id":%q,"deactivate":true}`, id)
 			},
 		},
+		{
+			name: "POST /admin/groups", method: http.MethodPost,
+			path: func(*testing.T, *Server) string { return "/admin/groups" },
+			body: func(t *testing.T, s *Server, _ string) string {
+				return fmt.Sprintf(`{"org_id":%q,"name":"drift-%d"}`,
+					anyOrgID(t, s), time.Now().UnixNano())
+			},
+		},
+		{
+			name: "PATCH /admin/groups/{groupID}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/groups/" + newDriftGroup(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return `{"display_name":"renamed"}` },
+		},
+		{
+			name: "DELETE /admin/groups/{groupID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/groups/" + newDriftGroup(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/groups/{groupID}/members/{userID}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/groups/" + newDriftGroup(t, s) + "/members/" + newDriftUser(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "DELETE /admin/groups/{groupID}/members/{userID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/groups/" + newDriftGroup(t, s) + "/members/" + newDriftUser(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "DELETE /admin/users/{userID}/sessions", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/users/" + newDriftUser(t, s) + "/sessions"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "DELETE /admin/sessions/{sid}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/sessions/" + newDriftSession(t, s, newDriftUser(t, s))
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
 	}
+}
+
+// newDriftGroup creates a group in the fixture organisation.
+func newDriftGroup(t *testing.T, s *Server) string {
+	t.Helper()
+	var id string
+	if err := s.db.QueryRow(context.Background(), `
+		INSERT INTO core.groups (org_id, name, display_name)
+		VALUES ($1::uuid, $2, $2)
+		RETURNING id::text`,
+		anyOrgID(t, s), fmt.Sprintf("drift-%d", time.Now().UnixNano())).Scan(&id); err != nil {
+		t.Fatalf("creating the fixture group: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.group_members WHERE group_id = $1::uuid`, id)
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.groups WHERE id = $1::uuid`, id)
+	})
+	return id
+}
+
+// newDriftSession creates a live session for a user.
+func newDriftSession(t *testing.T, s *Server, userID string) string {
+	t.Helper()
+	sid := fmt.Sprintf("drift-sess-%d", time.Now().UnixNano())
+	var orgID string
+	if err := s.db.QueryRow(context.Background(),
+		`SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID); err != nil {
+		t.Fatalf("reading the fixture user's organisation: %v", err)
+	}
+	if _, err := s.db.Exec(context.Background(), `
+		INSERT INTO core.sessions (sid, org_id, user_id, auth_time, not_after)
+		VALUES ($1, $2::uuid, $3::uuid, now(), now() + interval '1 hour')`,
+		sid, orgID, userID); err != nil {
+		t.Fatalf("creating the fixture session: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.sessions WHERE sid = $1`, sid)
+	})
+	return sid
 }
 
 func newDriftUser(t *testing.T, s *Server) string {

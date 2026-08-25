@@ -81,18 +81,46 @@ flows:
   - name: default-recovery
     on: recovery
     stages:
+      # A challenge before a request is created and mail is sent, on the same
+      # reasoning as sign-in: the cost of the work comes after the challenge, not
+      # before it.
+      - {stage: captcha, when: captcha_required}
+
       - identify
       # A code to the address on file. The password cannot be what proves this,
       # because the password is what is being recovered -- the analysis enforces
       # that, and it is worth saying here too.
       - email_otp
       - password_change
-      - session
+
+      # `done`, NOT `session`, and this line is the whole journey's ending.
+      #
+      # It said `session` until 25 August 2026, and that was wrong in the one way
+      # this file must never be wrong: it described a journey the server did not
+      # run. Completing a reset renders the done page and signs nobody in -- the
+      # person authenticates with the password they just set, which proves they
+      # know it. Driving the flow while the default still said `session` would
+      # have started issuing sessions on password reset in every deployment that
+      # had written no flow of its own, silently, as a side effect of the
+      # sequence moving into a file.
+      #
+      # The analysis PERMITS `session` here -- `email_otp` above is a guaranteed
+      # prover -- but the driver does not execute it yet, and refuses the journey
+      # rather than resetting the password and quietly not signing anybody in.
+      # Issuing a session at the end of a reset means running an authentication
+      # flow, with its own second-factor and prompt stages, nested inside the
+      # reset transaction; that is a change to make deliberately rather than as a
+      # consequence of a default.
+      - done
 
     tests:
       - name: recovers by email
         given: {}
-        expect: [identify, email_otp, password_change, session]
+        expect: [identify, email_otp, password_change, done]
+
+      - name: recovers behind a challenge
+        given: {captcha_required: true}
+        expect: [captcha, identify, email_otp, password_change, done]
 
   # ---------------------------------------------------------------------------
   - name: default-sign-up

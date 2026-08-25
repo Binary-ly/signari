@@ -42,25 +42,42 @@ const (
 //
 // # Why this exists
 //
-// The flow language defines four designations. `/signup` now walks the enrolment
-// flow (9q option 2), so `captcha`, `prompt` and `create_user` order is the
-// operator's; sign-in has always been driven. What remains hardcoded is
-// `/recover` -- a recovery flow is parsed, its safety analysed by rules written
-// specifically for it (`recoveryProving` exists so a recovery flow cannot accept
-// the very factor it is replacing), its tests pass, and it governs nothing.
+// The flow language defines four designations, and for most of this package's
+// life it executed one. A recovery flow was parsed, analysed by safety rules
+// written specifically for it (`recoveryProving` exists only for this
+// designation), had its own test cases pass, could be installed with `signari
+// flow apply` -- and governed nothing, because no endpoint consulted it.
 //
-// The tests pass because they exercise the walker, which genuinely works. What
-// does not exist for recovery is a driver that consults it at that endpoint.
+// That is worse than an absent feature. An absent feature is looked for; a
+// feature that accepts your configuration and ignores it is looked at once and
+// trusted thereafter.
 //
-// This predicate does not fix that. It exists so that nothing in this codebase
-// can claim otherwise by omission: every place that accepts a flow file asks
-// this question and says the answer out loud. A promise that is unenforced is
-// worse than an absent feature, because the operator stops looking.
+// This predicate exists so nothing here can claim otherwise by omission: every
+// place that accepts a flow file asks the question and says the answer out loud.
+// It must move only in step with a driver -- widened without one, operators stop
+// being warned about a file that does not run; left behind after one is added,
+// they are warned about a file that does.
 //
-// Open decision 9q, option 3: driving recovery, the most security-sensitive
-// journey, is the remaining scope decision and is not this file's to make.
+// # The three that are driven
+//
+//	authentication  the sign-in journey, driven since the package existed
+//	enrolment       /signup walks the flow (9q option 2)
+//	recovery        /recover and /recover/reset walk it (9q option 3)
+//
+// # Why unenrolment is not, and why that is not the same kind of gap
+//
+// Because there is no unenrolment journey to drive. This engine has no
+// self-service account-deletion endpoint at all: deletion is `signari erase
+// subject` and the admin API, both of which are operator actions rather than
+// journeys a subject walks. The designation is defined, parsed and safety-checked
+// so that a file declaring one is understood rather than rejected, and so the
+// language does not have to change on the day such an endpoint is built.
+//
+// So the other three were "the file is ignored". This one is "there is nothing
+// for the file to be about", which is why the two must not be reported the same
+// way.
 func (d Designation) Driven() bool {
-	return d == Authentication || d == Enrolment
+	return d == Authentication || d == Enrolment || d == Recovery
 }
 
 // Undriven returns the designations this engine parses and does not execute.

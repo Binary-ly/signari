@@ -222,7 +222,12 @@ func (s *Server) enrolCaptcha(w http.ResponseWriter, r *http.Request) bool {
 		s.log.Info("captcha refused at sign-up", "err", cerr,
 			"correlation_id", correlationID(ctx))
 		csrf, _ := s.csrfToken(w, r)
-		s.renderPage(w, r, "signup", s.captchaFields(r, map[string]any{
+		// captchaWidget, not captchaFields, for the same reason as the recovery
+		// stage: this runs because the FLOW asked for a captcha, so the challenge
+		// has to be on the re-rendered form even when the adaptive counter would
+		// not have asked for one. Otherwise an unconditional captcha stage refuses
+		// the sign-up and returns a page with no challenge on it.
+		s.renderPage(w, r, "signup", s.captchaWidget(map[string]any{
 			"Error":  s.tr(r).T("error.captcha.incomplete"),
 			"Email":  strings.ToLower(strings.TrimSpace(r.PostFormValue("email"))),
 			"Invite": r.PostFormValue("invite"),

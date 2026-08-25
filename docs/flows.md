@@ -81,12 +81,39 @@ and more obvious version of the same bug.
 
 ### Designations
 
-| `on:` | what it is | rules |
-|---|---|---|
-| `authentication` | signing in | must prove the subject before a session |
-| `recovery` | restoring lost access | must prove the subject, from a **narrower** set of factors |
-| `enrolment` | creating an account | exempt from proof — and may not reach a session |
-| `unenrolment` | deleting an account | must prove the subject |
+| `on:` | what it is | rules | endpoint |
+|---|---|---|---|
+| `authentication` | signing in | must prove the subject before a session | `/login` |
+| `enrolment` | creating an account | exempt from proof — and may not reach a session | `/signup` |
+| `recovery` | restoring lost access | must prove the subject, from a **narrower** set of factors | `/recover`, `/recover/reset` |
+| `unenrolment` | deleting an account | must prove the subject | **none — see below** |
+
+**Three of the four run.** `unenrolment` is defined, parsed and safety-checked,
+and nothing executes it, because there is no self-service unenrolment journey in
+this engine to execute: deleting an account is `signari erase subject` and the
+admin API, which are operator actions rather than a sequence a subject walks. The
+designation exists so that a file declaring one is understood rather than
+rejected, and so the language does not have to change on the day such an endpoint
+is built. `signari flow test` says so about any flow it cannot run, and
+`signari flow apply` warns before storing one.
+
+### What a recovery flow governs, and what it refuses
+
+Recovery is two requests separated by an email, so the flow is consulted twice:
+`captcha` and `identify` at `/recover`, then `email_otp`, `password_change` and
+the terminal at `/recover/reset`.
+
+A stage the engine cannot execute in a recovery journey — `mfa` before a reset,
+`sms_otp` as the proving channel, `passkey` recovery — **stops the journey** with
+a 501 rather than being skipped. Skipping it would reset the password having
+proved less than the file requires, which is the failure the flow engine exists
+to prevent. The refusal happens before anything is written, so a flow this engine
+cannot honour leaves the credential untouched.
+
+The `captcha` stage at `/recover` reads the **default** organisation's flow, not
+the account's. That is deliberate: `/recover` answers identically whether or not
+an account exists, and a journey that varied by account would be an enumeration
+oracle wearing a configuration setting.
 
 Recovery counts fewer factors on purpose. A flow that resets a password by asking
 for the password is not a recovery flow, and one that asks for the second factor

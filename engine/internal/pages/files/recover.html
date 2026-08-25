@@ -1,11 +1,12 @@
 {{define "title"}}{{T "recover.title"}}{{end}}
 {{define "content"}}
 <h1>{{T "recover.title"}}</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 <p class="hint">{{T "recover.hint"}}</p>
 <form method="POST" action="/recover">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 <label for="u">{{T "login.username"}}</label>
 <input id="u" name="username" autocomplete="username" autocapitalize="none" autofocus required>
-<button type="submit">{{T "recover.submit"}}</button>
+{{template "captcha" .}}<button type="submit">{{T "recover.submit"}}</button>
 </form>
 {{end}}

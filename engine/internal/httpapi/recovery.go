@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/store"
 )
 
@@ -48,6 +49,43 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	identifier := strings.TrimSpace(r.PostForm.Get("username"))
+
+	// The operator's recovery flow governs this half: whether a challenge runs
+	// before a row is written and mail is sent. Read under the default
+	// organisation, never the account's -- see recoverflow.go for why that is a
+	// security requirement and not a shortcut.
+	orgID, _ := s.defaultOrg(ctx)
+	plan, unsupported, flowName := s.recoveryPlan(ctx, orgID,
+		flow.State{
+			string(flow.CondCaptchaRequired): s.captcha.Required(ctx, r.RemoteAddr),
+		},
+		[]flow.StageName{flow.StageIdentify, flow.StageEmailOTP, flow.StagePasswordChange, flow.StageDone},
+	)
+	if unsupported != "" {
+		s.refuseRecoveryStage(w, r, unsupported, flowName)
+		return
+	}
+	if recoveryDenied(plan) {
+		// An operator who has closed recovery. Refused plainly, and identically
+		// for every identifier, because whether recovery is open is a property of
+		// the deployment rather than of the account.
+		writeError(w, http.StatusForbidden, "recovery_closed",
+			"account recovery is not available here")
+		return
+	}
+
+	for _, stage := range plan {
+		if stage != flow.StageCaptcha {
+			// identify is the form that has just been submitted; everything after it
+			// belongs to the reset half, which runs when the link is followed.
+			continue
+		}
+		// In the plan means required: the default stage carries `when:
+		// captcha_required`, so Plan includes it exactly when a challenge is owed.
+		if !s.recoverCaptcha(w, r) {
+			return // the challenge failed; the form was re-rendered with a fresh one
+		}
+	}
 
 	// The work happens regardless of whether the account exists, and the same
 	// page is always returned. See the file comment.
@@ -260,6 +298,39 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		// Pending and invalid are shown the same way here. By the time a form is
 		// being submitted, the difference only matters to someone probing.
 		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
+		return
+	}
+
+	// The operator's flow governs this half. The account is known now -- the token
+	// named it -- so its own organisation's flow is read, and the enumeration
+	// concern that forces the default organisation in the request half does not
+	// apply here: reaching this point already required holding the link.
+	//
+	// Checked BEFORE the password is validated or anything is written. A flow
+	// naming a stage this engine cannot run must refuse the journey with the
+	// account untouched, not after the credential has been replaced.
+	plan, unsupported, flowName := s.recoveryPlan(ctx, req.OrgID,
+		flow.State{string(flow.CondCaptchaRequired): false},
+		[]flow.StageName{flow.StageIdentify, flow.StageEmailOTP, flow.StagePasswordChange, flow.StageDone},
+	)
+	if unsupported != "" {
+		s.refuseRecoveryStage(w, r, unsupported, flowName)
+		return
+	}
+	if recoveryDenied(plan) {
+		writeError(w, http.StatusForbidden, "recovery_closed",
+			"account recovery is not available here")
+		return
+	}
+	if !planHasStage(plan, flow.StagePasswordChange) {
+		// A recovery flow that never changes a credential recovers nothing. Safety
+		// permits it -- nothing is handed out, so there is nothing to prove -- but
+		// consuming the token and rendering success would tell somebody their
+		// password was reset when it was not.
+		s.log.Error("the recovery flow has no password_change stage", "flow", flowName,
+			"correlation_id", correlationID(ctx))
+		writeError(w, http.StatusInternalServerError, "server_error",
+			"account recovery is misconfigured: the recovery flow changes no credential")
 		return
 	}
 

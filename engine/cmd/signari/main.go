@@ -3296,10 +3296,11 @@ func flowTest(path string) error {
 		fl := &f.Flows[i]
 		fmt.Printf("\n  %s (%s)\n", fl.Name, fl.On)
 		if !fl.On.Driven() {
-			fmt.Printf("    !!   this engine does not EXECUTE %s flows. The file "+
-				"parses, its\n         safety rules apply and its tests run -- and "+
-				"no endpoint consults\n         it. This is a known scope limit (9q).\n",
-				fl.On)
+			fmt.Printf("    !!   this engine has no %s journey, so nothing consults "+
+				"this flow.\n         It parses, its safety rules apply and its tests "+
+				"run. Deleting an\n         account is `signari erase subject` and the "+
+				"admin API, which are\n         operator actions rather than a sequence "+
+				"a subject walks.\n", fl.On)
 		}
 		for _, tc := range fl.Tests {
 			fmt.Printf("    ok   %s\n", tc.Name)
@@ -7362,7 +7363,9 @@ func attesterList(ctx context.Context, conn *pgx.Conn) error {
 // operator who applies a recovery flow has just been told it is deployed, and it
 // is not: `/recover` is a hardcoded journey that never reads this document.
 //
-// The engine drives `authentication` flows and no others. See item 9q.
+// The engine drives authentication, enrolment and recovery flows. The only
+// designation it does not is `unenrolment`, and the reason is that there is no
+// self-service unenrolment journey to drive -- see flow.Designation.Driven.
 func warnUndriven(f *flow.File) {
 	var undriven []string
 	for i := range f.Flows {
@@ -7379,10 +7382,12 @@ func warnUndriven(f *flow.File) {
 	for _, u := range undriven {
 		fmt.Printf("    - %s\n", u)
 	}
-	fmt.Printf("  This engine drives %s flows only. The rest are parsed, "+
-		"safety-checked and\n  tested, and nothing consults them at run time: "+
-		"sign-up and recovery are\n  hardcoded journeys. This is a known scope "+
-		"limit (9q).\n", flow.Authentication)
+	fmt.Printf("  This engine drives %s, %s and %s flows. It has no self-service\n"+
+		"  %s journey at all -- deleting an account is `signari erase subject`\n"+
+		"  and the admin API, which are operator actions rather than a sequence a\n"+
+		"  subject walks -- so a flow declaring one is stored, checked, and has no\n"+
+		"  endpoint to govern.\n",
+		flow.Authentication, flow.Enrolment, flow.Recovery, flow.Unenrolment)
 }
 
 // clientSetDPoP pins a client to DPoP, per RFC 9449 §5.2.

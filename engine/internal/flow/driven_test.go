@@ -2,31 +2,34 @@ package flow
 
 import "testing"
 
-// The flow language defines four designations and this engine executes two:
-// authentication (always) and enrolment (9q option 2 -- /signup walks the flow).
+// The flow language defines four designations and this engine executes three:
+// authentication (always), enrolment (9q option 2 -- /signup walks the flow) and
+// recovery (9q option 3 -- /recover and /recover/reset walk it).
 //
-// `/recover` is still a hardcoded journey that never reads a flow document, so an
-// operator can write a recovery flow, have it parsed, have safety rules written
-// specifically for it applied, watch its tests pass, install it — and it governs
-// nothing.
+// Unenrolment is the fourth and is deliberately not driven, for a different
+// reason than the other three ever were: there is no unenrolment journey in this
+// engine to drive. Account deletion is `signari erase subject` and the admin API,
+// which are operator actions rather than a sequence a subject walks. If a
+// self-service deletion endpoint is ever built, this test is what fails and says
+// so.
 //
-// This test does not assert that the whole gap is closed. It asserts that the
-// codebase's own answer to "is this executed?" stays truthful, so that the
-// warnings built on it cannot quietly become wrong in either direction: if a
-// driver is added without updating Driven(), operators keep being warned about a
-// flow that now runs; if Driven() is widened without a driver, they stop being
-// warned about one that does not.
-func TestDrivenReportsAuthenticationAndEnrolment(t *testing.T) {
-	for _, d := range []Designation{Authentication, Enrolment} {
+// This test asserts that the codebase's own answer to "is this executed?" stays
+// truthful, so the warnings built on it cannot quietly become wrong in either
+// direction: if a driver is added without updating Driven(), operators keep being
+// warned about a flow that now runs; if Driven() is widened without a driver,
+// they stop being warned about one that does not.
+func TestDrivenReportsTheDesignationsWithDrivers(t *testing.T) {
+	for _, d := range []Designation{Authentication, Enrolment, Recovery} {
 		if !d.Driven() {
 			t.Errorf("%s is reported as not driven, but the engine executes it", d)
 		}
 	}
-	for _, d := range []Designation{Recovery, Unenrolment} {
+	for _, d := range []Designation{Unenrolment} {
 		if d.Driven() {
-			t.Errorf("%s is reported as driven. If a driver was added, this test "+
-				"and item 9q both need updating -- and if one was NOT added, the "+
-				"CLI is now telling operators their flow runs when it does not", d)
+			t.Errorf("%s is reported as driven. If a self-service unenrolment "+
+				"journey was built, update this test with it -- and if one was NOT "+
+				"built, the CLI is now telling operators their flow runs when there "+
+				"is no endpoint for it to run at", d)
 		}
 	}
 }

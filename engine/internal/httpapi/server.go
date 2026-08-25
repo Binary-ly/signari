@@ -795,6 +795,32 @@ func (s *Server) captchaFields(r *http.Request, data map[string]any) map[string]
 		data = map[string]any{}
 	}
 	if s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr) {
+		return s.captchaWidget(data)
+	}
+	return data
+}
+
+// captchaWidget puts the challenge on the page whatever the adaptive counter
+// says, for a form a FLOW demanded a captcha stage on.
+//
+// The distinction matters and it was a real dead end. captchaFields renders the
+// widget only when `Required()` is true, which is right when the adaptive
+// counter is what decides. When the operator's flow carries an unconditional
+// `captcha` stage, the counter does NOT decide -- the file does -- and a
+// submission with no challenge response is refused. Re-rendering through
+// captchaFields then produced a form with an error and no captcha on it: the
+// person is told to solve a challenge that is not there, and no amount of
+// retrying gets them through.
+//
+// Still gated on Enabled(), because with no provider configured there is no
+// widget to draw and claiming otherwise would be a different dead end. A flow
+// demanding captcha with no provider configured is a misconfiguration `signari
+// doctor` reports.
+func (s *Server) captchaWidget(data map[string]any) map[string]any {
+	if data == nil {
+		data = map[string]any{}
+	}
+	if s.captcha.Enabled() {
 		data["Captcha"] = true
 		data["CaptchaProvider"] = string(s.captcha.Provider())
 		data["CaptchaSiteKey"] = s.captcha.SiteKey()

@@ -22,19 +22,16 @@ import (
 // outcome of a last-write-wins API whenever two people, or two automation runs,
 // touch one object.
 //
-// It is worth stating plainly that this is not a hypothetical gap in the field.
-// Read on 25 August 2026, against current upstream source:
+// It is worth stating plainly that this is not a hypothetical problem. The
+// last-write-wins administrative API is the norm rather than the exception: a
+// survey of the comparable self-hosted identity providers, read against current
+// upstream source on 25 August 2026, found none that accepts a precondition on
+// an administrative write. Some expose a per-object sequence number, but for
+// reads only -- it is not accepted back on a mutation, so it cannot be used to
+// make one conditional.
 //
-//   - Keycloak's admin client update (`ClientResource.java:157` `update()`)
-//     applies the representation unconditionally. Its documented 409 is
-//     `ModelDuplicateException` -- a name collision, not a concurrency conflict.
-//   - Zitadel's `management.proto` (14,427 lines) has no precondition field on
-//     any write. Its `ObjectDetails.sequence` is documented for reads: "on read:
-//     the sequence of the last event reduced by the projection".
-//   - authentik and Ory Hydra have no `If-Match` handling at all.
-//
-// So every one of them silently loses the first writer's change. This engine can
-// do better for a structural reason rather than a clever one: ADR-008 already
+// So a lost update is the ordinary outcome across the field. This engine can do
+// better for a structural reason rather than a clever one: ADR-008 already
 // requires every mutation to bump `core.config_version` in the same transaction,
 // so a monotonic number identifying the exact configuration state already exists
 // and is already transactional. Preconditions are that number, used.

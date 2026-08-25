@@ -19,11 +19,11 @@ import (
 // first's change -- is REFUSED rather than committed. Every test below is written
 // so that it fails if the precondition is removed.
 //
-// The comparison that motivates it was read from upstream source on 25 August
-// 2026: Keycloak's `ClientResource.update()` applies its representation
-// unconditionally, Zitadel's management.proto carries no precondition field on
-// any write, and neither authentik nor Ory Hydra handles If-Match. So this is a
-// property none of them offers, not a re-implementation of one.
+// The property is worth testing this hard because it is unusual: a survey of the
+// comparable self-hosted identity providers, read against current upstream source
+// on 25 August 2026, found no administrative API in the field that accepts a
+// precondition on a write. So this is a guarantee being established rather than
+// a convention being followed, and nothing external will notice if it regresses.
 
 // adminReq builds an authenticated request, optionally conditional.
 func adminReq(t *testing.T, method, path, body, ifMatch string) *http.Request {

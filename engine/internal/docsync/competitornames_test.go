@@ -54,7 +54,16 @@ func TestNoCompetitorIsNamedInAPublishedFile(t *testing.T) {
 	// been carefully written WITHOUT the vendor's name. Naming the failure class
 	// -- algorithm confusion, CWE-347 -- says everything the identifier said and
 	// belongs to nobody.
-	competitorCVE := regexp.MustCompile(`\bCVE-2026-(11800|1486|1609|25748|9793|15573|16443|16442|57580|25922)\b`)
+	competitorCVE := regexp.MustCompile(
+		`\bCVE-2026-(11800|1486|1609|25748|9793|15573|16443|16442|57580|25922)\b` +
+			// Redirect-URI-as-pattern and the two halves of the PKCE biconditional.
+			// Added 25 August 2026, when the comment-blind reader below was fixed and
+			// a test file citing all four became visible to this guard for the first
+			// time. The defect classes they name are tested in
+			// engine/internal/oauth/vulnerabilityclasses_test.go, which describes each
+			// class without attributing it.
+			`|\bCVE-2024-(52289|21637|23647)\b` +
+			`|\bCVE-2023-48228\b`)
 
 	// A line naming a product purely as something we migrate FROM. Narrow on
 	// purpose: it matches the migrate-from page names and the import verbs, and
@@ -130,7 +139,19 @@ func TestNoCompetitorIsNamedInAPublishedFile(t *testing.T) {
 		if hasAnyPrefix(rel, private) || hasAnyPrefix(rel, migration) {
 			return nil
 		}
-		for i, line := range strings.Split(readSource(t, p), "\n") {
+		// Read RAW, not through readSource.
+		//
+		// readSource strips comments, which is right for the scanners that look
+		// for code -- a commented-out os.Getenv is not a setting the engine reads.
+		// Here it was catastrophic: the FIRST failure shape this test was written
+		// to catch is "a rival named in a code comment", and stripping comments
+		// removed precisely that. The test passed a tree containing the exact
+		// thing it exists to forbid, in a doc comment, in a committed file.
+		//
+		// It went unnoticed because the .md files carried no Go comments, so the
+		// markdown half of the guard kept working and the test kept passing. A
+		// guard that is only half blind still reports success.
+		for i, line := range strings.Split(readRaw(t, p), "\n") {
 			if migrationLine.MatchString(line) {
 				// The name is there as a migration SOURCE -- a link to the
 				// migrate-from page, or the import verb itself. Exempted per line
@@ -171,4 +192,68 @@ func hasAnyPrefix(s string, prefixes []string) bool {
 		}
 	}
 	return false
+}
+
+// readRaw reads a file exactly as committed, comments included.
+//
+// Deliberately not readSource. See the note at the scan above: comments are
+// where the names actually appear, because nobody puts a rival's name in a
+// string literal -- they put it in the sentence explaining why the code is the
+// way it is.
+func readRaw(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// The guard's own guard.
+//
+// TestNoCompetitorIsNamedInAPublishedFile passed for as long as it was blind,
+// because a scan that finds nothing and a scan that looks at nothing report the
+// same result. This asserts the scan can still see the two shapes that matter --
+// a name in a `//` comment and a name in a `/* */` block -- so a future change to
+// the reader cannot silently disarm it again.
+//
+// The names below are assembled at runtime rather than written out, so this file
+// does not itself become the thing it forbids.
+func TestTheCompetitorScanCanSeeIntoComments(t *testing.T) {
+	rival := "key" + "cloak"
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"a line comment", "package x\n\n// " + rival + " does this differently.\n"},
+		{"a doc comment", "// Package x is a thing.\n//\n//   - " + rival + " gets it wrong.\npackage x\n"},
+		{"a block comment", "package x\n\n/*\n" + rival + " gets it wrong.\n*/\n"},
+		{"a string literal", "package x\n\nconst s = \"" + rival + "\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "sample.go")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			raw := readRaw(t, path)
+			if !strings.Contains(strings.ToLower(raw), rival) {
+				t.Fatalf("the scan reads a file in a way that hides a name in %s. "+
+					"The guard would report success over a tree that names a rival", tc.name)
+			}
+		})
+	}
+
+	// And the control: readSource, the reader that caused this, genuinely does
+	// hide it. Without this the test above could pass against any reader at all
+	// and prove nothing.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stripped.go")
+	if err := os.WriteFile(path, []byte("package x\n\n// "+rival+" does this differently.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(readSource(t, path)), rival) {
+		t.Skip("readSource no longer strips line comments; this control is obsolete")
+	}
 }

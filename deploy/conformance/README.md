@@ -12,12 +12,26 @@ protocol and judge the answers.
 | Plan | Result |
 |---|---|
 | **Config OP** (`oidcc-config-certification-test-plan`) | **PASSED** — 39 conditions, 0 failures, 0 warnings, runner exit 0. Reproduced twice. |
-| **Basic OP** (`oidcc-basic-certification-test-plan`) | Engine side verified: `oidcc-server` ran to completion, 99 log entries, **0 failures**. The plan does not finish — see "the suite's browser driver" below. |
+| **Basic OP** (`oidcc-basic-certification-test-plan`) | All 36 modules run. 1628 conditions passed, 3 failures, 6 warnings. 22 modules PASSED, 3 SKIPPED (address/phone scopes, not supported), the rest as noted below. |
 
-The Config OP pass is not a vacuous green. The same plan, run against the same
-engine over plaintext HTTP, produced **7 failures** (every endpoint check plus
-`CheckDiscEndpointAllEndpointsAreHttps`). It detects real problems; it stopped
-finding them once the real problems were fixed.
+Neither is a vacuous green. The Config OP plan, run against the same engine over
+plaintext HTTP, produced **7 failures**; it detects real problems and stopped
+finding them once the real problems were fixed. The Basic OP plan found a
+genuine defect in this engine — see below — and the count moved from *no module
+completing at all* to 1628 passing conditions as each cause was fixed.
+
+### What Basic OP found in the engine
+
+`oidcc-prompt-login` exposed an infinite re-authentication loop. `prompt=login`
+made `SessionSufficient` return `StepUpForced` unconditionally, and the sign-in
+handler resumed by replaying the authorization query verbatim — `prompt=login`
+included. So a correct password produced the sign-in form again, forever, and no
+relying party using `prompt=login` could ever complete authentication.
+
+Invisible to every test in this repository, because they all sign in first. Fixed
+in `resumeAfterSignIn`, which now consumes the prompt values that the sign-in has
+just satisfied (`login`, `select_account`) while leaving `consent` alone. Locked
+down by `TestSignInConsumesTheReauthPromptItSatisfied`.
 
 ## What the plans actually test
 
@@ -82,34 +96,63 @@ The suite is a JVM, so it will not trust a private CA until the certificate is i
 the truststore **and the process has restarted**; a JVM reads the truststore once,
 at startup. `setup.sh` does both.
 
-## The suite's browser driver, which is the remaining limit
+## The suite's browser driver, and how to get round it
 
-With everything above fixed, `oidcc-server` runs to completion with zero
-failures — the full code flow, ID token, `at_hash` and UserInfo, all judged by a
-third party. The plan still does not finish, because modules stall after the
-callback:
+The suite hardcodes HtmlUnit: `BrowserControl.java:312` constructs a
+`ResponseCodeHtmlUnitDriver` with no configuration to substitute a real browser
+or a remote WebDriver. HtmlUnit intermittently fails to run the JavaScript on the
+suite's **own** callback page — the page whose only job is to POST
+`window.location.hash` to an implicit submit URL — so a module reaches the
+callback and then sits in WAITING forever:
 
     CreateRandomImplicitSubmitUrl :: Created random implicit submission URL
     WebRunner                     :: Completed processing of webpage
     ... then WAITING, indefinitely
 
-The browser never navigates to the submission URL. This is in the suite, not in
-the engine: `BrowserControl.java:312` constructs a `ResponseCodeHtmlUnitDriver`
-unconditionally, and there is no configuration to substitute a real browser or a
-remote WebDriver. It is also intermittent — the same module completes on one run
-and stalls on the next, which is why a green module is worth more than a red plan
-here.
+With browser automation configured, this capped the plan at zero completed
+modules.
 
-Two red herrings worth recording so nobody chases them:
+The way through is to configure **no** `browser` block at all. `goToUrl` then
+publishes each URL for external interaction ("If there is no matching element,
+the url is made available for user interaction"), and something without a
+JavaScript engine can do the three things the page needed: submit the sign-in
+form, answer consent, and make that one POST by hand. `browserdrive.py` does
+exactly that against `GET /api/runner/browser/{id}`.
 
-- `org.htmlunit.ScriptException: syntax error ... bootstrap.min.js` is HtmlUnit
-  failing to parse Bootstrap on the **suite's own** results page.
-  `setThrowExceptionOnScriptError(false)` means it is logged and ignored.
-- Adding a trailing `"Verify Complete"` task to the browser config makes the stall
-  *more* frequent, not less: the driver stops at the callback instead of following
-  the implicit submit URL. The sign-in task alone, marked `"optional": true` so a
-  module needing no login is skipped rather than failed, is the best local
-  configuration found.
+Four things it has to get right, each of which a real browser does silently:
+
+- **HTML-unescape hidden inputs.** `authz` carries the whole authorization query,
+  so inside an attribute every separator is `&amp;`. Posting the raw text back
+  makes the engine redirect to a URL whose second parameter is named `amp;nonce`
+  — which looks like the server emitting a malformed `Location`.
+- **Unescape the implicit submit URL.** Thymeleaf inlines it as a JS string
+  literal, so every `/` arrives as `\/`.
+- **Send `decision=allow` on consent.** It is carried by the submit *button*, not
+  by a hidden input, so posting only the hidden fields sends no decision and the
+  engine answers `access_denied` — which reads as "the user declined" rather than
+  "the harness forgot to click". The consent form also emits one `scope` input
+  per scope, so the fields must be a list, not a map.
+- **One session per module, not per URL.** A module that authorizes twice needs
+  the cookie from the first round; throwing it away makes `auth_time` change and
+  `oidcc-max-age-10000` fail on `CheckIdTokenAuthTimeClaimsSameIfPresent` — an
+  engine defect that is really the harness discarding the session.
+
+A red herring worth recording: `org.htmlunit.ScriptException: syntax error ...
+bootstrap.min.js` is HtmlUnit failing to parse Bootstrap on the **suite's own**
+results page, and `setThrowExceptionOnScriptError(false)` means it is logged and
+ignored.
+
+## What is still not green, and why
+
+- **`oidcc-server-client-secret-post`** fails `GetStaticClientConfiguration`
+  ("the test configuration must contain a client configuration") even though the
+  logged config plainly contains one. Not diagnosed. Certifying
+  `client_secret_post` is normally a separate plan run with a client configured
+  for that method, which is the next thing to try.
+- A handful of modules can still be INTERRUPTED by an alias conflict if the
+  driver's per-module budget expires before a two-round module finishes — every
+  module in a plan shares `alias`, so the next one claims it. The budget is 320s
+  for that reason; raising it trades wall-clock for reliability.
 
 ## Running
 

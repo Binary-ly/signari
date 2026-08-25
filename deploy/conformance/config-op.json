@@ -1,0 +1,20 @@
+{
+  "alias": "signari-config",
+  "description": "signari engine -- Config OP",
+  "server": {
+    "discoveryUrl": "https://signari-engine:8080/.well-known/openid-configuration",
+    "allow_unexpected_metadata_fields": [
+      "permission_endpoint",
+      "client_attestation_pop_methods_supported"
+    ]
+  },
+  "client": {
+    "client_id": "conformance-1",
+    "client_secret": "REPLACE-WITH-THE-SECRET-setup.sh-PRINTED"
+  },
+  "client2": {
+    "client_id": "conformance-2",
+    "client_secret": "REPLACE-WITH-THE-SECRET-setup.sh-PRINTED"
+  },
+  "consent": {}
+}

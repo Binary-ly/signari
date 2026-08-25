@@ -51,7 +51,12 @@ export SIGNARI_TLS_KEY=/tls/engine.key
 # Order matters and used to be wrong: the engine refuses to start until an
 # instance exists, so `up -d engine` before `instance create` leaves a container
 # restarting forever while the wait loop spins.
-docker compose up -d --build postgres
+# The engine image must be REBUILT, not just started. Skipping this is a quiet
+# failure: the container keeps whatever binary it was last built with, so a flag
+# added since -- `-require-pkce`, for one -- is "not defined" and the run dies
+# somewhere unrelated to the actual cause.
+docker compose build engine
+docker compose up -d postgres
 until [ "$(docker inspect -f '{{.State.Health.Status}}' signari-postgres-1)" = healthy ]; do
   sleep 1
 done

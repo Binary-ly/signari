@@ -12,7 +12,7 @@ protocol and judge the answers.
 | Plan | Result |
 |---|---|
 | **Config OP** (`oidcc-config-certification-test-plan`) | **PASSED** — 39 conditions, 0 failures, 0 warnings, runner exit 0. Reproduced twice. |
-| **Basic OP** (`oidcc-basic-certification-test-plan`) | All 36 modules run. **1607 conditions passed, 1 failure, 5 warnings.** 20 PASSED, 4 SKIPPED (unsupported optional features), 5 WARNING, 5 incomplete, 1 FAILED. |
+| **Basic OP** (`oidcc-basic-certification-test-plan`) | All 36 modules run and **all 36 complete**. **1754 conditions passed, 0 failures, 5 warnings.** 22 PASSED, 4 REVIEW (screenshot uploaded, awaiting human sign-off), 4 SKIPPED (unsupported optional features), 5 WARNING. 84 seconds. |
 
 Neither is a vacuous green. The Config OP plan, run against the same engine over
 plaintext HTTP, produced **7 failures**; it detects real problems and stopped
@@ -20,19 +20,20 @@ finding them once the real problems were fixed.
 
 The Basic OP number moved as each cause was fixed, which is the useful part:
 
-| | conditions passed | failures |
-|---|---|---|
-| with the suite's own browser automation | 0 modules completed at all | — |
-| front channel driven externally | 1472 | 10 |
-| one session per module, consent answered | 1628 | 3 |
-| `prompt=login` fixed | 1581 | 3 |
-| request objects refused | **1607** | **1** |
+| | conditions passed | failures | incomplete |
+|---|---|---|---|
+| with the suite's own browser automation | 0 modules completed at all | — | 36 |
+| front channel driven externally | 1472 | 10 | many |
+| one session per module, consent answered | 1628 | 3 | 5 |
+| `prompt=login` fixed | 1581 | 3 | 5 |
+| request objects refused | 1607 | 1 | 5 |
+| placeholders answered, `client_secret_post` client added | 1605 | **0** | 1 |
+| `prompt=consent` fixed | **1754** | **0** | **0** |
 
-(Totals vary by a few dozen between runs: modules that need two authorization
-rounds sometimes lose the shared `alias` to the next module. The failure count
-does not move with it.)
+Wall-clock fell from 1265s to 84s over the same 36 modules, because nothing
+stalls any more.
 
-### Two genuine defects it found in the engine
+### Three genuine defects it found in the engine
 
 **`prompt=login` looped forever.** `SessionSufficient` returned `StepUpForced`
 for it unconditionally, and the sign-in handler resumed by replaying the
@@ -53,8 +54,18 @@ from the cause. `ValidateAuthz` now answers `request_not_supported` /
 module reports SKIPPED with zero failures because the feature is now honestly
 declined. Locked down by `TestARequestObjectIsRefusedRatherThanIgnored`.
 
-Both were invisible to every test in this repository: they all sign in first, and
-none of them sends a parameter the server does not implement.
+**`prompt=consent` looped forever too.** The same defect on the other resume
+path, found by `oidcc-refresh-token`. The branch honouring `prompt=consent`
+deliberately ignores the stored grant and re-lists every scope — the client asked
+the user to look again — so replaying the query after the decision committed
+rendered the identical page, and pressing Allow never got anywhere. Both resume
+paths now share `consumePrompt`, which drops only what has actually been
+satisfied: sign-in consumes `login` and `select_account`, granting consent
+consumes `consent`, and neither touches the other's.
+
+All three were invisible to every test in this repository: they all sign in
+first, none of them sends a parameter the server does not implement, and none
+re-enters the authorization endpoint after answering a prompt.
 
 ## What the plans actually test
 
@@ -165,17 +176,30 @@ bootstrap.min.js` is HtmlUnit failing to parse Bootstrap on the **suite's own**
 results page, and `setThrowExceptionOnScriptError(false)` means it is logged and
 ignored.
 
-## What is still not green, and why
+## The five warnings, none of which is a failure
 
-- **`oidcc-server-client-secret-post`** fails `GetStaticClientConfiguration`
-  ("the test configuration must contain a client configuration") even though the
-  logged config plainly contains one. Not diagnosed. Certifying
-  `client_secret_post` is normally a separate plan run with a client configured
-  for that method, which is the next thing to try.
-- A handful of modules can still be INTERRUPTED by an alias conflict if the
-  driver's per-module budget expires before a two-round module finishes — every
-  module in a plan shares `alias`, so the next one claims it. The budget is 320s
-  for that reason; raising it trades wall-clock for reliability.
+Recorded so a green run is read accurately rather than as "nothing left to do".
+
+- **`oidcc-codereuse-30seconds`** — after a code is replayed, the access token
+  already issued from it still works at UserInfo. RFC 6749 section 4.1.2 says the
+  server SHOULD revoke all tokens issued from a reused code; refresh-token
+  families ARE revoked (`RevokeFamilyForCode`), but this module requests no
+  `offline_access`, so there is no family and therefore no grant to revoke.
+  Closing it means recording every issued access token's `jti` so it can be
+  denied later — `core.revoked_jtis` is a denylist and issuance is stateless
+  today. That is a deliberate architectural trade (a write per token issued), not
+  a bug to patch quietly.
+- **`oidcc-scope-email`, `oidcc-alternate-happy-flow`** — `email` appears in the
+  ID token when only the `email` scope was requested and no claims request was
+  made. Permitted, but the suite expects code-flow claims to come from UserInfo.
+- **`oidcc-scope-profile`, `oidcc-claims-essential`** — `name` and other profile
+  claims are absent from UserInfo. The conformance user is created with an email
+  and nothing else, so there is nothing to return; give it profile data before
+  reading anything into this.
+
+**REVIEW** is not a failure either: it is the status of a module whose screenshot
+placeholder was filled, and it means a human should confirm the picture shows
+what it should. That is the intended certification workflow.
 
 ## Running
 

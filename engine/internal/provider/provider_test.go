@@ -53,9 +53,9 @@ func TestAProviderWithNoFailureModeIsRefused(t *testing.T) {
 //
 // When a hook is wired, this test is what fails and says so.
 func TestCalledMatchesWhatIsWired(t *testing.T) {
-	// Grep-verifiable claim: no decision point calls this package yet. If that
-	// changes, Called() and this list change together.
-	wired := map[Hook]bool{}
+	// The hooks a decision point actually consults. HookAuthorize is called from
+	// httpapi.consultAuthorizeProvider, on the AuthZEN evaluation path.
+	wired := map[Hook]bool{HookAuthorize: true}
 
 	for _, h := range allHooks {
 		if h.Called() != wired[h] {

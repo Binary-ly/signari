@@ -81,6 +81,9 @@ const (
 
 var allHooks = []Hook{HookAuthorize}
 
+// AllHooks returns every defined hook, for the CLI's help text and listings.
+func AllHooks() []Hook { return append([]Hook(nil), allHooks...) }
+
 // Known reports whether a hook name is one this engine defines.
 func (h Hook) Known() bool {
 	for _, k := range allHooks {
@@ -109,9 +112,10 @@ func (h Hook) Known() bool {
 // same commit -- the test in this package fails if it does not, in both
 // directions.
 func (h Hook) Called() bool {
-	// Nothing yet. When the AuthZEN outbound decision lands, this becomes
-	// `return h == HookAuthorize` and TestCalledMatchesWhatIsWired changes with it.
-	return false
+	// HookAuthorize is consulted by the AuthZEN evaluation path
+	// (httpapi.consultAuthorizeProvider), after every local check has already
+	// allowed. It can only turn that allow into a deny; it can never grant.
+	return h == HookAuthorize
 }
 
 // Uncalled returns every hook that is defined and not consulted.

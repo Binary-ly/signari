@@ -100,6 +100,7 @@ var twoWordCommands = map[string]bool{
 	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"invite": true, "signup": true, "outpost": true, "provision": true,
+	"provider": true,
 	"erase":    true,
 	"prompt":   true,
 	"attester": true,
@@ -294,6 +295,10 @@ func run(args []string) error {
 	ssfToken := fs.String("receiver-token", "", "bearer token the Shared Signals receiver issued us (optional)")
 	ssfEvents := fs.String("events", "", "comma-separated event types the receiver asked for")
 	ssfPoll := fs.Bool("poll", false, "create a poll stream (RFC 8936): the receiver pulls from /ssf/poll instead of us pushing")
+	providerURL := fs.String("provider-url", "", "https endpoint of the extension service to call")
+	providerHook := fs.String("hook", "", "which decision it extends ("+providerHookList()+")")
+	providerMode := fs.String("mode", "", "what happens when it cannot be reached: fail_closed or fail_open. REQUIRED -- there is no default")
+	providerTimeout := fs.Duration("provider-timeout", 2*time.Second, "how long to wait for it (max 5s)")
 	radiusNet := fs.String("network", "", "CIDR the RADIUS device sends from, e.g. 10.0.0.0/24")
 	radiusSecret := fs.String("secret", "", "shared secret configured on the RADIUS device")
 	tokenScopes := fs.String("scopes", "",
@@ -646,6 +651,13 @@ func run(args []string) error {
 		return ssfAddStream(ctx, conn, *orgID, *clientID, *ssfEndpoint, *ssfToken, *ssfEvents, *ssfPoll)
 	case "ssf list":
 		return ssfListStreams(ctx, conn)
+	case "provider add":
+		return providerAdd(ctx, conn, *orgID, *providerHook, *providerURL,
+			*providerMode, *providerTimeout)
+	case "provider list":
+		return providerList(ctx, conn, *orgID)
+	case "provider remove":
+		return providerRemove(ctx, conn, *orgID, *providerHook)
 	case "radius add-client":
 		return radiusAddClient(ctx, conn, *orgID, *name, *radiusNet, *radiusSecret)
 	case "radius disable-client":

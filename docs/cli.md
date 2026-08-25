@@ -120,6 +120,17 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari uma settings` | Offer, or stop offering, resource-owner intervention on refused UMA requests (§3.3.6 `request_submitted`). Off means a refusal is final. See [uma.md](uma.md) |
 | `signari uma requests` / `uma approve` / `uma deny` | Requests waiting for a resource owner. Approving **grants a relation** in the authorization model, so the access lives where all other access lives |
 
+## Extension providers
+
+An operator's own service, called to extend a decision this engine makes. See
+[extensibility.md](extensibility.md).
+
+| | |
+|---|---|
+| `signari provider add` | Register one: `-hook authorize -provider-url https://… -mode fail_closed`. **`-mode` is required and has no default** — it says what happens when the service cannot be reached |
+| `signari provider list` | What is registered, with its failure mode, and whether any decision point actually consults that hook |
+| `signari provider remove` | Remove it. Decisions are then made locally only |
+
 ## Outposts and remote access
 
 | | |

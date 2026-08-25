@@ -156,6 +156,7 @@ command or an environment variable exists in code and not on its page.
 |---|---|
 | [console-configuration.md](console-configuration.md) | What each screen answers, and why they are read-only |
 | [admin-api.md](admin-api.md) | The write surface, its endpoints, and conditional writes |
+| [extensibility.md](extensibility.md) | Extending a decision with your own service |
 | [admin-tokens.md](admin-tokens.md) | Credentials for the Admin API |
 
 ## Migrating in

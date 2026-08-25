@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/authzen"
+	"signari.dev/engine/internal/provider"
+	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/store"
 	"strings"
 )
@@ -303,10 +305,145 @@ func (s *Server) decide(ctx context.Context, orgID string, req authzen.Request) 
 		}
 	}
 
+	// Everything local says yes. An operator's own policy service gets the last
+	// word -- and only ever a veto. See consultAuthorizeProvider.
+	if resp, vetoed, err := s.consultAuthorizeProvider(ctx, orgID, req, held); err != nil {
+		return authzen.Response{}, err
+	} else if vetoed {
+		return resp, nil
+	}
+
 	return authzen.Response{
 		Decision: true,
 		Context:  map[string]any{"relation": held},
 	}, nil
+}
+
+// consultAuthorizeProvider asks the operator's external policy service (ADR-011).
+//
+// # Deny-only, and this is the load-bearing decision
+//
+// The provider is consulted ONLY after everything local has already said yes,
+// and it can only turn that into a no. It can never grant access the model
+// refused.
+//
+// The alternative -- delegating the decision outright -- reads as more powerful
+// and is a much larger transfer of trust: the relation graph, the conditions, the
+// second-factor requirements would all become advisory, overridable by whatever
+// answers an HTTP request. Composing the two as AND means the external service
+// can tighten access and cannot loosen it, so adding one can never weaken a
+// guarantee that already holds. An operator wanting to GRANT access adds a
+// relation, which is what the model is for.
+//
+// Because of that ordering it also costs nothing on the deny path: a request that
+// was going to be refused never makes a network call.
+//
+// # The wire format is AuthZEN, not something invented here
+//
+// This engine implements the AuthZEN PDP side already, so calling somebody else's
+// PDP is the same specification pointed the other way. A bespoke JSON body would
+// be a second dialect of a protocol already spoken, and would mean an integrator
+// could not point an existing conformant PDP at it.
+//
+// Returns (response, vetoed, error). vetoed=false means carry on with the local
+// allow, whether that is because no provider is registered, because it allowed,
+// or because it was unreachable and declared fail_open.
+func (s *Server) consultAuthorizeProvider(ctx context.Context, orgID string,
+	req authzen.Request, held string) (authzen.Response, bool, error) {
+
+	p, err := store.LoadProvider(ctx, s.db, orgID, provider.HookAuthorize)
+	if err != nil {
+		// A provider row that will not load is a configuration fault, not a
+		// decision. Failing the request rather than silently allowing: the
+		// operator registered something, and quietly ignoring it is the "a
+		// written policy governs nothing" bug.
+		return authzen.Response{}, false, err
+	}
+	if p == nil {
+		return authzen.Response{}, false, nil
+	}
+
+	var answer providerAnswer
+	callErr := p.Call(ctx, s.providerClient(p.Timeout), req, &answer)
+
+	if callErr != nil {
+		// Logged either way. A fail_open provider that has silently stopped
+		// answering means an operator's veto is no longer being enforced, and
+		// nothing else would record that.
+		if p.Decide(callErr) {
+			s.log.Warn("the authorization provider did not answer; continuing because "+
+				"it is registered fail_open",
+				"provider", p.Name, "err", callErr, "correlation_id", correlationID(ctx))
+		} else {
+			s.log.Error("the authorization provider did not answer; denying because it "+
+				"is registered fail_closed",
+				"provider", p.Name, "err", callErr, "correlation_id", correlationID(ctx))
+		}
+	}
+
+	resp, vetoed := combineProviderAnswer(p.Name, p.Decide(callErr), callErr, answer, held)
+	return resp, vetoed, nil
+}
+
+// providerAnswer is what a provider returns.
+type providerAnswer struct {
+	Decision bool           `json:"decision"`
+	Context  map[string]any `json:"context"`
+}
+
+// combineProviderAnswer applies the composition rule.
+//
+// Pure, and separated from the call so the rule can be read and tested on its
+// own. The whole security argument of this hook is three lines long, and burying
+// it inside HTTP handling is how it would come to be changed by accident:
+//
+//   - the provider is only ever consulted after a local ALLOW, so a veto is the
+//     only outcome it can produce;
+//   - an unanswered call is resolved by the provider's declared mode, never by a
+//     default;
+//   - a provider answering "allow" changes nothing, because the local decision
+//     was already allow.
+//
+// proceed is p.Decide(callErr): true when the call succeeded, or when it failed
+// and the provider is fail_open.
+func combineProviderAnswer(name string, proceed bool, callErr error,
+	answer providerAnswer, held string) (authzen.Response, bool) {
+
+	if callErr != nil {
+		if proceed {
+			// fail_open: keep the local allow.
+			return authzen.Response{}, false
+		}
+		return authzen.Response{
+			Decision: false,
+			Context: authzen.Reasons(
+				"the external authorization provider \""+name+"\" could not be "+
+					"reached and is registered fail_closed",
+				"Access could not be confirmed. Try again shortly."),
+		}, true
+	}
+
+	if answer.Decision {
+		// Allowed by both. Nothing to add: the local response already carries the
+		// relation that granted it, which is the more useful reason of the two.
+		return authzen.Response{}, false
+	}
+	return authzen.Response{
+		Decision: false,
+		Context: authzen.Reasons(
+			"the subject holds "+held+", and the external authorization provider \""+
+				name+"\" refused",
+			"You do not have access to this."),
+	}, true
+}
+
+// providerClient is the HTTP client used for provider calls.
+//
+// safedial, so a provider URL that resolves into the private network is refused
+// at DIAL time as well as at registration. The two checks are not redundant: DNS
+// can change between them, which is the whole rebinding technique.
+func (s *Server) providerClient(timeout time.Duration) *http.Client {
+	return safedial.Client(timeout)
 }
 
 // handleAuthzSearchResource answers "what may this subject act on".

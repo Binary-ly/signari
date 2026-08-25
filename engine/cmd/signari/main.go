@@ -232,6 +232,14 @@ func run(args []string) error {
 	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
 	redirect := fs.String("redirect", "", "registered redirect_uri (exact match)")
 	public := fs.Bool("public", false, "register a public client (PKCE, no secret)")
+	// Defaults to true, matching the column default, because PKCE is required for
+	// every client by RFC 9700 and OAuth 2.1. The flag exists because the OIDC
+	// Basic profile -- the one the certification plan of that name exercises --
+	// predates that rule and sends no challenge, so a deployment seeking Basic OP
+	// certification needs a client that permits it. Without the flag the only way
+	// to set the column was an UPDATE by hand.
+	requirePKCE := fs.Bool("require-pkce", true,
+		"refuse an authorization request from this client that carries no PKCE challenge")
 	file := fs.String("file", "", "path to a realm export (import)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
 	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
@@ -614,7 +622,7 @@ func run(args []string) error {
 		return clientSetGrants(ctx, conn, *clientID, *grantTypes)
 	case "client create":
 		return clientCreate(ctx, conn, *clientID, *name, *redirect, *public,
-			*launchURL, *logoURL, *portalHidden)
+			*launchURL, *logoURL, *portalHidden, *requirePKCE)
 	case "serve":
 		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr)
 	case "janitor once":
@@ -1735,7 +1743,7 @@ func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) err
 }
 
 func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect string,
-	public bool, launchURL, logoURL string, portalHidden bool) error {
+	public bool, launchURL, logoURL string, portalHidden, requirePKCE bool) error {
 
 	if err := clients.ValidateClientID(clientID); err != nil && clientID != "" {
 		return err
@@ -1801,12 +1809,13 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect 
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 		                          client_secret_hash, scopes,
-		                          initiate_login_uri, logo_uri, portal_hidden)
+		                          initiate_login_uri, logo_uri, portal_hidden,
+		                          require_pkce)
 		VALUES ($1, $2, $3, $4, NULLIF($5, ''),
 		        ARRAY['openid','profile','email','offline_access'],
-		        NULLIF($6,''), NULLIF($7,''), $8)`,
+		        NULLIF($6,''), NULLIF($7,''), $8, $9)`,
 		clientID, orgID, name, kind, secretHash,
-		launchURL, logoURL, portalHidden); err != nil {
+		launchURL, logoURL, portalHidden, requirePKCE); err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
 	if _, err := conn.Exec(ctx,

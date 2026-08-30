@@ -428,19 +428,46 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			return decisionHandled
 
 		case flow.StageMFA:
-			// Decided by the CALLER, before the transaction opens -- see
-			// FlowDemandsMFA. Not here, and the reason is worth stating because the
-			// obvious refactor is to move it here.
+			// Acted on HERE, so the stage binds every way in.
 			//
-			// completeSignIn has ten callers. Exactly one of them, the password
-			// path, checks for a second factor today; passkey, Kerberos, Duo and
-			// the federated sources go straight through. Acting on this stage here
-			// would therefore start demanding a code from, say, a Kerberos user who
-			// happens to have TOTP enrolled -- arguably an improvement, and
-			// certainly not one to arrive as a side effect of moving the sequence
-			// into a file. Whether the other nine paths should gate on a second
-			// factor is a separate decision with its own consequences.
-			continue
+			// This used to be decided by the caller, and the reason it was not done
+			// here was recorded in this spot: completeSignIn has ten callers, only
+			// the password path checked, and acting on the stage would start
+			// demanding a code from a Kerberos or federated user who happens to have
+			// a factor enrolled. That was called "arguably an improvement" and
+			// deferred as a separate decision. It has now been taken.
+			//
+			// What the old arrangement meant in practice: an operator who wrote an
+			// unconditional `mfa` stage and enrolled passkeys believed the whole
+			// deployment had MFA, while passkey, Kerberos, Duo, the federated
+			// sources and the second password path at flow.go:2207 all reached a
+			// session without consulting it. A control that binds one route out of
+			// ten is not a control.
+			if hasSecondFactorAMR(amr) {
+				// Already multi-factor, so the stage is satisfied by what has been
+				// proved. Delegated to the same predicate the session's acr claim is
+				// derived from, so the sequencer and the session cannot disagree
+				// about whether this sign-in was multi-factor.
+				continue
+			}
+			if !facts.Holds(string(flow.CondHasSecondFactor)) {
+				// Demanded of everybody, and this account has nothing enrolled.
+				// Refused rather than waved through: skipping would mean the control
+				// holds for every account except the ones it was written to catch.
+				// Same answer the password path gave before this moved.
+				s.auditDetached(ctx, audit.Event{
+					Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+					CorrelationID: correlationID(ctx),
+					Detail:        map[string]any{"reason": "mfa_required_but_not_enrolled"},
+				})
+				s.clearPending(w)
+				s.renderLogin(w, r, authzQuery,
+					"This account needs a second factor before it can be used to sign in. "+
+						"Please contact your administrator.")
+				return decisionHandled
+			}
+			s.beginMFAChallenge(w, r, userID, orgID, authzQuery, amr)
+			return decisionHandled
 
 		default:
 			// Every other stage either proved the subject before this point

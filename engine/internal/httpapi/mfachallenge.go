@@ -255,7 +255,16 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 
 	// Both factors are now proven. amr records what ACTUALLY happened, and acr is
 	// derived from it rather than asserted.
-	full := append(append([]string{}, pending.AMR...), amr...)
+	//
+	// AMRMFA is appended because two DISTINCT factors were used, which is exactly
+	// what acr.go:93 says the value asserts -- and because deriving it from the
+	// concatenation alone is wrong whenever both factors land in the same
+	// category. A passkey without user verification reports ["user","hwk"], all
+	// possession; adding a TOTP code gives ["user","hwk","otp"], still possession
+	// only, so ACRFromAMR would answer single-factor after a second factor had
+	// genuinely been presented. The sequencer would then demand the same code
+	// again, and again. `duo.go:210` already appends it for this reason.
+	full := append(append(append([]string{}, pending.AMR...), amr...), oauth.AMRMFA)
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, full, pending.Authz)
 }
 

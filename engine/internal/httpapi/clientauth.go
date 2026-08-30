@@ -24,7 +24,26 @@ import (
 // So the method is read from configuration and dispatched on, rather than
 // inferred from whichever credential the request happens to carry.
 func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Request,
-	c *clients.Client, presentedSecret string) error {
+	c *clients.Client, presentedSecret string) (err error) {
+
+	// A failure budget, checked here because this is the ONE place a confidential
+	// client proves itself -- /token, /introspect, /revoke and /par all arrive
+	// through it, so a new endpoint cannot forget the control.
+	//
+	// Deliberately NOT a rate limit on those endpoints. `client_credentials` runs
+	// at five figures a second on this engine, so a limiter on the endpoint would
+	// throttle legitimate machine traffic and hand an attacker a tenant-wide
+	// denial of service: burn the bucket, lock the integration out. The
+	// brute-forceable asset here is the secret, not the endpoint, so the budget
+	// counts FAILURES and a correct secret is never charged.
+	if !s.clientAuthAllowed(ctx, r, c.ClientID) {
+		return fmt.Errorf("too many failed client authentications; try again shortly")
+	}
+	defer func() {
+		if err != nil {
+			s.recordClientAuthFailure(ctx, r, c.ClientID)
+		}
+	}()
 
 	method, jwks, err := store.ClientAuthMethod(ctx, s.db, c.ClientID)
 	if err != nil {
@@ -106,5 +125,89 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 			return fmt.Errorf("the client secret did not match")
 		}
 		return nil
+	}
+}
+
+// Failure budgets for client authentication.
+//
+// # Why the key is (client, address) and not the client alone
+//
+// A per-client budget is a way to take somebody's integration offline on
+// purpose: send wrong secrets for their client_id until the budget is spent, and
+// the real service is refused with a correct secret. For a human account this
+// codebase accepts that tradeoff deliberately -- fifteen minutes of slower
+// sign-in beats an account needing an administrator. A machine integration is
+// different: it has no human to notice, and the failure is a production outage
+// rather than an inconvenience.
+//
+// Keying on the pair removes the cross-tenant attack entirely. An attacker
+// grinding from one address exhausts only their own budget against that client,
+// while a legitimate deployment authenticating from its own addresses is
+// untouched however much noise anyone else makes.
+//
+// What this does not bound is guessing distributed across many addresses. That
+// is the accepted residual, and it is acceptable because the secret is 256 bits
+// of random data -- distributed guessing does not become feasible by being
+// distributed. The budget exists to bound CPU spent on failed comparisons and to
+// catch a weak secret carried in from a migration, not to be the thing standing
+// between an attacker and a correctly generated secret.
+const (
+	clientAuthPerPairLimit  = 50
+	clientAuthPerPairWindow = 10 * time.Minute
+
+	// A second, wider key on the address alone, so one source cannot sweep many
+	// client_ids cheaply. Generous, because a shared NAT egress may legitimately
+	// carry several failing integrations at once.
+	clientAuthPerIPLimit  = 200
+	clientAuthPerIPWindow = 10 * time.Minute
+)
+
+// clientAuthAllowed reports whether this address may attempt this client again.
+//
+// Reads only. The budget is charged in recordClientAuthFailure, so a correct
+// secret costs nothing and a busy legitimate client is never throttled by its
+// own success.
+func (s *Server) clientAuthAllowed(ctx context.Context, r *http.Request, clientID string) bool {
+	ip := clientIP(r)
+	if ip == "" {
+		ip = "unknown"
+	}
+
+	pair, err := store.CountRate(ctx, s.db,
+		"clientauth:fail:pair:"+clientID+":"+ip, clientAuthPerPairWindow)
+	if err != nil {
+		// Fail closed, for the reason allowSignInAttempt gives: authenticating a
+		// client needs the database one query later anyway, so refusing here costs
+		// nothing that was going to work, and failing open turns a database blip
+		// into an unlimited guessing window.
+		s.log.Error("checking the client authentication rate limit", "err", err)
+		return false
+	}
+	if pair >= clientAuthPerPairLimit {
+		return false
+	}
+
+	byIP, err := store.CountRate(ctx, s.db, "clientauth:fail:ip:"+ip, clientAuthPerIPWindow)
+	if err != nil {
+		s.log.Error("checking the client authentication rate limit", "err", err)
+		return false
+	}
+	return byIP < clientAuthPerIPLimit
+}
+
+// recordClientAuthFailure charges both budgets. Called only when the proof was
+// actually wrong.
+func (s *Server) recordClientAuthFailure(ctx context.Context, r *http.Request, clientID string) {
+	ip := clientIP(r)
+	if ip == "" {
+		ip = "unknown"
+	}
+	if _, err := store.AllowRate(ctx, s.db, "clientauth:fail:pair:"+clientID+":"+ip,
+		clientAuthPerPairLimit, clientAuthPerPairWindow); err != nil {
+		s.log.Error("recording a client authentication failure", "err", err)
+	}
+	if _, err := store.AllowRate(ctx, s.db, "clientauth:fail:ip:"+ip,
+		clientAuthPerIPLimit, clientAuthPerIPWindow); err != nil {
+		s.log.Error("recording a client authentication failure", "err", err)
 	}
 }

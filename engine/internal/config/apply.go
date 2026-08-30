@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/audit"
 )
 
 // Reading the deployment, diffing it against the file, and applying.
@@ -482,6 +484,58 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		if err != nil {
 			return fmt.Errorf("deleting %s %q: %w", c.Kind, c.Name, err)
 		}
+	}
+
+	return recordApply(ctx, tx, orgID, plan)
+}
+
+// recordApply leaves the two records every other write path leaves.
+//
+// # What was missing
+//
+// This path wrote clients, groups, SAML providers and RADIUS clients straight
+// into the transaction and committed. It bumped no configuration version and
+// wrote no audit event, so two of the three invariants this project states as
+// non-negotiable did not hold on its own declarative path:
+//
+//   - ADR-008 requires every configuration mutation to bump `core.config_version`
+//     in the SAME transaction as the write. Without it, a caller holding an
+//     If-Match precondition from a read taken before an apply is told nothing
+//     changed, and overwrites it. That is precisely the lost update the
+//     precondition exists to refuse, reachable from the product's own CLI.
+//   - Every mutation through the admin API writes an audit event. A change made
+//     with `signari apply` left no record at all, so "who changed this client"
+//     had no answer for the path most likely to be used in production.
+//
+// Both go in this function rather than at the CLI call site, because a second
+// caller of Apply would otherwise inherit neither.
+func recordApply(ctx context.Context, tx pgx.Tx, orgID string, plan *Plan) error {
+	// One event per change, matching the granularity the admin API produces for
+	// the same edits made individually. A single "config applied" row would make
+	// the trail for fifty changes indistinguishable from the trail for one.
+	for _, c := range plan.Changes {
+		if err := audit.Write(ctx, tx, audit.Event{
+			Type:  "config.applied",
+			OrgID: orgID,
+			Detail: map[string]any{
+				"kind":   c.Kind,
+				"name":   c.Name,
+				"action": c.Action,
+				"source": "config-as-code",
+			},
+		}); err != nil {
+			return fmt.Errorf("auditing %s %q: %w", c.Kind, c.Name, err)
+		}
+	}
+
+	// The bump, in the same transaction as the writes, exactly as
+	// internal/adminapi/server.go does it. A write that commits without this is
+	// durable and invisible.
+	if _, err := tx.Exec(ctx, `
+		UPDATE core.config_version
+		SET version = version + 1, bumped_at = now()
+		WHERE id = true`); err != nil {
+		return fmt.Errorf("bumping the configuration version: %w", err)
 	}
 	return nil
 }

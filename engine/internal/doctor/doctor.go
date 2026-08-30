@@ -29,6 +29,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/migrate"
 	"signari.dev/engine/internal/pages"
+	"signari.dev/engine/internal/provider"
 	"sort"
 	"strings"
 	"time"
@@ -137,6 +138,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkMTLS(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkProviderHooks(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	if err := checkNotificationChannels(ctx, conn, r); err != nil {
 		return nil, err
 	}
@@ -241,6 +245,53 @@ func checkAuthenticatorModels(r *Report) {
 				"Service BLOB, or unset it and use SIGNARI_FIDO_MDS_FETCH=1 to fetch "+
 				"it. Until then passkeys are named by their nickname only")
 	}
+}
+
+// checkProviderHooks reports a registered provider whose hook nothing consults.
+//
+// `internal/provider` carries the predicate for this -- `Hook.Called()` -- for
+// the reason its own comment gives: a thing an operator can configure, which
+// parses, validates, has tests and governs nothing is the exact shape of a bug
+// this codebase has had before. The comment said `signari doctor` reads that
+// predicate. It did not, and a claim in a comment is worth nothing until
+// something executes it.
+//
+// An operator who registers an authorization provider and sees it listed has
+// every reason to believe it is being consulted. If the hook is staged rather
+// than wired, this is where they find out -- before an incident, not during one.
+func checkProviderHooks(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("extension hooks")
+
+	rows, err := conn.Query(ctx, `
+		SELECT p.hook, count(*), o.slug
+		  FROM core.providers p
+		  JOIN core.organizations o ON o.id = p.org_id
+		 WHERE p.enabled
+		 GROUP BY p.hook, o.slug`)
+	if err != nil {
+		// A deployment predating the providers table is not a finding.
+		return nil
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var hook, slug string
+		var n int
+		if err := rows.Scan(&hook, &n, &slug); err != nil {
+			return err
+		}
+		if provider.Hook(hook).Called() {
+			continue
+		}
+		r.add(Warning, "extension hooks",
+			fmt.Sprintf("%s has %d enabled provider(s) on the %q hook, which no "+
+				"decision point consults", slug, n, hook),
+			"the provider is registered and reachable, and nothing asks it anything. "+
+				"Either the hook is staged and not yet wired, or the registration names "+
+				"a hook that does not exist. Until it is consulted, this provider "+
+				"governs nothing.")
+	}
+	return rows.Err()
 }
 
 func checkNotificationChannels(ctx context.Context, conn *pgx.Conn, r *Report) error {

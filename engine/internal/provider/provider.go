@@ -96,11 +96,12 @@ func (h Hook) Known() bool {
 
 // Called reports whether a hook is actually CONSULTED at a decision point.
 //
-// # Why this exists, and why it currently returns false for everything
+// # Why this exists
 //
-// This package is the mechanism, and no decision point calls it yet (ADR-011:
-// the direction is settled, the hooks are staged). That is a legitimate state to
-// be in for one commit and a dangerous one to leave undeclared, because it is
+// This package is the mechanism, and hooks are wired one at a time (ADR-011).
+// `authorize` is consulted today; anything else defined here is staged and
+// governs nothing yet. That is a legitimate state to be in and a dangerous one
+// to leave undeclared, because it is
 // precisely the shape of the bug the flow engine had for months: a thing an
 // operator can configure, which parses, validates, has tests, and governs
 // nothing. flow.Designation.Driven exists for the same reason and is the model

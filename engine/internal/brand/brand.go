@@ -35,7 +35,18 @@ import (
 	"strings"
 )
 
-// Brand is one organisation's appearance.
+// Brand is one INSTANCE's appearance.
+//
+// Not one organisation's, which is what this said and what the name suggests.
+// `core.brands` keys on `instance_id` as its PRIMARY KEY (0056_brands.sql:24),
+// so every organisation on an instance shares a single brand. An operator
+// reading "one organisation's appearance" would reasonably expect to give two
+// tenants different logos and find, after building the flow, that the second
+// write replaced the first.
+//
+// Per-organisation branding is a real gap rather than a bug in this comment;
+// closing it means a composite key and a resolution order. Until then the
+// comment should describe the schema that exists.
 type Brand struct {
 	// ProductName replaces "Signari" in page titles and headings.
 	ProductName string

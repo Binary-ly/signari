@@ -47,6 +47,13 @@ CREATE TABLE saml_providers (
     -- Extra attributes to release, as {"saml attribute name": "claim source"}.
     -- Empty by default: attribute release is a disclosure decision, so it is
     -- made explicitly per SP rather than inherited.
+    --
+    -- RESERVED AND UNUSED. Nothing reads this column and nothing writes it, so
+    -- setting it releases no attribute -- an assertion carries the fixed set the
+    -- minting code emits, whatever is stored here. Recorded because a
+    -- disclosure control that silently does nothing is the worst kind to be
+    -- wrong about: an operator would configure a release, see the column hold
+    -- what they asked for, and reasonably believe it applied.
     attributes   jsonb       NOT NULL DEFAULT '{}',
 
     -- How long an assertion is valid for. Short by design: the assertion is

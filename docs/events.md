@@ -59,6 +59,65 @@ The scheme is deliberately the one Stripe uses. A subscriber's engineers have
 almost certainly implemented it before, and a verification routine somebody
 already got right is worth more than an original one.
 
+### Verifying a delivery
+
+```go
+func verify(secret, header string, body []byte, tolerance time.Duration) error {
+	var ts, sig string
+	for _, part := range strings.Split(header, ",") {
+		k, v, _ := strings.Cut(part, "=")
+		switch k {
+		case "t":
+			ts = v
+		case "v1":
+			sig = v
+		}
+	}
+
+	// The timestamp is checked BEFORE the MAC and again after. Before, so a
+	// replay costs nothing to reject; the MAC covers `t`, so a replayer cannot
+	// move the window without invalidating the signature it is replaying.
+	secs, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return errors.New("no timestamp")
+	}
+	if d := time.Since(time.Unix(secs, 0)); d > tolerance || d < -tolerance {
+		return errors.New("outside the tolerance window")
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(ts))
+	mac.Write([]byte{'.'})
+	mac.Write(body)
+
+	want, err := hex.DecodeString(sig)
+	if err != nil {
+		return errors.New("malformed signature")
+	}
+	// Constant time. A byte-by-byte comparison that returns early leaks how
+	// much of a guess was right, and a MAC is exactly the value that makes
+	// that leak worth harvesting.
+	if !hmac.Equal(mac.Sum(nil), want) {
+		return errors.New("signature does not match")
+	}
+	return nil
+}
+```
+
+Three things this depends on that are easy to get wrong:
+
+- **The RAW body.** Verify the bytes as received, before any JSON decode. Decode
+  and re-encode and the key order, spacing and number formatting are your
+  library's rather than ours, and a correct delivery fails to verify.
+- **Reject before parsing.** An unverified body is attacker-supplied input; a
+  handler that decodes first has already acted on it.
+- **A tolerance you actually enforce.** A few minutes. Without one the timestamp
+  is decoration and a captured delivery replays forever.
+
+Signari's own implementation of this MAC is `Sign` in `internal/outbox`, exported
+so a test can call the same function the sender uses. Two implementations of one
+MAC is one implementation and one bug.
+
 ## The URL is treated as hostile
 
 A webhook URL is a place the identity provider will make a request, to an address

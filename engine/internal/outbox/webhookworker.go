@@ -50,9 +50,16 @@ const SignatureHeader = "Signari-Signature"
 
 // Sign returns the header value for a body at a time.
 //
-// Exported because the conformance tester and the subscriber-side example must
-// compute it exactly the same way, and two implementations of one MAC is one
-// implementation and one bug.
+// Exported so the package's own tests compute the MAC with the function the
+// sender uses rather than a second copy of it; two implementations of one MAC
+// is one implementation and one bug.
+//
+// This used to claim "the conformance tester and the subscriber-side example"
+// as the callers. There is no conformance tester for webhooks, and the example
+// did not exist -- nothing outside this package referenced the function at all.
+// The subscriber side is documented rather than compiled, in docs/events.md,
+// which is the honest arrangement: a subscriber writes it in their own language
+// and cannot import this.
 func Sign(secret string, at time.Time, body []byte) string {
 	ts := strconv.FormatInt(at.Unix(), 10)
 	mac := hmac.New(sha256.New, []byte(secret))

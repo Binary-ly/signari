@@ -10,13 +10,28 @@
 //     An audit log outlives the account it describes, so putting the identifier
 //     a person can ask you to erase into an append-only table means either
 //     breaking the append-only property or refusing a lawful erasure request.
-//     Personal detail goes in detail_enc, encrypted under the subject's own key,
-//     so shredding that key removes the content and leaves the record.
+//     This rule is what actually protects erasure today, and it is load-bearing:
+//     it is the ONLY thing keeping personal data out of this append-only table.
 //
-//  2. THE HASH CHAIN COVERS CIPHERTEXT. If it covered plaintext, crypto-shredding
-//     a subject would break every subsequent link and destroy the integrity
-//     property for every other tenant in the table. Chaining over what is stored
-//     means the chain still verifies after a shred.
+//  2. THE HASH CHAIN COVERS `detail`, WHICH IS PLAINTEXT.
+//
+//     This said the chain covered CIPHERTEXT, with personal detail in
+//     `detail_enc` encrypted under the subject's key, so shredding removed the
+//     content and left the record verifiable. That design is sound and it is NOT
+//     BUILT: `core.audit_events.detail_enc` exists in the schema with no writer
+//     and no reader anywhere in the tree, `chainHash(prev, e, detail)` hashes the
+//     plaintext column, and the INSERT never names detail_enc.
+//
+//     So the safety of shredding rests entirely on rule 1 rather than on
+//     encryption. That is a real guarantee while rule 1 holds, and a weaker one
+//     than was claimed here. Somebody deciding whether an erasure request has
+//     been satisfied needs the true version: nothing in this table is encrypted,
+//     so anything personal written into `detail` survives a shred.
+//
+//     Chaining over plaintext is still correct given rule 1 -- the rows a shred
+//     touches carry no personal content, so no link is invalidated. Building
+//     detail_enc would restore the stronger property; until then this comment
+//     describes the code.
 //
 //  3. WRITES JOIN THE CALLER'S TRANSACTION. An audit row that commits when the
 //     decision it describes rolled back is a false record, and one that rolls

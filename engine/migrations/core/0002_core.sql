@@ -447,10 +447,16 @@ CREATE TABLE audit_events (
     -- erasure with a documented reason.
     retention_class text       NOT NULL DEFAULT 'security'
                                CHECK (retention_class IN ('security','operational','profile')),
-    -- Encrypted with the subject DEK where it contains anything personal.
+    -- RESERVED AND UNUSED. Intended for detail encrypted under the subject DEK,
+    -- so a shred would remove content and leave the record. Nothing writes it and
+    -- nothing reads it; see internal/audit/audit.go. Kept rather than dropped
+    -- because the design is still the intended one, but do not cite it as a
+    -- protection that exists.
     detail_enc     bytea,
     detail         jsonb       NOT NULL DEFAULT '{}',
-    -- Hash chain computed over CIPHERTEXT so it stays verifiable post-shred.
+    -- Hash chain computed over `detail`, which is PLAINTEXT. This said CIPHERTEXT
+    -- and that was never true. Safe because the package rule is subject IDs only,
+    -- so a shred touches no row's hashed content -- not because it is encrypted.
     prev_hash      bytea,
     entry_hash     bytea
 );

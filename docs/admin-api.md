@@ -100,6 +100,7 @@ Every mutation returns `config_version` in its body and `ETag` in its headers.
 | `GET /admin/users/{userID}` | One user |
 | `POST /admin/users` | Create |
 | `PATCH /admin/users/{userID}` | Activate, deactivate, set a password, require a change |
+| `DELETE /admin/users/{userID}` | Remove the person and everything they hold. Real deletion, not a flag (ADR-005). Their sessions are **terminated before the row goes**, so every relying party they reached receives a back-channel logout — letting the rows cascade away would destroy the list of who to notify before anyone was notified, and leave them signed in everywhere with an account that no longer exists. Returns `sessions_ended`, `notices_queued` and `tokens_revoked`. The audit trail keeps its records: `audit_events` has no foreign key to `users`, so what a person did outlives their account |
 
 ### Groups
 
@@ -148,6 +149,13 @@ that decision from the other side.
 | | |
 |---|---|
 | `POST /admin/subjects/{subjectID}/erase` | Crypto-shred. Permanent, and requires the identifier repeated in `confirm_subject_id` |
+
+**Erasure is not deletion, and the two are deliberately separate verbs.**
+`DELETE /admin/users/{userID}` removes the account; this makes the person
+unidentifiable in records that outlive it. An offboarding removes the account and
+keeps the trail; a lawful erasure request keeps neither the identity nor,
+usually, the account. Conflating them would mean one of the two requests is
+always answered wrongly.
 
 ## What reads never return
 

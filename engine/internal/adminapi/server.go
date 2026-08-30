@@ -118,6 +118,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/clients/{clientID}/rotate-secret",
 		s.auth(ScopeClientsWrite, s.rotateClientSecret))
 	mux.HandleFunc("PATCH /admin/users/{userID}", s.auth(ScopeUsersWrite, s.patchUser))
+	mux.HandleFunc("DELETE /admin/users/{userID}", s.auth(ScopeUsersWrite, s.deleteUser))
 	mux.HandleFunc("GET /admin/config-version", s.auth(ScopeConfigRead, s.configVersion))
 
 	// Reads. These complete the conditional-write protocol: a caller GETs the

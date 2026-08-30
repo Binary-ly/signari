@@ -317,3 +317,121 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		"id": userID, "sessions_ended": sessionsEnded, "config_version": version,
 	})
 }
+
+// deleteUser removes a person and everything they hold.
+//
+// # Sessions are TERMINATED before the row goes, not cascaded away
+//
+// This is the whole difficulty of the operation and it is invisible if you only
+// read the schema. Forty foreign keys point at core.users and every one is
+// CASCADE or SET NULL, so `DELETE FROM core.users` succeeds on its own and
+// takes the sessions with it. It also tells nobody.
+//
+// A session row disappearing is not a logout. The applications the person
+// reached hold their own sessions, and they find out only because this server
+// sends a back-channel logout notice to each. Cascading the rows away destroys
+// the list of who to notify before anything is notified, so the person stays
+// signed in to every relying party they had reached -- with the account they
+// were signed in as no longer existing -- until each application's own session
+// expires on its own schedule.
+//
+// So store.TerminateSessions runs FIRST, inside the same transaction: it
+// snapshots the relying parties, queues a notice for each, and only then does
+// the DELETE remove what it snapshotted. Both commit together, so there is no
+// state where the notices are queued and the user survives, or the user is gone
+// and the notices were never raised.
+//
+// store.ReasonUserDeleted rather than ReasonAdminRevoke, because the reason
+// reaches the notice and "your account was deleted" and "an administrator ended
+// your session" are different events to the receiving application.
+//
+// # Real deletion (ADR-005)
+//
+// No `deleted_at`. A soft delete means every hot-path query must remember `AND
+// deleted_at IS NULL`, and forgetting once authenticates somebody who was
+// deleted. Deactivation already exists for the reversible case and is a
+// different operation with a different verb.
+//
+// core.audit_events has NO foreign key to core.users, so the trail describing
+// what this person did outlives them. That is deliberate and it is the reason
+// deletion can be real: erasing the account does not erase the record.
+//
+// Erasure of personal data is a separate operation, POST
+// /admin/subjects/{id}/erase, because "remove this account" and "make this
+// person unidentifiable in the record" are different requests and conflating
+// them means one of the two is always wrong.
+func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userID := r.PathValue("userID")
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+
+	var ended, notified, tokens int
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		var orgID string
+		if err := tx.QueryRow(ctx,
+			`SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errNotFound
+			}
+			return err
+		}
+		if err := requireOrg(ctx, orgID); err != nil {
+			return err
+		}
+
+		// Counted before the cascade. "How much did this revoke" is asked
+		// afterwards, by which time the rows are gone.
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM core.access_tokens WHERE user_id = $1::uuid`,
+			userID).Scan(&tokens); err != nil {
+			return err
+		}
+
+		term, err := store.TerminateSessions(ctx, tx, "", userID, store.ReasonUserDeleted)
+		if err != nil {
+			return err
+		}
+		if term != nil {
+			ended, notified = term.Sessions, term.Notices
+		}
+
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM core.users WHERE id = $1::uuid`, userID); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{
+			Type: "admin.user_deleted", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, SubjectID: userID,
+			Detail: map[string]any{
+				"sessions_ended": ended,
+				"notices_queued": notified,
+				"tokens_revoked": tokens,
+			},
+		})
+	})
+
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case errors.Is(err, errCrossOrg):
+		writeCrossOrg(w, err)
+		return
+	case errors.Is(err, errNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user_not_found"})
+		return
+	case err != nil:
+		s.log.Error("deleting a user", "user_id", userID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	s.log.Warn("user deleted", "user_id", userID, "sessions_ended", ended,
+		"tokens_revoked", tokens, "config_version", version)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": userID, "sessions_ended": ended, "notices_queued": notified,
+		"tokens_revoked": tokens, "config_version": version,
+	})
+}

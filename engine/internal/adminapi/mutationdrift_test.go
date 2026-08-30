@@ -58,6 +58,16 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return `{"active":false}` },
 		},
 		{
+			// A fresh user each time: the route deletes what it is pointed at,
+			// so reusing one would make the second assertion a 404 rather than
+			// the precondition failure it is checking for.
+			name: "DELETE /admin/users/{userID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/users/" + newDriftUser(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/clients", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/clients" },
 			body: func(t *testing.T, s *Server, _ string) string {

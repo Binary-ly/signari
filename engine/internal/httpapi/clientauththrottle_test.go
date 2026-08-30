@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -48,6 +50,58 @@ func throttleServer(t *testing.T) (*Server, context.Context) {
 	return &Server{db: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}, ctx
 }
 
+// freshRequest builds a request from an address no other run has used.
+//
+// The first version of these tests reused fixed addresses, and they passed once
+// and then failed. `recordClientAuthFailure` charges an address-only key as well
+// as the pair, that key has a ten-minute window, and the suite runs against a
+// shared database -- so each run added fifty failures to the same bucket until
+// the 200 ceiling was reached and the very first assertion was refused. It also
+// filled core.rate_limits enough to disturb the store package's concurrency
+// test running beside it.
+//
+// This is the shared-test-state failure docs/BUILD-LOG.md records, reproduced
+// faithfully. A unique address per run means the buckets cannot accumulate.
+func freshRequest(t *testing.T, s *Server, ctx context.Context) *http.Request {
+	t.Helper()
+	r := httptest.NewRequest("POST", "/oauth2/token", nil)
+	// 2001:db8::/32 is the documentation range; the low bits come from the clock
+	// and a random word, so two runs a nanosecond apart still get different
+	// buckets.
+	host := fmt.Sprintf("2001:db8::%x:%x",
+		time.Now().UnixNano()&0xffffffff, rand.Uint32()&0xffff)
+	r.RemoteAddr = "[" + host + "]:5555"
+
+	// Both keys this address will touch are removed afterwards. The address-only
+	// bucket carries no client name, so cleaning by client alone leaves it
+	// behind -- which is how the first version of this file left ninety-two rows
+	// in a shared database.
+	t.Cleanup(func() {
+		if _, err := s.db.Exec(ctx,
+			`DELETE FROM core.rate_limits WHERE bucket_key LIKE $1`,
+			"clientauth:fail:%"+host+"%"); err != nil {
+			t.Logf("cleaning up rate buckets for %s: %v", host, err)
+		}
+	})
+	return r
+}
+
+// cleanupRateKeys removes only the buckets this test created.
+//
+// Scoped by key prefix rather than truncating the table: a bare delete would
+// take rows another package's test wrote a moment earlier, and the failure
+// would surface somewhere unrelated.
+func cleanupRateKeys(t *testing.T, s *Server, ctx context.Context, client string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if _, err := s.db.Exec(ctx,
+			`DELETE FROM core.rate_limits WHERE bucket_key LIKE $1`,
+			"clientauth:fail:%"+client+"%"); err != nil {
+			t.Logf("cleaning up rate buckets for %s: %v", client, err)
+		}
+	})
+}
+
 // THE property: burning one address's budget must not refuse another address.
 //
 // This is the whole reason the key is a pair. If it regresses to client_id
@@ -57,10 +111,9 @@ func TestOneAddressCannotLockOutAnotherAddressForTheSameClient(t *testing.T) {
 	s, ctx := throttleServer(t)
 	client := fmt.Sprintf("throttle-test-%d", time.Now().UnixNano())
 
-	attacker := httptest.NewRequest("POST", "/oauth2/token", nil)
-	attacker.RemoteAddr = "203.0.113.9:5555"
-	victim := httptest.NewRequest("POST", "/oauth2/token", nil)
-	victim.RemoteAddr = "198.51.100.4:5555"
+	cleanupRateKeys(t, s, ctx, client)
+	attacker := freshRequest(t, s, ctx)
+	victim := freshRequest(t, s, ctx)
 
 	// Spend the attacker's budget against this client, and then some.
 	for i := 0; i < clientAuthPerPairLimit+5; i++ {
@@ -85,8 +138,8 @@ func TestSuccessfulClientAuthenticationIsNotCharged(t *testing.T) {
 	s, ctx := throttleServer(t)
 	client := fmt.Sprintf("throttle-ok-%d", time.Now().UnixNano())
 
-	r := httptest.NewRequest("POST", "/oauth2/token", nil)
-	r.RemoteAddr = "192.0.2.7:5555"
+	cleanupRateKeys(t, s, ctx, client)
+	r := freshRequest(t, s, ctx)
 
 	// Far more than the limit, but none of them failures.
 	for i := 0; i < clientAuthPerPairLimit*3; i++ {
@@ -103,8 +156,8 @@ func TestFailuresFromOneSourceAreEventuallyRefused(t *testing.T) {
 	s, ctx := throttleServer(t)
 	client := fmt.Sprintf("throttle-bind-%d", time.Now().UnixNano())
 
-	r := httptest.NewRequest("POST", "/oauth2/token", nil)
-	r.RemoteAddr = "203.0.113.44:5555"
+	cleanupRateKeys(t, s, ctx, client)
+	r := freshRequest(t, s, ctx)
 
 	if !s.clientAuthAllowed(ctx, r, client) {
 		t.Fatal("refused before a single failure was recorded")

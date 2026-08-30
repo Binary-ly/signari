@@ -230,19 +230,44 @@ func RemainingRecoveryCodes(ctx context.Context, tx pgx.Tx, userID string) (int,
 	return n, err
 }
 
+// newRecoveryCode returns 20 characters from a 31-symbol alphabet, printed in
+// four groups of five.
+//
+// That is 20 x log2(31) = 99.1 bits. The comment here used to say "128 bits, in
+// two readable groups" and both halves were wrong: 128 bits would need 26 of
+// these characters, and the separator goes in every five, which makes four
+// groups. 99 bits is ample for a code that is hashed at rest, rate limited on
+// presentation and single use -- but a number in a comment is what somebody
+// quotes in a risk assessment, so it should be the real one.
+//
+// # Drawn without modulo bias
+//
+// The previous version did `recoveryAlphabet[int(v)%31]` over a uniform byte.
+// 256 is not a multiple of 31 -- it leaves 8 -- so the first eight symbols came
+// up about 3.5% more often than the rest. That costs a fraction of a bit rather
+// than breaking anything, and it is still the kind of thing that has no reason
+// to be here: rejection sampling removes it for a loop nobody will notice.
 func newRecoveryCode() (string, error) {
-	// 128 bits, in two readable groups.
 	const chars = 20
-	b := make([]byte, chars)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		return "", fmt.Errorf("no entropy for a recovery code: %w", err)
-	}
+	// The largest multiple of the alphabet that fits in a byte. Anything at or
+	// above it is redrawn rather than folded, which is what removes the bias.
+	const limit = 256 - (256 % len(recoveryAlphabet)) // 248 for 31 symbols
+
 	var sb strings.Builder
-	for i, v := range b {
+	buf := make([]byte, 1)
+	for i := 0; i < chars; i++ {
 		if i > 0 && i%5 == 0 {
 			sb.WriteByte('-')
 		}
-		sb.WriteByte(recoveryAlphabet[int(v)%len(recoveryAlphabet)])
+		for {
+			if _, err := io.ReadFull(rand.Reader, buf); err != nil {
+				return "", fmt.Errorf("no entropy for a recovery code: %w", err)
+			}
+			if int(buf[0]) < limit {
+				sb.WriteByte(recoveryAlphabet[int(buf[0])%len(recoveryAlphabet)])
+				break
+			}
+		}
 	}
 	return sb.String(), nil
 }

@@ -318,6 +318,11 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
 	mux.HandleFunc("GET "+oidc.PathAuthorize, s.handleAuthorize)
+	// OIDC Core 3.1.2.1 makes POST mandatory alongside GET. See authorizeParams
+	// for why a POST carrying a query string as well is refused rather than
+	// merged. The CORS exclusion at cors.go:39 is unaffected and must stay: this
+	// is a top-level navigation endpoint, not one script calls cross-origin.
+	mux.HandleFunc("POST "+oidc.PathAuthorize, s.handleAuthorize)
 	mux.HandleFunc("POST "+oidc.PathToken, s.handleToken)
 	mux.HandleFunc("POST /oauth2/par", s.handlePAR)
 	mux.HandleFunc("POST /oauth2/device_authorization", s.handleDeviceAuthorization)

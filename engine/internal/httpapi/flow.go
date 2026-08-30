@@ -43,7 +43,12 @@ const (
 // pages reached from unvalidated links.
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	query := r.URL.Query()
+
+	query, perr := authorizeParams(r)
+	if perr != nil {
+		s.renderAuthzFailure(w, r, perr.Error())
+		return
+	}
 
 	// RFC 6749 §3.1, before anything reads a parameter.
 	//
@@ -1528,6 +1533,37 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	s.completeSignIn(w, r, tx, userID, orgID, []string{oauth.AMRPassword}, authzQuery)
+}
+
+// authorizeParams reads an authorization request's parameters from wherever the
+// method puts them.
+//
+// OIDC Core 3.1.2.1 makes BOTH methods mandatory: "The Authorization Server MUST
+// support the use of the HTTP GET and POST methods". This endpoint accepted GET
+// alone until this existed, which is a plain non-conformance -- and it also
+// denied clients the reason POST is there at all. Parameters in a query string
+// end up in access logs, in `Referer`, and in browser history; a request object
+// or a long `claims` parameter can also exceed what a URL comfortably carries.
+//
+// A POST that ALSO carries a query string is refused rather than merged.
+// `r.Form` would merge both, and a request naming `redirect_uri` once in the URL
+// and once in the body is the same ambiguity refuseDuplicateParams exists to
+// reject: the decision and the record of the decision must describe the same
+// request. Merging would additionally let a parameter smuggled into the URL win
+// against the body a client signed.
+func authorizeParams(r *http.Request) (url.Values, error) {
+	if r.Method != http.MethodPost {
+		return r.URL.Query(), nil
+	}
+	if err := r.ParseForm(); err != nil {
+		return nil, fmt.Errorf("the request body could not be parsed as " +
+			"application/x-www-form-urlencoded")
+	}
+	if r.URL.RawQuery != "" {
+		return nil, fmt.Errorf("an authorization request sent as POST must carry " +
+			"its parameters in the body alone, not split across the body and the URL")
+	}
+	return r.PostForm, nil
 }
 
 // completeSignIn creates the session once every required factor is proven.

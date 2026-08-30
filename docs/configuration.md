@@ -38,6 +38,7 @@ effect at all.
 | `SIGNARI_TLS_CERT`, `SIGNARI_TLS_KEY` | Serve HTTPS. Without them the engine warns: browsers refuse `__Host-` cookies over plaintext on anything but localhost, so sign-in silently fails to persist |
 | `SIGNARI_TLS_CLIENT_CA` | Authorities that may issue client certificates for RFC 8705 mutual-TLS. Absent, `tls_client_auth` is refused rather than relaxed |
 | `SIGNARI_ADMIN_ADDR` | Listen address for the admin API. Absent, it does not start |
+| `SIGNARI_ADMIN_INSECURE` | `1` permits the admin API to serve plaintext HTTP. Without it, an admin listener configured with no `SIGNARI_TLS_CERT` refuses to start rather than putting a bearer token that can erase a subject on the wire in clear. Only reasonable bound to loopback behind a terminator you control |
 | `SIGNARI_INSECURE_ISSUER` | `1` permits an `http://` issuer. Development only |
 | `SIGNARI_PROXY_COOKIE_DOMAIN` | Parent domain for the forward-auth cookie |
 

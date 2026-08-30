@@ -227,6 +227,16 @@ func run(args []string) error {
 	tlsCert := fs.String("tls-cert", os.Getenv("SIGNARI_TLS_CERT"), "PEM certificate chain; enables HTTPS")
 	tlsKey := fs.String("tls-key", os.Getenv("SIGNARI_TLS_KEY"), "PEM private key")
 	adminAddr := fs.String("admin-addr", os.Getenv("SIGNARI_ADMIN_ADDR"), "listen address for the admin API (empty = disabled)")
+	// The admin API served plaintext until this existed, which put a bearer token
+	// carrying every write privilege on the wire in clear. TLS is now the default
+	// and plaintext has to be asked for by name.
+	//
+	// Fail closed rather than warn: a warning in a log nobody reads is how the
+	// previous behaviour survived. The escape hatch is real, because binding to
+	// loopback behind a trusted terminator is a legitimate deployment -- it just
+	// should not be what somebody gets by forgetting.
+	adminInsecure := fs.Bool("admin-insecure", os.Getenv("SIGNARI_ADMIN_INSECURE") == "1",
+		"serve the admin API over plaintext HTTP (requires no -tls-cert; only safe on loopback behind a trusted terminator)")
 	email := fs.String("email", "", "user email")
 	password := fs.String("password", "", "user password")
 	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
@@ -624,7 +634,7 @@ func run(args []string) error {
 		return clientCreate(ctx, conn, *clientID, *name, *redirect, *public,
 			*launchURL, *logoURL, *portalHidden, *requirePKCE)
 	case "serve":
-		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr)
+		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr, *adminInsecure)
 	case "janitor once":
 		return janitorOnce(ctx, conn)
 	case "import authentik":
@@ -1172,7 +1182,7 @@ func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) er
 	return nil
 }
 
-func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
+func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecure bool) error {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -1358,14 +1368,38 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string) error {
 		if err != nil {
 			return fmt.Errorf("admin API: %w", err)
 		}
+
+		// Refused at startup, not warned about at runtime.
+		//
+		// Every request to this listener carries a bearer token that can create a
+		// client, reset a password or erase a subject. Serving that in clear is
+		// not a degraded mode, it is a credential disclosure on every call, and
+		// the operator who would notice a log line is not the one who needs the
+		// message.
+		if tlsCert == "" && !adminInsecure {
+			return fmt.Errorf("the admin API will not serve plaintext: pass -tls-cert " +
+				"and -tls-key, or -admin-insecure if it is bound to loopback behind a " +
+				"terminator you control")
+		}
+
 		go func() {
-			log.Info("admin API listening", "addr", adminAddr)
+			scheme := "https"
+			if tlsCert == "" {
+				scheme = "http"
+			}
+			log.Info("admin API listening", "addr", adminAddr, "scheme", scheme)
 			ah := &http.Server{
 				Addr:              adminAddr,
 				Handler:           adminSrv.Routes(),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
-			if err := ah.ListenAndServe(); err != nil {
+			var err error
+			if tlsCert != "" {
+				err = ah.ListenAndServeTLS(tlsCert, tlsKey)
+			} else {
+				err = ah.ListenAndServe()
+			}
+			if err != nil {
 				log.Error("admin API stopped", "err", err)
 			}
 		}()

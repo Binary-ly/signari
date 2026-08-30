@@ -51,6 +51,27 @@ const (
 	argonKeyLen    = 32
 )
 
+// Ceilings for cost parameters read out of an IMPORTED hash.
+//
+// Not a policy about how expensive a hash may be -- they are set far above any
+// sane configuration. They bound what a foreign export can make this process do
+// on the sign-in path, where the parameters are attacker-supplied in the only
+// sense that matters: whoever produced the export chose them, and we verify
+// against them on every attempt.
+//
+// 1 GiB and 16 rounds are roughly fifty times our own settings. A real export
+// from any product never approaches them.
+const (
+	argonMaxMemoryKiB = 1 << 20 // 1 GiB
+	argonMaxTime      = 16
+	argonMaxThreads   = 16
+
+	// Django's default is on the order of a million; ten million is generous and
+	// still bounded. pbkdf2.Key is linear in this, so an unbounded value is a
+	// direct multiplier on CPU per failed sign-in.
+	pbkdf2MaxIterations = 10_000_000
+)
+
 // Hasher owns the concurrency budget for password hashing.
 type Hasher struct {
 	sem chan struct{}
@@ -252,6 +273,20 @@ func verifyArgon2id(stored, password string) (current bool, err error) {
 	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err != nil {
 		return false, ErrMismatch
 	}
+	// Bounded, for the same reason scrypt is bounded in foreign.go: these numbers
+	// arrive inside an imported hash, so whoever produced the export chooses them.
+	// `m` is memory in KiB and reaches argon2.IDKey directly -- an import carrying
+	// m=17179869184 asks for 16 TiB on the sign-in path, and the request that
+	// triggers it is an ordinary failed password attempt against a migrated
+	// account. That is a denial of service reachable through the migration
+	// on-ramp, which is a feature we advertise.
+	//
+	// The ceilings are far above anything a real deployment configures -- ours is
+	// m=19456, t=2, p=1 -- so a legitimate export is unaffected and only an
+	// absurd one is refused.
+	if m > argonMaxMemoryKiB || t > argonMaxTime || p > argonMaxThreads {
+		return false, ErrMismatch
+	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil {
 		return false, ErrMismatch
@@ -277,7 +312,7 @@ func verifyDjangoPBKDF2(stored, password string) error {
 		return ErrMismatch
 	}
 	iter, err := strconv.Atoi(parts[1])
-	if err != nil || iter <= 0 {
+	if err != nil || iter <= 0 || iter > pbkdf2MaxIterations {
 		return ErrMismatch
 	}
 	want, err := base64.StdEncoding.DecodeString(parts[3])

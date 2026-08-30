@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,6 +72,13 @@ func allMutatingRoutes() []mutatingRoute {
 				return "/admin/clients/" + newPreconditionClient(t, s)
 			},
 			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
+			name: "DELETE /admin/clients/{clientID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/clients/" + newPreconditionClient(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
 			name: "POST /admin/clients/{clientID}/rotate-secret", method: http.MethodPost,
@@ -229,6 +239,57 @@ func newDriftSubject(t *testing.T, s *Server) string {
 //
 // 412 specifically. A 500 means the handler ran the mutation and then failed to
 // map the error, which would mean the write happened.
+// The list below must cover every mutating route the server registers.
+//
+// # Why this guard is the important one
+//
+// `allMutatingRoutes` is hand-written, and the two tests under it are what
+// guarantee the product's headline property: every administrative write honours
+// an If-Match precondition and bumps the configuration version. A route missing
+// from the list is not caught by those tests -- it is silently exempt from both,
+// and they still report success.
+//
+// That is a green suite meaning less than it appears, which this codebase has
+// been caught by before. Adding `DELETE /admin/clients/{clientID}` demonstrated
+// it: both tests passed with the new route entirely unexercised.
+//
+// Derived from the actual registrations rather than a second hand-written list,
+// so the only way to satisfy it is to write the case.
+func TestTheMutatingRouteListCoversEveryRegisteredRoute(t *testing.T) {
+	src, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// mux.HandleFunc("METHOD /admin/...", ...) for the methods that write.
+	re := regexp.MustCompile(`mux\.HandleFunc\("(POST|PATCH|PUT|DELETE) (/admin/[^"]*)"`)
+	found := re.FindAllStringSubmatch(string(src), -1)
+	if len(found) < 8 {
+		t.Fatalf("only %d mutating registrations parsed out of server.go; the regex "+
+			"has stopped matching and this guard is checking nothing", len(found))
+	}
+
+	listed := map[string]bool{}
+	for _, rt := range allMutatingRoutes() {
+		listed[rt.name] = true
+	}
+
+	var missing []string
+	for _, m := range found {
+		name := m[1] + " " + m[2]
+		if !listed[name] {
+			missing = append(missing, "  "+name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("%d mutating route(s) are registered but absent from "+
+			"allMutatingRoutes():\n%s\n\nEach is currently exempt from both the "+
+			"precondition test and the config-version test, and those tests pass "+
+			"without exercising it. Add a case rather than trusting the route.",
+			len(missing), strings.Join(missing, "\n"))
+	}
+}
+
 func TestEveryMutatingRouteHonoursPreconditions(t *testing.T) {
 	s, _ := newTestServer(t)
 

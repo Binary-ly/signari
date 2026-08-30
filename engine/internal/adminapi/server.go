@@ -112,6 +112,7 @@ const (
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /admin/clients/{clientID}", s.auth(ScopeClientsWrite, s.patchClient))
+	mux.HandleFunc("DELETE /admin/clients/{clientID}", s.auth(ScopeClientsWrite, s.deleteClient))
 	mux.HandleFunc("POST /admin/users", s.auth(ScopeUsersWrite, s.createUser))
 	mux.HandleFunc("POST /admin/clients", s.auth(ScopeClientsWrite, s.createClient))
 	mux.HandleFunc("POST /admin/clients/{clientID}/rotate-secret",

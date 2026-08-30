@@ -270,3 +270,95 @@ func (s *Server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
 func validateRedirectURI(raw string) error {
 	return clients.ValidateRedirectURI(raw)
 }
+
+// deleteClient removes a client and everything issued to it.
+//
+// # Why this needed to exist
+//
+// There was no way to remove a client over any HTTP surface. Every competitor
+// has one, and the absence had a second cost here: the Terraform provider's
+// destroy could only DISABLE a client and warn that the row remained, so
+// `terraform destroy` left state behind that Terraform believed it had removed.
+//
+// # Real deletion, and why that is safe here
+//
+// ADR-005 refuses soft deletes: a `deleted_at` column means every hot-path query
+// must remember `AND deleted_at IS NULL`, and forgetting once authenticates
+// against a client somebody deleted. Every foreign key pointing at core.clients
+// is ON DELETE CASCADE -- nineteen of them, covering codes, tokens, refresh
+// families, consents, pushed requests, device authorisations, UMA tickets and
+// SSF streams -- so the row and everything issued under it go together.
+//
+// core.audit_events carries client_id WITHOUT a foreign key, deliberately, so
+// the trail describing a client outlives the client. Deleting one does not erase
+// the record that it existed or what was done with it.
+func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	clientID := r.PathValue("clientID")
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+
+	var sessions, tokens int
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		var orgID string
+		if err := tx.QueryRow(ctx,
+			`SELECT org_id::text FROM core.clients WHERE client_id = $1`, clientID).Scan(&orgID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errNotFound
+			}
+			return err
+		}
+		if err := requireOrg(ctx, orgID); err != nil {
+			return err
+		}
+
+		// Counted before the cascade, for the audit record. "How much was revoked"
+		// is asked afterwards, and the rows are gone by then.
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM core.access_tokens WHERE client_id = $1`,
+			clientID).Scan(&tokens); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM core.session_clients WHERE client_id = $1`,
+			clientID).Scan(&sessions); err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM core.clients WHERE client_id = $1`, clientID); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{
+			Type: "admin.client_deleted", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, ClientID: clientID,
+			Detail: map[string]any{
+				"tokens_revoked":   tokens,
+				"sessions_touched": sessions,
+			},
+		})
+	})
+
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case errors.Is(err, errCrossOrg):
+		writeCrossOrg(w, err)
+		return
+	case errors.Is(err, errNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client_not_found"})
+		return
+	case err != nil:
+		s.log.Error("deleting a client", "client_id", clientID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"client_id":      clientID,
+		"tokens_revoked": tokens,
+		"config_version": version,
+	})
+}

@@ -89,6 +89,7 @@ Every mutation returns `config_version` in its body and `ETag` in its headers.
 | `GET /admin/clients/{clientID}` | One client |
 | `POST /admin/clients` | Register a client |
 | `PATCH /admin/clients/{clientID}` | Enable or disable |
+| `DELETE /admin/clients/{clientID}` | Remove the client and everything issued under it. Real deletion, not a flag (ADR-005): every code, token, refresh family, consent, pushed request and device authorisation cascades with it. The audit trail keeps its records — `audit_events.client_id` has no foreign key, so the history of a client outlives the client. Returns how many access tokens were revoked |
 | `POST /admin/clients/{clientID}/rotate-secret` | New secret, shown once. The previous one stops working immediately |
 
 ### Users

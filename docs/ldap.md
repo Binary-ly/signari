@@ -101,6 +101,27 @@ query including its status check, the same Argon2 parameters, the same
 throttling. An LDAP front end with its own quiet credential path is a way around
 every control the rest of the product has.
 
+### The guessing budget, and what a client sees when it is spent
+
+Failed binds are metered on two keys: **20 per address per 5 minutes** and **30
+per account per 15 minutes**. Both are the *same buckets the sign-in form uses*,
+not a second allowance of the same size — two doors onto one credential draw
+down one budget, or the number describes neither door.
+
+**Only failures are charged.** A correct bind costs nothing, so a mail server or
+a VPN concentrator that binds on every request is never throttled by its own
+success. The limits expire by themselves; there is no lockout and no
+administrator action needed to clear one.
+
+A bind refused for throttling answers **`busy` (51)**, not `invalidCredentials`
+(49). Every other failure — no such user, wrong password, deactivated account —
+is deliberately indistinguishable, because telling them apart is a user
+enumeration oracle for anyone who can open the port. Throttling is the exception
+because its answer is identical whether or not the account exists, so it
+discloses nothing, and because reporting it as a bad password sends an operator
+to rotate a credential that was correct while the guessing run that actually
+spent the budget stays invisible.
+
 ## Verified against
 
 `ldapsearch` and `ldapwhoami` from OpenLDAP, and `go-ldap` in the test suite —

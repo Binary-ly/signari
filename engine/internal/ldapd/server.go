@@ -156,8 +156,55 @@ type session struct {
 	dn       string
 }
 
+// peerKey carries the connection's remote address down to the Authenticator.
+//
+// A context value rather than a parameter on Authenticate, for the same reason
+// net/http puts the local address in the connection context: every LDAP
+// operation would otherwise have to grow an address argument to serve the one
+// that needs it, and each implementation of the interface would have to be
+// changed to ignore it.
+// ErrBusy is returned by an Authenticator that refused a bind without judging
+// the credential, because the caller has spent a failure budget.
+//
+// Distinct from an invalid credential on purpose: the two need different
+// answers on the wire, and only the Authenticator knows which happened.
+var ErrBusy = errors.New("too many recent authentication failures")
+
+type peerKey struct{}
+
+// WithPeerAddr records the address a bind arrived from.
+//
+// Exported so the value has one constructor. An Authenticator keys a guessing
+// budget on what comes back from PeerAddr, and a test or an embedder that had to
+// build the context value itself would be free to build a different one -- at
+// which point the budget silently stops applying and every test of it passes.
+func WithPeerAddr(ctx context.Context, addr string) context.Context {
+	return context.WithValue(ctx, peerKey{}, addr)
+}
+
+// PeerAddr returns the address the current LDAP connection came from, or "" when
+// called outside one.
+//
+// It exists so an Authenticator can rate-limit a bind by origin. It is the
+// address of the socket and never a value the client supplied, because a limit
+// an attacker can re-key by setting a field is not a limit.
+func PeerAddr(ctx context.Context) string {
+	addr, _ := ctx.Value(peerKey{}).(string)
+	return addr
+}
+
 func (s *Server) handle(ctx context.Context, c net.Conn) {
 	defer func() { _ = c.Close() }()
+
+	if a := c.RemoteAddr(); a != nil {
+		// Host only. Keeping the ephemeral port would give every reconnection a
+		// fresh budget, which is the same as having no budget at all.
+		host := a.String()
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		ctx = WithPeerAddr(ctx, host)
+	}
 
 	s.mu.Lock()
 	s.conns[c] = struct{}{}
@@ -383,6 +430,27 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 	}
 
 	id, err := s.auth.Authenticate(ctx, username, req.Password)
+	if errors.Is(err, ErrBusy) {
+		// Reported distinctly, and this is the one place a bind failure is
+		// allowed to be distinguishable.
+		//
+		// The collapse below exists to deny an ENUMERATION oracle: the answer
+		// must not differ between a user who exists and one who does not. A
+		// throttle answer differs on neither -- the budget is charged for an
+		// unknown username exactly as for a known one -- so it discloses
+		// nothing about the directory, only that this caller has spent its
+		// allowance, which that caller already knows.
+		//
+		// Saying "invalid credentials" here would be a lie with a cost. An
+		// operator whose service account is being throttled by somebody else's
+		// guessing run would read it as a wrong password and rotate a correct
+		// credential, and the attack would stay invisible behind a symptom that
+		// looks like their own misconfiguration.
+		s.log.Warn("ldap bind throttled", "username", username,
+			"remote", c.RemoteAddr().String())
+		return s.write(c, newMessage(messageID, newResult(appBindResponse,
+			resultBusy, "", "too many recent authentication failures")))
+	}
 	if err != nil || id == nil {
 		s.log.Info("ldap bind failed", "username", username,
 			"remote", c.RemoteAddr().String())

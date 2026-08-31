@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -272,4 +274,139 @@ func UserAttributes(ctx context.Context, tx pgx.Tx, userID, orgID string,
 		out = append(out, av)
 	}
 	return out, nil
+}
+
+// ApplyIDPAttributeMapping writes an upstream provider's mapped claims.
+//
+// # Only the claims an operator named
+//
+// The mapping is read first and each claim is looked up BY NAME in the verified
+// payload. Nothing else in that payload is decoded, so whoever runs the upstream
+// provider cannot write local state by adding a claim — they can only supply a
+// value for one this deployment already decided to trust them for.
+//
+// That direction matters more than the outbound one. If any access policy ever
+// reads an attribute, an unmapped copy-everything design would make the upstream
+// provider a participant in local authorization decisions.
+//
+// # Values are bounded, and over-length is refused rather than truncated
+//
+// The provider chooses these strings. A truncated value is a wrong value that
+// looks like a right one -- a department cut from "Engineering (Platform)" to
+// "Engineering" reads as correct and is not -- so an over-length value is
+// dropped with a count returned, and the caller logs it.
+//
+// # A failure here never fails the sign-in
+//
+// The caller treats the error as advisory. Somebody who has just authenticated
+// correctly at their provider must not be refused entry because an optional
+// profile field could not be written; the sign-in is the security decision and
+// the attribute is decoration on it.
+func ApplyIDPAttributeMapping(ctx context.Context, tx pgx.Tx, userID, orgID, providerID string,
+	rawClaims []byte, root *keys.RootKey) (applied, skipped int, err error) {
+
+	if len(rawClaims) == 0 {
+		return 0, 0, nil
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT m.upstream_claim, s.name, m.overwrite, m.max_length
+		FROM core.idp_attribute_map m
+		JOIN core.user_attribute_schema s ON s.id = m.attribute_id
+		WHERE m.provider_id = $1::uuid AND m.org_id = $2::uuid`, providerID, orgID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("reading the provider's attribute mapping: %w", err)
+	}
+	type mapping struct {
+		claim     string
+		attribute string
+		overwrite bool
+		maxLen    int
+	}
+	var maps []mapping
+	for rows.Next() {
+		var m mapping
+		if err := rows.Scan(&m.claim, &m.attribute, &m.overwrite, &m.maxLen); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		maps = append(maps, m)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	if len(maps) == 0 {
+		return 0, 0, nil
+	}
+
+	// Decoded once, into a generic map, AFTER establishing that at least one
+	// mapping exists. A provider nobody has configured a mapping for costs no
+	// parse at all.
+	var claims map[string]any
+	if err := json.Unmarshal(rawClaims, &claims); err != nil {
+		return 0, 0, fmt.Errorf("decoding the upstream claims: %w", err)
+	}
+
+	// What the user already has, so `overwrite = false` can mean something.
+	existing, err := UserAttributes(ctx, tx, userID, orgID, root)
+	if err != nil {
+		return 0, 0, err
+	}
+	present := map[string]bool{}
+	for _, e := range existing {
+		// A value that exists but cannot be read (erased) still counts as
+		// present: overwriting it would write new personal data for a subject
+		// whose data was destroyed.
+		present[e.Name] = true
+	}
+
+	for _, m := range maps {
+		v, ok := claims[m.claim]
+		if !ok || v == nil {
+			continue
+		}
+		value := claimToString(v)
+		if value == "" {
+			continue
+		}
+		if len(value) > m.maxLen {
+			skipped++
+			continue
+		}
+		if present[m.attribute] && !m.overwrite {
+			continue
+		}
+		if err := SetUserAttribute(ctx, tx, userID, orgID, m.attribute, value, root); err != nil {
+			// One unmappable attribute must not abandon the rest.
+			skipped++
+			continue
+		}
+		applied++
+	}
+	return applied, skipped, nil
+}
+
+// claimToString renders a JSON claim as the text an attribute stores.
+//
+// Objects and arrays return "" rather than their JSON encoding. Storing
+// `{"a":1}` in a field an operator declared as a string produces a value that
+// every consumer downstream has to guess the shape of, and the honest answer to
+// "map this object onto a string attribute" is that it does not map.
+func claimToString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	case float64:
+		// %v on a float64 gives 1e+06 for a million, which is not what anybody
+		// means by an employee number.
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	default:
+		return ""
+	}
 }

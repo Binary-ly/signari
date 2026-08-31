@@ -312,6 +312,32 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	// The provider's mapped attributes, if the operator configured any.
+	//
+	// Advisory: a failure is logged and the sign-in continues. Somebody who just
+	// authenticated correctly at their provider must not be refused entry
+	// because an optional profile field could not be written -- the sign-in is
+	// the security decision, and the attribute is decoration on it.
+	//
+	// Only claims the operator NAMED are read. Nothing else in the upstream
+	// payload is decoded, so whoever runs that provider cannot write local state
+	// by adding a claim to their tokens.
+	if s.root != nil && userID != "" {
+		applied, skipped, aerr := store.ApplyIDPAttributeMapping(ctx, tx, userID,
+			provider.OrgID, provider.ID, ext.RawClaims, s.root)
+		switch {
+		case aerr != nil:
+			s.log.Error("applying the provider's attribute mapping", "err", aerr,
+				"provider", provider.Slug, "correlation_id", correlationID(ctx))
+		case skipped > 0:
+			// Named, because a value silently dropped for being over-length is
+			// a profile field an operator will otherwise chase for an afternoon.
+			s.log.Warn("some mapped attributes were refused",
+				"provider", provider.Slug, "applied", applied, "skipped", skipped,
+				"correlation_id", correlationID(ctx))
+		}
+	}
+
 	// A link performed by an already signed-in user does NOT re-establish the
 	// session -- they already have one, and minting a second would rotate their
 	// sid for no reason.

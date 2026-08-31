@@ -182,9 +182,10 @@ func (c Config) oidcIdentity(ctx context.Context, hc *http.Client, ts *TokenSet,
 	}
 
 	id := ExternalIdentity{
-		Subject: claims.Subject,
-		Email:   claims.Email,
-		Name:    claims.Name,
+		Subject:   claims.Subject,
+		Email:     claims.Email,
+		Name:      claims.Name,
+		RawClaims: claims.Raw,
 	}
 
 	switch c.Kind {
@@ -203,6 +204,9 @@ func (c Config) oidcIdentity(ctx context.Context, hc *http.Client, ts *TokenSet,
 // idTokenClaims is only what we read. Anything not listed cannot be trusted by
 // accident.
 type idTokenClaims struct {
+	// Raw is the verified payload, for operator-configured attribute mapping.
+	// Not a claim; excluded from JSON so a provider cannot set it.
+	Raw      []byte          `json:"-"`
 	Issuer   string          `json:"iss"`
 	Subject  string          `json:"sub"`
 	Audience json.RawMessage `json:"aud"`
@@ -267,6 +271,19 @@ func (c Config) verifyIDToken(ctx context.Context, hc *http.Client, raw, nonce s
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, fmt.Errorf("the id_token claims did not parse: %w", err)
 	}
+	// The VERIFIED payload, kept so an operator-configured attribute mapping can
+	// read a claim this struct does not name.
+	//
+	// This does not weaken the rule above it. Nothing reads from here except by
+	// exact claim name, from a mapping the operator wrote — so "anything not
+	// listed cannot be trusted by accident" still holds; the list has simply
+	// moved from a Go struct to per-provider configuration for the claims that
+	// were always going to be deployment-specific.
+	//
+	// Assigned AFTER verification, never before. A payload that failed signature
+	// checking must not be reachable from anywhere, and the way that goes wrong
+	// is somebody keeping the bytes early "to log them".
+	claims.Raw = payload
 
 	if want := c.issuer(); want != "" && claims.Issuer != want {
 		// Microsoft's issuer is per-tenant, so `common` deployments legitimately

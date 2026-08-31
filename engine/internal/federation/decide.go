@@ -45,6 +45,21 @@ type ExternalIdentity struct {
 	// provider's policy allows -- see Policy.RequireVerifiedEmail.
 	EmailVerified bool
 	Name          string
+
+	// RawClaims is the verified upstream payload, for operator-configured
+	// attribute mapping only.
+	//
+	// Deliberately NOT a decoded map. A map invites `ext.Claims["role"]` at some
+	// future call site, and the moment a decision reads an upstream claim
+	// directly, the provider is deciding local authorization. Keeping it as
+	// bytes means the only way to reach a claim is to ask for one by name
+	// through the mapping, which is where the operator's consent to trust it
+	// lives.
+	//
+	// Nil for providers that supply no id_token payload, which is not an error:
+	// an attribute mapping over a provider that returns nothing simply maps
+	// nothing.
+	RawClaims []byte
 }
 
 // Policy is the provider's configuration.

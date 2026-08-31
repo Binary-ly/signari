@@ -65,6 +65,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/ldapd"
 	"signari.dev/engine/internal/mail"
+	"signari.dev/engine/internal/metrics"
 	"signari.dev/engine/internal/migrate"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/oidfed"
@@ -1596,6 +1597,46 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 				"org_id", radiusOrgID, "eap_tls", eapCfg != nil)
 			if err := radiusSrv.Serve(ctx, pc); err != nil {
 				log.Error("RADIUS stopped", "err", err)
+			}
+		}()
+	}
+
+	// Metrics.
+	//
+	// On its own listener, off unless an address is given, exactly like the admin
+	// API. Serving them from the public listener would publish request rates,
+	// error rates and sign-in failure counts to anybody who can reach the sign-in
+	// page -- which is, for an identity provider, the whole internet. Those are
+	// not secrets individually and together they are a map of the deployment:
+	// when it is busiest, when it is degraded, and whether an attack is working.
+	//
+	// A separate address also means the usual advice ("bind it to the internal
+	// network") is something an operator can actually follow, rather than being
+	// told to put a path exception in a proxy.
+	metricsAddr := os.Getenv("SIGNARI_METRICS_ADDR")
+	if metricsAddr != "" {
+		// Built only when it will be served. Instrumenting a process nobody can
+		// scrape is work done for nothing, and the nil case is what keeps the
+		// middleware out of Routes() entirely.
+		met := metrics.NewEngine()
+		srv.SetMetrics(met)
+		go func() {
+			mm := http.NewServeMux()
+			mm.Handle("GET /metrics", met.Handler())
+			mh := &http.Server{
+				Addr:              metricsAddr,
+				Handler:           mm,
+				ReadHeaderTimeout: 10 * time.Second,
+			}
+			go func() {
+				<-ctx.Done()
+				sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout())
+				defer cancel()
+				_ = mh.Shutdown(sctx)
+			}()
+			log.Info("metrics listening", "addr", metricsAddr)
+			if err := mh.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("metrics listener stopped", "err", err)
 			}
 		}()
 	}

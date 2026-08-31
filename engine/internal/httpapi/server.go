@@ -27,6 +27,7 @@ import (
 	"signari.dev/engine/internal/fidomds"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
+	"signari.dev/engine/internal/metrics"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/pages"
@@ -149,7 +150,19 @@ type Server struct {
 
 	krbConfig kerberos.Config
 	krbKeytab *keytab.Keytab
+
+	// metrics is nil when no metrics listener is configured, and Routes() then
+	// adds no middleware at all rather than incrementing counters nobody can
+	// read. Fifteen tests build this struct as a literal and none of them should
+	// have to know about instrumentation.
+	metrics *metrics.Engine
 }
+
+// SetMetrics supplies the metric handles, or nil for none.
+//
+// Set after construction like the other optional collaborators: the registry is
+// owned by the serve command, which decides whether to expose it at all.
+func (s *Server) SetMetrics(e *metrics.Engine) { s.metrics = e }
 
 // SetClientCAs supplies the authorities that may issue client certificates.
 //
@@ -313,11 +326,62 @@ func (s *Server) Routes() http.Handler {
 	// sits outside everything else, so a panic in any middleware -- not only in a
 	// route handler -- is still caught, logged in this server's format, and
 	// answered.
-	return s.withCorrelation(s.withRecovery(s.withSecurityHeaders(s.withCORS(s.mux()))))
+	inner := http.Handler(s.mux())
+	if s.metrics != nil {
+		// INNERMOST, wrapping the mux directly, and this position is load-bearing
+		// rather than a preference.
+		//
+		// `http.ServeMux` sets `Request.Pattern` on the request object it
+		// dispatches. The wrappers below hand the mux a request they built with
+		// `WithContext`, which is a different object -- so a metrics middleware
+		// placed outside them holds a request whose Pattern is never filled in,
+		// and every series comes out labelled `route="other"`.
+		//
+		// That was not a theory: the first version wrapped Routes() from the
+		// serve command and a live scrape showed `route="other"` for /healthz
+		// and the discovery document, both of which are ordinary registered
+		// routes. The unit test passed throughout, because it wrapped a bare mux.
+		//
+		// The cost of being innermost is that a panic is counted by the recovery
+		// handler's 500 rather than here -- which is why recovery stays outside,
+		// and why latency measured here excludes the wrappers' own work. Both are
+		// small next to labels that are always "other".
+		inner = s.metrics.Middleware(inner)
+	}
+	return s.withCorrelation(s.withRecovery(s.withSecurityHeaders(s.withCORS(inner))))
+}
+
+// recordingMux is an http.ServeMux that also declares each pattern to the
+// metrics package.
+//
+// Written as a wrapper with the same method signature so the 123 registrations
+// below did not have to change. That matters beyond tidiness: a scheme where
+// each call site had to remember a second call is one where the route added
+// next week is the one that gets missed, and a missing declaration turns into a
+// route label of "other" -- a silent hole in the very dashboard somebody added
+// the route to watch.
+type recordingMux struct{ *http.ServeMux }
+
+func (m recordingMux) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	metrics.RegisterRoutePattern(routeLabel(pattern))
+	m.ServeMux.HandleFunc(pattern, h)
+}
+
+func (m recordingMux) Handle(pattern string, h http.Handler) {
+	metrics.RegisterRoutePattern(routeLabel(pattern))
+	m.ServeMux.Handle(pattern, h)
+}
+
+// routeLabel strips the method from "GET /path", which is already its own label.
+func routeLabel(pattern string) string {
+	if i := strings.IndexByte(pattern, '/'); i >= 0 {
+		return pattern[i:]
+	}
+	return pattern
 }
 
 func (s *Server) mux() *http.ServeMux {
-	mux := http.NewServeMux()
+	mux := recordingMux{http.NewServeMux()}
 	mux.HandleFunc("GET "+oidc.PathDiscovery, s.handleDiscovery)
 	mux.HandleFunc("GET "+oidc.PathJWKS, s.handleJWKS)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
@@ -526,7 +590,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /account/passkeys/delete", s.handlePasskeyDelete)
 	mux.HandleFunc("POST /login/passkey/begin", s.handlePasskeyLoginBegin)
 	mux.HandleFunc("POST /login/passkey/finish", s.handlePasskeyLoginFinish)
-	return mux
+	return mux.ServeMux
 }
 
 func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {

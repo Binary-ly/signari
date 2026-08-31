@@ -38,6 +38,7 @@ effect at all.
 | `SIGNARI_TLS_CERT`, `SIGNARI_TLS_KEY` | Serve HTTPS. Without them the engine warns: browsers refuse `__Host-` cookies over plaintext on anything but localhost, so sign-in silently fails to persist |
 | `SIGNARI_TLS_CLIENT_CA` | Authorities that may issue client certificates for RFC 8705 mutual-TLS. Absent, `tls_client_auth` is refused rather than relaxed |
 | `SIGNARI_ADMIN_ADDR` | Listen address for the admin API. Absent, it does not start |
+| `SIGNARI_METRICS_ADDR` | Listen address for `GET /metrics` in the Prometheus text format. Absent, nothing is collected and nothing is served. **Its own listener, like the admin API**: serving metrics from the public listener would publish request rates, error rates and sign-in failure counts to anyone who can reach the sign-in page, which for an identity provider is the internet. No label ever carries an identifier — see below |
 | `SIGNARI_SHUTDOWN_DRAIN` | How long to keep serving after SIGTERM before the listener closes, default `5s`. `/readyz` answers 503 for this whole window, so whatever routes traffic here has time to take the node out of rotation before the socket goes. Set it above your readiness probe's interval; `0` disables it, which is right locally and wrong behind a load balancer |
 | `SIGNARI_SHUTDOWN_TIMEOUT` | How long in-flight requests may take to finish, default `20s`. Keep it **under** the orchestrator's grace period before SIGKILL — a timeout longer than the one that kills you never runs. Also caps the drain |
 | `SIGNARI_ADMIN_INSECURE` | `1` permits the admin API to serve plaintext HTTP. Without it, an admin listener configured with no `SIGNARI_TLS_CERT` refuses to start rather than putting a bearer token that can erase a subject on the wire in clear. Only reasonable bound to loopback behind a terminator you control |
@@ -261,6 +262,39 @@ Set on the OUTPOST, not the core. See [outposts.md](outposts.md).
 Outpost kinds: `ldap`, `radius`, `proxy`, and `desktop` — the last for a
 credential provider or PAM module, which may verify a second factor as well as a
 password. See [desktop-login.md](desktop-login.md).
+
+## Metrics, and the label rule
+
+`SIGNARI_METRICS_ADDR` exposes `GET /metrics` in the Prometheus text format
+(version 0.0.4). Six series: HTTP responses by route pattern, method and status
+class; request latency; sign-ins by outcome; tokens by grant type; authentication
+failures by mechanism.
+
+**No label ever carries an identifier** — not a user id, subject, email,
+username, client id, session id, token or IP address. This is enforced
+structurally rather than by convention: every labelled metric declares the
+complete set of values each label may take, and a value outside that set is
+recorded as `other`. A bug that passes a subject id where an outcome was meant
+produces `{outcome="other"}` and never the id.
+
+The reason it is enforced this hard is that a metric leaves the boundary this
+system controls. It is scraped into a time-series database, retained for months
+and copied into dashboards, none of which
+`POST /admin/subjects/{id}/erase` can reach. An identifier that reaches a label
+is permanent, which makes it the one instrumentation mistake with no remediation.
+The second cost lands sooner: one series per user is how a Prometheus server runs
+out of memory, and it takes the monitoring down at the moment it is needed.
+
+The HTTP counter is labelled by the **route pattern**, `/admin/users/{userID}`,
+never the request path — a path containing a uuid *is* an identifier, and that is
+how this mistake is normally made without anybody writing an identifier anywhere.
+An unmatched request reports `route="other"` rather than what was probed for, so
+a scanner cannot choose the label set.
+
+There is deliberately no per-client, per-user or per-tenant series. This endpoint
+answers "is the deployment healthy", never "what is this tenant doing" — the
+second question belongs to the audit trail, which is queryable,
+access-controlled and erasable.
 
 ## FIPS 140-3
 

@@ -22,6 +22,25 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, username, password string) error
 }
 
+// Authorizer decides what network access a successful authentication grants.
+//
+// Separate from Authenticator on purpose, and optional: a deployment that has
+// configured no network authorisation implements only the first, and its
+// Access-Accept is byte-for-byte what it always was.
+//
+// The split also keeps the two questions apart in the type system. "Is this
+// person who they say they are" and "which VLAN do they go on" are answered by
+// different tables and have different failure modes -- an authorisation lookup
+// that fails must not turn a correct authentication into a rejection, and a
+// single method returning both would make that easy to get wrong.
+type Authorizer interface {
+	// Authorize returns what to attach to the Access-Accept. An error is
+	// advisory: the caller logs it and sends an Accept with no attributes,
+	// because refusing somebody who authenticated correctly over a failed
+	// lookup of an optional field would be the wrong trade.
+	Authorize(ctx context.Context, username string) (Authorization, error)
+}
+
 // Client is a network device permitted to ask.
 type Client struct {
 	// Net is the range the device may connect from. RADIUS has no client
@@ -49,7 +68,11 @@ type Config struct {
 type Server struct {
 	cfg  Config
 	auth Authenticator
-	log  *slog.Logger
+	// authz is optional. nil means the Access-Accept carries no attributes,
+	// which is what it always did -- so a deployment that has configured no
+	// network authorisation sees no change at all.
+	authz Authorizer
+	log   *slog.Logger
 
 	// clientsMu guards the device list, which is REPLACED while the listener is
 	// running.
@@ -107,6 +130,13 @@ func (s *Server) ReplaceClients(clients []Client) error {
 	}
 	return nil
 }
+
+// SetAuthorizer supplies network authorisation, or nil for none.
+//
+// Set after construction like the engine's other optional collaborators, so a
+// deployment that has configured none passes nothing and every existing caller
+// of New keeps compiling.
+func (s *Server) SetAuthorizer(a Authorizer) { s.authz = a }
 
 func New(cfg Config, auth Authenticator, log *slog.Logger) (*Server, error) {
 	if len(cfg.Clients) == 0 {
@@ -258,7 +288,24 @@ func (s *Server) handle(ctx context.Context, conn net.PacketConn, addr net.Addr,
 
 	s.log.Info("RADIUS authentication succeeded", "client", client.Name,
 		"username", string(username))
-	out, err := Response(p, CodeAccessAccept, secret, nil)
+
+	// Network authorisation, when the deployment has any.
+	//
+	// Advisory throughout: a failed lookup logs and sends an Accept with no
+	// attributes. Refusing somebody who authenticated correctly because an
+	// optional VLAN mapping could not be read would turn a directory hiccup
+	// into a building full of people who cannot get on the network.
+	var attrs []Attribute
+	if s.authz != nil {
+		auth, aerr := s.authz.Authorize(ctx, strings.TrimSpace(string(username)))
+		if aerr != nil {
+			s.log.Error("reading RADIUS authorisation", "client", client.Name, "err", aerr)
+		} else {
+			attrs = auth.Attributes()
+		}
+	}
+
+	out, err := Response(p, CodeAccessAccept, secret, attrs)
 	if err != nil {
 		return
 	}

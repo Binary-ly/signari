@@ -659,7 +659,17 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// deciding whether to withdraw an issuance already approved. It can turn an
 	// allow into a deny and can never turn a deny into an allow, because on a
 	// refused redemption it is not reached at all.
-	if hook, herr := store.ConsultTokenProvider(ctx, s.db,
+	// `tx`, NOT s.db. The transaction is already open at this point, so taking a
+	// second connection from the pool to read one row is a deadlock: under
+	// concurrent redemptions every goroutine holds a transaction and waits for a
+	// connection that only another goroutine's completion can free. It hung the
+	// suite for eight minutes before this was found, which is what a pool
+	// exhaustion looks like from the outside -- nothing crashes, everything
+	// stops.
+	//
+	// Reading inside the transaction is also the correct snapshot: the provider
+	// registration is read as of the same instant as the code being redeemed.
+	if hook, herr := store.ConsultTokenProvider(ctx, tx,
 		s.providerClient, s.log, consumed.OrgID, store.TokenHookRequest{
 			Subject:  consumed.UserID,
 			ClientID: c.ClientID,

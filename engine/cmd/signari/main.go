@@ -1649,12 +1649,17 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			return fmt.Errorf("configuring EAP-TLS: %w", eerr)
 		}
 
+		radiusAuth := httpapi.NewRADIUSAuthenticator(pool,
+			passwords.NewHasher(passwords.MemoryBudgetMiB), radiusOrgID, log)
 		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg},
-			httpapi.NewRADIUSAuthenticator(pool,
-				passwords.NewHasher(passwords.MemoryBudgetMiB), radiusOrgID, log), log)
+			radiusAuth, log)
 		if rerr2 != nil {
 			return fmt.Errorf("%w -- register one with `signari radius add-client`", rerr2)
 		}
+		// Network authorisation: a VLAN and a filter name per group, and nothing
+		// about the person. A deployment that has configured none sees an
+		// Access-Accept identical to what it always sent.
+		radiusSrv.SetAuthorizer(radiusAuth)
 
 		// Re-read the devices while serving. Without this, disabling an access
 		// point did nothing until a restart: the listener kept answering a

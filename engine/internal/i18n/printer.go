@@ -137,6 +137,69 @@ func (p *Printer) T(key string, data ...any) template.HTML {
 	return p.render(key, p.form(key, "other"), nil, data...)
 }
 
+// Text renders a message for somewhere that is not HTML -- today, email.
+//
+// # Why this exists rather than a cast on T
+//
+// T escapes every substituted value for HTML, which is right for a page and
+// wrong for a plain-text email: an address containing an apostrophe arrives as
+// `o&#39;brien@example.test`, and a message mentioning "you & your team" arrives
+// with an `&amp;`. Somebody reading their password-reset email sees mangled
+// text from their identity provider, which is exactly the signal people are
+// taught to read as a forgery.
+//
+// So this substitutes without escaping. That is safe HERE and would not be in a
+// page: the output goes into an email body as bytes, never into markup, so
+// there is no context for an injected `<script>` to be interpreted in. The
+// header-injection risk that DOES exist for mail -- a newline in a subject line
+// -- is handled where it belongs, in mail.stripNewlines, at the point the
+// header is written.
+//
+// It is deliberately a separate method rather than a flag on T. A boolean
+// parameter would be got wrong at exactly one call site, and the wrong value in
+// the HTML direction is a scripting hole.
+func (p *Printer) Text(key string, data ...any) string {
+	text := p.form(key, "other")
+	if !strings.ContainsRune(text, '{') {
+		return text
+	}
+
+	lookup := func(name string) (string, bool) {
+		for _, d := range data {
+			if v, ok := field(d, name); ok {
+				return stringify(v)
+			}
+		}
+		return "", false
+	}
+
+	var out strings.Builder
+	for {
+		i := strings.IndexRune(text, '{')
+		if i < 0 {
+			out.WriteString(text)
+			break
+		}
+		j := strings.IndexRune(text[i:], '}')
+		if j < 0 {
+			out.WriteString(text)
+			break
+		}
+		out.WriteString(text[:i])
+		name := text[i+1 : i+j]
+		if v, ok := lookup(name); ok {
+			out.WriteString(v)
+		} else {
+			// Left visible rather than blanked, for the same reason a missing
+			// key renders as the key: a message with a hole in it is a bug
+			// report, and a message with a silent gap is a mystery.
+			out.WriteString("{" + name + "}")
+		}
+		text = text[i+j+1:]
+	}
+	return out.String()
+}
+
 // N renders a message that counts something.
 //
 // The form is chosen by CLDR for this language, so a caller never decides

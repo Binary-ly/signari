@@ -160,27 +160,20 @@ func (s *Server) beginRecovery(ctx context.Context, identifier string) error {
 // the independent channel is the point regardless of where the action lives.
 func (s *Server) notifyRecovery(ctx context.Context, userID, token, cancelTok string, effective time.Time) error {
 	wait := time.Until(effective).Round(time.Minute)
-	emailBody := fmt.Sprintf(`Someone asked to reset the password for your account.
 
-If this was you, the reset becomes available in %s:
+	// The account holder's language, not the requester's. The requester here may
+	// be the attacker -- that is the whole reason this notice exists.
+	tr := s.notifierFor(ctx, userID)
+	data := map[string]any{
+		"Wait":      wait.String(),
+		"ResetURL":  fmt.Sprintf("%s/recover/reset?token=%s", s.cfg.Issuer, token),
+		"CancelURL": fmt.Sprintf("%s/recover/cancel?token=%s", s.cfg.Issuer, cancelTok),
+	}
 
-  %s/recover/reset?token=%s
-
-If it was NOT you, cancel it now -- no sign-in needed:
-
-  %s/recover/cancel?token=%s
-
-The delay is deliberate. It exists so that a reset you did not ask for cannot
-happen without you having a chance to stop it.
-
-This message was sent to every address on the account, including ones the
-request did not come from.`,
-		wait, s.cfg.Issuer, token, s.cfg.Issuer, cancelTok)
-
-	smsBody := "A password reset was requested on your account. If this was not " +
-		"you, check your email now for a one-tap link to cancel it -- no sign-in needed."
-
-	return s.notifyAccount(ctx, userID, "Password reset requested", emailBody, smsBody)
+	return s.notifyAccount(ctx, userID,
+		tr.Text("mail.recovery.requested.subject"),
+		tr.Text("mail.recovery.requested.body", data),
+		tr.Text("sms.recovery.requested"))
 }
 
 // handleRecoverCancel kills a pending request. No sign-in required, by design:
@@ -393,12 +386,11 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	// Told after the fact, on every channel: a completed reset is exactly what a
 	// victim needs to know about immediately, on an address the attacker may not
 	// hold.
-	_ = s.notifyAccount(ctx, req.UserID, "Your password was changed",
-		"Your account password has just been changed, and every signed-in "+
-			"session was ended.\n\nIf this was not you, reset it again immediately "+
-			"and contact your administrator.",
-		"Your account password was just changed and all sessions ended. If this "+
-			"was not you, reset it again now and contact your administrator.")
+	trChanged := s.notifierFor(ctx, req.UserID)
+	_ = s.notifyAccount(ctx, req.UserID,
+		trChanged.Text("mail.password.changed.subject"),
+		trChanged.Text("mail.password.changed.body"),
+		trChanged.Text("sms.password.changed"))
 	s.renderPage(w, r, "done", map[string]any{})
 }
 

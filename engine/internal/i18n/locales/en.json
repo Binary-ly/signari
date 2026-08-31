@@ -241,5 +241,31 @@
 
   "bridge.title": "Signing you in&hellip;",
   "bridge.continueprompt": "Continue to finish signing in.",
-  "bridge.noscript": "JavaScript is disabled. Continue to complete signing in."
+  "bridge.noscript": "JavaScript is disabled. Continue to complete signing in.",
+
+  "mail.signincode.subject": "Your sign-in code",
+  "mail.signincode.body": "Your sign-in code is {Code}\n\nIt expires in {Minutes} minutes and can be used once.\n\nIf you did not just try to sign in, somebody has your password. Change it, and tell whoever runs your systems.\n",
+
+  "mail.confirmaddress.subject": "Confirm this address for sign-in codes",
+  "mail.confirmaddress.body": "Your confirmation code is {Code}\n\nIt expires in {Minutes} minutes.\n\nIf you did not ask to use this address for sign-in codes, somebody may be signed in to your account. Change your password.\n",
+
+  "mail.recovery.requested.subject": "Password reset requested",
+  "mail.recovery.requested.body": "Someone asked to reset the password for your account.\n\nIf this was you, the reset becomes available in {Wait}:\n\n  {ResetURL}\n\nIf it was NOT you, cancel it now -- no sign-in needed:\n\n  {CancelURL}\n\nThe delay is deliberate. It exists so that a reset you did not ask for cannot happen without you having a chance to stop it.\n\nThis message was sent to every address on the account, including ones the request did not come from.",
+  "sms.recovery.requested": "A password reset was requested on your account. If this was not you, check your email now for a one-tap link to cancel it -- no sign-in needed.",
+
+  "mail.password.changed.subject": "Your password was changed",
+  "mail.password.changed.body": "Your account password has just been changed, and every signed-in session was ended.\n\nIf this was not you, reset it again immediately and contact your administrator.",
+  "sms.password.changed": "Your account password was just changed and all sessions ended. If this was not you, reset it again now and contact your administrator.",
+
+  "mail.passkey.added.subject": "A new passkey was added to your account",
+  "mail.passkey.added.body": "A passkey named {Label} was added to your account on {When}.\n\nIf you added it, there is nothing to do.\n\nIf you did NOT add it, someone else may have had access to your account. Sign in, remove the passkey you do not recognise, and change your password. If you cannot sign in, contact support at {Support}.\n",
+  "sms.passkey.added": "A new passkey ({Label}) was just added to your account. If this was not you, sign in and remove it, then change your password.",
+
+  "mail.passkey.removed.subject": "A passkey was removed from your account",
+  "mail.passkey.removed.body": "The passkey {Label} was removed from your account on {When}.\n\nIf you removed it, there is nothing to do.\n\nIf you did NOT remove it, someone else may have access to your account. Sign in, check the passkeys listed there, and change your password. If you cannot sign in, contact support at {Support}.\n",
+  "sms.passkey.removed": "The passkey {Label} was just removed from your account. If this was not you, sign in and change your password.",
+
+  "mail.recoverycodes.replaced.subject": "Your recovery codes were replaced",
+  "mail.recoverycodes.replaced.body": "Your account's recovery codes were just regenerated. The previous set no longer works.\n\nIf you did not do this, someone else may have access to your account: change your password and review your sign-in methods.",
+  "sms.recoverycodes.replaced": "Your account's recovery codes were just replaced. If this was not you, change your password now."
 }

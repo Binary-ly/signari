@@ -123,12 +123,11 @@ func (s *Server) handleRecoveryCodesRegenerate(w http.ResponseWriter, r *http.Re
 
 	// Best-effort, after the commit: the codes are already replaced, so a notice
 	// that fails must not undo that.
-	_ = s.notifyAccount(ctx, userID, "Your recovery codes were replaced",
-		"Your account's recovery codes were just regenerated. The previous set no "+
-			"longer works.\n\nIf you did not do this, someone else may have access to "+
-			"your account: change your password and review your sign-in methods.",
-		"Your account's recovery codes were just replaced. If this was not you, "+
-			"change your password now.")
+	tr := s.notifierFor(ctx, userID)
+	_ = s.notifyAccount(ctx, userID,
+		tr.Text("mail.recoverycodes.replaced.subject"),
+		tr.Text("mail.recoverycodes.replaced.body"),
+		tr.Text("sms.recoverycodes.replaced"))
 
 	// Shown once, on the same page enrolment uses.
 	htmlPageHeaders(w)

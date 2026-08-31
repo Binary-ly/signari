@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/i18n"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/store"
@@ -92,6 +93,40 @@ func (s *Server) accountChannels(ctx context.Context, userID string) ([]notifyCh
 // the entire point when the requester controls one. The first error is returned
 // so a caller that needs to know "did anything get through" still can, while the
 // delivery to every reachable channel is attempted regardless.
+// # The language is the ACCOUNT HOLDER's, never the request's
+//
+// This is the half that looks like a detail and is a security property.
+//
+// These notices exist to reach the account holder on a channel whoever
+// triggered the action may not control. When the trigger is an attacker --
+// which is the case the notice is FOR -- the request carries the attacker's
+// browser language. Rendering the warning from `Accept-Language` would send the
+// victim "your password was changed" in a language they may not read, on the
+// one message whose entire job is to be understood immediately. The notice
+// arrives, says the right thing, and is useless, while the deployment records
+// that the person was told.
+//
+// So the language comes from `core.users.locale`, falling back to the
+// deployment default when the account has no preference recorded. Interactive
+// messages are the opposite case and deliberately use the request instead: a
+// sign-in code is read by whoever just submitted the form.
+func (s *Server) notifierFor(ctx context.Context, userID string) *i18n.Printer {
+	bundle := s.pageSet().Bundle()
+	var locale *string
+	if err := s.db.QueryRow(ctx,
+		`SELECT locale FROM core.users WHERE id = $1::uuid`, userID).Scan(&locale); err != nil {
+		// A notice in the default language beats no notice. This runs on the
+		// path that tells somebody their account was touched, and failing it
+		// over a missing preference would be the wrong trade every time.
+		s.log.Warn("reading a user's locale for a notice", "user_id", userID, "err", err)
+		return bundle.For(i18n.Default)
+	}
+	if locale == nil || *locale == "" {
+		return bundle.For(i18n.Default)
+	}
+	return bundle.For(*locale)
+}
+
 func (s *Server) notifyAccount(ctx context.Context, userID, subject, emailBody, smsBody string) error {
 	chans, err := s.accountChannels(ctx, userID)
 	if err != nil {

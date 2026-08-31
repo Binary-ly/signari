@@ -94,6 +94,40 @@ The last four were read by the code and documented nowhere, which meant an
 authenticated relay — the normal case — could not be configured from the
 documentation.
 
+### Every message is translated, and every message is plain text
+
+The seven messages this engine sends — sign-in code, address confirmation,
+password-reset request, password changed, passkey added, passkey removed,
+recovery codes replaced — are message-catalogue keys under `mail.*` and `sms.*`,
+so they translate with everything else and can be overridden per deployment
+through the `locales/` directory under `SIGNARI_THEME_DIR`, like any other
+string.
+
+**There is no HTML.** That is a decision, not a gap. HTML mail from an identity
+provider is a phishing lesson: it teaches people that a message about their
+account legitimately contains a styled button they are expected to click, which
+is the exact shape of the attack such a message would warn them about. Every
+competitor ships HTML templates; shipping them here would close a feature gap by
+training users into the failure mode. So the answer stays no, and the reason is
+recorded rather than the feature quietly missing.
+
+**Account-security notices are written in the account holder's language, taken
+from `core.users.locale` — never from the request.** This is the half that looks
+like a detail and is not. Those notices exist to reach the account holder when
+somebody *else* triggered the action, and in that case the request carries the
+attacker's `Accept-Language`. Rendering "your password was changed" from the
+request would deliver the single most important message this system produces in
+a language the victim may not read: it would arrive, say the right thing, be
+useless, and the deployment would record that they were told.
+
+The address-confirmation mail is the one genuinely interactive message and does
+use the request's language — the person at the form is demonstrably the person
+who will read it. A sign-in code uses the account holder's, because it is
+delivered to the address on the account: if the person at the form is not the
+holder, that email is the one telling them somebody has their password.
+
+A user with no recorded preference falls back to the deployment default.
+
 ## SMS second factor
 
 See [SMS](sms.md), including why it is the weakest factor offered here.

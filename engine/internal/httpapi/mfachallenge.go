@@ -151,15 +151,26 @@ func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
 		return
 	}
 
+	// The ACCOUNT HOLDER's language, not the requester's.
+	//
+	// It is tempting to use the request here on the grounds that whoever is
+	// signing in is about to read this. But the code is delivered to the
+	// ADDRESS ON THE ACCOUNT, so by construction the reader is the account
+	// holder -- and if the person at the form is not them, this message is the
+	// one telling them somebody has their password. That reader needs their own
+	// language, not the browser language of whoever triggered it.
+	//
+	// The address-confirmation mail in enrol.go is the genuinely interactive
+	// case and uses the request instead: there, the person at the form is
+	// demonstrably the person who will read it.
+	tr := s.notifierFor(ctx, userID)
 	if err := s.mailer.Send(ctx, mail.Message{
 		To:      address,
-		Subject: "Your sign-in code",
-		Body: fmt.Sprintf(
-			"Your sign-in code is %s\n\n"+
-				"It expires in %d minutes and can be used once.\n\n"+
-				"If you did not just try to sign in, somebody has your password. "+
-				"Change it, and tell whoever runs your systems.\n",
-			code, int(store.EmailOTPLifetime.Minutes())),
+		Subject: tr.Text("mail.signincode.subject"),
+		Body: tr.Text("mail.signincode.body", map[string]any{
+			"Code":    code,
+			"Minutes": int(store.EmailOTPLifetime.Minutes()),
+		}),
 	}); err != nil {
 		// The code is already stored, so a resend can succeed later. Logged
 		// rather than surfaced: telling the form that mail failed would confirm

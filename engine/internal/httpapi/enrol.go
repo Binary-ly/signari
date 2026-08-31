@@ -585,14 +585,16 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// The request's language: this person is enrolling right now, on this
+		// form, and will read the mail in a moment.
+		tr := s.tr(r)
 		if err := s.mailer.Send(ctx, mail.Message{
 			To:      addr,
-			Subject: "Confirm this address for sign-in codes",
-			Body: fmt.Sprintf("Your confirmation code is %s\n\n"+
-				"It expires in %d minutes.\n\n"+
-				"If you did not ask to use this address for sign-in codes, "+
-				"somebody may be signed in to your account. Change your password.\n",
-				code, int(store.EmailOTPLifetime.Minutes())),
+			Subject: tr.Text("mail.confirmaddress.subject"),
+			Body: tr.Text("mail.confirmaddress.body", map[string]any{
+				"Code":    code,
+				"Minutes": int(store.EmailOTPLifetime.Minutes()),
+			}),
 		}); err != nil {
 			s.log.Error("sending an enrolment code", "err", err)
 			// Said out loud HERE, unlike at sign-in: this person is already

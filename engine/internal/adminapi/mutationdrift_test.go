@@ -89,6 +89,28 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/attributes", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + anyOrgID(t, s) + "/attributes"
+			},
+			body: func(*testing.T, *Server, string) string {
+				// A fresh name each run: the declaration is upserted by name, and
+				// a fixed one would exercise the update path only after the first
+				// run, which is not the path this list is checking.
+				return fmt.Sprintf(`{"name":"drift_attr_%d","personal":true}`,
+					time.Now().UnixNano())
+			},
+		},
+		{
+			name: "PUT /admin/users/{userID}/attributes", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/users/" + newDriftUserWithAttribute(t, s) + "/attributes"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"attributes":{"` + driftAttributeName + `":"a value"}}`
+			},
+		},
+		{
 			name: "POST /admin/organizations", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/organizations" },
 			body: func(t *testing.T, s *Server, _ string) string {
@@ -270,6 +292,32 @@ func newDriftUser(t *testing.T, s *Server) string {
 // factor routes deliberately never return it. Columns taken from the live
 // schema rather than guessed -- a failing INSERT here would make the route skip
 // itself while the suite reported PASS.
+// driftAttributeName is declared once for the whole package.
+//
+// A fixed name because the value-setting route needs an attribute that already
+// exists, and declaring one per call would make the drift test's fixture depend
+// on the order tests happen to run in.
+const driftAttributeName = "drift_fixture_attribute"
+
+// newDriftUserWithAttribute creates a user in an org that declares the fixture
+// attribute, so the value-setting route has something to write.
+func newDriftUserWithAttribute(t *testing.T, s *Server) string {
+	t.Helper()
+	userID := newDriftUser(t, s)
+	var orgID string
+	if err := s.db.QueryRow(context.Background(),
+		`SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID); err != nil {
+		t.Fatalf("reading the fixture user's organisation: %v", err)
+	}
+	if _, err := s.db.Exec(context.Background(), `
+		INSERT INTO core.user_attribute_schema (org_id, name, value_type, personal)
+		VALUES ($1::uuid, $2, 'string', true)
+		ON CONFLICT (org_id, name) DO NOTHING`, orgID, driftAttributeName); err != nil {
+		t.Fatalf("declaring the fixture attribute: %v", err)
+	}
+	return userID
+}
+
 func anyInstanceID(t *testing.T, s *Server) string {
 	t.Helper()
 	var id string

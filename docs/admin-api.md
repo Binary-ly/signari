@@ -134,6 +134,49 @@ database in front of you.
 | `PATCH /admin/users/{userID}` | Activate, deactivate, set a password, require a change, and edit identity: `email`, `username`, `display_name`, `given_name`, `surname`. An empty string clears a field; both identifiers cannot be cleared at once (400 `no_identifier_left`), and a taken address or name is 409 `already_exists` |
 | `DELETE /admin/users/{userID}` | Remove the person and everything they hold. Real deletion, not a flag (ADR-005). Their sessions are **terminated before the row goes**, so every relying party they reached receives a back-channel logout — letting the rows cascade away would destroy the list of who to notify before anyone was notified, and leave them signed in everywhere with an account that no longer exists. Returns `sessions_ended`, `notices_queued` and `tokens_revoked`. The audit trail keeps its records: `audit_events` has no foreign key to `users`, so what a person did outlives their account |
 
+### User attributes
+
+Operator-defined fields on a user, declared per organisation before anything can
+be stored in them.
+
+| | |
+|---|---|
+| `GET /admin/organizations/{orgID}/attributes` | The organisation's declarations. Needs `config:read` |
+| `PUT /admin/organizations/{orgID}/attributes` | Declare or update one. Needs `organizations:write` |
+| `GET /admin/users/{userID}/attributes` | One user's values. Needs `users:read` |
+| `PUT /admin/users/{userID}/attributes` | Set values. Needs `users:write` |
+
+**An attribute must be declared before it can hold anything**, and the
+declaration carries the decision that matters: `personal`. A personal attribute
+is stored **sealed under the subject's own key** — the same key that protects
+their TOTP secret — so `POST /admin/subjects/{subjectID}/erase` destroys it at the same
+instant and by the same mechanism, with no list of tables for erasure to visit.
+A list is what goes stale the first time somebody adds a table, and going stale
+here means telling a person their data was destroyed when it was not.
+
+The cost is that a sealed value **cannot be searched**. So an attribute that is
+genuinely not about a person — a cost centre, a licence tier — may be declared
+`"personal": false` and stored in the clear, where it is queryable and where
+erasure deliberately leaves it alone.
+
+**`personal` defaults to `true` when the field is omitted.** Forgetting makes an
+attribute safe and inconvenient rather than convenient and undeletable, and the
+failure that direction prevents is somebody adding `national_id` in a hurry.
+
+**It cannot be changed once declared.** Flipping it on an attribute that already
+holds values would leave rows in the wrong storage — and in one direction, a
+later erasure would believe it destroyed something it did not. Changing an
+attribute's sensitivity means declaring a new one and migrating deliberately.
+
+Reads report `readable: false` rather than an error when a personal value cannot
+be unsealed, which happens for exactly one reason: the subject was erased.
+"Destroyed on request" and "never set" are different facts, and an audit of
+whether an erasure completed needs to tell them apart.
+
+The audit trail records **which** attributes were declared or set, never their
+values — writing those into an append-only table is precisely what the sealed
+storage exists to avoid.
+
 ### Second factors
 
 | | |

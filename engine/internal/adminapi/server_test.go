@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/keys"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef" // 32 chars
@@ -33,6 +35,22 @@ func newTestServer(t *testing.T) (*Server, *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// A root key, so the user-attribute routes are registered.
+	//
+	// Without one they are absent and every request to them is a 404 — which the
+	// route-drift test reports as "the route did not succeed, so this test
+	// proves nothing", correctly. A fixed key rather than a random one: these
+	// tests seal and unseal within a single run, and a per-test key would make a
+	// value written by one test unreadable to another that shares a fixture.
+	secret := make([]byte, 32)
+	secret[0] = 0x5a
+	root, err := keys.NewRootKey("test", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetRootKey(root)
+
 	return s, pool
 }
 

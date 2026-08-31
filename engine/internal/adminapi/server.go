@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/ratelimit"
 )
@@ -52,6 +53,13 @@ type Server struct {
 	// pwPolicy is the SAME policy the sign-in paths enforce. An administrator
 	// setting a password must not be able to set one a user could not.
 	pwPolicy passwords.Policy
+
+	// root unwraps subject keys, which is what personal user attributes are
+	// sealed under. nil when the admin API was built without one, and the
+	// attribute routes are then not registered at all -- a route that could only
+	// ever answer "no key configured" is worse than an absent one, because it
+	// looks like a capability.
+	root *keys.RootKey
 
 	// arrivals bounds work done for callers who have not authenticated yet.
 	//
@@ -106,6 +114,14 @@ const (
 	// and evicting an entry hands its key a fresh allowance.
 	adminTrackedTokens = 1024
 )
+
+// SetRootKey supplies the key that unwraps subject keys.
+//
+// Set after construction like the engine's other optional collaborators. Without
+// it the user-attribute routes are not registered, because a personal attribute
+// is sealed under a subject key and there is nothing useful to answer without
+// the key that opens it.
+func (s *Server) SetRootKey(root *keys.RootKey) { s.root = root }
 
 // Routes returns the fully wrapped handler.
 //
@@ -172,6 +188,17 @@ func (s *Server) Routes() http.Handler {
 	route("DELETE /admin/users/{userID}/sessions", ScopeUsersWrite, s.revokeUserSessions)
 	route("DELETE /admin/sessions/{sid}", ScopeUsersWrite, s.revokeSession)
 	route("POST /admin/subjects/{subjectID}/erase", ScopeSubjectsErase, s.eraseSubject)
+
+	// User attributes. Registered only when a root key is available, because a
+	// personal attribute is sealed under a subject key and cannot be read
+	// without it. Declaring the SHAPE is configuration and takes the config
+	// scope; setting one person's values is user administration.
+	if s.root != nil {
+		route("GET /admin/organizations/{orgID}/attributes", ScopeConfigRead, s.listAttributes)
+		route("PUT /admin/organizations/{orgID}/attributes", ScopeOrganizationsWrite, s.declareAttribute)
+		route("GET /admin/users/{userID}/attributes", ScopeUsersRead, s.getUserAttributes)
+		route("PUT /admin/users/{userID}/attributes", ScopeUsersWrite, s.setUserAttributes)
+	}
 
 	// The document itself, unauthenticated. See handleOpenAPI for why: it
 	// describes the shape of the API and no data, and the same facts are already

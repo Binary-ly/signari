@@ -119,6 +119,15 @@ func (s *Server) Routes() http.Handler {
 		s.auth(ScopeClientsWrite, s.rotateClientSecret))
 	mux.HandleFunc("PATCH /admin/users/{userID}", s.auth(ScopeUsersWrite, s.patchUser))
 	mux.HandleFunc("DELETE /admin/users/{userID}", s.auth(ScopeUsersWrite, s.deleteUser))
+	mux.HandleFunc("GET /admin/users/{userID}/factors",
+		s.auth(ScopeUsersRead, s.listUserFactors))
+	// Two patterns rather than an optional segment: the kinds a user may hold
+	// several of need the credential named, and the ones keyed on the user must
+	// not accept an id that would be silently ignored.
+	mux.HandleFunc("DELETE /admin/users/{userID}/factors/{kind}",
+		s.auth(ScopeUsersWrite, s.deleteUserFactor))
+	mux.HandleFunc("DELETE /admin/users/{userID}/factors/{kind}/{factorID}",
+		s.auth(ScopeUsersWrite, s.deleteUserFactor))
 	mux.HandleFunc("GET /admin/config-version", s.auth(ScopeConfigRead, s.configVersion))
 
 	// Reads. These complete the conditional-write protocol: a caller GETs the

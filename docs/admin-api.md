@@ -102,6 +102,31 @@ Every mutation returns `config_version` in its body and `ETag` in its headers.
 | `PATCH /admin/users/{userID}` | Activate, deactivate, set a password, require a change, and edit identity: `email`, `username`, `display_name`, `given_name`, `surname`. An empty string clears a field; both identifiers cannot be cleared at once (400 `no_identifier_left`), and a taken address or name is 409 `already_exists` |
 | `DELETE /admin/users/{userID}` | Remove the person and everything they hold. Real deletion, not a flag (ADR-005). Their sessions are **terminated before the row goes**, so every relying party they reached receives a back-channel logout — letting the rows cascade away would destroy the list of who to notify before anyone was notified, and leave them signed in everywhere with an account that no longer exists. Returns `sessions_ended`, `notices_queued` and `tokens_revoked`. The audit trail keeps its records: `audit_events` has no foreign key to `users`, so what a person did outlives their account |
 
+### Second factors
+
+| | |
+|---|---|
+| `GET /admin/users/{userID}/factors` | What the person can authenticate with: kind, label, whether the enrolment was completed, when it was created and last used. Recovery codes are reported as a **count of unused ones**, never listed |
+| `DELETE /admin/users/{userID}/factors/{kind}` | Remove a factor the user holds one of: `totp`, `email_otp`, `sms_otp`, `duo` |
+| `DELETE /admin/users/{userID}/factors/{kind}/{factorID}` | Remove one of several: `webauthn`, `recovery` |
+
+**Removing a factor ends the person's sessions**, with the reason `mfa_reset`,
+and every relying party gets a back-channel logout. The deciding case is the
+stolen phone: if whoever took it has already signed in, deleting the enrolment
+they are no longer using does nothing about the session they are using. It is
+also what keeps the `acr` honest — those sessions asserted multi-factor
+authentication and the factor behind that assertion is now gone.
+
+**Removing someone's last factor is allowed**, deliberately, because a person who
+cannot produce their only factor is exactly who this rescues. It cannot downgrade
+anybody: an organisation whose flow demands MFA meets an account with nothing
+enrolled and refuses the sign-in with an enrolment message, rather than admitting
+it as single-factor.
+
+No secret material is returned by any of these: no TOTP secret even encrypted, no
+code hash, no public key, and neither the address nor the number behind an
+email or SMS factor.
+
 ### Groups
 
 | | |

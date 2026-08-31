@@ -68,6 +68,27 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			// Keyed on the user, so no factor id in the path. The fixture
+			// enrols TOTP first: the handler returns 404 when there was nothing
+			// to remove, and a 404 would exempt this route from the very checks
+			// the list exists to apply.
+			name: "DELETE /admin/users/{userID}/factors/{kind}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/users/" + newDriftUserWithTOTP(t, s) + "/factors/totp"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name:   "DELETE /admin/users/{userID}/factors/{kind}/{factorID}",
+			method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				userID := newDriftUser(t, s)
+				return "/admin/users/" + userID + "/factors/webauthn/" +
+					newDriftPasskey(t, s, userID)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/clients", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/clients" },
 			body: func(t *testing.T, s *Server, _ string) string {
@@ -228,6 +249,51 @@ func newDriftUser(t *testing.T, s *Server) string {
 // the one whose missing version bump prompted this whole test -- skipped itself
 // while the suite reported PASS. A skip in a coverage test is a hole with a
 // friendly name.
+// newDriftUserWithTOTP creates a user who has something to reset.
+//
+// secret_enc is a placeholder: nothing in these tests decrypts it, and the
+// factor routes deliberately never return it. Columns taken from the live
+// schema rather than guessed -- a failing INSERT here would make the route skip
+// itself while the suite reported PASS.
+func newDriftUserWithTOTP(t *testing.T, s *Server) string {
+	t.Helper()
+	userID := newDriftUser(t, s)
+	var orgID string
+	if err := s.db.QueryRow(context.Background(),
+		`SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID); err != nil {
+		t.Fatalf("reading the fixture user's organisation: %v", err)
+	}
+	if _, err := s.db.Exec(context.Background(), `
+		INSERT INTO core.totp_credentials (user_id, org_id, secret_enc, confirmed_at)
+		VALUES ($1::uuid, $2::uuid, $3, now())`,
+		userID, orgID, []byte("not-a-real-secret")); err != nil {
+		t.Fatalf("enrolling the fixture TOTP credential: %v", err)
+	}
+	return userID
+}
+
+// newDriftPasskey gives a user one WebAuthn credential and returns its id.
+func newDriftPasskey(t *testing.T, s *Server, userID string) string {
+	t.Helper()
+	var orgID string
+	if err := s.db.QueryRow(context.Background(),
+		`SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID); err != nil {
+		t.Fatalf("reading the fixture user's organisation: %v", err)
+	}
+	var id string
+	if err := s.db.QueryRow(context.Background(), `
+		INSERT INTO core.webauthn_credentials
+			(user_id, org_id, credential_id, public_key, rp_id, friendly_name)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)
+		RETURNING id::text`,
+		userID, orgID,
+		[]byte(fmt.Sprintf("cred-%d", time.Now().UnixNano())),
+		[]byte("not-a-real-key"), "localhost", "fixture key").Scan(&id); err != nil {
+		t.Fatalf("enrolling the fixture passkey: %v", err)
+	}
+	return id
+}
+
 func newDriftSubject(t *testing.T, s *Server) string {
 	t.Helper()
 	var id string

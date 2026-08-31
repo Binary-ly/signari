@@ -29,6 +29,28 @@ func queue(t *testing.T, conn *pgx.Conn, streamID, jti, subject string) {
 		        jsonb_build_object('subject', $3::text, 'reason', 'admin_revoke'))`,
 		streamID, jti, subject)
 	must(t, err)
+
+	// Scoped to this stream, never a bare DELETE: packages run in parallel
+	// against one database, and a wholesale delete would drop rows another
+	// package's test had just written. Without any cleanup at all, a row this
+	// test backdates by forty days lives forever and changes the answer for
+	// every future run.
+	t.Cleanup(func() {
+		_, _ = conn.Exec(context.Background(),
+			`DELETE FROM core.ssf_poll_queue WHERE stream_id = $1::uuid AND jti = $2`,
+			streamID, jti)
+	})
+}
+
+// stalePollRows counts what a purge at the 30-day horizon would take.
+func stalePollRows(t *testing.T, conn *pgx.Conn) int {
+	t.Helper()
+	var n int
+	err := conn.QueryRow(context.Background(),
+		`SELECT count(*) FROM core.ssf_poll_queue
+		 WHERE queued_at < now() - interval '30 days'`).Scan(&n)
+	must(t, err)
+	return n
 }
 
 func TestPollStreamForClientFindsOnlyAnEnabledPollStream(t *testing.T) {
@@ -171,14 +193,32 @@ func TestPurgeStalePollEventsDropsOnlyTheOld(t *testing.T) {
 		`UPDATE core.ssf_poll_queue SET queued_at = now() - interval '40 days' WHERE jti='stale'`)
 	must(t, err)
 
+	// This test used to assert the purge returned exactly 1, and it poisoned
+	// itself: `PurgeStalePollEvents` counts every stale row in the DATABASE,
+	// the `queued_at` backdate above commits on `conn`, and the purge runs in a
+	// transaction that rolls back. So each run left one more 40-day-old row
+	// behind permanently, and run N saw N. It reached 4 in the shared dev
+	// database before anybody looked, failing with a different number each time
+	// -- which reads like flakiness and is not.
+	//
+	// The fix is to assert what this test actually means. It is about WHICH rows
+	// a purge takes, not how many exist across every package's fixtures, so the
+	// count is measured against this stream and the global figure is only
+	// required to have included it.
+	before := stalePollRows(t, conn)
+
 	tx, err := conn.Begin(ctx)
 	must(t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	n, err := PurgeStalePollEvents(ctx, tx, 30*24*time.Hour)
 	must(t, err)
-	if n != 1 {
-		t.Fatalf("purged %d, want 1 (only the 40-day-old event)", n)
+	if n != before {
+		t.Fatalf("purged %d of %d stale rows; a purge must take every row past "+
+			"the horizon, not a subset", n, before)
+	}
+	if before < 1 {
+		t.Fatal("the fixture's 40-day-old event is not stale, so this proves nothing")
 	}
 	left, _, err := PollFetch(ctx, tx, streamID, 10)
 	must(t, err)

@@ -697,6 +697,8 @@ func run(args []string) error {
 		return keysRotate(ctx, conn, *alg, *promoteNow)
 	case "keys retire":
 		return keysRetire(ctx, conn, *dryRun)
+	case "keys rewrap-root":
+		return keysRewrapRoot(ctx, conn, *dryRun)
 	case "saml add-sp":
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
@@ -1066,6 +1068,89 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 // failing at verifiers this deployment does not run, weeks later. There is no
 // emergency that early retirement solves, so the flag would only ever be a way to
 // cause the problem the dwell exists to prevent.
+// keysRewrapRoot re-seals every root-wrapped secret under a new root key.
+//
+// # The dry run is the important part
+//
+// `-dry-run` does the ENTIRE job — opens every blob with the old key, re-seals
+// each with the new one, writes them all — and then rolls back. That is the only
+// way to learn whether a rotation would succeed without betting the deployment
+// on finding out. A dry run that merely counted rows would prove nothing about
+// the one thing that can go wrong, which is a blob the current key cannot open.
+//
+// # Why the old key comes from the environment and the new one is separate
+//
+// SIGNARI_ROOT_KEY stays what it is: the key this deployment is running on. The
+// replacement is SIGNARI_NEW_ROOT_KEY. Overloading one variable would mean the
+// command could not tell "rotate to this" from "this is already the key", and
+// the failure mode of guessing wrong is a database nothing opens.
+//
+// After a successful run, SIGNARI_ROOT_KEY must be set to the new value
+// everywhere before any node restarts. A node that comes up holding the old key
+// finds every row wrapped under a ref it does not have, and refuses to start --
+// which is the designed outcome, not a bug: `LoadSet` compares `key_ref` against
+// the configured key and says so, rather than failing later inside a signature.
+func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
+	old, err := rootKey()
+	if err != nil {
+		return err
+	}
+	nextB64 := os.Getenv("SIGNARI_NEW_ROOT_KEY")
+	if nextB64 == "" {
+		return fmt.Errorf(
+			"SIGNARI_NEW_ROOT_KEY is unset (32 random bytes, base64) -- generate one with:\n" +
+				"  head -c 32 /dev/urandom | base64\n" +
+				"and set SIGNARI_NEW_ROOT_KEY_REF to a name distinct from the current one")
+	}
+	next, err := keys.NewRootKeyFromBase64(os.Getenv("SIGNARI_NEW_ROOT_KEY_REF"), nextB64)
+	if err != nil {
+		return fmt.Errorf("the new root key: %w", err)
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rolled back on every path that does not explicitly commit, including a
+	// panic. A half-rotated database is not a degraded state, it is one no
+	// single key opens.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	reports, err := keys.RewrapRoot(ctx, tx, old, next)
+	if err != nil {
+		return err
+	}
+
+	var total, skipped int
+	for _, r := range reports {
+		total += r.Rows
+		skipped += r.Skipped
+		if r.Rows > 0 || r.Skipped > 0 {
+			line := fmt.Sprintf("  %-40s %d re-wrapped", r.Table+"."+r.Column, r.Rows)
+			if r.Skipped > 0 {
+				line += fmt.Sprintf(", %d already under the new key", r.Skipped)
+			}
+			fmt.Println(line)
+		}
+	}
+
+	if dryRun {
+		fmt.Printf("\nDRY RUN: %d secrets would be re-wrapped from %q to %q. Nothing written.\n",
+			total, old.Ref(), next.Ref())
+		return nil
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing the rotation: %w", err)
+	}
+	fmt.Printf("\n%d secrets re-wrapped from %q to %q.\n", total, old.Ref(), next.Ref())
+	fmt.Println("\nSet SIGNARI_ROOT_KEY to the new value on EVERY node before any of them")
+	fmt.Println("restarts. A node holding the old key will refuse to start rather than")
+	fmt.Println("serve with keys it cannot open. Keep the old key until every node has")
+	fmt.Println("been restarted on the new one and a restore test has passed.")
+	return nil
+}
+
 func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 	instanceID, set, _, err := loadInstanceKeys(ctx, conn)
 	if err != nil {

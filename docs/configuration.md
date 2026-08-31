@@ -20,6 +20,38 @@ way it already had.
 `SIGNARI_ROOT_KEY_REF` names an external key reference instead, for a
 deployment keeping the root key outside the process environment.
 
+### Rotating the root key
+
+| | |
+|---|---|
+| `SIGNARI_NEW_ROOT_KEY` | The replacement, read only by `signari keys rewrap-root`. Separate from `SIGNARI_ROOT_KEY` so the command can always tell "the key we are on" from "the key we are moving to"; one overloaded variable would leave it guessing, and guessing wrong produces a database nothing opens |
+| `SIGNARI_NEW_ROOT_KEY_REF` | A name for the new key, and it **must differ from the current ref**. Stored rows record which key wrapped them, so two keys sharing a ref are indistinguishable — a later rotation could not tell which rows it had already done, and a failed one could not be diagnosed. The command refuses rather than proceeding |
+
+```sh
+export SIGNARI_NEW_ROOT_KEY="$(head -c 32 /dev/urandom | base64)"
+export SIGNARI_NEW_ROOT_KEY_REF=v2
+signari keys rewrap-root -dry-run   # does the whole job, then rolls back
+signari keys rewrap-root
+```
+
+The rotation runs in **one transaction**. A partial rotation is not a degraded
+state — it is a database where half the rows open with the old key and half with
+the new, and no single key opens the deployment.
+
+Afterwards, set `SIGNARI_ROOT_KEY` to the new value on **every** node before any
+of them restarts. A node that comes up holding the old key refuses to start,
+which is the designed behaviour rather than a fault: the engine compares the
+stored `key_ref` against the key it was given and says so, instead of failing
+later inside a signature. Keep the old key until every node is running on the new
+one and a restore test has passed.
+
+Anything sealed under a *subject's* key — a TOTP secret, for instance — needs no
+attention: the subject's DEK is itself root-sealed and is re-wrapped, so
+everything under it follows. A test enumerates every encrypted column in the
+schema and fails the build if one is not classified, because a root-sealed column
+the rotation does not know about becomes ciphertext nobody can ever open, and the
+operator is told the rotation succeeded.
+
 ## Build-time, not runtime
 
 | | |

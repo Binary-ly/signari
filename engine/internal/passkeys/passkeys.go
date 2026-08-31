@@ -187,8 +187,15 @@ func ToLibrary(stored []store.WebAuthnCredential) []webauthn.Credential {
 //   - USER VERIFICATION IS REQUIRED. Without it a passkey proves possession of a
 //     device and nothing else, so it is one factor, not two, and cannot honestly
 //     back an acr of 2.
-func (r *Relying) BeginRegistration(u *User) (*protocol.CredentialCreation, *webauthn.SessionData, error) {
-	return r.w.BeginRegistration(u,
+//
+// conveyance is the attestation preference, empty for the browser default.
+//
+// A parameter rather than configuration on the Relying party, because it is a
+// per-ORGANISATION decision and one process serves many. Asking every browser
+// for attestation because one tenant needs it would collect device identifiers
+// from everybody else's users.
+func (r *Relying) BeginRegistration(u *User, conveyance string) (*protocol.CredentialCreation, *webauthn.SessionData, error) {
+	opts := []webauthn.RegistrationOption{
 		webauthn.WithAuthenticatorSelection(protocol.AuthenticatorSelection{
 			ResidentKey:      protocol.ResidentKeyRequirementRequired,
 			UserVerification: protocol.VerificationRequired,
@@ -197,7 +204,15 @@ func (r *Relying) BeginRegistration(u *User) (*protocol.CredentialCreation, *web
 		// same authenticator, which would otherwise look like two credentials and
 		// silently satisfy the two-credential rule with one device.
 		webauthn.WithExclusions(descriptors(u.Creds)),
-	)
+	}
+	// Only raised when an organisation asked. `none` is the WebAuthn default and
+	// the privacy-preserving one: attestation identifies the device model, and
+	// some browsers show the user an extra prompt for it.
+	if conveyance != "" && conveyance != "none" {
+		opts = append(opts, webauthn.WithConveyancePreference(
+			protocol.ConveyancePreference(conveyance)))
+	}
+	return r.w.BeginRegistration(u, opts...)
 }
 
 // BeginLogin starts an assertion for a known user.

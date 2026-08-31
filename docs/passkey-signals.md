@@ -268,3 +268,51 @@ between two concurrent assertions. It is recorded at WARN and audited so an
 operator can act on a *pattern*; it does not destroy a credential or refuse a
 sign-in, because a false positive there locks a legitimate user out of their own
 account.
+
+## Which authenticators an organisation accepts
+
+An organisation may require that passkeys come from approved authenticator
+models — hardware keys of a particular make, for instance. Two settings, both
+per organisation:
+
+| | |
+|---|---|
+| `attestation_conveyance` | What to ask the browser for: `none` (default), `indirect`, `direct` or `enterprise` |
+| `allowed_aaguids` | Approved authenticator models. Empty accepts any |
+
+**Attestation is off by default, and that is a decision rather than an
+oversight.** Requesting it sends the authenticator's attestation statement, which
+identifies the device model and, for some vendors, a manufacturing batch. The
+WebAuthn specification and every browser vendor made `none` the default
+deliberately — it is the privacy-preserving choice, and some browsers show the
+user an extra prompt when a site asks for more. A deployment without an
+approved-device requirement should not be collecting device identifiers from its
+users by accident.
+
+**An AAGUID from a `none` registration is self-asserted.** The authenticator data
+carries an AAGUID either way, and with no attestation nothing vouches for it — a
+software authenticator can put a hardware vendor's identifier in the field.
+Filtering on it would be filtering a value chosen by the party being filtered.
+
+So the allow-list **refuses rather than compares** when attestation was not
+conveyed, the database refuses a policy that names an allow-list alongside
+conveyance `none`, and each credential records whether its AAGUID was vouched
+for at registration — a later policy change cannot retroactively make an old
+credential's AAGUID trustworthy.
+
+The all-zero AAGUID never matches anything. It means "I decline to identify
+myself", which every privacy-preserving authenticator sends, and treating it as a
+value would let all of them match a single allow-list entry of zeroes.
+
+### What this proves, and what it does not
+
+With conveyance raised, the attestation statement's format and signature are
+verified. **The attestation certificate is not validated against a FIDO Metadata
+Service root**, because this deployment holds no MDS attestation roots —
+`internal/fidomds` maps AAGUIDs to model names and carries no certificates.
+
+Stated plainly: the allow-list stops a casual software authenticator, which
+cannot produce a well-formed packed attestation for a hardware vendor's AAGUID.
+It does not stop somebody who obtains a genuine attestation key. That is a real
+control with a stated ceiling, and the ceiling is written here so nobody builds a
+compliance claim on top of more than it delivers.

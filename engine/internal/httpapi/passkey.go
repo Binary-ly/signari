@@ -189,7 +189,16 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	creation, sd, err := rp.BeginRegistration(u)
+	// The organisation's authenticator policy decides what to ask the browser
+	// for. A failure to read it falls back to the default rather than refusing:
+	// an unreachable policy row must not stop somebody enrolling a passkey, and
+	// the default is the safe-for-privacy one.
+	policy, perr := store.LoadWebAuthnPolicy(ctx, s.db, orgID)
+	if perr != nil {
+		s.log.Error("loading the WebAuthn policy", "org_id", orgID, "err", perr)
+	}
+
+	creation, sd, err := rp.BeginRegistration(u, policy.Conveyance)
 	if err != nil {
 		s.log.Error("beginning registration", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
@@ -256,6 +265,45 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		// detailed and would tell an attacker exactly which check they tripped.
 		s.log.Info("registration failed verification", "err", err)
 		writeError(w, http.StatusBadRequest, "invalid_request", "the authenticator response was rejected")
+		return
+	}
+
+	// Whether the AAGUID is vouched for.
+	//
+	// `cred.AttestationType` is the format the authenticator used; "none" means
+	// it conveyed no attestation, so the AAGUID beside it is SELF-ASSERTED. A
+	// software authenticator can put a hardware vendor's identifier there, which
+	// is why the allow-list below refuses rather than compares when this is
+	// false — comparing a value the filtered party chose is not a filter.
+	attestationVerified := cred.AttestationType != "" && cred.AttestationType != "none"
+
+	policy, perr := store.LoadWebAuthnPolicy(ctx, s.db, orgID)
+	if perr != nil {
+		// Fail CLOSED here, unlike at BeginRegistration. There the fallback only
+		// decided what to ask for; here it decides whether to accept, and
+		// accepting because a policy could not be read is how an approved-device
+		// requirement quietly stops applying.
+		s.log.Error("loading the WebAuthn policy", "org_id", orgID, "err", perr)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	if ok, why := policy.PermitsAuthenticator(cred.Authenticator.AAGUID, attestationVerified); !ok {
+		s.log.Info("registration refused by the authenticator policy",
+			"org_id", orgID, "user_id", userID, "attestation", cred.AttestationType,
+			"correlation_id", correlationID(ctx))
+		s.auditDetached(ctx, audit.Event{
+			Type: "mfa.passkey_refused", OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+			Detail: map[string]any{
+				"reason": "authenticator_not_permitted", "attestation": cred.AttestationType,
+			},
+		})
+		// The reason IS returned here, unlike a verification failure. This is a
+		// policy decision about the device rather than a cryptographic check, so
+		// telling somebody "your organisation does not accept this key" saves
+		// them an afternoon and tells an attacker nothing they could not learn
+		// by reading the policy they are subject to.
+		writeError(w, http.StatusForbidden, "authenticator_not_permitted", why)
 		return
 	}
 

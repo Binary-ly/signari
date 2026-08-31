@@ -89,7 +89,7 @@ func TestRegistrationRequiresResidentKeyAndUserVerification(t *testing.T) {
 	}
 	u := &User{ID: make([]byte, 64), Name: "alice@example.test", DisplayName: "Alice"}
 
-	creation, session, err := rp.BeginRegistration(u)
+	creation, session, err := rp.BeginRegistration(u, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestExistingCredentialsAreExcluded(t *testing.T) {
 	rp, _ := New("localhost", "Signari", "http://localhost:9411")
 	u := &User{ID: make([]byte, 64), Name: "alice", DisplayName: "Alice"}
 
-	creation, _, err := rp.BeginRegistration(u)
+	creation, _, err := rp.BeginRegistration(u, "")
 	if err != nil {
 		t.Fatal(err)
 	}

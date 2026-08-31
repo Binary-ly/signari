@@ -531,6 +531,22 @@ func run(args []string) error {
 	sessionBehaviour := fs.String("when-exceeded", "deny",
 		"what happens at the limit: deny the new sign-in, or evict_oldest to end the "+
 			"least recently authenticated session and let the new one through")
+	setEnabled := fs.Bool("enabled", true, "whether the object is in service")
+	onMissing := fs.String("on-missing", "",
+		"what a directory sync does with somebody the directory no longer returns: "+
+			"report (name them and change nothing) or deactivate")
+	maxDeactivate := fs.Int("max-deactivate", -1,
+		"percentage of an organisation a single sync may deactivate before the whole "+
+			"plan is refused. The guard against a bad fetch reading as 'everybody left'")
+	signAssertions := fs.Bool("sign-assertions", true, "sign the SAML assertion")
+	signResponses := fs.Bool("sign-responses", false, "sign the SAML response envelope")
+	assertionLifetime := fs.Int("assertion-lifetime", 0,
+		"seconds a SAML assertion stays valid, 30 to 3600; 0 leaves it unchanged")
+	samlAttrName := fs.String("attribute-name", "",
+		"the SAML attribute name group membership is released under (saml group-release)")
+	rpID := fs.String("rp-id", "",
+		"WebAuthn Relying Party ID: a bare domain, no scheme, port or path. Passkeys "+
+			"are unavailable until this is set, and it can never be widened afterwards")
 
 	cmd := args[0]
 	rest := args[1:]
@@ -706,6 +722,8 @@ func run(args []string) error {
 		return dirSync(ctx, conn, *slug, *apply)
 	case "dir group-map":
 		return dirGroupMap(ctx, conn, *slug, *remoteGroup, *groupName, *removeMember)
+	case "dir set":
+		return dirSet(ctx, conn, *slug, *onMissing, *maxDeactivate, fs, *setEnabled, *dryRun)
 	case "rac add":
 		return racAdd(ctx, conn, *orgID, *slug, *name, *racProtocol, *racHost,
 			*racPort, *racUser, *racPassword, *groupName, *racRecording)
@@ -856,6 +874,20 @@ func run(args []string) error {
 			*brandPrimary, *brandOnPrimary, *brandBackground, *brandText)
 	case "brand show":
 		return brandShow(ctx, conn, *issuer)
+	case "saml attribute-release":
+		return samlAttributeRelease(ctx, conn, *entityID, *upstreamClaim, *localAttribute, *removeMember)
+	case "saml signing":
+		return samlSigning(ctx, conn, *entityID, *signAssertions, *signResponses, *assertionLifetime)
+	case "saml group-release":
+		return samlGroupRelease(ctx, conn, *entityID, *samlAttrName, *onlyGroups, *removeMember)
+	case "idp verified-email":
+		return idpVerifiedEmail(ctx, conn, *slug, *trustEmail)
+	case "instance webauthn":
+		return instanceWebAuthn(ctx, conn, *issuer, *rpID, *name)
+	case "scim enable":
+		return scimSetEnabled(ctx, conn, *slug, true)
+	case "scim disable":
+		return scimSetEnabled(ctx, conn, *slug, false)
 	case "saml list":
 		return samlListSPs(ctx, conn)
 	case "idp add":
@@ -3569,6 +3601,15 @@ func syncSCIMGroups(ctx context.Context, conn *pgx.Conn, t scim.Target,
 		}
 		if err := client.RemoveMembers(ctx, g.remoteID, toRemove); err != nil {
 			return fmt.Errorf("removing members from %q at %s: %w", g.name, t.Slug, err)
+		}
+		// Recorded only after both calls succeeded. A timestamp written on a
+		// failed reconciliation says the group is in sync when it is not, which
+		// is worse than no timestamp: it is the field somebody checks to decide
+		// whether to investigate.
+		if _, err := conn.Exec(ctx, `
+			UPDATE core.scim_group_links SET last_synced_at = now()
+			WHERE target_id = $1::uuid AND group_id = $2::uuid`, t.ID, g.groupID); err != nil {
+			return fmt.Errorf("recording the sync time for %q at %s: %w", g.name, t.Slug, err)
 		}
 	}
 	return nil

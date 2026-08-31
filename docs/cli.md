@@ -39,6 +39,7 @@ a class of failure that shows up as data corruption rather than an error.
 |---|---|
 | `signari instance create` | An issuer and its first signing keys |
 | `signari instance session-limit` | How many sessions one person may hold at once, and whether the limit denies the new sign-in or ends the oldest session. `0` is unlimited and is the default |
+| `signari instance webauthn` | The WebAuthn Relying Party ID passkeys are bound to. **Passkeys are unavailable until this is set.** A credential made under `example.com` works on `login.example.com`; one made under `login.example.com` does not work on `example.com`, and changing the value invalidates every credential already enrolled |
 | `signari user create` | A user with a password. Subject to the [password policy](password-policy.md) |
 | `signari user locale` | The language this person's security notices are written in, as a BCP 47 tag. Empty returns them to the deployment default |
 | `signari group create` / `group list` / `group member` / `group release` | Groups, membership, and which clients may see them |
@@ -96,10 +97,15 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari idp apple-secret` | Mint the client secret Apple requires (a signed JWT that expires) |
 | `signari dir add -kind google` / `-kind entra` | Directory sync from the two most common sources. `google`, `entra` and `ldap` are values of `-kind`, not commands of their own |
 | `signari saml add-sp` / `saml list` | SAML service providers |
+| `signari saml attribute-release` | Which local user attribute a SAML attribute carries. An explicit map, not a wildcard: a disclosure control that silently releases nothing and one that silently releases everything both look like success |
+| `signari saml signing` | What is signed, and how long an assertion lives. Signing neither the assertion nor the response is refused by the schema — the service provider would have nothing to check |
+| `signari saml group-release` | Which groups a service provider is told about, matching `group release` for OIDC clients. Group membership is authorization data, so it is an allow-list |
 | `signari scim-source add` / `scim-source list` | Inbound SCIM |
 | `signari kerberos check` / `kerberos principals` / `kerberos sync` | Kerberos/SPNEGO, keytab checking, principal import |
 | `signari dir add` / `dir sync` | Directory sync from LDAP, Entra or Google |
 | `signari dir group-map` | Which local group a directory group grants. A sync grants nothing that is not mapped here, so a directory reporting `domain admins` cannot make anybody an administrator of this system by name alone |
+| `signari dir set` | Whether a source is enabled, in dry run, what it does with people the directory stops returning, and **the deactivation ceiling** — the share of an organisation one sync may deactivate before the whole plan is refused. A bad fetch looks exactly like "everybody left", and that number is what stops the reconciler acting on it |
+| `signari idp verified-email` | Whether to believe a provider's `email_verified` claim. Accounts are linked by address on that basis, so a provider that reports unverified addresses as verified turns this into account takeover by registration |
 | `signari idp attribute-map` | Route a claim from an upstream provider into a local user attribute. `-overwrite` decides whether a sign-in may replace a value an administrator set by hand |
 | `signari import keycloak` / `import authentik` | Migrate a realm or an installation in |
 
@@ -108,6 +114,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | | |
 |---|---|
 | `signari scim add` / `scim list` / `scim sync` / `scim verify` | Outbound SCIM provisioning |
+| `signari scim enable` / `scim disable` | Take a target in or out of service. Disabling keeps the configuration, the links and the remote ids, and the next sync skips it — deleting the target would take the links with it and leave the far-end accounts unreachable rather than merely unmanaged |
 | `signari scim scope` | Limit a target to one group's members. Unscoped, a target receives every user in the organisation — right for a company directory, wrong for an application five people use |
 | `signari scim provision-group` / `scim deprovision-group` | Create or delete a group at the target and record that we own it. Reconciliation only ever touches groups this link names, so a group the target's own administrators maintain is left alone however similar its name |
 | `signari provision add` | Provisioning targets |

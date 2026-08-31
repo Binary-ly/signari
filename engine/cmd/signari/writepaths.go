@@ -11,19 +11,30 @@ package main
 // warning, and a query plan that says the operator simply has not configured it
 // yet.
 //
-// Ten of them were found at once, which is what makes it a class rather than an
-// oversight. `TestEveryGovernedTableHasAWritePath` in internal/docsync now fails
-// the build when a table or column the engine reads for a decision has no writer
-// outside a migration, so the next one cannot be added the same way.
+// They were found in a batch, which is what makes it a class rather than an
+// oversight. `TestEveryTableTheEngineReadsCanBeWritten` and
+// `TestEveryColumnTheEngineReadsCanBeWritten` in internal/docsync now fail the
+// build when a table or column the engine reads for a decision has no writer
+// outside a migration, so the next one cannot be added the same way. What those
+// two tests still cannot close is carried in `knownUnwritable`, explicitly, with
+// what stays fixed at its default as a result.
 //
 // A reachability guard over FUNCTIONS already existed and passed throughout,
 // because each of these loaders genuinely had a call site. A function being
 // called is not the same as a capability being reachable, and the difference is
 // exactly one table nobody can write to.
+//
+// The first version of the table guard matched `core.<table>` only, and 57 of
+// the 113 core tables are created unqualified — so it reported clean over half
+// the schema, including the SAML attribute release it was written to catch. A
+// guard that reports clean over its own subject is worse than no guard: it turns
+// an open question into a settled one.
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 
@@ -802,6 +813,437 @@ func instanceSessionLimit(ctx context.Context, conn *pgx.Conn, orgID string,
 	}
 	fmt.Println("\n  Existing sessions over the limit are not ended now; the rule applies at")
 	fmt.Println("  the next sign-in.")
+	return nil
+}
+
+// samlAttributeRelease declares which local attribute a SAML attribute carries.
+//
+// This is M34, and the column it writes has a comment recording that it was dead
+// for months: `core.saml_providers.attributes` was read by nothing, so an
+// operator could configure a release, see the column hold exactly what they had
+// asked for, and receive assertions carrying none of it. The reader was then
+// written -- and still nothing could put a value there, which is the same
+// failure standing on its other foot.
+//
+// A disclosure control that silently releases nothing looks like success. One
+// that silently releases everything looks like success too. Both are why this is
+// an explicit map rather than a wildcard.
+func samlAttributeRelease(ctx context.Context, conn *pgx.Conn, entityID, samlName,
+	attribute string, remove bool) error {
+
+	if entityID == "" || samlName == "" {
+		return fmt.Errorf("give -entity-id (the service provider) and -claim (the SAML " +
+			"attribute name it expects, e.g. http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress)")
+	}
+
+	var providerID, orgID string
+	if err := conn.QueryRow(ctx,
+		`SELECT id::text, org_id::text FROM core.saml_providers WHERE entity_id = $1`,
+		entityID).Scan(&providerID, &orgID); err != nil {
+		return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+	}
+
+	if remove {
+		tp, err := conn.Exec(ctx,
+			`UPDATE core.saml_providers SET attributes = attributes - $2 WHERE id = $1::uuid`,
+			providerID, samlName)
+		if err != nil {
+			return err
+		}
+		if tp.RowsAffected() == 0 {
+			return fmt.Errorf("no such provider")
+		}
+		fmt.Printf("%s no longer releases %q\n", entityID, samlName)
+		return nil
+	}
+
+	if attribute == "" {
+		return fmt.Errorf("give -attribute, the local user attribute whose value is released")
+	}
+	// The local attribute must exist. Naming one that does not would store a
+	// release that resolves to nothing on every assertion -- the exact silence
+	// this command exists to end.
+	var exists bool
+	if err := conn.QueryRow(ctx,
+		`SELECT true FROM core.user_attribute_schema WHERE org_id = $1::uuid AND name = $2`,
+		orgID, attribute).Scan(&exists); err != nil {
+		return fmt.Errorf("that organisation has no attribute named %q; declare it "+
+			"before releasing it", attribute)
+	}
+
+	if _, err := conn.Exec(ctx, `
+		UPDATE core.saml_providers
+		   SET attributes = attributes || jsonb_build_object($2::text, $3::text)
+		 WHERE id = $1::uuid`, providerID, samlName, attribute); err != nil {
+		return err
+	}
+
+	fmt.Printf("%s releases %q from attribute %q\n", entityID, samlName, attribute)
+	fmt.Println("\n  Released in every assertion to this provider, for every user who has a")
+	fmt.Println("  value. A user with none simply carries no such attribute -- an empty one")
+	fmt.Println("  would assert that the value IS empty, which is a different claim.")
+	return nil
+}
+
+// samlSigning chooses what is signed and how long an assertion lives.
+//
+// The schema refuses signing neither: an unsigned assertion inside an unsigned
+// response is a document anyone can write. There is no configuration in which
+// that is what somebody meant.
+func samlSigning(ctx context.Context, conn *pgx.Conn, entityID string,
+	assertions, responses bool, lifetime int) error {
+
+	if entityID == "" {
+		return fmt.Errorf("give -entity-id")
+	}
+	if !assertions && !responses {
+		return fmt.Errorf("-sign-assertions and -sign-responses cannot both be off: an " +
+			"unsigned assertion inside an unsigned response is a document anyone can " +
+			"write, and the service provider has nothing to check")
+	}
+
+	// 0 means "leave it alone", so a caller changing only the signing flags does
+	// not silently reset a lifetime somebody chose.
+	var lifeArg any
+	if lifetime != 0 {
+		if lifetime < 30 || lifetime > 3600 {
+			return fmt.Errorf("-assertion-lifetime is 30 to 3600 seconds; %d is outside "+
+				"that. Short because an assertion is a bearer credential, and long enough "+
+				"to survive clock skew", lifetime)
+		}
+		lifeArg = lifetime
+	}
+
+	tp, err := conn.Exec(ctx, `
+		UPDATE core.saml_providers
+		   SET sign_assertions = $2, sign_responses = $3,
+		       lifetime_seconds = COALESCE($4::int, lifetime_seconds)
+		 WHERE entity_id = $1`, entityID, assertions, responses, lifeArg)
+	if err != nil {
+		return err
+	}
+	if tp.RowsAffected() == 0 {
+		return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+	}
+
+	fmt.Printf("%s:\n  sign assertions : %t\n  sign responses  : %t\n",
+		entityID, assertions, responses)
+	if lifeArg != nil {
+		fmt.Printf("  lifetime        : %ds\n", lifetime)
+	}
+	return nil
+}
+
+// samlGroupRelease says which groups a service provider is told about.
+//
+// An allow-list, matching `client group release` for OIDC clients and for the
+// same reason: group membership is authorization data. A provider that receives
+// every group learns the shape of the organisation, and one that receives a
+// group it was never meant to see can act on it.
+func samlGroupRelease(ctx context.Context, conn *pgx.Conn, entityID, attrName,
+	only string, remove bool) error {
+
+	if entityID == "" {
+		return fmt.Errorf("give -entity-id")
+	}
+	var providerID, orgID string
+	if err := conn.QueryRow(ctx,
+		`SELECT id::text, org_id::text FROM core.saml_providers WHERE entity_id = $1`,
+		entityID).Scan(&providerID, &orgID); err != nil {
+		return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+	}
+
+	if remove {
+		tp, err := conn.Exec(ctx,
+			`DELETE FROM core.saml_group_release WHERE provider_id = $1::uuid`, providerID)
+		if err != nil {
+			return err
+		}
+		if tp.RowsAffected() == 0 {
+			return fmt.Errorf("%s releases no groups already", entityID)
+		}
+		fmt.Printf("%s no longer receives group membership\n", entityID)
+		return nil
+	}
+
+	names := []string{}
+	for _, g := range strings.Split(only, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			names = append(names, g)
+		}
+	}
+	// Every named group must exist. A typo would silently release nothing, and
+	// an allow-list that quietly matches no group is indistinguishable from one
+	// that is working.
+	for _, n := range names {
+		var ok bool
+		if err := conn.QueryRow(ctx,
+			`SELECT true FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
+			orgID, n).Scan(&ok); err != nil {
+			return fmt.Errorf("no group named %q in that organisation", n)
+		}
+	}
+
+	name := strings.TrimSpace(attrName)
+	if name == "" {
+		name = "groups"
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO core.saml_group_release (provider_id, org_id, attribute_name, only_groups)
+		VALUES ($1::uuid, $2::uuid, $3, $4)
+		ON CONFLICT (provider_id) DO UPDATE
+		   SET attribute_name = EXCLUDED.attribute_name,
+		       only_groups    = EXCLUDED.only_groups`,
+		providerID, orgID, name, names); err != nil {
+		return err
+	}
+
+	fmt.Printf("%s receives group membership as %q\n", entityID, name)
+	if len(names) == 0 {
+		fmt.Println("\n  -only was empty, so EVERY group this user belongs to is released.")
+		fmt.Println("  Name the groups explicitly unless the provider genuinely needs all of them.")
+	} else {
+		fmt.Printf("  releasing only: %s\n", strings.Join(names, ", "))
+	}
+	return nil
+}
+
+// idpVerifiedEmail decides whether to believe a provider's email_verified claim.
+//
+// Believing it is trusting a third party's word that somebody controls an
+// address, and that word is what account linking is decided on. A provider that
+// lets anybody set an unverified address and reports it as verified turns this
+// into account takeover by registration.
+func idpVerifiedEmail(ctx context.Context, conn *pgx.Conn, slug string, trust bool) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	tp, err := conn.Exec(ctx,
+		`UPDATE core.identity_providers SET require_verified_email = $2 WHERE slug = $1`,
+		slug, !trust)
+	if err != nil {
+		return err
+	}
+	if tp.RowsAffected() == 0 {
+		return fmt.Errorf("no identity provider with slug %q", slug)
+	}
+
+	if trust {
+		fmt.Printf("%s: this engine believes the provider's email_verified claim\n", slug)
+		fmt.Println("\n  Accounts are linked by address on that basis. Only do this for a")
+		fmt.Println("  provider that verifies addresses itself and will not report an")
+		fmt.Println("  unverified one as verified.")
+		return nil
+	}
+	fmt.Printf("%s: an address from this provider is verified here, not taken on trust\n", slug)
+	return nil
+}
+
+// instanceWebAuthn sets the Relying Party identity passkeys are bound to.
+//
+// # Nothing could set this, so passkeys were unavailable everywhere
+//
+// `internal/passkeys` refuses to build a relying party without it — "this
+// instance has no rp_id set; passkeys are unavailable until it is" — and no
+// command, API or console field wrote the column. Every deployment therefore had
+// passkeys switched off by a value nobody could supply, including the
+// authenticator policy and attestation work that sits on top of it.
+//
+// # Why the value is checked here as well as at use
+//
+// The RP ID is the scope a credential is bound to. A credential created under
+// `example.com` works for `login.example.com`; one created under
+// `login.example.com` does NOT work for `example.com`, and changing the value
+// later invalidates every credential registered under the old one. So the shape
+// is checked before it is stored rather than only when somebody tries to sign
+// in, and widening is called out rather than silently accepted.
+func instanceWebAuthn(ctx context.Context, conn *pgx.Conn, issuer, id, displayName string) error {
+	if issuer == "" || id == "" {
+		return fmt.Errorf("give -issuer and -rp-id")
+	}
+	if strings.Contains(id, "://") || strings.ContainsAny(id, ":/?#") {
+		return fmt.Errorf("-rp-id is a bare domain: %q has a scheme, port or path. "+
+			"Use example.com, not https://example.com:8443/", id)
+	}
+	if !strings.Contains(id, ".") && id != "localhost" {
+		return fmt.Errorf("-rp-id %q is not a domain. WebAuthn allows `localhost` for "+
+			"local testing and requires a registrable domain otherwise", id)
+	}
+	// An IP address is refused by internal/passkeys when a ceremony is attempted.
+	// Checked here as well, because the first version of this command accepted
+	// 192.168.1.1 happily — it contains dots — and the operator would then have
+	// found out at the first enrolment, from a browser, with a stored value that
+	// looked correct.
+	if ip := net.ParseIP(id); ip != nil {
+		return fmt.Errorf("-rp-id %q is an IP address. WebAuthn binds a credential to a "+
+			"registrable domain, and browsers refuse a ceremony scoped to an address", id)
+	}
+
+	var current, currentName *string
+	var host string
+	if err := conn.QueryRow(ctx,
+		`SELECT rp_id, rp_display_name, issuer FROM core.instances WHERE issuer = $1`,
+		issuer).Scan(&current, &currentName, &host); err != nil {
+		return fmt.Errorf("no instance with issuer %q", issuer)
+	}
+
+	name := strings.TrimSpace(displayName)
+	if name == "" && currentName != nil {
+		name = *currentName
+	}
+	if name == "" {
+		// Shown by the authenticator when somebody is asked to confirm. Falling
+		// back to the RP ID is better than an empty prompt, which reads to the
+		// person as an unidentified site asking for their key.
+		name = id
+	}
+
+	if _, err := conn.Exec(ctx,
+		`UPDATE core.instances SET rp_id = $2, rp_display_name = $3 WHERE issuer = $1`,
+		issuer, id, name); err != nil {
+		return err
+	}
+
+	fmt.Printf("%s\n  rp_id        : %s\n  display name : %s\n", issuer, id, name)
+	if current != nil && *current != "" && *current != id {
+		fmt.Printf("\n  CHANGED from %q. Every passkey registered under the old value is\n", *current)
+		fmt.Println("  now unusable -- a credential is bound to the RP ID it was created")
+		fmt.Println("  under, and this is not reversible for anybody who has already enrolled.")
+		fmt.Println("  They will need to register again.")
+		return nil
+	}
+	fmt.Println("\n  Passkeys are now available for this instance. The RP ID must be the")
+	fmt.Println("  registrable domain or a parent of every host that serves sign-in: a")
+	fmt.Println("  credential made under example.com works on login.example.com, and one")
+	fmt.Println("  made under login.example.com does not work on example.com.")
+	return nil
+}
+
+// scimSetEnabled takes a provisioning target in or out of service.
+//
+// Disabling is what an operator wants when a target is down or being migrated:
+// the configuration, the links and the remote ids are all kept, and the next
+// sync simply skips it. Deleting the target would take the links with it, and
+// the accounts at the far end would then be unreachable rather than merely
+// unmanaged.
+func scimSetEnabled(ctx context.Context, conn *pgx.Conn, slug string, enabled bool) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	tp, err := conn.Exec(ctx,
+		`UPDATE core.scim_targets SET enabled = $2 WHERE slug = $1`, slug, enabled)
+	if err != nil {
+		return err
+	}
+	if tp.RowsAffected() == 0 {
+		return fmt.Errorf("no SCIM target with slug %q", slug)
+	}
+	if enabled {
+		fmt.Printf("%s is enabled; the next sync includes it\n", slug)
+		return nil
+	}
+	fmt.Printf("%s is disabled; syncs skip it and its links are kept\n", slug)
+	fmt.Println("\n  Nothing is deprovisioned. People deactivated here while the target is")
+	fmt.Println("  disabled keep their access there until it is enabled and synced.")
+	return nil
+}
+
+// dirSet changes how a directory sync behaves.
+//
+// `max_deactivate_percent` is the one that matters. It is the ceiling the whole
+// planner is built around -- a fetch that fails part-way, a filter that matches
+// too little, an upstream outage all look identical to "everybody left the
+// company", and the ceiling is what stops the reconciler acting on that. It had
+// a sensible default and no way to change it, so an operator who found 20% wrong
+// for their organisation had no move at all.
+func dirSet(ctx context.Context, conn *pgx.Conn, slug, onMissing string, maxPercent int,
+	fs *flag.FlagSet, enabled, dryRun bool) error {
+
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+
+	// Only the flags actually supplied are applied. Without this, changing
+	// -on-missing would silently reset -max-deactivate to its default, which on
+	// this particular setting means quietly widening a safety ceiling.
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	var changes []string
+	if set["on-missing"] {
+		switch onMissing {
+		case "report", "deactivate":
+		default:
+			return fmt.Errorf("-on-missing must be report or deactivate, not %q", onMissing)
+		}
+		changes = append(changes, "on-missing")
+	}
+	if set["max-deactivate"] && (maxPercent < 0 || maxPercent > 100) {
+		return fmt.Errorf("-max-deactivate is a percentage, 0 to 100")
+	}
+	if set["max-deactivate"] {
+		changes = append(changes, "max-deactivate")
+	}
+	if set["enabled"] {
+		changes = append(changes, "enabled")
+	}
+	if set["dry-run"] {
+		changes = append(changes, "dry-run")
+	}
+	if len(changes) == 0 {
+		return fmt.Errorf("give at least one of -on-missing, -max-deactivate, -enabled " +
+			"or -dry-run")
+	}
+
+	var onMissingArg, maxArg, enabledArg, dryArg any
+	if set["on-missing"] {
+		onMissingArg = onMissing
+	}
+	if set["max-deactivate"] {
+		maxArg = maxPercent
+	}
+	if set["enabled"] {
+		enabledArg = enabled
+	}
+	if set["dry-run"] {
+		dryArg = dryRun
+	}
+
+	tp, err := conn.Exec(ctx, `
+		UPDATE core.directory_sources
+		   SET on_missing             = COALESCE($2::text, on_missing),
+		       max_deactivate_percent = COALESCE($3::int, max_deactivate_percent),
+		       enabled                = COALESCE($4::boolean, enabled),
+		       dry_run                = COALESCE($5::boolean, dry_run)
+		 WHERE slug = $1`, slug, onMissingArg, maxArg, enabledArg, dryArg)
+	if err != nil {
+		if strings.Contains(err.Error(), "on_missing") {
+			return fmt.Errorf("-on-missing must be report or deactivate")
+		}
+		return err
+	}
+	if tp.RowsAffected() == 0 {
+		return fmt.Errorf("no directory source with slug %q", slug)
+	}
+
+	var om string
+	var mp int
+	var en, dr bool
+	_ = conn.QueryRow(ctx, `
+		SELECT on_missing, max_deactivate_percent, enabled, dry_run
+		FROM core.directory_sources WHERE slug = $1`, slug).Scan(&om, &mp, &en, &dr)
+
+	fmt.Printf("%s:\n  enabled        : %t\n  dry run        : %t\n"+
+		"  on missing     : %s\n  max deactivate : %d%%\n", slug, en, dr, om, mp)
+	if om == "deactivate" {
+		fmt.Println("\n  People the directory stops returning will be DEACTIVATED here. Preview")
+		fmt.Println("  every run first -- `signari dir sync -slug " + slug + "` shows the plan")
+		fmt.Printf("  and refuses it whole if it would deactivate more than %d%%.\n", mp)
+	}
+	if mp == 100 {
+		fmt.Println("\n  A 100% ceiling refuses nothing. A single bad fetch can then deactivate")
+		fmt.Println("  the entire organisation, which is the failure this setting exists for.")
+	}
 	return nil
 }
 

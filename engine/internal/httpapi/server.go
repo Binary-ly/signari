@@ -916,6 +916,32 @@ func (s *Server) captchaWidget(data map[string]any) map[string]any {
 	return data
 }
 
+// firstOrgID returns the organisation whose scope catalogue discovery reflects.
+//
+// # Why one organisation and not a union
+//
+// The discovery document is per ISSUER, and an instance may host several
+// organisations. Listing every organisation's declared scopes in one document
+// would tell each tenant what the others have defined — a scope name is a hint
+// about what a company holds, and "clinical_records" leaking between tenants
+// discloses something real.
+//
+// So it reflects the instance's own organisation, which is the single-tenant
+// case that actually reads this document. A multi-tenant deployment that needs
+// per-tenant discovery needs per-tenant issuers, which is a larger decision than
+// this function.
+func (s *Server) firstOrgID(ctx context.Context) string {
+	var id string
+	if err := s.db.QueryRow(ctx, `
+		SELECT o.id::text FROM core.organizations o
+		JOIN core.instances i ON i.id = o.instance_id
+		WHERE i.issuer = $1
+		ORDER BY o.created_at LIMIT 1`, s.cfg.Issuer).Scan(&id); err != nil {
+		return ""
+	}
+	return id
+}
+
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	md, err := oidc.Build(s.cfg)
 	if err != nil {
@@ -932,6 +958,22 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("checking whether dynamic registration is enabled", "err", cerr)
 	} else if on {
 		md.RegistrationEndpoint = s.cfg.Issuer + "/oauth2/register"
+	}
+
+	// Operator-declared scopes, for organisations that have any.
+	//
+	// The same rule as everything else in this document: advertised only when a
+	// client could actually be granted it. A declared scope may opt out of being
+	// advertised, because a scope used between a first-party client and its own
+	// resource server is not something a stranger reading discovery needs to
+	// learn exists, and every advertised scope is a hint about what this
+	// deployment holds.
+	//
+	// Failure here is not fatal. Discovery must not become unanswerable because
+	// an optional catalogue could not be read -- AdvertisedScopes returns the
+	// standard set on any error.
+	if orgID := s.firstOrgID(r.Context()); orgID != "" {
+		md.ScopesSupported = store.AdvertisedScopes(r.Context(), s.db, orgID)
 	}
 
 	// RFC 9396 §10: advertise the registered authorization details types, and

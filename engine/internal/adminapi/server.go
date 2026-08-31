@@ -159,6 +159,13 @@ func (s *Server) Routes() http.Handler {
 	route("DELETE /admin/users/{userID}/factors/{kind}", ScopeUsersWrite, s.deleteUserFactor)
 	route("DELETE /admin/users/{userID}/factors/{kind}/{factorID}", ScopeUsersWrite, s.deleteUserFactor)
 	route("POST /admin/organizations", ScopeOrganizationsWrite, s.createOrganization)
+
+	// The scope catalogue. Registered unconditionally — unlike attributes, a
+	// scope holds no personal data and needs no subject key.
+	route("GET /admin/organizations/{orgID}/scopes", ScopeConfigRead, s.listScopes)
+	route("PUT /admin/organizations/{orgID}/scopes", ScopeOrganizationsWrite, s.declareScope)
+	route("DELETE /admin/organizations/{orgID}/scopes/{scope}",
+		ScopeOrganizationsWrite, s.deleteScope)
 	route("GET /admin/audit-events", ScopeAuditRead, s.listAuditEvents)
 	route("GET /admin/config-version", ScopeConfigRead, s.configVersion)
 

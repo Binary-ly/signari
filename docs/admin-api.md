@@ -113,6 +113,39 @@ reachable by one mistyped identifier. Setting `status` to `suspended` stops the
 tenant working; removing the data is a deliberate operation done with the
 database in front of you.
 
+### Scopes
+
+| | |
+|---|---|
+| `GET /admin/organizations/{orgID}/scopes` | The organisation's declared scopes, plus the standard set. Needs `config:read` |
+| `PUT /admin/organizations/{orgID}/scopes` | Declare or update one. Needs `organizations:write` |
+| `DELETE /admin/organizations/{orgID}/scopes/{scope}` | Remove a declaration |
+
+**Declaring a scope adds no gate on a request.** A client already cannot ask for
+a scope it is not registered for — that check runs at `/authorize`, the device
+and CIBA endpoints, `jwt-bearer` and `client_credentials`, and none of it changes
+here.
+
+What declaring buys is that a scope stops being a word somebody typed twice.
+Before this, `hr_records` existed only because the same string appeared in a
+client's registered list and in a claim mapper's `required_scope`, with nothing
+connecting them — so a typo in either was silent, and silent in the worst
+direction: the mapper waits for a scope no client can be granted, the claim is
+never released, and the configuration looks correct.
+
+It also gives the consent screen something to say. `hr_records` tells a person
+nothing, and a screen that cannot explain what is being asked for collects a
+click rather than a decision.
+
+`advertise` (default true) controls whether discovery lists it. A scope used only
+between a first-party client and its own resource server is not something a
+stranger needs to learn exists, and every advertised scope is a hint about what
+this deployment holds.
+
+**The standard scopes cannot be declared.** `openid`, `profile`, `email`,
+`groups` and `offline_access` mean what the specifications say; a row appearing
+to redefine one would be a setting that changes nothing.
+
 ### Clients
 
 | | |

@@ -135,6 +135,24 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/scopes", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + anyOrgID(t, s) + "/scopes"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return fmt.Sprintf(`{"name":"drift_scope_%d"}`, time.Now().UnixNano())
+			},
+		},
+		{
+			name:   "DELETE /admin/organizations/{orgID}/scopes/{scope}",
+			method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				orgID := anyOrgID(t, s)
+				return "/admin/organizations/" + orgID + "/scopes/" + newDriftScope(t, s, orgID)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/organizations" },
 			body: func(t *testing.T, s *Server, _ string) string {
@@ -379,6 +397,22 @@ func newDriftMapper(t *testing.T, s *Server, orgID string) string {
 			`DELETE FROM core.claim_mappers WHERE id = $1::uuid`, id)
 	})
 	return id
+}
+
+// newDriftScope declares a scope for the delete case to remove.
+func newDriftScope(t *testing.T, s *Server, orgID string) string {
+	t.Helper()
+	name := fmt.Sprintf("drift_del_scope_%d", time.Now().UnixNano())
+	if _, err := s.db.Exec(context.Background(), `
+		INSERT INTO core.scopes (org_id, name) VALUES ($1::uuid, $2)`,
+		orgID, name); err != nil {
+		t.Fatalf("declaring the fixture scope: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(),
+			`DELETE FROM core.scopes WHERE org_id = $1::uuid AND name = $2`, orgID, name)
+	})
+	return name
 }
 
 func anyInstanceID(t *testing.T, s *Server) string {

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -104,8 +105,12 @@ type Server struct {
 	// chains legitimately makes far more of them than anybody registers clients.
 	federation *ratelimit.Bucket
 	db         *pgxpool.Pool
-	hasher     *passwords.Hasher
-	policies   *policyCache
+	// draining is set at the start of shutdown so /readyz answers 503 while the
+	// listener is still accepting, giving a load balancer a window to stop
+	// sending traffic here before the socket closes. See BeginDraining.
+	draining atomic.Bool
+	hasher   *passwords.Hasher
+	policies *policyCache
 	// flows holds the sign-in journey per organisation. Same shape and same
 	// refusal rule as policies: only a document that parsed, passed its own
 	// tests and cleared the static safety analysis is ever cached.
@@ -316,6 +321,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET "+oidc.PathDiscovery, s.handleDiscovery)
 	mux.HandleFunc("GET "+oidc.PathJWKS, s.handleJWKS)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /readyz", s.handleReady)
 
 	mux.HandleFunc("GET "+oidc.PathAuthorize, s.handleAuthorize)
 	// OIDC Core 3.1.2.1 makes POST mandatory alongside GET. See authorizeParams
@@ -935,6 +941,61 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 // "Is it up" needs one field.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+// BeginDraining marks the process as no longer accepting new work.
+//
+// Called at the start of shutdown, BEFORE the listener stops. `/readyz` answers
+// 503 from this moment, which is what gives a load balancer time to take the
+// node out of rotation while it can still finish the requests it already has.
+// Without it, graceful shutdown is only half a mechanism: in-flight requests
+// drain correctly while new ones keep arriving at a socket that is about to
+// close, and the drain window becomes the error window.
+func (s *Server) BeginDraining() { s.draining.Store(true) }
+
+// handleReady reports whether this node can serve a request right now.
+//
+// # Why this is a different question from /healthz, and must fail differently
+//
+// Liveness asks "is this process wedged, should it be killed". Readiness asks
+// "should traffic come here". Answering both from one check is the mistake that
+// turns a database blip into a total outage: if /healthz touched the database,
+// an orchestrator would see every replica fail liveness at once and restart the
+// entire fleet — replacing a degraded service that would have recovered with a
+// cold one that cannot start, because the thing it needs in order to become
+// healthy is the thing that is down.
+//
+// So /healthz stays a pure process check and never touches the database, and
+// this endpoint is the one that does.
+//
+// # The timeout is short on purpose
+//
+// A readiness probe that blocks for the pool's full acquisition timeout is a
+// probe that times out at the orchestrator instead of answering, and an
+// unanswered probe is usually treated as a failure anyway — with the added cost
+// of a connection held for the duration. Two seconds is longer than a healthy
+// round trip by orders of magnitude and shorter than any sensible probe timeout.
+//
+// # It reports no detail
+//
+// "not ready" and nothing else. A probe endpoint is reachable by whatever can
+// reach the port, which in practice is broader than the protocol endpoints, and
+// a database error string names the host, the database, the role and often the
+// reason. That belongs in the log, where it already is.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if s.draining.Load() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "draining"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.db.Ping(ctx); err != nil {
+		s.log.Error("readiness probe failed", "err", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

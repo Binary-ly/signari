@@ -38,6 +38,8 @@ effect at all.
 | `SIGNARI_TLS_CERT`, `SIGNARI_TLS_KEY` | Serve HTTPS. Without them the engine warns: browsers refuse `__Host-` cookies over plaintext on anything but localhost, so sign-in silently fails to persist |
 | `SIGNARI_TLS_CLIENT_CA` | Authorities that may issue client certificates for RFC 8705 mutual-TLS. Absent, `tls_client_auth` is refused rather than relaxed |
 | `SIGNARI_ADMIN_ADDR` | Listen address for the admin API. Absent, it does not start |
+| `SIGNARI_SHUTDOWN_DRAIN` | How long to keep serving after SIGTERM before the listener closes, default `5s`. `/readyz` answers 503 for this whole window, so whatever routes traffic here has time to take the node out of rotation before the socket goes. Set it above your readiness probe's interval; `0` disables it, which is right locally and wrong behind a load balancer |
+| `SIGNARI_SHUTDOWN_TIMEOUT` | How long in-flight requests may take to finish, default `20s`. Keep it **under** the orchestrator's grace period before SIGKILL — a timeout longer than the one that kills you never runs. Also caps the drain |
 | `SIGNARI_ADMIN_INSECURE` | `1` permits the admin API to serve plaintext HTTP. Without it, an admin listener configured with no `SIGNARI_TLS_CERT` refuses to start rather than putting a bearer token that can erase a subject on the wire in clear. Only reasonable bound to loopback behind a terminator you control |
 | `SIGNARI_INSECURE_ISSUER` | `1` permits an `http://` issuer. Development only |
 | `SIGNARI_PROXY_COOKIE_DOMAIN` | Parent domain for the forward-auth cookie |

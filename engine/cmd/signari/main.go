@@ -1183,7 +1183,14 @@ func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) er
 }
 
 func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecure bool) error {
-	ctx := context.Background()
+	// Cancelled on SIGINT or SIGTERM, which is what an orchestrator sends before
+	// it eventually kills the process. Everything started below hangs off this
+	// context, so the signal reaches the background workers as well as the
+	// listeners -- the outbox and janitor loops stop taking new work instead of
+	// being terminated mid-transaction.
+	ctx, stopSignals := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	// The startup gate. A drifted or half-migrated database must fail here, at
@@ -1393,13 +1400,25 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 				Handler:           adminSrv.Routes(),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
+			// Shut down with the rest of the process rather than being killed
+			// with it. An admin write is a transaction that bumps the config
+			// version; losing one halfway is a durable write whose caller never
+			// learned whether it happened.
+			go func() {
+				<-ctx.Done()
+				sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout())
+				defer cancel()
+				if err := ah.Shutdown(sctx); err != nil {
+					log.Error("admin API shutdown", "err", err)
+				}
+			}()
 			var err error
 			if tlsCert != "" {
 				err = ah.ListenAndServeTLS(tlsCert, tlsKey)
 			} else {
 				err = ah.ListenAndServe()
 			}
-			if err != nil {
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error("admin API stopped", "err", err)
 			}
 		}()
@@ -1590,13 +1609,55 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		IdleTimeout:       120 * time.Second,
 	}
 
+	// Ordered shutdown. The sequence is the whole point, and getting it wrong is
+	// invisible until a deploy drops requests:
+	//
+	//  1. Mark the node NOT READY. `/readyz` starts answering 503 while the
+	//     listener is still accepting, so a load balancer has a window to take
+	//     this node out of rotation.
+	//  2. Wait out that window. Shutting down immediately means the socket
+	//     closes before anything upstream has noticed, and every request routed
+	//     here in the meantime is refused -- the drain window becomes the error
+	//     window. This is the step people leave out.
+	//  3. Stop accepting and let in-flight requests finish, bounded.
+	//
+	// A signing operation or a token exchange interrupted at step 3 is a client
+	// that gets a connection reset for a request the database may already have
+	// committed, which is the ambiguity refresh-token rotation exists to avoid
+	// creating.
+	go func() {
+		<-ctx.Done()
+		log.Info("shutting down", "drain", shutdownDrain(), "timeout", shutdownTimeout())
+		srv.BeginDraining()
+
+		// Never drain for longer than the whole budget. A deployment that sets
+		// the drain above the timeout means to wait a long time, not to spend
+		// the entire grace period unready and then be SIGKILLed mid-request.
+		drain := shutdownDrain()
+		if drain > shutdownTimeout() {
+			drain = shutdownTimeout()
+		}
+		time.Sleep(drain)
+
+		sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout())
+		defer cancel()
+		if err := h.Shutdown(sctx); err != nil {
+			// Reported, not swallowed: this is the difference between "every
+			// request finished" and "the timeout expired and some did not".
+			log.Error("shutdown did not complete cleanly", "err", err)
+		}
+	}()
+
 	if tlsCert == "" || tlsKey == "" {
 		log.Info("serving over plaintext HTTP", "addr", addr, "issuer", issuer,
 			"algs", set.Algorithms())
 		log.Warn("no TLS configured: browsers will refuse to store the __Host- session " +
 			"cookie over plaintext on any host except localhost, so sign-in will silently " +
 			"fail to persist. Supply -tls-cert and -tls-key outside local testing.")
-		return h.ListenAndServe()
+		if err := h.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
 	}
 
 	// TLS 1.2 floor. 1.0 and 1.1 are deprecated and their cipher suites are not
@@ -1628,7 +1689,52 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		},
 	}
 	log.Info("serving over HTTPS", "addr", addr, "issuer", issuer, "algs", set.Algorithms())
-	return h.ListenAndServeTLS(tlsCert, tlsKey)
+	if err := h.ListenAndServeTLS(tlsCert, tlsKey); err != nil &&
+		!errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+// shutdownDrain is how long to keep serving after being told to stop.
+//
+// The default is five seconds because that is longer than the interval of every
+// common readiness probe, which is what the window exists to outlast: the node
+// must be observed unready by whatever routes to it before it stops listening.
+// Zero disables the wait, which is right for a local run and wrong behind a load
+// balancer.
+func shutdownDrain() time.Duration {
+	return durationEnv("SIGNARI_SHUTDOWN_DRAIN", 5*time.Second)
+}
+
+// shutdownTimeout bounds how long in-flight requests may take to finish.
+//
+// Twenty seconds by default: long enough for a slow token exchange or an
+// outbound back-channel logout, short enough to stay inside the grace period an
+// orchestrator allows before it sends SIGKILL. Set it under that grace period,
+// never above -- a timeout longer than the one that kills you is a timeout that
+// never runs.
+func shutdownTimeout() time.Duration {
+	return durationEnv("SIGNARI_SHUTDOWN_TIMEOUT", 20*time.Second)
+}
+
+// durationEnv reads a Go duration, falling back rather than failing.
+//
+// A malformed value is logged and ignored. This is read on the shutdown path,
+// where refusing to start over a typo in a timeout would be a worse outcome than
+// using the default -- and where returning an error has nowhere to go.
+func durationEnv(name string, fallback time.Duration) time.Duration {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		slog.Warn("ignoring a malformed duration", "var", name, "value", raw,
+			"using", fallback)
+		return fallback
+	}
+	return d
 }
 
 func up(ctx context.Context, conn *pgx.Conn, tier migrate.Tier, to int) error {

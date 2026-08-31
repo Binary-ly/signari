@@ -111,6 +111,30 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			name:   "POST /admin/organizations/{orgID}/claim-mappers",
+			method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + orgWithDriftAttribute(t, s) + "/claim-mappers"
+			},
+			body: func(*testing.T, *Server, string) string {
+				// A fresh claim name so the upsert path is not the only one
+				// exercised after the first run.
+				return fmt.Sprintf(
+					`{"attribute":%q,"claim_name":"drift_claim_%d","destination":"userinfo","all_clients":true}`,
+					driftAttributeName, time.Now().UnixNano())
+			},
+		},
+		{
+			name:   "DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}",
+			method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				orgID := orgWithDriftAttribute(t, s)
+				return "/admin/organizations/" + orgID + "/claim-mappers/" +
+					newDriftMapper(t, s, orgID)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/organizations" },
 			body: func(t *testing.T, s *Server, _ string) string {
@@ -316,6 +340,45 @@ func newDriftUserWithAttribute(t *testing.T, s *Server) string {
 		t.Fatalf("declaring the fixture attribute: %v", err)
 	}
 	return userID
+}
+
+// orgWithDriftAttribute returns an organisation that declares the fixture
+// attribute, so a mapper has something to point at.
+func orgWithDriftAttribute(t *testing.T, s *Server) string {
+	t.Helper()
+	orgID := anyOrgID(t, s)
+	if _, err := s.db.Exec(context.Background(), `
+		INSERT INTO core.user_attribute_schema (org_id, name, value_type, personal)
+		VALUES ($1::uuid, $2, 'string', true)
+		ON CONFLICT (org_id, name) DO NOTHING`, orgID, driftAttributeName); err != nil {
+		t.Fatalf("declaring the fixture attribute: %v", err)
+	}
+	return orgID
+}
+
+// newDriftMapper creates a mapper to delete, and returns its id.
+//
+// A fresh claim name each time: the unique constraint is on (org, client,
+// attribute, destination), so reusing one would upsert rather than insert and
+// the delete case would race the create case above.
+func newDriftMapper(t *testing.T, s *Server, orgID string) string {
+	t.Helper()
+	var id string
+	if err := s.db.QueryRow(context.Background(), `
+		INSERT INTO core.claim_mappers
+			(org_id, client_id, attribute_id, claim_name, destination, required_scope)
+		SELECT $1::uuid, NULL, id, $2, 'id_token', ''
+		FROM core.user_attribute_schema WHERE org_id = $1::uuid AND name = $3
+		RETURNING id::text`,
+		orgID, fmt.Sprintf("drift_del_%d", time.Now().UnixNano()), driftAttributeName).
+		Scan(&id); err != nil {
+		t.Fatalf("creating the fixture mapper: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(),
+			`DELETE FROM core.claim_mappers WHERE id = $1::uuid`, id)
+	})
+	return id
 }
 
 func anyInstanceID(t *testing.T, s *Server) string {

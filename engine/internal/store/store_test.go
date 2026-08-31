@@ -175,7 +175,7 @@ func TestConsumeCodeDistinguishesUnknownFromReused(t *testing.T) {
 func TestTerminateQueuesNoticesBeforeRevoking(t *testing.T) {
 	ctx := context.Background()
 	conn := connect(t)
-	_, userID, _, sid := fixture(t, conn)
+	_, userID, clientID, sid := fixture(t, conn)
 
 	tx, err := conn.Begin(ctx)
 	must(t, err)
@@ -197,7 +197,7 @@ func TestTerminateQueuesNoticesBeforeRevoking(t *testing.T) {
 	}
 
 	// A single-session termination addresses the RP by sid, never by sub.
-	n := lastNotice(t, ctx, tx)
+	n := lastNotice(t, ctx, tx, clientID)
 	if n.SessionID != sid {
 		t.Errorf("notice sid = %q, want %q", n.SessionID, sid)
 	}
@@ -223,7 +223,7 @@ func TestTerminateQueuesNoticesBeforeRevoking(t *testing.T) {
 func TestTerminateAllSessionsUsesSubNotSid(t *testing.T) {
 	ctx := context.Background()
 	conn := connect(t)
-	_, userID, _, _ := fixture(t, conn)
+	_, userID, clientID, _ := fixture(t, conn)
 
 	tx, err := conn.Begin(ctx)
 	must(t, err)
@@ -232,7 +232,7 @@ func TestTerminateAllSessionsUsesSubNotSid(t *testing.T) {
 	_, err = TerminateSessions(ctx, tx, "", userID, ReasonUserDeactivated)
 	must(t, err)
 
-	n := lastNotice(t, ctx, tx)
+	n := lastNotice(t, ctx, tx, clientID)
 	if n.Subject != userID {
 		t.Errorf("notice sub = %q, want %q", n.Subject, userID)
 	}
@@ -285,12 +285,27 @@ func must(t *testing.T, err error) {
 }
 
 // lastNotice reads the most recently queued back-channel logout notice.
-func lastNotice(t *testing.T, ctx context.Context, tx pgx.Tx) LogoutNotice {
+// lastNotice returns the newest back-channel logout notice FOR ONE SUBJECT.
+//
+// It used to take the newest notice in the table, unscoped, and that made these
+// tests depend on the order the package happened to run in: any other test that
+// queued a notice first would be the one this read, and the assertion would fail
+// naming a sid from a different test's fixture. It passed in isolation and
+// failed in a full run, which reads as flakiness and is not.
+//
+// Scoped by CLIENT, which is the one field present on every notice: a
+// single-session logout carries `sid` and no `sub`, and an all-sessions logout
+// carries `sub` and no `sid`, so neither of those can scope both callers. The
+// fixture's client id is unique per run, which makes it the discriminator that
+// actually works.
+func lastNotice(t *testing.T, ctx context.Context, tx pgx.Tx, clientID string) LogoutNotice {
 	t.Helper()
 	var raw []byte
 	must(t, tx.QueryRow(ctx, `
 		SELECT payload FROM core.outbox
-		WHERE topic='backchannel_logout' ORDER BY id DESC LIMIT 1`).Scan(&raw))
+		WHERE topic='backchannel_logout'
+		  AND payload->>'client_id' = $1
+		ORDER BY id DESC LIMIT 1`, clientID).Scan(&raw))
 	var n LogoutNotice
 	must(t, json.Unmarshal(raw, &n))
 	return n

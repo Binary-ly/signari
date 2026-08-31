@@ -1395,6 +1395,8 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// means tls_client_auth is refused.
 	srv.SetClientCAs(clientCAPool())
 	srv.SetInstance(instanceID)
+	// Needed to unseal personal user attributes for operator-defined claims.
+	srv.SetRootKey(root)
 
 	// OpenID Federation keys, loaded only if this instance has any.
 	//

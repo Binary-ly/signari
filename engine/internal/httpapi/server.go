@@ -156,7 +156,20 @@ type Server struct {
 	// read. Fifteen tests build this struct as a literal and none of them should
 	// have to know about instrumentation.
 	metrics *metrics.Engine
+
+	// root unwraps subject keys, which is what a personal user attribute is
+	// sealed under. nil means operator-defined claims are not resolved at all --
+	// the fixed claim set still works, so a Server built without a root key
+	// serves ordinary OIDC rather than failing.
+	root *keys.RootKey
 }
+
+// SetRootKey supplies the key that unwraps subject keys.
+//
+// Needed only for operator-defined claims: without it the fixed claim set is
+// unaffected and mapped claims are silently absent, which is the right failure
+// for a capability an unconfigured deployment is not using.
+func (s *Server) SetRootKey(root *keys.RootKey) { s.root = root }
 
 // SetMetrics supplies the metric handles, or nil for none.
 //

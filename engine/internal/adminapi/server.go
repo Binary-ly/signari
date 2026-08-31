@@ -198,6 +198,15 @@ func (s *Server) Routes() http.Handler {
 		route("PUT /admin/organizations/{orgID}/attributes", ScopeOrganizationsWrite, s.declareAttribute)
 		route("GET /admin/users/{userID}/attributes", ScopeUsersRead, s.getUserAttributes)
 		route("PUT /admin/users/{userID}/attributes", ScopeUsersWrite, s.setUserAttributes)
+
+		// Claim mappers. Creating one decides that a relying party receives a
+		// fact about every user who has it, so it takes the same scope as
+		// declaring the attribute rather than the user-administration scope.
+		route("GET /admin/organizations/{orgID}/claim-mappers", ScopeConfigRead, s.listMappers)
+		route("POST /admin/organizations/{orgID}/claim-mappers",
+			ScopeOrganizationsWrite, s.createMapper)
+		route("DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}",
+			ScopeOrganizationsWrite, s.deleteMapper)
 	}
 
 	// The document itself, unauthenticated. See handleOpenAPI for why: it

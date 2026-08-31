@@ -178,6 +178,35 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Operator-defined claims, resolved LAST and merged without overwriting.
+	//
+	// The order is the safety property. A mapper cannot replace `sub`, `email`
+	// or `email_verified` with an attribute value: the database refuses the
+	// protocol claims outright (claim_mappers_not_a_protocol_claim), and this
+	// loop refuses to overwrite anything already released above. Between them a
+	// mapper can only ADD, which means no configuration change can alter the
+	// meaning of a claim a relying party already trusts.
+	if s.root != nil {
+		if tx, err := s.db.Begin(ctx); err == nil {
+			var orgID string
+			if err := tx.QueryRow(ctx,
+				`SELECT org_id::text FROM core.users WHERE id = $1::uuid`,
+				claims.Subject).Scan(&orgID); err == nil {
+				mapped, merr := store.MappedClaims(ctx, tx, claims.Subject, orgID,
+					claims.ClientID, store.ClaimInUserInfo, claims.Scope, s.root)
+				if merr != nil {
+					s.log.Error("resolving mapped claims", "err", merr)
+				}
+				for name, value := range mapped {
+					if _, taken := out[name]; !taken {
+						out[name] = value
+					}
+				}
+			}
+			_ = tx.Rollback(ctx)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, out)
 }
 

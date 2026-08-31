@@ -177,6 +177,45 @@ The audit trail records **which** attributes were declared or set, never their
 values — writing those into an append-only table is precisely what the sealed
 storage exists to avoid.
 
+### Claim mappers
+
+Which attribute becomes which claim, where, and for whom.
+
+| | |
+|---|---|
+| `GET /admin/organizations/{orgID}/claim-mappers` | Everything this organisation releases. Needs `config:read` |
+| `POST /admin/organizations/{orgID}/claim-mappers` | Release an attribute as a claim. Needs `organizations:write` |
+| `DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}` | Stop releasing it |
+
+**Nothing is released without a mapper.** An attribute that exists reaches no
+token, for any client, in any destination, until somebody says so. The common
+alternative — attributes flow into tokens automatically, a deny-list holds back
+the sensitive ones — inverts the failure: adding an attribute becomes a
+disclosure to every relying party already integrated, made by whoever added it.
+A deployment that adds `national_insurance_number` to track something internal
+has, in that shape, just sent it to a dozen third-party applications.
+
+**`destination` and the audience are required, not defaulted.** A default would
+be a disclosure nobody chose. `destination` is `id_token`, `userinfo` or
+`access_token`, and the last is the one that travels furthest — it is presented
+to resource servers the user never saw a consent screen for. For the audience,
+either name a `client_id` or set `"all_clients": true`; an omitted field must
+never be the thing that widens a disclosure to everybody.
+
+**`required_scope` keeps consent meaningful.** A mapper that names one releases
+nothing to a grant that does not carry it, so a user who declined `profile` does
+not receive a token carrying their job title anyway. Leaving it empty releases
+unconditionally, which is right for something every client needs to function.
+
+**A mapper cannot write a protocol claim.** `sub`, `iss`, `aud`, `exp`, `acr`,
+`amr`, `cnf` and the rest are refused by the database. One writing `sub` would
+let an organisation issue tokens impersonating any subject at every relying
+party that trusts this issuer; `acr` and `amr` are what a relying party reads to
+decide the authentication was strong enough. Mapped claims can only ever *add*.
+
+An erased subject releases nothing — the value cannot be unsealed, and it is
+omitted rather than reported, because a token is not a diagnostic surface.
+
 ### Second factors
 
 | | |

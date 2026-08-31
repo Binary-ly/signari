@@ -199,6 +199,31 @@ The listing reports the user agent and whether an address is on file, never the
 address. `ip_hash` is a hash by deliberate choice, and returning it would undo
 that decision from the other side.
 
+### Audit trail
+
+| | |
+|---|---|
+| `GET /admin/audit-events` | The trail, newest first. Cursor-paged. Filters: `event_type`, `subject_id`, `client_id`, `since`, `until` (RFC 3339). Needs `audit:read` |
+
+**`audit:read` is its own scope and is not implied by `users:write`.** The trail
+says when each person authenticated, from what, and what an administrator did to
+them — a larger disclosure than a user list. A provisioning script that needs to
+look up users should not thereby be able to read everyone's authentication
+history.
+
+**This endpoint does not verify the hash chain, and every response says so.** The
+chain is over the whole table: entry *N*'s hash covers entry *N−1*. Verifying a
+*page* proves nothing, because its first entry has a predecessor the page does
+not contain. Verifying the entire chain to answer a fifty-row query would read
+the table, so verification stays in `signari export audit` — the operation whose
+output is the evidence. The response carries `"chain_verified": false` rather
+than leaving that in documentation, because somebody will build a compliance
+process on this call and should find out here.
+
+The cursor is `(occurred_at, id)`, not `occurred_at` alone: a fan-out writes
+several events in one transaction with identical timestamps, and paging on a
+non-unique column skips rows at every page boundary.
+
 ### Subjects
 
 | | |

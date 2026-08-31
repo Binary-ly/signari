@@ -39,6 +39,7 @@ wholesale, which is exactly the situation being replaced.
 | `config:read` | `GET /admin/config-version` |
 | `subjects:erase` | `POST /admin/subjects/{id}/erase` |
 | `organizations:write` | `POST /admin/organizations`. Useless to an organisation-scoped token — see below |
+| `audit:read` | `GET /admin/audit-events`. **Not implied by any write scope** — see below |
 
 **A write scope implies the matching read scope.** `clients:write` can read a
 client without also being granted `clients:read` — a token that may change a
@@ -53,6 +54,12 @@ password.
 
 **`subjects:erase` is separate from `users:write`** because a token that may
 rename a user should not thereby be able to destroy one irreversibly.
+
+**`audit:read` is not implied by any write scope.** The implication rule exists
+so a token that may change a thing can see *that thing*; the audit trail is not
+that thing, it is the record of everyone who touched it. Granting `users:write`
+to a provisioning script should not hand it every person's authentication
+history.
 
 **`organizations:write` needs an unscoped token as well as the scope.** Holding
 it on a token scoped to one organisation grants nothing: creating a tenant is the

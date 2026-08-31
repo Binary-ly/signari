@@ -46,6 +46,14 @@ const (
 	// one, because a tenant that can provision tenants has escaped the isolation
 	// boundary the product is built on.
 	ScopeOrganizationsWrite = "organizations:write"
+	// ScopeAuditRead reads the audit trail.
+	//
+	// Its own scope, and deliberately NOT implied by users:write. The implication
+	// rule exists so a token that may change a thing can see that thing; the
+	// trail is not that thing, it is the record of everyone who touched it. A
+	// provisioning script that needs to look up users should not thereby be able
+	// to read every person's authentication history.
+	ScopeAuditRead = "audit:read"
 	// ScopeAll is what the break-glass environment token carries. It is not
 	// grantable to a database token: a stored credential that can do everything
 	// is the thing this package exists to stop handing out.
@@ -55,7 +63,8 @@ const (
 // KnownScopes is what `admin-token create` will accept.
 var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
 	ScopeSubjectsErase, ScopeUsersRead, ScopeClientsRead,
-	ScopeGroupsRead, ScopeGroupsWrite, ScopeOrganizationsWrite}
+	ScopeGroupsRead, ScopeGroupsWrite, ScopeOrganizationsWrite,
+	ScopeAuditRead}
 
 // impliedBy says which scope a write scope satisfies on its own.
 //

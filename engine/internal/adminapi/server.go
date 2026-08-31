@@ -40,6 +40,10 @@ type Server struct {
 	db    *pgxpool.Pool
 	log   *slog.Logger
 	token string
+	// ops is what Routes() registered, in registration order. The OpenAPI
+	// document is rendered from this rather than from a parallel description,
+	// so it cannot name a route that does not exist or omit one that does.
+	ops []operation
 	// hasher is the ENGINE's Argon2 configuration. Passwords set by an
 	// administrator must be written with the same parameters the login path
 	// expects; a hash produced elsewhere is a credential that may simply not
@@ -111,61 +115,69 @@ const (
 // the unlimited one is shorter to type.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("PATCH /admin/clients/{clientID}", s.auth(ScopeClientsWrite, s.patchClient))
-	mux.HandleFunc("DELETE /admin/clients/{clientID}", s.auth(ScopeClientsWrite, s.deleteClient))
-	mux.HandleFunc("POST /admin/users", s.auth(ScopeUsersWrite, s.createUser))
-	mux.HandleFunc("POST /admin/clients", s.auth(ScopeClientsWrite, s.createClient))
-	mux.HandleFunc("POST /admin/clients/{clientID}/rotate-secret",
-		s.auth(ScopeClientsWrite, s.rotateClientSecret))
-	mux.HandleFunc("PATCH /admin/users/{userID}", s.auth(ScopeUsersWrite, s.patchUser))
-	mux.HandleFunc("DELETE /admin/users/{userID}", s.auth(ScopeUsersWrite, s.deleteUser))
-	mux.HandleFunc("GET /admin/users/{userID}/factors",
-		s.auth(ScopeUsersRead, s.listUserFactors))
+
+	// route registers a handler AND records the operation, so the OpenAPI
+	// document is derived from this list rather than written beside it.
+	//
+	// One call rather than a registration plus a separate "and describe it":
+	// the second call is the one a route added next week does not get, and a
+	// missing description is an operation that exists on the server and not in
+	// the document that generated somebody's client.
+	s.ops = s.ops[:0]
+	route := func(pattern, scope string, h http.HandlerFunc) {
+		mux.HandleFunc(pattern, s.auth(scope, h))
+		s.recordOperation(pattern, scope)
+	}
+
+	route("PATCH /admin/clients/{clientID}", ScopeClientsWrite, s.patchClient)
+	route("DELETE /admin/clients/{clientID}", ScopeClientsWrite, s.deleteClient)
+	route("POST /admin/users", ScopeUsersWrite, s.createUser)
+	route("POST /admin/clients", ScopeClientsWrite, s.createClient)
+	route("POST /admin/clients/{clientID}/rotate-secret", ScopeClientsWrite, s.rotateClientSecret)
+	route("PATCH /admin/users/{userID}", ScopeUsersWrite, s.patchUser)
+	route("DELETE /admin/users/{userID}", ScopeUsersWrite, s.deleteUser)
+	route("GET /admin/users/{userID}/factors", ScopeUsersRead, s.listUserFactors)
 	// Two patterns rather than an optional segment: the kinds a user may hold
 	// several of need the credential named, and the ones keyed on the user must
 	// not accept an id that would be silently ignored.
-	mux.HandleFunc("DELETE /admin/users/{userID}/factors/{kind}",
-		s.auth(ScopeUsersWrite, s.deleteUserFactor))
-	mux.HandleFunc("DELETE /admin/users/{userID}/factors/{kind}/{factorID}",
-		s.auth(ScopeUsersWrite, s.deleteUserFactor))
-	mux.HandleFunc("POST /admin/organizations",
-		s.auth(ScopeOrganizationsWrite, s.createOrganization))
-	mux.HandleFunc("GET /admin/audit-events", s.auth(ScopeAuditRead, s.listAuditEvents))
-	mux.HandleFunc("GET /admin/config-version", s.auth(ScopeConfigRead, s.configVersion))
+	route("DELETE /admin/users/{userID}/factors/{kind}", ScopeUsersWrite, s.deleteUserFactor)
+	route("DELETE /admin/users/{userID}/factors/{kind}/{factorID}", ScopeUsersWrite, s.deleteUserFactor)
+	route("POST /admin/organizations", ScopeOrganizationsWrite, s.createOrganization)
+	route("GET /admin/audit-events", ScopeAuditRead, s.listAuditEvents)
+	route("GET /admin/config-version", ScopeConfigRead, s.configVersion)
 
 	// Reads. These complete the conditional-write protocol: a caller GETs the
 	// resource, takes the ETag from the response, and sends it back as If-Match.
 	// Without them the only readable endpoint was the version counter, so the
 	// precondition had nothing to be a precondition ON.
-	mux.HandleFunc("GET /admin/clients", s.auth(ScopeClientsRead, s.listClients))
-	mux.HandleFunc("GET /admin/clients/{clientID}", s.auth(ScopeClientsRead, s.getClient))
-	mux.HandleFunc("GET /admin/users", s.auth(ScopeUsersRead, s.listUsers))
-	mux.HandleFunc("GET /admin/users/{userID}", s.auth(ScopeUsersRead, s.getUser))
+	route("GET /admin/clients", ScopeClientsRead, s.listClients)
+	route("GET /admin/clients/{clientID}", ScopeClientsRead, s.getClient)
+	route("GET /admin/users", ScopeUsersRead, s.listUsers)
+	route("GET /admin/users/{userID}", ScopeUsersRead, s.getUser)
 
 	// Groups. Their own scope pair: editing membership grants application
 	// access, which is a different decision from resetting a password.
-	mux.HandleFunc("GET /admin/groups", s.auth(ScopeGroupsRead, s.listGroups))
-	mux.HandleFunc("GET /admin/groups/{groupID}", s.auth(ScopeGroupsRead, s.getGroup))
-	mux.HandleFunc("POST /admin/groups", s.auth(ScopeGroupsWrite, s.createGroup))
-	mux.HandleFunc("PATCH /admin/groups/{groupID}", s.auth(ScopeGroupsWrite, s.patchGroup))
-	mux.HandleFunc("DELETE /admin/groups/{groupID}", s.auth(ScopeGroupsWrite, s.deleteGroup))
-	mux.HandleFunc("GET /admin/groups/{groupID}/members",
-		s.auth(ScopeGroupsRead, s.listGroupMembers))
-	mux.HandleFunc("PUT /admin/groups/{groupID}/members/{userID}",
-		s.auth(ScopeGroupsWrite, s.addGroupMember))
-	mux.HandleFunc("DELETE /admin/groups/{groupID}/members/{userID}",
-		s.auth(ScopeGroupsWrite, s.removeGroupMember))
+	route("GET /admin/groups", ScopeGroupsRead, s.listGroups)
+	route("GET /admin/groups/{groupID}", ScopeGroupsRead, s.getGroup)
+	route("POST /admin/groups", ScopeGroupsWrite, s.createGroup)
+	route("PATCH /admin/groups/{groupID}", ScopeGroupsWrite, s.patchGroup)
+	route("DELETE /admin/groups/{groupID}", ScopeGroupsWrite, s.deleteGroup)
+	route("GET /admin/groups/{groupID}/members", ScopeGroupsRead, s.listGroupMembers)
+	route("PUT /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, s.addGroupMember)
+	route("DELETE /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, s.removeGroupMember)
 
 	// Sessions. Reading is part of seeing a user; ending one is acting on them,
 	// so the scopes follow users:* rather than getting a third pair.
-	mux.HandleFunc("GET /admin/users/{userID}/sessions",
-		s.auth(ScopeUsersRead, s.listUserSessions))
-	mux.HandleFunc("DELETE /admin/users/{userID}/sessions",
-		s.auth(ScopeUsersWrite, s.revokeUserSessions))
-	mux.HandleFunc("DELETE /admin/sessions/{sid}",
-		s.auth(ScopeUsersWrite, s.revokeSession))
-	mux.HandleFunc("POST /admin/subjects/{subjectID}/erase",
-		s.auth(ScopeSubjectsErase, s.eraseSubject))
+	route("GET /admin/users/{userID}/sessions", ScopeUsersRead, s.listUserSessions)
+	route("DELETE /admin/users/{userID}/sessions", ScopeUsersWrite, s.revokeUserSessions)
+	route("DELETE /admin/sessions/{sid}", ScopeUsersWrite, s.revokeSession)
+	route("POST /admin/subjects/{subjectID}/erase", ScopeSubjectsErase, s.eraseSubject)
+
+	// The document itself, unauthenticated. See handleOpenAPI for why: it
+	// describes the shape of the API and no data, and the same facts are already
+	// public in docs/admin-api.md.
+	mux.HandleFunc("GET /admin/openapi.json", s.handleOpenAPI)
+
 	return s.limitArrivals(mux)
 }
 

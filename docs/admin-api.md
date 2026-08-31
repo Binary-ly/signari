@@ -80,6 +80,19 @@ Every mutation returns `config_version` in its body and `ETag` in its headers.
 | | |
 |---|---|
 | `GET /admin/config-version` | The current version. The read half of the conditional-write protocol |
+| `GET /admin/openapi.json` | An OpenAPI 3.1 description of this API, **generated from the router**. Unauthenticated |
+
+**The OpenAPI document is derived, not written.** It cannot describe a route that
+is not registered or omit one that is, and each operation carries the scope the
+server actually enforces — taken from the same `auth(scope, …)` wrapper that
+enforces it, so a generated client is a client of the server that exists rather
+than of the server somebody last remembered to document. Request and response
+*schemas* are not derived: reflecting over the Go structs would describe the JSON
+tags rather than the meaning, so those stay in this page.
+
+It needs no token. It describes the shape of the API and no data — the same facts
+you are reading here — and requiring a token to read the description of how to
+use a token costs an integrator an hour and an attacker nothing.
 
 ### Organisations
 

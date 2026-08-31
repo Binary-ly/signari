@@ -34,7 +34,11 @@ import (
 // it hides exactly the drift it exists to catch.
 
 var (
-	adminRoute = regexp.MustCompile(`mux\.HandleFunc\("((?:GET|POST|PUT|PATCH|DELETE) /admin/[^"]*)"`)
+	// Both registration forms: `route(...)`, which also records the operation for
+	// the OpenAPI document, and `mux.HandleFunc`, which still registers the
+	// unauthenticated document endpoint. Matching only the first would make this
+	// guard blind to exactly the route that has no scope.
+	adminRoute = regexp.MustCompile(`(?:mux\.HandleFunc|route)\("((?:GET|POST|PUT|PATCH|DELETE) /admin/[^"]*)"`)
 	// Routes appear in the document as `METHOD /admin/...` inside a table cell.
 	docRoute = regexp.MustCompile("`((?:GET|POST|PUT|PATCH|DELETE) /admin/[^`]*)`")
 )

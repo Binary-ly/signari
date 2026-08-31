@@ -363,7 +363,15 @@ func TestTheMutatingRouteListCoversEveryRegisteredRoute(t *testing.T) {
 	}
 
 	// mux.HandleFunc("METHOD /admin/...", ...) for the methods that write.
-	re := regexp.MustCompile(`mux\.HandleFunc\("(POST|PATCH|PUT|DELETE) (/admin/[^"]*)"`)
+	// Matches both registration forms. `route(...)` is the one that also records
+	// the operation for the OpenAPI document; `mux.HandleFunc` remains for the
+	// unauthenticated document endpoint itself.
+	//
+	// This regex went blind once already: Routes() moved from mux.HandleFunc to
+	// route() and this guard silently matched nothing. It reported that rather
+	// than passing, because of the count check below -- which is the only reason
+	// the change did not land with every precondition assertion quietly skipped.
+	re := regexp.MustCompile(`(?:mux\.HandleFunc|route)\("(POST|PATCH|PUT|DELETE) (/admin/[^"]*)"`)
 	found := re.FindAllStringSubmatch(string(src), -1)
 	if len(found) < 8 {
 		t.Fatalf("only %d mutating registrations parsed out of server.go; the regex "+

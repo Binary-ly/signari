@@ -70,7 +70,23 @@ var mustBeReachable = []capability{
 	{"AddMembers", "group membership is provisioned to no target"},
 	{"RemoveMembers", "somebody removed from a group keeps their access at every " +
 		"provisioned target"},
+	{"DeleteGroup", "a group provisioned to a target can never be removed from it, " +
+		"so deprovisioning is one-way"},
 }
+
+// This test is NOT sufficient, and knowing why is the point.
+//
+// It checks that a function has a caller. It passed, green, while ten
+// capabilities were unusable — because each one's loader genuinely was called,
+// on the request path, on every request, against a table no operator could put a
+// row in. A function being called is not the same as a capability being
+// reachable, and the difference is exactly one table nobody can write to.
+//
+// `TestEveryTableTheEngineReadsCanBeWritten` and
+// `TestEveryColumnAddedForBehaviourCanBeWritten` in writepath_test.go close that
+// second gap. Both are needed: a write path with no reader is dead
+// configuration, and a reader with no write path is a feature that cannot be
+// switched on. Neither test sees the other's failure.
 
 // callSite matches a call that is not the declaration.
 func callSite(fn string) *regexp.Regexp {

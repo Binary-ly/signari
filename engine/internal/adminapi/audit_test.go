@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"signari.dev/engine/internal/audit"
 )
 
 // Reading the audit trail over HTTP.
@@ -58,30 +60,20 @@ func getAuditPage(t *testing.T, s *Server, query string) auditPage {
 // the bug.
 func TestPagingTheAuditTrailDoesNotSkipRowsSharingATimestamp(t *testing.T) {
 	s, _ := newTestServer(t)
-	ctx := context.Background()
 	userID := newDriftUser(t, s)
 	orgID := anyOrgID(t, s)
 
-	// Five events, one timestamp, written directly so the timestamp really is
-	// identical rather than merely close.
-	stamp := time.Now().UTC()
-	marker := fmt.Sprintf("paging-%d", stamp.UnixNano())
-	for i := 0; i < 5; i++ {
-		if _, err := s.db.Exec(ctx, `
-			INSERT INTO core.audit_events
-				(org_id, occurred_at, event_type, subject_id, detail, prev_hash, entry_hash)
-			VALUES ($1::uuid, $2::timestamptz, $3::text, $4::uuid,
-			        jsonb_build_object('n', $5::int),
-			        sha256($6::bytea), sha256($7::bytea))`,
-			orgID, stamp, marker, userID, i,
-			[]byte(marker), []byte(fmt.Sprintf("%s-%d", marker, i))); err != nil {
-			t.Fatalf("writing fixture event %d: %v", i, err)
-		}
-	}
-	t.Cleanup(func() {
-		_, _ = s.db.Exec(context.Background(),
-			`DELETE FROM core.audit_events WHERE event_type = $1`, marker)
-	})
+	// Five events written through audit.Write, in ONE transaction so they share
+	// a timestamp -- which is the condition this test exists for.
+	//
+	// Written properly, and never deleted afterwards. The first version
+	// fabricated rows with hand-made prev_hash/entry_hash values and cleaned up
+	// with DELETE, and both halves were wrong: the fabricated hashes were not
+	// chain links, and deleting from a hash chain BREAKS it. It corrupted the
+	// shared database's chain and failed the audit package's own
+	// tamper-detection tests, which is precisely what those tests are for.
+	marker := fmt.Sprintf("paging-%d", time.Now().UnixNano())
+	writeFixtureEvents(t, s, orgID, userID, marker, 5)
 
 	seen := map[string]bool{}
 	cursor := ""
@@ -122,17 +114,7 @@ func TestAScopedTokenCannotReadAnotherOrganisationsAuditTrail(t *testing.T) {
 
 	other := makeOrg(t, s, fmt.Sprintf("audit-other-%d", time.Now().UnixNano()))
 	marker := fmt.Sprintf("foreign-%d", time.Now().UnixNano())
-	if _, err := s.db.Exec(ctx, `
-		INSERT INTO core.audit_events
-			(org_id, occurred_at, event_type, detail, prev_hash, entry_hash)
-		VALUES ($1::uuid, now(), $2::text, '{}'::jsonb, sha256($3::bytea), sha256($4::bytea))`,
-		other, marker, []byte(marker), []byte(marker+"x")); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = s.db.Exec(context.Background(),
-			`DELETE FROM core.audit_events WHERE event_type = $1`, marker)
-	})
+	writeFixtureEvents(t, s, other, "", marker, 1)
 
 	// A principal scoped to a DIFFERENT organisation.
 	scoped := &Principal{OrgID: anyOrgID(t, s), Scopes: []string{ScopeAuditRead}}
@@ -193,19 +175,18 @@ func TestAuditTimeFiltersApply(t *testing.T) {
 	orgID := anyOrgID(t, s)
 	marker := fmt.Sprintf("timed-%d", time.Now().UnixNano())
 
-	old := time.Now().UTC().Add(-72 * time.Hour)
+	// Written properly, then BACKDATED with an UPDATE of occurred_at only.
+	//
+	// occurred_at is not part of the chain hash, so moving it leaves every link
+	// intact -- which is the only way to age a row without forging one. An
+	// INSERT with hand-made hashes would break the chain, and a DELETE
+	// afterwards would break it again.
+	writeFixtureEvents(t, s, orgID, "", marker, 1)
 	if _, err := s.db.Exec(ctx, `
-		INSERT INTO core.audit_events
-			(org_id, occurred_at, event_type, detail, prev_hash, entry_hash)
-		VALUES ($1::uuid, $2::timestamptz, $3::text, '{}'::jsonb,
-		        sha256($4::bytea), sha256($5::bytea))`,
-		orgID, old, marker, []byte(marker), []byte(marker+"y")); err != nil {
+		UPDATE core.audit_events SET occurred_at = now() - interval '72 hours'
+		WHERE event_type = $1`, marker); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = s.db.Exec(context.Background(),
-			`DELETE FROM core.audit_events WHERE event_type = $1`, marker)
-	})
 
 	within := getAuditPage(t, s, "?event_type="+marker+
 		"&since="+time.Now().UTC().Add(-96*time.Hour).Format(time.RFC3339))
@@ -218,5 +199,45 @@ func TestAuditTimeFiltersApply(t *testing.T) {
 	if len(after.Events) != 0 {
 		t.Errorf("since=1h ago returned %d events for a 72-hour-old row, want 0",
 			len(after.Events))
+	}
+}
+
+// writeFixtureEvents appends real audit events through audit.Write.
+//
+// # Why not an INSERT
+//
+// core.audit_events is a HASH CHAIN. Each row's entry_hash covers its
+// predecessor's, so a row inserted with a hand-made hash is not a link, and a
+// row deleted afterwards breaks the link that pointed at it. The first version
+// of these fixtures did both, corrupted the shared database's chain, and failed
+// the audit package's own tamper-detection tests — which is exactly what those
+// tests exist to catch, so the mechanism worked and the fixtures were wrong.
+//
+// Nothing is cleaned up, and that is correct rather than lazy: an append-only
+// trail is append-only for tests too. `occurred_at` may be moved afterwards
+// because it is not part of the hash (see audit.chainHash); nothing else may.
+//
+// All `count` events are written in ONE transaction, so they share an
+// occurred_at — which is the condition the paging test needs, and the reason a
+// cursor on the timestamp alone would drop rows.
+func writeFixtureEvents(t *testing.T, s *Server, orgID, subjectID, eventType string, count int) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning the fixture transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for i := 0; i < count; i++ {
+		if err := audit.Write(ctx, tx, audit.Event{
+			Type: eventType, OrgID: orgID, SubjectID: subjectID,
+			Detail: map[string]any{"n": i},
+		}); err != nil {
+			t.Fatalf("writing fixture event %d: %v", i, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("committing the fixture events: %v", err)
 	}
 }

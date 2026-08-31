@@ -77,9 +77,24 @@ const (
 	// already, so calling somebody else's PDP is the same protocol pointed the
 	// other way rather than a second dialect of a thing we already speak.
 	HookAuthorize Hook = "authorize"
+
+	// HookTokenIssue is consulted while a token is being minted, and keeps the
+	// same discipline as HookAuthorize with one addition.
+	//
+	// It may VETO issuance, and it may contribute claims — but only claim names
+	// the operator listed when registering the provider, and never a claim the
+	// protocol defines. It cannot widen scope, change the audience or extend a
+	// lifetime, because each of those would turn an extension point into an
+	// authorization decision made somewhere this deployment does not control.
+	//
+	// The allow-list lives on the provider registration rather than in the
+	// provider's response, because "what may this external service put in my
+	// users' tokens" is the operator's question and an answer carried in the
+	// response would be the provider answering it.
+	HookTokenIssue Hook = "token_issue"
 )
 
-var allHooks = []Hook{HookAuthorize}
+var allHooks = []Hook{HookAuthorize, HookTokenIssue}
 
 // AllHooks returns every defined hook, for the CLI's help text and listings.
 func AllHooks() []Hook { return append([]Hook(nil), allHooks...) }
@@ -113,10 +128,21 @@ func (h Hook) Known() bool {
 // same commit -- the test in this package fails if it does not, in both
 // directions.
 func (h Hook) Called() bool {
-	// HookAuthorize is consulted by the AuthZEN evaluation path
-	// (httpapi.consultAuthorizeProvider), after every local check has already
-	// allowed. It can only turn that allow into a deny; it can never grant.
-	return h == HookAuthorize
+	switch h {
+	case HookAuthorize:
+		// Consulted by the AuthZEN evaluation path
+		// (httpapi.consultAuthorizeProvider), after every local check has
+		// already allowed. It can only turn that allow into a deny; it can
+		// never grant.
+		return true
+	case HookTokenIssue:
+		// Consulted by store.ConsultTokenProvider on the token path, after the
+		// grant has already been authorised. Same composition: a veto turns an
+		// issuance into a refusal, and contributed claims are bounded by the
+		// operator's allow-list.
+		return true
+	}
+	return false
 }
 
 // Uncalled returns every hook that is defined and not consulted.
@@ -149,6 +175,43 @@ type Provider struct {
 	// an extension point is also a way to make every sign-in as slow as the
 	// slowest thing an operator registered.
 	Timeout time.Duration
+
+	// AllowedClaims bounds what a HookTokenIssue provider may contribute.
+	//
+	// Empty means it may contribute nothing and is consulted only for its veto,
+	// which is a legitimate and probably common configuration. Anything the
+	// provider returns that is not named here is dropped -- silently to the
+	// provider, loudly in the log, because a provider quietly discovering which
+	// claims it can smuggle is exactly what this bound exists to prevent.
+	AllowedClaims []string
+}
+
+// MayContribute reports whether this provider may set a claim.
+//
+// Protocol claims are refused here as well as by the database constraint. Two
+// checks rather than one because they fail at different times: the constraint
+// stops the configuration being written, and this stops a row that predates the
+// constraint, or one written by some future path that forgot it. A claim like
+// `sub` reaching a token from an external service would let that service issue
+// tokens impersonating any subject at every relying party trusting this issuer.
+func (p *Provider) MayContribute(claim string) bool {
+	if protocolClaims[claim] {
+		return false
+	}
+	for _, allowed := range p.AllowedClaims {
+		if allowed == claim {
+			return true
+		}
+	}
+	return false
+}
+
+// protocolClaims are never contributable, whatever a registration says.
+var protocolClaims = map[string]bool{
+	"iss": true, "sub": true, "aud": true, "exp": true, "iat": true,
+	"nbf": true, "jti": true, "azp": true, "nonce": true, "auth_time": true,
+	"acr": true, "amr": true, "sid": true, "at_hash": true, "c_hash": true,
+	"s_hash": true, "client_id": true, "scope": true, "cnf": true,
 }
 
 // maxTimeout is the ceiling on any provider call.

@@ -651,6 +651,48 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The operator's token provider, if one is registered.
+	//
+	// CONSULTED HERE, after every local check has passed and before anything is
+	// minted. That position is the composition rule: the provider is never
+	// deciding whether to issue -- this engine has already decided to -- it is
+	// deciding whether to withdraw an issuance already approved. It can turn an
+	// allow into a deny and can never turn a deny into an allow, because on a
+	// refused redemption it is not reached at all.
+	if hook, herr := store.ConsultTokenProvider(ctx, s.db,
+		s.providerClient, s.log, consumed.OrgID, store.TokenHookRequest{
+			Subject:  consumed.UserID,
+			ClientID: c.ClientID,
+			Scopes:   consumed.Scopes,
+			Grant:    req.GrantType,
+			OrgID:    consumed.OrgID,
+		}); herr != nil {
+		s.log.Error("consulting the token provider", "err", herr)
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	} else if hook.Vetoed {
+		// The provider's reason goes to the log and the audit trail, never to
+		// the client: it is written by somebody outside this deployment and must
+		// not become part of an OAuth error a stranger reads.
+		s.log.Warn("token issuance vetoed by the operator's provider",
+			"client_id", c.ClientID, "reason", hook.Reason,
+			"correlation_id", correlationID(ctx))
+		s.auditDetached(ctx, audit.Event{
+			Type: "token.vetoed", OrgID: consumed.OrgID, SubjectID: consumed.UserID,
+			ClientID: c.ClientID, CorrelationID: correlationID(ctx),
+			Detail: map[string]any{"reason": hook.Reason},
+		})
+		if err := tx.Commit(ctx); err != nil {
+			s.log.Error("committing code consumption after a provider veto", "err", err)
+		}
+		writeTokenError(w, &oauth.TokenError{
+			Code:        "access_denied",
+			Description: "this authorization was refused",
+			Status:      http.StatusForbidden,
+		})
+		return
+	}
+
 	resp, err := s.mintTokens(ctx, tx, c, consumed)
 	if err != nil {
 		s.log.Error("minting tokens", "err", err)

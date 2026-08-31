@@ -38,11 +38,11 @@ func LoadProvider(ctx context.Context, q providerReader, orgID string, hook prov
 		token     *string
 	)
 	err := q.QueryRow(ctx, `
-		SELECT name, url, mode, timeout_ms, NULL::text
+		SELECT name, url, mode, timeout_ms, NULL::text, allowed_claims
 		  FROM core.providers
 		 WHERE org_id = $1::uuid AND hook = $2 AND enabled
 		 LIMIT 1`, orgID, string(hook)).
-		Scan(&p.Name, &p.URL, &p.Mode, &timeoutMS, &token)
+		Scan(&p.Name, &p.URL, &p.Mode, &timeoutMS, &token, &p.AllowedClaims)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}

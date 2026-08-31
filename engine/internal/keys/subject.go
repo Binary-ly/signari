@@ -39,6 +39,44 @@ type SubjectKey struct {
 // should treat it as "this data no longer exists", not as a fault.
 var ErrErased = errors.New("subject key has been erased")
 
+// ErrNoSubjectKey means the subject has never had anything sealed for them.
+//
+// Distinct from ErrErased on purpose: "nothing was ever stored" and "what was
+// stored has been destroyed" are different answers to an investigation asking
+// whether an erasure request was carried out.
+var ErrNoSubjectKey = errors.New("subject has no key")
+
+// LoadSubjectKey fetches a subject's DEK WITHOUT creating one.
+//
+// The read-only counterpart to LoadOrCreateSubjectKey, and the distinction is
+// load-bearing rather than stylistic. A read path that used the creating
+// version would mint a key merely because somebody looked at a profile -- which
+// is a write on a read, and worse, would mint one for a subject who has no
+// sealed data and therefore should have no key at all. Reading a profile must
+// not leave a trace that says data was stored for this person.
+func LoadSubjectKey(ctx context.Context, tx pgx.Tx, subjectID string, root *RootKey) (*SubjectKey, error) {
+	var wrapped []byte
+	var erased bool
+	err := tx.QueryRow(ctx, `
+		SELECT wrapped_dek, erased_at IS NOT NULL
+		FROM core.subject_keys WHERE subject_id = $1::uuid`, subjectID).
+		Scan(&wrapped, &erased)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, ErrNoSubjectKey
+	case err != nil:
+		return nil, fmt.Errorf("loading subject key: %w", err)
+	case erased || wrapped == nil:
+		return nil, ErrErased
+	}
+
+	raw, err := root.open(wrapped)
+	if err != nil {
+		return nil, fmt.Errorf("unwrapping subject key: %w", err)
+	}
+	return newSubjectKey(raw)
+}
+
 // LoadOrCreateSubjectKey fetches a subject's DEK, minting one on first use.
 //
 // It takes a transaction, not a pool, so the key and whatever it protects are

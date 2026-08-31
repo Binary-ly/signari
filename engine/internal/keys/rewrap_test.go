@@ -54,6 +54,10 @@ var columnClass = map[string]string{
 	// Sealed under the subject's own DEK. Re-wrapping the DEK covers these, and
 	// touching them here would try to open them with the wrong key.
 	"totp_credentials.secret_enc": "subjectSealed",
+	// Operator-defined attributes declared `personal`. Sealed with the
+	// subject's DEK for the same reason the TOTP secret is: erasure destroys
+	// the DEK, so these die with it and no list of tables has to stay current.
+	"user_attributes.value_sealed": "subjectSealed",
 
 	// One-way. A root key change cannot affect something nothing can open.
 	"access_tokens.token_hash":                      "oneWay",

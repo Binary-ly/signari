@@ -99,7 +99,7 @@ Every mutation returns `config_version` in its body and `ETag` in its headers.
 | `GET /admin/users` | List, paged |
 | `GET /admin/users/{userID}` | One user |
 | `POST /admin/users` | Create |
-| `PATCH /admin/users/{userID}` | Activate, deactivate, set a password, require a change |
+| `PATCH /admin/users/{userID}` | Activate, deactivate, set a password, require a change, and edit identity: `email`, `username`, `display_name`, `given_name`, `surname`. An empty string clears a field; both identifiers cannot be cleared at once (400 `no_identifier_left`), and a taken address or name is 409 `already_exists` |
 | `DELETE /admin/users/{userID}` | Remove the person and everything they hold. Real deletion, not a flag (ADR-005). Their sessions are **terminated before the row goes**, so every relying party they reached receives a back-channel logout — letting the rows cascade away would destroy the list of who to notify before anyone was notified, and leave them signed in everywhere with an account that no longer exists. Returns `sessions_ended`, `notices_queued` and `tokens_revoked`. The audit trail keeps its records: `audit_events` has no foreign key to `users`, so what a person did outlives their account |
 
 ### Groups
@@ -114,6 +114,17 @@ Every mutation returns `config_version` in its body and `ETag` in its headers.
 | `GET /admin/groups/{groupID}/members` | List members, paged |
 | `PUT /admin/groups/{groupID}/members/{userID}` | Add a member |
 | `DELETE /admin/groups/{groupID}/members/{userID}` | Remove a member |
+
+**Changing an email address clears its verified mark, always, and there is no
+field to opt out.** `email_verified_at` is what makes this server assert
+`email_verified: true` in an ID token and from `/userinfo`. Relying parties key
+accounts on a verified address precisely because an unverified one proves
+nothing — so keeping the mark while the address underneath it changes would have
+this server sign a statement that somebody owns an address nobody checked. That
+would make `users:write` an account-takeover primitive at every downstream
+application, and the takeover would happen elsewhere, using a claim signed here,
+with nothing in this server's own logs looking wrong afterwards. Re-verification
+is a separate flow with its own proof.
 
 **`may_impersonate` is reported and cannot be set here.** It grants members the
 ability to act as other users, so exposing it would let a `groups:write` token

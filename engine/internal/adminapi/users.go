@@ -159,6 +159,37 @@ type patchUserRequest struct {
 	// before a session exists. This is what makes "set a temporary password"
 	// mean anything.
 	RequirePasswordChange *bool `json:"require_password_change"`
+
+	// Identity fields. Without these a support desk cannot act on a change of
+	// name or a mistyped address without SQL, which means either the boundary
+	// ADR-004 draws gets bypassed or the correction does not happen.
+	//
+	// An empty string CLEARS the field rather than storing "". The uniqueness
+	// indexes are partial -- `UNIQUE (org_id, lower(email)) WHERE email IS NOT
+	// NULL` -- so NULL is the value that means "absent" and two users with an
+	// empty-string email would collide on an index designed to let them both
+	// have none.
+	Email       *string `json:"email"`
+	Username    *string `json:"username"`
+	DisplayName *string `json:"display_name"`
+	GivenName   *string `json:"given_name"`
+	Surname     *string `json:"surname"`
+}
+
+// nullableTrimmed maps an absent or blank field to SQL NULL.
+//
+// The empty string is not a usable value for either identifier: the uniqueness
+// indexes are partial (`WHERE email IS NOT NULL`), so two accounts each holding
+// "" would collide on an index whose entire purpose is to let them both hold
+// nothing.
+func nullableTrimmed(v *string) any {
+	if v == nil {
+		return nil
+	}
+	if trimmed := strings.TrimSpace(*v); trimmed != "" {
+		return trimmed
+	}
+	return nil
 }
 
 func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
@@ -170,11 +201,23 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	if req.Active == nil && req.Password == nil && req.RequirePasswordChange == nil {
+	if req.Active == nil && req.Password == nil && req.RequirePasswordChange == nil &&
+		req.Email == nil && req.Username == nil && req.DisplayName == nil &&
+		req.GivenName == nil && req.Surname == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
 		return
+	}
+	// Validated before the transaction opens, so a malformed address is a 400
+	// that never took a row lock.
+	if req.Email != nil && strings.TrimSpace(*req.Email) != "" {
+		if _, err := mail.ParseAddress(strings.TrimSpace(*req.Email)); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "invalid_email", "detail": "not a usable address",
+			})
+			return
+		}
 	}
 	if req.Password != nil {
 		previous, perr := store.RecentPasswordHashes(ctx, s.db, userID, s.pwPolicy.HistoryDepth)
@@ -234,6 +277,86 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// CHANGING THE ADDRESS CLEARS ITS VERIFIED MARK. Always, and there is no
+		// request field to opt out.
+		//
+		// `email_verified_at` is what makes this server emit `email_verified:
+		// true` in an ID token and from /userinfo (see httpapi/userinfo.go).
+		// Relying parties key accounts on a verified address precisely because
+		// an unverified one is worthless for that -- so leaving the mark in
+		// place while the address underneath it changes means this server
+		// asserts, with a signature, that somebody owns an address nobody
+		// checked.
+		//
+		// That turns `users:write` into account takeover at every relying party
+		// downstream: set the address to one the attacker controls, keep the
+		// verified mark, and the next sign-in merges onto their account. The
+		// scope is meant to administer users, not to mint verified ownership of
+		// arbitrary addresses.
+		//
+		// Re-verification is a separate flow with its own proof. This only
+		// declines to lie in the meantime.
+		// ONE STATEMENT for both identifiers, and that is a correctness
+		// requirement rather than a tidiness one.
+		//
+		// `CHECK (username IS NOT NULL OR email IS NOT NULL)` is evaluated per
+		// statement. Two UPDATEs mean the row passes through an intermediate
+		// state, so a caller swapping identifiers -- setting a username and
+		// clearing the address in the same request, which is exactly what
+		// "switch this account from email to username" looks like -- is refused
+		// on the first statement for a state the finished request would never
+		// have left behind. Setting both together lets the constraint judge the
+		// end state, which is the only state that exists once the transaction
+		// commits.
+		//
+		// Found by a test, not by reading: the version with two UPDATEs passed
+		// every single-field case and failed the first combined one.
+		if req.Email != nil || req.Username != nil {
+			if _, err := tx.Exec(ctx, `
+				UPDATE core.users SET
+					email             = CASE WHEN $2 THEN $3 ELSE email END,
+					-- Cleared only when the address itself moves, so an
+					-- unrelated username change does not silently unverify a
+					-- confirmed address.
+					email_verified_at = CASE WHEN $2 THEN NULL ELSE email_verified_at END,
+					username          = CASE WHEN $4 THEN $5 ELSE username END,
+					updated_at        = now()
+				WHERE id = $1::uuid`,
+				userID,
+				req.Email != nil, nullableTrimmed(req.Email),
+				req.Username != nil, nullableTrimmed(req.Username),
+			); err != nil {
+				return err
+			}
+		}
+
+		// Display fields. No uniqueness, no authentication meaning: two people
+		// may share a name, and none of these is ever a login identifier.
+		for _, f := range []struct {
+			column string
+			value  *string
+		}{
+			{"display_name", req.DisplayName},
+			{"given_name", req.GivenName},
+			{"surname", req.Surname},
+		} {
+			if f.value == nil {
+				continue
+			}
+			trimmed := strings.TrimSpace(*f.value)
+			var value any
+			if trimmed != "" {
+				value = trimmed
+			}
+			// The column name is from the fixed list above, never from the
+			// request -- the one place this loop could have become an injection
+			// point is the one place it takes no input.
+			if _, err := tx.Exec(ctx, `UPDATE core.users SET `+f.column+
+				` = $2, updated_at = now() WHERE id = $1::uuid`, userID, value); err != nil {
+				return err
+			}
+		}
+
 		if req.Password != nil {
 			// Recorded BEFORE it is replaced -- afterwards would file the new
 			// password as a previous one and refuse it at the next change.
@@ -286,11 +409,23 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.user_updated", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID, SubjectID: userID,
+			// WHICH fields moved, never their values. An audit trail that
+			// recorded the new address would put the personal data straight
+			// back into the append-only table the package rule keeps it out of
+			// -- and `email_verified_cleared` is the one an investigation
+			// actually needs, because it says the account stopped asserting a
+			// verified address and when.
 			Detail: map[string]any{
-				"active_set":     req.Active != nil,
-				"password_set":   req.Password != nil,
-				"must_change":    req.RequirePasswordChange != nil && *req.RequirePasswordChange,
-				"sessions_ended": sessionsEnded,
+				"active_set":             req.Active != nil,
+				"password_set":           req.Password != nil,
+				"must_change":            req.RequirePasswordChange != nil && *req.RequirePasswordChange,
+				"sessions_ended":         sessionsEnded,
+				"email_set":              req.Email != nil,
+				"email_verified_cleared": req.Email != nil,
+				"username_set":           req.Username != nil,
+				"display_name_set":       req.DisplayName != nil,
+				"given_name_set":         req.GivenName != nil,
+				"surname_set":            req.Surname != nil,
 			},
 		})
 	})
@@ -303,6 +438,27 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, errNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user_not_found"})
+		return
+	// A taken address is the caller's mistake, not this server's fault. Without
+	// this it is a 500, which tells an operator to open an incident about a
+	// working uniqueness constraint.
+	case err != nil && strings.Contains(err.Error(), "users_org_email_key"),
+		err != nil && strings.Contains(err.Error(), "users_org_username_key"):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "already_exists", "detail": "that email or username is taken in this organisation",
+		})
+		return
+	// `CHECK (username IS NOT NULL OR email IS NOT NULL)`. Clearing the last
+	// identifier would leave an account nobody can sign in to and no
+	// administrator can search for -- reachable only by its uuid. The database
+	// refuses it; without this case the caller is told "server_error" and left
+	// to guess, when the truthful answer is that the request was impossible.
+	case err != nil && strings.Contains(err.Error(), "users_has_an_identifier"):
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "no_identifier_left",
+			"detail": "a user must keep an email or a username; clearing both " +
+				"would leave an account that cannot sign in and cannot be found",
+		})
 		return
 	case err != nil:
 		s.log.Error("patching user", "user_id", userID, "err", err)

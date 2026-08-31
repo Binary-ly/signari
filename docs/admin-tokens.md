@@ -31,13 +31,14 @@ wholesale, which is exactly the situation being replaced.
 | scope | endpoints |
 | --- | --- |
 | `users:read` | `GET /admin/users`, `GET /admin/users/{id}`, and a user's sessions |
-| `users:write` | `POST /admin/users`, `PATCH /admin/users/{id}`, and ending sessions |
+| `users:write` | `POST /admin/users`, `PATCH /admin/users/{id}`, `DELETE /admin/users/{id}`, removing second factors, and ending sessions |
 | `clients:read` | `GET /admin/clients`, `GET /admin/clients/{id}` |
 | `clients:write` | `POST /admin/clients`, `PATCH /admin/clients/{id}`, rotate-secret |
 | `groups:read` | `GET /admin/groups`, one group, and its members |
 | `groups:write` | Create, rename, delete a group; add and remove members |
 | `config:read` | `GET /admin/config-version` |
 | `subjects:erase` | `POST /admin/subjects/{id}/erase` |
+| `organizations:write` | `POST /admin/organizations`. Useless to an organisation-scoped token — see below |
 
 **A write scope implies the matching read scope.** `clients:write` can read a
 client without also being granted `clients:read` — a token that may change a
@@ -52,6 +53,14 @@ password.
 
 **`subjects:erase` is separate from `users:write`** because a token that may
 rename a user should not thereby be able to destroy one irreversibly.
+
+**`organizations:write` needs an unscoped token as well as the scope.** Holding
+it on a token scoped to one organisation grants nothing: creating a tenant is the
+one write with no tenant to be scoped to, and a tenant that can provision tenants
+has escaped the isolation everything else enforces — it could create a sibling
+and then act on it with a token for the new organisation. Issue it only to a
+provisioning system, and separately from the scopes that administer the people
+inside a tenant.
 
 A missing scope is **403 with the scope named**, not a bare "forbidden". This is
 an operator-facing API; an opaque refusal turns a one-line fix into an afternoon.

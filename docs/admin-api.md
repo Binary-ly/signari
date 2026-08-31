@@ -81,6 +81,25 @@ Every mutation returns `config_version` in its body and `ETag` in its headers.
 |---|---|
 | `GET /admin/config-version` | The current version. The read half of the conditional-write protocol |
 
+### Organisations
+
+| | |
+|---|---|
+| `POST /admin/organizations` | Provision a tenant. `slug`, `display_name`, and `instance_id` — the last required only when the deployment has more than one instance. Needs `organizations:write` **and an unscoped token** |
+
+**Only an unscoped token may create an organisation.** A token scoped to one
+organisation is refused, because a tenant that can provision tenants has escaped
+the isolation the rest of the product enforces: it could create a sibling and
+then act on it. This reuses the same `MayActOn` check every other write uses
+rather than adding a second boundary that has to be kept in step.
+
+**There is no `DELETE`,** and that is a decision. Every user, client, session,
+token and audit event in a deployment hangs off an organisation, so a one-call
+tenant deletion is irreversible destruction of everything a customer has,
+reachable by one mistyped identifier. Setting `status` to `suspended` stops the
+tenant working; removing the data is a deliberate operation done with the
+database in front of you.
+
 ### Clients
 
 | | |

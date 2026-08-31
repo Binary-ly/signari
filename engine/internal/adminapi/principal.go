@@ -36,6 +36,16 @@ const (
 	// irreversibly, and most tokens that need the former do not need the latter.
 	// Erasure is the only operation in this API that nobody can undo.
 	ScopeSubjectsErase = "subjects:erase"
+	// ScopeOrganizationsWrite provisions tenants, and is separate for the same
+	// reason as subjects:erase: the blast radius differs in kind.
+	//
+	// A provisioning system that creates tenants has no business editing the
+	// people inside them, and a support desk token that edits people has no
+	// business creating tenants. It is additionally useless to an
+	// organisation-scoped token -- creating an organisation requires an unscoped
+	// one, because a tenant that can provision tenants has escaped the isolation
+	// boundary the product is built on.
+	ScopeOrganizationsWrite = "organizations:write"
 	// ScopeAll is what the break-glass environment token carries. It is not
 	// grantable to a database token: a stored credential that can do everything
 	// is the thing this package exists to stop handing out.
@@ -45,7 +55,7 @@ const (
 // KnownScopes is what `admin-token create` will accept.
 var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
 	ScopeSubjectsErase, ScopeUsersRead, ScopeClientsRead,
-	ScopeGroupsRead, ScopeGroupsWrite}
+	ScopeGroupsRead, ScopeGroupsWrite, ScopeOrganizationsWrite}
 
 // impliedBy says which scope a write scope satisfies on its own.
 //

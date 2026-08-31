@@ -89,6 +89,21 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "POST /admin/organizations", method: http.MethodPost,
+			path: func(*testing.T, *Server) string { return "/admin/organizations" },
+			body: func(t *testing.T, s *Server, _ string) string {
+				// A slug no other run has used. The uniqueness is per instance,
+				// so a fixed one would make the second run a 409 and exempt the
+				// route from the checks this list exists to apply.
+				//
+				// instance_id is named rather than inferred: the handler only
+				// infers it when a deployment has exactly one instance, and a
+				// test database accumulates several.
+				return fmt.Sprintf(`{"slug":"drift-%d","display_name":"Drift","instance_id":%q}`,
+					time.Now().UnixNano(), anyInstanceID(t, s))
+			},
+		},
+		{
 			name: "POST /admin/clients", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/clients" },
 			body: func(t *testing.T, s *Server, _ string) string {
@@ -255,6 +270,16 @@ func newDriftUser(t *testing.T, s *Server) string {
 // factor routes deliberately never return it. Columns taken from the live
 // schema rather than guessed -- a failing INSERT here would make the route skip
 // itself while the suite reported PASS.
+func anyInstanceID(t *testing.T, s *Server) string {
+	t.Helper()
+	var id string
+	if err := s.db.QueryRow(context.Background(),
+		`SELECT id::text FROM core.instances ORDER BY created_at LIMIT 1`).Scan(&id); err != nil {
+		t.Fatalf("no instance to attach an organisation to: %v", err)
+	}
+	return id
+}
+
 func newDriftUserWithTOTP(t *testing.T, s *Server) string {
 	t.Helper()
 	userID := newDriftUser(t, s)

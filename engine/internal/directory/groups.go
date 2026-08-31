@@ -6,6 +6,8 @@ import (
 	"sort"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/audit"
 )
 
 // Synchronising group membership from a directory.
@@ -213,4 +215,85 @@ func (p *GroupPlan) Describe() string {
 	}
 	return fmt.Sprintf("%d to join, %d to leave, of %d memberships",
 		join, leave, p.MembershipsBefore)
+}
+
+// LoadGroupState reads what this source governs today.
+//
+// Returns the local group memberships that fall under this source's mappings,
+// keyed by user id. RESTRICTED to governed groups on purpose: a membership in a
+// group this source does not map is none of its business, and returning it
+// would let a sync propose removing something a person was added to by hand.
+func LoadGroupState(ctx context.Context, db *pgxpool.Pool, sourceID, orgID string) (map[string][]string, error) {
+	rows, err := db.Query(ctx, `
+		SELECT gm.user_id::text, gm.group_id::text
+		FROM core.group_members gm
+		WHERE gm.org_id = $1::uuid
+		  AND gm.group_id IN (
+		      SELECT group_id FROM core.directory_group_map WHERE source_id = $2::uuid)`,
+		orgID, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("reading current group membership: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string][]string{}
+	for rows.Next() {
+		var userID, groupID string
+		if err := rows.Scan(&userID, &groupID); err != nil {
+			return nil, err
+		}
+		out[userID] = append(out[userID], groupID)
+	}
+	return out, rows.Err()
+}
+
+// ApplyGroupPlan writes the membership changes.
+//
+// One transaction, so a partially applied plan cannot leave somebody in half
+// the groups their directory says they should be in. The audit event names the
+// counts rather than every membership: a sync of ten thousand people would
+// otherwise write ten thousand rows into an append-only table on every run.
+func ApplyGroupPlan(ctx context.Context, db *pgxpool.Pool, sourceID, orgID string, p *GroupPlan) error {
+	if !p.Safe() {
+		return fmt.Errorf("refusing to apply an unsafe plan: %s", p.Refused)
+	}
+	if len(p.Actions) == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	join, leave := p.Counts()
+	for _, a := range p.Actions {
+		switch a.Kind {
+		case "join":
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO core.group_members (group_id, user_id, org_id)
+				VALUES ($1::uuid, $2::uuid, $3::uuid)
+				ON CONFLICT DO NOTHING`, a.GroupID, a.UserID, orgID); err != nil {
+				return fmt.Errorf("adding %s to group %s: %w", a.UserID, a.GroupID, err)
+			}
+		case "leave":
+			if _, err := tx.Exec(ctx, `
+				DELETE FROM core.group_members
+				WHERE group_id = $1::uuid AND user_id = $2::uuid AND org_id = $3::uuid`,
+				a.GroupID, a.UserID, orgID); err != nil {
+				return fmt.Errorf("removing %s from group %s: %w", a.UserID, a.GroupID, err)
+			}
+		}
+	}
+
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "directory.groups_synced", OrgID: orgID,
+		Detail: map[string]any{
+			"source_id": sourceID, "joined": join, "left": leave,
+		},
+	}); err != nil {
+		return fmt.Errorf("auditing the group sync: %w", err)
+	}
+	return tx.Commit(ctx)
 }

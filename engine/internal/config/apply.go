@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/store"
 )
 
 // Reading the deployment, diffing it against the file, and applying.
@@ -362,6 +363,28 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		scopes := cl.Scopes
 		if len(scopes) == 0 {
 			scopes = []string{"openid", "profile", "email", "offline_access"}
+		}
+
+		// Every non-standard scope must be one the organisation declared.
+		//
+		// This is where a typo is worth catching, and the only place it can be:
+		// `signari plan` runs without a database on purpose, so it cannot know
+		// which scopes exist, and by request time it is far too late — a client
+		// registered for "hr_recrods" simply never receives the claim that a
+		// mapper gated on "hr_records", and the configuration looks correct at
+		// both ends.
+		//
+		// Refused rather than warned. A warning during apply is read by nobody
+		// at 2am, and the failure it predicts is silent for months.
+		if undeclared, uerr := store.UndeclaredScopes(ctx, tx, orgID, scopes); uerr != nil {
+			return fmt.Errorf("checking the scopes for client %q: %w", cl.ClientID, uerr)
+		} else if len(undeclared) > 0 {
+			return fmt.Errorf("client %q is registered for scope(s) %s, which this "+
+				"organisation has not declared. Declare them first, or correct the "+
+				"spelling: a client registered for a scope nobody declared can ask "+
+				"for it and receive nothing, and any claim mapper gated on the "+
+				"intended spelling silently never fires",
+				cl.ClientID, strings.Join(undeclared, ", "))
 		}
 		enabled := true
 		if cl.Enabled != nil {

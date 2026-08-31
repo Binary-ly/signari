@@ -32,6 +32,13 @@ type Source struct {
 	ClientID      string
 	ClientSecret  string
 	Scope         string
+
+	// For Kind == "ldap". TokenEndpoint carries the ldaps:// or ldap:// URL,
+	// reusing the column rather than adding one that is empty for every other
+	// kind -- the field means "where this source is reached", and that is true
+	// of both.
+	StartTLS       bool
+	BindDNTemplate string
 }
 
 // Verifier asks a source whether a password is correct.
@@ -66,7 +73,20 @@ func New() *Verifier {
 //   - The response body is size-limited. A hostile or broken endpoint must not be
 //     able to exhaust memory on the login path.
 func (v *Verifier) Verify(ctx context.Context, s Source, username, password string) error {
-	if s.Kind != "oidc_password" {
+	switch s.Kind {
+	case "oidc_password":
+		// Handled below.
+	case "ldap":
+		// A directory being migrated from. Same risk as the token endpoint --
+		// the password goes to a third party -- and the same rules enforced
+		// rather than configured: encrypted transport only, and the DN built
+		// from a template with the username escaped. See ldapbind.go.
+		return VerifyLDAP(ctx, LDAPSource{
+			URL:            s.TokenEndpoint,
+			StartTLS:       s.StartTLS,
+			BindDNTemplate: s.BindDNTemplate,
+		}, username, password)
+	default:
 		return fmt.Errorf("delegated: unsupported source kind %q", s.Kind)
 	}
 	u, err := url.Parse(s.TokenEndpoint)

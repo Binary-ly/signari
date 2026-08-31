@@ -113,6 +113,56 @@ type IDTokenClaims struct {
 	// things to a relying party, and "absent" is the honest answer when the
 	// client is not released groups at all.
 	Groups []string `json:"groups,omitempty"`
+
+	// Extra carries operator-defined claims from a claim mapper.
+	//
+	// Merged by MarshalJSON, which will NOT let one overwrite a field above.
+	// See that method: the refusal is the whole reason this is a separate map
+	// rather than the caller assembling one big object.
+	Extra map[string]any `json:"-"`
+}
+
+// MarshalJSON emits the fixed claims, then any operator-defined ones that do
+// not collide.
+//
+// # A mapped claim can only ever ADD
+//
+// The merge skips any key the struct already produced. So an operator-defined
+// claim cannot replace `sub`, `iss`, `acr`, `amr`, `at_hash` or anything else
+// above, and the guarantee holds here rather than depending on the database's
+// CHECK constraint or on the mapper resolution filtering correctly.
+//
+// Three layers say the same thing, deliberately: the schema refuses a protocol
+// claim name at configuration time, provider.MayContribute refuses one at merge
+// time, and this refuses one at serialisation. A mapper that could set `sub`
+// would let an organisation issue tokens impersonating any subject at every
+// relying party trusting this issuer, so the property is worth stating in the
+// one place that is impossible to route around -- the bytes that get signed.
+func (c IDTokenClaims) MarshalJSON() ([]byte, error) {
+	// A distinct type, so marshalling it does not re-enter this method.
+	type fixed IDTokenClaims
+	raw, err := json.Marshal(fixed(c))
+	if err != nil {
+		return nil, err
+	}
+	if len(c.Extra) == 0 {
+		return raw, nil
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	for k, v := range c.Extra {
+		if _, taken := out[k]; taken {
+			// Silently skipped here rather than erroring: the caller has already
+			// filtered, so reaching this means a layer above failed and the
+			// right outcome is a correct token, not a refused sign-in.
+			continue
+		}
+		out[k] = v
+	}
+	return json.Marshal(out)
 }
 
 // Signer mints tokens with a specific key.
@@ -350,6 +400,41 @@ type AccessTokenClaims struct {
 	// It was previously not modelled at all, so a subject token carrying it was
 	// parsed and the claim discarded. See oauth.CheckMayAct.
 	MayAct map[string]any `json:"may_act,omitempty"`
+
+	// Extra carries operator-defined claims from a claim mapper.
+	//
+	// Same rule as the ID token's: MarshalJSON below will not let one overwrite
+	// a field above. It matters more here, because an access token is presented
+	// to resource servers the user never saw a consent screen for -- so a
+	// mapped claim that could rewrite `scope` or `cnf` would be granting itself
+	// access at systems this deployment does not operate.
+	Extra map[string]any `json:"-"`
+}
+
+// MarshalJSON emits the fixed claims, then any operator-defined ones that do
+// not collide. See IDTokenClaims.MarshalJSON; the rule and the reasoning are
+// identical, and both exist so the guarantee lives in the bytes that get signed
+// rather than only in the layers above.
+func (c AccessTokenClaims) MarshalJSON() ([]byte, error) {
+	type fixed AccessTokenClaims
+	raw, err := json.Marshal(fixed(c))
+	if err != nil {
+		return nil, err
+	}
+	if len(c.Extra) == 0 {
+		return raw, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	for k, v := range c.Extra {
+		if _, taken := out[k]; taken {
+			continue
+		}
+		out[k] = v
+	}
+	return json.Marshal(out)
 }
 
 // Actor identifies a party acting for someone else. Nested, so A-acting-for-B

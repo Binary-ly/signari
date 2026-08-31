@@ -38,6 +38,15 @@ type RemoteUser struct {
 	Email     string
 	Name      string
 	Suspended bool
+
+	// Groups the directory reports for this person, as it names them.
+	//
+	// Only meaningful when the fetch actually asked for them -- see
+	// GroupsFetched on the source. An empty slice from a source that cannot
+	// report groups at all is NOT "this person is in no groups", and treating
+	// it as such would propose removing every governed membership in the
+	// organisation.
+	Groups []string
 }
 
 // LocalUser is one person as this engine currently has them.

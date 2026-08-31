@@ -161,9 +161,34 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request,
 	}
 
 	printer := s.tr(r)
+
+	// The organisation's own descriptions for its own scopes.
+	//
+	// Precedence, and each step is a decision:
+	//
+	//  1. The message catalogue, for the standard scopes. Those mean what the
+	//     specifications say and are translated into every language we ship.
+	//  2. The operator's declared description, for a scope they invented. Their
+	//     words, because nobody else can say what `hr_records` grants.
+	//  3. The bare name, unchanged.
+	//
+	// Step 2 is the whole reason scopes are declarable objects rather than
+	// strings: a consent screen that cannot explain what is being asked for
+	// collects a click rather than a decision. It was built and reached nothing
+	// until this line.
+	declared := store.DescribeScopes(r.Context(), s.db, c.OrgID, d.Missing)
+
 	items := make([]scopeItem, 0, len(d.Missing))
 	for _, sc := range d.Missing {
-		items = append(items, scopeItem{Name: sc, Description: describeScope(printer, sc)})
+		desc := describeScope(printer, sc)
+		// Only when the catalogue had nothing: a translated standard scope must
+		// not be replaced by an operator's untranslated text.
+		if desc == sc {
+			if s, ok := declared[sc]; ok && s.Description != "" {
+				desc = s.Description
+			}
+		}
+		items = append(items, scopeItem{Name: sc, Description: desc})
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

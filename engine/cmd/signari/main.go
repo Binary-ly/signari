@@ -3327,6 +3327,14 @@ func scimSync(ctx context.Context, conn *pgx.Conn, only string, apply bool) erro
 			}
 		}
 
+		// Groups, after the users. A membership references an account, so
+		// pushing one before the account exists at the target is a request the
+		// target refuses -- and refuses per member, which reads as a flaky
+		// integration rather than an ordering mistake.
+		if gerr := syncSCIMGroups(ctx, conn, t, hc, apply); gerr != nil {
+			return gerr
+		}
+
 		verb := "would"
 		if apply {
 			verb = "did"
@@ -3340,6 +3348,122 @@ func scimSync(ctx context.Context, conn *pgx.Conn, only string, apply bool) erro
 		return nil
 	}
 	fmt.Println("\n  Run `signari scim verify` to confirm the targets agree.")
+	return nil
+}
+
+// syncSCIMGroups reconciles group membership at one target.
+//
+// # Only groups this deployment created there
+//
+// Driven from `core.scim_group_links`, never by matching displayName. A target's
+// own administrators may already maintain a group called "Engineering", and a
+// name match would adopt it on the first run and start removing the members they
+// put there.
+//
+// # Only groups the operator asked to provision
+//
+// A group reaches a target because it is in `core.directory_group_map`... no:
+// because an operator created a link for it. Until a link exists, nothing is
+// pushed — the same default-deny as everywhere else in this work, so adding a
+// group locally never sends it anywhere by itself.
+func syncSCIMGroups(ctx context.Context, conn *pgx.Conn, t scim.Target,
+	hc *http.Client, apply bool) error {
+
+	rows, err := conn.Query(ctx, `
+		SELECT l.group_id::text, l.remote_id, g.display_name
+		FROM core.scim_group_links l
+		JOIN core.groups g ON g.id = l.group_id
+		WHERE l.target_id = $1::uuid
+		ORDER BY g.display_name`, t.ID)
+	if err != nil {
+		return fmt.Errorf("reading provisioned groups for %s: %w", t.Slug, err)
+	}
+	type linked struct{ groupID, remoteID, name string }
+	var groups []linked
+	for rows.Next() {
+		var l linked
+		if err := rows.Scan(&l.groupID, &l.remoteID, &l.name); err != nil {
+			rows.Close()
+			return err
+		}
+		groups = append(groups, l)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+
+	client := scim.NewClient(t, hc)
+	for _, g := range groups {
+		// Who should be in it: our members who have an account at this target.
+		// A member with no account there is skipped rather than failing the
+		// group -- they are provisioned by the pass above, and the next run
+		// picks them up.
+		wantRows, qerr := conn.Query(ctx, `
+			SELECT sl.remote_id
+			FROM core.group_members gm
+			JOIN core.scim_links sl ON sl.user_id = gm.user_id AND sl.target_id = $1::uuid
+			WHERE gm.group_id = $2::uuid`, t.ID, g.groupID)
+		if qerr != nil {
+			return qerr
+		}
+		want := map[string]bool{}
+		for wantRows.Next() {
+			var rid string
+			if err := wantRows.Scan(&rid); err != nil {
+				wantRows.Close()
+				return err
+			}
+			want[rid] = true
+		}
+		wantRows.Close()
+		if err := wantRows.Err(); err != nil {
+			return err
+		}
+
+		remote, gerr := client.GetGroup(ctx, g.remoteID)
+		if gerr != nil {
+			fmt.Printf("  %s: group %q could not be read (%v); skipped\n",
+				t.Slug, g.name, gerr)
+			continue
+		}
+		have := map[string]bool{}
+		for _, m := range remote.Members {
+			have[m.Value] = true
+		}
+
+		var toAdd, toRemove []string
+		for id := range want {
+			if !have[id] {
+				toAdd = append(toAdd, id)
+			}
+		}
+		for id := range have {
+			if !want[id] {
+				toRemove = append(toRemove, id)
+			}
+		}
+		sort.Strings(toAdd)
+		sort.Strings(toRemove)
+
+		if len(toAdd) == 0 && len(toRemove) == 0 {
+			continue
+		}
+		fmt.Printf("  %s: group %q -- %d to add, %d to remove\n",
+			t.Slug, g.name, len(toAdd), len(toRemove))
+		if !apply {
+			continue
+		}
+		if err := client.AddMembers(ctx, g.remoteID, toAdd); err != nil {
+			return fmt.Errorf("adding members to %q at %s: %w", g.name, t.Slug, err)
+		}
+		if err := client.RemoveMembers(ctx, g.remoteID, toRemove); err != nil {
+			return fmt.Errorf("removing members from %q at %s: %w", g.name, t.Slug, err)
+		}
+	}
 	return nil
 }
 
@@ -4791,6 +4915,90 @@ func dirSync(ctx context.Context, conn *pgx.Conn, slug string, apply bool) error
 		return err
 	}
 	fmt.Println("\n  Applied.")
+
+	if err := syncDirectoryGroups(ctx, pool, id, orgID, remote, maxPct); err != nil {
+		directory.RecordFailure(ctx, pool, id, err)
+		return err
+	}
+	return nil
+}
+
+// syncDirectoryGroups reconciles group membership after the users are in place.
+//
+// # After the users, never before
+//
+// A membership references a user row. Running this first would try to add
+// somebody to a group before they exist here, so the ordering is a requirement
+// rather than a preference.
+//
+// # It does nothing unless the source actually reported groups
+//
+// This is the guard that matters. A source with no group attribute configured
+// returns every user with an empty group list, and that is NOT "everybody is in
+// no groups" -- it is "this source has nothing to say about groups". Treating
+// the two the same would propose removing every governed membership in the
+// organisation on the first run against a source that never fetched them.
+//
+// So: no mappings, or no user reporting any group, means no plan at all.
+func syncDirectoryGroups(ctx context.Context, pool *pgxpool.Pool, sourceID, orgID string,
+	remote []directory.RemoteUser, maxPct int) error {
+
+	mappings, err := directory.LoadGroupMappings(ctx, pool, sourceID)
+	if err != nil {
+		return err
+	}
+	if len(mappings) == 0 {
+		return nil
+	}
+
+	reported := false
+	for _, u := range remote {
+		if len(u.Groups) > 0 {
+			reported = true
+			break
+		}
+	}
+	if !reported {
+		fmt.Println("\n  Group mappings are configured but this source reported no")
+		fmt.Println("  group memberships, so nothing was changed. Set the source's")
+		fmt.Println("  group attribute (usually memberOf) to enable group sync.")
+		return nil
+	}
+
+	// Keyed by LOCAL user id, which means resolving the remote id first: the
+	// plan speaks in local ids because that is what a membership row holds.
+	byRemote, err := directory.LoadLocal(ctx, pool, sourceID, orgID)
+	if err != nil {
+		return err
+	}
+	localOf := make(map[string]string, len(byRemote))
+	for _, l := range byRemote {
+		localOf[l.RemoteID] = l.UserID
+	}
+
+	remoteGroups := map[string][]string{}
+	for _, u := range remote {
+		if local, ok := localOf[u.ID]; ok {
+			remoteGroups[local] = u.Groups
+		}
+	}
+
+	current, err := directory.LoadGroupState(ctx, pool, sourceID, orgID)
+	if err != nil {
+		return err
+	}
+
+	gp := directory.BuildGroupPlan(mappings, remoteGroups, current, maxPct)
+	fmt.Printf("\n  Groups: %s\n", gp.Describe())
+	if !gp.Safe() {
+		return fmt.Errorf("group sync refused")
+	}
+	if err := directory.ApplyGroupPlan(ctx, pool, sourceID, orgID, gp); err != nil {
+		return err
+	}
+	if len(gp.Actions) > 0 {
+		fmt.Println("  Group memberships applied.")
+	}
 	return nil
 }
 

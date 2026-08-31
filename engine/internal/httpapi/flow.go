@@ -848,6 +848,24 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		detailClaim = encoded
 	}
 
+	// Operator-defined access token claims.
+	//
+	// Resolved before the token is assembled so a failure refuses the mint
+	// rather than issuing one silently missing what an operator configured.
+	// A separate destination from the ID token's, because an access token
+	// travels to resource servers the user never saw a consent screen for --
+	// so releasing something there is a wider decision, and the mapper has to
+	// say so explicitly.
+	var accessExtra map[string]any
+	if s.root != nil && userID != "" {
+		mapped, merr := store.MappedClaims(ctx, tx, userID, orgID, c.ClientID,
+			store.ClaimInAccessToken, joinScopes(scopes), s.root)
+		if merr != nil {
+			return nil, nil, fmt.Errorf("resolving mapped access token claims: %w", merr)
+		}
+		accessExtra = mapped
+	}
+
 	at, err := signer.SignJSON(tokens.AccessTokenClaims{
 		Issuer:    issuer,
 		Subject:   userID,
@@ -863,6 +881,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 
 		AuthorizationDetails: detailClaim,
 		GrantID:              familyID,
+		Extra:                accessExtra,
 	}, tokens.TypAccessToken)
 	if err != nil {
 		return nil, nil, err
@@ -911,6 +930,27 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		}
 		if err := s.addProfileClaims(ctx, tx, &claims, userID, scopes); err != nil {
 			return nil, nil, err
+		}
+
+		// Operator-defined claims, resolved LAST so the fixed set above is
+		// already in place.
+		//
+		// IDTokenClaims.MarshalJSON refuses to let one overwrite a field the
+		// struct produced, so this cannot replace `sub`, `acr`, `email` or
+		// anything else — a mapper can only ever add. That is enforced at three
+		// layers on purpose (schema, resolution, serialisation), and this is the
+		// call site that makes the feature reachable at all.
+		if s.root != nil && userID != "" {
+			mapped, merr := store.MappedClaims(ctx, tx, userID, orgID, c.ClientID,
+				store.ClaimInIDToken, joinScopes(scopes), s.root)
+			if merr != nil {
+				// Refused rather than issued without them. An operator who
+				// mapped a claim is relying on it reaching the relying party,
+				// and a token silently missing it is the failure this whole
+				// wiring exists to fix.
+				return nil, nil, fmt.Errorf("resolving mapped ID token claims: %w", merr)
+			}
+			claims.Extra = mapped
 		}
 
 		idt, err := signer.SignIDToken(claims)

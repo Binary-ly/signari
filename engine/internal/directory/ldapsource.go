@@ -55,6 +55,21 @@ type LDAPSource struct {
 	Filter  string
 	Flavour LDAPFlavour
 
+	// GroupAttribute names the attribute carrying a person's group memberships,
+	// usually `memberOf`. EMPTY MEANS GROUPS ARE NOT FETCHED AT ALL, and that
+	// distinction is load-bearing.
+	//
+	// A source that does not fetch groups reports every user with an empty group
+	// list. Feeding that into BuildGroupPlan would read as "everybody is in no
+	// groups" and propose removing every governed membership in the
+	// organisation -- caught by the removal ceiling, but only after proposing a
+	// change that was never real.
+	//
+	// So the sync only runs group reconciliation when this is set, and the
+	// absence of the setting is what says "this source has nothing to say about
+	// groups" rather than "this source says nobody is in any".
+	GroupAttribute string
+
 	// StartTLS upgrades a plaintext connection. Ignored for ldaps://.
 	StartTLS bool
 	// CAs verifies the server. nil uses the system roots.
@@ -169,6 +184,12 @@ func (s *LDAPSource) Fetch(ctx context.Context) ([]RemoteUser, error) {
 	if disabledAttr != "" {
 		attrs = append(attrs, disabledAttr)
 	}
+	// Only when asked for. Requesting the attribute unconditionally would make
+	// every source look like it reports groups, and a source reporting none is
+	// indistinguishable from one saying nobody is in any -- see GroupAttribute.
+	if s.GroupAttribute != "" {
+		attrs = append(attrs, s.GroupAttribute)
+	}
 
 	pageSize := s.PageSize
 	if pageSize == 0 {
@@ -206,11 +227,21 @@ func (s *LDAPSource) Fetch(ctx context.Context) ([]RemoteUser, error) {
 			// what happened in the plan.
 			email = e.GetAttributeValue(uidAttr)
 		}
+		var groups []string
+		if s.GroupAttribute != "" {
+			// Every value, not the first. A person is in several groups, and
+			// GetAttributeValue returns one -- which would silently reduce
+			// everybody to their alphabetically-first membership and propose
+			// removing the rest.
+			groups = e.GetAttributeValues(s.GroupAttribute)
+		}
+
 		out = append(out, RemoteUser{
 			ID:        id,
 			Email:     email,
 			Name:      e.GetAttributeValue(nameAttr),
 			Suspended: s.disabled(e, disabledAttr),
+			Groups:    groups,
 		})
 	}
 

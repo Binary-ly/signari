@@ -165,3 +165,65 @@ func typedValue(raw, valueType string) any {
 		return raw
 	}
 }
+
+// SAMLAttributes resolves a service provider's declared attribute release.
+//
+// # The column this reads was dead for months
+//
+// `core.saml_providers.attributes` maps a SAML attribute name to one of this
+// organisation's user attributes, and nothing read it. An operator could
+// configure a release, see the column hold exactly what they had asked for, and
+// receive assertions carrying none of it — a disclosure control failing in the
+// direction that looks like success.
+//
+// # Why it goes through the same sealed store as OIDC claims
+//
+// A SAML assertion is a token by another name. Releasing attributes here from
+// some separate plaintext path would make SAML the one surface where an erased
+// subject still discloses, and erasure would be complete everywhere except the
+// protocol enterprises actually use.
+//
+// So a personal attribute is unsealed with the subject key, exactly as for a
+// mapped OIDC claim, and an erased subject releases nothing.
+func SAMLAttributes(ctx context.Context, tx pgx.Tx, userID, providerID string,
+	root *keys.RootKey) (map[string]string, error) {
+
+	// The provider's release map, and the organisation it belongs to.
+	var release map[string]string
+	var orgID string
+	if err := tx.QueryRow(ctx, `
+		SELECT attributes, org_id::text FROM core.saml_providers WHERE id = $1::uuid`,
+		providerID).Scan(&release, &orgID); err != nil {
+		return nil, fmt.Errorf("reading the SAML attribute release: %w", err)
+	}
+	if len(release) == 0 {
+		return nil, nil
+	}
+
+	// The user's values for the attributes named in the release, and only those.
+	values, err := UserAttributes(ctx, tx, userID, orgID, root)
+	if err != nil {
+		return nil, err
+	}
+	byName := make(map[string]AttributeValue, len(values))
+	for _, v := range values {
+		byName[v.Name] = v
+	}
+
+	out := map[string]string{}
+	for samlName, attrName := range release {
+		v, ok := byName[attrName]
+		// Not readable means erased. Omitted rather than reported, for the same
+		// reason a mapped OIDC claim is: an assertion is not a diagnostic
+		// surface, and a value saying "this was erased" would republish the fact
+		// of erasure to every service provider.
+		if !ok || !v.Readable || v.Value == "" {
+			continue
+		}
+		out[samlName] = v.Value
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}

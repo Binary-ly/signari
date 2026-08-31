@@ -48,12 +48,17 @@ CREATE TABLE saml_providers (
     -- Empty by default: attribute release is a disclosure decision, so it is
     -- made explicitly per SP rather than inherited.
     --
-    -- RESERVED AND UNUSED. Nothing reads this column and nothing writes it, so
-    -- setting it releases no attribute -- an assertion carries the fixed set the
-    -- minting code emits, whatever is stored here. Recorded because a
-    -- disclosure control that silently does nothing is the worst kind to be
-    -- wrong about: an operator would configure a release, see the column hold
-    -- what they asked for, and reasonably believe it applied.
+    -- Read by store.SAMLAttributes at assertion time. Maps a SAML attribute
+    -- name to one of the organisation's declared user attributes, so a value
+    -- released here goes through the same sealed storage as an OIDC claim and
+    -- an erased subject releases nothing.
+    --
+    -- This column was dead for months, and the note recording that is worth
+    -- keeping: nothing read it, so an operator could configure a release, see
+    -- the column hold exactly what they asked for, and receive assertions
+    -- carrying none of it. A disclosure control that silently does nothing is
+    -- the worst kind to be wrong about, because it fails in the direction that
+    -- looks like success.
     attributes   jsonb       NOT NULL DEFAULT '{}',
 
     -- How long an assertion is valid for. Short by design: the assertion is

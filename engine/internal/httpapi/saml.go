@@ -390,6 +390,34 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 		attrs[attrName] = groups
 	}
 
+	// The provider's declared attribute release.
+	//
+	// `saml_providers.attributes` has held `{"SAML attribute name": "attribute"}`
+	// since migration 0019 and was read by nothing -- an operator could configure
+	// a release, see the column hold exactly what they asked for, and receive
+	// assertions that carried none of it. That is the worst way for a disclosure
+	// control to be wrong, because it fails in the direction that looks like it
+	// worked.
+	//
+	// Released from the SAME store as OIDC claims, so a personal attribute is
+	// sealed under the subject key here too and an erased subject releases
+	// nothing. A SAML assertion is a token by another name; it must not be the
+	// path where erasure does not reach.
+	if s.root != nil {
+		released, rerr := store.SAMLAttributes(ctx, tx, userID, p.ID, s.root)
+		if rerr != nil {
+			return "", "", rerr
+		}
+		for name, value := range released {
+			// Never overwrites the group attribute. A provider that named the
+			// same SAML attribute for both would otherwise get whichever the map
+			// iteration reached last.
+			if _, taken := attrs[name]; !taken {
+				attrs[name] = []string{value}
+			}
+		}
+	}
+
 	lifetime := time.Duration(p.LifetimeSeconds) * time.Second
 	doc, err = saml.BuildResponse(saml.ResponseInput{
 		Issuer:      s.samlEntityID(),

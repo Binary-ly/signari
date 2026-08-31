@@ -55,6 +55,28 @@ password.
 **`subjects:erase` is separate from `users:write`** because a token that may
 rename a user should not thereby be able to destroy one irreversibly.
 
+## Narrowing a token to named objects
+
+A token may be restricted to particular clients or groups, not just to a scope
+and an organisation. A CI job that deploys one application should not hold a
+credential able to disable the payroll system.
+
+| | |
+|---|---|
+| `client_ids` | Clients this token may act on, for reads and writes alike |
+| `group_ids` | Groups it may act on, including their membership |
+
+**Unset means every object**, which is what every token issued before this
+existed carries — the restriction is opt-in, for the same reason `If-Match` is.
+
+**An empty list means *none*, not everything.** The two are deliberately
+different: a `[]` that read as unrestricted is how a narrowing feature becomes a
+widening one, the first time somebody clears a list intending to revoke access
+and grants all of it instead.
+
+Reads are narrowed as well as writes. A read boundary that does not match the
+write boundary is one an integrator will find and use.
+
 **`audit:read` is not implied by any write scope.** The implication rule exists
 so a token that may change a thing can see *that thing*; the audit trail is not
 that thing, it is the record of everyone who touched it. Granting `users:write`

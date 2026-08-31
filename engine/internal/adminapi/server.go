@@ -341,6 +341,10 @@ type patchClientRequest struct {
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	clientID := r.PathValue("clientID")
+	if err := requireClient(ctx, clientID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
 
 	var req patchClientRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {

@@ -95,10 +95,15 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getGroup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	groupID := r.PathValue("groupID")
+	if err := requireGroup(ctx, groupID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
 	var g groupSummary
 	err := scanGroup(s.db.QueryRow(ctx,
 		`SELECT `+groupColumns+` FROM core.groups WHERE id = $1::uuid`,
-		r.PathValue("groupID")), &g)
+		groupID), &g)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "group_not_found"})
 		return
@@ -193,6 +198,10 @@ type patchGroupRequest struct {
 func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	groupID := r.PathValue("groupID")
+	if err := requireGroup(ctx, groupID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
 
 	var req patchGroupRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
@@ -244,6 +253,10 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	groupID := r.PathValue("groupID")
+	if err := requireGroup(ctx, groupID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
 	pre, ok := s.readPrecondition(w, r)
 	if !ok {
 		return
@@ -319,6 +332,12 @@ func (s *Server) finishGroupWrite(w http.ResponseWriter, r *http.Request, groupI
 func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	groupID := r.PathValue("groupID")
+	// Membership is who reaches which applications. A token restricted to one
+	// group must not be able to read another's roster.
+	if err := requireGroup(ctx, groupID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
 	limit, cursor := pageParams(r)
 
 	var orgID string
@@ -392,6 +411,12 @@ func (s *Server) removeGroupMember(w http.ResponseWriter, r *http.Request) {
 func (s *Server) changeMembership(w http.ResponseWriter, r *http.Request, add bool) {
 	ctx := r.Context()
 	groupID, userID := r.PathValue("groupID"), r.PathValue("userID")
+	// Adding somebody to a group grants them whatever that group reaches, so
+	// this is the membership check that matters most.
+	if err := requireGroup(ctx, groupID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
 	pre, ok := s.readPrecondition(w, r)
 	if !ok {
 		return

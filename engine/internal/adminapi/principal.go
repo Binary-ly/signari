@@ -90,6 +90,45 @@ type Principal struct {
 	// A credential that bypasses revocation should be visible every time it is
 	// used, not silently equivalent to the others.
 	BreakGlass bool
+
+	// ClientIDs and GroupIDs narrow the token to named objects.
+	//
+	// nil means every object of that kind in the token's organisation, which is
+	// what every token issued before this existed carries. An EMPTY slice means
+	// none, and the difference is the whole point: a `'{}'` that read as
+	// unrestricted would turn a narrowing feature into a widening one the first
+	// time somebody cleared a list intending to revoke access.
+	ClientIDs []string
+	GroupIDs  []string
+}
+
+// MayActOnClient reports whether this principal may touch a client.
+func (p *Principal) MayActOnClient(clientID string) error {
+	return p.mayActOnObject("client", clientID, p.ClientIDs)
+}
+
+// MayActOnGroup reports whether this principal may touch a group.
+func (p *Principal) MayActOnGroup(groupID string) error {
+	return p.mayActOnObject("group", groupID, p.GroupIDs)
+}
+
+// mayActOnObject is the shared rule.
+//
+// nil is unrestricted; anything else is an allow-list, including the empty one.
+// Written once because the two call sites must not drift: a copy that treated
+// empty as unrestricted for groups and not for clients would be a boundary that
+// holds for one object kind, which reads as enforced and is not.
+func (p *Principal) mayActOnObject(kind, id string, allowed []string) error {
+	if allowed == nil {
+		return nil
+	}
+	for _, a := range allowed {
+		if strings.EqualFold(a, id) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: this token is restricted to named %ss and %s is not one of them",
+		errCrossOrg, kind, id)
 }
 
 // Can reports whether this principal holds a scope.
@@ -167,10 +206,12 @@ func (s *Server) resolveToken(ctx context.Context, presented string) (*Principal
 	var orgID *string
 	var expires, revoked *time.Time
 	err := s.db.QueryRow(ctx, `
-		SELECT id::text, name, org_id::text, scopes, expires_at, revoked_at
+		SELECT id::text, name, org_id::text, scopes, expires_at, revoked_at,
+		       client_ids, group_ids
 		FROM core.admin_tokens
 		WHERE token_hash = $1`, sum[:]).
-		Scan(&p.TokenID, &p.Name, &orgID, &p.Scopes, &expires, &revoked)
+		Scan(&p.TokenID, &p.Name, &orgID, &p.Scopes, &expires, &revoked,
+			&p.ClientIDs, &p.GroupIDs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, errTokenRejected
@@ -221,6 +262,30 @@ var errCrossOrg = errors.New("outside this token's organisation")
 // create, and the existing row on an update. Enforcing it in only one leaves a
 // boundary that holds for new records and not for edits -- worse than none,
 // because it reads as enforced.
+// requireClient narrows a request to the clients this token may act on.
+//
+// Called ALONGSIDE requireOrg, never instead of it: the organisation check
+// decides which tenant, and this decides which object within it. A handler that
+// called only one would enforce half a boundary.
+func requireClient(ctx context.Context, clientID string) error {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return fmt.Errorf("no admin principal on the request context; the handler is " +
+			"registered without auth()")
+	}
+	return p.MayActOnClient(clientID)
+}
+
+// requireGroup narrows a request to the groups this token may act on.
+func requireGroup(ctx context.Context, groupID string) error {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return fmt.Errorf("no admin principal on the request context; the handler is " +
+			"registered without auth()")
+	}
+	return p.MayActOnGroup(groupID)
+}
+
 func requireOrg(ctx context.Context, orgID string) error {
 	p, ok := principalFrom(ctx)
 	if !ok {

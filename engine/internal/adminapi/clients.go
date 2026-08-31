@@ -176,6 +176,14 @@ func (s *Server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	clientID := r.PathValue("clientID")
 
+	// Before any work. A token restricted to named clients must not be able to
+	// invalidate another application's secret, and rotating first and checking
+	// afterwards would already have broken it.
+	if err := requireClient(ctx, clientID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+
 	b := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -295,6 +303,10 @@ func validateRedirectURI(raw string) error {
 func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	clientID := r.PathValue("clientID")
+	if err := requireClient(ctx, clientID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
 	pre, ok := s.readPrecondition(w, r)
 	if !ok {
 		return

@@ -121,6 +121,17 @@ func (s *Server) getClient(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	clientID := r.PathValue("clientID")
 
+	// Reads are narrowed too. A token restricted to one application must not be
+	// able to enumerate another's configuration -- a read boundary that does not
+	// match the write boundary is one an integrator will find and use.
+	// Reads are narrowed too. A token restricted to one application must not be
+	// able to enumerate another's configuration -- a read boundary that does not
+	// match the write boundary is one an integrator will find and use.
+	if err := requireClient(ctx, clientID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+
 	var c clientSummary
 	err := s.db.QueryRow(ctx, `
 		SELECT client_id, org_id::text, display_name, client_type, enabled,

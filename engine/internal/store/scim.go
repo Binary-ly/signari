@@ -17,7 +17,8 @@ func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, on
 		SELECT id::text, org_id::text, slug, display_name, base_url, token,
 		       dry_run, on_deactivate, kind,
 		       COALESCE(credentials_enc, ''::bytea),
-		       COALESCE(impersonate, ''), COALESCE(target_domain, '')
+		       COALESCE(impersonate, ''), COALESCE(target_domain, ''),
+		       COALESCE(scope_group_id::text, '')
 		FROM core.scim_targets
 		WHERE enabled AND ($1 = '' OR slug = $1)
 		ORDER BY slug`, only)
@@ -33,7 +34,7 @@ func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, on
 		var sealedCreds []byte
 		if err := rows.Scan(&t.ID, &t.OrgID, &t.Slug, &t.DisplayName, &t.BaseURL,
 			&sealed, &t.DryRun, &t.OnDeactivate, &t.Kind,
-			&sealedCreds, &t.Impersonate, &t.TargetDomain); err != nil {
+			&sealedCreds, &t.Impersonate, &t.TargetDomain, &t.ScopeGroupID); err != nil {
 			return nil, err
 		}
 		// A SCIM target's secret is a bearer token; a native one's is a service
@@ -86,7 +87,17 @@ func SCIMDesiredState(ctx context.Context, conn *pgx.Conn, target scim.Target) (
 		SELECT u.id::text,
 		       COALESCE(NULLIF(u.username,''), u.email, u.id::text),
 		       COALESCE(u.email,''),
-		       u.status = 'active',
+		       -- Active AT THIS TARGET, which is not the same as active here.
+		       --
+		       -- Somebody who leaves the scope group is still an active user of
+		       -- this deployment and must become INACTIVE at the target, so the
+		       -- reconciliation deactivates their remote account. Reporting the
+		       -- account's own status instead would leave a live account for
+		       -- somebody who lost access — the precise failure that
+		       -- reconciling from desired state is supposed to make impossible.
+		       u.status = 'active' AND ($3 = '' OR EXISTS (
+		           SELECT 1 FROM core.group_members gm
+		           WHERE gm.user_id = u.id AND gm.group_id = $3::uuid)),
 		       COALESCE(l.remote_id,''),
 		       l.last_synced_at IS NOT NULL
 		FROM core.users u
@@ -97,7 +108,19 @@ func SCIMDesiredState(ctx context.Context, conn *pgx.Conn, target scim.Target) (
 		  -- nothing at the target to correct, and listing them would bury the
 		  -- rows that need action.
 		  AND (l.remote_id IS NOT NULL OR u.status = 'active')
-		ORDER BY u.created_at`, target.ID, target.OrgID)
+		  -- The target's scope, when it has one.
+		  --
+		  -- Note what this does NOT do: it does not skip somebody who has left
+		  -- the group and still has an account there. They fall out of the
+		  -- "active" half and stay in through the remote_id test, so the
+		  -- next pass deactivates them at the target. Filtering them out
+		  -- entirely would leave a live account for somebody who lost access,
+		  -- which is the exact failure reconciling-from-desired-state exists to
+		  -- prevent.
+		  AND ($3 = '' OR l.remote_id IS NOT NULL OR EXISTS (
+		        SELECT 1 FROM core.group_members gm
+		        WHERE gm.user_id = u.id AND gm.group_id = $3::uuid))
+		ORDER BY u.created_at`, target.ID, target.OrgID, target.ScopeGroupID)
 	if err != nil {
 		return nil, err
 	}

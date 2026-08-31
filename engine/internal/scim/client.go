@@ -61,6 +61,15 @@ type Target struct {
 	Impersonate string
 	// TargetDomain is the domain new accounts are created under.
 	TargetDomain string
+
+	// ScopeGroupID restricts provisioning to one group's members.
+	//
+	// Empty provisions every active user in the organisation, which is what
+	// every target did before this existed. Narrowing an existing target is a
+	// mass DEPROVISION at the remote system -- the next reconciliation sees
+	// accounts that should no longer exist and deactivates them -- which is
+	// exactly the shape provision.CheckSafety refuses above 25%.
+	ScopeGroupID string
 }
 
 // User is the subset of the SCIM user schema we send.

@@ -287,6 +287,18 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
+	// Asked for and not received. NOT a refusal: with conveyance `direct` the
+	// browser may still return none — the user is entitled to decline the
+	// attestation prompt — and refusing would lock somebody out of enrolment for
+	// exercising that choice. But an operator who set a conveyance and believes
+	// it is being honoured has no other way to discover that real devices are
+	// not honouring it, so it is said once per registration rather than never.
+	if policy.RequiresAttestation() && !attestationVerified {
+		s.log.Warn("attestation was requested and none was conveyed",
+			"org_id", orgID, "conveyance", policy.Conveyance,
+			"note", "the AAGUID recorded for this credential is self-asserted")
+	}
+
 	if ok, why := policy.PermitsAuthenticator(cred.Authenticator.AAGUID, attestationVerified); !ok {
 		s.log.Info("registration refused by the authenticator policy",
 			"org_id", orgID, "user_id", userID, "attestation", cred.AttestationType,

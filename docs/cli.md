@@ -38,8 +38,12 @@ a class of failure that shows up as data corruption rather than an error.
 | | |
 |---|---|
 | `signari instance create` | An issuer and its first signing keys |
+| `signari instance session-limit` | How many sessions one person may hold at once, and whether the limit denies the new sign-in or ends the oldest session. `0` is unlimited and is the default |
 | `signari user create` | A user with a password. Subject to the [password policy](password-policy.md) |
+| `signari user locale` | The language this person's security notices are written in, as a BCP 47 tag. Empty returns them to the deployment default |
 | `signari group create` / `group list` / `group member` / `group release` | Groups, membership, and which clients may see them |
+| `signari group impersonation` | Grant or revoke a group's ability to act as another user. **Deliberately not in the Admin API**: a `groups:write` token is issued for day-to-day administration, and letting one grant this would turn every such token into a way to become anybody. See [impersonation.md](impersonation.md) |
+| `signari webauthn policy` / `webauthn show` | Which authenticator models an organisation accepts, and what attestation to ask for. An allow-list is refused without attestation, because an unattested AAGUID is chosen by the authenticator being filtered |
 | `signari invite create` / `invite list` | Invitations |
 | `signari signup enable` / `signup disable` / `signup show` | Self-service sign-up, and which email domains may use it |
 | `signari registration enable` / `registration token` | Dynamic client registration (RFC 7591) |
@@ -61,6 +65,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari client set-hybrid` | Permit hybrid response types |
 | `signari client set-claims-redirects` | UMA 2.0 §3.3.2: where a requesting party may be returned after claims gathering. A separate list from `redirect_uris`, because the specification forbids reusing those. See [uma.md](uma.md) |
 | `signari client set-grants` | Which grant types this client may use (RFC 6749 §5.2) |
+| `signari client set-ciba` | CIBA delivery mode: `poll`, `ping` or `push`. Dynamic registration may only take `poll` — `ping` and `push` have this issuer POST to a URL the client supplies, so an operator grants those deliberately |
 
 ## Verifiable credentials
 
@@ -94,6 +99,8 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari scim-source add` / `scim-source list` | Inbound SCIM |
 | `signari kerberos check` / `kerberos principals` / `kerberos sync` | Kerberos/SPNEGO, keytab checking, principal import |
 | `signari dir add` / `dir sync` | Directory sync from LDAP, Entra or Google |
+| `signari dir group-map` | Which local group a directory group grants. A sync grants nothing that is not mapped here, so a directory reporting `domain admins` cannot make anybody an administrator of this system by name alone |
+| `signari idp attribute-map` | Route a claim from an upstream provider into a local user attribute. `-overwrite` decides whether a sign-in may replace a value an administrator set by hand |
 | `signari import keycloak` / `import authentik` | Migrate a realm or an installation in |
 
 ## Federation out
@@ -101,6 +108,8 @@ existed, and the test that exists to catch exactly that could not see this table
 | | |
 |---|---|
 | `signari scim add` / `scim list` / `scim sync` / `scim verify` | Outbound SCIM provisioning |
+| `signari scim scope` | Limit a target to one group's members. Unscoped, a target receives every user in the organisation — right for a company directory, wrong for an application five people use |
+| `signari scim provision-group` / `scim deprovision-group` | Create or delete a group at the target and record that we own it. Reconciliation only ever touches groups this link names, so a group the target's own administrators maintain is left alone however similar its name |
 | `signari provision add` | Provisioning targets |
 | `signari ssf add-stream` / `ssf list` | Shared Signals (CAEP/RISC) streams |
 | `signari events subscribe` / `events list` | Event subscriptions — see [events.md](events.md) |
@@ -130,6 +139,7 @@ An operator's own service, called to extend a decision this engine makes. See
 |---|---|
 | `signari provider add` | Register one: `-hook authorize -provider-url https://… -mode fail_closed`. **`-mode` is required and has no default** — it says what happens when the service cannot be reached |
 | `signari provider list` | What is registered, with its failure mode, and whether any decision point actually consults that hook |
+| `signari provider claims` | Which claims a token hook may add. The allow-list is the hook's whole security model: without it a service returning `{"admin": true}` would put that claim in a token this engine signed, and a resource server could not tell it apart from one the engine decided. Protocol claims are refused by the schema |
 | `signari provider remove` | Remove it. Decisions are then made locally only |
 
 ## Outposts and remote access
@@ -139,6 +149,7 @@ An operator's own service, called to extend a decision this engine makes. See
 | `signari outpost create` / `outpost list` / `outpost run` | LDAP, RADIUS, proxy and desktop outposts |
 | — | LDAP and RADIUS are **listeners inside `signari serve`**, not commands. Set `SIGNARI_LDAP_ADDR` or `SIGNARI_RADIUS_ADDR`; each is off unless its address is. See [ldap.md](ldap.md) and [radius.md](radius.md) |
 | `signari radius add-client` / `radius list` / `radius enable-client` / `radius disable-client` | RADIUS clients and their shared secrets |
+| `signari radius authorize` | Place a group's members on a VLAN, or name a Filter-Id the device already holds. A VLAN id is 12 bits (RFC 3580 §3.31) and is bounded by the schema. Somebody in several authorised groups gets the highest priority, ties broken by group id so the same person lands on the same VLAN every time |
 | `signari proxy check` | Check a forward-auth deployment **from outside** the network — which is why it dispatches before the database is required |
 | `signari rac add` / `rac list` | Remote access connections |
 | `signari rac add -protocol rdp` / `vnc` / `ssh` | The protocol is a value of `-protocol`, not a command. Sessions are started from `/rac` in a browser |

@@ -39,6 +39,7 @@ says nothing.
 | | |
 |---|---|
 | **Nobody may, by default** | A capability on a group (`may_impersonate`), granted to nobody. A feature arriving switched on for whoever is in a group called "admins" is a privilege escalation delivered by an upgrade |
+| **Granting it takes database credentials** | `signari group impersonation -org <uuid> -group <name> -grant`. Deliberately **not** in the Admin API: a `groups:write` token is issued for day-to-day administration, and letting one confer impersonation would turn every such token into a way to become anybody. The API reports which groups hold it and refuses to set it, on create and on patch alike |
 | **A reason is required** | And stored. An organisation that cannot answer "why was this account accessed" does not have support access, it has a back door |
 | **Never yourself** | Impersonating yourself launders an action into an unattributable one |
 | **Never across organisations** | RLS does *not* catch this — the engine is exempt by design and this runs as the engine |

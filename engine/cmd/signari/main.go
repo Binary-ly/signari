@@ -117,6 +117,7 @@ var twoWordCommands = map[string]bool{
 	"i18n":       true,
 	"credential": true,
 	"rar":        true,
+	"webauthn":   true,
 }
 
 func usage() error {
@@ -487,6 +488,49 @@ func run(args []string) error {
 	credTTL := fs.Duration("offer-expires", 5*time.Minute,
 		"how long the pre-authorized code lasts. Short by design: section 3.5 says "+
 			"it MUST be short lived, and it is redeemed within seconds of being scanned")
+	localeTag := fs.String("locale", "",
+		"BCP 47 language tag for this person's security notices, e.g. de or pt-BR. "+
+			"Empty clears it, which returns them to the deployment default")
+	attestation := fs.String("attestation", "none",
+		"WebAuthn attestation conveyance: none, indirect, direct or enterprise. "+
+			"Anything but none is required before -aaguids means anything")
+	aaguids := fs.String("aaguids", "",
+		"comma-separated authenticator model identifiers (AAGUIDs, as uuids) this "+
+			"organisation accepts. Empty accepts every authenticator")
+	upstreamClaim := fs.String("claim", "",
+		"claim name as the upstream provider spells it, e.g. department")
+	localAttribute := fs.String("attribute", "",
+		"name of the local user attribute the claim lands in (see `signari user attribute declare`)")
+	mapOverwrite := fs.Bool("overwrite", false,
+		"let a sign-in replace a value already stored. Off by default: it makes the "+
+			"upstream provider the system of record for that attribute")
+	mapMaxLength := fs.Int("max-length", 256,
+		"longest accepted value; longer is refused rather than truncated")
+	remoteGroup := fs.String("remote-group", "",
+		"group name or DN exactly as the directory reports it")
+	radiusVLAN := fs.Int("vlan", 0, "VLAN id (1-4094) this group's members are placed on; 0 sets none")
+	radiusFilterID := fs.String("filter-id", "",
+		"RADIUS Filter-Id: the name of a filter list already configured on the device")
+	radiusPriority := fs.Int("priority", 0,
+		"which row wins when somebody is in several authorised groups; highest first")
+	providerClaims := fs.String("claims", "",
+		"comma-separated claim names this token hook may add. A hook can add nothing "+
+			"that is not listed here, whatever it returns")
+	tokenClients := fs.String("clients", "",
+		"comma-separated client ids this admin token may act on; empty means every client in its organisation")
+	cibaDelivery := fs.String("delivery", "poll",
+		"CIBA token delivery mode: poll, ping or push. ping and push have this issuer "+
+			"POST to a URL the client supplies, which is why they are set here and not "+
+			"through dynamic registration")
+	cibaNotifyURL := fs.String("notification-endpoint", "",
+		"https URL a ping or push delivers to (CIBA Core 1.0 section 7.3)")
+	grantPower := fs.Bool("grant", false,
+		"grant the capability instead of revoking it")
+	sessionMax := fs.Int("max-sessions", 0,
+		"most concurrent sign-in sessions one person may hold; 0 is unlimited")
+	sessionBehaviour := fs.String("when-exceeded", "deny",
+		"what happens at the limit: deny the new sign-in, or evict_oldest to end the "+
+			"least recently authenticated session and let the new one through")
 
 	cmd := args[0]
 	rest := args[1:]
@@ -614,6 +658,18 @@ func run(args []string) error {
 		return instanceCreate(ctx, conn, *issuer, *name)
 	case "user create":
 		return userCreate(ctx, conn, *email, *password)
+	case "user locale":
+		return userLocale(ctx, conn, *email, *localeTag)
+	case "client set-ciba":
+		return clientSetCIBA(ctx, conn, *clientID, *cibaDelivery, *cibaNotifyURL)
+	case "group impersonation":
+		return groupImpersonation(ctx, conn, *orgID, *groupName, *grantPower)
+	case "instance session-limit":
+		return instanceSessionLimit(ctx, conn, *orgID, *sessionMax, *sessionBehaviour)
+	case "webauthn policy":
+		return webauthnPolicySet(ctx, conn, *orgID, *attestation, *aaguids)
+	case "webauthn show":
+		return webauthnPolicyShow(ctx, conn)
 	case "client set-tls":
 		return clientSetTLS(ctx, conn, *clientID, *tlsSubjectDN, *tlsSANDNS, *tlsSANURI,
 			*tlsSANIP, *tlsSANEmail, *spCert, *tlsBound)
@@ -648,6 +704,8 @@ func run(args []string) error {
 			*ldapPassword, *ldapBaseDN, *ldapFlavour, *ldapCA, *ldapStartTLS)
 	case "dir sync":
 		return dirSync(ctx, conn, *slug, *apply)
+	case "dir group-map":
+		return dirGroupMap(ctx, conn, *slug, *remoteGroup, *groupName, *removeMember)
 	case "rac add":
 		return racAdd(ctx, conn, *orgID, *slug, *name, *racProtocol, *racHost,
 			*racPort, *racUser, *racPassword, *groupName, *racRecording)
@@ -677,6 +735,8 @@ func run(args []string) error {
 		return providerList(ctx, conn, *orgID)
 	case "provider remove":
 		return providerRemove(ctx, conn, *orgID, *providerHook)
+	case "provider claims":
+		return providerClaimsSet(ctx, conn, *orgID, *providerHook, *providerClaims)
 	case "radius add-client":
 		return radiusAddClient(ctx, conn, *orgID, *name, *radiusNet, *radiusSecret)
 	case "radius disable-client":
@@ -685,8 +745,12 @@ func run(args []string) error {
 		return radiusSetClientEnabled(ctx, conn, *name, true)
 	case "radius list":
 		return radiusListClients(ctx, conn)
+	case "radius authorize":
+		return radiusAuthorize(ctx, conn, *orgID, *groupName, *radiusVLAN,
+			*radiusFilterID, *radiusPriority, *removeMember)
 	case "admin-token create":
-		return adminTokenCreate(ctx, conn, *name, *orgID, *tokenScopes, *tokenExpires)
+		return adminTokenCreate(ctx, conn, *name, *orgID, *tokenScopes, *tokenExpires,
+			*tokenClients, *inviteGroups)
 	case "admin-token list":
 		return adminTokenList(ctx, conn)
 	case "admin-token revoke":
@@ -807,6 +871,9 @@ func run(args []string) error {
 		return idpAssertions(ctx, conn, *slug, *allowAssertions)
 	case "idp add-issuer":
 		return idpAddIssuer(ctx, conn, *orgID, *slug, *name, *issuer, *jwksURL)
+	case "idp attribute-map":
+		return idpAttributeMap(ctx, conn, *slug, *upstreamClaim, *localAttribute,
+			*mapOverwrite, *mapMaxLength, *removeMember)
 	case "scim add":
 		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2)
 	case "provision add":
@@ -832,6 +899,12 @@ func run(args []string) error {
 		return scimSync(ctx, conn, *slug, *apply)
 	case "scim verify":
 		return scimVerify(ctx, conn, *slug)
+	case "scim scope":
+		return scimScope(ctx, conn, *slug, *groupName)
+	case "scim provision-group":
+		return scimProvisionGroup(ctx, conn, *slug, *groupName)
+	case "scim deprovision-group":
+		return scimDeprovisionGroup(ctx, conn, *slug, *groupName)
 	case "group create":
 		return groupCreate(ctx, conn, *orgID, *groupName, *name)
 	case "group member":
@@ -1133,6 +1206,17 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 			fmt.Println(line)
 		}
 	}
+
+	// What the rotation COVERS, not only what it happened to touch.
+	//
+	// The loop above prints a line per column that had rows, so a column holding
+	// no secrets today prints nothing -- and "no line" reads identically to "not
+	// covered". After a root-key rotation that distinction is the whole question:
+	// a column left behind is a secret that no key opens once the old one is
+	// destroyed, and the operator finds out at the restore test, or later.
+	covered := keys.RootSealedColumns()
+	fmt.Printf("\n  covers %d sealed column(s): %s\n",
+		len(covered), strings.Join(covered, ", "))
 
 	if dryRun {
 		fmt.Printf("\nDRY RUN: %d secrets would be re-wrapped from %q to %q. Nothing written.\n",
@@ -1715,6 +1799,29 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		// scrape is work done for nothing, and the nil case is what keeps the
 		// middleware out of Routes() entirely.
 		met := metrics.NewEngine()
+
+		// Pool saturation, read at scrape time rather than sampled.
+		//
+		// This is the gauge that answers "why is everything slow" for an engine
+		// that is not CPU-bound: every request path here takes a connection, and
+		// a handler that holds one while waiting for a second deadlocks the pool
+		// under concurrency rather than erroring. Acquired sitting at the
+		// maximum with latency climbing is that failure, and it is invisible
+		// from request counters alone.
+		//
+		// A function, not a copied number: the pool already knows, and copying
+		// it on a timer would introduce a second source of truth that is wrong
+		// between ticks.
+		met.Registry.NewGauge("signari_db_pool_connections_total",
+			"Connections the database pool currently holds, idle and in use.",
+			func() float64 { return float64(pool.Stat().TotalConns()) })
+		met.Registry.NewGauge("signari_db_pool_connections_acquired",
+			"Connections currently checked out by a request.",
+			func() float64 { return float64(pool.Stat().AcquiredConns()) })
+		met.Registry.NewGauge("signari_db_pool_connections_max",
+			"The pool's ceiling, so headroom can be computed without knowing the config.",
+			func() float64 { return float64(pool.Stat().MaxConns()) })
+
 		srv.SetMetrics(met)
 		go func() {
 			mm := http.NewServeMux()
@@ -3948,7 +4055,7 @@ func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string) error {
 // pushes toward that: the table holds a SHA-256, and there is no command to
 // retrieve a token, only to replace one.
 func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes string,
-	expiresIn time.Duration) error {
+	expiresIn time.Duration, clients, groups string) error {
 
 	if name == "" {
 		return fmt.Errorf("give -name; it appears in the audit trail, and \"which token " +
@@ -3971,7 +4078,22 @@ func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes s
 		expires = &t
 	}
 
-	secret, id, err := adminapi.NewToken(ctx, conn, name, orgID, list, expires)
+	// Object scoping. An empty list means "every object of that kind this token's
+	// organisation holds", which is what a token without the flag has always
+	// meant -- so adding the columns changes nothing for tokens already minted.
+	var clientIDs []string
+	for _, c := range strings.Split(clients, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			clientIDs = append(clientIDs, c)
+		}
+	}
+	groupIDs, err := resolveGroupIDs(ctx, conn, orgID, groups)
+	if err != nil {
+		return err
+	}
+
+	secret, id, err := adminapi.NewToken(ctx, conn, name, orgID, list, expires,
+		clientIDs, groupIDs)
 	if err != nil {
 		return err
 	}
@@ -3982,6 +4104,12 @@ func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes s
 		fmt.Println("  org    : every organisation")
 	} else {
 		fmt.Printf("  org    : %s only\n", orgID)
+	}
+	if len(clientIDs) > 0 {
+		fmt.Printf("  clients: %s only\n", strings.Join(clientIDs, ", "))
+	}
+	if len(groupIDs) > 0 {
+		fmt.Printf("  groups : %d named group(s) only\n", len(groupIDs))
 	}
 	if expires != nil {
 		fmt.Printf("  expires: %s\n", expires.Format(time.RFC3339))

@@ -28,7 +28,8 @@ const TokenPrefix = "sgnadm_"
 // exactly what a database backup, a replica, or a support dump must not contain.
 func NewToken(ctx context.Context, conn interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, name, orgID string, scopes []string, expires *time.Time) (secret, id string, err error) {
+}, name, orgID string, scopes []string, expires *time.Time,
+	clientIDs, groupIDs []string) (secret, id string, err error) {
 
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -51,6 +52,17 @@ func NewToken(ctx context.Context, conn interface {
 		}
 	}
 
+	// Object scoping narrows a token to named clients or groups. Both are
+	// meaningless without an organisation: a client id is unique per
+	// organisation, so a token scoped to one client and to every organisation
+	// would reach a different client in each -- which is wider than the operator
+	// asked for, in the one direction a scoping flag must never fail.
+	if orgID == "" && (len(clientIDs) > 0 || len(groupIDs) > 0) {
+		return "", "", fmt.Errorf("a token scoped to particular clients or groups must " +
+			"also be scoped to an organisation; without one the same identifier names a " +
+			"different object in each")
+	}
+
 	raw := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
 		return "", "", fmt.Errorf("generating a token: %w", err)
@@ -58,11 +70,24 @@ func NewToken(ctx context.Context, conn interface {
 	secret = TokenPrefix + base64.RawURLEncoding.EncodeToString(raw)
 	sum := sha256.Sum256([]byte(secret))
 
+	// NULL, not an empty array, when nothing was named. requireClient reads NULL
+	// as "every client in this token's organisation" and an empty array as "no
+	// client at all"; storing '{}' for the unscoped case would mint a token that
+	// can reach nothing and report no reason why.
+	var clientArg, groupArg any
+	if len(clientIDs) > 0 {
+		clientArg = clientIDs
+	}
+	if len(groupIDs) > 0 {
+		groupArg = groupIDs
+	}
+
 	err = conn.QueryRow(ctx, `
-		INSERT INTO core.admin_tokens (org_id, name, token_hash, scopes, expires_at)
-		VALUES (NULLIF($1,'')::uuid, $2, $3, $4, $5)
+		INSERT INTO core.admin_tokens
+		    (org_id, name, token_hash, scopes, expires_at, client_ids, group_ids)
+		VALUES (NULLIF($1,'')::uuid, $2, $3, $4, $5, $6, $7::uuid[])
 		RETURNING id::text`,
-		orgID, name, sum[:], scopes, expires).Scan(&id)
+		orgID, name, sum[:], scopes, expires, clientArg, groupArg).Scan(&id)
 	if err != nil {
 		return "", "", err
 	}

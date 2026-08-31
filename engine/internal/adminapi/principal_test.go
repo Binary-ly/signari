@@ -16,7 +16,7 @@ import (
 func mintToken(t *testing.T, s *Server, name, orgID string, scopes []string,
 	expires *time.Time) string {
 	t.Helper()
-	secret, _, err := NewToken(context.Background(), s.db, name, orgID, scopes, expires)
+	secret, _, err := NewToken(context.Background(), s.db, name, orgID, scopes, expires, nil, nil)
 	if err != nil {
 		t.Fatalf("minting %q: %v", name, err)
 	}
@@ -134,7 +134,7 @@ func TestUnknownTokenAndRevokedTokenLookIdentical(t *testing.T) {
 // this whole mechanism exists to replace.
 func TestScopeAllCannotBeStored(t *testing.T) {
 	s, _ := newTestServer(t)
-	_, _, err := NewToken(context.Background(), s.db, "god mode", "", []string{ScopeAll}, nil)
+	_, _, err := NewToken(context.Background(), s.db, "god mode", "", []string{ScopeAll}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("a token carrying * was created")
 	}
@@ -146,7 +146,7 @@ func TestScopeAllCannotBeStored(t *testing.T) {
 func TestUnknownScopeIsRefused(t *testing.T) {
 	s, _ := newTestServer(t)
 	if _, _, err := NewToken(context.Background(), s.db, "typo", "",
-		[]string{"users:wrote"}, nil); err == nil {
+		[]string{"users:wrote"}, nil, nil, nil); err == nil {
 		t.Fatal("a misspelled scope was accepted; it would grant nothing and look granted")
 	}
 }
@@ -154,7 +154,7 @@ func TestUnknownScopeIsRefused(t *testing.T) {
 func TestNamelessTokenIsRefused(t *testing.T) {
 	s, _ := newTestServer(t)
 	if _, _, err := NewToken(context.Background(), s.db, "  ", "",
-		[]string{ScopeConfigRead}, nil); err == nil {
+		[]string{ScopeConfigRead}, nil, nil, nil); err == nil {
 		t.Fatal("a token with no name was created")
 	}
 }

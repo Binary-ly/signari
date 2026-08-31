@@ -81,7 +81,15 @@ class ClientEnableDisableTest extends TestCase
      */
     public function test_toggling_calls_the_engine_admin_api(): void
     {
-        Http::fake(['*/admin/clients/*' => Http::response(['config_version' => 42], 200)]);
+        // Two requests now, not one: the console reads the configuration
+        // version and sends it as If-Match, so the write is conditional. See
+        // EngineAdminApi::conditionalPatch -- the engine has accepted the
+        // precondition since the admin API existed and this console sent it
+        // nowhere.
+        Http::fake([
+            '*/admin/config-version' => Http::response(['config_version' => 41], 200),
+            '*/admin/clients/*' => Http::response(['config_version' => 42], 200),
+        ]);
 
         $this->actingAs($this->operator);
 

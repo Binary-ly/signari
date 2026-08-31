@@ -86,9 +86,15 @@ class UserAdministrationTest extends TestCase
         if ($user === null) {
             $this->markTestSkipped('no engine user to act on');
         }
-        Http::fake(['*/admin/users/*' => Http::response(
-            ['id' => $user->id, 'sessions_ended' => 3, 'config_version' => 10], 200
-        )]);
+        // The version read comes first: deactivating a user is a conditional
+        // write, so the console asks the engine where the configuration is
+        // before saying where it should stay. See EngineAdminApi.
+        Http::fake([
+            '*/admin/config-version' => Http::response(['config_version' => 9], 200),
+            '*/admin/users/*' => Http::response(
+                ['id' => $user->id, 'sessions_ended' => 3, 'config_version' => 10], 200
+            ),
+        ]);
         $this->actingAs($this->operator);
 
         DB::transaction(function () use ($user) {

@@ -71,8 +71,14 @@ credential able to disable the payroll system.
 
 | | |
 |---|---|
-| `client_ids` | Clients this token may act on, for reads and writes alike |
-| `group_ids` | Groups it may act on, including their membership |
+| `client_ids` | Clients this token may act on, for reads and writes alike. `GET /admin/clients` lists only these, and the token cannot create a client |
+| `group_ids` | Groups it may act on, including their membership. `GET /admin/groups` lists only these, and the token cannot create a group |
+
+**A narrowed token cannot create an object of the kind it is narrowed on.**
+The new object would not be on its list, so the token could register an
+application, with credentials and redirect URIs, that it is then forbidden to
+manage. Narrowing on one kind does not affect the other: a token narrowed to
+named clients can still create a group if it holds `groups:write`.
 
 **Unset means every object**, which is what every token issued before this
 existed carries — the restriction is opt-in, for the same reason `If-Match` is.

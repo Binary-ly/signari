@@ -34,6 +34,18 @@ var (
 	readsGroupID  = regexp.MustCompile(`r\.PathValue\("groupID"\)`)
 	callsClient   = regexp.MustCompile(`requireClient\(ctx,`)
 	callsGroup    = regexp.MustCompile(`requireGroup\(ctx,`)
+	// Lists and creates. A handler that reads the table without an id in its
+	// path is a list, and must narrow it; one that inserts must refuse a
+	// narrowed token. Both were missing until a token restricted to one
+	// application could list every application and register new ones.
+	selectsClients = regexp.MustCompile(`FROM core\.clients`)
+	selectsGroups  = regexp.MustCompile(`FROM core\.groups`)
+	insertsClient  = regexp.MustCompile(`INSERT INTO core\.clients`)
+	insertsGroup   = regexp.MustCompile(`INSERT INTO core\.groups`)
+	filtersClients = regexp.MustCompile(`clientFilter\(ctx\)`)
+	filtersGroups  = regexp.MustCompile(`groupFilter\(ctx\)`)
+	refusesClient  = regexp.MustCompile(`requireUnrestricted\(ctx, "client"\)`)
+	refusesGroup   = regexp.MustCompile(`requireUnrestricted\(ctx, "group"\)`)
 	// A handler starts at a func on *Server taking an http.ResponseWriter.
 	handlerStart = regexp.MustCompile(`(?m)^func \(s \*Server\) (\w+)\(w http\.ResponseWriter`)
 )
@@ -44,7 +56,7 @@ func TestEveryHandlerAddressingAnObjectChecksTheToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checked := 0
+	checked, listsChecked, createsChecked := 0, 0, 0
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
 			continue
@@ -88,7 +100,39 @@ func TestEveryHandlerAddressingAnObjectChecksTheToken(t *testing.T) {
 						e.Name(), name)
 				}
 			}
+
+			for _, k := range []struct {
+				kind                    string
+				byID, selects, inserts  *regexp.Regexp
+				filters, refusesCreates *regexp.Regexp
+			}{
+				{"client", readsClientID, selectsClients, insertsClient, filtersClients, refusesClient},
+				{"group", readsGroupID, selectsGroups, insertsGroup, filtersGroups, refusesGroup},
+			} {
+				if k.selects.MatchString(fn) && !k.byID.MatchString(fn) {
+					listsChecked++
+					if !k.filters.MatchString(fn) {
+						t.Errorf("%s.%s reads %ss with no id in its path, so it is a "+
+							"list, and it never applies %sFilter(ctx): a token "+
+							"narrowed to named %ss would see every one",
+							e.Name(), name, k.kind, k.kind, k.kind)
+					}
+				}
+				if k.inserts.MatchString(fn) {
+					createsChecked++
+					if !k.refusesCreates.MatchString(fn) {
+						t.Errorf("%s.%s creates a %s and never calls "+
+							"requireUnrestricted(ctx, %q): a token narrowed to named "+
+							"%ss could register new ones", e.Name(), name, k.kind, k.kind, k.kind)
+					}
+				}
+			}
 		}
+	}
+	if listsChecked < 2 || createsChecked < 2 {
+		t.Fatalf("found %d list and %d create handlers for clients and groups; "+
+			"there were 2 of each when this was written, so the pattern has "+
+			"stopped matching", listsChecked, createsChecked)
 	}
 
 	// Vacuity guard. If the shape of a handler changes and this stops matching

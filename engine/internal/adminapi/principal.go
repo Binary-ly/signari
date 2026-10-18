@@ -330,6 +330,68 @@ func orgFilter(ctx context.Context) *string {
 	return &org
 }
 
+// clientFilter and groupFilter narrow a LIST to the objects a token may act on,
+// as orgFilter narrows it to the token's organisation. Before them, a token
+// restricted to one application listed every application in the organisation.
+//
+// nil means every object and goes to the query as NULL. A non-nil slice is an
+// allow-list, and an empty one matches nothing: pgx sends it as '{}', and
+// `= ANY('{}')` is false. This is the same distinction mayActOnObject draws.
+// Lower-cased, because mayActOnObject compares without case. Fails closed
+// without a principal.
+func clientFilter(ctx context.Context) []string {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return []string{}
+	}
+	return lowered(p.ClientIDs)
+}
+
+func groupFilter(ctx context.Context) []string {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return []string{}
+	}
+	return lowered(p.GroupIDs)
+}
+
+func lowered(ids []string) []string {
+	if ids == nil {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, strings.ToLower(id))
+	}
+	return out
+}
+
+// requireUnrestricted refuses a create from a token narrowed to named objects
+// of that kind. The new object would not be on the token's list, so the token
+// could create it and then not manage it. Worse, an application it registers
+// receives credentials and redirect URIs that nobody narrowed to anything.
+func requireUnrestricted(ctx context.Context, kind string) error {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return fmt.Errorf("no admin principal on the request context; the handler is " +
+			"registered without auth()")
+	}
+	var restricted bool
+	switch kind {
+	case "client":
+		restricted = p.ClientIDs != nil
+	case "group":
+		restricted = p.GroupIDs != nil
+	default:
+		return fmt.Errorf("%w: no object restriction is defined for %q", errCrossOrg, kind)
+	}
+	if restricted {
+		return fmt.Errorf("%w: this token is restricted to named %ss and cannot create one",
+			errCrossOrg, kind)
+	}
+	return nil
+}
+
 // TokenIDFrom returns the acting token's id for the audit trail, empty when the
 // caller is the break-glass environment token (which has no row to reference).
 func TokenIDFrom(ctx context.Context) string {

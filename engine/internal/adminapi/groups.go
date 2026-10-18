@@ -61,8 +61,9 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 		  FROM core.groups
 		 WHERE ($1 = '' OR id::text > $1)
 		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
+		   AND ($4::text[] IS NULL OR id::text = ANY($4::text[]))
 		 ORDER BY id
-		 LIMIT $3`, cursor, orgFilter(ctx), limit+1)
+		 LIMIT $3`, cursor, orgFilter(ctx), limit+1, groupFilter(ctx))
 	if err != nil {
 		s.log.Error("listing groups", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -155,6 +156,9 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		// The boundary, before the insert: a token scoped to one organisation
 		// must not create a group in another.
 		if err := requireOrg(ctx, req.OrgID); err != nil {
+			return err
+		}
+		if err := requireUnrestricted(ctx, "group"); err != nil {
 			return err
 		}
 		if err := tx.QueryRow(ctx, `

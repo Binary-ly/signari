@@ -60,6 +60,10 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 		writeCrossOrg(w, err)
 		return
 	}
+	if err := requireUnrestricted(ctx, "client"); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
 	if req.DisplayName == "" {
 		req.DisplayName = req.ClientID
 	}

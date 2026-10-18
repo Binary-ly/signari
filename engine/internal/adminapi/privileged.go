@@ -3,6 +3,8 @@ package adminapi
 import (
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/store"
 )
@@ -108,6 +110,36 @@ func (s *Server) requirePrivileged(target privilegedTarget, next http.HandlerFun
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "privileged_target", "detail": detail,
 		})
+	}
+}
+
+// uuidPathValues are the path parameters that name a row by its uuid.
+var uuidPathValues = []string{"userID", "groupID", "subjectID", "orgID", "mapperID"}
+
+// canonicalIDs refuses a uuid path parameter not written in its canonical
+// form (lower case, 8-4-4-4-12).
+//
+// PostgreSQL accepts other spellings of one uuid, braced or hyphenated every
+// four digits, and a check that read the id differently from the write it
+// guarded let a users:write token take over an administrator. One spelling at
+// the boundary means every check, every write and every audit record names the
+// row the same way.
+func canonicalIDs(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		for _, name := range uuidPathValues {
+			v := r.PathValue(name)
+			if v == "" {
+				continue
+			}
+			if id, err := uuid.Parse(v); err != nil || id.String() != v {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error":  "invalid_request",
+					"detail": name + " must be a uuid in its canonical form, lower case 8-4-4-4-12",
+				})
+				return
+			}
+		}
+		next(w, r)
 	}
 }
 

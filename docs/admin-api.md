@@ -75,6 +75,14 @@ counter stays the reload signal and the per-resource one is added beside it.
 
 Every mutation returns `config_version` in its body and `ETag` in its headers.
 
+An id in a path (`{userID}`, `{groupID}`, `{subjectID}`, `{orgID}`, `{mapperID}`)
+must be a uuid in its canonical form, lower case `8-4-4-4-12`, or the request is
+`400 invalid_request`. PostgreSQL accepts other spellings of the same uuid, braced
+or with a hyphen after every four digits, and a check that read an id more strictly
+than the write it guarded once let a `users:write` token take over an administrator.
+One spelling at the boundary means every check, write and audit record names the
+row the same way.
+
 ### Configuration
 
 | | |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -110,6 +111,54 @@ func TestAGroupsWriteTokenCannotJoinAGroupThatMayImpersonate(t *testing.T) {
 	}
 	if !isMember(t, s, groupID, userID) {
 		t.Fatal("the permitted request did not add the member")
+	}
+}
+
+// respell writes a uuid as PostgreSQL also accepts it: a hyphen after every
+// four digits, or braced.
+func respell(id string, braced bool) string {
+	hex := strings.ReplaceAll(id, "-", "")
+	if braced {
+		return "{" + hex + "}"
+	}
+	var b strings.Builder
+	for i := 0; i < len(hex); i += 4 {
+		if i > 0 {
+			b.WriteByte('-')
+		}
+		b.WriteString(hex[i : i+4])
+	}
+	return b.String()
+}
+
+// A respelled id never reaches a handler. The guard once used a Go parser
+// stricter than PostgreSQL's, so a respelled id was "nobody" to the guard and
+// the real administrator to the write; ids are now refused unless canonical,
+// and the guard parses with PostgreSQL besides (store tests).
+func TestARespelledIDIsTheSameTargetToTheGuard(t *testing.T) {
+	s, _ := newTestServer(t)
+	groupID := newFlaggedGroup(t, s)
+	userID := newDriftUser(t, s)
+	admin := newPrivilegedUser(t, s)
+	groupsOnly := mintToken(t, s, "groups only", "", []string{ScopeGroupsWrite}, nil)
+	usersOnly := mintToken(t, s, "users only", "", []string{ScopeUsersWrite}, nil)
+
+	for _, braced := range []bool{false, true} {
+		path := "/admin/groups/" + url.PathEscape(respell(groupID, braced)) + "/members/" + userID
+		rec := call(t, s, http.MethodPut, path, groupsOnly, nil)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "canonical") {
+			t.Errorf("groups:write on a flagged group spelled %q: %d %s",
+				respell(groupID, braced), rec.Code, rec.Body.String())
+		}
+		rec = call(t, s, http.MethodPatch, "/admin/users/"+url.PathEscape(respell(admin, braced)),
+			usersOnly, map[string]any{"display_name": "taken"})
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "canonical") {
+			t.Errorf("users:write on an administrator spelled %q: %d %s",
+				respell(admin, braced), rec.Code, rec.Body.String())
+		}
+	}
+	if isMember(t, s, groupID, userID) {
+		t.Fatal("a respelled id put somebody in a group that may impersonate")
 	}
 }
 

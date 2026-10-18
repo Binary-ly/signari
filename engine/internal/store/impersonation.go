@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -55,6 +54,15 @@ func BeginImpersonation(ctx context.Context, tx pgx.Tx, orgID, actorID, subjectI
 	reason, correlationID string, ttl time.Duration) (Impersonation, error) {
 
 	var im Impersonation
+	// The id as the database writes it. PostgreSQL accepts several spellings of
+	// one uuid ({…}, a hyphen every four digits), and a spelling the checks below
+	// did not recognise passed them as "nobody" while the episode was written
+	// for the real person. Every comparison from here on uses this one.
+	canonical, ok := CanonicalUUID(subjectID)
+	if !ok {
+		return im, fmt.Errorf("%w: no such user", ErrImpersonationRefused)
+	}
+	subjectID = canonical
 	if actorID == subjectID {
 		// Not a quirk. Impersonating yourself launders an action into one that
 		// cannot be attributed to the person who took it.
@@ -268,8 +276,15 @@ func MayImpersonate(ctx context.Context, q Querier, orgID, userID string) (bool,
 // privileged-users:write, and BeginImpersonation uses it to refuse
 // impersonating such a person, so the two cannot disagree about who is
 // protected.
+//
+// The id is read as PostgreSQL reads it (CanonicalUUID), so the guard and the
+// write it guards cannot disagree about which row an id names. It was checked
+// with a stricter parser, which refused spellings PostgreSQL accepts: such an
+// id was "nobody" to the guard and the real person to the write that followed,
+// and a users:write token took over an administrator.
 func PrivilegedUser(ctx context.Context, q rowQuerier, userID string) (orgID string, privileged, found bool, err error) {
-	if uuid.Validate(userID) != nil {
+	userID, ok := CanonicalUUID(userID)
+	if !ok {
 		return "", false, false, nil
 	}
 	err = q.QueryRow(ctx, `
@@ -292,7 +307,8 @@ func PrivilegedUser(ctx context.Context, q rowQuerier, userID string) (orgID str
 // PrivilegedGroup reports whether membership of a group makes a person
 // privileged (see PrivilegedUser), and which organisation the group belongs to.
 func PrivilegedGroup(ctx context.Context, q rowQuerier, groupID string) (orgID string, privileged, found bool, err error) {
-	if uuid.Validate(groupID) != nil {
+	groupID, ok := CanonicalUUID(groupID)
+	if !ok {
 		return "", false, false, nil
 	}
 	err = q.QueryRow(ctx,

@@ -141,7 +141,7 @@ func (s *Server) Routes() http.Handler {
 	// the document that generated somebody's client.
 	s.ops = s.ops[:0]
 	route := func(pattern, scope string, h http.HandlerFunc) {
-		mux.HandleFunc(pattern, s.auth(scope, h))
+		mux.HandleFunc(pattern, s.auth(scope, canonicalIDs(h)))
 		s.recordOperation(pattern, scope)
 	}
 	// privileged is route for a write on a user or a group, which needs
@@ -150,7 +150,7 @@ func (s *Server) Routes() http.Handler {
 	// derives the routes that need it from this table, so a write on a user
 	// registered with plain route fails there.
 	privileged := func(pattern, scope string, target privilegedTarget, h http.HandlerFunc) {
-		mux.HandleFunc(pattern, s.auth(scope, s.requirePrivileged(target, h)))
+		mux.HandleFunc(pattern, s.auth(scope, canonicalIDs(s.requirePrivileged(target, h))))
 		s.recordOperation(pattern, scope)
 		s.ops[len(s.ops)-1].privileged = true
 	}

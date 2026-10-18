@@ -169,6 +169,25 @@ func TestAnAdministratorIsNotImpersonated(t *testing.T) {
 	if !errors.Is(err, ErrImpersonationRefused) || !strings.Contains(err.Error(), "may impersonate others") {
 		t.Fatalf("impersonating a member of a group that may impersonate gave %v, want a refusal naming why", err)
 	}
+
+	// The same person spelled as PostgreSQL also accepts them: braced, and with
+	// a hyphen after every four digits. Each is the administrator to the check
+	// as it is to the database, and impersonating them is refused.
+	hex := strings.ReplaceAll(subjectID, "-", "")
+	var fours []string
+	for i := 0; i < len(hex); i += 4 {
+		fours = append(fours, hex[i:i+4])
+	}
+	for _, spelled := range []string{"{" + hex + "}", strings.Join(fours, "-"), strings.ToUpper(subjectID)} {
+		if _, privileged, found, err := PrivilegedUser(ctx, tx, spelled); err != nil || !found || !privileged {
+			t.Errorf("PrivilegedUser(%q) = (privileged %v, found %v, %v), want the administrator",
+				spelled, privileged, found, err)
+		}
+		_, err = BeginImpersonation(ctx, tx, orgID, actorID, spelled, why, "cid", time.Minute)
+		if !errors.Is(err, ErrImpersonationRefused) {
+			t.Errorf("impersonating the administrator spelled %q gave %v, want a refusal", spelled, err)
+		}
+	}
 }
 
 func TestImpersonationEndsByItself(t *testing.T) {

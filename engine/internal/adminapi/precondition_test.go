@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Conditional writes on the administrative API.
@@ -72,14 +75,55 @@ func newPreconditionClient(t *testing.T, s *Server) string {
 	return id
 }
 
+// anyOrgID returns an organisation to hang fixtures off: the oldest one, so
+// repeated calls within a test agree.
+//
+// On a database fresh from `migrate up` -- every CI run -- there is none, and
+// these tests used to fail there while passing on any machine whose database
+// had accumulated rows. So one is created and kept: an organisation is not
+// tenant data any test asserts on, and the next call finds it.
 func anyOrgID(t *testing.T, s *Server) string {
 	t.Helper()
+	ctx := context.Background()
 	var org string
-	if err := s.db.QueryRow(context.Background(),
-		`SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).Scan(&org); err != nil {
-		t.Fatalf("no organisation to hang a fixture off: %v", err)
+	err := s.db.QueryRow(ctx,
+		`SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).Scan(&org)
+	if err == nil {
+		return org
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("looking for an organisation to hang a fixture off: %v", err)
+	}
+	if err := s.db.QueryRow(ctx, `
+		INSERT INTO core.organizations (instance_id, slug, display_name)
+		VALUES ($1::uuid, 'adminapi-fixture', 'Admin API test fixture')
+		ON CONFLICT (instance_id, slug) DO UPDATE SET slug = EXCLUDED.slug
+		RETURNING id::text`, fixtureInstance(t, s)).Scan(&org); err != nil {
+		t.Fatalf("creating the fixture organisation: %v", err)
 	}
 	return org
+}
+
+// fixtureInstance returns the oldest instance, creating one on a fresh database.
+func fixtureInstance(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	var id string
+	err := s.db.QueryRow(ctx, `SELECT id::text FROM core.instances ORDER BY created_at LIMIT 1`).Scan(&id)
+	if err == nil {
+		return id
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("looking for an instance: %v", err)
+	}
+	if err := s.db.QueryRow(ctx, `
+		INSERT INTO core.instances (issuer, display_name)
+		VALUES ('https://adminapi-fixture.invalid', 'Admin API test fixture')
+		ON CONFLICT (issuer) DO UPDATE SET issuer = EXCLUDED.issuer
+		RETURNING id::text`).Scan(&id); err != nil {
+		t.Fatalf("creating the fixture instance: %v", err)
+	}
+	return id
 }
 
 func clientEnabled(t *testing.T, s *Server, clientID string) bool {

@@ -224,8 +224,8 @@ func makeOrg(t *testing.T, s *Server, name string) string {
 	var id string
 	if err := s.db.QueryRow(context.Background(),
 		`INSERT INTO core.organizations (instance_id, slug, display_name)
-		 SELECT id, $1, $1 FROM core.instances ORDER BY created_at LIMIT 1
-		 RETURNING id::text`, name).Scan(&id); err != nil {
+		 VALUES ($2::uuid, $1, $1)
+		 RETURNING id::text`, name, fixtureInstance(t, s)).Scan(&id); err != nil {
 		// Fatal, NOT Skip. A skipped boundary test reads exactly like a passing
 		// one in the summary, and this is the check the whole change exists for.
 		t.Fatalf("cannot create an organisation: %v", err)

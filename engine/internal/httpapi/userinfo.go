@@ -118,25 +118,11 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if bound {
-		jkt, derr := s.verifyDPoPForRequest(r, raw)
-		if derr != nil || jkt == "" {
-			reason := "a DPoP proof is required for this token"
-			if derr != nil {
-				reason = derr.Error()
-			}
-			s.log.Info("DPoP enforcement refused a userinfo request", "reason", reason,
+		if derr := s.proofForBoundToken(r, raw, claims.Cnf.JKT); derr != nil {
+			s.log.Info("DPoP enforcement refused a userinfo request", "reason", derr,
 				"correlation_id", correlationID(ctx))
 			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
 				"the access token is sender-constrained and the DPoP proof did not match"))
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		if err := dpop.BoundTo(&dpop.Confirmation{JKT: claims.Cnf.JKT},
-			&dpop.Proof{JKT: jkt}); err != nil {
-			s.log.Info("DPoP binding mismatch", "err", err,
-				"correlation_id", correlationID(ctx))
-			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
-				"this access token is bound to a different key"))
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}

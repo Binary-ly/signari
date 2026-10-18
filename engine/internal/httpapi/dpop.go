@@ -65,6 +65,25 @@ func bearerOrDPoP(jkt string) string {
 	return "DPoP"
 }
 
+// proofForBoundToken is a protected resource's whole check of a DPoP-bound
+// access token: a proof is present, valid for this request and this token,
+// fresh, and made with the very key the token names in cnf.jkt.
+//
+// One function for every resource, because the last step is the one a
+// resource leaves out. The credential endpoint checked that a valid proof
+// came with the token and never that the proof's key was the token's, so a
+// stolen bound token minted credentials with the thief's own proof.
+func (s *Server) proofForBoundToken(r *http.Request, accessToken, tokenJKT string) error {
+	jkt, err := s.verifyDPoPForRequest(r, accessToken)
+	if err != nil {
+		return err
+	}
+	if jkt == "" {
+		return fmt.Errorf("a DPoP proof is required for this token")
+	}
+	return dpop.BoundTo(&dpop.Confirmation{JKT: tokenJKT}, &dpop.Proof{JKT: jkt})
+}
+
 // verifyDPoPForRequest checks a proof and its replay record.
 //
 // Returns the thumbprint on success. An absent header is not an error here: the

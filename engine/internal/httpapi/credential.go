@@ -97,8 +97,8 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bound {
-		if jkt, derr := s.verifyDPoPForRequest(r, raw); derr != nil || jkt == "" {
-			s.log.Info("DPoP enforcement refused a credential request",
+		if derr := s.proofForBoundToken(r, raw, claims.Cnf.JKT); derr != nil {
+			s.log.Info("DPoP enforcement refused a credential request", "reason", derr,
 				"correlation_id", correlationID(ctx))
 			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
 				"the access token is sender-constrained and the DPoP proof did not match"))
@@ -175,10 +175,20 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The holder must still be active. A deactivated person's issuance token
+	// carries no session to end and no grant to revoke, so without this it went
+	// on minting month-long credentials until it expired.
 	var orgID string
+	var active bool
 	oerr := s.db.QueryRow(ctx,
-		`SELECT org_id::text FROM core.users WHERE id = $1::uuid`,
-		claims.Subject).Scan(&orgID)
+		`SELECT org_id::text, status = 'active' FROM core.users WHERE id = $1::uuid`,
+		claims.Subject).Scan(&orgID, &active)
+	if oerr == nil && !active {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
+			`error_description="The account this token was issued for is not active"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	if oerr != nil {
 		s.log.Error("resolving the organisation for a credential request", "err", oerr)
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")

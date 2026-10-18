@@ -38,6 +38,16 @@ machinery as back-channel logout, so they inherit its private-address refusal,
 its retry schedule and its parked-failure queue rather than opening a second
 delivery path with its own bugs.
 
+The delivery is parked when the request arrives and released when the person
+answers on `/account/requests`. Approving makes a ping due. For push, it mints
+the tokens once, seals them into the parked row and makes it due. Refusing makes
+a ping due (§10 notifies on the result, not only on approval) and drops a push,
+which has no tokens to deliver. **Until October 2026 the answer was recorded and
+nothing was released.** Both modes were advertised and parked a delivery, and
+neither ever told its client anything. The tests approved by writing the
+decision directly, which skipped the page where the release was missing; they
+now go through that page.
+
 `client_notification_token` is checked **in both directions**, and the second is
 the one implementations skip. A `poll` client that sends one is refused — it
 expects a callback that will never arrive. A `ping` or `push` client that omits
@@ -107,7 +117,6 @@ what it says.
   refused with `invalid_request`. Treating them as a `login_hint` would resolve
   an opaque token as an email address, find nobody, and report `unknown_user_id`
   for a request that was in fact unsupported.
-- **No ping or push**, as above.
 - **No `user_code`**, as above.
 - `requested_expiry` is honoured **downwards only**, capped at 15 minutes. A
   longer pending authorization is a longer window in which a prompt somebody has

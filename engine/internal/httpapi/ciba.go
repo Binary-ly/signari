@@ -390,8 +390,16 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 	// that never asked. A refusal is recorded as a denial, so the client hears
 	// access_denied rather than waiting for the request to expire.
 	refusal := ""
+	// Loaded whichever way the answer goes: the delivery after the decision
+	// needs the client, the scope and the person. nil when the request is not
+	// theirs, decided or expired -- DecideBackchannel then refuses it with the
+	// one answer, and nothing is delivered.
+	d, derr := store.PendingBackchannelRequest(ctx, s.db, id, userID)
+	if derr != nil {
+		d = nil
+	}
 	if approve {
-		if d, err := store.PendingBackchannelRequest(ctx, s.db, id, userID); err == nil {
+		if d != nil {
 			mfa, amr := sessionFactors(ctx, s.db, sid)
 			if pd := s.checkAccessPolicy(ctx, r, orgID, d.ClientID, userID, d.Scope, mfa, amr); pd != nil {
 				s.auditDetached(ctx, audit.Event{
@@ -425,6 +433,21 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"request_id": id},
 		})
+
+		// The result, delivered. This page is the only place a CIBA request is
+		// decided, and it decided and stopped: ping and push -- both advertised
+		// in discovery -- parked a delivery at the request and nothing here ever
+		// released it, so neither mode ever told its client anything. The device
+		// page that did call these cannot see a CIBA request at all.
+		if d != nil {
+			if approve {
+				d.SID = sid
+				s.releaseCIBAPing(ctx, d.ID)
+				s.releaseCIBAPush(ctx, d)
+			} else {
+				s.announceDenial(ctx, d.ID)
+			}
+		}
 	}
 	if refusal != "" {
 		s.renderBackchannel(w, r, userID, refusal)

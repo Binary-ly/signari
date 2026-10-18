@@ -349,15 +349,20 @@ func (s *Server) refuseDeviceAuthorization(ctx context.Context, d *store.DeviceA
 	if err := store.DenyDeviceAuthorization(ctx, s.db, d.ID); err != nil {
 		s.log.Error("denying a device authorization", "err", err)
 	}
+	s.announceDenial(ctx, d.ID)
+}
+
+// announceDenial tells a waiting CIBA client that the answer was no.
+func (s *Server) announceDenial(ctx context.Context, requestID string) {
 	// §10 notifies on the RESULT, not on approval. A ping client left
 	// polling after a refusal is exactly the wait this mode removes.
-	s.releaseCIBAPing(ctx, d.ID)
+	s.releaseCIBAPing(ctx, requestID)
 	// A denial has no tokens to push. §10.3 defines the push callback as a
 	// token delivery, so the parked row is dropped rather than delivered
 	// empty. A ping client is told about a refusal because it would otherwise
 	// poll forever; a push client is not waiting on anything it can stop.
-	if err := store.DiscardCIBAPush(ctx, s.db, d.ID); err != nil {
-		s.log.Error("discarding a denied CIBA push", "err", err, "request_id", d.ID)
+	if err := store.DiscardCIBAPush(ctx, s.db, requestID); err != nil {
+		s.log.Error("discarding a denied CIBA push", "err", err, "request_id", requestID)
 	}
 }
 

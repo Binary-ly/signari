@@ -109,3 +109,9 @@ somebody else sent you to cannot turn your second factor off. Opening the page i
 a GET and stores nothing at all, because a GET is what a link from any other site
 can make a signed-in browser send. Confirming a replacement tells the account
 holder by email (and SMS, where a verified number exists).
+
+Starting and confirming both need a sign-in from the last ten minutes. An older
+session is sent to sign in again and brought back to the page. Both are refused
+outright in an [impersonation session](impersonation.md). Confirming replaces
+the authenticator and deletes the recovery codes, so a stolen cookie must not
+be enough to do it.

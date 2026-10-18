@@ -33,6 +33,13 @@ live from `core.users`**. If it were read live, anyone able to change the accoun
 email could redirect the second factor to themselves. Changing it re-enrols and
 kills any code in flight.
 
+Enrolling or moving the factor also needs a sign-in from **the last ten
+minutes**. The same goes for every other change to how the account signs in:
+TOTP, SMS, passkeys, linked accounts and recovery codes. An older session is
+sent to sign in again and brought back to the page. A cookie stolen from a
+browser would otherwise be enough to point the factor at an address the thief
+reads, and that would outlast the cookie.
+
 ## One live code, never a queue of them
 
 At most one code per user. Requesting another **replaces** it. Without that,

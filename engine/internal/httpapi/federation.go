@@ -67,9 +67,13 @@ func (s *Server) startFederation(w http.ResponseWriter, r *http.Request, linking
 	// happened to be signed in.
 	var linkUserID string
 	if linking {
-		_, userID, orgID, ok := s.currentSession(r)
+		sid, userID, orgID, ok := s.currentSession(r)
 		if !ok {
 			http.Redirect(w, r, parkLogin("/account/link/"+url.PathEscape(slug)), http.StatusSeeOther)
+			return
+		}
+		// A linked external account signs in as this person from then on.
+		if s.credentialChangeRefused(w, r, sid, "/account/link/"+url.PathEscape(slug), false) {
 			return
 		}
 		if orgID != provider.OrgID {

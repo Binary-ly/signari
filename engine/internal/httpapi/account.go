@@ -200,9 +200,12 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 		s.federationError(w, r, "That request could not be verified. Please try again.")
 		return
 	}
-	_, userID, _, ok := s.currentSession(r)
+	sid, userID, _, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account"), http.StatusSeeOther)
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account", false) {
 		return
 	}
 	slug := r.PathValue("slug")

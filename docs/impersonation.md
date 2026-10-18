@@ -46,6 +46,7 @@ says nothing.
 | **Never across organisations** | RLS does *not* catch this — the engine is exempt by design and this runs as the engine |
 | **Never chained** | An impersonated session cannot start another, or the actor recorded is the person being impersonated |
 | **It ends by itself** | 30 minutes, enforced by the janitor. Support access nobody remembered to close is a live administrative session wearing somebody else's name |
+| **It changes no way in** | An impersonated session cannot add, replace, move or remove a factor, register or delete a passkey, link or unlink an external account, or regenerate recovery codes. It is refused with 403 on every one of those routes. Support exists to see what the person sees, and a credential the administrator enrolled would outlast the episode |
 
 ## Session handling
 

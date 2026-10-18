@@ -170,9 +170,14 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	ctx := r.Context()
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "login_required", "sign in first")
+		return
+	}
+	// A passkey is a way in on its own, so a stolen cookie that could add one
+	// would outlive itself.
+	if s.credentialChangeRefused(w, r, sid, "/account", true) {
 		return
 	}
 
@@ -229,9 +234,12 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 	// ground against.
 	defer s.clearCeremony(w)
 
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "login_required", "sign in first")
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account", true) {
 		return
 	}
 
@@ -832,7 +840,7 @@ func (s *Server) notifyAuthenticatorBound(ctx context.Context, userID, orgID, na
 // both proceed.
 func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "login_required", "sign in first")
 		return
@@ -845,6 +853,9 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 	// want to make from another origin: strip a factor, or lock the owner out.
 	if !checkCSRF(r) {
 		writeError(w, http.StatusForbidden, "invalid_request", "that form expired; try again")
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account", true) {
 		return
 	}
 	id := strings.TrimSpace(r.PostForm.Get("id"))

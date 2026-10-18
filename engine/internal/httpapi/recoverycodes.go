@@ -74,9 +74,14 @@ func (s *Server) handleRecoveryCodesRegenerate(w http.ResponseWriter, r *http.Re
 		http.Error(w, "that request could not be verified", http.StatusBadRequest)
 		return
 	}
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/recovery"), http.StatusSeeOther)
+		return
+	}
+	// New codes are a way past the second factor, and the old ones stop
+	// working: from a stolen cookie that is both persistence and a lockout.
+	if s.credentialChangeRefused(w, r, sid, "/account/recovery", false) {
 		return
 	}
 

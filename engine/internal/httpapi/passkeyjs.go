@@ -86,7 +86,15 @@ async function postJSON(url, body) {
     credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body)
   });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error_description || r.statusText);
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    // Changing how the account signs in needs a recent sign-in; the server
+    // says where to go, and the person comes back here afterwards.
+    if (e.error === "reauthentication_required" && e.location && e.location.startsWith("/")) {
+      window.location.assign(e.location);
+    }
+    throw new Error(e.error_description || r.statusText);
+  }
   return r.json();
 }
 

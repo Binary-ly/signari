@@ -111,9 +111,12 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/mfa/totp"), http.StatusSeeOther)
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account/mfa/totp", false) {
 		return
 	}
 
@@ -194,9 +197,14 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	// Here as well as at the start: confirming is the step that replaces the
+	// credential and deletes the recovery codes.
+	if s.credentialChangeRefused(w, r, sid, "/account/mfa/totp", false) {
 		return
 	}
 
@@ -563,7 +571,7 @@ func (s *Server) brandNow(ctx context.Context) *brand.Brand {
 // out rather than a way of protecting them.
 func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/mfa/email"), http.StatusSeeOther)
 		return
@@ -594,6 +602,9 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 
 	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
 		render("start", "", "That form expired. Try again.")
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account/mfa/email", false) {
 		return
 	}
 
@@ -719,7 +730,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 // they are already locked out.
 func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/mfa/sms"), http.StatusSeeOther)
 		return
@@ -756,6 +767,9 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 
 	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
 		render("start", "", "That form expired. Try again.")
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account/mfa/sms", false) {
 		return
 	}
 

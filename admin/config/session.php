@@ -169,7 +169,13 @@ return [
     |
     */
 
-    'secure' => env('SESSION_SECURE_COOKIE'),
+    /*
+     * Secure whenever the console is served over HTTPS, unless told otherwise.
+     * Laravel's default was "unset", which sends the session cookie of an
+     * identity provider's admin console over plain HTTP whenever anything
+     * links there.
+     */
+    'secure' => env('SESSION_SECURE_COOKIE', str_starts_with((string) env('APP_URL', ''), 'https://')),
 
     /*
     |--------------------------------------------------------------------------

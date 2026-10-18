@@ -78,7 +78,7 @@ class OrganisationScopingTest extends TestCase
         $user->email = 'op-'.Str::random(10).'@example.test';
         $user->password = bcrypt('irrelevant');
         $user->org_id = $orgId;
-        $user->save();
+        $this->enrol($user)->save();
 
         $this->createdUserIds[] = $user->id;
 

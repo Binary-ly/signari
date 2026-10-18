@@ -132,7 +132,7 @@ class LogoutDeliveryTest extends TestCase
         $operator->email = 'op-'.Str::random(8).'@example.test';
         $operator->password = bcrypt('irrelevant');
         $operator->org_id = $org;
-        $operator->save();
+        $this->enrol($operator)->save();
 
         try {
             $this->actingAs($operator)->get('/admin/logout-deliveries')

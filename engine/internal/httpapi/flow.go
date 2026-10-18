@@ -1451,16 +1451,41 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	userID, orgID, stored, ok, err := s.lookupCredential(ctx, identifier)
+	// Whose sign-in page this is: the parked request's client, or the only
+	// organisation. Empty on a bare page of a deployment with several.
+	pageOrg := s.loginOrg(ctx, authzQuery)
+	cred, ok, ambiguous, err := s.lookupCredential(ctx, identifier, pageOrg)
 	if err != nil {
 		s.log.Error("looking up credential", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 		return
 	}
+	userID, orgID, stored := cred.userID, cred.orgID, cred.hash
 
 	// One generic message for every failure -- unknown user, wrong password,
 	// deactivated account. Distinguishing them is a user-enumeration oracle.
-	const generic = "Incorrect username or password."
+	generic := "Incorrect username or password."
+	if pageOrg == "" {
+		// A bare page on a deployment with several organisations says so on
+		// every failure, not only an ambiguous one: saying it only then would
+		// tell anybody typing an address that it is held in more than one.
+		generic += " If you belong to more than one organisation, start from the " +
+			"application you want to sign in to."
+	}
+
+	if ambiguous {
+		// Same cost and the same answer as a wrong password.
+		_, _ = s.hasher.Verify(ctx, dummyHash, password)
+		s.auditDetached(ctx, audit.Event{
+			Type:          audit.EventLoginFailed,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": "identifier_in_several_organisations"},
+		})
+		s.captcha.RecordFailure(ctx, r.RemoteAddr)
+		s.recordSignInFailure(ctx, r)
+		s.renderLogin(w, r, authzQuery, generic)
+		return
+	}
 
 	if !ok {
 		// No local credential. Before treating this as "no such user", check
@@ -1901,23 +1926,61 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 // timing of "no such user" indistinguishable from "wrong password".
 const dummyHash = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHR2YWx1ZQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG"
 
-func (s *Server) lookupCredential(ctx context.Context, identifier string) (userID, orgID, hash string, ok bool, err error) {
+// credential is one account a sign-in name could mean.
+type credential struct {
+	userID, orgID, hash string
+}
+
+// lookupCredentials finds the accounts an identifier names: in orgID when it is
+// given, and in every organisation when it is empty. At most a few -- a caller
+// needs to tell one from several, not to enumerate.
+//
+// Sign-in names are unique per organisation (users_org_email_key), not across
+// them. This used to ask across all of them with QueryRow, so the same address
+// in two tenants signed in to whichever row the planner returned, or refused the
+// right person when it met the other's hash.
+func (s *Server) lookupCredentials(ctx context.Context, identifier, orgID string) ([]credential, error) {
 	// The status check is in the query: a deactivated user must not be able to
 	// sign in, and doing it here means there is no window where a caller forgets.
-	err = s.db.QueryRow(ctx, `
+	rows, err := s.db.Query(ctx, `
 		SELECT u.id::text, u.org_id::text, pc.hash
 		FROM core.users u
 		JOIN core.password_credentials pc ON pc.user_id = u.id
 		WHERE u.status = 'active'
-		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))`,
-		identifier).Scan(&userID, &orgID, &hash)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", "", false, nil
-	}
+		  AND ($2 = '' OR u.org_id::text = $2)
+		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))
+		ORDER BY u.org_id
+		LIMIT 5`, identifier, orgID)
 	if err != nil {
-		return "", "", "", false, err
+		return nil, err
 	}
-	return userID, orgID, hash, true, nil
+	defer rows.Close()
+	var out []credential
+	for rows.Next() {
+		var c credential
+		if err := rows.Scan(&c.userID, &c.orgID, &c.hash); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// lookupCredential finds the one account an identifier names. ambiguous is true
+// when no organisation was given and the name is held in more than one: a page
+// that cannot say whose it is cannot say which of them is meant, and choosing
+// would sign somebody in to an account in the wrong tenant.
+func (s *Server) lookupCredential(ctx context.Context, identifier, orgID string) (c credential, ok, ambiguous bool, err error) {
+	found, err := s.lookupCredentials(ctx, identifier, orgID)
+	switch {
+	case err != nil:
+		return credential{}, false, false, err
+	case len(found) == 1:
+		return found[0], true, false, nil
+	case len(found) > 1:
+		return credential{}, false, true, nil
+	}
+	return credential{}, false, false, nil
 }
 
 func (s *Server) verifyClientSecret(ctx context.Context, c *clients.Client, presented string) (bool, error) {

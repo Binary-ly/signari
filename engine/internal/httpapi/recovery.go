@@ -101,15 +101,28 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 }
 
 // beginRecovery does the work for an identifier that may not exist.
+//
+// Every account the name holds is sent its own link. Sign-in names are unique
+// per organisation, so one address can hold accounts in several; this used to
+// pick one of them at random, and the person reset whichever account the
+// planner returned. The page answers the same whatever is found, so writing to
+// each discloses nothing the address's owner does not already receive.
 func (s *Server) beginRecovery(ctx context.Context, identifier string) error {
-	userID, orgID, _, ok, err := s.lookupCredential(ctx, identifier)
+	found, err := s.lookupCredentials(ctx, identifier, "")
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return nil // no account; the caller already returned the same page
+	var first error
+	for _, c := range found {
+		if err := s.beginRecoveryFor(ctx, c.userID, c.orgID); err != nil && first == nil {
+			first = err
+		}
 	}
+	return first
+}
 
+// beginRecoveryFor starts recovery for one account.
+func (s *Server) beginRecoveryFor(ctx context.Context, userID, orgID string) error {
 	token, tokenHash, err := newRecoveryToken()
 	if err != nil {
 		return err

@@ -102,6 +102,14 @@ that thing, it is the record of everyone who touched it. Granting `users:write`
 to a provisioning script should not hand it every person's authentication
 history.
 
+**A restricted token reads only the events about its own objects.** A token
+named to particular clients or groups that also holds `audit:read` sees an
+event when the event's client, or the group in its detail, is one the token may
+act on. An event about neither, such as a person's sign-in, is not shown to it.
+Unrestricted tokens see the whole organisation as before. A one-client token
+used to read the entire organisation's trail, every other client's events
+included.
+
 **`organizations:write` needs an unscoped token as well as the scope.** Holding
 it on a token scoped to one organisation grants nothing: creating a tenant is the
 one write with no tenant to be scoped to, and a tenant that can provision tenants

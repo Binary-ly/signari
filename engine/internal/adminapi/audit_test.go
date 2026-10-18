@@ -262,3 +262,84 @@ func writeFixtureEvents(t *testing.T, s *Server, orgID, subjectID, eventType str
 		t.Fatalf("committing the fixture events: %v", err)
 	}
 }
+
+// A token restricted to named clients or groups reads only the events about
+// them. It read the whole organisation's trail -- every other client's events
+// and every person's -- while docs/admin-tokens.md said reads are narrowed as
+// writes are.
+func TestARestrictedTokenReadsOnlyItsOwnObjectsAuditEvents(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	org := anyOrgID(t, s)
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	marker := "restricted-read-" + suffix
+	clientA, clientB := "audit-a-"+suffix, "audit-b-"+suffix
+	group := "6d3c1a7e-0000-4000-8000-" + fmt.Sprintf("%012d", time.Now().UnixNano()%1_000_000_000_000)
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []audit.Event{
+		{Type: marker, OrgID: org, ClientID: clientA},
+		{Type: marker, OrgID: org, ClientID: clientA},
+		{Type: marker, OrgID: org, ClientID: clientB},
+		{Type: marker, OrgID: org, Detail: map[string]any{"group_id": group}},
+		{Type: marker, OrgID: org},
+	} {
+		if err := audit.Write(ctx, tx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// nil is unrestricted for that kind and an empty list is none, as for
+	// writes. NewToken stores an unnamed list as NULL, so "none" is set on the
+	// row directly.
+	read := func(clients, groups []string) int {
+		t.Helper()
+		secret, _, err := NewToken(ctx, s.db, "audit read "+suffix, org, []string{ScopeAuditRead}, nil,
+			clients, groups)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = s.db.Exec(context.Background(), `DELETE FROM core.admin_tokens WHERE token_hash = $1`, sha256Of(secret))
+		})
+		for col, list := range map[string][]string{"client_ids": clients, "group_ids": groups} {
+			if list != nil && len(list) == 0 {
+				if _, err := s.db.Exec(ctx, `UPDATE core.admin_tokens SET `+col+` = '{}' WHERE token_hash = $1`,
+					sha256Of(secret)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		rec := call(t, s, http.MethodGet, "/admin/audit-events?limit=100&event_type="+marker, secret, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("the audit read answered %d: %s", rec.Code, rec.Body.String())
+		}
+		var page auditPage
+		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		return len(page.Events)
+	}
+
+	if n := read(nil, nil); n != 5 {
+		t.Errorf("an unrestricted token read %d of the 5 events", n)
+	}
+	if n := read([]string{clientA}, nil); n != 3 {
+		t.Errorf("a token for %s read %d events, want its 2 plus the group's (groups unrestricted)", clientA, n)
+	}
+	if n := read([]string{clientA}, []string{}); n != 2 {
+		t.Errorf("a token for %s and no groups read %d events, want its 2", clientA, n)
+	}
+	if n := read([]string{}, []string{group}); n != 1 {
+		t.Errorf("a token for the group and no clients read %d events, want 1", n)
+	}
+	if n := read(nil, []string{group}); n != 4 {
+		t.Errorf("a token for the group, clients unrestricted, read %d events, want every client's 3 and the group's", n)
+	}
+}

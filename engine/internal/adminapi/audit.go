@@ -173,11 +173,23 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		   AND ($6 = '' OR client_id = $6)
 		   AND ($7::timestamptz IS NULL OR occurred_at >= $7::timestamptz)
 		   AND ($8::timestamptz IS NULL OR occurred_at <= $8::timestamptz)
+		   -- A token restricted to named clients or groups reads only the
+		   -- events about them: reads are narrowed as writes are
+		   -- (docs/admin-tokens.md). It read the whole organisation's trail,
+		   -- every other client's and every person's. An event about neither
+		   -- a client nor a group is about something outside the token's
+		   -- objects, and is not shown to it.
+		   AND (NOT $10::boolean
+		        OR (client_id IS NOT NULL AND client_id <> ''
+		            AND ($11::text[] IS NULL OR client_id = ANY($11::text[])))
+		        OR (detail->>'group_id' IS NOT NULL
+		            AND ($12::text[] IS NULL OR lower(detail->>'group_id') = ANY($12::text[]))))
 		 ORDER BY occurred_at DESC, id DESC
 		 LIMIT $9`,
 		orgFilter(ctx), cursorTime, cursorID,
 		q.Get("event_type"), q.Get("subject_id"), q.Get("client_id"),
-		since, until, limit+1)
+		since, until, limit+1,
+		clientFilter(ctx) != nil || groupFilter(ctx) != nil, clientFilter(ctx), groupFilter(ctx))
 	if err != nil {
 		s.log.Error("listing audit events", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})

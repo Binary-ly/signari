@@ -47,6 +47,12 @@ var factorTables = map[string]bool{
 	// since a false positive costs one line here and a false negative is a
 	// bypass.
 	"recovery_requests": false,
+
+	// A TOTP secret shown for enrolment and not yet proved. Not a factor: the
+	// user may never have scanned it, and treating it as one would challenge
+	// them for a code their phone cannot produce. It becomes a factor only by
+	// being moved into totp_credentials on confirmation.
+	"totp_enrolments": false,
 }
 
 // TestEveryFactorTableIsChecked fails when a second-factor table exists that

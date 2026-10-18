@@ -32,14 +32,25 @@ func mfaFixture(t *testing.T) (pgx.Tx, string, string, *keys.RootKey) {
 	return tx, orgID, userID, root
 }
 
-func enrol(t *testing.T, tx pgx.Tx, userID, orgID string, root *keys.RootKey) []byte {
+// startEnrolment generates a secret and stores it as an enrolment in progress.
+func startEnrolment(t *testing.T, tx pgx.Tx, userID, orgID string, root *keys.RootKey) []byte {
 	t.Helper()
 	secret, _, err := mfa.GenerateSecret()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := EnrollTOTP(context.Background(), tx, userID, orgID, secret,
+	if err := StartTOTPEnrolment(context.Background(), tx, userID, orgID, secret,
 		mfa.DefaultDigits, mfa.DefaultPeriod, root); err != nil {
+		t.Fatal(err)
+	}
+	return secret
+}
+
+// enrol leaves the user with a confirmed TOTP credential.
+func enrol(t *testing.T, tx pgx.Tx, userID, orgID string, root *keys.RootKey) []byte {
+	t.Helper()
+	secret := startEnrolment(t, tx, userID, orgID, root)
+	if _, err := CompleteTOTPEnrolment(context.Background(), tx, userID, 0); err != nil {
 		t.Fatal(err)
 	}
 	return secret
@@ -51,27 +62,116 @@ func TestTOTPSecretRoundTripsThroughEncryption(t *testing.T) {
 	tx, orgID, userID, root := mfaFixture(t)
 	ctx := context.Background()
 
-	secret := enrol(t, tx, userID, orgID, root)
+	secret := startEnrolment(t, tx, userID, orgID, root)
 
+	pending, err := LoadTOTPEnrolment(ctx, tx, userID, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pending.Secret) != string(secret) {
+		t.Fatal("the decrypted enrolment secret does not match the generated one")
+	}
+	// Nothing is a credential until the user proves their app holds the secret.
+	if _, err := LoadTOTP(ctx, tx, userID, root); !errors.Is(err, ErrNoTOTP) {
+		t.Fatalf("an unconfirmed enrolment is already a credential (err = %v); a failed scan would lock the user out", err)
+	}
+
+	// The stored form must not be the secret, pending or confirmed.
+	var stored []byte
+	if err := tx.QueryRow(ctx,
+		`SELECT secret_enc FROM core.totp_enrolments WHERE user_id = $1::uuid`, userID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stored), string(secret)) {
+		t.Fatal("the TOTP secret is recoverable from the enrolment column")
+	}
+
+	if _, err := CompleteTOTPEnrolment(ctx, tx, userID, 0); err != nil {
+		t.Fatal(err)
+	}
 	cred, err := LoadTOTP(ctx, tx, userID, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(cred.Secret) != string(secret) {
-		t.Fatal("the decrypted secret does not match the enrolled one")
+	if string(cred.Secret) != string(secret) || !cred.Confirmed {
+		t.Fatal("completing the enrolment did not produce a confirmed credential holding its secret")
 	}
-	if cred.Confirmed {
-		t.Error("a freshly enrolled credential is already confirmed; a failed scan would lock the user out")
-	}
-
-	// The stored form must not be the secret.
-	var stored []byte
 	if err := tx.QueryRow(ctx,
 		`SELECT secret_enc FROM core.totp_credentials WHERE user_id = $1::uuid`, userID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(stored), string(secret)) {
 		t.Fatal("the TOTP secret is recoverable from the stored column")
+	}
+}
+
+// THE regression. Starting an enrolment must not touch the confirmed factor.
+//
+// Starting one used to overwrite the credential with an unconfirmed one, and it
+// was reachable by a cross-site GET, so a link on any page turned a signed-in
+// user's second factor off. An abandoned or attacker-started enrolment must
+// leave the old authenticator working and HasSecondFactor true.
+func TestStartingAnEnrolmentLeavesTheConfirmedFactorWorking(t *testing.T) {
+	tx, orgID, userID, root := mfaFixture(t)
+	ctx := context.Background()
+
+	original := enrol(t, tx, userID, orgID, root)
+	startEnrolment(t, tx, userID, orgID, root) // abandoned
+
+	has, err := HasSecondFactor(ctx, tx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Fatal("starting a TOTP enrolment removed the user's confirmed second factor")
+	}
+	cred, err := LoadTOTP(ctx, tx, userID, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cred.Secret) != string(original) || !cred.Confirmed {
+		t.Fatal("starting a TOTP enrolment replaced the confirmed credential")
+	}
+}
+
+// Completing a re-enrolment replaces the old authenticator, and says so.
+func TestCompletingAReEnrolmentReplacesTheOldAuthenticator(t *testing.T) {
+	tx, orgID, userID, root := mfaFixture(t)
+	ctx := context.Background()
+
+	enrol(t, tx, userID, orgID, root)
+	fresh := startEnrolment(t, tx, userID, orgID, root)
+	replaced, err := CompleteTOTPEnrolment(ctx, tx, userID, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replaced {
+		t.Error("completing a re-enrolment did not report that a credential was replaced")
+	}
+	cred, err := LoadTOTP(ctx, tx, userID, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cred.Secret) != string(fresh) || cred.LastCounter != 7 {
+		t.Fatal("the new authenticator did not replace the old one with its proving counter")
+	}
+	if _, err := LoadTOTPEnrolment(ctx, tx, userID, root); !errors.Is(err, ErrNoTOTPEnrolment) {
+		t.Fatalf("the enrolment survived its completion (err = %v)", err)
+	}
+}
+
+// An enrolment nobody finished is refused, not confirmable forever.
+func TestAStaleEnrolmentIsRefused(t *testing.T) {
+	tx, orgID, userID, root := mfaFixture(t)
+	ctx := context.Background()
+
+	startEnrolment(t, tx, userID, orgID, root)
+	if _, err := tx.Exec(ctx, `UPDATE core.totp_enrolments SET created_at = now() - $2::interval
+		WHERE user_id = $1::uuid`, userID, (TOTPEnrolmentTTL + time.Minute).String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadTOTPEnrolment(ctx, tx, userID, root); !errors.Is(err, ErrTOTPEnrolmentOld) {
+		t.Fatalf("an enrolment older than %s was still confirmable (err = %v)", TOTPEnrolmentTTL, err)
 	}
 }
 
@@ -220,10 +320,15 @@ func TestErasureDestroysTheTOTPSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	startEnrolment(t, tx, userID, orgID, root) // a pending secret too
+
 	if err := keys.EraseSubject(ctx, tx, userID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadTOTP(ctx, tx, userID, root); err == nil {
 		t.Fatal("the TOTP secret was still readable after the subject was erased")
+	}
+	if _, err := LoadTOTPEnrolment(ctx, tx, userID, root); err == nil {
+		t.Fatal("a pending TOTP secret was still readable after the subject was erased")
 	}
 }

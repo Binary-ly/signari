@@ -90,11 +90,22 @@ worse outcome than losing the square.
 Against the running engine, using only what the QR code carries:
 
 ```
-GET /account/mfa/totp        -> page with an inline <svg>
-decode the served SVG        -> otpauth://totp/Default:...?secret=YDFBKF3G...
-derive a TOTP code from it   -> 6 digits
-POST /account/mfa/totp       -> "Two-factor authentication is on", 10 recovery codes
+GET  /account/mfa/totp         -> introduction and a button; nothing is stored
+POST /account/mfa/totp/start   -> page with an inline <svg> (CSRF token required)
+decode the served SVG          -> otpauth://totp/Default:...?secret=YDFBKF3G...
+derive a TOTP code from it     -> 6 digits
+POST /account/mfa/totp         -> "Two-factor authentication is on", 10 recovery codes
 ```
 
 The secret read out of the QR code matched the one shown for manual entry, and
 the code derived from it was accepted.
+
+## Enrolment never disturbs the factor you already have
+
+The secret shown on the setup page is stored as an enrolment in progress, apart
+from any authenticator the account already has. That one keeps working until the
+new code is confirmed; an abandoned setup page changes nothing, and a setup page
+somebody else sent you to cannot turn your second factor off. Opening the page is
+a GET and stores nothing at all, because a GET is what a link from any other site
+can make a signed-in browser send. Confirming a replacement tells the account
+holder by email (and SMS, where a verified number exists).

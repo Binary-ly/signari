@@ -51,6 +51,9 @@
   "enrol.openlink": "Or open <a href=\"{URI}\">this link</a> on the device with your authenticator app.",
   "enrol.entercode": "Enter the 6-digit code it shows",
   "enrol.submit": "Turn on two-factor authentication",
+  "enrol.intro": "Use an authenticator app as a second step when you sign in. You will scan a code with the app, then enter the six digits it shows.",
+  "enrol.keepscurrent": "Your current authenticator keeps working until you confirm the new one.",
+  "enrol.begin": "Show my setup code",
 
   "recovery.title": "Your recovery codes",
   "recovery.heading": "Two-factor authentication is on",
@@ -234,6 +237,7 @@
   "scope.phone": "See your phone number",
 
   "error.totp.mismatch": "That code did not match. Check your authenticator app and try again.",
+  "error.totp.expired": "That setup code has expired. Start again to get a new one.",
   "error.reset.invalid": "That link is not valid.",
   "error.reset.expired": "That link is not valid or has expired.",
   "error.invite.invalid": "That invitation link is not valid. It may have been used already, or expired. Ask whoever invited you for a new one.",
@@ -267,5 +271,11 @@
 
   "mail.recoverycodes.replaced.subject": "Your recovery codes were replaced",
   "mail.recoverycodes.replaced.body": "Your account's recovery codes were just regenerated. The previous set no longer works.\n\nIf you did not do this, someone else may have access to your account: change your password and review your sign-in methods.",
-  "sms.recoverycodes.replaced": "Your account's recovery codes were just replaced. If this was not you, change your password now."
+  "sms.recoverycodes.replaced": "Your account's recovery codes were just replaced. If this was not you, change your password now.",
+  "mail.totp.enrolled.subject": "An authenticator app was set up on your account",
+  "mail.totp.enrolled.body": "An authenticator app was just set up as a second sign-in step for your account.\n\nIf you did this, there is nothing to do.\n\nIf you did NOT, someone else may have access to your account: sign in, review your sign-in methods, and change your password.",
+  "sms.totp.enrolled": "An authenticator app was just set up on your account. If this was not you, sign in and review your sign-in methods.",
+  "mail.totp.replaced.subject": "Your authenticator app was replaced",
+  "mail.totp.replaced.body": "The authenticator app used as your second sign-in step was just replaced. The previous one no longer works.\n\nIf you did not do this, someone else may have access to your account: change your password and review your sign-in methods.",
+  "sms.totp.replaced": "Your authenticator app was just replaced. If this was not you, change your password now."
 }

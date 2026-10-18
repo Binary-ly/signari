@@ -59,12 +59,61 @@ func (s *Server) currentSession(r *http.Request) (sid, userID, orgID string, ok 
 	return sid, userID, orgID, true
 }
 
+// handleTOTPPage shows the enrolment introduction. It changes nothing.
+//
+// It used to generate and store the secret, and storing it overwrote a
+// confirmed credential with an unconfirmed one. The session cookie is
+// SameSite=Lax, which travels on any top-level navigation from another site, so
+// a single link turned a signed-in user's second factor off. A GET may not
+// write: generating the secret now takes a POST carrying the CSRF token, and
+// replacing the credential takes proof that the new secret was scanned.
+func (s *Server) handleTOTPPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	_, userID, _, ok := s.currentSession(r)
+	if !ok {
+		http.Redirect(w, r, parkLogin("/account/mfa/totp"), http.StatusSeeOther)
+		return
+	}
+	var hasCurrent bool
+	if err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.totp_credentials
+		                WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL)`,
+		userID).Scan(&hasCurrent); err != nil {
+		s.log.Error("reading the TOTP credential", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	csrf, err := s.csrfToken(w, r)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	htmlPageHeaders(w)
+	s.renderPage(w, r, "enrol", map[string]any{
+		"Begin": true, "HasCurrent": hasCurrent,
+		"CSRF": csrf, "CSRFField": csrfFormField,
+	})
+}
+
 // handleTOTPStart generates a secret and shows it for enrolment.
+//
+// The secret is stored as an enrolment in progress, apart from any credential
+// the user already has: their current authenticator keeps working until the
+// new one is confirmed, so abandoning this page -- or being sent here by
+// somebody else -- costs them nothing.
 func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "malformed form", http.StatusBadRequest)
+		return
+	}
+	if !checkCSRF(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	_, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		http.Redirect(w, r, parkLogin("/account/mfa/totp"), http.StatusSeeOther)
 		return
 	}
 
@@ -82,9 +131,9 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := store.EnrollTOTP(ctx, tx, userID, orgID, secret,
+	if err := store.StartTOTPEnrolment(ctx, tx, userID, orgID, secret,
 		mfa.DefaultDigits, mfa.DefaultPeriod, s.cfg.Root); err != nil {
-		s.log.Error("enrolling TOTP", "err", err)
+		s.log.Error("starting a TOTP enrolment", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -158,19 +207,29 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	cred, err := store.LoadTOTP(ctx, tx, userID, s.cfg.Root)
+	pending, err := store.LoadTOTPEnrolment(ctx, tx, userID, s.cfg.Root)
+	if errors.Is(err, store.ErrTOTPEnrolmentOld) {
+		csrf, _ := s.csrfToken(w, r)
+		htmlPageHeaders(w)
+		s.renderPage(w, r, "enrol", map[string]any{
+			"Begin": true, "CSRF": csrf, "CSRFField": csrfFormField,
+			"Error": s.tr(r).T("error.totp.expired"),
+		})
+		return
+	}
 	if err != nil {
-		s.log.Info("confirming TOTP without a pending enrolment", "err", err)
+		s.log.Info("confirming TOTP without an enrolment in progress", "err", err)
 		http.Redirect(w, r, "/account/mfa/totp", http.StatusSeeOther)
 		return
 	}
 
-	counter, verr := mfa.Verify(cred.Secret, r.PostForm.Get("code"), time.Now(),
-		cred.Digits, cred.Period, mfa.DefaultSkew, cred.LastCounter)
+	counter, verr := mfa.Verify(pending.Secret, r.PostForm.Get("code"), time.Now(),
+		pending.Digits, pending.Period, mfa.DefaultSkew, 0)
 	if verr != nil {
 		// Not a lockout path: a failed CONFIRMATION means the app was scanned
 		// wrong, and locking someone out of enrolment for mistyping would be a
-		// self-inflicted denial of service.
+		// self-inflicted denial of service. Nothing about the user's current
+		// factor has changed.
 		csrf, _ := s.csrfToken(w, r)
 		s.renderPage(w, r, "enrol", map[string]any{
 			"Secret": "", "URI": "", "CSRF": csrf, "CSRFField": csrfFormField,
@@ -179,7 +238,8 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := store.RecordTOTPSuccess(ctx, tx, userID, counter); err != nil {
+	replaced, err := store.CompleteTOTPEnrolment(ctx, tx, userID, counter)
+	if err != nil {
 		s.log.Error("confirming TOTP", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -199,7 +259,7 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	if err := audit.Write(ctx, tx, audit.Event{
 		Type: "mfa.totp_enrolled", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx),
-		Detail:        map[string]any{"recovery_codes_issued": len(codes)},
+		Detail:        map[string]any{"recovery_codes_issued": len(codes), "replaced": replaced},
 	}); err != nil {
 		s.log.Error("auditing TOTP enrolment", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -208,6 +268,18 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	if err := tx.Commit(ctx); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+
+	// A second factor changing is exactly what the account holder must hear
+	// about on an independent channel. Best-effort, after the commit: the
+	// credential is already in place, so a notice that fails must not undo it.
+	tr := s.notifierFor(ctx, userID)
+	if replaced {
+		_ = s.notifyAccount(ctx, userID, tr.Text("mail.totp.replaced.subject"),
+			tr.Text("mail.totp.replaced.body"), tr.Text("sms.totp.replaced"))
+	} else {
+		_ = s.notifyAccount(ctx, userID, tr.Text("mail.totp.enrolled.subject"),
+			tr.Text("mail.totp.enrolled.body"), tr.Text("sms.totp.enrolled"))
 	}
 
 	// Shown ONCE. Only hashes are stored, so this page cannot be reproduced --

@@ -32,9 +32,16 @@ const (
 )
 
 var (
-	ErrNoTOTP     = errors.New("store: no TOTP credential")
-	ErrTOTPLocked = errors.New("store: TOTP credential is locked")
+	ErrNoTOTP           = errors.New("store: no TOTP credential")
+	ErrTOTPLocked       = errors.New("store: TOTP credential is locked")
+	ErrNoTOTPEnrolment  = errors.New("store: no TOTP enrolment in progress")
+	ErrTOTPEnrolmentOld = errors.New("store: the TOTP enrolment has expired; start again")
 )
+
+// TOTPEnrolmentTTL bounds how long a shown-but-unconfirmed secret stays
+// confirmable. Long enough to find a phone and scan; short enough that an
+// abandoned enrolment does not linger as a second secret for the account.
+const TOTPEnrolmentTTL = 15 * time.Minute
 
 // TOTPCredential is an enrolled authenticator.
 type TOTPCredential struct {
@@ -46,45 +53,114 @@ type TOTPCredential struct {
 	LockedUntil *time.Time
 }
 
-// EnrollTOTP stores an UNCONFIRMED credential.
+// StartTOTPEnrolment stores a secret the user is about to scan, APART from any
+// credential they already have.
 //
-// Unconfirmed matters: enrolment is only complete once the user proves the app
-// holds the same secret. Marking it usable at generation time is how people end
-// up locked out by an authenticator that silently failed to scan -- the server
-// believes MFA is on, the phone has nothing, and the account is unreachable.
-func EnrollTOTP(ctx context.Context, tx pgx.Tx, userID, orgID string, secret []byte,
+// It used to write straight into core.totp_credentials with confirmed_at NULL,
+// which kept an unscanned authenticator from locking anyone out -- by
+// overwriting the confirmed credential the moment enrolment was opened. Opening
+// it was a GET, so one cross-site link turned a user's second factor off
+// (migration 0125). The confirmed credential is now replaced only by
+// CompleteTOTPEnrolment, after the user proves their app holds the new secret.
+//
+// Starting again replaces an earlier unfinished enrolment, never a credential.
+func StartTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID, orgID string, secret []byte,
 	digits int, period time.Duration, root *keys.RootKey) error {
 
 	sk, err := keys.LoadOrCreateSubjectKey(ctx, tx, userID, root)
 	if err != nil {
 		return fmt.Errorf("subject key for TOTP enrolment: %w", err)
 	}
+	// Same context as the credential, so completion moves the ciphertext rather
+	// than unsealing and resealing it.
 	sealed, err := sk.Seal(secret, totpContext)
 	if err != nil {
 		return fmt.Errorf("sealing TOTP secret: %w", err)
 	}
-
-	// Re-enrolling REPLACES the credential and resets its counter and lock. The
-	// old secret is gone; a user who re-enrols has decided the previous
-	// authenticator is lost, and leaving it live would be a second, forgotten
-	// way into the account.
-	_, err = tx.Exec(ctx, `
-		INSERT INTO core.totp_credentials
-			(user_id, org_id, secret_enc, digits, period_secs)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.totp_enrolments (user_id, org_id, secret_enc, digits, period_secs)
 		VALUES ($1::uuid, $2::uuid, $3, $4, $5)
 		ON CONFLICT (user_id) DO UPDATE SET
+			org_id = EXCLUDED.org_id,
 			secret_enc = EXCLUDED.secret_enc,
 			digits = EXCLUDED.digits,
 			period_secs = EXCLUDED.period_secs,
-			confirmed_at = NULL,
-			last_used_counter = 0,
-			failed_attempts = 0,
-			locked_until = NULL`,
-		userID, orgID, sealed, digits, int(period.Seconds()))
-	if err != nil {
-		return fmt.Errorf("storing TOTP credential: %w", err)
+			created_at = now()`,
+		userID, orgID, sealed, digits, int(period.Seconds())); err != nil {
+		return fmt.Errorf("storing the TOTP enrolment: %w", err)
 	}
 	return nil
+}
+
+// LoadTOTPEnrolment reads the secret shown for enrolment, refusing one older
+// than TOTPEnrolmentTTL.
+func LoadTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, root *keys.RootKey) (*TOTPCredential, error) {
+	var sealed []byte
+	var digits, period int
+	var createdAt time.Time
+	err := tx.QueryRow(ctx, `
+		SELECT secret_enc, digits, period_secs, created_at
+		FROM core.totp_enrolments WHERE user_id = $1::uuid
+		FOR UPDATE`, userID).Scan(&sealed, &digits, &period, &createdAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNoTOTPEnrolment
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading the TOTP enrolment: %w", err)
+	}
+	if time.Since(createdAt) > TOTPEnrolmentTTL {
+		return nil, ErrTOTPEnrolmentOld
+	}
+	sk, err := keys.LoadOrCreateSubjectKey(ctx, tx, userID, root)
+	if err != nil {
+		return nil, fmt.Errorf("subject key for TOTP enrolment: %w", err)
+	}
+	secret, err := sk.Open(sealed, totpContext)
+	if err != nil {
+		return nil, fmt.Errorf("decrypting the TOTP enrolment secret: %w", err)
+	}
+	return &TOTPCredential{Secret: secret, Digits: digits, Period: time.Duration(period) * time.Second}, nil
+}
+
+// CompleteTOTPEnrolment makes the enrolment the user's confirmed credential,
+// replacing any previous one, and records the counter of the code that proved
+// it so that code cannot be replayed. Reports whether a confirmed credential was
+// replaced, so the caller can tell the account holder.
+//
+// Replacement is deliberate: a user who re-enrols has decided the previous
+// authenticator is lost, and leaving it live would be a second, forgotten way
+// into the account.
+func CompleteTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, counter int64) (replaced bool, err error) {
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.totp_credentials
+		                WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL)`,
+		userID).Scan(&replaced); err != nil {
+		return false, fmt.Errorf("checking for an existing TOTP credential: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO core.totp_credentials
+			(user_id, org_id, secret_enc, digits, period_secs, confirmed_at, last_used_counter)
+		SELECT user_id, org_id, secret_enc, digits, period_secs, now(), $2
+		  FROM core.totp_enrolments WHERE user_id = $1::uuid
+		ON CONFLICT (user_id) DO UPDATE SET
+			org_id = EXCLUDED.org_id,
+			secret_enc = EXCLUDED.secret_enc,
+			digits = EXCLUDED.digits,
+			period_secs = EXCLUDED.period_secs,
+			confirmed_at = now(),
+			last_used_counter = EXCLUDED.last_used_counter,
+			failed_attempts = 0,
+			locked_until = NULL`, userID, counter)
+	if err != nil {
+		return false, fmt.Errorf("confirming the TOTP credential: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return false, ErrNoTOTPEnrolment
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM core.totp_enrolments WHERE user_id = $1::uuid`, userID); err != nil {
+		return false, fmt.Errorf("clearing the TOTP enrolment: %w", err)
+	}
+	return replaced, nil
 }
 
 // LoadTOTP reads and decrypts a credential.

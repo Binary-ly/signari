@@ -2,6 +2,14 @@
 {{define "content"}}
 <h1>{{T "enrol.title"}}</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+{{if .Begin}}
+<p>{{T "enrol.intro"}}</p>
+{{if .HasCurrent}}<p class="hint">{{T "enrol.keepscurrent"}}</p>{{end}}
+<form method="POST" action="/account/mfa/totp/start">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<button type="submit">{{T "enrol.begin"}}</button>
+</form>
+{{else}}
 {{if .Secret}}
 <p>{{T "enrol.scan"}}</p>
 <div class="qr">{{.QR}}</div>
@@ -18,4 +26,5 @@
 <input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
 <button type="submit">{{T "enrol.submit"}}</button>
 </form>
+{{end}}
 {{end}}

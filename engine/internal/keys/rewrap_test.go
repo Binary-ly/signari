@@ -54,6 +54,9 @@ var columnClass = map[string]string{
 	// Sealed under the subject's own DEK. Re-wrapping the DEK covers these, and
 	// touching them here would try to open them with the wrong key.
 	"totp_credentials.secret_enc": "subjectSealed",
+	// The secret shown during enrolment, sealed exactly as the credential is so
+	// confirmation can move it without opening it.
+	"totp_enrolments.secret_enc": "subjectSealed",
 	// Operator-defined attributes declared `personal`. Sealed with the
 	// subject's DEK for the same reason the TOTP secret is: erasure destroys
 	// the DEK, so these die with it and no list of tables has to stay current.

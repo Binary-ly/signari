@@ -17,6 +17,11 @@ the policy.
     client -> AS        grant_type=urn:...:uma-ticket, ticket=...   -> RPT
     client -> RS        Authorization: Bearer <RPT>
 
+The client exchanging the ticket needs the grant, which defaults to off:
+`signari client set-grants -client-id <id> -grant-types
+urn:ietf:params:oauth:grant-type:uma-ticket`. Until October 2026 `set-grants`
+refused this grant type, so no client could be given it.
+
 ## The decision comes from the existing policy engine
 
 `internal/authzen` — the same policy decision point that answers

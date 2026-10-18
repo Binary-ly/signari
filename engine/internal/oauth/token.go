@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -411,13 +412,24 @@ func RequireClientAuth(c *clients.Client, req TokenRequest) *TokenError {
 	return nil
 }
 
+// GrantTypes are the grant types the token endpoint dispatches. The one list:
+// ValidateGrantType accepts exactly these, and `signari client set-grants`
+// records exactly these. The command kept a list of its own, which lacked
+// CIBA, the UMA ticket grant and jwt-bearer -- three grants the token endpoint
+// served only to a client registered for them, and which no operator could
+// register a client for.
+var GrantTypes = []string{
+	"authorization_code", "refresh_token", "client_credentials",
+	GrantTypeTokenExchange, GrantTypeDeviceCode, GrantTypePreAuthorizedCode,
+	GrantTypeCIBA, GrantTypeUMATicket, GrantTypeJWTBearer,
+}
+
 // ValidateGrantType rejects everything we do not implement, before any lookup.
 func ValidateGrantType(gt string) *TokenError {
-	switch gt {
-	case "authorization_code", "refresh_token", "client_credentials",
-		GrantTypeTokenExchange, GrantTypeDeviceCode, GrantTypePreAuthorizedCode,
-		GrantTypeCIBA, GrantTypeUMATicket, GrantTypeJWTBearer:
+	if slices.Contains(GrantTypes, gt) {
 		return nil
+	}
+	switch gt {
 	case "":
 		return tokenErr("invalid_request", "grant_type is required")
 	case "password":

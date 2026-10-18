@@ -19,6 +19,16 @@ POST /oauth2/token                → authorization_pending
 
 The person answers at **`/account/requests`**.
 
+A client uses CIBA only once it has the grant, which defaults to off:
+
+```sh
+signari client set-grants -client-id call-centre \
+    -grant-types urn:openid:params:grant-type:ciba
+```
+
+Until October 2026 `set-grants` refused this grant type, so no client could be
+given it. A client without it is refused with `unauthorized_client`.
+
 ## All three delivery modes
 
 §7.3 defines three, and `backchannel_token_delivery_modes_supported` lists all

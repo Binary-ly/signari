@@ -8,7 +8,13 @@ signari idp add-issuer -org <uuid> -slug github-actions \
 signari idp assertions -slug github-actions -allow-assertions
 
 signari client set-assertion-issuers -client-id ci-deploy -issuers github-actions
+signari client set-grants -client-id ci-deploy \
+    -grant-types urn:ietf:params:oauth:grant-type:jwt-bearer
 ```
+
+The client also needs the grant itself, like every grant the token endpoint
+serves. Until October 2026 `set-grants` did not accept this one, so no client
+could be given it.
 
 Two commands because they are two decisions: the first records that an issuer
 exists and where its keys are, the second grants it the power to mint tokens

@@ -7774,14 +7774,11 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 // Listed so `client set-grants` can refuse a typo. A grant type recorded on a
 // client but never dispatched is a registration that looks like it did
 // something, and the operator finds out at the first token request.
-var knownGrantTypes = []string{
-	"authorization_code",
-	"refresh_token",
-	"client_credentials",
-	oauth.GrantTypeDeviceCode,
-	oauth.GrantTypeTokenExchange,
-	oid4vci.GrantType,
-}
+// knownGrantTypes is what the token endpoint dispatches (oauth.GrantTypes),
+// not a list of its own: one kept here lacked CIBA, the UMA ticket grant and
+// jwt-bearer, so no client could be registered for them and all three were
+// refused as unauthorized_client to everybody.
+var knownGrantTypes = oauth.GrantTypes
 
 // clientSetGrants replaces the grant types a client may use.
 //

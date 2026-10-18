@@ -113,8 +113,17 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 	// mail. Without it, one script fills the users table and the mail queue. This
 	// is a gate on the endpoint, not a stage of the flow -- it runs whatever the
 	// operator's enrolment sequence is.
-	if res, err := store.AllowRate(ctx, s.db, "signup:ip:"+clientIP(r),
-		signupsPerWindow, signupWindow); err == nil && !res.Allowed {
+	//
+	// A database error refuses. It used to wave the request through, which
+	// turned a fault in the limiter into an unlimited window for exactly the
+	// flood it exists to stop.
+	res, err := store.AllowRate(ctx, s.db, "signup:ip:"+clientIP(r), signupsPerWindow, signupWindow)
+	if err != nil {
+		s.log.Error("checking the signup rate limit", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again shortly")
+		return
+	}
+	if !res.Allowed {
 		writeError(w, http.StatusTooManyRequests, "slow_down",
 			"too many attempts from this address; wait a few minutes")
 		return

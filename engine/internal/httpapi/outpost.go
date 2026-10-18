@@ -115,8 +115,15 @@ func (s *Server) outpostAuth(w http.ResponseWriter, r *http.Request) (orgID, kin
 	if kind == "pdp" {
 		limit = pdpCallsPerMinute
 	}
-	if res, rerr := store.AllowRate(r.Context(), s.db, "outpost:"+id,
-		limit, time.Minute); rerr == nil && !res.Allowed {
+	// A database error refuses, as every other limiter here does. It used to
+	// let the call through, so a fault in the limiter unthrottled every outpost.
+	res, rerr := store.AllowRate(r.Context(), s.db, "outpost:"+id, limit, time.Minute)
+	if rerr != nil {
+		s.log.Error("checking the outpost rate limit", "err", rerr)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again shortly")
+		return "", "", "", false
+	}
+	if !res.Allowed {
 		writeError(w, http.StatusTooManyRequests, "slow_down",
 			"this outpost is asking faster than the core will answer")
 		return "", "", "", false

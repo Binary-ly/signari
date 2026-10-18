@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
+	"time"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/store"
@@ -73,7 +75,39 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 			"If you signed in without a password, set one through account recovery instead.", "")
 		return
 	}
+
+	// Metered with the sign-in form's own budgets, read before the Argon2
+	// evaluation and charged on a wrong answer. It was unmetered, so a stolen
+	// session cookie could guess the account's password here without limit and
+	// take it to every other site the person reuses it on. Two doors onto one
+	// credential share one budget, as the LDAP bind does.
+	identity, _ := store.EmailForUser(ctx, s.db, userID)
+	budget := []struct {
+		key    string
+		limit  int
+		window time.Duration
+	}{
+		{"signin:fail:ip:" + clientIP(r), signInPerIPLimit, signInPerIPWindow},
+		{"signin:fail:user:" + strings.ToLower(identity), signInPerAccountLimit, signInPerAccountWindow},
+	}
+	for _, b := range budget {
+		n, err := store.CountRate(ctx, s.db, b.key, b.window)
+		if err != nil {
+			s.log.Error("checking the current-password budget", "err", err)
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if n >= b.limit {
+			s.renderAccountPassword(w, r, "Too many wrong attempts. Try again later.", "")
+			return
+		}
+	}
 	if _, verr := s.hasher.Verify(ctx, stored, current); verr != nil {
+		for _, b := range budget {
+			if _, err := store.AllowRate(ctx, s.db, b.key, b.limit, b.window); err != nil {
+				s.log.Error("charging the current-password budget", "err", err)
+			}
+		}
 		s.renderAccountPassword(w, r, "That is not your current password.", "")
 		return
 	}
@@ -82,7 +116,6 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	identity, _ := store.EmailForUser(ctx, s.db, userID)
 	previous, perr := store.RecentPasswordHashes(ctx, s.db, userID, s.pwPolicy.HistoryDepth)
 	if perr != nil {
 		s.log.Error("reading password history", "err", perr)

@@ -151,10 +151,24 @@ func Write(ctx context.Context, tx pgx.Tx, e Event) error {
 	//
 	// One extra round trip to let the database canonicalise it, and both sides
 	// then hash exactly the same string.
+	//
+	// The ids go through the same round trip, for the same reason. PostgreSQL
+	// accepts a uuid in upper case, in braces, without hyphens or with one after
+	// every four digits, and stores the canonical form. A respelled id therefore
+	// hashed as one string and was stored as another, and the chain read as
+	// tampered from that row on, permanently: an Admin API PATCH to
+	// /admin/users/d578-90c1-... did exactly this to the shared test database.
 	var detail string
-	if err := tx.QueryRow(ctx, `SELECT $1::jsonb::text`, raw).Scan(&detail); err != nil {
-		return fmt.Errorf("audit: canonicalising detail: %w", err)
+	var org, subject, actor, correlation, token *string
+	if err := tx.QueryRow(ctx,
+		`SELECT $1::jsonb::text, $2::uuid::text, $3::uuid::text, $4::uuid::text, $5::uuid::text, $6::uuid::text`,
+		raw, nullIfEmpty(e.OrgID), nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
+		nullIfEmpty(e.CorrelationID), nullIfEmpty(e.AdminTokenID)).
+		Scan(&detail, &org, &subject, &actor, &correlation, &token); err != nil {
+		return fmt.Errorf("audit: canonicalising the entry: %w", err)
 	}
+	e.OrgID, e.SubjectID, e.ActorID = deref(org), deref(subject), deref(actor)
+	e.CorrelationID, e.AdminTokenID = deref(correlation), deref(token)
 
 	// An advisory lock on the CHAIN, not a row lock on its current tail.
 	//
@@ -351,4 +365,11 @@ func nullIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

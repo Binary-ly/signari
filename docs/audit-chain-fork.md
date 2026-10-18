@@ -165,6 +165,26 @@ artefact of this bug rather than evidence of tampering. That is worth recording
 somewhere an auditor will see, because "we know why those are there" is not
 something to reconstruct later from memory.
 
+## A respelled id read as tampering
+
+A second, unrelated way to break the chain without touching it. PostgreSQL
+accepts a uuid in several spellings: upper case, in braces, without hyphens, or
+with a hyphen after every four digits. Whatever the spelling, it stores the
+canonical form. The entry hash was computed over the id **as the caller passed
+it**. So an Admin API request to `/admin/users/d578-90c1-c9ae-…` produced an
+entry whose hash covered `d578-90c1-c9ae-…` while its `subject_id` column held
+`d57890c1-c9ae-…`. Verification recomputes from the column, so the chain broke
+at that entry, permanently.
+
+The detail column already went through PostgreSQL before hashing, because jsonb
+also normalises. The ids now take the same round trip, so the hash covers
+exactly what is stored, whatever spelling a caller used. The Admin API also
+refuses a non-canonical id in a path, but the chain no longer depends on every
+caller doing that.
+
+A database that took such a write has two entries with this artefact. A
+checkpoint declared after them, with that reason, is the honest record.
+
 ## A note on testing this
 
 The tests that prove a break is detected have to *create* one — deleting and

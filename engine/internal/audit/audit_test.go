@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -40,9 +41,57 @@ func inRollback(t *testing.T, fn func(tx pgx.Tx)) {
 	fn(tx)
 }
 
+// tail is the newest entry before a test writes its own, so a test verifies
+// from there: its entries and their link to the chain they joined, and not
+// whatever history the shared database carries from before.
+func tail(t *testing.T, tx pgx.Tx) int64 {
+	t.Helper()
+	var id int64
+	if err := tx.QueryRow(context.Background(),
+		`SELECT COALESCE(max(id), 0) FROM core.audit_events`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// An id in any spelling PostgreSQL accepts is hashed as the column stores it.
+// A respelled subject id was hashed as written and stored canonically, and the
+// chain read as tampered from that entry on: row 56750 of the shared test
+// database, written by an Admin API PATCH to /admin/users/d578-90c1-....
+func TestARespelledIDIsHashedAsItIsStored(t *testing.T) {
+	inRollback(t, func(tx pgx.Tx) {
+		ctx := context.Background()
+		from := tail(t, tx)
+		id := "d57890c1-c9ae-4817-b3bd-5d98434a00d0"
+		hex := strings.ReplaceAll(id, "-", "")
+		if err := Write(ctx, tx, Event{
+			Type:          "test.respelled",
+			OrgID:         "{" + strings.ToUpper(hex) + "}",
+			SubjectID:     "d578-90c1-c9ae-4817-b3bd-5d98-434a-00d0",
+			ActorID:       strings.ToUpper(id),
+			CorrelationID: hex,
+			AdminTokenID:  "{" + id + "}",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := Write(ctx, tx, Event{Type: "test.after"}); err != nil {
+			t.Fatal(err)
+		}
+		broken, checked, err := VerifyFrom(ctx, tx, from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if broken != 0 || checked < 2 {
+			t.Fatalf("an entry written with respelled ids broke the chain at %d (checked %d)",
+				broken, checked)
+		}
+	})
+}
+
 func TestChainVerifies(t *testing.T) {
 	inRollback(t, func(tx pgx.Tx) {
 		ctx := context.Background()
+		from := tail(t, tx)
 		for _, ev := range []Event{
 			{Type: EventLoginFailed, Detail: map[string]any{"reason": "bad_password"}},
 			{Type: EventLoginSucceeded, Detail: map[string]any{"amr": []string{"pwd"}}},
@@ -53,7 +102,7 @@ func TestChainVerifies(t *testing.T) {
 			}
 		}
 
-		broken, checked, err := Verify(ctx, tx)
+		broken, checked, err := VerifyFrom(ctx, tx, from)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -72,6 +121,7 @@ func TestChainVerifies(t *testing.T) {
 func TestTamperedRowIsDetected(t *testing.T) {
 	inRollback(t, func(tx pgx.Tx) {
 		ctx := context.Background()
+		from := tail(t, tx)
 		for i := 0; i < 3; i++ {
 			if err := Write(ctx, tx, Event{Type: EventLoginSucceeded}); err != nil {
 				t.Fatal(err)
@@ -90,7 +140,7 @@ func TestTamperedRowIsDetected(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		broken, _, err := Verify(ctx, tx)
+		broken, _, err := VerifyFrom(ctx, tx, from)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -105,6 +155,7 @@ func TestTamperedRowIsDetected(t *testing.T) {
 func TestDeletedRowIsDetected(t *testing.T) {
 	inRollback(t, func(tx pgx.Tx) {
 		ctx := context.Background()
+		from := tail(t, tx)
 		for i := 0; i < 4; i++ {
 			if err := Write(ctx, tx, Event{Type: EventLoginSucceeded}); err != nil {
 				t.Fatal(err)
@@ -124,7 +175,7 @@ func TestDeletedRowIsDetected(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		broken, _, err := Verify(ctx, tx)
+		broken, _, err := VerifyFrom(ctx, tx, from)
 		if err != nil {
 			t.Fatal(err)
 		}

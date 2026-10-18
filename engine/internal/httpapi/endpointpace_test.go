@@ -143,4 +143,9 @@ func TestOnePersonGetsALimitedNumberOfApprovalPrompts(t *testing.T) {
 	if status, body := f.backchannel(t, f.clientID, f.secret, other); status != http.StatusOK {
 		t.Fatalf("a different person was refused too: %d %v", status, body)
 	}
+	// And another client may still ask for the first person. Keyed on the
+	// person alone, one client's prompts denied them CIBA from every client.
+	if status, body := f.backchannel(t, f.otherClient, f.otherSecret, f.goodRequest()); status != http.StatusOK {
+		t.Fatalf("one client's prompts denied the person CIBA from another client: %d %v", status, body)
+	}
 }

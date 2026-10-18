@@ -128,10 +128,13 @@ what it says.
   longer pending authorization is a longer window in which a prompt somebody has
   forgotten about can still be approved. The response says what the client
   actually got.
-- **Five prompts per person per ten minutes**, whichever client asks. A sixth
-  is refused with `403 access_denied`, the code CIBA §13 gives for a request the
-  OP has decided to deny. Without the limit, any client allowed CIBA could keep
-  filling one person's queue until they approved something to make it stop.
+- **Five prompts per person per ten minutes from each client.** A sixth from
+  the same client is refused with `403 access_denied`, the code CIBA §13 gives
+  for a request the OP has decided to deny. Without the limit, any client
+  allowed CIBA could keep filling one person's queue until they approved
+  something to make it stop. The count is per client because it was once per
+  person only, and then one client spending the allowance denied that person
+  CIBA from every other client.
 
 
 ## See also

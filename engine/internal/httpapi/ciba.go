@@ -164,12 +164,18 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Paced per person. Each request puts an approval prompt in front of them,
-	// and there was no limit, so any client allowed CIBA could fill one
-	// person's queue until an approval was given to make it stop. CIBA §13
-	// (specs/ciba.html, "Authentication Error Response") gives access_denied
-	// with 403 for a request the OP has decided to deny, which this is.
-	res, rerr := store.AllowRate(ctx, s.db, "ciba:user:"+userID, cibaPerUserLimit, cibaPerUserWindow)
+	// Paced per client and person. Each request puts an approval prompt in
+	// front of them, and there was no limit, so any client allowed CIBA could
+	// fill one person's queue until an approval was given to make it stop. CIBA
+	// §13 (specs/ciba.html, "Authentication Error Response") gives
+	// access_denied with 403 for a request the OP has decided to deny, which
+	// this is.
+	//
+	// Per client as well as per person. Keyed on the person alone, one client
+	// spending the allowance -- by design or by a bug -- denied that person CIBA
+	// from every other client in the organisation.
+	res, rerr := store.AllowRate(ctx, s.db, "ciba:user:"+c.ClientID+":"+userID,
+		cibaPerUserLimit, cibaPerUserWindow)
 	if rerr != nil {
 		s.log.Error("checking the CIBA per-user limit", "err", rerr)
 		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,

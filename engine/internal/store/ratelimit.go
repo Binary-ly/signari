@@ -55,6 +55,11 @@ func AllowRate(ctx context.Context, q interface {
 		return RateResult{}, fmt.Errorf("rate limit for %q is not configured "+
 			"(limit %d, window %s)", key, limit, window)
 	}
+	if window > MaxRateWindow {
+		return RateResult{}, fmt.Errorf("rate limit for %q has a %s window, longer than "+
+			"the %s PurgeRateLimits keeps; its counter would be deleted while live", key,
+			window, MaxRateWindow)
+	}
 
 	res := RateResult{Limit: limit}
 	// The window start is derived from the clock, not stored per caller, so
@@ -75,15 +80,26 @@ func AllowRate(ctx context.Context, q interface {
 	return res, nil
 }
 
+// MaxRateWindow is the longest window a limit may use, and how far back
+// PurgeRateLimits keeps rows. The two are one number so they cannot disagree:
+// a row that started before it has ended, whatever its own length.
+//
+// The purge used to delete everything that started over an hour ago. The SMS
+// ceilings count per day in windows starting at midnight UTC, so from 01:00
+// the janitor deleted each live counter on its next pass, and "ten a day per
+// number" became ten a minute.
+const MaxRateWindow = 24 * time.Hour
+
 // PurgeRateLimits drops windows that have passed.
 //
 // Housekeeping rather than a security control -- an old window can no longer
 // permit anything, since the current window is computed from the clock. It is
 // here because a table that only grows is how a deployment discovers its disk
-// on a Sunday.
+// on a Sunday. It keeps every row that could still be a live window.
 func PurgeRateLimits(ctx context.Context, tx pgx.Tx) (int64, error) {
 	tag, err := tx.Exec(ctx,
-		`DELETE FROM core.rate_limits WHERE window_start < now() - interval '1 hour'`)
+		`DELETE FROM core.rate_limits WHERE window_start < now() - $1::interval`,
+		fmt.Sprintf("%d seconds", int(MaxRateWindow.Seconds())))
 	if err != nil {
 		return 0, err
 	}
@@ -103,8 +119,9 @@ func CountRate(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, key string, window time.Duration) (int, error) {
 
-	if window <= 0 {
-		return 0, fmt.Errorf("no window given for %q", key)
+	if window <= 0 || window > MaxRateWindow {
+		return 0, fmt.Errorf("no usable window given for %q (%s; at most %s)", key, window,
+			MaxRateWindow)
 	}
 	var n int
 	err := q.QueryRow(ctx, `

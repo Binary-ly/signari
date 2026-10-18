@@ -11,6 +11,48 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// The purge keeps every row that could still be a live window. It deleted
+// whatever started over an hour ago, and a daily SMS ceiling starts at
+// midnight UTC, so from 01:00 the janitor reset it every minute.
+func TestThePurgeKeepsADailyWindowThatIsStillOpen(t *testing.T) {
+	pool := rateTestPool(t)
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	key := fmt.Sprintf("purge-test:%d", time.Now().UnixNano())
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.rate_limits (bucket_key, window_start, count) VALUES
+		    ($1 || ':open', now() - interval '23 hours', 7),
+		    ($1 || ':over', now() - interval '25 hours', 7)`, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PurgeRateLimits(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	var open, over int
+	if err := tx.QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE bucket_key = $1 || ':open'),
+		count(*) FILTER (WHERE bucket_key = $1 || ':over')
+		FROM core.rate_limits WHERE bucket_key LIKE $1 || ':%'`, key).Scan(&open, &over); err != nil {
+		t.Fatal(err)
+	}
+	if open != 1 {
+		t.Error("a 24-hour window that started 23 hours ago was purged while still counting")
+	}
+	if over != 0 {
+		t.Error("a window older than the longest one any limit uses was kept")
+	}
+
+	// And a limit cannot ask for a window the purge would cut short.
+	if _, err := AllowRate(ctx, tx, key, 1, MaxRateWindow+time.Hour); err == nil {
+		t.Error("a window longer than the purge keeps was accepted")
+	}
+}
+
 func rateTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("SIGNARI_TEST_DSN")

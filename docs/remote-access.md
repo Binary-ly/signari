@@ -188,3 +188,15 @@ nothing about whether the user left or the host died.
 Closing sends `disconnect` to guacd before closing the socket, so the remote
 session is torn down rather than left to time out — on RDP that can leave a
 logged-in desktop running for minutes after the browser has gone.
+
+**An open channel is asked again every 30 seconds**: is the sign-in session
+behind it still live, does the access policy still allow `rac:<slug>`, and is the
+person still in the connection's group? When any answer is no, the channel ends,
+with that answer as its recorded reason. So signing out, an administrator
+revoking the session, deactivating the account (which revokes every session), a
+new deny rule and a removed membership each end an open desktop within half a
+minute. A check that cannot be made, because the database is unreachable, ends
+the channel too rather than assuming it would have passed. Until October 2026 a
+channel asked nothing after it opened, and stayed open until the browser tab
+closed. The session's own absolute lifetime bounds a channel's length, because
+an expired session fails the first of the three questions.

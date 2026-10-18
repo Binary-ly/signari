@@ -4,7 +4,22 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
+
+// Recheck reports whether the person may still hold this channel, and when not,
+// why. Asked every RecheckInterval for as long as the channel is open.
+type Recheck func(ctx context.Context) (ok bool, reason string)
+
+// RecheckInterval is how often an open channel asks again. A variable only so a
+// test does not wait half a minute.
+//
+// Thirty seconds is the bound on how long a channel outlives the thing that
+// should end it. Without the question at all it was the channel's whole life:
+// signing out, an administrator revoking the session and deactivating the
+// account each ended every other way into the deployment, and left a remote
+// desktop open in the browser that had it until somebody closed the tab.
+var RecheckInterval = 30 * time.Second
 
 // Copying between a browser and guacd.
 //
@@ -32,16 +47,37 @@ type Peer interface {
 // deliberately, so it can be reported as that rather than as a failure.
 var NormalClose = errors.New("closed by the user")
 
-// Proxy copies between a browser and guacd until either stops, and returns why.
+// Proxy copies between a browser and guacd until either stops, or until
+// recheck -- when given -- says the person may no longer hold the channel, and
+// returns why.
 //
 // The reason is returned rather than logged because it is recorded against the
 // session: "the session closed" with no reason tells an operator nothing about
 // whether the user left or the host died.
-func Proxy(ctx context.Context, peer Peer, guac *Session) string {
+func Proxy(ctx context.Context, peer Peer, guac *Session, recheck Recheck) string {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	done := make(chan string, 2)
+	// One slot per sender, so none blocks after the first answer is taken.
+	done := make(chan string, 3)
+
+	if recheck != nil {
+		go func() {
+			t := time.NewTicker(RecheckInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if ok, reason := recheck(ctx); !ok {
+						done <- reason
+						return
+					}
+				}
+			}
+		}()
+	}
 
 	// The tunnel identifier, before anything else.
 	//

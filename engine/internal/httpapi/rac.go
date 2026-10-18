@@ -172,7 +172,36 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reason := rac.Proxy(ctx, wsPeer{ws}, guac)
+	// Asked again while the channel is open: the session behind it, the access
+	// policy and the connection's group, the three things that admitted the
+	// person a moment ago. Each can stop being true -- a sign-out, a revoked
+	// session, a deactivated account (which revokes every session), a new deny
+	// rule, a removed membership -- and none of them used to reach a channel
+	// already open. A check that cannot be made ends the channel rather than
+	// assuming it would have passed.
+	recheck := func(ctx context.Context) (bool, string) {
+		live, err := store.SessionLive(ctx, s.db, sid)
+		if err != nil {
+			s.log.Error("re-checking a remote session", "err", err)
+			return false, "the session could not be re-checked"
+		}
+		if !live {
+			return false, "the sign-in session ended"
+		}
+		mfa, amr := sessionFactors(ctx, s.db, sid)
+		if pd := s.checkAccessPolicy(ctx, r, orgID, "rac:"+slug, userID,
+			"remote_access", mfa, amr); pd != nil {
+			return false, "refused by the access policy: " + pd.Rule
+		}
+		if still, err := store.MayUse(ctx, s.db, conn, userID); err != nil {
+			s.log.Error("re-checking remote access group", "err", err)
+			return false, "the session could not be re-checked"
+		} else if !still {
+			return false, "no longer in the connection's group"
+		}
+		return true, ""
+	}
+	reason := rac.Proxy(ctx, wsPeer{ws}, guac, recheck)
 
 	if sessionID != "" {
 		if err := store.EndRACSession(context.Background(), s.db, sessionID, reason); err != nil {

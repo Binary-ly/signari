@@ -131,7 +131,8 @@ func main() {
 			return
 		}
 		log.Printf("connected, guacd id %s", guac.ID)
-		reason := rac.Proxy(r.Context(), &recordingPeer{ws: ws, seen: &seen}, guac)
+		// No re-check: the harness has no sign-in session to ask about.
+		reason := rac.Proxy(r.Context(), &recordingPeer{ws: ws, seen: &seen}, guac, nil)
 		log.Printf("session ended: %s", reason)
 		_ = ws.Close(websocket.StatusNormalClosure, "")
 	})

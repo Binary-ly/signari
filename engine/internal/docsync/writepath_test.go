@@ -143,6 +143,7 @@ var (
 	createTable = regexp.MustCompile(`(?is)CREATE TABLE (?:IF NOT EXISTS )?(?:core\.)?([a-z_]+)\s*\((.*?)\n\);`)
 	alterTable  = regexp.MustCompile(`(?is)ALTER TABLE\s+(?:core\.)?([a-z_]+)(.*?);`)
 	addColName  = regexp.MustCompile(`(?i)ADD COLUMN\s+(?:IF NOT EXISTS\s+)?([a-z_]+)\s+([a-z_]+(?:\[\])?)([^,]*)`)
+	dropColName = regexp.MustCompile(`(?i)DROP COLUMN\s+(?:IF EXISTS\s+)?([a-z_]+)`)
 	colDecl     = regexp.MustCompile(`(?i)^([a-z_]+)\s+([a-z_]+(?:\[\])?)\b(.*)$`)
 	// Values the database supplies. A column with one of these is not
 	// configuration and no code should be setting it.
@@ -202,6 +203,18 @@ func readSchema(t *testing.T, root string) (tables []string, columns []schemaCol
 			seen[m[1]] = true
 			for _, cm := range addColName.FindAllStringSubmatch(m[2], -1) {
 				columns = append(columns, schemaColumn{m[1], cm[1], strings.ToLower(cm[2]), cm[3]})
+			}
+			// A dropped column is gone. Kept, it would be judged forever by
+			// whatever text still shares its name: 0132 dropped a CIBA column
+			// whose name is also a form parameter, which read as a reader.
+			for _, dm := range dropColName.FindAllStringSubmatch(m[2], -1) {
+				kept := columns[:0]
+				for _, c := range columns {
+					if c.table != m[1] || c.column != dm[1] {
+						kept = append(kept, c)
+					}
+				}
+				columns = kept
 			}
 		}
 	}

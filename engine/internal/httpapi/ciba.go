@@ -193,8 +193,7 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 	lifetime := req.Expiry()
 	requestID, err := store.CreateBackchannelAuthentication(ctx, s.db, c.OrgID, c.ClientID,
 		userID, req.Scope, req.BindingMessage, req.ACRValues,
-		store.HashToken(authReqID), oauth.CIBAMinPollInterval, lifetime,
-		req.ClientNotificationToken)
+		store.HashToken(authReqID), oauth.CIBAMinPollInterval, lifetime)
 	if err != nil {
 		s.log.Error("recording a backchannel authentication", "err", err)
 		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
@@ -209,7 +208,7 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 		// Push parks the same way and for the same reason. What differs is what
 		// the row eventually carries: the tokens, sealed, written when the person
 		// decides. See store.CIBAPush.Sealed.
-		if err := store.QueueCIBAPush(ctx, s.db, requestID, c.ClientID,
+		if err := store.QueueCIBAPush(ctx, s.db, s.cfg.Root, requestID, c.ClientID,
 			c.BackchannelClientNotificationEndpoint, req.ClientNotificationToken,
 			authReqID); err != nil {
 			s.log.Error("parking a CIBA push", "err", err, "client_id", c.ClientID)
@@ -219,7 +218,7 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if c.BackchannelTokenDeliveryMode == oauth.DeliveryPing {
-		if err := store.QueueCIBAPing(ctx, s.db, requestID, c.ClientID,
+		if err := store.QueueCIBAPing(ctx, s.db, s.cfg.Root, requestID, c.ClientID,
 			c.BackchannelClientNotificationEndpoint, req.ClientNotificationToken,
 			authReqID); err != nil {
 			// Refused rather than issued: a ping client that receives an

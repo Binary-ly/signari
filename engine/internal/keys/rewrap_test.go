@@ -97,6 +97,9 @@ var columnClass = map[string]string{
 	"uma_claims_interactions.ticket_hash":           "oneWay",
 	"uma_permission_tickets.ticket_hash":            "oneWay",
 
+	// A hash in a text column (an encoded password hash).
+	"clients.client_secret_hash": "oneWay",
+
 	// Public or non-secret material.
 	"clients.tls_thumbprint":             "public",
 	"signing_keys.certificate":           "public",
@@ -105,14 +108,43 @@ var columnClass = map[string]string{
 	"webauthn_credentials.credential_id": "public",
 	"webauthn_credentials.public_key":    "public",
 
+	// Not bytes, and named as if secret: settings, URLs and identifiers whose
+	// names mention a token or a secret. Listed so that a column of this kind
+	// holding a real secret in the clear cannot hide among them: it arrives
+	// unclassified, and there is no class for "plaintext secret".
+	"audit_events.admin_token_id":             "public",
+	"clients.access_token_format":             "public",
+	"clients.access_token_ttl_s":              "public",
+	"clients.backchannel_token_delivery_mode": "public",
+	"clients.dpop_bound_access_tokens":        "public",
+	"clients.id_token_signed_alg":             "public",
+	"clients.refresh_token_ttl_s":             "public",
+	"clients.tls_bound_tokens":                "public",
+	"clients.token_endpoint_auth_method":      "public",
+	"identity_providers.token_url":            "public",
+	"migration_sources.token_endpoint":        "public",
+	"organizations.password_only_binds":       "public",
+	"outbox.subject_key":                      "public",
+	"rate_limits.bucket_key":                  "public",
+
 	// Columns nothing reads or writes. Recorded rather than left unclassified so
 	// that this test does not have to be edited if one of them is ever wired up
 	// -- it will fail then, which is the moment somebody must decide how a
 	// rotation treats it.
-	"audit_events.detail_enc":             "unused",
-	"migration_sources.client_secret_enc": "unused",
-	"providers.token_wrapped":             "unused",
+	"audit_events.detail_enc": "unused",
+	"providers.token_wrapped": "unused",
+
+	// Root-sealed and read, though nothing writes the table yet.
+	"migration_sources.client_secret_enc": "rootSealed",
 }
+
+// mayHoldASecret is which columns the classification covers: every bytea
+// column, and every column of any type whose name says it holds a token, a
+// secret, a password or a key. The name half exists because the CIBA
+// notification token sat in a text column in the clear, and a test that looked
+// only at bytea could not see it.
+const mayHoldASecret = `(c.data_type = 'bytea' OR c.column_name ~* ` +
+	`'(token|secret|password|passwd|private|sealed|wrapped|_enc$|credential|api_key|_key$)')`
 
 func TestEveryEncryptedColumnIsClassified(t *testing.T) {
 	dsn := os.Getenv("SIGNARI_TEST_DSN")
@@ -132,7 +164,7 @@ func TestEveryEncryptedColumnIsClassified(t *testing.T) {
 		JOIN information_schema.tables t
 		  ON t.table_schema = c.table_schema AND t.table_name = c.table_name
 		WHERE c.table_schema = 'core' AND t.table_type = 'BASE TABLE'
-		  AND c.data_type = 'bytea'
+		  AND `+mayHoldASecret+`
 		ORDER BY 1, 2`)
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +189,8 @@ func TestEveryEncryptedColumnIsClassified(t *testing.T) {
 
 	for _, col := range found {
 		if columnClass[col] == "" {
-			t.Errorf("core.%s holds bytes and is not classified.\n\n"+
+			t.Errorf("core.%s holds bytes, or is named as if it holds a secret, and "+
+				"is not classified.\n\n"+
 				"Decide what a ROOT KEY ROTATION does to it:\n"+
 				"  rootSealed    -- add it to rootSealedColumns in rewrap.go AND here\n"+
 				"  subjectSealed -- sealed under a subject DEK; the DEK is re-wrapped, so this follows\n"+
@@ -180,8 +213,9 @@ func TestEveryEncryptedColumnIsClassified(t *testing.T) {
 	}
 	for col := range columnClass {
 		if !present[col] {
-			t.Errorf("columnClass names core.%s, which is not a bytea column in "+
-				"the schema. If it was renamed, the new name is unclassified.", col)
+			t.Errorf("columnClass names core.%s, which the schema no longer has as "+
+				"a column this test covers. If it was renamed, the new name is "+
+				"unclassified.", col)
 		}
 	}
 }

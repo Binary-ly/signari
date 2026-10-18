@@ -80,8 +80,14 @@ func newCIBAFixture(t *testing.T) *cibaFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every deployment has a root key (serve refuses to start without one), and
+	// ping and push seal what they park under it.
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv, err := New(oidc.Config{
-		Issuer: "https://ciba-test.example", Keys: set, AllowInsecureIssuer: true,
+		Issuer: "https://ciba-test.example", Keys: set, AllowInsecureIssuer: true, Root: root,
 	}, pool, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
 	if err != nil {
 		t.Fatal(err)

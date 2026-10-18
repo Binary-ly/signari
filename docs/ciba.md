@@ -55,6 +55,12 @@ one is also refused: §7.1 makes that token the means by which the notification 
 authenticated to the client, so without it the callback could be delivered but
 never proven to have come from us.
 
+That token is the client's bearer credential, and the client accepts it from
+whoever presents it. It is kept in one place only: the parked delivery, sealed
+under the root key together with the `auth_req_id`, and opened by the worker at
+the moment it sends. It was once also copied into the request row in the clear
+and never read back; migration 0132 dropped that column.
+
 Likewise `backchannel_user_code_parameter_supported` is an explicit `false`
 rather than an omitted field, and the endpoint refuses a `user_code`. A client
 reading an absent field has to guess; one reading `false` knows.

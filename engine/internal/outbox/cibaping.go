@@ -54,21 +54,28 @@ func (w *Worker) deliverCIBAPing(ctx context.Context, p store.CIBAPing) error {
 	return nil
 }
 
+// deliverCIBAPingRow decodes a parked row, opens its sealed credentials and
+// delivers it.
+func (w *Worker) deliverCIBAPingRow(ctx context.Context, raw []byte) error {
+	var p store.CIBAPing
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("decoding a CIBA ping: %w", err)
+	}
+	if err := p.Open(w.root); err != nil {
+		return fmt.Errorf("a CIBA ping for %q: %w", p.ClientID, err)
+	}
+	return w.deliverCIBAPing(ctx, p)
+}
+
 // drainCIBAPings sends the notifications that are due.
 //
 // A parked row (next_attempt_at = 'infinity') is invisible to the claim query, so
 // this drains only requests somebody has actually decided.
 func (w *Worker) drainCIBAPings(ctx context.Context) (int, error) {
 	return w.drainTopic(ctx, drainSpec{
-		topic: CIBAPingTopic,
-		batch: w.batch,
-		deliver: func(ctx context.Context, raw []byte) error {
-			var p store.CIBAPing
-			if err := json.Unmarshal(raw, &p); err != nil {
-				return fmt.Errorf("decoding a CIBA ping: %w", err)
-			}
-			return w.deliverCIBAPing(ctx, p)
-		},
+		topic:   CIBAPingTopic,
+		batch:   w.batch,
+		deliver: w.deliverCIBAPingRow,
 		backoff: backoffFor,
 		onFailure: func(raw []byte, attempts int, err error) {
 			var p store.CIBAPing

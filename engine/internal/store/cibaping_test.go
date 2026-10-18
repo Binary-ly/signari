@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/keys"
 )
 
 // The parking mechanism, which is what makes ping delivery possible at all.
@@ -27,7 +30,11 @@ func TestACIBAPingIsParkedUntilTheRequestIsDecided(t *testing.T) {
 			`DELETE FROM core.outbox WHERE subject_key = $1`, requestID)
 	})
 
-	if err := QueueCIBAPing(ctx, pool, requestID, "client-1",
+	root, err := keys.NewRootKey("test-root", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := QueueCIBAPing(ctx, pool, root, requestID, "client-1",
 		"https://rp.example/ciba", "notification-token-abc", "the-auth-req-id"); err != nil {
 		t.Fatalf("parking: %v", err)
 	}
@@ -52,9 +59,19 @@ func TestACIBAPingIsParkedUntilTheRequestIsDecided(t *testing.T) {
 		`SELECT payload FROM core.outbox WHERE subject_key = $1`, requestID).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
+	// Both are credentials, and neither may be readable in the row: a backup of
+	// the queue outlives the delivery.
+	for _, secret := range []string{"notification-token-abc", "the-auth-req-id"} {
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("the parked payload carries %q in the clear: %s", secret, raw)
+		}
+	}
 	var p CIBAPing
 	if err := json.Unmarshal(raw, &p); err != nil {
 		t.Fatal(err)
+	}
+	if err := p.Open(root); err != nil {
+		t.Fatalf("opening the parked credentials: %v", err)
 	}
 	if p.AuthReqID != "the-auth-req-id" {
 		t.Errorf("payload auth_req_id = %q, want the value the client holds", p.AuthReqID)
@@ -103,13 +120,22 @@ func TestReleasingWithNothingParkedIsNotAnError(t *testing.T) {
 func TestParkingRefusesAnIncompletePing(t *testing.T) {
 	pool := rateTestPool(t)
 	ctx := context.Background()
-	if err := QueueCIBAPing(ctx, pool, "33333333-3333-3333-3333-333333333333",
+	root, err := keys.NewRootKey("test-root", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := QueueCIBAPing(ctx, pool, root, "33333333-3333-3333-3333-333333333333",
 		"client-1", "", "token", "auth-req"); err == nil {
 		t.Error("a ping with no notification endpoint was parked")
 	}
-	if err := QueueCIBAPing(ctx, pool, "33333333-3333-3333-3333-333333333333",
+	if err := QueueCIBAPing(ctx, pool, root, "33333333-3333-3333-3333-333333333333",
 		"client-1", "https://rp.example/ciba", "", "auth-req"); err == nil {
 		t.Error("a ping with no notification token was parked; the callback could " +
 			"not be authenticated to the client")
+	}
+	// With no key to seal under, refused rather than written in the clear.
+	if err := QueueCIBAPing(ctx, pool, nil, "33333333-3333-3333-3333-333333333333",
+		"client-1", "https://rp.example/ciba", "token", "auth-req"); err == nil {
+		t.Error("a ping was parked with no root key to seal its credentials")
 	}
 }

@@ -25,10 +25,12 @@ const SealContextCIBAPush = "ciba_push_payload"
 // endpoint, and §11 forbids the client from calling the token endpoint at all. So
 // unlike ping, this payload is a credential in its own right.
 type CIBAPush struct {
-	Endpoint  string `json:"endpoint"`
-	Token     string `json:"token"`
-	AuthReqID string `json:"auth_req_id"`
-	ClientID  string `json:"client_id"`
+	Endpoint string `json:"endpoint"`
+	ClientID string `json:"client_id"`
+	// Credentials, Token and AuthReqID are as for CIBAPing.
+	Credentials []byte `json:"credentials,omitempty"`
+	Token       string `json:"token,omitempty"`
+	AuthReqID   string `json:"auth_req_id,omitempty"`
 	// Sealed is the token response, encrypted under the root key.
 	//
 	// # Why it is sealed and why it is here at all
@@ -51,21 +53,29 @@ type CIBAPush struct {
 	Sealed []byte `json:"sealed,omitempty"`
 }
 
+// Open unseals Credentials into Token and AuthReqID.
+func (p *CIBAPush) Open(root *keys.RootKey) error {
+	return openCIBACredentials(root, p.Credentials, &p.Token, &p.AuthReqID)
+}
+
 // QueueCIBAPush parks a delivery for a request nobody has decided yet.
 //
 // Queued at creation for the same reason as ping: the notification carries the
 // `auth_req_id` the client holds, and this server stores only its hash, so at
-// approval time the plaintext no longer exists.
-func QueueCIBAPush(ctx context.Context, db *pgxpool.Pool, requestID, clientID,
-	endpoint, notificationToken, authReqID string) error {
+// approval time the plaintext no longer exists. Sealed for the same reason too.
+func QueueCIBAPush(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, requestID,
+	clientID, endpoint, notificationToken, authReqID string) error {
 
 	if endpoint == "" || notificationToken == "" {
 		return fmt.Errorf("client %q is registered for push delivery but the request "+
 			"carries no endpoint or notification token", clientID)
 	}
+	sealed, err := sealCIBACredentials(root, notificationToken, authReqID)
+	if err != nil {
+		return err
+	}
 	payload, err := json.Marshal(CIBAPush{
-		Endpoint: endpoint, Token: notificationToken,
-		AuthReqID: authReqID, ClientID: clientID,
+		Endpoint: endpoint, ClientID: clientID, Credentials: sealed,
 	})
 	if err != nil {
 		return err

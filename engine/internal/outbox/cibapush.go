@@ -90,14 +90,21 @@ func (w *Worker) deliverCIBAPush(ctx context.Context, p store.CIBAPush) error {
 // somebody has approved and whose tokens have been sealed into the row.
 func (w *Worker) drainCIBAPushes(ctx context.Context) (int, error) {
 	return w.drainTopic(ctx, drainSpec{
-		topic: CIBAPushTopic,
-		batch: w.batch,
-		deliver: func(ctx context.Context, raw []byte) error {
-			var p store.CIBAPush
-			if err := json.Unmarshal(raw, &p); err != nil {
-				return fmt.Errorf("decoding a CIBA push: %w", err)
-			}
-			return w.deliverCIBAPush(ctx, p)
-		},
+		topic:   CIBAPushTopic,
+		batch:   w.batch,
+		deliver: w.deliverCIBAPushRow,
 	})
+}
+
+// deliverCIBAPushRow decodes a released row, opens its sealed credentials and
+// delivers it.
+func (w *Worker) deliverCIBAPushRow(ctx context.Context, raw []byte) error {
+	var p store.CIBAPush
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("decoding a CIBA push: %w", err)
+	}
+	if err := p.Open(w.root); err != nil {
+		return fmt.Errorf("a CIBA push for %q: %w", p.ClientID, err)
+	}
+	return w.deliverCIBAPush(ctx, p)
 }

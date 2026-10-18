@@ -50,7 +50,16 @@ attention: the subject's DEK is itself root-sealed and is re-wrapped, so
 everything under it follows. A test enumerates every encrypted column in the
 schema and fails the build if one is not classified, because a root-sealed column
 the rotation does not know about becomes ciphertext nobody can ever open, and the
-operator is told the rotation succeeded.
+operator is told the rotation succeeded. It covers every `bytea` column, and every
+column of any type whose name says it holds a token, a secret, a password or a
+key, so a secret kept in a text column in the clear is caught too.
+
+Some sealed values live inside a JSON payload rather than a column of their own:
+a CIBA delivery waiting in the outbox holds the client's notification token, the
+`auth_req_id` and, for push, the minted tokens, all sealed. The rotation re-seals
+those in place, and the command's output lists them after the columns. A second
+test finds every place the code seals with the root key and fails unless the
+rotation knows that context, so a new sealed value cannot be left out.
 
 ## Build-time, not runtime
 

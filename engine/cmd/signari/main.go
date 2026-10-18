@@ -1275,6 +1275,9 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 	covered := keys.RootSealedColumns()
 	fmt.Printf("\n  covers %d sealed column(s): %s\n",
 		len(covered), strings.Join(covered, ", "))
+	fields := keys.RootSealedFields()
+	fmt.Printf("  and %d sealed value(s) inside JSON: %s\n",
+		len(fields), strings.Join(fields, ", "))
 
 	if dryRun {
 		fmt.Printf("\nDRY RUN: %d secrets would be re-wrapped from %q to %q. Nothing written.\n",

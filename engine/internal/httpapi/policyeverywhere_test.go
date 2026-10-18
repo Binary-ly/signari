@@ -212,7 +212,7 @@ func TestADenyRuleRefusesACIBAApproval(t *testing.T) {
 	newRequest := func() string {
 		id, err := store.CreateBackchannelAuthentication(ctx, f.pool, f.orgID, f.clientID, f.userID,
 			"openid", "", nil, store.HashToken(fmt.Sprint("ar-", time.Now().UnixNano())), 5,
-			10*time.Minute, "")
+			10*time.Minute)
 		if err != nil {
 			t.Fatal(err)
 		}

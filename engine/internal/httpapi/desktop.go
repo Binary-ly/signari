@@ -112,10 +112,30 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 	// Whether a second factor is needed is decided by the same machinery as
 	// everywhere else, so a policy demanding MFA cannot be sidestepped by
 	// signing in at a desktop instead of a browser.
-	needsMFA, err := store.HasSecondFactor(ctx, s.db, userID)
+	//
+	// The flow's answer, as LDAP, RADIUS and the outpost endpoint ask it
+	// (BindDemandsMFA). This asked only whether a factor was enrolled, so an
+	// operator's unconditional mfa stage let a person with nothing enrolled in
+	// on a password at the desktop while the sign-in page stopped them.
+	// password_only_binds does not apply: it is for protocols that cannot
+	// carry a code, and this one can.
+	needsMFA, err := s.BindDemandsMFA(ctx, orgID, userID)
 	if err != nil {
-		s.log.Error("checking enrolled factors", "err", err)
+		s.log.Error("checking whether the flow demands a second factor", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	enrolled := false
+	if needsMFA {
+		if enrolled, err = store.HasSecondFactor(ctx, s.db, userID); err != nil {
+			s.log.Error("checking enrolled factors", "err", err)
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+	}
+	if needsMFA && !enrolled {
+		// No code could be right, and enrolling happens in a browser.
+		refuse("second factor required, none enrolled")
 		return
 	}
 	if needsMFA {

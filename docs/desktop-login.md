@@ -48,10 +48,17 @@ second box.
 
 ## MFA cannot be sidestepped by signing in at a desktop
 
-Whether a second factor is required is decided by the same function the browser
-flow uses. Enrol an authenticator and the desktop path demands it from the next
-attempt — verified by enrolling one and watching the same correct password stop
-being sufficient.
+Whether a second factor is required is decided by the sign-in flow, the same
+question LDAP and RADIUS ask. Enrol an authenticator and the desktop path
+demands it from the next attempt. This was verified by enrolling one and
+watching the same correct password stop being sufficient. Under a flow whose
+mfa stage runs for everybody, a person with nothing enrolled is refused at the
+desktop as at the sign-in page, because no code they could type would be
+right. That case used to sign in on the password alone, because the desktop
+asked only whether a factor was enrolled.
+
+`password_only_binds` does not apply here. It exists for protocols that cannot
+carry a code, and this one can.
 
 ## Its own outpost kind
 

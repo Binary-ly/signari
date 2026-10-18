@@ -31,7 +31,7 @@ import (
 //   - It promised throttling that did not exist either. Nothing on this path
 //     consulted a limiter, so the LDAP port was an unmetered guessing oracle
 //     against every account while the sign-in form next to it was capped at 30
-//     failures per quarter hour. Fixed; see `allowBind` below.
+//     failures per quarter hour. Fixed; see `reserveBind` below.
 //
 // It also claimed a "lockout". There is no lockout anywhere in the product --
 // sign-in uses expiring rate limits precisely so nobody can be locked out on
@@ -138,12 +138,13 @@ func (a *LDAPAuthenticator) audit(ctx context.Context, e audit.Event) {
 
 var errLDAPInvalid = errors.New("invalid credentials")
 
-// allowBind reports whether this bind may be attempted at all.
+// reserveBind takes this bind's place in both failure budgets before anything
+// expensive happens, or refuses it.
 //
 // # The buckets are the sign-in form's, deliberately
 //
-// This charges and reads `signin:fail:ip:` and `signin:fail:user:` -- the exact
-// keys `allowSignInAttempt` uses -- rather than an `ldap:` namespace of its own.
+// `signin:fail:ip:` and `signin:fail:user:` -- the exact keys
+// `allowSignInAttempt` uses -- rather than an `ldap:` namespace of its own.
 //
 // A separate namespace was the obvious implementation and it is the wrong one.
 // It would have given an attacker a second full allowance per account: thirty
@@ -151,91 +152,91 @@ var errLDAPInvalid = errors.New("invalid credentials")
 // documented as thirty. Two doors onto one credential must draw down one
 // budget, or the budget describes neither door.
 //
-// # Failures only
+// # Reserved first, kept only for a failure
 //
-// Read here, charged in recordBindFailure, so a correct bind costs nothing.
-// Charging every attempt would be defensible for a browser form at human pace
-// and is not defensible here: a mail server or a VPN concentrator binds on
-// every request, and a limit that counted successes would take out the
-// integrations this port exists to serve within a minute of a busy morning.
-func (a *LDAPAuthenticator) allowBind(ctx context.Context, identifier string) error {
+// The budgets used to be read here and charged after the Argon2 verification.
+// Every bind that arrived while others were being verified read a count below
+// the limit, so a parallel burst was hashed in full before the first failure
+// was counted: a counter, not a control. The place is now taken first
+// (store.ReserveRate, which does not count a caller it refuses) and handed
+// back by Authenticate for anything but a wrong credential, so a correct bind
+// still costs nothing. Charging successes would take out a mail server or a
+// VPN concentrator, which bind on every request, within a minute of a busy
+// morning.
+//
+// Kept for an unknown username as for a known one. Charging only for users
+// that exist would make the counter itself an enumeration oracle.
+func (a *LDAPAuthenticator) reserveBind(ctx context.Context, identifier string) ([]store.Reservation, error) {
+	var held []store.Reservation
+	refuse := func(err error) ([]store.Reservation, error) {
+		if err != nil {
+			// Fail closed. The credential lookup needs the same database, so
+			// refusing costs nothing that was going to succeed, and failing open
+			// would turn a database blip into an unmetered guessing window on
+			// the one port with no human in front of it.
+			a.log.Error("reserving against the LDAP bind rate limit", "err", err)
+		}
+		a.release(ctx, held)
+		return nil, ldapd.ErrBusy
+	}
 	// From the socket, never from the request. The peer is the one thing on an
 	// LDAP bind an attacker cannot choose.
 	if ip := ldapd.PeerAddr(ctx); ip != "" {
-		n, err := store.CountRate(ctx, a.db, "signin:fail:ip:"+ip, signInPerIPWindow)
-		if err != nil {
-			// Fail closed. The credential lookup one line down needs the same
-			// database, so refusing here costs nothing that was going to
-			// succeed, and failing open would turn a database blip into an
-			// unmetered guessing window on the one port with no human in front
-			// of it.
-			a.log.Error("checking the LDAP bind rate limit", "err", err)
-			return ldapd.ErrBusy
+		r, ok, err := store.ReserveRate(ctx, a.db, "signin:fail:ip:"+ip, signInPerIPLimit, signInPerIPWindow)
+		if err != nil || !ok {
+			return refuse(err)
 		}
-		if n >= signInPerIPLimit {
-			return ldapd.ErrBusy
-		}
+		held = append(held, r)
 	}
-
 	// Lowercased to match the form's key exactly. Without it Alice@example.com
 	// and alice@example.com would be two budgets on one account, and the LDAP
 	// port would hand out a fresh one per spelling.
-	identifier = strings.ToLower(strings.TrimSpace(identifier))
-	if identifier == "" {
-		return nil
+	if identifier = strings.ToLower(strings.TrimSpace(identifier)); identifier != "" {
+		r, ok, err := store.ReserveRate(ctx, a.db, "signin:fail:user:"+identifier,
+			signInPerAccountLimit, signInPerAccountWindow)
+		if err != nil || !ok {
+			return refuse(err)
+		}
+		held = append(held, r)
 	}
-	n, err := store.CountRate(ctx, a.db, "signin:fail:user:"+identifier,
-		signInPerAccountWindow)
-	if err != nil {
-		a.log.Error("checking the per-account LDAP bind rate limit", "err", err)
-		return ldapd.ErrBusy
-	}
-	if n >= signInPerAccountLimit {
-		return ldapd.ErrBusy
-	}
-	return nil
+	return held, nil
 }
 
-// recordBindFailure charges one failure against both budgets.
-//
-// Called for every outcome that denies the bind, including an unknown username.
-// Charging only for users that exist would make the counter itself an
-// enumeration oracle: guess a thousand names, see which thousandth attempt is
-// refused, and the refusals name the real accounts.
-func (a *LDAPAuthenticator) recordBindFailure(ctx context.Context, identifier string) {
-	if ip := ldapd.PeerAddr(ctx); ip != "" {
-		if _, err := store.AllowRate(ctx, a.db, "signin:fail:ip:"+ip,
-			signInPerIPLimit, signInPerIPWindow); err != nil {
-			a.log.Error("recording an LDAP bind failure", "err", err)
+// release hands reserved places back. On a context of its own: a bind that ran
+// out of time must still return its place, or a slow hasher would charge
+// correct binds as failures.
+func (a *LDAPAuthenticator) release(ctx context.Context, held []store.Reservation) {
+	ctx = context.WithoutCancel(ctx)
+	for _, r := range held {
+		if err := r.Release(ctx, a.db); err != nil {
+			a.log.Error("releasing an LDAP bind reservation", "err", err)
 		}
-	}
-	identifier = strings.ToLower(strings.TrimSpace(identifier))
-	if identifier == "" {
-		return
-	}
-	if _, err := store.AllowRate(ctx, a.db, "signin:fail:user:"+identifier,
-		signInPerAccountLimit, signInPerAccountWindow); err != nil {
-		a.log.Error("recording an LDAP bind failure", "err", err)
 	}
 }
 
 func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password string) (_ *ldapd.Identity, err error) {
-	// Charged once, at the single exit, rather than at each of the four returns
-	// that deny a bind. A new denial branch added later inherits the charge; a
-	// call at each site is one somebody adds a fifth branch without.
-	//
-	// Scoped to errLDAPInvalid exactly, and the two exclusions are the point:
-	//
-	//   - Not ErrBusy. Charging a caller who was already refused would let a
-	//     client's own retries extend its ban without limit, turning an
-	//     expiring rate limit into the permanent lockout this product
-	//     deliberately does not have.
-	//   - Not a database error. That failure is ours, and spending a real
-	//     user's budget for it would let a five-minute outage deny sign-in for
-	//     fifteen more.
+	// Before the lookup and before the hash: the point of a guessing budget is
+	// to stop spending Argon2 on an attacker. A refusal is not counted
+	// (ReserveRate), so a client's own retries cannot extend it into the
+	// permanent lockout this product deliberately does not have.
+	held, rerr := a.reserveBind(ctx, username)
+	if rerr != nil {
+		a.audit(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: a.orgID,
+			Detail: map[string]any{"via": a.via, "reason": "rate_limited"},
+		})
+		return nil, rerr
+	}
+	// Kept once, at the single exit, rather than at each of the returns that
+	// deny a bind: a new denial branch inherits it, where a call at each site
+	// is one somebody adds a branch without. Kept for errLDAPInvalid exactly.
+	// Anything else hands the place back: a correct bind; errMFARequired, a
+	// right password the organisation will not take alone; and a database error
+	// or a timeout, which are our failures, and spending a real user's budget
+	// for them would let a five-minute outage deny sign-in for fifteen more.
 	defer func() {
-		if errors.Is(err, errLDAPInvalid) {
-			a.recordBindFailure(ctx, username)
+		if !errors.Is(err, errLDAPInvalid) {
+			a.release(ctx, held)
 		}
 	}()
 
@@ -244,18 +245,6 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 	// place that would have to fail for one to get through.
 	if password == "" {
 		return nil, errLDAPInvalid
-	}
-
-	// Before the hash is verified, and before the lookup: the point of a
-	// guessing budget is to stop spending Argon2 on an attacker, and a check
-	// that runs after the expensive part has already run is a counter, not a
-	// control.
-	if err := a.allowBind(ctx, username); err != nil {
-		a.audit(ctx, audit.Event{
-			Type: audit.EventLoginFailed, OrgID: a.orgID,
-			Detail: map[string]any{"via": a.via, "reason": "rate_limited"},
-		})
-		return nil, err
 	}
 
 	// The same query the sign-in form uses, including its status check: a

@@ -109,7 +109,14 @@ and the work here is one Argon2 verification, which is deliberately expensive.
 so the loop would spin forever on a packet an attacker sends once.
 
 **Binds go through the same credential path** as every other way into this
-product — same Argon2 parameters, same throttling, same audit trail.
+product — same Argon2 parameters, same throttling, same audit trail. That
+includes the budget [LDAP](ldap.md) claims before verifying a password.
+
+**An Access-Request has five seconds**, the wait for the shared hasher
+included, and is rejected after that. Packets are answered one at a time, and
+the verification waits for the hasher slots the sign-in form also uses. Without
+a deadline, one packet could hold the listener while a sign-in flood kept
+the slots busy, long after the client had retransmitted and given up.
 
 ## The bug the round-trip caught
 

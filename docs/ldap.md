@@ -132,6 +132,21 @@ a VPN concentrator that binds on every request is never throttled by its own
 success. The limits expire by themselves; there is no lockout and no
 administrator action needed to clear one.
 
+**The place is taken before the password is verified.** Each bind claims its
+place in both budgets first, and hands it back unless the password turns out to
+be wrong. The budgets used to be read before the Argon2 verification and only
+charged after it. So every bind that arrived while others were still being
+verified read a count under the limit, and a parallel burst was hashed in full
+before the first failure was counted. A burst of sixty wrong binds now produces
+thirty verifications and thirty `busy` answers. Binds in flight count while
+they are in flight, so a single client making more simultaneous binds than the
+limit is told `busy` for the rest.
+
+**A bind has ten seconds**, the wait for the shared hasher included. Past that
+it answers `busy` and the client retries. The verification waits for the same
+hasher slots as the sign-in form. Without a deadline, a bind flood queued there
+indefinitely, ahead of people signing in at the browser.
+
 A bind refused for throttling answers **`busy` (51)**, not `invalidCredentials`
 (49). Every other failure — no such user, wrong password, deactivated account —
 is deliberately indistinguishable, because telling them apart is a user

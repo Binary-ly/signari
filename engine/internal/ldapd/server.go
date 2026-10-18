@@ -312,6 +312,10 @@ func (s *Server) dispatch(ctx context.Context, c net.Conn, sess *session, messag
 	}
 }
 
+// BindTimeout is the longest a bind may take, waiting for the hasher included.
+// A refusal past it is answered busy, and the client retries.
+const BindTimeout = 10 * time.Second
+
 // Extended operation OIDs.
 const (
 	oidWhoAmI   = "1.3.6.1.4.1.4203.1.11.3"
@@ -441,7 +445,13 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 			resultInvalidCredentials, "", "invalid credentials")))
 	}
 
-	id, err := s.auth.Authenticate(ctx, username, req.Password)
+	// A deadline of its own. The verification waits for a slot in the hasher
+	// the sign-in form shares, and this context otherwise lives as long as the
+	// connection: a bind flood queued there without end, ahead of people
+	// signing in at the browser, and kept waiting after the client had given up.
+	bctx, cancel := context.WithTimeout(ctx, BindTimeout)
+	defer cancel()
+	id, err := s.auth.Authenticate(bctx, username, req.Password)
 	if errors.Is(err, ErrBusy) {
 		// Reported distinctly, and this is the one place a bind failure is
 		// allowed to be distinguishable.

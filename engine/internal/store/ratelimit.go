@@ -35,6 +35,66 @@ type RateResult struct {
 	RetryAfter time.Duration
 }
 
+// Reservation is one place in a window taken by ReserveRate, to be given back
+// with Release when what it guarded turns out not to count.
+type Reservation struct {
+	key   string
+	start time.Time
+}
+
+// ReserveRate takes one place in a keyed window only while the window is below
+// limit, and reports whether it did. A caller refused is NOT counted, so its
+// own retries cannot extend its refusal.
+//
+// It exists for a check that has to come before something expensive. A
+// failure budget read beforehand and charged afterwards admits every request
+// that arrives during the expensive part: a burst of parallel guesses each
+// read a count below the limit and each paid for an Argon2 evaluation before
+// the first of them was charged. Taking the place first, and handing it back
+// when the attempt succeeds, closes that window: the burst stops at the limit.
+func ReserveRate(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, key string, limit int, window time.Duration) (Reservation, bool, error) {
+
+	if limit <= 0 || window <= 0 {
+		return Reservation{}, false, fmt.Errorf("rate limit for %q is not configured "+
+			"(limit %d, window %s)", key, limit, window)
+	}
+	if window > MaxRateWindow {
+		return Reservation{}, false, fmt.Errorf("rate limit for %q has a %s window, longer "+
+			"than the %s PurgeRateLimits keeps", key, window, MaxRateWindow)
+	}
+	r := Reservation{key: key}
+	err := q.QueryRow(ctx, `
+		INSERT INTO core.rate_limits (bucket_key, window_start, count)
+		VALUES ($1, to_timestamp(floor(extract(epoch FROM now()) / $2) * $2), 1)
+		ON CONFLICT (bucket_key, window_start)
+		DO UPDATE SET count = core.rate_limits.count + 1
+		WHERE core.rate_limits.count < $3
+		RETURNING window_start`, key, window.Seconds(), limit).Scan(&r.start)
+	if err == pgx.ErrNoRows {
+		return Reservation{}, false, nil
+	}
+	if err != nil {
+		return Reservation{}, false, fmt.Errorf("reserving against the rate limit for %q: %w", key, err)
+	}
+	return r, true, nil
+}
+
+// Release gives a reservation's place back, in the window it was taken from.
+// A zero Reservation releases nothing.
+func (r Reservation) Release(ctx context.Context, q interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}) error {
+	if r.key == "" {
+		return nil
+	}
+	_, err := q.Exec(ctx, `
+		UPDATE core.rate_limits SET count = count - 1
+		 WHERE bucket_key = $1 AND window_start = $2 AND count > 0`, r.key, r.start)
+	return err
+}
+
 // AllowRate counts one request against a keyed limit.
 //
 // The increment happens INSIDE the UPDATE, referencing the stored row, so two

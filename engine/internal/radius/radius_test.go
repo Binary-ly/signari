@@ -81,10 +81,19 @@ func buildRequest(t *testing.T, secret, username, password string, withMAC bool)
 	return pkt
 }
 
-type fakeAuth struct{ calls int }
+type fakeAuth struct {
+	calls int
+	// left is how long the last Authenticate's context had before its
+	// deadline, or zero when it had none.
+	left time.Duration
+}
 
-func (f *fakeAuth) Authenticate(_ context.Context, u, p string) error {
+func (f *fakeAuth) Authenticate(ctx context.Context, u, p string) error {
 	f.calls++
+	f.left = 0
+	if d, ok := ctx.Deadline(); ok {
+		f.left = time.Until(d)
+	}
 	if u == "alice" && p == "correct-horse-battery" {
 		return nil
 	}
@@ -146,6 +155,20 @@ func TestValidRequestIsAccepted(t *testing.T) {
 	}
 	if reply.Code != CodeAccessAccept {
 		t.Fatalf("code = %d, want Access-Accept", reply.Code)
+	}
+}
+
+// An Access-Request's verification has a deadline. It waits for a slot in the
+// hasher the sign-in form shares, on the listener's context, which lives as
+// long as the process: one packet could hold the only goroutine that answers
+// every client for as long as a sign-in flood kept the slots busy.
+func TestAnAccessRequestHasADeadline(t *testing.T) {
+	s, auth := newServer(t)
+	if reply := exchange(t, s, buildRequest(t, testSecret, "alice", "correct-horse-battery", true)); reply == nil {
+		t.Fatal("no reply")
+	}
+	if auth.left <= 0 || auth.left > AuthTimeout {
+		t.Fatalf("the request was verified with %v before its deadline, want (0, %v]", auth.left, AuthTimeout)
 	}
 }
 

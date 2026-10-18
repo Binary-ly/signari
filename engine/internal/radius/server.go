@@ -22,6 +22,11 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, username, password string) error
 }
 
+// AuthTimeout is the longest one Access-Request's authentication may take,
+// waiting for the hasher included. RADIUS clients retransmit within seconds,
+// and a later answer is to a question nobody is still asking.
+const AuthTimeout = 5 * time.Second
+
 // Authorizer decides what network access a successful authentication grants.
 //
 // Separate from Authenticator on purpose, and optional: a deployment that has
@@ -300,7 +305,15 @@ func (s *Server) handle(ctx context.Context, conn net.PacketConn, addr net.Addr,
 		return
 	}
 
-	if err := s.auth.Authenticate(ctx, strings.TrimSpace(string(username)), password); err != nil {
+	// A deadline of its own, shorter than LDAP's. The verification waits for a
+	// slot in the hasher the sign-in form shares, and the listener's context
+	// lives as long as the process: a packet waited there without end, holding
+	// the one goroutine that answers every client, for an answer a RADIUS
+	// client stopped waiting for after its first retransmission.
+	actx, cancel := context.WithTimeout(ctx, AuthTimeout)
+	err = s.auth.Authenticate(actx, strings.TrimSpace(string(username)), password)
+	cancel()
+	if err != nil {
 		s.log.Info("RADIUS authentication failed", "client", client.Name,
 			"username", string(username))
 		s.reject(conn, addr, p, secret, "authentication failed")

@@ -23,6 +23,9 @@ import (
 type fakeAuth struct {
 	calls  int
 	groups []string
+	// left is how long the last Authenticate's context had before its
+	// deadline, or zero when it had none.
+	left time.Duration
 }
 
 var fixtures = map[string]struct{ pw, email, name string }{
@@ -30,8 +33,12 @@ var fixtures = map[string]struct{ pw, email, name string }{
 	"bob":   {"hunter2hunter2", "bob@example.test", "Bob Example"},
 }
 
-func (f *fakeAuth) Authenticate(_ context.Context, u, p string) (*Identity, error) {
+func (f *fakeAuth) Authenticate(ctx context.Context, u, p string) (*Identity, error) {
 	f.calls++
+	f.left = 0
+	if d, ok := ctx.Deadline(); ok {
+		f.left = time.Until(d)
+	}
 	r, ok := fixtures[strings.ToLower(u)]
 	if !ok || r.pw != p {
 		return nil, errors.New("invalid credentials")
@@ -142,6 +149,20 @@ func TestCorrectBindSucceeds(t *testing.T) {
 	c := dial(t, addr)
 	if err := c.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
 		t.Fatalf("a valid bind was refused: %v", err)
+	}
+}
+
+// A bind's verification has a deadline. It waits for a slot in the hasher the
+// sign-in form shares, on a context that otherwise lived as long as the
+// connection, so a bind flood queued there without end.
+func TestABindHasADeadline(t *testing.T) {
+	addr, auth := startServer(t, Config{})
+	c := dial(t, addr)
+	if err := c.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
+		t.Fatalf("a valid bind was refused: %v", err)
+	}
+	if auth.left <= 0 || auth.left > BindTimeout {
+		t.Fatalf("the bind was verified with %v before its deadline, want (0, %v]", auth.left, BindTimeout)
 	}
 }
 

@@ -261,6 +261,15 @@ a root the catalogue does not list. **Without a catalogue an approved-model
 allow-list cannot verify any registration, so every registration under one is
 refused.**
 
+The chain for a listed model must reach one of that model's roots, whatever
+names its certificates carry. If it doesn't, the registration is refused. This
+covers a self-signed certificate, and also a certificate issued by a made-up CA
+that has the same common name. Either one is an authenticator claiming to be a
+model it cannot prove it is. Chains are read from the attestation statement's
+`x5c`, which covers the packed, TPM, Android key, Apple and U2F formats. A
+SafetyNet or compound attestation vouches for nothing here, and is not refused
+for that.
+
 The BLOB must be signed by the FIDO production root, wherever it comes from; an
 unsigned or wrongly signed one is refused.
 

@@ -283,7 +283,17 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 	// to a self-made root (basic_full), which go-webauthn accepts unexamined when
 	// no catalogue is configured -- so the approved-model allow-list could be
 	// passed by any software authenticator claiming an approved AAGUID.
-	attestationVerified := fidomds.AttestationAnchored(s.models, cred.Authenticator.AAGUID, cred.AttestationType)
+	//
+	// A chain claiming a listed model that does not reach its roots is refused
+	// outright, as go-webauthn refuses it itself when the common names differ.
+	attestationVerified, aerr := fidomds.AttestationAnchored(s.models,
+		cred.Authenticator.AAGUID, cred.AttestationType, cred.Attestation.Object)
+	if aerr != nil {
+		s.log.Warn("registration refused: the attestation does not anchor in the catalogue",
+			"org_id", orgID, "user_id", userID, "attestation", cred.AttestationType, "err", aerr)
+		writeError(w, http.StatusBadRequest, "invalid_request", "the authenticator response was rejected")
+		return
+	}
 
 	policy, perr := store.LoadWebAuthnPolicy(ctx, s.db, orgID)
 	if perr != nil {

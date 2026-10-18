@@ -2,13 +2,23 @@ package fidomds
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
+	"errors"
 	"io"
 	"log/slog"
+	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/go-webauthn/webauthn/metadata"
+	"github.com/go-webauthn/webauthn/protocol/webauthncbor"
 	"github.com/google/uuid"
 )
 
@@ -191,39 +201,134 @@ func withEntries(ids ...uuid.UUID) *Resolver {
 	return r
 }
 
-// Only a certificate chain, for a model the catalogue lists, vouches for an
-// AAGUID. Every other combination must say no -- this is what the
-// approved-model allow-list rests on.
+// issue makes a certificate for cn, signed by parent (self-signed when parent
+// is nil), with any extra extensions.
+func issue(t *testing.T, cn string, parent *x509.Certificate, parentKey *ecdsa.PrivateKey, ca bool,
+	ext ...pkix.Extension) (*x509.Certificate, *ecdsa.PrivateKey) {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{Country: []string{"US"}, Organization: []string{"Vendor"},
+			OrganizationalUnit: []string{"Authenticator Attestation"}, CommonName: cn},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		BasicConstraintsValid: true, IsCA: ca,
+		KeyUsage:        x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtraExtensions: ext,
+	}
+	if parent == nil {
+		parent, parentKey = tmpl, k
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, &k.PublicKey, parentKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, k
+}
+
+// attObject is a CBOR attestation object whose statement carries chain as x5c.
+func attObject(t *testing.T, chain ...*x509.Certificate) []byte {
+	t.Helper()
+	stmt := map[string]any{"alg": int64(-7), "sig": []byte{1}}
+	if len(chain) > 0 {
+		x5c := []any{}
+		for _, c := range chain {
+			x5c = append(x5c, c.Raw)
+		}
+		stmt["x5c"] = x5c
+	}
+	b, err := webauthncbor.Marshal(map[string]any{"fmt": "packed", "authData": []byte{0}, "attStmt": stmt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// Only a certificate chain that reaches the roots the catalogue lists for the
+// model vouches for an AAGUID, whatever the certificates' common names. Every
+// other combination must say no, and a chain for a listed model that does not
+// reach its roots must be refused -- this is what the approved-model
+// allow-list rests on.
 func TestOnlyAnAnchoredChainVouchesForAnAAGUID(t *testing.T) {
 	listed := uuid.MustParse(yubi5)
 	unlisted := uuid.MustParse("00000000-0000-0000-0000-0000000000ff")
+
+	root, rootKey := issue(t, "Vendor Root", nil, nil, true)
+	inter, interKey := issue(t, "Vendor Intermediate", root, rootKey, true)
 	r := withEntries(listed)
+	(*r.entries.Load())[listed].MetadataStatement.AttestationRootCertificates = []*x509.Certificate{root}
+
+	genuine, _ := issue(t, "Vendor EE", root, rootKey, false)
+	viaInter, _ := issue(t, "Vendor EE 2", inter, interKey, false)
+	// A genuine leaf may share its issuer's common name; the old library path
+	// skipped the check for exactly this shape, so it must still pass on merit.
+	sameNameGenuine, _ := issue(t, "Vendor Root", root, rootKey, false)
+	selfSigned, _ := issue(t, "Totally A YubiKey", nil, nil, false)
+	fakeCA, fakeKey := issue(t, "Same Name", nil, nil, true)
+	sameNameForged, _ := issue(t, "Same Name", fakeCA, fakeKey, false)
+	otherCA, otherKey := issue(t, "Attacker CA", nil, nil, true)
+	otherForged, _ := issue(t, "Leaf", otherCA, otherKey, false)
+
+	// A TPM AIK certificate: empty subject, a critical SAN holding only a
+	// directoryName, which x509 leaves unhandled, and the AIK key purpose
+	// rather than a TLS one.
+	tpmName, _ := asn1.Marshal(pkix.Name{ExtraNames: []pkix.AttributeTypeAndValue{
+		{Type: asn1.ObjectIdentifier{2, 23, 133, 2, 1}, Value: "id:49465800"}}}.ToRDNSequence())
+	san, _ := asn1.Marshal([]asn1.RawValue{{Class: asn1.ClassContextSpecific, Tag: 4, IsCompound: true, Bytes: tpmName}})
+	aikEKU, _ := asn1.Marshal([]asn1.ObjectIdentifier{{2, 23, 133, 8, 3}})
+	aik, _ := issue(t, "", root, rootKey, false,
+		pkix.Extension{Id: oidSubjectAltName, Critical: true, Value: san},
+		pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Value: aikEKU})
+	if len(aik.UnhandledCriticalExtensions) == 0 {
+		t.Fatal("the AIK fixture's SAN is not left unhandled, so it proves nothing")
+	}
 
 	cases := []struct {
 		name    string
 		r       *Resolver
 		aaguid  uuid.UUID
 		attType string
+		object  []byte
 		vouched bool
+		refused bool
 	}{
-		{"chain for a listed model", r, listed, "basic_full", true},
-		{"attestation CA for a listed model", r, listed, "attca", true},
-		{"packed self-attestation", r, listed, "basic_surrogate", false},
-		{"no attestation", r, listed, "none", false},
-		{"chain for an unlisted model (accepted unexamined by the library)", r, unlisted, "basic_full", false},
-		{"no catalogue configured", nil, listed, "basic_full", false},
-		{"catalogue configured but never loaded", &Resolver{log: quietLog()}, listed, "basic_full", false},
+		{"chain for a listed model", r, listed, "basic_full", attObject(t, genuine), true, false},
+		{"chain through an intermediate", r, listed, "basic_full", attObject(t, viaInter, inter), true, false},
+		{"genuine leaf sharing its issuer's name", r, listed, "basic_full", attObject(t, sameNameGenuine), true, false},
+		{"attestation CA with a TPM SAN", r, listed, "attca", attObject(t, aik), true, false},
+		{"self-signed leaf claiming a listed model", r, listed, "basic_full", attObject(t, selfSigned), false, true},
+		{"made-up CA sharing the leaf's name", r, listed, "basic_full", attObject(t, sameNameForged, fakeCA), false, true},
+		{"made-up CA with another name", r, listed, "basic_full", attObject(t, otherForged, otherCA), false, true},
+		{"made-up AIK", r, listed, "attca", attObject(t, selfSigned), false, true},
+		{"chain kept outside x5c", r, listed, "basic_full", attObject(t), false, false},
+		{"packed self-attestation", r, listed, "basic_surrogate", attObject(t), false, false},
+		{"no attestation", r, listed, "none", attObject(t), false, false},
+		{"chain for an unlisted model (accepted unexamined by the library)", r, unlisted, "basic_full", attObject(t, selfSigned), false, false},
+		{"no catalogue configured", nil, listed, "basic_full", attObject(t, genuine), false, false},
+		{"catalogue configured but never loaded", &Resolver{log: quietLog()}, listed, "basic_full", attObject(t, genuine), false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := AttestationAnchored(c.r, c.aaguid[:], c.attType); got != c.vouched {
-				t.Errorf("AttestationAnchored = %v, want %v", got, c.vouched)
+			got, err := AttestationAnchored(c.r, c.aaguid[:], c.attType, c.object)
+			if got != c.vouched {
+				t.Errorf("vouched = %v, want %v (err %v)", got, c.vouched, err)
+			}
+			if refused := errors.Is(err, ErrUnanchoredChain); refused != c.refused {
+				t.Errorf("refused = %v, want %v (err %v)", refused, c.refused, err)
 			}
 		})
 	}
 
-	if AttestationAnchored(r, make([]byte, 16), "basic_full") {
-		t.Error("the all-zero AAGUID was vouched for")
+	if ok, err := AttestationAnchored(r, make([]byte, 16), "basic_full", attObject(t, genuine)); ok || err != nil {
+		t.Errorf("the all-zero AAGUID was vouched for or refused: %v %v", ok, err)
 	}
 }
 

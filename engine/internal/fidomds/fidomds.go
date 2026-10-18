@@ -26,6 +26,9 @@ package fidomds
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/asn1"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -35,6 +38,8 @@ import (
 	"time"
 
 	"github.com/go-webauthn/webauthn/metadata"
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/protocol/webauthncbor"
 	"github.com/google/uuid"
 
 	"signari.dev/engine/internal/safedial"
@@ -104,26 +109,20 @@ func (r *Resolver) Model(aaguid []byte) (string, bool) {
 // Loaded reports whether the catalogue has been read successfully at least once.
 func (r *Resolver) Loaded() bool { return r != nil && r.loaded.Load() }
 
-// Anchors reports whether the catalogue holds an entry for this AAGUID.
-//
-// That is the condition under which go-webauthn checks a certificate-chain
-// attestation against a trust anchor at all: with no entry it accepts the chain
-// unexamined. So a registration's attestation vouches for its AAGUID only when
-// this is true AND the attestation carried a chain -- see AttestationAnchored.
-func (r *Resolver) Anchors(aaguid []byte) bool {
+// entryFor returns the catalogue entry for this AAGUID, or nil.
+func (r *Resolver) entryFor(aaguid []byte) *metadata.Entry {
 	if r == nil || len(aaguid) != 16 {
-		return false
+		return nil
 	}
 	id, err := uuid.FromBytes(aaguid)
 	if err != nil || id == uuid.Nil {
-		return false
+		return nil
 	}
 	m := r.entries.Load()
 	if m == nil {
-		return false
+		return nil
 	}
-	_, ok := (*m)[id]
-	return ok
+	return (*m)[id]
 }
 
 // chainTypes are the attestation types that carry a certificate chain, which
@@ -132,12 +131,81 @@ func (r *Resolver) Anchors(aaguid []byte) bool {
 // authenticator holds that key and nothing about what model it is.
 var chainTypes = map[string]bool{"basic_full": true, "attca": true, "anonca": true}
 
+// ErrUnanchoredChain is a certificate chain for a model the catalogue lists
+// that does not reach that model's roots: an authenticator claiming to be a
+// model it cannot prove it is.
+var ErrUnanchoredChain = errors.New("the attestation chain does not reach the catalogue's roots for its model")
+
+// oidSubjectAltName is the SAN extension, critical on a TPM AIK certificate and
+// holding only TPM names Go does not parse.
+var oidSubjectAltName = asn1.ObjectIdentifier{2, 5, 29, 17}
+
 // AttestationAnchored reports whether a completed registration's AAGUID is
 // vouched for: the catalogue was loaded and given to the ceremony, it holds an
-// entry for the model, and the attestation was a certificate chain -- which
-// go-webauthn then validated against that entry's roots or refused.
-func AttestationAnchored(r *Resolver, aaguid []byte, attestationType string) bool {
-	return r.Loaded() && chainTypes[attestationType] && r.Anchors(aaguid)
+// entry for the model, the attestation was a certificate chain, and that chain
+// verifies to the roots the entry lists. A chain for a listed model that does
+// not verify is ErrUnanchoredChain, and the registration is refused.
+//
+// The chain is verified here and not left to go-webauthn. In v0.17.4 the
+// library checks it only when the leaf's subject and issuer common names
+// differ (protocol/metadata.go:101). So a self-signed leaf, or one issued by a
+// made-up CA with the same common name, was accepted as basic_full. Any
+// software authenticator could then claim an approved model's AAGUID and pass
+// the approved-model allow-list.
+//
+// attestationObject is the raw CBOR the authenticator returned
+// (webauthn.Credential.Attestation.Object). A chain only counts if it is in
+// the statement's x5c. That covers packed, tpm, android-key, apple and
+// fido-u2f. android-safetynet keeps its chain inside a JWS and compound nests
+// statements, so neither vouches for anything here. They are not refused.
+func AttestationAnchored(r *Resolver, aaguid []byte, attestationType string, attestationObject []byte) (bool, error) {
+	if !r.Loaded() || !chainTypes[attestationType] {
+		return false, nil
+	}
+	entry := r.entryFor(aaguid)
+	if entry == nil {
+		return false, nil
+	}
+	var att protocol.AttestationObject
+	if err := webauthncbor.Unmarshal(attestationObject, &att); err != nil {
+		return false, fmt.Errorf("reading the attestation object: %w", err)
+	}
+	x5c, _ := att.AttStatement["x5c"].([]any)
+	if len(x5c) == 0 {
+		return false, nil
+	}
+	var chain []*x509.Certificate
+	for _, raw := range x5c {
+		der, ok := raw.([]byte)
+		if !ok {
+			return false, fmt.Errorf("%w: an x5c entry is %T, not a certificate", ErrUnanchoredChain, raw)
+		}
+		c, err := x509.ParseCertificate(der)
+		if err != nil {
+			return false, fmt.Errorf("%w: %v", ErrUnanchoredChain, err)
+		}
+		chain = append(chain, c)
+	}
+	leaf := chain[0]
+	if attestationType == "attca" {
+		// The ceremony has already read the SAN the way the TPM format requires;
+		// x509 would otherwise refuse the chain over an extension it cannot parse.
+		var unhandled []asn1.ObjectIdentifier
+		for _, oid := range leaf.UnhandledCriticalExtensions {
+			if !oid.Equal(oidSubjectAltName) {
+				unhandled = append(unhandled, oid)
+			}
+		}
+		leaf.UnhandledCriticalExtensions = unhandled
+	}
+	opts := entry.MetadataStatement.Verifier(chain[1:])
+	// Attestation and AIK certificates carry their own key purposes, or none;
+	// what is vouched for here is the issuer, not a TLS server.
+	opts.KeyUsages = []x509.ExtKeyUsage{x509.ExtKeyUsageAny}
+	if _, err := leaf.Verify(opts); err != nil {
+		return false, fmt.Errorf("%w: %v", ErrUnanchoredChain, err)
+	}
+	return true, nil
 }
 
 // Provider returns the Resolver as a go-webauthn metadata provider, or nil when

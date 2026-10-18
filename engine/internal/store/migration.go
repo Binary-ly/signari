@@ -34,13 +34,19 @@ type PendingMigration struct {
 // Returns ok=false for everything else -- an unknown identifier, a user with a
 // local hash, a disabled source. No fallback, no guessing: delegation is
 // attempted only where it was explicitly configured.
-func LookupMigrationCandidate(ctx context.Context, db *pgxpool.Pool, identifier string,
+//
+// Scoped to orgID, the sign-in page's organisation, as the local credential
+// lookup is (1.13b). Empty means the page belongs to no organisation in
+// particular, and then the identifier must name exactly one candidate: two
+// would mean sending this password to whichever tenant's old provider the
+// database returned first.
+func LookupMigrationCandidate(ctx context.Context, db *pgxpool.Pool, orgID, identifier string,
 	root *keys.RootKey) (*PendingMigration, bool, error) {
 
 	var p PendingMigration
 	var secretEnc []byte
 
-	err := db.QueryRow(ctx, `
+	rows, err := db.Query(ctx, `
 		SELECT u.id::text, u.org_id::text,
 		       ms.id::text, ms.kind, ms.display_name, ms.token_endpoint,
 		       ms.client_id, ms.client_secret_enc, ms.scope
@@ -54,15 +60,28 @@ func LookupMigrationCandidate(ctx context.Context, db *pgxpool.Pool, identifier 
 		  -- locally; delegating for them would send their password to a third
 		  -- party we no longer need to ask.
 		  AND pc.user_id IS NULL
-		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))`,
-		identifier).Scan(&p.UserID, &p.OrgID, &p.Source.ID, &p.Source.Kind,
-		&p.Source.DisplayName, &p.Source.TokenEndpoint, &p.Source.ClientID,
-		&secretEnc, &p.Source.Scope)
-	if err == pgx.ErrNoRows {
-		return nil, false, nil
-	}
+		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))
+		  AND ($2 = '' OR u.org_id = $2::uuid)
+		LIMIT 2`, identifier, orgID)
 	if err != nil {
 		return nil, false, fmt.Errorf("looking up migration candidate: %w", err)
+	}
+	found := 0
+	for rows.Next() {
+		found++
+		if err := rows.Scan(&p.UserID, &p.OrgID, &p.Source.ID, &p.Source.Kind,
+			&p.Source.DisplayName, &p.Source.TokenEndpoint, &p.Source.ClientID,
+			&secretEnc, &p.Source.Scope); err != nil {
+			rows.Close()
+			return nil, false, fmt.Errorf("looking up migration candidate: %w", err)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("looking up migration candidate: %w", err)
+	}
+	if found != 1 {
+		return nil, false, nil
 	}
 
 	if len(secretEnc) > 0 {

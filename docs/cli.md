@@ -9,6 +9,14 @@ to look for it.
 Most commands need `SIGNARI_DSN`. Anything touching sealed material also needs
 `SIGNARI_ROOT_KEY`. See [configuration.md](configuration.md).
 
+A command that names something by a slug, a name or an address also takes
+`-org`. Those are unique within one organisation at most. Without `-org`, the
+name must belong to exactly one organisation in the deployment, or the command
+refuses and asks which. A single-organisation deployment never needs it. This
+covers the SCIM target, directory source and RADIUS client commands,
+`user locale` and `duo enroll`. Until October 2026 these acted on every
+tenant's row of that name, or on whichever one came back first.
+
 ## Schema
 
 | | |

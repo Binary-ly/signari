@@ -1535,7 +1535,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		// whether it is a user we imported whose password still lives at the
 		// provider being migrated away from. Those two cases look identical at
 		// this form and must be handled completely differently.
-		if done := s.tryDelegated(w, r, identifier, password, authzQuery); done {
+		if done := s.tryDelegated(w, r, pageOrg, identifier, password, authzQuery); done {
 			return
 		}
 
@@ -2377,13 +2377,13 @@ func stepUpErrorCode(r oauth.StepUpReason) string {
 }
 
 func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
-	identifier, password, authzQuery string) bool {
+	pageOrg, identifier, password, authzQuery string) bool {
 
 	ctx := r.Context()
 	if s.cfg.Root == nil {
 		return false
 	}
-	pending, ok, err := store.LookupMigrationCandidate(ctx, s.db, identifier, s.cfg.Root)
+	pending, ok, err := store.LookupMigrationCandidate(ctx, s.db, pageOrg, identifier, s.cfg.Root)
 	if err != nil {
 		s.log.Error("looking up migration candidate", "err", err)
 		return false

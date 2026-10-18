@@ -47,25 +47,74 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
+// oneInOrg resolves a row the operator named by a key that is unique within an
+// organisation at most: a slug, a name, an address. With -org it is that
+// organisation's row; without, the key must name exactly one row in the whole
+// deployment, or the command refuses and asks for -org.
+//
+// These commands found their row by the key alone. Two organisations each with
+// a SCIM target called "slack" had both enabled by one command, and one was
+// synced at random by another. Refusing the ambiguous case rather than always
+// requiring -org keeps every single-organisation deployment working unchanged.
+//
+// table and match are this file's constants, never operator input; value and
+// orgID are bound parameters.
+func oneInOrg(ctx context.Context, conn *pgx.Conn, table, match, value, orgID, what string) (id, org string, err error) {
+	rows, err := conn.Query(ctx, fmt.Sprintf(
+		`SELECT id::text, org_id::text FROM core.%s WHERE %s AND ($2 = '' OR org_id = $2::uuid) LIMIT 2`,
+		table, match), value, orgID)
+	if err != nil {
+		return "", "", err
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		if err := rows.Scan(&id, &org); err != nil {
+			return "", "", err
+		}
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", err
+	}
+	switch {
+	case n == 0 && orgID != "":
+		return "", "", fmt.Errorf("no %s %q in that organisation", what, value)
+	case n == 0:
+		return "", "", fmt.Errorf("no %s %q", what, value)
+	case n > 1 && orgID != "":
+		return "", "", fmt.Errorf("%q names more than one %s in that organisation; "+
+			"name it by something unique", value, what)
+	case n > 1:
+		return "", "", fmt.Errorf("%q names a %s in more than one organisation; give -org "+
+			"to say which", value, what)
+	}
+	return id, org, nil
+}
+
 // userLocale sets the language a person's security notices are written in.
 //
 // core.users.locale is read by the notice path to choose a message bundle.
 // Empty clears it rather than storing "", so the column means "this person has
 // expressed no preference" and the deployment default applies -- a stored empty
 // string would be a preference for a locale that does not exist.
-func userLocale(ctx context.Context, conn *pgx.Conn, email, tag string) error {
+func userLocale(ctx context.Context, conn *pgx.Conn, orgID, email, tag string) error {
 	if email == "" {
 		return fmt.Errorf("give -email")
 	}
 	tag = strings.TrimSpace(tag)
+	userID, _, err := oneInOrg(ctx, conn, "users",
+		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+	if err != nil {
+		return err
+	}
 
 	var stored any
 	if tag != "" {
 		stored = tag
 	}
 	tp, err := conn.Exec(ctx, `
-		UPDATE core.users SET locale = $2
-		WHERE lower(email) = lower($1) OR lower(username) = lower($1)`, email, stored)
+		UPDATE core.users SET locale = $2 WHERE id = $1::uuid`, userID, stored)
 	if err != nil {
 		// The column carries a shape constraint. A rejected tag is a typo, and
 		// saying which one costs nothing.
@@ -257,16 +306,15 @@ func idpAttributeMap(ctx context.Context, conn *pgx.Conn, slug, claim, attribute
 // property: a directory reporting a group named `domain admins` cannot make
 // anybody an administrator of this system unless somebody deliberately connected
 // the two.
-func dirGroupMap(ctx context.Context, conn *pgx.Conn, slug, remote, local string, remove bool) error {
+func dirGroupMap(ctx context.Context, conn *pgx.Conn, givenOrg, slug, remote, local string, remove bool) error {
 	if slug == "" || remote == "" || local == "" {
 		return fmt.Errorf("give -slug (the directory source), -remote-group and -group")
 	}
 
-	var sourceID, orgID string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text, org_id::text FROM core.directory_sources WHERE slug = $1`,
-		slug).Scan(&sourceID, &orgID); err != nil {
-		return fmt.Errorf("no directory source with slug %q", slug)
+	sourceID, orgID, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, givenOrg,
+		"directory source")
+	if err != nil {
+		return err
 	}
 
 	var groupID string
@@ -438,16 +486,15 @@ func providerClaimsSet(ctx context.Context, conn *pgx.Conn, orgID, hook, claims 
 // column is ON DELETE RESTRICT: deleting the group would silently widen the
 // target to everybody, and a widening that happens as a side effect of deleting
 // something else is not a change anybody would look for.
-func scimScope(ctx context.Context, conn *pgx.Conn, slug, group string) error {
+func scimScope(ctx context.Context, conn *pgx.Conn, givenOrg, slug, group string) error {
 	if slug == "" {
 		return fmt.Errorf("give -slug")
 	}
 
-	var targetID, orgID string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text, org_id::text FROM core.scim_targets WHERE slug = $1`,
-		slug).Scan(&targetID, &orgID); err != nil {
-		return fmt.Errorf("no SCIM target with slug %q", slug)
+	targetID, orgID, err := oneInOrg(ctx, conn, "scim_targets", "slug = $1", slug, givenOrg,
+		"SCIM target")
+	if err != nil {
+		return err
 	}
 
 	if strings.TrimSpace(group) == "" {
@@ -487,12 +534,12 @@ func scimScope(ctx context.Context, conn *pgx.Conn, slug, group string) error {
 // with no row in core.scim_group_links is somebody else's -- a target's own
 // administrators may already maintain "Engineering" -- and matching by name
 // would adopt it and begin removing the members they put there.
-func scimProvisionGroup(ctx context.Context, conn *pgx.Conn, slug, group string) error {
+func scimProvisionGroup(ctx context.Context, conn *pgx.Conn, givenOrg, slug, group string) error {
 	if slug == "" || group == "" {
 		return fmt.Errorf("give -slug (the SCIM target) and -group")
 	}
 
-	t, orgID, err := scimTargetForGroups(ctx, conn, slug)
+	t, orgID, err := scimTargetForGroups(ctx, conn, givenOrg, slug)
 	if err != nil {
 		return err
 	}
@@ -564,12 +611,12 @@ func scimProvisionGroup(ctx context.Context, conn *pgx.Conn, slug, group string)
 // a group at the target that nothing here remembers creating, which is
 // unreachable by every later command -- the reconciliation only acts on groups
 // the link table names.
-func scimDeprovisionGroup(ctx context.Context, conn *pgx.Conn, slug, group string) error {
+func scimDeprovisionGroup(ctx context.Context, conn *pgx.Conn, givenOrg, slug, group string) error {
 	if slug == "" || group == "" {
 		return fmt.Errorf("give -slug (the SCIM target) and -group")
 	}
 
-	t, orgID, err := scimTargetForGroups(ctx, conn, slug)
+	t, orgID, err := scimTargetForGroups(ctx, conn, givenOrg, slug)
 	if err != nil {
 		return err
 	}
@@ -623,7 +670,7 @@ func scimDeprovisionGroup(ctx context.Context, conn *pgx.Conn, slug, group strin
 // Dry-run is refused rather than silently skipped: `scim sync` previews and this
 // does not, so honouring the flag by doing nothing would report success for a
 // group that was never created.
-func scimTargetForGroups(ctx context.Context, conn *pgx.Conn, slug string) (scim.Target, string, error) {
+func scimTargetForGroups(ctx context.Context, conn *pgx.Conn, orgID, slug string) (scim.Target, string, error) {
 	var zero scim.Target
 	root, err := rootKey()
 	if err != nil {
@@ -633,18 +680,16 @@ func scimTargetForGroups(ctx context.Context, conn *pgx.Conn, slug string) (scim
 	// either "no such slug" or "disabled". Distinguished here, because "no SCIM
 	// target with that slug" sent to somebody who disabled it last week is an
 	// hour of looking for a typo that is not there.
-	targets, err := store.LoadSCIMTargets(ctx, conn, root, slug)
+	targets, err := store.LoadSCIMTargets(ctx, conn, root, orgID, slug)
 	if err != nil {
 		return zero, "", err
 	}
 	if len(targets) == 0 {
-		var exists bool
-		_ = conn.QueryRow(ctx,
-			`SELECT true FROM core.scim_targets WHERE slug = $1`, slug).Scan(&exists)
-		if exists {
-			return zero, "", fmt.Errorf("%s is disabled", slug)
+		if _, _, lerr := oneInOrg(ctx, conn, "scim_targets", "slug = $1", slug, orgID,
+			"SCIM target"); lerr != nil {
+			return zero, "", lerr
 		}
-		return zero, "", fmt.Errorf("no SCIM target with slug %q", slug)
+		return zero, "", fmt.Errorf("%s is disabled", slug)
 	}
 	t := targets[0]
 	if t.Kind != "" && t.Kind != "scim" {
@@ -1416,17 +1461,17 @@ func instanceWebAuthn(ctx context.Context, conn *pgx.Conn, issuer, id, displayNa
 // sync simply skips it. Deleting the target would take the links with it, and
 // the accounts at the far end would then be unreachable rather than merely
 // unmanaged.
-func scimSetEnabled(ctx context.Context, conn *pgx.Conn, slug string, enabled bool) error {
+func scimSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, enabled bool) error {
 	if slug == "" {
 		return fmt.Errorf("give -slug")
 	}
-	tp, err := conn.Exec(ctx,
-		`UPDATE core.scim_targets SET enabled = $2 WHERE slug = $1`, slug, enabled)
+	id, _, err := oneInOrg(ctx, conn, "scim_targets", "slug = $1", slug, orgID, "SCIM target")
 	if err != nil {
 		return err
 	}
-	if tp.RowsAffected() == 0 {
-		return fmt.Errorf("no SCIM target with slug %q", slug)
+	if _, err := conn.Exec(ctx,
+		`UPDATE core.scim_targets SET enabled = $2 WHERE id = $1::uuid`, id, enabled); err != nil {
+		return err
 	}
 	if enabled {
 		fmt.Printf("%s is enabled; the next sync includes it\n", slug)
@@ -1446,11 +1491,16 @@ func scimSetEnabled(ctx context.Context, conn *pgx.Conn, slug string, enabled bo
 // company", and the ceiling is what stops the reconciler acting on that. It had
 // a sensible default and no way to change it, so an operator who found 20% wrong
 // for their organisation had no move at all.
-func dirSet(ctx context.Context, conn *pgx.Conn, slug, onMissing string, maxPercent int,
+func dirSet(ctx context.Context, conn *pgx.Conn, orgID, slug, onMissing string, maxPercent int,
 	fs *flag.FlagSet, enabled, dryRun bool) error {
 
 	if slug == "" {
 		return fmt.Errorf("give -slug")
+	}
+	sourceID, _, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, orgID,
+		"directory source")
+	if err != nil {
+		return err
 	}
 
 	// Only the flags actually supplied are applied. Without this, changing
@@ -1499,21 +1549,17 @@ func dirSet(ctx context.Context, conn *pgx.Conn, slug, onMissing string, maxPerc
 		dryArg = dryRun
 	}
 
-	tp, err := conn.Exec(ctx, `
+	if _, err := conn.Exec(ctx, `
 		UPDATE core.directory_sources
 		   SET on_missing             = COALESCE($2::text, on_missing),
 		       max_deactivate_percent = COALESCE($3::int, max_deactivate_percent),
 		       enabled                = COALESCE($4::boolean, enabled),
 		       dry_run                = COALESCE($5::boolean, dry_run)
-		 WHERE slug = $1`, slug, onMissingArg, maxArg, enabledArg, dryArg)
-	if err != nil {
+		 WHERE id = $1::uuid`, sourceID, onMissingArg, maxArg, enabledArg, dryArg); err != nil {
 		if strings.Contains(err.Error(), "on_missing") {
 			return fmt.Errorf("-on-missing must be report or deactivate")
 		}
 		return err
-	}
-	if tp.RowsAffected() == 0 {
-		return fmt.Errorf("no directory source with slug %q", slug)
 	}
 
 	var om string
@@ -1521,7 +1567,7 @@ func dirSet(ctx context.Context, conn *pgx.Conn, slug, onMissing string, maxPerc
 	var en, dr bool
 	_ = conn.QueryRow(ctx, `
 		SELECT on_missing, max_deactivate_percent, enabled, dry_run
-		FROM core.directory_sources WHERE slug = $1`, slug).Scan(&om, &mp, &en, &dr)
+		FROM core.directory_sources WHERE id = $1::uuid`, sourceID).Scan(&om, &mp, &en, &dr)
 
 	fmt.Printf("%s:\n  enabled        : %t\n  dry run        : %t\n"+
 		"  on missing     : %s\n  max deactivate : %d%%\n", slug, en, dr, om, mp)

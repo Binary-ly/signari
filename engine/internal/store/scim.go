@@ -11,8 +11,14 @@ import (
 	"signari.dev/engine/internal/scim"
 )
 
-// LoadSCIMTargets returns the provisioning targets, secrets unsealed.
-func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, only string) ([]scim.Target, error) {
+// LoadSCIMTargets returns the provisioning targets, secrets unsealed: every
+// enabled one, or only those of orgID, or only the one named by slug.
+//
+// A slug is unique within an organisation, not across them, so asking for one
+// by slug alone used to return every tenant's target of that name, and a sync
+// of "slack" provisioned all of them. Without orgID a slug must now name one
+// organisation's target, or the call refuses.
+func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, orgID, only string) ([]scim.Target, error) {
 	rows, err := conn.Query(ctx, `
 		SELECT id::text, org_id::text, slug, display_name, base_url, token,
 		       dry_run, on_deactivate, kind,
@@ -20,8 +26,8 @@ func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, on
 		       COALESCE(impersonate, ''), COALESCE(target_domain, ''),
 		       COALESCE(scope_group_id::text, '')
 		FROM core.scim_targets
-		WHERE enabled AND ($1 = '' OR slug = $1)
-		ORDER BY slug`, only)
+		WHERE enabled AND ($1 = '' OR slug = $1) AND ($2 = '' OR org_id = $2::uuid)
+		ORDER BY slug`, only, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +61,14 @@ func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, on
 		}
 		out = append(out, t)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if only != "" && orgID == "" && len(out) > 1 {
+		return nil, fmt.Errorf("%q names a SCIM target in more than one organisation; "+
+			"give -org to say which", only)
+	}
+	return out, nil
 }
 
 // SCIMDesiredUser is what a target SHOULD hold for one of our users.

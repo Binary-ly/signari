@@ -692,7 +692,7 @@ func run(args []string) error {
 	case "user create":
 		return userCreate(ctx, conn, *email, *password)
 	case "user locale":
-		return userLocale(ctx, conn, *email, *localeTag)
+		return userLocale(ctx, conn, *orgID, *email, *localeTag)
 	case "client set-ciba":
 		return clientSetCIBA(ctx, conn, *clientID, *cibaDelivery, *cibaNotifyURL)
 	case "group impersonation":
@@ -740,11 +740,11 @@ func run(args []string) error {
 			*dirImpersonate, *dirTenant, *dirFilter, *ldapURL, *ldapBindDN,
 			*ldapPassword, *ldapBaseDN, *ldapFlavour, *ldapCA, *ldapStartTLS)
 	case "dir sync":
-		return dirSync(ctx, conn, *slug, *apply)
+		return dirSync(ctx, conn, *orgID, *slug, *apply)
 	case "dir group-map":
-		return dirGroupMap(ctx, conn, *slug, *remoteGroup, *groupName, *removeMember)
+		return dirGroupMap(ctx, conn, *orgID, *slug, *remoteGroup, *groupName, *removeMember)
 	case "dir set":
-		return dirSet(ctx, conn, *slug, *onMissing, *maxDeactivate, fs, *setEnabled, *dryRun)
+		return dirSet(ctx, conn, *orgID, *slug, *onMissing, *maxDeactivate, fs, *setEnabled, *dryRun)
 	case "rac add":
 		return racAdd(ctx, conn, *orgID, *slug, *name, *racProtocol, *racHost,
 			*racPort, *racUser, *racPassword, *groupName, *racRecording)
@@ -779,9 +779,9 @@ func run(args []string) error {
 	case "radius add-client":
 		return radiusAddClient(ctx, conn, *orgID, *name, *radiusNet, *radiusSecret)
 	case "radius disable-client":
-		return radiusSetClientEnabled(ctx, conn, *name, false)
+		return radiusSetClientEnabled(ctx, conn, *orgID, *name, false)
 	case "radius enable-client":
-		return radiusSetClientEnabled(ctx, conn, *name, true)
+		return radiusSetClientEnabled(ctx, conn, *orgID, *name, true)
 	case "radius list":
 		return radiusListClients(ctx, conn)
 	case "radius authorize":
@@ -916,9 +916,9 @@ func run(args []string) error {
 	case "instance webauthn":
 		return instanceWebAuthn(ctx, conn, *issuer, *rpID, *name)
 	case "scim enable":
-		return scimSetEnabled(ctx, conn, *slug, true)
+		return scimSetEnabled(ctx, conn, *orgID, *slug, true)
 	case "scim disable":
-		return scimSetEnabled(ctx, conn, *slug, false)
+		return scimSetEnabled(ctx, conn, *orgID, *slug, false)
 	case "saml list":
 		return samlListSPs(ctx, conn)
 	case "idp add":
@@ -959,15 +959,15 @@ func run(args []string) error {
 	case "scim list":
 		return scimList(ctx, conn)
 	case "scim sync":
-		return scimSync(ctx, conn, *slug, *apply)
+		return scimSync(ctx, conn, *orgID, *slug, *apply)
 	case "scim verify":
-		return scimVerify(ctx, conn, *slug)
+		return scimVerify(ctx, conn, *orgID, *slug)
 	case "scim scope":
-		return scimScope(ctx, conn, *slug, *groupName)
+		return scimScope(ctx, conn, *orgID, *slug, *groupName)
 	case "scim provision-group":
-		return scimProvisionGroup(ctx, conn, *slug, *groupName)
+		return scimProvisionGroup(ctx, conn, *orgID, *slug, *groupName)
 	case "scim deprovision-group":
-		return scimDeprovisionGroup(ctx, conn, *slug, *groupName)
+		return scimDeprovisionGroup(ctx, conn, *orgID, *slug, *groupName)
 	case "group create":
 		return groupCreate(ctx, conn, *orgID, *groupName, *name)
 	case "group member":
@@ -3400,12 +3400,12 @@ func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, to
 //
 // The command that makes deprovisioning checkable. Everything else records what
 // we MEANT; this asks the target.
-func scimVerify(ctx context.Context, conn *pgx.Conn, only string) error {
+func scimVerify(ctx context.Context, conn *pgx.Conn, orgID, only string) error {
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	targets, err := store.LoadSCIMTargets(ctx, conn, root, only)
+	targets, err := store.LoadSCIMTargets(ctx, conn, root, orgID, only)
 	if err != nil {
 		return err
 	}
@@ -3484,12 +3484,12 @@ func scimVerify(ctx context.Context, conn *pgx.Conn, only string) error {
 }
 
 // scimSync converges each target on the desired state.
-func scimSync(ctx context.Context, conn *pgx.Conn, only string, apply bool) error {
+func scimSync(ctx context.Context, conn *pgx.Conn, orgID, only string, apply bool) error {
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	targets, err := store.LoadSCIMTargets(ctx, conn, root, only)
+	targets, err := store.LoadSCIMTargets(ctx, conn, root, orgID, only)
 	if err != nil {
 		return err
 	}
@@ -5093,9 +5093,14 @@ func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPa
 }
 
 // dirSync runs one reconciliation.
-func dirSync(ctx context.Context, conn *pgx.Conn, slug string, apply bool) error {
+func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply bool) error {
 	if slug == "" {
 		return fmt.Errorf("give -slug")
+	}
+	sourceID, _, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, givenOrg,
+		"directory source")
+	if err != nil {
+		return err
 	}
 
 	var id, orgID, kind, credsEnc, domain, impersonate, tenant, filter, onMissing string
@@ -5104,14 +5109,14 @@ func dirSync(ctx context.Context, conn *pgx.Conn, slug string, apply bool) error
 	var sealed []byte
 	var dryRun bool
 	var maxPct int
-	err := conn.QueryRow(ctx, `
+	err = conn.QueryRow(ctx, `
 		SELECT id::text, org_id::text, kind, credentials_enc, COALESCE(domain,''),
 		       COALESCE(impersonate,''), COALESCE(tenant_id,''), user_filter,
 		       on_missing, dry_run, max_deactivate_percent,
 		       COALESCE(ldap_url,''), COALESCE(ldap_bind_dn,''),
 		       COALESCE(ldap_base_dn,''), COALESCE(ldap_flavour,''), ldap_start_tls,
 		       COALESCE(ldap_ca_pem,'')
-		FROM core.directory_sources WHERE slug = $1 AND enabled`, slug).
+		FROM core.directory_sources WHERE id = $1::uuid AND enabled`, sourceID).
 		Scan(&id, &orgID, &kind, &sealed, &domain, &impersonate, &tenant, &filter,
 			&onMissing, &dryRun, &maxPct,
 			&lURL, &lBindDN, &lBaseDN, &lFlavour, &lStartTLS, &lCA)
@@ -5687,14 +5692,13 @@ func duoEnroll(ctx context.Context, conn *pgx.Conn, orgID, email, duoUsername st
 			"frequently not their email address")
 	}
 
-	var userID, foundOrg string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text, org_id::text FROM core.users WHERE lower(email) = lower($1)`,
-		email).Scan(&userID, &foundOrg); err != nil {
-		return fmt.Errorf("no user with address %q", email)
-	}
-	if orgID != "" && orgID != foundOrg {
-		return fmt.Errorf("%s belongs to a different organisation", email)
+	// One address may belong to a person in each of several organisations, so
+	// the address alone found whichever came back first, and -org then refused
+	// it as "a different organisation" while the right person existed.
+	userID, foundOrg, err := oneInOrg(ctx, conn, "users", "lower(email) = lower($1)", email, orgID,
+		"user with address")
+	if err != nil {
+		return err
 	}
 
 	var configured bool
@@ -5845,20 +5849,23 @@ func policyGraph(path, out string) error {
 // editing the database by hand -- and the running listener would carry on
 // answering it anyway, because the client list was read once at startup. Two
 // halves of the same gap: no way to say it, and no effect if you did.
-func radiusSetClientEnabled(ctx context.Context, conn *pgx.Conn, name string,
+func radiusSetClientEnabled(ctx context.Context, conn *pgx.Conn, orgID, name string,
 	enabled bool) error {
 
 	if name == "" {
 		return fmt.Errorf("give -name, the device to change (see `signari radius list`)")
 	}
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.radius_clients SET enabled = $2, updated_at = now()
-		WHERE name = $1`, name, enabled)
+	// A name is not unique at all, not even within an organisation (the table
+	// keys on the network), and the update used to change every device of that
+	// name in every tenant.
+	id, _, err := oneInOrg(ctx, conn, "radius_clients", "name = $1", name, orgID, "RADIUS client")
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no RADIUS client named %q", name)
+	if _, err := conn.Exec(ctx, `
+		UPDATE core.radius_clients SET enabled = $2, updated_at = now()
+		WHERE id = $1::uuid`, id, enabled); err != nil {
+		return err
 	}
 
 	if enabled {

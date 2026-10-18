@@ -72,7 +72,7 @@ func assertLoginWorks(t *testing.T, be, bs bool) {
 	credID := randomBytes(t, 32)
 	userHandle := randomBytes(t, 64)
 
-	rp, err := New(testRPID, "Test", testOrigin)
+	rp, err := New(testRPID, "Test", testOrigin, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

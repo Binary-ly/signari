@@ -154,10 +154,23 @@ unless a destination is set; see [audit-streaming.md](audit-streaming.md).
 
 ## Authenticator models (FIDO metadata)
 
-Resolves a passkey's AAGUID to a device model — "YubiKey 5 NFC" rather than the
-nickname a user typed — on the passkey-added and passkey-removed notices. Off
-unless a source is set, and **display only**: it never decides whether a passkey
-may enrol, so a missing or unknown entry costs a nicer label, never a sign-in.
+Off unless a source is set. When set, the catalogue does two things:
+
+- **Names models.** A passkey's AAGUID resolves to a device model — "YubiKey 5
+  NFC" rather than the nickname a user typed — on the passkey-added and
+  passkey-removed notices.
+- **Anchors attestation.** A registration that conveys a certificate-chain
+  attestation for a model the catalogue lists is checked against that model's
+  roots, and a model the FIDO Alliance has marked revoked or compromised is
+  refused. A model the catalogue does not list is still accepted.
+
+The second is what makes `signari webauthn policy -allow` mean anything. An
+AAGUID is the authenticator's own claim; only a chain anchored in the catalogue
+vouches for it. Packed self-attestation does not, and neither does a chain to
+a root the catalogue does not list. **Without a catalogue an approved-model
+allow-list cannot verify any registration, so every registration under one is
+refused.**
+
 The BLOB must be signed by the FIDO production root, wherever it comes from; an
 unsigned or wrongly signed one is refused.
 

@@ -44,7 +44,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari user locale` | The language this person's security notices are written in, as a BCP 47 tag. Empty returns them to the deployment default |
 | `signari group create` / `group list` / `group member` / `group release` | Groups, membership, and which clients may see them |
 | `signari group impersonation` | Grant or revoke a group's ability to act as another user. **Deliberately not in the Admin API**: a `groups:write` token is issued for day-to-day administration, and letting one grant this would turn every such token into a way to become anybody. See [impersonation.md](impersonation.md) |
-| `signari webauthn policy` / `webauthn show` | Which authenticator models an organisation accepts, and what attestation to ask for. An allow-list is refused without attestation, because an unattested AAGUID is chosen by the authenticator being filtered |
+| `signari webauthn policy` / `webauthn show` | Which authenticator models an organisation accepts, and what attestation to ask for. An allow-list admits only a registration whose attestation is a certificate chain anchored in the FIDO catalogue (see `SIGNARI_FIDO_MDS_*` in [configuration](configuration.md)), because any other AAGUID is chosen by the authenticator being filtered. Without a catalogue, every registration under an allow-list is refused |
 | `signari invite create` / `invite list` | Invitations |
 | `signari signup enable` / `signup disable` / `signup show` | Self-service sign-up, and which email domains may use it |
 | `signari registration enable` / `registration token` | Dynamic client registration (RFC 7591) |

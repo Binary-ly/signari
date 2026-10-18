@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/go-webauthn/webauthn/metadata"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 
@@ -36,7 +37,12 @@ type Relying struct {
 // Configuring them independently is how a deployment ends up with an RP ID and
 // an origin list that disagree -- a ceremony that fails in the browser with a
 // message naming neither.
-func New(rpID, displayName string, issuer string) (*Relying, error) {
+//
+// mds, when not nil, is the FIDO metadata catalogue: a certificate-chain
+// attestation for a model it lists is checked against that model's roots, and
+// a model marked revoked or compromised is refused. Nil means no catalogue,
+// and then no attestation can vouch for an AAGUID.
+func New(rpID, displayName string, issuer string, mds metadata.Provider) (*Relying, error) {
 	if rpID == "" {
 		return nil, fmt.Errorf("passkeys: this instance has no rp_id set; passkeys are unavailable until it is")
 	}
@@ -59,6 +65,7 @@ func New(rpID, displayName string, issuer string) (*Relying, error) {
 		RPID:          rpID,
 		RPDisplayName: displayName,
 		RPOrigins:     origins,
+		MDS:           mds,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("passkeys: %w", err)

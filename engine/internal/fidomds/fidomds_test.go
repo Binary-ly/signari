@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/go-webauthn/webauthn/metadata"
 	"github.com/google/uuid"
 )
 
@@ -176,6 +177,82 @@ func TestRefreshRejectsAGarbageBlobAndKeepsThePrevious(t *testing.T) {
 	// The old table is still in force.
 	if got, ok := r.Model(id[:]); !ok || got != "YubiKey 5 NFC" {
 		t.Errorf("a failed refresh discarded the previous catalogue: got %q ok=%v", got, ok)
+	}
+}
+
+// withEntries builds a loaded resolver holding catalogue entries for ids.
+func withEntries(ids ...uuid.UUID) *Resolver {
+	r := withTable(map[uuid.UUID]string{})
+	m := map[uuid.UUID]*metadata.Entry{}
+	for _, id := range ids {
+		m[id] = &metadata.Entry{AaGUID: id}
+	}
+	r.entries.Store(&m)
+	return r
+}
+
+// Only a certificate chain, for a model the catalogue lists, vouches for an
+// AAGUID. Every other combination must say no -- this is what the
+// approved-model allow-list rests on.
+func TestOnlyAnAnchoredChainVouchesForAnAAGUID(t *testing.T) {
+	listed := uuid.MustParse(yubi5)
+	unlisted := uuid.MustParse("00000000-0000-0000-0000-0000000000ff")
+	r := withEntries(listed)
+
+	cases := []struct {
+		name    string
+		r       *Resolver
+		aaguid  uuid.UUID
+		attType string
+		vouched bool
+	}{
+		{"chain for a listed model", r, listed, "basic_full", true},
+		{"attestation CA for a listed model", r, listed, "attca", true},
+		{"packed self-attestation", r, listed, "basic_surrogate", false},
+		{"no attestation", r, listed, "none", false},
+		{"chain for an unlisted model (accepted unexamined by the library)", r, unlisted, "basic_full", false},
+		{"no catalogue configured", nil, listed, "basic_full", false},
+		{"catalogue configured but never loaded", &Resolver{log: quietLog()}, listed, "basic_full", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := AttestationAnchored(c.r, c.aaguid[:], c.attType); got != c.vouched {
+				t.Errorf("AttestationAnchored = %v, want %v", got, c.vouched)
+			}
+		})
+	}
+
+	if AttestationAnchored(r, make([]byte, 16), "basic_full") {
+		t.Error("the all-zero AAGUID was vouched for")
+	}
+}
+
+// The ceremony gets a provider only when there is a loaded catalogue, and the
+// provider enforces the trust anchor and the revocation statuses.
+func TestTheProviderIsOnlyGivenWhenLoadedAndEnforcesAnchorsAndStatus(t *testing.T) {
+	var none *Resolver
+	if none.Provider() != nil {
+		t.Error("a nil resolver produced a provider")
+	}
+	if (&Resolver{log: quietLog()}).Provider() != nil {
+		t.Error("a never-loaded resolver produced a provider")
+	}
+	p := withEntries(uuid.MustParse(yubi5)).Provider()
+	if p == nil {
+		t.Fatal("a loaded resolver produced no provider")
+	}
+	ctx := context.Background()
+	if !p.GetValidateTrustAnchor(ctx) {
+		t.Error("the provider does not enforce trust anchors, so a self-made chain passes")
+	}
+	if !p.GetValidateStatus(ctx) {
+		t.Error("the provider does not refuse revoked or compromised models")
+	}
+	if p.GetValidateEntry(ctx) {
+		t.Error("the provider refuses models absent from the catalogue, turning it into a lockout")
+	}
+	if err := p.ValidateStatusReports(ctx, []metadata.StatusReport{{Status: metadata.Revoked}}); err == nil {
+		t.Error("a revoked model passed status validation")
 	}
 }
 

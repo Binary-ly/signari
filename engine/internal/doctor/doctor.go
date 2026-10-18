@@ -141,6 +141,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkProviderHooks(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkAuthenticatorAllowList(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	if err := checkNotificationChannels(ctx, conn, r); err != nil {
 		return nil, err
 	}
@@ -245,6 +248,38 @@ func checkAuthenticatorModels(r *Report) {
 				"Service BLOB, or unset it and use SIGNARI_FIDO_MDS_FETCH=1 to fetch "+
 				"it. Until then passkeys are named by their nickname only")
 	}
+}
+
+// checkAuthenticatorAllowList reports an approved-model allow-list that nothing
+// can satisfy.
+//
+// An allow-list admits a passkey only when its attestation is a certificate
+// chain anchored in the FIDO catalogue: an AAGUID on its own is the
+// authenticator's claim about itself. With no catalogue configured nothing can
+// be anchored, so every registration in that organisation is refused -- the
+// correct failure, and one an operator should hear about here rather than from
+// users who cannot add a passkey.
+func checkAuthenticatorAllowList(ctx context.Context, conn interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, r *Report) error {
+	r.ran("approved authenticator models")
+	if os.Getenv("SIGNARI_FIDO_MDS_PATH") != "" || os.Getenv("SIGNARI_FIDO_MDS_URL") != "" ||
+		os.Getenv("SIGNARI_FIDO_MDS_FETCH") == "1" {
+		return nil
+	}
+	var orgs int
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*) FROM core.webauthn_policy WHERE cardinality(allowed_aaguids) > 0`).Scan(&orgs); err != nil {
+		return fmt.Errorf("checking authenticator allow-lists: %w", err)
+	}
+	if orgs > 0 {
+		r.add(Warning, "approved authenticator models",
+			fmt.Sprintf("%d organisation(s) accept only approved authenticator models, and no FIDO "+
+				"metadata catalogue is configured, so no passkey can be registered in them", orgs),
+			"set SIGNARI_FIDO_MDS_PATH, SIGNARI_FIDO_MDS_URL or SIGNARI_FIDO_MDS_FETCH=1 so attestation "+
+				"can be anchored, or remove the allow-list with `signari webauthn policy`")
+	}
+	return nil
 }
 
 // checkProviderHooks reports a registered provider whose hook nothing consults.

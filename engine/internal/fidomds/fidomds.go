@@ -1,12 +1,21 @@
-// Package fidomds resolves an authenticator's AAGUID to a human-readable model
-// name -- "YubiKey 5 NFC" rather than the nickname a user typed -- using the
-// FIDO Alliance Metadata Service (MDS) BLOB.
+// Package fidomds reads the FIDO Alliance Metadata Service (MDS) BLOB for two
+// purposes.
 //
-// This is display only. The mapping NEVER decides whether a passkey may enrol.
-// An allow-list keyed on AAGUID is a separate and deliberate decision -- it can
-// lock out a user who bought a model the operator did not foresee -- and it is
-// not this. So a missing, stale, or even wrong entry here costs a nicer label,
-// never a sign-in.
+// Display: an authenticator's AAGUID resolves to a model name -- "YubiKey 5 NFC"
+// rather than the nickname a user typed.
+//
+// Trust anchors: the Resolver is a go-webauthn metadata.Provider, so a
+// registration that conveys a certificate-chain attestation is checked against
+// the roots the catalogue lists for that model, and a model the Alliance has
+// marked revoked or compromised is refused. This is what lets an approved-model
+// allow-list mean anything: an AAGUID is the authenticator's own claim, and
+// only a chain anchored in the catalogue vouches for it. Without a catalogue an
+// allow-list can verify nothing, and registration under one is refused.
+//
+// The model name still never decides enrolment on its own, and a model with no
+// catalogue entry is not refused -- the allow-list is a separate, deliberate
+// operator decision, because it can lock out a user who bought a model nobody
+// foresaw.
 //
 // Off by default. An identity provider that silently reached out to
 // fidoalliance.org on every start would be making an outbound call its operator
@@ -57,6 +66,10 @@ type Resolver struct {
 	// table is swapped atomically on each successful refresh, so Model reads are
 	// lock-free and never observe a half-built map.
 	table atomic.Pointer[map[uuid.UUID]string]
+	// entries is the full catalogue, swapped with table, for attestation
+	// anchoring. Separate from table because a model with an entry need not
+	// have a description, and the reverse.
+	entries atomic.Pointer[map[uuid.UUID]*metadata.Entry]
 	// loaded records whether a refresh has ever succeeded. It separates
 	// "configured but the source has never loaded" -- an operator problem worth
 	// surfacing -- from "loaded, and this AAGUID simply is not in the catalogue".
@@ -88,6 +101,94 @@ func (r *Resolver) Model(aaguid []byte) (string, bool) {
 
 // Loaded reports whether the catalogue has been read successfully at least once.
 func (r *Resolver) Loaded() bool { return r != nil && r.loaded.Load() }
+
+// Anchors reports whether the catalogue holds an entry for this AAGUID.
+//
+// That is the condition under which go-webauthn checks a certificate-chain
+// attestation against a trust anchor at all: with no entry it accepts the chain
+// unexamined. So a registration's attestation vouches for its AAGUID only when
+// this is true AND the attestation carried a chain -- see AttestationAnchored.
+func (r *Resolver) Anchors(aaguid []byte) bool {
+	if r == nil || len(aaguid) != 16 {
+		return false
+	}
+	id, err := uuid.FromBytes(aaguid)
+	if err != nil || id == uuid.Nil {
+		return false
+	}
+	m := r.entries.Load()
+	if m == nil {
+		return false
+	}
+	_, ok := (*m)[id]
+	return ok
+}
+
+// chainTypes are the attestation types that carry a certificate chain, which
+// is the only kind a trust anchor can vouch for. basic_surrogate (packed
+// self-attestation) is signed by the credential's own key, so it proves the
+// authenticator holds that key and nothing about what model it is.
+var chainTypes = map[string]bool{"basic_full": true, "attca": true, "anonca": true}
+
+// AttestationAnchored reports whether a completed registration's AAGUID is
+// vouched for: the catalogue was loaded and given to the ceremony, it holds an
+// entry for the model, and the attestation was a certificate chain -- which
+// go-webauthn then validated against that entry's roots or refused.
+func AttestationAnchored(r *Resolver, aaguid []byte, attestationType string) bool {
+	return r.Loaded() && chainTypes[attestationType] && r.Anchors(aaguid)
+}
+
+// Provider returns the Resolver as a go-webauthn metadata provider, or nil when
+// there is no loaded catalogue -- so a ceremony without one is configured with
+// no provider at all rather than an empty one.
+func (r *Resolver) Provider() metadata.Provider {
+	if !r.Loaded() {
+		return nil
+	}
+	return r
+}
+
+// GetEntry implements metadata.Provider.
+func (r *Resolver) GetEntry(_ context.Context, aaguid uuid.UUID) (*metadata.Entry, error) {
+	if r == nil {
+		return nil, nil
+	}
+	m := r.entries.Load()
+	if m == nil {
+		return nil, nil
+	}
+	return (*m)[aaguid], nil
+}
+
+// GetValidateEntry implements metadata.Provider: a model absent from the
+// catalogue is not refused. Plenty of legitimate authenticators are not listed,
+// and refusing them would turn an optional catalogue into a lockout.
+func (r *Resolver) GetValidateEntry(context.Context) bool { return false }
+
+// GetValidateEntryPermitZeroAAGUID implements metadata.Provider.
+func (r *Resolver) GetValidateEntryPermitZeroAAGUID(context.Context) bool { return true }
+
+// GetValidateTrustAnchor implements metadata.Provider: a chain for a listed
+// model must anchor in that model's roots.
+func (r *Resolver) GetValidateTrustAnchor(context.Context) bool { return true }
+
+// GetValidateStatus implements metadata.Provider: a listed model the Alliance
+// has marked revoked or compromised is refused at registration.
+func (r *Resolver) GetValidateStatus(context.Context) bool { return true }
+
+// GetValidateAttestationTypes implements metadata.Provider. Off: entries are
+// not consistently complete about the types a model uses, and a mismatch is not
+// evidence of anything worth refusing a user over.
+func (r *Resolver) GetValidateAttestationTypes(context.Context) bool { return false }
+
+// ValidateStatusReports implements metadata.Provider with the library's
+// default undesired statuses (revoked, attestation key compromise, user
+// verification bypass, user key compromise).
+func (r *Resolver) ValidateStatusReports(_ context.Context, reports []metadata.StatusReport) error {
+	return metadata.ValidateStatusReports(reports, nil, metadata.DefaultUndesiredAuthenticatorStatuses())
+}
+
+var _ metadata.Provider = (*Resolver)(nil)
 
 // Size reports how many AAGUIDs are currently resolvable, for diagnostics.
 func (r *Resolver) Size() int {
@@ -129,14 +230,19 @@ func (r *Resolver) Refresh(ctx context.Context) error {
 		return fmt.Errorf("fidomds: parsing the metadata BLOB: %w", err)
 	}
 	table := make(map[uuid.UUID]string, len(md.Parsed.Entries))
+	entries := make(map[uuid.UUID]*metadata.Entry, len(md.Parsed.Entries))
 	for i := range md.Parsed.Entries {
 		e := &md.Parsed.Entries[i]
-		if e.AaGUID == uuid.Nil || e.MetadataStatement.Description == "" {
+		if e.AaGUID == uuid.Nil {
 			continue
 		}
-		table[e.AaGUID] = e.MetadataStatement.Description
+		entries[e.AaGUID] = e
+		if e.MetadataStatement.Description != "" {
+			table[e.AaGUID] = e.MetadataStatement.Description
+		}
 	}
 	r.table.Store(&table)
+	r.entries.Store(&entries)
 	r.loaded.Store(true)
 	r.log.Info("loaded the FIDO metadata catalogue", "authenticators", len(table))
 	return nil

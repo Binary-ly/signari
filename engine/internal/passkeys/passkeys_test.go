@@ -11,7 +11,7 @@ import (
 // guess. Guessing produces credentials bound to a value nobody chose, and the
 // value is permanent once a passkey exists.
 func TestMissingRPIDIsRefused(t *testing.T) {
-	if _, err := New("", "Signari", "https://id.example.com"); err == nil {
+	if _, err := New("", "Signari", "https://id.example.com", nil); err == nil {
 		t.Fatal("a relying party was built with no rp_id")
 	}
 }
@@ -26,7 +26,7 @@ func TestMalformedRPIDIsRefused(t *testing.T) {
 		"example.com/auth",    // path
 		"http://localhost",    // scheme again, the most common mistake
 	} {
-		if _, err := New(bad, "Signari", "https://example.com"); err == nil {
+		if _, err := New(bad, "Signari", "https://example.com", nil); err == nil {
 			t.Errorf("rp_id %q was accepted", bad)
 		}
 	}
@@ -83,7 +83,7 @@ func TestLocalhostGetsPlaintextAndNothingElseDoes(t *testing.T) {
 // point. Without user verification a passkey proves possession of a device and
 // nothing more, so it is one factor and cannot honestly back an acr of 2.
 func TestRegistrationRequiresResidentKeyAndUserVerification(t *testing.T) {
-	rp, err := New("localhost", "Signari", "http://localhost:9411")
+	rp, err := New("localhost", "Signari", "http://localhost:9411", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestRegistrationRequiresResidentKeyAndUserVerification(t *testing.T) {
 // Re-registering the SAME authenticator must be excluded, or one device produces
 // two credential rows and silently satisfies the two-credential rule on its own.
 func TestExistingCredentialsAreExcluded(t *testing.T) {
-	rp, _ := New("localhost", "Signari", "http://localhost:9411")
+	rp, _ := New("localhost", "Signari", "http://localhost:9411", nil)
 	u := &User{ID: make([]byte, 64), Name: "alice", DisplayName: "Alice"}
 
 	creation, _, err := rp.BeginRegistration(u, "")
@@ -146,7 +146,7 @@ func TestOriginsIncludeThePort(t *testing.T) {
 // Saying so here beats an opaque browser failure.
 func TestIPAddressRPIDIsRefused(t *testing.T) {
 	for _, ip := range []string{"127.0.0.1", "::1", "192.168.1.10"} {
-		if _, err := New(ip, "Signari", "http://"+ip+":9411"); err == nil {
+		if _, err := New(ip, "Signari", "http://"+ip+":9411", nil); err == nil {
 			t.Errorf("rp_id %q was accepted", ip)
 		}
 	}

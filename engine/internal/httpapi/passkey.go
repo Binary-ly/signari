@@ -13,6 +13,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/fidomds"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/passkeys"
 	"signari.dev/engine/internal/store"
@@ -155,7 +156,9 @@ func (s *Server) relyingParty(ctx context.Context, orgID string) (*passkeys.Rely
 		WHERE o.id = $1::uuid`, orgID).Scan(&rpID, &displayName); err != nil {
 		return nil, fmt.Errorf("loading instance rp_id: %w", err)
 	}
-	return passkeys.New(rpID, displayName, s.cfg.Issuer)
+	// The FIDO catalogue, when one is configured and loaded, so certificate-chain
+	// attestations are anchored and revoked models refused. Nil otherwise.
+	return passkeys.New(rpID, displayName, s.cfg.Issuer, s.models.Provider())
 }
 
 // handlePasskeyRegisterBegin starts adding an authenticator to a live account.
@@ -270,12 +273,17 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 
 	// Whether the AAGUID is vouched for.
 	//
-	// `cred.AttestationType` is the format the authenticator used; "none" means
-	// it conveyed no attestation, so the AAGUID beside it is SELF-ASSERTED. A
-	// software authenticator can put a hardware vendor's identifier there, which
-	// is why the allow-list below refuses rather than compares when this is
-	// false — comparing a value the filtered party chose is not a filter.
-	attestationVerified := cred.AttestationType != "" && cred.AttestationType != "none"
+	// An AAGUID is the authenticator's own claim; a software authenticator can
+	// put a hardware vendor's identifier there. Only a certificate chain anchored
+	// in the FIDO catalogue's roots for that model vouches for it.
+	//
+	// This used to treat any attestation type but "none" as verified. That
+	// counted packed SELF-attestation (basic_surrogate), signed by the
+	// credential's own key and so proving nothing about the model, and a chain
+	// to a self-made root (basic_full), which go-webauthn accepts unexamined when
+	// no catalogue is configured -- so the approved-model allow-list could be
+	// passed by any software authenticator claiming an approved AAGUID.
+	attestationVerified := fidomds.AttestationAnchored(s.models, cred.Authenticator.AAGUID, cred.AttestationType)
 
 	policy, perr := store.LoadWebAuthnPolicy(ctx, s.db, orgID)
 	if perr != nil {

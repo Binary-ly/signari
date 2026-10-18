@@ -1612,9 +1612,14 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 				"Please contact your administrator.")
 		return
 	}
+	failedOpen := false
 	if demanded {
-		s.beginMFAChallenge(w, r, userID, orgID, authzQuery, []string{oauth.AMRPassword})
-		return
+		if !s.beginMFAChallenge(w, r, userID, orgID, authzQuery, []string{oauth.AMRPassword}) {
+			return
+		}
+		// Duo is unreachable, the deployment fails open, and this person has
+		// nothing else to present: the sign-in carries on, on a password alone.
+		failedOpen = true
 	}
 
 	tx, err := s.db.Begin(ctx)
@@ -1624,6 +1629,12 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if failedOpen {
+		s.recordDuoFailOpen(ctx, tx, orgID, userID)
+		// So the walk completeSignIn starts does not reach the mfa stage, find
+		// a password-only amr, and ask Duo again.
+		r = withMFAWaivedByFailOpen(r)
+	}
 	s.completeSignIn(w, r, tx, userID, orgID, []string{oauth.AMRPassword}, authzQuery)
 }
 

@@ -202,6 +202,13 @@ func clearSignInBucket(t *testing.T, pool *pgxpool.Pool) {
 // would pass just as happily if the outer one stopped calling it.
 func (f *signInFixture) attempt(t *testing.T, identifier, password string) outcome {
 	t.Helper()
+	return f.attemptCtx(t, context.Background(), identifier, password)
+}
+
+// attemptCtx is attempt with the POST bound to ctx, for a test that must not
+// hang if the handler blocks waiting on a connection.
+func (f *signInFixture) attemptCtx(t *testing.T, ctx context.Context, identifier, password string) outcome {
+	t.Helper()
 
 	// A real form first, for a CSRF token pair the POST will accept.
 	get := httptest.NewRequest(http.MethodGet, "/login", nil)
@@ -228,7 +235,8 @@ func (f *signInFixture) attempt(t *testing.T, identifier, password string) outco
 		"password":    {password},
 		csrfFormField: {csrfField},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/login",
+		strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: csrfCookie})
 	req.RemoteAddr = testClientIP(t) + ":5555"

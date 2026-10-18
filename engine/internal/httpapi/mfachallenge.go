@@ -60,8 +60,30 @@ type pendingClaims struct {
 }
 
 // beginMFAChallenge issues the pending token and renders the code prompt.
+//
+// It reports failedOpen when Duo is unreachable, the deployment fails open and
+// the person has nothing else to present. Nothing has been written to the
+// response then: the caller records it (recordDuoFailOpen) and carries on to the
+// session in its own transaction, without a second factor and without saying it
+// had one.
 func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
-	userID, orgID, authzQuery string, amr []string) {
+	userID, orgID, authzQuery string, amr []string) (failedOpen bool) {
+
+	// Duo takes the browser away entirely, so it is offered BEFORE the code
+	// form is rendered -- a page asking for a code the person will never receive
+	// is worse than no page. And before the pending cookie: Duo's callback is
+	// tied to its own stored challenge, and a fail-open sign-in has no code
+	// step for the cookie to admit anybody to.
+	//
+	// When Duo is configured but unreachable and the deployment fails closed,
+	// startDuo renders the refusal itself; when it is not configured, or the
+	// user is not enrolled, the ordinary code prompt follows.
+	switch s.startDuo(w, r, userID, orgID, authzQuery, amr) {
+	case duoTookOver:
+		return false
+	case duoFailedOpen:
+		return true
+	}
 
 	key, err := s.cfg.Keys.Active(keys.ES256)
 	if err != nil {
@@ -77,7 +99,7 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		s.log.Error("no signing key for the pending token", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return false
 	}
 
 	now := time.Now()
@@ -88,7 +110,7 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		s.log.Error("signing the pending token", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return false
 	}
 
 	http.SetCookie(w, &http.Cookie{
@@ -96,17 +118,6 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(pendingTTL.Seconds()),
 	})
-	// Duo takes the browser away entirely, so it is offered BEFORE the code
-	// form is rendered -- a page asking for a code the person will never receive
-	// is worse than no page.
-	//
-	// startDuo reports whether it took over the response. When Duo is
-	// configured but unreachable and the deployment fails closed, it renders the
-	// refusal itself; when it is not configured, or the user is not enrolled, it
-	// returns false and the ordinary code prompt follows.
-	if s.startDuo(w, r, userID, orgID, authzQuery, amr) {
-		return
-	}
 
 	// If email is the enrolled factor, the code has to be sent now -- the person
 	// is looking at a form asking for a code that does not exist yet.
@@ -118,6 +129,7 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 	s.sendSMSOTPIfEnrolled(r.Context(), userID)
 
 	s.renderMFA(w, r, authzQuery, "")
+	return false
 }
 
 // sendEmailOTPIfEnrolled issues and mails a code, when that factor is enrolled.

@@ -80,6 +80,18 @@ factor is Duo cannot answer. That was fail-*closed* with a confusing page, in a
 setting named fail-open. Only running it showed the difference; the status code
 was 200 and nothing looked wrong.
 
+The second attempt failed in a different way. The fail-open path finished the
+sign-in by itself: it opened a transaction and handed over to the sign-in flow.
+That flow's `mfa` stage saw a password-only sign-in and started the challenge
+again. So Duo was asked again, failed open again, and another transaction was
+opened while the last one was still held. Each level kept its database
+connection. Once the pool was empty, every sign-in in the deployment was waiting
+on the Duo outage, which is the one moment fail-open exists for. Now the challenge
+only *reports* that Duo failed open. The `mfa` stage records it in the sign-in's
+own transaction and moves on, so Duo is asked once, one transaction is held, and
+one session is issued (`TestDuoFailingOpenSignsInOnceThroughThePasswordForm`,
+`…FromInsideTheFlow`).
+
 Note what the third row does **not** do: claim a second factor. `amr` carries
 only what was proven, so `acr` stays single-factor and every policy asking for
 MFA still refuses. Fail-open decides whether the sign-in continues; it does not

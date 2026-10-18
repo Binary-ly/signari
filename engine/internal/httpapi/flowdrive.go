@@ -371,6 +371,10 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 	// known keeps the walker from treating it as an unanswerable condition.
 	facts.setKnown(flow.CondCaptchaRequired, false)
 
+	// Whether Duo already failed open for this sign-in -- on the password path,
+	// before this walk began, or at an earlier mfa stage of this walk.
+	waived := mfaWaivedByFailOpen(ctx)
+
 	c := fl.Cursor()
 	for {
 		stage, ok := c.Next(facts)
@@ -443,6 +447,12 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			// sources and the second password path at flow.go:2207 all reached a
 			// session without consulting it. A control that binds one route out of
 			// ten is not a control.
+			if waived {
+				// Duo failed open earlier in this sign-in, and that was recorded.
+				// Asking again would ask Duo again: see duoFailedOpen for the
+				// recursion this used to be.
+				continue
+			}
 			if hasSecondFactorAMR(amr) {
 				// Already multi-factor, so the stage is satisfied by what has been
 				// proved. Delegated to the same predicate the session's acr claim is
@@ -466,7 +476,14 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 						"Please contact your administrator.")
 				return decisionHandled
 			}
-			s.beginMFAChallenge(w, r, userID, orgID, authzQuery, amr)
+			if s.beginMFAChallenge(w, r, userID, orgID, authzQuery, amr) {
+				// Duo is unreachable, the deployment fails open, and there is
+				// nothing else to present. Recorded in this transaction and the
+				// walk carries on to the session, on a password alone and saying so.
+				s.recordDuoFailOpen(ctx, tx, orgID, userID)
+				waived = true
+				continue
+			}
 			return decisionHandled
 
 		default:

@@ -60,8 +60,11 @@ password correct for this user" as fast as the core answers. That is unavoidable
   path already applies.
 - **Every call updates `last_seen`, with the address.** A token being exercised
   from somewhere new is visible rather than inferred.
-- It cannot change anything, mint a session, or read more of the directory than
-  a client bound to the local listener could.
+- It cannot change anything or mint a session. It **can** list the directory,
+  because the outpost needs that to answer members of its
+  `SIGNARI_LDAP_SEARCH_GROUP`. The search group is enforced by the outpost, so a
+  token used directly against the core sees what that group would see. Treat it
+  as a directory read credential as well as an oracle.
 - **Somebody under an MFA mandate is refused** when their organisation is set to
   `refuse_when_mfa`, which is the default since migration 0128. LDAP and RADIUS
   carry only a password. See

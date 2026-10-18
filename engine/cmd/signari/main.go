@@ -1759,6 +1759,8 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			// directory to anyone who can reach the port.
 			AllowAnonymousSearch: os.Getenv("SIGNARI_LDAP_ANONYMOUS_SEARCH") == "1",
 			WriteGroup:           ldapWriteGroup,
+			// Who may search beyond their own entry. Empty means nobody.
+			SearchGroup: os.Getenv("SIGNARI_LDAP_SEARCH_GROUP"),
 		}, httpapi.NewLDAPAuthenticator(pool, ldapHasher, ldapOrgID, log).
 			WithMFAGate(srv.BindDemandsMFA), log)
 
@@ -6464,6 +6466,7 @@ func outpostRun(core, token, kind, addr, baseDN, tlsCert, tlsKey string, ldapIns
 			UserAttr:    envOr("SIGNARI_LDAP_USER_ATTR", "uid"),
 			MaxResults:  500,
 			ReadTimeout: 30 * time.Second,
+			SearchGroup: os.Getenv("SIGNARI_LDAP_SEARCH_GROUP"),
 		}, client, log)
 		ln, err := outpost.ListenLDAP(addr, tlsCert, tlsKey, ldapInsecure)
 		if err != nil {

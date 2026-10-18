@@ -82,6 +82,18 @@ type Config struct {
 	// their own `memberOf` and are managed with `signari group member` like every
 	// other privilege.
 	WriteGroup string
+
+	// SearchGroup names the group whose members may search the whole
+	// directory: the service accounts applications bind as to look people up.
+	//
+	// EMPTY MEANS NOBODY, as for WriteGroup. Everyone else who binds sees their
+	// own entry and no other. A bind is a password check, and a password is all
+	// it takes to have one; reading every name, address and group in the
+	// organisation is a different grant, and was being given to anybody who
+	// passed the first. Members of WriteGroup may search too, since they can
+	// already rename and delete anyone, and AllowAnonymousSearch, when an
+	// operator has turned it on, publishes the directory to everyone anyway.
+	SearchGroup string
 }
 
 func (c *Config) withDefaults() {
@@ -510,7 +522,12 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 		defer cancel()
 	}
 
-	entries, err := s.entriesFor(ctx, req, limit)
+	var entries []*entry
+	if s.maySearchDirectory(sess) {
+		entries, err = s.entriesFor(ctx, req, limit)
+	} else {
+		entries, err = s.ownEntry(ctx, sess, req)
+	}
 	// `ctx.Err()` rather than `errors.Is(err, context.DeadlineExceeded)` alone:
 	// a backing store is free to report cancellation as its own error type, and
 	// several do -- pgx wraps, some drivers substitute. Asking the context
@@ -536,6 +553,53 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 		}
 	}
 	return s.write(c, newMessage(messageID, newResult(appSearchResultDone, resultSuccess, "", "")))
+}
+
+// maySearchDirectory reports whether this connection may see entries other
+// than its own. See Config.SearchGroup.
+func (s *Server) maySearchDirectory(sess *session) bool {
+	if s.cfg.AllowAnonymousSearch || s.mayWrite(sess) {
+		return true
+	}
+	if s.cfg.SearchGroup == "" || !sess.bound || sess.identity == nil {
+		return false
+	}
+	for _, g := range sess.identity.Groups {
+		if g == s.cfg.SearchGroup {
+			return true
+		}
+	}
+	return false
+}
+
+// ownEntry answers a search for a connection that may see only itself: the
+// bound identity, read again now, if the request's base and filter would
+// include it. Anyone else's DN returns nothing, the same nothing whether or
+// not that person exists, so the base-object form cannot be used to ask who
+// has an account.
+func (s *Server) ownEntry(ctx context.Context, sess *session, req *searchRequest) ([]*entry, error) {
+	if !sess.bound || sess.identity == nil {
+		return nil, nil
+	}
+	self, err := s.auth.Lookup(ctx, sess.identity.Username)
+	if err != nil || self == nil {
+		return nil, err
+	}
+	if req.Scope == scopeBaseObject {
+		username, uerr := s.usernameFromDN(req.BaseDN)
+		if uerr != nil {
+			return nil, nil
+		}
+		asked, lerr := s.auth.Lookup(ctx, username)
+		if lerr != nil || asked == nil || !equalFold(asked.Username, self.Username) {
+			return nil, nil
+		}
+	}
+	e := s.entryFor(self)
+	if !req.Filter.Matches(e) {
+		return nil, nil
+	}
+	return []*entry{e}, nil
 }
 
 // entriesFor resolves a search to entries.

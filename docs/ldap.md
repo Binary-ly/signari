@@ -64,6 +64,25 @@ directory published to anyone who can reach the port, which is how internal
 address books end up in breach dumps. `SIGNARI_LDAP_ANONYMOUS_SEARCH=1` enables
 it deliberately.
 
+**A bound user sees only their own entry.** Binding proves a password, and
+that is all it proves. Reading every name, address and group in the
+organisation is a separate grant, so it goes to a group:
+
+    SIGNARI_LDAP_SEARCH_GROUP=directory-readers
+
+Members of that group, usually the service accounts applications bind as to
+look people up, can search the whole directory. Everyone else can search, but
+the only entry they get back is their own. Reading another person's DN directly
+returns nothing, and the answer is the same whether or not that person exists.
+Members of `SIGNARI_LDAP_WRITE_GROUP` can search as well, since they can already
+rename and delete anyone. When anonymous search is on, every connection sees
+everything, because nothing is gained by limiting bound users then.
+
+Before this, any account that could bind could list the directory. If an
+application's service account searches for other users, add it to the search
+group, or its searches will come back with only its own entry. The same setting
+applies to an LDAP outpost, which reads it from its own environment.
+
 **No `userPassword` attribute is ever returned**, at any value. Some directories
 return a hash; some return a placeholder. Both teach applications to compare
 credentials themselves, which is how a password ends up compared with `==` in

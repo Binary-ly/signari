@@ -71,7 +71,7 @@ var summaries = map[string]string{
 	"GET /admin/clients":                                     "List clients.",
 	"GET /admin/clients/{clientID}":                          "One client.",
 	"POST /admin/clients":                                    "Register a client.",
-	"PATCH /admin/clients/{clientID}":                        "Enable or disable a client.",
+	"PATCH /admin/clients/{clientID}":                        "Enable or disable a client, or opt it out of PKCE.",
 	"DELETE /admin/clients/{clientID}":                       "Remove a client and everything issued under it.",
 	"POST /admin/clients/{clientID}/rotate-secret":           "Issue a new client secret, shown once.",
 	"GET /admin/users":                                       "List users.",

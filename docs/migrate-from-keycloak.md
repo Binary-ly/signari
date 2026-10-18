@@ -16,6 +16,24 @@ hold, and redirect URIs. The point of importing a secret rather than issuing a
 new one is that the application does not have to be touched: migration becomes a
 DNS change instead of a change to every downstream app.
 
+## PKCE is required of every imported client
+
+Every client created here requires a PKCE challenge, imported ones included.
+The importer once required it only of public clients, so every imported
+confidential client accepted an authorization request without a challenge.
+That is the one change an imported application may notice. A confidential
+browser-flow client whose code sends no `code_challenge` is refused at its first
+sign-in after cutover. The import report lists every confidential client this
+applies to. Check each one before you switch DNS, and opt out any that cannot
+send a challenge:
+
+```sh
+signari client set-pkce -client <id> -require-pkce=false
+```
+
+You can also send `PATCH /admin/clients/{id}` with `{"require_pkce": false}`.
+A public client cannot opt out.
+
 ## Grants, and the bug that was fixed here (21 August 2026)
 
 Keycloak calls the client credentials grant **"service accounts"**

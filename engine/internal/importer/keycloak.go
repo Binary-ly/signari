@@ -73,6 +73,12 @@ type Result struct {
 	UsersSkipped   []string
 	ClientsCreated int
 	ClientsSkipped []string
+	// ClientsNowRequiringPKCE are confidential clients using the browser flow.
+	// Every imported client requires PKCE, as every client created here does,
+	// and an application that sends no code_challenge stops at the first
+	// sign-in after cutover. Listed so the operator can check each one, and opt
+	// out with `client set-pkce` the ones that cannot send it.
+	ClientsNowRequiringPKCE []string
 }
 
 // Parse reads a realm export.
@@ -204,6 +210,9 @@ func Import(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm,
 		}
 		if dryRun {
 			res.ClientsCreated++
+			if !c.PublicClient && c.StandardFlowEnabled {
+				res.ClientsNowRequiringPKCE = append(res.ClientsNowRequiringPKCE, c.ClientID)
+			}
 			continue
 		}
 
@@ -228,18 +237,22 @@ func Import(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm,
 			}
 			secretHash = h
 		}
-		if _, err := tx.Exec(ctx, `
+		// PKCE required, as for every client created here. This once required it
+		// only of public clients, so every imported confidential client accepted
+		// an authorization request with no challenge. The ones that may need an
+		// opt-out are listed, not left to fail silently in either direction.
+		tag, err := tx.Exec(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 			                          client_secret_hash, enabled, grant_types, scopes, require_pkce)
-			VALUES ($1, $2::uuid, $1, $3, $4, $5, $7,
-			        ARRAY['openid','profile','email'], $6)
+			VALUES ($1, $2::uuid, $1, $3, $4, $5, $6,
+			        ARRAY['openid','profile','email'], true)
 			ON CONFLICT (client_id) DO NOTHING`,
-			c.ClientID, orgID, kind, secretHash, c.Enabled,
-			// PKCE is required for public clients, and meaningless for a client
-			// that only ever uses client_credentials -- there is no redirect and
-			// no authorization request to bind.
-			c.PublicClient, grants); err != nil {
+			c.ClientID, orgID, kind, secretHash, c.Enabled, grants)
+		if err != nil {
 			return nil, fmt.Errorf("importer: creating client %s: %w", c.ClientID, err)
+		}
+		if tag.RowsAffected() == 1 && !c.PublicClient && c.StandardFlowEnabled {
+			res.ClientsNowRequiringPKCE = append(res.ClientsNowRequiringPKCE, c.ClientID)
 		}
 		for _, u := range c.RedirectURIs {
 			// An import brings somebody else's registrations, and Keycloak

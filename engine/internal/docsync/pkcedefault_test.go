@@ -1,6 +1,9 @@
 package docsync
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -67,4 +70,114 @@ func TestPKCEIsRequiredByDefaultInBothPlaces(t *testing.T) {
 		t.Error("`client create` does not name require_pkce in its INSERT, so the " +
 			"-require-pkce flag cannot be reaching the database")
 	}
+}
+
+// Every other way a client is created, too.
+//
+// The test above covered the CLI and the column, and said the column default
+// governs "every insert path that does not name the column -- the admin API
+// among them". The admin API did name it, bound to `public`, and so did the
+// importer. Every confidential client made through the API, the console,
+// Terraform or an import accepted an authorization request with no challenge,
+// and nothing here could see it.
+//
+// So every `INSERT INTO core.clients` in the engine is read. One that omits the
+// column gets the default checked above. One that names it must give the
+// literal `true`, or be listed here with the test that proves its default.
+func TestEveryClientInsertRequiresPKCEByDefault(t *testing.T) {
+	root := repoRoot(t)
+	reviewed := map[string]string{
+		"engine/cmd/signari/main.go": "the -require-pkce flag, checked by " +
+			"TestPKCEIsRequiredByDefaultInBothPlaces",
+		"engine/internal/adminapi/clients.go": "require_pkce defaults to true " +
+			"unless the request opts out, TestAnAPICreatedClientRequiresPKCEUnlessItOptsOut",
+	}
+
+	insert := regexp.MustCompile(`(?s)INSERT INTO core\.clients\s*\(([^)]*)\)\s*VALUES\s*\(`)
+	found := 0
+	err := filepath.WalkDir(filepath.Join(root, "engine"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		rel, _ := filepath.Rel(root, path)
+		for _, loc := range insert.FindAllStringSubmatchIndex(string(src), -1) {
+			found++
+			columns := splitTopLevel(string(src[loc[2]:loc[3]]))
+			values := splitTopLevel(valuesGroup(string(src[loc[1]:])))
+			at := -1
+			for i, c := range columns {
+				if c == "require_pkce" {
+					at = i
+				}
+			}
+			if at < 0 {
+				continue // the column default, checked above
+			}
+			if at < len(values) && strings.EqualFold(values[at], "true") {
+				continue
+			}
+			if _, ok := reviewed[rel]; ok {
+				continue
+			}
+			value := "(unparsed)"
+			if at < len(values) {
+				value = values[at]
+			}
+			t.Errorf("%s inserts a client with require_pkce = %s. Give the literal true, "+
+				"omit the column, or add the file to `reviewed` with the test proving the "+
+				"value defaults to true: a client that may skip PKCE should be a decision "+
+				"somebody made, not a binding nobody read", rel, value)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found < 4 {
+		t.Fatalf("found %d client inserts; there were 5 when this was written, so the "+
+			"pattern has stopped matching", found)
+	}
+}
+
+// valuesGroup returns the text of a parenthesised group whose opening paren has
+// already been consumed, up to its matching close.
+func valuesGroup(s string) string {
+	depth := 1
+	for i, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return s[:i]
+			}
+		}
+	}
+	return s
+}
+
+// splitTopLevel splits on commas outside brackets and parentheses, so an
+// ARRAY[...] literal or a NULLIF(...) call stays one value.
+func splitTopLevel(s string) []string {
+	var out []string
+	depth, start := 0, 0
+	for i, r := range s {
+		switch r {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, strings.TrimSpace(s[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	return append(out, strings.TrimSpace(s[start:]))
 }

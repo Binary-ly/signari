@@ -659,6 +659,68 @@ func scimTargetForGroups(ctx context.Context, conn *pgx.Conn, slug string) (scim
 	return t, t.OrgID, nil
 }
 
+// clientSetPKCE decides whether a client's authorization requests must carry a
+// PKCE challenge.
+//
+// Every client requires it from creation, and before this only `client create`
+// could choose otherwise. An imported confidential client whose application
+// sends no challenge could therefore be fixed only with an UPDATE by hand. A
+// public client cannot opt out: it holds no secret, and PKCE is the only thing
+// tying the code to the application that asked for it.
+func clientSetPKCE(ctx context.Context, conn *pgx.Conn, clientID string, required bool) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var orgID, kind string
+	if err := tx.QueryRow(ctx,
+		`SELECT org_id::text, client_type FROM core.clients WHERE client_id = $1`,
+		clientID).Scan(&orgID, &kind); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no client %q", clientID)
+		}
+		return err
+	}
+	if !required && kind == "public" {
+		return fmt.Errorf("%s is a public client and must require PKCE: it holds no "+
+			"secret, so the challenge is the only proof the code reached the "+
+			"application that asked for it", clientID)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE core.clients SET require_pkce = $2, updated_at = now() WHERE client_id = $1`,
+		clientID, required); err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "admin.client_updated", OrgID: orgID, ClientID: clientID,
+		Detail: map[string]any{"require_pkce": required, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE core.config_version SET version = version + 1, bumped_at = now()
+		 WHERE id = true`); err != nil {
+		return fmt.Errorf("bumping the configuration version: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if required {
+		fmt.Printf("%s now refuses an authorization request with no PKCE challenge\n", clientID)
+	} else {
+		fmt.Printf("%s now accepts an authorization request with no PKCE challenge.\n"+
+			"  The challenge binds the code to the application that asked for it, and the\n"+
+			"  FAPI 2.0 profile requires one of every client. Keep this only for an\n"+
+			"  application that cannot send one, and turn it back on when it can.\n", clientID)
+	}
+	return nil
+}
+
 // clientSetCIBA chooses how a client receives backchannel authentication results.
 //
 // This is the command `/register` promises. Dynamic registration accepts only

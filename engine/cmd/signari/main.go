@@ -703,6 +703,8 @@ func run(args []string) error {
 		return clientSetExchangeContainment(ctx, conn, *clientID, *exchangeAudMatch)
 	case "client set-dpop":
 		return clientSetDPoP(ctx, conn, *clientID, *dpopBound)
+	case "client set-pkce":
+		return clientSetPKCE(ctx, conn, *clientID, *requirePKCE)
 	case "client set-hybrid":
 		return clientSetHybrid(ctx, conn, *clientID, *reviewBy)
 	case "client set-keys":
@@ -2367,6 +2369,14 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 	}
 	for _, s := range res.ClientsSkipped {
 		fmt.Printf("  skipped client: %s\n", s)
+	}
+	if len(res.ClientsNowRequiringPKCE) > 0 {
+		fmt.Printf("\nThese confidential clients now require PKCE, as every client here does.\n" +
+			"An application that sends no code_challenge is refused at its first sign-in;\n" +
+			"for one that cannot send it, run `signari client set-pkce -client <id> -require-pkce=false`:\n")
+		for _, id := range res.ClientsNowRequiringPKCE {
+			fmt.Printf("  %s\n", id)
+		}
 	}
 	if !dryRun && res.UsersCreated+res.UsersUpdated > 0 {
 		fmt.Printf("\nImported users are marked migration_state=pending and keep their Keycloak\n" +

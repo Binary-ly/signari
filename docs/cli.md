@@ -63,6 +63,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari client set-keys` | Switch to `private_key_jwt` with a public JWKS |
 | `signari client set-tls` | mTLS client authentication and certificate-bound tokens |
 | `signari client set-dpop` | RFC 9449 §5.2: require a DPoP proof on every token request from this client |
+| `signari client set-pkce` | `-client <id> [-require-pkce=false]`: whether this client's authorization requests must carry a PKCE challenge. Every client requires one from creation; the opt-out is for an application that cannot send one, and a public client cannot take it. Audited, and moves the configuration version |
 | `signari client set-exchange-containment` | RFC 8693: only exchange subject tokens this client holds or is named in the audience of |
 | `signari client set-hybrid` | Permit hybrid response types |
 | `signari client set-claims-redirects` | UMA 2.0 §3.3.2: where a requesting party may be returned after claims gathering. A separate list from `redirect_uris`, because the specification forbids reusing those. See [uma.md](uma.md) |

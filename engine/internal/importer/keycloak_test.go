@@ -205,4 +205,23 @@ func TestServiceAccountClientsKeepTheirGrant(t *testing.T) {
 		t.Errorf("a client using no flow we implement was imported anyway: %v",
 			res.ClientsSkipped)
 	}
+
+	// Every imported client requires PKCE. The importer once required it only of
+	// public clients, so every confidential one accepted a request with no
+	// challenge. The confidential browser-flow clients are the ones an
+	// application might notice, and are listed for the operator.
+	for _, id := range []string{"kc-both", "kc-machine", "kc-browser", "kc-public-sa"} {
+		var pkce bool
+		if err := tx.QueryRow(ctx,
+			`SELECT require_pkce FROM core.clients WHERE client_id = $1`, id).Scan(&pkce); err != nil {
+			t.Fatal(err)
+		}
+		if !pkce {
+			t.Errorf("%s was imported without requiring PKCE", id)
+		}
+	}
+	listed := strings.Join(res.ClientsNowRequiringPKCE, ",")
+	if listed != "kc-both,kc-browser" {
+		t.Errorf("ClientsNowRequiringPKCE = %q, want the confidential browser-flow clients kc-both,kc-browser", listed)
+	}
 }

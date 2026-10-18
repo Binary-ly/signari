@@ -32,6 +32,12 @@ type createClientRequest struct {
 	// Secret may be supplied to import an application's EXISTING credential, so
 	// migrating it needs no change on their side. Left empty, one is generated.
 	Secret string `json:"secret"`
+	// RequirePKCE defaults to true for every client. This handler once stored
+	// `public` here, so every confidential client created through the API, the
+	// console or Terraform accepted an authorization request with no challenge.
+	// false is an explicit opt-out, for an application that cannot send one,
+	// and a public client cannot take it.
+	RequirePKCE *bool `json:"require_pkce"`
 }
 
 func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +120,11 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 	if req.Public {
 		kind = "public"
 	}
+	requirePKCE := req.RequirePKCE == nil || *req.RequirePKCE
+	if req.Public && !requirePKCE {
+		writePublicClientNeedsPKCE(w)
+		return
+	}
 	pre, ok := s.readPrecondition(w, r)
 	if !ok {
 		return
@@ -127,7 +138,7 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 			VALUES ($1, $2::uuid, $3, $4, $5, true,
 			        ARRAY['authorization_code','refresh_token'],
 			        ARRAY['openid','profile','email'], $6)`,
-			req.ClientID, req.OrgID, req.DisplayName, kind, hash, req.Public); err != nil {
+			req.ClientID, req.OrgID, req.DisplayName, kind, hash, requirePKCE); err != nil {
 			return err
 		}
 		for _, u := range req.RedirectURIs {
@@ -139,7 +150,8 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.client_created", AdminTokenID: TokenIDFrom(ctx), OrgID: req.OrgID, ClientID: req.ClientID,
-			Detail: map[string]any{"type": kind, "imported_secret": req.Secret != ""},
+			Detail: map[string]any{"type": kind, "imported_secret": req.Secret != "",
+				"require_pkce": requirePKCE},
 		})
 	})
 
@@ -160,7 +172,8 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Info("client created", "client_id", req.ClientID, "type", kind, "config_version", version)
 
-	resp := map[string]any{"client_id": req.ClientID, "type": kind, "config_version": version}
+	resp := map[string]any{"client_id": req.ClientID, "type": kind,
+		"require_pkce": requirePKCE, "config_version": version}
 	if plaintext != "" {
 		resp["client_secret"] = plaintext
 		// Said in the response, because an operator who does not copy it now has
@@ -168,6 +181,16 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 		resp["notice"] = "This secret is shown once and is not recoverable. Copy it now."
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// writePublicClientNeedsPKCE refuses a PKCE opt-out for a public client, on
+// create and on patch alike.
+func writePublicClientNeedsPKCE(w http.ResponseWriter) {
+	writeJSON(w, http.StatusBadRequest, map[string]string{
+		"error": "pkce_required",
+		"detail": "a public client must require PKCE: it holds no secret, so the " +
+			"challenge is the only proof the code reached the application that asked for it",
+	})
 }
 
 // rotateClientSecret issues a new secret and invalidates the old one.

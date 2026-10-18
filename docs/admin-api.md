@@ -155,8 +155,8 @@ to redefine one would be a setting that changes nothing.
 |---|---|
 | `GET /admin/clients` | List, paged. `?limit=` (max 200) and `?cursor=` |
 | `GET /admin/clients/{clientID}` | One client |
-| `POST /admin/clients` | Register a client |
-| `PATCH /admin/clients/{clientID}` | Enable or disable |
+| `POST /admin/clients` | Register a client. `require_pkce` defaults to `true` for confidential clients as well as public ones; `false` is an explicit opt-out and is refused for a public client |
+| `PATCH /admin/clients/{clientID}` | `enabled` and/or `require_pkce`. Only the fields sent are changed, and the response gives both. A public client cannot drop PKCE |
 | `DELETE /admin/clients/{clientID}` | Remove the client and everything issued under it. Real deletion, not a flag (ADR-005): every code, token, refresh family, consent, pushed request and device authorisation cascades with it. The audit trail keeps its records — `audit_events.client_id` has no foreign key, so the history of a client outlives the client. Returns how many access tokens were revoked |
 | `POST /admin/clients/{clientID}/rotate-secret` | New secret, shown once. The previous one stops working immediately |
 

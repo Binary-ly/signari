@@ -354,6 +354,9 @@ type patchClientRequest struct {
 	// Pointer so "absent" and "false" are distinguishable. Without this, a PATCH
 	// that does not mention `enabled` would silently disable the client.
 	Enabled *bool `json:"enabled"`
+	// RequirePKCE is the opt-out for an application that cannot send a PKCE
+	// challenge, and the way back. A public client cannot opt out.
+	RequirePKCE *bool `json:"require_pkce"`
 }
 
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
@@ -369,7 +372,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	if req.Enabled == nil {
+	if req.Enabled == nil && req.RequirePKCE == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
@@ -380,14 +383,15 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var enabled, requirePKCE bool
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		// This handler previously changed a client without ever reading which
 		// organisation it belonged to, so there was nothing for the boundary to
 		// check against. The lookup exists for that reason.
-		var orgID string
+		var orgID, kind string
 		if err := tx.QueryRow(ctx,
-			`SELECT org_id::text FROM core.clients WHERE client_id = $1`,
-			clientID).Scan(&orgID); err != nil {
+			`SELECT org_id::text, client_type FROM core.clients WHERE client_id = $1`,
+			clientID).Scan(&orgID, &kind); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return errNotFound
 			}
@@ -396,26 +400,40 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		if err := requireOrg(ctx, orgID); err != nil {
 			return err
 		}
+		if kind == "public" && req.RequirePKCE != nil && !*req.RequirePKCE {
+			return errPublicClientNeedsPKCE
+		}
 
-		tag, err := tx.Exec(ctx,
-			`UPDATE core.clients SET enabled = $2, updated_at = now() WHERE client_id = $1`,
-			clientID, *req.Enabled)
+		err := tx.QueryRow(ctx, `
+			UPDATE core.clients
+			   SET enabled = COALESCE($2, enabled),
+			       require_pkce = COALESCE($3, require_pkce),
+			       updated_at = now()
+			 WHERE client_id = $1
+			RETURNING enabled, require_pkce`,
+			clientID, req.Enabled, req.RequirePKCE).Scan(&enabled, &requirePKCE)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errNotFound
+		}
 		if err != nil {
 			return err
-		}
-		if tag.RowsAffected() == 0 {
-			return errNotFound
 		}
 
 		// Disabling a client is the emergency lever -- the way an operator cuts a
 		// compromised integration off from every user at once. It had no audit
 		// record at all, so afterwards there was no way to say who pulled it, or
 		// when, or whether it was pulled rather than the client breaking on its
-		// own.
+		// own. The record names only the fields this request set.
+		detail := map[string]any{}
+		if req.Enabled != nil {
+			detail["enabled"] = *req.Enabled
+		}
+		if req.RequirePKCE != nil {
+			detail["require_pkce"] = *req.RequirePKCE
+		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.client_updated", AdminTokenID: TokenIDFrom(ctx),
-			OrgID: orgID, ClientID: clientID,
-			Detail: map[string]any{"enabled": *req.Enabled},
+			OrgID: orgID, ClientID: clientID, Detail: detail,
 		})
 	})
 
@@ -428,6 +446,9 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client_not_found"})
 		return
+	case errors.Is(err, errPublicClientNeedsPKCE):
+		writePublicClientNeedsPKCE(w)
+		return
 	case err != nil:
 		s.log.Error("patching client", "client_id", clientID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -437,13 +458,16 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 
 	// Disabling is a security-relevant action, so it is logged at a level an
 	// operator will actually see, with the version needed to confirm propagation.
-	s.log.Info("client updated", "client_id", clientID, "enabled", *req.Enabled,
-		"config_version", version)
+	s.log.Info("client updated", "client_id", clientID, "enabled", enabled,
+		"require_pkce", requirePKCE, "config_version", version)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"client_id": clientID, "enabled": *req.Enabled, "config_version": version,
+		"client_id": clientID, "enabled": enabled, "require_pkce": requirePKCE,
+		"config_version": version,
 	})
 }
+
+var errPublicClientNeedsPKCE = errors.New("a public client must require PKCE")
 
 // configVersion reports the current configuration version.
 //

@@ -151,4 +151,41 @@ func TestEveryFactorTableIsChecked(t *testing.T) {
 				"HasSecondFactor consults it. One of the two is wrong.", tbl)
 		}
 	}
+
+	// Consulting a table is not enough: each one has a half-enrolled state, and
+	// only the proved half is a factor. Email was consulted with no predicate
+	// at all, so an address abandoned at the code screen -- or one an intruder
+	// had just pointed the account at -- counted as the second factor (0126).
+	for _, fn := range []string{"HasSecondFactor", "HasFactorOtherThanDuo"} {
+		fnBody := regexp.MustCompile(`(?s)func ` + fn + `\(.*?(\n}\n\n|\z)`).Find(src)
+		if fnBody == nil {
+			t.Fatalf("%s not found; this test is no longer checking it", fn)
+		}
+		for tbl, pred := range provedPredicate {
+			i := strings.Index(string(fnBody), "core."+tbl)
+			if i < 0 {
+				if fn == "HasSecondFactor" {
+					t.Errorf("%s does not consult core.%s", fn, tbl)
+				}
+				continue
+			}
+			clause := string(fnBody[i:])
+			if j := strings.Index(clause, "EXISTS"); j >= 0 {
+				clause = clause[:j]
+			}
+			if !strings.Contains(clause, pred) {
+				t.Errorf("%s consults core.%s without %q, so an enrolment nobody "+
+					"proved counts as a second factor", fn, tbl, pred)
+			}
+		}
+	}
+}
+
+// provedPredicate is what makes a row in each second-factor table a factor
+// rather than an enrolment somebody started.
+var provedPredicate = map[string]string{
+	"totp_credentials":      "confirmed_at IS NOT NULL",
+	"email_otp_credentials": "verified_at IS NOT NULL",
+	"sms_otp_credentials":   "verified_at IS NOT NULL",
+	"duo_enrollments":       "i.enabled",
 }

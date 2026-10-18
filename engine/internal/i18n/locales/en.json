@@ -277,5 +277,10 @@
   "sms.totp.enrolled": "An authenticator app was just set up on your account. If this was not you, sign in and review your sign-in methods.",
   "mail.totp.replaced.subject": "Your authenticator app was replaced",
   "mail.totp.replaced.body": "The authenticator app used as your second sign-in step was just replaced. The previous one no longer works.\n\nIf you did not do this, someone else may have access to your account: change your password and review your sign-in methods.",
-  "sms.totp.replaced": "Your authenticator app was just replaced. If this was not you, change your password now."
+  "sms.totp.replaced": "Your authenticator app was just replaced. If this was not you, change your password now.",
+  "mail.emailotp.enrolled.subject": "Sign-in codes will now be sent by email",
+  "mail.emailotp.enrolled.body": "Email was just set up as a second sign-in step for your account, and sign-in codes will go to the address that was confirmed.\n\nIf you did this, there is nothing to do.\n\nIf you did NOT, someone else may have access to your account: sign in, review your sign-in methods, and change your password.",
+  "sms.emailotp.enrolled": "Email was just set up as a second sign-in step on your account. If this was not you, sign in and review your sign-in methods.",
+  "mail.emailotp.moved.subject": "Sign-in codes will no longer come to this address",
+  "mail.emailotp.moved.body": "The second sign-in step on your account was just moved to a different email address. Codes will no longer be sent here.\n\nIf you did this, there is nothing to do.\n\nIf you did NOT, someone else has access to your account and has taken over your sign-in codes. Change your password now and contact your administrator."
 }

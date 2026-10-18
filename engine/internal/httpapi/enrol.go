@@ -603,7 +603,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		okCode, verr := store.VerifyEmailOTP(ctx, tx, userID,
+		okCode, replaced, verr := store.ConfirmEmailOTPEnrolment(ctx, tx, userID,
 			strings.TrimSpace(r.PostForm.Get("code")))
 		if verr != nil {
 			s.log.Error("verifying an enrolment code", "err", verr)
@@ -615,12 +615,37 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 				"That code did not match, or it has expired.")
 			return
 		}
+		if err := audit.Write(ctx, tx, audit.Event{
+			Type: "mfa.email_otp_enrolled", OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"replaced": replaced != ""},
+		}); err != nil {
+			s.log.Error("auditing the email factor enrolment", "err", err)
+			render("start", "", "Something went wrong. Try again.")
+			return
+		}
 		if err := tx.Commit(ctx); err != nil {
 			render("start", "", "Something went wrong. Try again.")
 			return
 		}
-		s.log.Info("email second factor enrolled", "user_id", userID,
-			"correlation_id", correlationID(ctx))
+
+		// A second factor that has just started or moved is what the account
+		// holder must hear about. And when it moved, the address that stops
+		// getting codes is told directly: it is the one channel an intruder who
+		// redirected the factor to themselves cannot also control.
+		// Best-effort, after the commit.
+		tr := s.notifierFor(ctx, userID)
+		_ = s.notifyAccount(ctx, userID, tr.Text("mail.emailotp.enrolled.subject"),
+			tr.Text("mail.emailotp.enrolled.body"), tr.Text("sms.emailotp.enrolled"))
+		if replaced != "" {
+			if err := s.mailer.Send(ctx, mail.Message{
+				To:      replaced,
+				Subject: tr.Text("mail.emailotp.moved.subject"),
+				Body:    tr.Text("mail.emailotp.moved.body"),
+			}); err != nil {
+				s.log.Warn("telling the previous address its codes have moved", "err", err)
+			}
+		}
 		render("done", "", "")
 
 	default: // send a code to the address being enrolled
@@ -637,12 +662,14 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		if err := store.EnrollEmailOTP(ctx, tx, userID, orgID, address); err != nil {
+		// Pending only: the address that already works -- if any -- stays the
+		// factor until a code sent to this one comes back.
+		if err := store.StartEmailOTPEnrolment(ctx, tx, userID, orgID, address); err != nil {
 			s.log.Error("enrolling the email factor", "err", err)
 			render("start", address, "Something went wrong. Try again.")
 			return
 		}
-		code, addr, ierr := store.IssueEmailOTP(ctx, tx, userID)
+		code, addr, ierr := store.IssueEmailOTPEnrolment(ctx, tx, userID)
 		if errors.Is(ierr, store.ErrEmailOTPTooSoon) {
 			render("code", address, "A code was just sent. Check your inbox.")
 			return

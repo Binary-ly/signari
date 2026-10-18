@@ -164,11 +164,15 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 		{"sms_otp", "sms_otp_credentials"},
 	} {
 		var created string
+		var verified bool
 		// The table name is from this fixed list, never from the request.
+		// Confirmed is the proved state, not the existence of a row: an address
+		// or number abandoned at the code screen is listed so a support desk can
+		// see it, and is not a factor (0126).
 		if err := s.db.QueryRow(ctx,
-			`SELECT created_at::text FROM core.`+k.table+` WHERE user_id = $1::uuid`,
-			userID).Scan(&created); err == nil {
-			out = append(out, factorSummary{Type: k.kind, Confirmed: true, CreatedAt: created})
+			`SELECT created_at::text, verified_at IS NOT NULL FROM core.`+k.table+` WHERE user_id = $1::uuid`,
+			userID).Scan(&created, &verified); err == nil {
+			out = append(out, factorSummary{Type: k.kind, Confirmed: verified, CreatedAt: created})
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			s.log.Error("listing otp credentials", "kind", k.kind, "err", err)
 		}
@@ -192,11 +196,20 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("counting recovery codes", "err", err)
 	}
 
+	// The same gate a password sign-in passes through, not a count of the rows
+	// above: those include enrolments nobody proved and passkeys, which are a
+	// first factor. Two different answers to "is MFA on?" is how a support desk
+	// tells someone they are protected when sign-in does not agree.
+	hasSecond, err := store.HasSecondFactor(ctx, s.db, userID)
+	if err != nil {
+		s.log.Error("checking for a second factor", "err", err)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id":               userID,
 		"factors":               out,
 		"recovery_codes_unused": unused,
-		"has_second_factor":     len(out) > 0,
+		"has_second_factor":     hasSecond,
 	})
 }
 

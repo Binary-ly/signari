@@ -386,7 +386,8 @@ func HasFactorOtherThanDuo(ctx context.Context, db interface {
 			SELECT 1 FROM core.totp_credentials
 			WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL
 		) OR EXISTS (
-			SELECT 1 FROM core.email_otp_credentials WHERE user_id = $1::uuid
+			SELECT 1 FROM core.email_otp_credentials
+			WHERE user_id = $1::uuid AND verified_at IS NOT NULL
 		) OR EXISTS (
 			SELECT 1 FROM core.sms_otp_credentials
 			WHERE user_id = $1::uuid AND verified_at IS NOT NULL
@@ -412,10 +413,12 @@ func HasFactorOtherThanDuo(ctx context.Context, db interface {
 // fails when a credential table exists that this query does not mention.
 //
 // Checked on the pool, not in a transaction, and deliberately cheap: it runs on
-// every password sign-in. For TOTP, `confirmed_at` is what matters -- an
-// enrolment the user never proved must not lock them out of their own account.
-// Email enrolment has no such half state: the row exists only after a code sent
-// to that address was entered.
+// every password sign-in. Every factor here has a half state, and the proved
+// half is the only one that counts: `confirmed_at` for TOTP, `verified_at` for
+// email and SMS. An enrolment the user never proved must not lock them out of
+// their own account. (This comment once said email had no half state because
+// "the row exists only after a code sent to that address was entered". The row
+// was written on the send step; see 0126.)
 func HasSecondFactor(ctx context.Context, db interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, userID string) (bool, error) {
@@ -425,7 +428,10 @@ func HasSecondFactor(ctx context.Context, db interface {
 			SELECT 1 FROM core.totp_credentials
 			WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL
 		) OR EXISTS (
-			SELECT 1 FROM core.email_otp_credentials WHERE user_id = $1::uuid
+			-- VERIFIED, for the same reason as SMS below: an address is
+			-- somebody's typo until a code sent to it comes back.
+			SELECT 1 FROM core.email_otp_credentials
+			WHERE user_id = $1::uuid AND verified_at IS NOT NULL
 		) OR EXISTS (
 			-- VERIFIED, not merely enrolled. An unverified number is somebody's
 			-- typo until a code sent to it comes back, and treating it as a

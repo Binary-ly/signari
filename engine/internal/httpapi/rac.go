@@ -154,6 +154,9 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("recording a remote session", "err", err)
 	}
 
+	// The tunnel outlives the listener's request timeouts by design: the upgrade
+	// hijacks the connection, which clears them (see listener.go), and its
+	// lifetime is bounded instead by the re-checks below.
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols: []string{"guacamole"},
 		// nil means same-origin only: the library compares the Origin host to

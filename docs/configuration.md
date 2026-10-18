@@ -77,6 +77,13 @@ effect at all.
 | `SIGNARI_INSECURE_ISSUER` | `1` permits an `http://` issuer. Development only |
 | `SIGNARI_PROXY_COOKIE_DOMAIN` | Parent domain for the forward-auth cookie |
 
+Every listener (public, admin and metrics) allows 10 seconds for headers, 30
+to read a whole request, 60 to answer it and 120 for an idle keep-alive. These
+are not settings. Before them a client could send its body a byte a minute and
+hold a connection for as long as it liked. The remote-access tunnel is a
+WebSocket, and upgrading to one clears these deadlines for that connection, so
+a remote desktop is bounded by its session checks instead.
+
 ## Behind a reverse proxy
 
 | | |

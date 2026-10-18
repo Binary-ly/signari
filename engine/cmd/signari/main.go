@@ -1662,10 +1662,16 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 				scheme = "http"
 			}
 			log.Info("admin API listening", "addr", adminAddr, "scheme", scheme)
+			// The same read and write bounds as the public listener: a slow
+			// body here holds a goroutine just the same, and no admin call
+			// takes longer than a minute to answer.
 			ah := &http.Server{
 				Addr:              adminAddr,
 				Handler:           adminSrv.Routes(),
-				ReadHeaderTimeout: 10 * time.Second,
+				ReadHeaderTimeout: httpapi.PublicReadHeaderTimeout,
+				ReadTimeout:       httpapi.PublicReadTimeout,
+				WriteTimeout:      httpapi.PublicWriteTimeout,
+				IdleTimeout:       httpapi.PublicIdleTimeout,
 			}
 			// Shut down with the rest of the process rather than being killed
 			// with it. An admin write is a transaction that bumps the config
@@ -1922,7 +1928,10 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			mh := &http.Server{
 				Addr:              metricsAddr,
 				Handler:           mm,
-				ReadHeaderTimeout: 10 * time.Second,
+				ReadHeaderTimeout: httpapi.PublicReadHeaderTimeout,
+				ReadTimeout:       httpapi.PublicReadTimeout,
+				WriteTimeout:      httpapi.PublicWriteTimeout,
+				IdleTimeout:       httpapi.PublicIdleTimeout,
 			}
 			go func() {
 				<-ctx.Done()
@@ -1937,14 +1946,8 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		}()
 	}
 
-	h := &http.Server{
-		Addr:    addr,
-		Handler: srv.Routes(),
-		// A slow-header attack costs an attacker nothing and holds a connection
-		// open indefinitely without this.
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	// Read, write, header and idle timeouts: see httpapi.NewPublicServer.
+	h := httpapi.NewPublicServer(addr, srv.Routes())
 
 	// Ordered shutdown. The sequence is the whole point, and getting it wrong is
 	// invisible until a deploy drops requests:

@@ -119,6 +119,7 @@ func clearSecondFactorBucket(t *testing.T, f *signInFixture) {
 func TestRecoveryCodeGuessingIsRefusedPastTheBudget(t *testing.T) {
 	f := newSignInFixture(t)
 	clearSecondFactorBucket(t, f)
+	clearOfWindowEdge(t, secondFactorPerAccountWindow)
 	codes := giveRecoveryCodes(t, f)
 	step := newMFAStep(t, f)
 
@@ -162,6 +163,7 @@ func TestRecoveryCodeGuessingIsRefusedPastTheBudget(t *testing.T) {
 func TestTheCodeStepDrawsOnTheAddressBudget(t *testing.T) {
 	f := newSignInFixture(t)
 	clearSecondFactorBucket(t, f)
+	clearOfWindowEdge(t, signInPerIPWindow)
 	giveRecoveryCodes(t, f)
 	step := newMFAStep(t, f)
 	ctx := context.Background()
@@ -294,6 +296,7 @@ func TestTheCeilingFailureDisablesTheFactorAndTellsTheHolder(t *testing.T) {
 func TestTheDesktopDoorKeepsTheFailureCount(t *testing.T) {
 	f := newSignInFixture(t)
 	clearSecondFactorBucket(t, f)
+	clearOfWindowEdge(t, secondFactorPerAccountWindow)
 	root, err := keys.NewRootKey("test", make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)

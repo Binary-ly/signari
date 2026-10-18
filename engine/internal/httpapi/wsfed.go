@@ -78,9 +78,25 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before the sign-in, so nobody is asked to authenticate for an application
+	// that will be refused anyway.
+	if !p.Enabled {
+		writeError(w, http.StatusForbidden, "access_denied",
+			"this application has been disabled by its administrator")
+		return
+	}
+
 	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin(r.URL.RequestURI()), http.StatusSeeOther)
+		return
+	}
+	// The same check the SAML endpoint makes, and the one this endpoint went
+	// without: a realm is another organisation's application, and a session here
+	// must not be turned into a signed token for it.
+	if err := checkSPUsable(p, orgID); err != nil {
+		s.log.Info("ws-federation realm refused", "realm", realm, "err", err)
+		writeError(w, http.StatusForbidden, "access_denied", err.Error())
 		return
 	}
 

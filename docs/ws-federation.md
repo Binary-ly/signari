@@ -32,6 +32,19 @@ WS-Federation is released, policy-gated and audited exactly like a SAML one.
 `wctx` is passed back untouched, which is what the relying party uses to resume
 whatever the user was doing.
 
+## Whose application, and whether it is switched on
+
+A realm belongs to one organisation. A session from any other organisation is
+refused with `403 access_denied`, and so is a realm whose registration is
+disabled. A disabled realm is refused before the sign-in page, so nobody is asked
+to authenticate for an application that will be turned away anyway.
+
+The SAML endpoint makes the same two checks, and so does the function that signs
+the assertion for both protocols. This endpoint was originally written with
+neither check. A session in one organisation could get a signed token for another
+organisation's realm, or for one its operator had switched off. The check inside
+the signing function exists so that a third caller cannot repeat that mistake.
+
 ## wreply is matched exactly
 
 ```

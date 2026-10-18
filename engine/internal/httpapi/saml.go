@@ -239,10 +239,8 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if provider.OrgID != orgID {
-		// The signed-in user belongs to a different organisation than the service
-		// provider does. Issuing here would be a cross-tenant assertion.
-		s.samlRefuse(w, r, "this service provider belongs to a different organisation")
+	if err := checkSPUsable(provider, orgID); err != nil {
+		s.samlRefuse(w, r, err.Error())
 		return
 	}
 
@@ -254,6 +252,26 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.postSAMLResponse(w, r, acs, doc, relayState)
+}
+
+// errSPNotUsable is a service provider this session may not receive an
+// assertion for.
+var errSPNotUsable = errors.New("service provider not usable")
+
+// checkSPUsable reports why a service provider may not be sent an assertion
+// for a session in orgID, or nil. One check for SAML and WS-Federation: the
+// second was written without either half, and issued a signed token for another
+// tenant's realm and for a realm its operator had switched off.
+func checkSPUsable(p *saml.Provider, orgID string) error {
+	if !p.Enabled {
+		return fmt.Errorf("%w: this application has been disabled by its administrator", errSPNotUsable)
+	}
+	if p.OrgID != orgID {
+		// The signed-in user belongs to a different organisation than the service
+		// provider does. Issuing here would be a cross-tenant assertion.
+		return fmt.Errorf("%w: this application belongs to a different organisation", errSPNotUsable)
+	}
+	return nil
 }
 
 // sessionAuthedAfter reports whether this session was authenticated after t.
@@ -347,6 +365,14 @@ func samlResumeQuery(encoded, relayState, method, originalQuery string) string {
 
 func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *saml.Provider,
 	sid, userID, orgID string) (doc string, acs string, err error) {
+
+	// Again here, though every caller checks first: this is the one function
+	// that produces a signed assertion for SAML and WS-Federation alike, and
+	// WS-Federation once reached it with neither check made. A caller added
+	// later inherits the refusal rather than having to remember it.
+	if err := checkSPUsable(p, orgID); err != nil {
+		return "", "", err
+	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

@@ -832,6 +832,17 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		render("start", "", "")
 
 	default: // "send"
+		// Outside the deployment's countries, refused before the number is
+		// stored. Accepting it and refusing every message later would build the
+		// person a factor that can never deliver a code.
+		if n, nerr := sms.NormaliseNumber(r.PostForm.Get("number")); nerr == nil && !s.smsPolicy.Permits(n) {
+			_ = s.refuseSMS(ctx, userID, "refused_country", "enrolment of a number outside "+
+				"SIGNARI_SMS_ALLOWED_PREFIXES")
+			render("start", r.PostForm.Get("number"), "Text messages to that country are not "+
+				"available here. Use an authenticator app or a passkey instead.")
+			return
+		}
+
 		tx, terr := s.db.Begin(ctx)
 		if terr != nil {
 			render("start", "", "Something went wrong. Try again.")
@@ -866,7 +877,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if serr := s.texter.Send(ctx, sms.Message{
+		if serr := s.sendSMS(ctx, userID, sms.Message{
 			To: to,
 			Body: fmt.Sprintf("%s: your verification code is %s. It expires in %d minutes.",
 				s.cfg.Issuer, code, int(store.SMSOTPLifetime.Minutes())),

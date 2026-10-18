@@ -578,7 +578,7 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 		return
 	}
 
-	if err := s.texter.Send(ctx, sms.Message{
+	if err := s.sendSMS(ctx, userID, sms.Message{
 		To: number,
 		// No link, and the issuer named. A code with a link in it trains people
 		// to tap links in texts, which is the delivery mechanism for the attack

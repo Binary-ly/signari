@@ -158,7 +158,7 @@ func (s *Server) notifyAccount(ctx context.Context, userID, subject, emailBody, 
 			if body == "" {
 				body = subject
 			}
-			sendErr = s.texter.Send(ctx, sms.Message{To: ch.Address, Body: body})
+			sendErr = s.sendSMS(ctx, userID, sms.Message{To: ch.Address, Body: body})
 		}
 		if sendErr != nil {
 			s.log.Error("sending account notice", "kind", ch.Kind, "err", sendErr)

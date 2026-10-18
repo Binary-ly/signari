@@ -169,6 +169,10 @@ type Server struct {
 	// read through failureLimit().
 	factorFailureLimit int
 
+	// smsPolicy bounds text messages: countries and daily ceilings (smsgate.go).
+	// The zero value allows any country under the default ceilings.
+	smsPolicy sms.Policy
+
 	// clientIPs decides which address a request came from (see withClientIP).
 	// nil reads the socket, which is right when nothing is in front.
 	clientIPs *clientip.Resolver
@@ -180,6 +184,9 @@ type Server struct {
 // SetFactorFailureLimit supplies how many consecutive wrong codes disable a
 // second factor, already checked by store.FactorFailureLimit.
 func (s *Server) SetFactorFailureLimit(n int) { s.factorFailureLimit = n }
+
+// SetSMSPolicy supplies the country list and daily ceilings for text messages.
+func (s *Server) SetSMSPolicy(p sms.Policy) { s.smsPolicy = p }
 
 // SetClientIPResolver supplies how the client address is read behind a proxy,
 // from SIGNARI_CLIENT_IP_SOURCE and SIGNARI_TRUSTED_PROXIES.

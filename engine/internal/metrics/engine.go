@@ -57,6 +57,11 @@ type Engine struct {
 	// Authentication failures by mechanism, so a guessing run against LDAP or
 	// RADIUS is visible without reading the audit trail.
 	AuthFailures *Counter
+
+	// Text messages by outcome. A climbing refusal count is SMS pumping being
+	// stopped, and a climbing send count with no matching sign-ins is the same
+	// attack not being stopped.
+	SMS *Counter
 }
 
 // routePatterns is the set of route labels, filled during startup.
@@ -126,6 +131,13 @@ func NewEngine() *Engine {
 		[]ValueSet{
 			set("password", "ldap", "radius", "client_secret", "client_assertion",
 				"mfa", "passkey", "kerberos"),
+		})
+
+	e.SMS = r.NewCounter("signari_sms_total",
+		"Text messages by outcome.",
+		[]string{"outcome"},
+		[]ValueSet{
+			set("sent", "failed", "refused_country", "refused_number_budget", "refused_org_budget"),
 		})
 
 	return e

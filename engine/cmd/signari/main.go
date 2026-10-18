@@ -1513,6 +1513,16 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	if texter != nil {
 		log.Info("SMS second factor available", "gateway", texter.Describe())
 	}
+	smsPolicy, err := sms.PolicyFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("configuring SMS limits: %w", err)
+	}
+	if texter != nil && !smsPolicy.Restricted() {
+		// Not fatal: the daily ceilings still cap the bill. Said once at start,
+		// because a gateway open to every country is how SMS pumping begins.
+		log.Warn("SMS is enabled with no SIGNARI_SMS_ALLOWED_PREFIXES, so a number in any " +
+			"country, including high-cost ranges, can be enrolled and sent codes")
+	}
 
 	srv, err := httpapi.New(oidc.Config{
 		Issuer:              issuer,
@@ -1550,6 +1560,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		return fmt.Errorf("SIGNARI_MFA_FAILURE_LIMIT: %w", err)
 	}
 	srv.SetFactorFailureLimit(failureLimit)
+	srv.SetSMSPolicy(smsPolicy)
 
 	// The client address behind a reverse proxy. Fatal when inconsistent, for
 	// the same reason as the limit above: a deployment that named its proxies

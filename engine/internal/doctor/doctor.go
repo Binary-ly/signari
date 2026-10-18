@@ -30,6 +30,7 @@ import (
 	"signari.dev/engine/internal/migrate"
 	"signari.dev/engine/internal/pages"
 	"signari.dev/engine/internal/provider"
+	"signari.dev/engine/internal/sms"
 	"sort"
 	"strings"
 	"time"
@@ -101,6 +102,7 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	checkRootKey(r)
 	checkAdminToken(r)
 	checkMail(r)
+	checkSMS(r)
 	checkAuthenticatorModels(r)
 	if err := checkSigningKeys(ctx, conn, r); err != nil {
 		return nil, err
@@ -216,6 +218,27 @@ func checkMail(r *Report) {
 			"set SIGNARI_SMTP_HOST and SIGNARI_MAIL_FROM. Until then recovery messages "+
 				"are written to the log, which is fine for development and means nobody "+
 				"can recover an account in production")
+	}
+}
+
+// checkSMS names an SMS gateway left open to every country, the shape SMS
+// pumping needs, and a malformed limit, which `serve` refuses to start on.
+func checkSMS(r *Report) {
+	if os.Getenv("SIGNARI_SMS_GATEWAY") == "" {
+		return
+	}
+	r.ran("text messages")
+	p, err := sms.PolicyFromEnv(os.Getenv)
+	if err != nil {
+		r.add(Critical, "sms", err.Error(), "correct it; the server will not start until it is")
+		return
+	}
+	if !p.Restricted() {
+		number, org := p.Limits()
+		r.add(Warning, "sms", "SMS is enabled for numbers in every country",
+			fmt.Sprintf("set SIGNARI_SMS_ALLOWED_PREFIXES to the countries you serve (+1,+44 ...). "+
+				"Until then a number on a high-cost range can be enrolled and sent codes, "+
+				"capped only by %d a day per number and %d per organisation", number, org))
 	}
 }
 

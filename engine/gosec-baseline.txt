@@ -27,7 +27,6 @@ G703    internal/outbox/tls.go              1      operator-configured CA bundle
 G703    internal/risk/geoip.go              1      operator-configured GeoIP database
 G705    internal/httpapi/trustmark.go       1      served as application/trust-mark+jwt with nosniff; never rendered as HTML
 G710    internal/httpapi/consent.go         1      same-origin /authorize path
-G710    internal/httpapi/duo.go             1      Duo API host from configuration
 G710    internal/httpapi/federation.go      2      upstream authorize URL from configuration; return target checked same-origin by parkedReturn
 G710    internal/httpapi/flow.go            5    redirect_uri and post_logout_redirect_uri matched against registered values; same-origin resume paths
 G710    internal/httpapi/forwardauth.go     1      rd checked against core.proxy_hosts

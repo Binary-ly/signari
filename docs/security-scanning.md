@@ -302,6 +302,11 @@ and each was traced to its source rather than added to the total:
 **Baseline: 71**, listed by rule and file in `engine/gosec-baseline.txt` and
 enforced by `scripts/gosec-check.sh`.
 
+**70** after the Duo hand-off was split, so that the health probe reads inside
+the sign-in's transaction and the redirect happens after it is released. The
+redirect target is still `AuthorizeURL` on the configured API host. gosec simply
+no longer follows it across the two functions.
+
 ## A fourth sweep: exported functions nothing calls
 
 The three sweeps above catch unimported *packages*, documented-but-absent

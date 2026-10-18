@@ -17,9 +17,9 @@ import (
 // with "flag provided but not defined", and so did the opt-out command this
 // repository printed after an import. The command was right and the line was
 // still wrong, which is the half nothing read.
-func TestEveryDocumentedFlagExists(t *testing.T) {
-	root := repoRoot(t)
-
+// cliFlags is every flag name cmd/signari defines.
+func cliFlags(t *testing.T, root string) map[string]bool {
+	t.Helper()
 	defined := map[string]bool{"h": true, "help": true}
 	define := regexp.MustCompile(`\.(?:String|Bool|Int|Int64|Uint|Uint64|Float64|Duration|Var|Func|BoolFunc|TextVar)\(\s*(?:&?\w+,\s*)?"([a-z][a-z0-9-]*)"`)
 	cmdDir := filepath.Join(root, "engine", "cmd", "signari")
@@ -39,6 +39,12 @@ func TestEveryDocumentedFlagExists(t *testing.T) {
 		t.Fatalf("only %d flags were parsed out of cmd/signari, so the definition "+
 			"pattern has stopped matching", len(defined))
 	}
+	return defined
+}
+
+func TestEveryDocumentedFlagExists(t *testing.T) {
+	root := repoRoot(t)
+	defined := cliFlags(t, root)
 
 	// An invocation: `signari` and a command word, up to the end of the line or
 	// a closing backtick, with shell continuations joined first. The tail stops
@@ -52,7 +58,7 @@ func TestEveryDocumentedFlagExists(t *testing.T) {
 
 	var undefined []string
 	seen := 0
-	err = filepath.Walk(filepath.Join(root, "docs"), func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(filepath.Join(root, "docs"), func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".md") {
 			return err
 		}

@@ -2866,7 +2866,7 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 	case slug == "":
 		return fmt.Errorf("give -slug, the short name used in the URL /login/with/<slug>")
 	case clientID == "" && kind != "saml":
-		return fmt.Errorf("give -client-id, issued by the provider")
+		return fmt.Errorf("give -client-id-ext, issued by the provider")
 	}
 
 	// A SAML upstream has no client ID, no scopes and no discovery document. It
@@ -3768,7 +3768,7 @@ func envOr(key, fallback string) string {
 // groupCreate adds a group.
 func groupCreate(ctx context.Context, conn *pgx.Conn, orgID, name, displayName string) error {
 	if orgID == "" || name == "" {
-		return fmt.Errorf("give -org and -name")
+		return fmt.Errorf("give -org and -group")
 	}
 	if _, err := store.CreateGroup(ctx, conn, orgID, name, displayName, ""); err != nil {
 		if strings.Contains(err.Error(), "groups_name_shape") {
@@ -3791,7 +3791,7 @@ func groupCreate(ctx context.Context, conn *pgx.Conn, orgID, name, displayName s
 // groupMember adds or removes a member.
 func groupMember(ctx context.Context, conn *pgx.Conn, orgID, name, email string, remove bool) error {
 	if orgID == "" || name == "" || email == "" {
-		return fmt.Errorf("give -org, -name and -email")
+		return fmt.Errorf("give -org, -group and -email-member")
 	}
 	var userID string
 	if err := conn.QueryRow(ctx,
@@ -4487,7 +4487,7 @@ func ssfAddStream(ctx context.Context, conn *pgx.Conn, orgID, clientID, endpoint
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this receiver belongs to")
 	case clientID == "":
-		return fmt.Errorf("give -client, the relying party this stream is for")
+		return fmt.Errorf("give -client-id, the relying party this stream is for")
 	}
 	// A poll stream is pulled, not pushed: it has no endpoint of ours to POST to,
 	// and the receiver authenticates to us as its OAuth client rather than with a

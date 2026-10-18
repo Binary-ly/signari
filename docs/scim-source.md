@@ -113,6 +113,25 @@ Matching is on `externalId` alone. Matching on `displayName` would make a rename
 look like the deletion of one group and the creation of another, revoking
 everything the first one granted.
 
+### A source manages only the groups it creates
+
+If a `POST /Groups` derives a name that a group in the organisation already
+has, the request is refused with `409 uniqueness`. The existing group might
+have been made by an operator, made by another source, or have members who may
+impersonate. Each group has at most one source, and a group a source manages
+cannot be given impersonation. Both rules are enforced by the database, so they
+also hold for any other writer:
+
+- `signari group impersonation -grant` on a group a source manages is refused;
+- a source cannot be linked to a group that may impersonate.
+
+The reason is the one directory sync already follows. Whoever administers the
+upstream decides who is in its groups. Before this, sending a matching display
+name took the existing group over: the upstream's users went in, everyone else
+was removed, and the group kept everything it already granted. If you want an
+upstream group to reach an application, let the source create the group and
+then release the application to it.
+
 ### Two deliberate asymmetries with /Users
 
 | | Users | Groups |

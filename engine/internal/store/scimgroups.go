@@ -87,10 +87,15 @@ func UpsertSCIMGroup(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		}
 
 	case errors.Is(err, pgx.ErrNoRows):
+		// A new group, never an existing one with the same name. This once
+		// upserted on (org_id, name) and then replaced the members, so an
+		// upstream could take over any local group by naming it: one whose
+		// members may impersonate, one an operator manages, or one another
+		// source owns. Whatever that group reached, the upstream's users then
+		// reached it too.
 		err = tx.QueryRow(ctx, `
 			INSERT INTO core.groups (org_id, name, display_name)
 			VALUES ($1::uuid, $2, $3)
-			ON CONFLICT (org_id, name) DO UPDATE SET display_name = EXCLUDED.display_name
 			RETURNING id::text`, src.OrgID, name, displayName).Scan(&groupID)
 		if err != nil {
 			return out, groupUniquenessError(err, name, displayName)
@@ -136,8 +141,8 @@ func groupUniquenessError(err error, name, displayName string) error {
 			"not a usable group name", displayName, name)
 	case strings.Contains(msg, "duplicate key"), strings.Contains(msg, "unique constraint"):
 		return &SCIMConflictError{Detail: fmt.Sprintf(
-			"a group named %q already exists and belongs to a different upstream "+
-				"record; two sources cannot both own one group", name)}
+			"a group named %q already exists in this organisation and this source did "+
+				"not create it; a source manages only the groups it creates", name)}
 	}
 	return err
 }

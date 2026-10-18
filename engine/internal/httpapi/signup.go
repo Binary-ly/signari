@@ -380,7 +380,7 @@ func (s *Server) createAccount(ctx context.Context, orgID, email, password strin
 	if _, err := io.ReadFull(rand.Reader, handle); err != nil {
 		return "", nil, err
 	}
-	hasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+	hasher := passwords.Shared()
 	hash, err := hasher.Hash(ctx, password)
 	if err != nil {
 		return "", nil, err

@@ -194,7 +194,7 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 		// which is an inconsistency nobody would predict from the outside.
 		hashed, ok := clients.HashSecret(secret)
 		if !ok {
-			h := passwords.NewHasher(passwords.MemoryBudgetMiB)
+			h := passwords.Shared()
 			var herr error
 			hashed, herr = h.Hash(ctx, secret)
 			if herr != nil {

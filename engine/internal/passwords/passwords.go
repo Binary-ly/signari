@@ -29,10 +29,13 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/pbkdf2"
+	"golang.org/x/sync/semaphore"
 )
 
 // ErrMismatch means the password did not verify. It is deliberately the only
@@ -73,8 +76,18 @@ const (
 )
 
 // Hasher owns the concurrency budget for password hashing.
+//
+// Two bounds, both needed. sem caps how many run at once, at the CPU count. mem
+// is the memory budget, and each evaluation takes from it what its own
+// parameters need: our Argon2id takes 19 MiB, but an imported Argon2id or
+// scrypt hash declares its own cost, and one of those may legitimately need
+// hundreds of MiB. A single slot per evaluation, sized for ours, let an import
+// within the parse ceilings use 50 times the memory the budget accounted for.
 type Hasher struct {
-	sem chan struct{}
+	sem       chan struct{}
+	mem       *semaphore.Weighted
+	budgetKiB int64
+	inFlight  atomic.Int64
 }
 
 // MemoryBudgetMiB is the default ceiling on concurrent Argon2 memory.
@@ -83,7 +96,11 @@ type Hasher struct {
 const MemoryBudgetMiB = 512
 
 // NewHasher builds a hasher whose concurrency is the smaller of the CPU count
-// and what the memory budget allows.
+// and what the memory budget allows for our own hashes.
+//
+// Outside this package, use Shared. A Hasher built per request has a budget of
+// its own, so the ceiling it was meant to be became one per request: N
+// requests, N times 512 MiB. TestNoPathBuildsItsOwnHasher keeps it that way.
 func NewHasher(memoryBudgetMiB int) *Hasher {
 	if memoryBudgetMiB <= 0 {
 		memoryBudgetMiB = MemoryBudgetMiB
@@ -96,16 +113,82 @@ func NewHasher(memoryBudgetMiB int) *Hasher {
 	if limit < 1 {
 		limit = 1
 	}
-	return &Hasher{sem: make(chan struct{}, limit)}
+	budget := int64(memoryBudgetMiB) * 1024
+	return &Hasher{sem: make(chan struct{}, limit), mem: semaphore.NewWeighted(budget), budgetKiB: budget}
 }
+
+var shared = sync.OnceValue(func() *Hasher { return NewHasher(MemoryBudgetMiB) })
+
+// Shared is the process's one Hasher, so every caller (the sign-in form,
+// LDAP, RADIUS, the outposts, the Admin API, signup) draws on one memory
+// budget.
+func Shared() *Hasher { return shared() }
 
 // Concurrency reports the cap, so it can be exported as a metric. Saturation
 // here is the first sign of a login flood.
 func (h *Hasher) Concurrency() int { return cap(h.sem) }
 
-// acquire blocks for a slot, or returns the context's error. Callers pass a
-// request context so a client that has already given up stops occupying budget.
-func (h *Hasher) acquire(ctx context.Context) error {
+// InFlight reports how many evaluations are running or waiting for a slot.
+func (h *Hasher) InFlight() int64 { return h.inFlight.Load() }
+
+// memoryKiB is what verifying stored will allocate, read from its own
+// parameters. Formats that allocate next to nothing (bcrypt, PBKDF2, the
+// phpass family) are charged our Argon2 cost, which keeps their concurrency
+// where it was.
+func memoryKiB(stored string) int64 {
+	parts := strings.Split(stored, "$")
+	switch {
+	case strings.HasPrefix(stored, "$argon2id$") && len(parts) > 3:
+		var m, t, p int64
+		if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err == nil && m > 0 {
+			return m
+		}
+	case strings.HasPrefix(stored, "$scrypt$") && len(parts) > 2:
+		var ln, r int64
+		for _, kv := range strings.Split(parts[2], ",") {
+			k, v, _ := strings.Cut(kv, "=")
+			n, _ := strconv.ParseInt(v, 10, 64)
+			switch k {
+			case "ln":
+				ln = n
+			case "r":
+				r = n
+			}
+		}
+		if ln > 0 && ln <= 22 && r > 0 {
+			return (int64(1) << ln) * r * 128 / 1024 // scrypt's V is 128·N·r bytes
+		}
+	}
+	return argonMemoryKiB
+}
+
+// acquire blocks for a slot and kib of the memory budget, or returns the
+// context's error. Callers pass a request context so a client that has already
+// given up stops occupying budget. A cost larger than the whole budget is
+// refused rather than run outside it, as a mismatch: it can never fit, and
+// waiting for it would hold the queue.
+func (h *Hasher) acquire(ctx context.Context, kib int64) error {
+	if kib > h.budgetKiB {
+		return fmt.Errorf("%w: this hash needs %d MiB to verify and the process allows "+
+			"%d MiB for all of them; reset the password", ErrMismatch, kib/1024, h.budgetKiB/1024)
+	}
+	if err := h.acquireSlot(ctx); err != nil {
+		return err
+	}
+	if err := h.mem.Acquire(ctx, kib); err != nil {
+		h.releaseSlot()
+		return err
+	}
+	return nil
+}
+
+func (h *Hasher) release(kib int64) {
+	h.mem.Release(kib)
+	h.releaseSlot()
+}
+
+// acquireSlot blocks for a concurrency slot, or returns the context's error.
+func (h *Hasher) acquireSlot(ctx context.Context) error {
 	// Check cancellation FIRST. A bare select over both cases picks at random
 	// when both are ready, so an already-abandoned request could still take a
 	// free slot and spend 19 MiB plus CPU on an answer nobody will read. Under a
@@ -122,7 +205,7 @@ func (h *Hasher) acquire(ctx context.Context) error {
 	}
 }
 
-func (h *Hasher) release() { <-h.sem }
+func (h *Hasher) releaseSlot() { <-h.sem }
 
 // Hash produces a PHC-format Argon2id string.
 
@@ -150,10 +233,12 @@ func Normalize(password string) string { return norm.NFC.String(password) }
 
 func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 	password = Normalize(password)
-	if err := h.acquire(ctx); err != nil {
+	h.inFlight.Add(1)
+	defer h.inFlight.Add(-1)
+	if err := h.acquire(ctx, argonMemoryKiB); err != nil {
 		return "", err
 	}
-	defer h.release()
+	defer h.release(argonMemoryKiB)
 
 	salt := make([]byte, argonSaltLen)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
@@ -175,10 +260,13 @@ func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 // the credential.
 func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsRehash bool, err error) {
 	password = Normalize(password)
-	if err := h.acquire(ctx); err != nil {
+	h.inFlight.Add(1)
+	defer h.inFlight.Add(-1)
+	kib := memoryKiB(stored)
+	if err := h.acquire(ctx, kib); err != nil {
 		return false, err
 	}
-	defer h.release()
+	defer h.release(kib)
 
 	switch {
 	case strings.HasPrefix(stored, "$argon2id$"):

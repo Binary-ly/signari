@@ -90,7 +90,7 @@ func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
 		return nil, fmt.Errorf("admin API token must be at least 32 characters (got %d)", len(token))
 	}
 	return &Server{db: db, log: log, token: token,
-		hasher:   passwords.NewHasher(passwords.MemoryBudgetMiB),
+		hasher:   passwords.Shared(),
 		pwPolicy: passwords.PolicyFromEnv(),
 		// Generous on purpose. Administration is low-volume and bursty -- an
 		// operator paging through clients, a provisioning run creating a batch --

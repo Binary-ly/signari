@@ -1731,7 +1731,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			return fmt.Errorf("SIGNARI_LDAP_ADDR is set but SIGNARI_LDAP_BASE_DN is not; " +
 				"the base DN is what every bind DN must sit under and there is no safe default")
 		}
-		ldapHasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+		ldapHasher := passwords.Shared()
 		// SIGNARI_LDAP_WRITE_GROUP names who may Add, Modify, Delete and Modify
 		// DN. Empty means nobody, and the directory stays read-only exactly as it
 		// was -- see internal/ldapd/write.go for why that is two decisions rather
@@ -1832,7 +1832,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		}
 
 		radiusAuth := httpapi.NewRADIUSAuthenticator(pool,
-			passwords.NewHasher(passwords.MemoryBudgetMiB), radiusOrgID, log).
+			passwords.Shared(), radiusOrgID, log).
 			WithMFAGate(srv.BindDemandsMFA)
 		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg},
 			radiusAuth, log)
@@ -1920,6 +1920,14 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		met.Registry.NewGauge("signari_db_pool_connections_max",
 			"The pool's ceiling, so headroom can be computed without knowing the config.",
 			func() float64 { return float64(pool.Stat().MaxConns()) })
+		// The password hasher's saturation: in flight against its slot count.
+		// One process-wide hasher, so these describe every sign-in path at once.
+		met.Registry.NewGauge("signari_password_hashes_in_flight",
+			"Password hashes running or waiting for a slot.",
+			func() float64 { return float64(passwords.Shared().InFlight()) })
+		met.Registry.NewGauge("signari_password_hash_slots",
+			"How many password hashes may run at once.",
+			func() float64 { return float64(passwords.Shared().Concurrency()) })
 
 		srv.SetMetrics(met)
 		go func() {
@@ -2205,7 +2213,7 @@ func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) err
 		return err
 	}
 
-	hasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+	hasher := passwords.Shared()
 	// The same gate the web paths use. The CLI creates the FIRST user of a
 	// deployment -- the account with the most access and the longest life -- so
 	// it is the last place a weaker rule belongs.
@@ -2284,7 +2292,7 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect 
 			return err
 		}
 		secret = base64.RawURLEncoding.EncodeToString(b)
-		hasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+		hasher := passwords.Shared()
 		// Ours are 256 bits of random data, so entropy is the property that
 		// protects them -- not the cost of the hash. See internal/clients.
 		if fast, ok := clients.HashSecret(secret); ok {
@@ -2373,7 +2381,7 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	res, err := importer.Import(ctx, tx, orgID, realm,
-		passwords.NewHasher(passwords.MemoryBudgetMiB), dryRun)
+		passwords.Shared(), dryRun)
 	if err != nil {
 		return err
 	}

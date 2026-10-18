@@ -384,6 +384,15 @@ One gate every new password passes through — sign-up, recovery, admin, CLI. Se
 | `SIGNARI_PASSWORD_BREACH_REQUIRED` | `1` to refuse when the corpus is unreachable. Default lets it through and logs loudly |
 | `SIGNARI_PASSWORD_BREACH_RECHECK_DAYS` | Re-consult the corpus at sign-in, at most this often per credential. A password that was clean when chosen and is breached now is flagged for change |
 
+Every password hash in the process draws on one memory budget of 512 MiB: the
+sign-in form, LDAP binds, RADIUS, outposts, signup and the Admin API. Each
+evaluation takes what its stored parameters need. Our own Argon2id takes 19 MiB.
+An imported Argon2id or scrypt hash takes what it declares, so a few expensive
+imports queue behind each other rather than exhausting memory. An imported hash
+that needs more than the whole budget cannot be verified, and its owner has to
+reset the password. `signari_password_hashes_in_flight` against
+`signari_password_hash_slots` shows how close the hasher is to saturation.
+
 ## Chrome Enterprise device trust
 
 A third device posture source, feeding the same `device_managed` and

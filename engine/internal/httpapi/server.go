@@ -317,7 +317,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// protocol it is protecting. This bounds the pathological case, not the
 		// busy one.
 		federation: ratelimit.New(200, 400),
-		hasher:     passwords.NewHasher(passwords.MemoryBudgetMiB),
+		hasher:     passwords.Shared(),
 		pwPolicy:   passwords.PolicyFromEnv(),
 		policies:   newPolicyCache(),
 		flows:      newFlowCache(),

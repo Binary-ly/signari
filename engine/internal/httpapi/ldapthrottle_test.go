@@ -157,6 +157,23 @@ func clearOfWindowEdge(t *testing.T, window time.Duration) {
 	}
 }
 
+// requireCharged fails, naming the count, when a bucket holds fewer failures
+// than were just charged to it. These tests have failed now and then with a
+// bind let through after the limit, and the assertion that caught it could not
+// say whether a charge had been lost or the bucket emptied; this one can.
+func requireCharged(t *testing.T, a *LDAPAuthenticator, ctx context.Context, key string,
+	window time.Duration, want int) {
+	t.Helper()
+	n, err := store.CountRate(ctx, a.db, key, window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < want {
+		t.Fatalf("bucket %q holds %d failures after %d were charged to it (window edge in %s)",
+			key, n, want, window-time.Duration(time.Now().UnixNano()%int64(window)))
+	}
+}
+
 // Guessing at ONE ACCOUNT is bounded, however many addresses it comes from.
 func TestAnLDAPBindIsRefusedOnceTheAccountBudgetIsSpent(t *testing.T) {
 	a, ctx := ldapAuthFixture(t)
@@ -174,6 +191,8 @@ func TestAnLDAPBindIsRefusedOnceTheAccountBudgetIsSpent(t *testing.T) {
 				"while the budget still has room", i+1, err)
 		}
 	}
+	requireCharged(t, a, ctx, "signin:fail:user:"+strings.ToLower(user),
+		signInPerAccountWindow, signInPerAccountLimit)
 
 	// One past the limit, from an address that has spent nothing. A budget an
 	// attacker escapes by moving address is not a budget on the account.
@@ -265,6 +284,7 @@ func TestABindRefusedForThrottlingIsNotChargedAgain(t *testing.T) {
 			t.Fatalf("attempt %d: %v", i+1, err)
 		}
 	}
+	requireCharged(t, a, ctx, key, signInPerAccountWindow, signInPerAccountLimit)
 	before, err := store.CountRate(ctx, a.db, key, signInPerAccountWindow)
 	if err != nil {
 		t.Fatal(err)

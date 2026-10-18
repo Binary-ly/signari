@@ -134,6 +134,68 @@ func TestEachOrganisationsApplicationSignsInItsOwnAccount(t *testing.T) {
 	}
 }
 
+// A session is a sign-in to its own organisation only. A person signed in to
+// one organisation who opens another's application is sent to sign in, not
+// issued a code: nothing compared the two, so anybody able to sign in
+// anywhere could be issued any tenant's tokens.
+func TestASessionFromAnotherOrganisationIsNoSignInForThisClient(t *testing.T) {
+	f := newSignInFixture(t)
+	cookie := f.signInAndReturnCookie(t)
+	if cookie == "" {
+		t.Fatal("the fixture user could not sign in")
+	}
+	ctx := context.Background()
+	var otherOrg string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO core.organizations (instance_id, slug, display_name)
+		SELECT instance_id, 'xo-' || substr(gen_random_uuid()::text, 1, 8), 'Other'
+		  FROM core.organizations WHERE id = $1::uuid RETURNING id::text`, f.orgID).Scan(&otherOrg); err != nil {
+		t.Fatal(err)
+	}
+	otherClient := fmt.Sprintf("xo-%d", time.Now().UnixNano())
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
+		                          client_secret_hash, grant_types, scopes, require_pkce)
+		VALUES ($1, $2::uuid, 'T', 'public', '', ARRAY['authorization_code'], ARRAY['openid'], false)`,
+		otherClient, otherOrg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`INSERT INTO core.client_redirect_uris (client_id, redirect_uri) VALUES ($1, 'https://rp.test/cb')`,
+		otherClient); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.clients WHERE client_id = $1`, otherClient)
+	})
+	authorize := func(prompt string) *httptest.ResponseRecorder {
+		q := url.Values{"client_id": {otherClient}, "response_type": {"code"},
+			"redirect_uri": {"https://rp.test/cb"}, "scope": {"openid"}, "state": {"s"}}
+		if prompt != "" {
+			q.Set("prompt", prompt)
+		}
+		r := httptest.NewRequest(http.MethodGet, "/oauth2/authorize?"+q.Encode(), nil)
+		r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})
+		rec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(rec, r)
+		return rec
+	}
+
+	rec := authorize("")
+	if loc := rec.Header().Get("Location"); strings.Contains(loc, "code=") {
+		t.Fatalf("another organisation's session was issued a code: %s", loc)
+	}
+	if !strings.Contains(rec.Body.String(), "different organisation") {
+		t.Errorf("the page does not say why sign-in is asked for again (%d)", rec.Code)
+	}
+
+	rec = authorize("none")
+	loc := rec.Header().Get("Location")
+	if strings.Contains(loc, "code=") || !strings.Contains(loc, "error=login_required") {
+		t.Fatalf("prompt=none from another organisation's session: %d %s", rec.Code, loc)
+	}
+}
+
 // A bare sign-in page on a deployment with several organisations cannot say
 // whose it is, and does not choose.
 func TestABarePageDoesNotChooseBetweenTwoAccounts(t *testing.T) {

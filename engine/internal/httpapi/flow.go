@@ -229,12 +229,30 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Consent is checked AFTER authentication and step-up, and BEFORE any code is
 	// issued. Asking first would show a stranger which clients exist and what
 	// they request; issuing first would make the question decorative.
-	var userID string
+	var userID, sessionOrg string
 	if err := s.db.QueryRow(ctx,
-		`SELECT user_id::text FROM core.sessions WHERE sid = $1`, sid).Scan(&userID); err != nil {
+		`SELECT user_id::text, org_id::text FROM core.sessions WHERE sid = $1`, sid).
+		Scan(&userID, &sessionOrg); err != nil {
 		s.log.Error("loading session user for consent", "err", err)
 		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
 			Description: "could not verify session", Disposition: oauth.DispositionRedirect})
+		return
+	}
+	// A session is a sign-in to one organisation, and is no sign-in at all for
+	// another's application. Nothing compared the two, so somebody who could
+	// sign in anywhere -- an organisation with open signup or federation --
+	// opened another tenant's client and was issued its tokens.
+	if sessionOrg != c.OrgID {
+		s.log.Info("a session from another organisation asked for this client",
+			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
+		if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
+			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "login_required",
+				Description: "the active session does not belong to this client's organisation",
+				Disposition: oauth.DispositionRedirect})
+			return
+		}
+		s.renderLogin(w, r, r.URL.RawQuery, "You are signed in to a different organisation. "+
+			"Sign in with your account for this application.")
 		return
 	}
 	// # Access policy
@@ -307,6 +325,16 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		s.log.Error("loading session", "err", err)
 		http.Error(w, "session lookup failed", http.StatusInternalServerError)
+		return
+	}
+	// Every code is minted here, whichever page led to it (the authorization
+	// endpoint, the consent form), so the organisation is checked here as well
+	// as where the request is first read.
+	if orgID != c.OrgID {
+		s.log.Warn("refused a code for a session from another organisation",
+			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
+		s.renderAuthzFailure(w, r, "You are signed in to a different organisation. "+
+			"Sign in with your account for this application.")
 		return
 	}
 
@@ -1431,6 +1459,20 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	// proved, not where the application's server is calling from. Not revoked on
 	// refusal: the next refresh asks again, so restoring the membership restores
 	// the grant.
+	//
+	// A lineage from another organisation's session is refused outright. The
+	// authorization endpoint once issued codes across organisations, and a
+	// family it left behind would otherwise be asked about by the session's
+	// organisation's policy, not this client's.
+	if grant.OrgID != c.OrgID {
+		_ = tx.Rollback(ctx)
+		s.log.Warn("refused a refresh for a grant from another organisation",
+			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "this grant does not belong to this client's organisation",
+			Status:      http.StatusBadRequest})
+		return
+	}
 	mfa, amr := sessionFactors(ctx, tx, grant.SessionID)
 	if pd := s.checkAccessPolicyIn(ctx, tx, nil, grant.OrgID, c.ClientID, grant.UserID,
 		strings.Join(scopes, " "), mfa, amr); pd != nil {

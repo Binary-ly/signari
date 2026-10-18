@@ -318,8 +318,8 @@ func (p *Printer) render(key, text string, extra map[string]string, data ...any)
 // direction is decided by its own first strong character; U+2069 POP
 // DIRECTIONAL ISOLATE closes it.
 const (
-	firstStrongIsolate = "⁨"
-	popDirectional     = "⁩"
+	firstStrongIsolate = "\U00002068"
+	popDirectional     = "\U00002069"
 )
 
 // isolate stops a value from being re-ordered by the text around it.

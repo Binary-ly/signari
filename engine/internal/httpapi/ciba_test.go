@@ -447,8 +447,8 @@ func TestABindingMessageCannotRestructureTheApprovalScreen(t *testing.T) {
 		{"a line break", "Transfer £40\nApproved by your bank"},
 		{"a carriage return", "Pay £5\rPay £5000"},
 		{"a control character", "Pay \x00 now"},
-		{"a right-to-left override", "Pay ‮0004£"},
-		{"an isolate", "Pay ⁦something else⁩"},
+		{"a right-to-left override", "Pay \U0000202E0004£"},
+		{"an isolate", "Pay \U00002066something else\U00002069"},
 		{"far too long", strings.Repeat("a", 200)},
 	} {
 		t.Run(bad.name, func(t *testing.T) {

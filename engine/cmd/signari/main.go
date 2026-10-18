@@ -3189,7 +3189,7 @@ func idpAddIssuer(ctx context.Context, conn *pgx.Conn, orgID, slug, name, issuer
 	case issuer == "":
 		return fmt.Errorf("give -issuer, the exact value assertions carry in `iss`")
 	case jwks == "":
-		return fmt.Errorf("give -jwks, the URL publishing this issuer's signing keys")
+		return fmt.Errorf("give -jwks-url, the URL publishing this issuer's signing keys")
 	}
 	if name == "" {
 		name = slug

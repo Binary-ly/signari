@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Tests\Concerns\SeedsEngineState;
 use Tests\TestCase;
 
 /**
@@ -31,6 +32,8 @@ use Tests\TestCase;
  */
 class ConfigurationScreensTest extends TestCase
 {
+    use SeedsEngineState;
+
     private array $createdUserIds = [];
 
     /** Every configuration screen this test covers. */
@@ -49,6 +52,7 @@ class ConfigurationScreensTest extends TestCase
         if ($this->createdUserIds !== []) {
             User::whereIn('id', $this->createdUserIds)->delete();
         }
+        $this->removePlantedEngineState();
 
         parent::tearDown();
     }
@@ -68,41 +72,33 @@ class ConfigurationScreensTest extends TestCase
     }
 
     /**
-     * An organisation that actually has some of this configuration, so the
-     * screens are exercised with rows rather than empty states.
+     * An organisation planted with configuration, so the screens are exercised
+     * with rows rather than empty states. Returns [org id, SAML entity id].
      *
-     * Found by asking each organisation in turn THROUGH the scoped view, because
-     * the console role has no privilege on schema `core` at all (ADR-004) — the
-     * first version of this helper queried core.saml_providers directly and was
-     * refused by the database, which is the boundary doing its job.
+     * The SAML provider is read back THROUGH the scoped view: the console role
+     * has no privilege on schema `core` at all (ADR-004).
      */
-    private function orgWithConfiguration(): string
+    private function orgWithConfiguration(): array
     {
-        $orgs = DB::select('SELECT id::text AS id FROM core_v1.organizations');
+        $org = $this->plantOrganisation();
+        $entityId = $this->plantSAMLProvider($org);
+        $this->plantClient($org);
+        $this->plantAdminToken($org);
 
-        if ($orgs === []) {
-            $this->markTestSkipped('no organisation in this database');
-        }
+        $visible = DB::transaction(function () use ($org) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org]);
 
-        foreach ($orgs as $org) {
-            $found = DB::transaction(function () use ($org) {
-                DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org->id]);
+            return DB::selectOne('SELECT entity_id FROM core_v1.saml_providers LIMIT 1');
+        });
+        $this->assertSame($entityId, $visible?->entity_id);
 
-                return DB::selectOne('SELECT entity_id FROM core_v1.saml_providers LIMIT 1');
-            });
-
-            if ($found !== null) {
-                return $org->id;
-            }
-        }
-
-        // None has SAML configured; the render tests are still worth running.
-        return $orgs[0]->id;
+        return [$org, $entityId];
     }
 
     public function test_every_configuration_screen_renders(): void
     {
-        $operator = $this->operatorFor($this->orgWithConfiguration());
+        [$org] = $this->orgWithConfiguration();
+        $operator = $this->operatorFor($org);
 
         foreach (self::SCREENS as $screen) {
             $this->actingAs($operator)->get($screen)->assertOk();
@@ -117,43 +113,36 @@ class ConfigurationScreensTest extends TestCase
      */
     public function test_the_saml_screen_shows_a_real_provider(): void
     {
-        $org = $this->orgWithConfiguration();
-
-        $provider = DB::transaction(function () use ($org) {
-            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org]);
-
-            return DB::selectOne('SELECT entity_id FROM core_v1.saml_providers LIMIT 1');
-        });
-
-        if ($provider === null) {
-            $this->markTestSkipped('no SAML provider registered for that organisation');
-        }
+        [$org, $entityId] = $this->orgWithConfiguration();
 
         $this->actingAs($this->operatorFor($org))
             ->get('/admin/saml-providers')
             ->assertOk()
-            ->assertSee($provider->entity_id);
+            ->assertSee($entityId);
     }
 
     public function test_configuration_is_scoped_to_the_operators_organisation(): void
     {
-        $org = $this->orgWithConfiguration();
+        [, $entityId] = $this->orgWithConfiguration();
 
-        $provider = DB::transaction(function () use ($org) {
-            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org]);
+        // A real, configured second organisation sees its own provider only.
+        [$other, $otherEntity] = $this->orgWithConfiguration();
+        $this->actingAs($this->operatorFor($other))
+            ->get('/admin/saml-providers')
+            ->assertOk()
+            ->assertSee($otherEntity)
+            ->assertDontSee($entityId);
+    }
 
-            return DB::selectOne('SELECT entity_id FROM core_v1.saml_providers LIMIT 1');
-        });
-
-        if ($provider === null) {
-            $this->markTestSkipped('no SAML provider registered for that organisation');
-        }
+    public function test_an_organisation_that_owns_nothing_sees_no_configuration(): void
+    {
+        [, $entityId] = $this->orgWithConfiguration();
 
         // A well-formed organisation that owns nothing.
         $this->actingAs($this->operatorFor((string) Str::uuid()))
             ->get('/admin/saml-providers')
             ->assertOk()
-            ->assertDontSee($provider->entity_id);
+            ->assertDontSee($entityId);
     }
 
     /**
@@ -162,22 +151,12 @@ class ConfigurationScreensTest extends TestCase
      */
     public function test_an_unassigned_operator_sees_no_configuration(): void
     {
-        $org = $this->orgWithConfiguration();
-
-        $provider = DB::transaction(function () use ($org) {
-            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org]);
-
-            return DB::selectOne('SELECT entity_id FROM core_v1.saml_providers LIMIT 1');
-        });
-
-        if ($provider === null) {
-            $this->markTestSkipped('no SAML provider registered for that organisation');
-        }
+        [, $entityId] = $this->orgWithConfiguration();
 
         $this->actingAs($this->operatorFor(null))
             ->get('/admin/saml-providers')
             ->assertOk()
-            ->assertDontSee($provider->entity_id);
+            ->assertDontSee($entityId);
     }
 
     /**
@@ -190,33 +169,31 @@ class ConfigurationScreensTest extends TestCase
      */
     public function test_admin_tokens_are_scoped_and_hide_deployment_wide_ones(): void
     {
-        $org = $this->orgWithConfiguration();
+        $org = $this->plantOrganisation();
+        $own = $this->plantAdminToken($org);
+        // The two that must stay invisible: a deployment-wide token (org_id NULL)
+        // and another tenant's. Planted, not hoped for, because "we cannot see
+        // them" and "there happened to be none" are different claims and only
+        // the first is what the policy guarantees.
+        $deploymentWide = $this->plantAdminToken(null);
+        $foreign = $this->plantAdminToken($this->plantOrganisation());
 
-        $scoped = DB::transaction(function () use ($org) {
+        $names = DB::transaction(function () use ($org) {
             DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org]);
 
-            return DB::select('SELECT name, org_id FROM core_v1.admin_tokens');
+            return array_map(fn ($t) => $t->name, DB::select('SELECT name FROM core_v1.admin_tokens'));
         });
 
-        foreach ($scoped as $token) {
-            $this->assertSame(
-                $org,
-                $token->org_id,
-                'a token belonging to another organisation is visible on this screen'
-            );
-        }
+        $this->assertContains($own, $names, 'the organisation cannot see its own token');
+        $this->assertNotContains($deploymentWide, $names, 'a deployment-wide token is listed on a tenant screen');
+        $this->assertNotContains($foreign, $names, 'another organisation\'s token is visible on this screen');
 
-        // A deployment-wide token has org_id NULL, so the assertion above already
-        // excludes it — there is no way for one to appear without failing that
-        // identity check. Stated explicitly because "we cannot see them" and "we
-        // checked and there were none" are different claims, and only the first
-        // is what the policy guarantees.
-        foreach ($scoped as $token) {
-            $this->assertNotNull(
-                $token->org_id,
-                'a deployment-wide token is listed on a tenant screen'
-            );
-        }
+        $this->actingAs($this->operatorFor($org))
+            ->get('/admin/admin-tokens')
+            ->assertOk()
+            ->assertSee($own)
+            ->assertDontSee($deploymentWide)
+            ->assertDontSee($foreign);
     }
 
     /**

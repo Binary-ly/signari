@@ -37,6 +37,13 @@
         -->
         <env name="DB_CONNECTION" value="pgsql"/>
         <env name="DB_URL" value=""/>
+        <!--
+            The console's production role, pinned here rather than left to .env:
+            under a superuser every boundary assertion passes vacuously, because
+            a superuser bypasses row-level security and every GRANT.
+            DatabaseRoleTest fails loudly if this is ever overridden back.
+        -->
+        <env name="DB_USERNAME" value="signari_admin"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>

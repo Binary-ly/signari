@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Livewire\Livewire;
+use Tests\Concerns\SeedsEngineState;
 use Tests\TestCase;
 
 /**
@@ -23,6 +24,8 @@ use Tests\TestCase;
  */
 class UserAdministrationTest extends TestCase
 {
+    use SeedsEngineState;
+
     private ?User $operator = null;
 
     private string $orgId = '';
@@ -30,23 +33,20 @@ class UserAdministrationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $org = DB::selectOne('SELECT id::text AS id FROM core_v1.organizations LIMIT 1');
-        if ($org === null) {
-            $this->markTestSkipped('no organisation seeded');
-        }
-        $this->orgId = $org->id;
+        $this->orgId = $this->plantOrganisation();
 
         $this->operator = new User;
         $this->operator->name = 'Operator';
         $this->operator->email = 'op-'.Str::random(8).'@example.test';
         $this->operator->password = bcrypt('irrelevant');
-        $this->operator->org_id = $org->id;
+        $this->operator->org_id = $this->orgId;
         $this->operator->save();
     }
 
     protected function tearDown(): void
     {
         $this->operator?->delete();
+        $this->removePlantedEngineState();
         parent::tearDown();
     }
 
@@ -82,10 +82,7 @@ class UserAdministrationTest extends TestCase
      */
     public function test_deactivation_reports_sessions_ended(): void
     {
-        $user = $this->seededUser();
-        if ($user === null) {
-            $this->markTestSkipped('no engine user to act on');
-        }
+        $user = $this->plantedUser();
         // The version read comes first: deactivating a user is a conditional
         // write, so the console asks the engine where the configuration is
         // before saying where it should stay. See EngineAdminApi.
@@ -99,13 +96,15 @@ class UserAdministrationTest extends TestCase
 
         DB::transaction(function () use ($user) {
             DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            // The success title, not any toast: the refusal path notifies too.
             Livewire::test(ListEngineUsers::class)
                 ->callAction(TestAction::make('toggleActive')->table($user))
-                ->assertNotified();
+                ->assertNotified(__('User deactivated'));
         });
 
+        // The planted user is active, so the action must ask for inactive.
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
-            && array_key_exists('active', $r->data()));
+            && ($r->data()['active'] ?? null) === false);
     }
 
     /** A refused write must say so, not show a success toast over a failure. */
@@ -123,12 +122,14 @@ class UserAdministrationTest extends TestCase
             ->assertNotified(__('User not created'));
     }
 
-    private function seededUser(): ?EngineUser
+    private function plantedUser(): EngineUser
     {
-        return DB::transaction(function () {
+        $userId = $this->plantUser($this->orgId);
+
+        return DB::transaction(function () use ($userId) {
             DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
 
-            return EngineUser::query()->first();
+            return EngineUser::query()->findOrFail($userId);
         });
     }
 }

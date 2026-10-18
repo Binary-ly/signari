@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Livewire\Livewire;
+use Tests\Concerns\SeedsEngineState;
 use Tests\TestCase;
 
 /**
@@ -29,6 +30,8 @@ use Tests\TestCase;
  */
 class ClientEnableDisableTest extends TestCase
 {
+    use SeedsEngineState;
+
     private ?User $operator = null;
 
     private array $client = [];
@@ -37,26 +40,22 @@ class ClientEnableDisableTest extends TestCase
     {
         parent::setUp();
 
-        $org = DB::selectOne('SELECT id::text AS id FROM core_v1.organizations LIMIT 1');
-        if ($org === null) {
-            $this->markTestSkipped('no organisation seeded in this database');
-        }
+        $orgId = $this->plantOrganisation();
+        $clientId = $this->plantClient($orgId);
 
-        $row = DB::transaction(function () use ($org) {
-            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org->id]);
+        $row = DB::transaction(function () use ($orgId) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $orgId]);
 
             return DB::selectOne('SELECT client_id, enabled FROM core_v1.clients LIMIT 1');
         });
-        if ($row === null) {
-            $this->markTestSkipped('no client seeded in this database');
-        }
+        $this->assertSame($clientId, $row?->client_id);
         $this->client = (array) $row;
 
         $this->operator = new User();
         $this->operator->name = 'Operator';
         $this->operator->email = 'op-'.Str::random(10).'@example.test';
         $this->operator->password = bcrypt('irrelevant');
-        $this->operator->org_id = $org->id;
+        $this->operator->org_id = $orgId;
         $this->operator->save();
 
         config(['app.env' => 'testing']);
@@ -65,6 +64,7 @@ class ClientEnableDisableTest extends TestCase
     protected function tearDown(): void
     {
         $this->operator?->delete();
+        $this->removePlantedEngineState();
 
         parent::tearDown();
     }

@@ -53,6 +53,18 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Duplicates refused BEFORE the client authenticates. CIBA §13 lists
+	// "includes a parameter more than once" under invalid_request
+	// (specs/ciba.html), and ParseCIBARequest below refused it, but only after
+	// authentication had read the first copy of each credential. A wrong secret
+	// followed by the right one was judged on the wrong one and charged to the
+	// client's failure budget.
+	if err := refuseDuplicateParams(r.PostForm); err != nil {
+		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusBadRequest,
+			Code: "invalid_request", Description: err.Error()})
+		return
+	}
+
 	// §7.1: "The Client MUST authenticate to the Backchannel Authentication
 	// Endpoint using the authentication method registered for its client_id".
 	//

@@ -64,6 +64,13 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "invalid_request", "malformed form body")
 		return
 	}
+	// Duplicates refused, as at the token and authorization endpoints (see
+	// dupeparams.go): `scope` twice was granted from the first while a proxy
+	// or log reading the last recorded a different request.
+	if err := refuseDuplicateParams(r.PostForm); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 
 	// Credentials resolved exactly as at the token endpoint. RFC 8628 §3.1: a
 	// confidential client authenticates as described in RFC 6749 §3.2.1, which

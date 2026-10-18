@@ -151,7 +151,9 @@ var oidSubjectAltName = asn1.ObjectIdentifier{2, 5, 29, 17}
 // differ (protocol/metadata.go:101). So a self-signed leaf, or one issued by a
 // made-up CA with the same common name, was accepted as basic_full. Any
 // software authenticator could then claim an approved model's AAGUID and pass
-// the approved-model allow-list.
+// the approved-model allow-list. v0.18.2 checks every chain
+// (protocol/metadata.go:133-156). The allow-list still rests on this check, so
+// it holds whatever a later version of the library does.
 //
 // attestationObject is the raw CBOR the authenticator returned
 // (webauthn.Credential.Attestation.Object). A chain only counts if it is in

@@ -271,7 +271,13 @@ SafetyNet or compound attestation vouches for nothing here, and is not refused
 for that.
 
 The BLOB must be signed by the FIDO production root, wherever it comes from; an
-unsigned or wrongly signed one is refused.
+unsigned or wrongly signed one is refused. The startup log says `loaded the FIDO
+metadata catalogue` with a count when it worked.
+
+Until October 2026 the official BLOB did not load at all. It is now signed
+through a chain with two intermediates, and the WebAuthn library read only the
+first of them. The log said `certificate signed by unknown authority`, and every
+registration under an allow-list was refused.
 
 | Variable | Meaning |
 |---|---|

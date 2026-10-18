@@ -367,6 +367,10 @@ func run(args []string) error {
 	outpostCore := fs.String("core", "", "URL of the Signari engine this outpost asks")
 	outpostToken := fs.String("outpost-token", "", "outpost token from `signari outpost create`")
 	outpostKind := fs.String("kind-outpost", "", "ldap, radius or proxy")
+	// Plaintext asked for by name, as -admin-insecure is: an LDAP outpost
+	// without -tls-cert refuses to start rather than take passwords in clear.
+	outpostLDAPInsecure := fs.Bool("ldap-insecure", os.Getenv("SIGNARI_OUTPOST_LDAP_INSECURE") == "1",
+		"`outpost run`: serve LDAP without TLS (only behind a TLS terminator on loopback)")
 	subURL := fs.String("url", "", "https endpoint events are POSTed to")
 	srcIssuer := fs.String("source-issuer", "", "the transmitter's issuer")
 	srcJWKS := fs.String("source-jwks", "", "the transmitter's JWKS URI (https)")
@@ -611,7 +615,8 @@ func run(args []string) error {
 	// credentials. Dispatched before the DSN is required, because requiring one
 	// would defeat the feature entirely.
 	if cmd == "outpost run" {
-		return outpostRun(*outpostCore, *outpostToken, *outpostKind, *addr, *ldapBaseDN)
+		return outpostRun(*outpostCore, *outpostToken, *outpostKind, *addr, *ldapBaseDN,
+			*tlsCert, *tlsKey, *outpostLDAPInsecure)
 	}
 
 	// `kerberos check` needs no database. It answers "will this keytab work",
@@ -6417,7 +6422,7 @@ func outpostList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 // No database handle exists in this process. That is the entire point: the
 // machine running this can sit in a DMZ, a branch office or an airgapped
 // segment, and a compromise of it does not yield the directory.
-func outpostRun(core, token, kind, addr, baseDN string) error {
+func outpostRun(core, token, kind, addr, baseDN, tlsCert, tlsKey string, ldapInsecure bool) error {
 	if kind == "" {
 		return fmt.Errorf("give -kind-outpost: ldap or radius")
 	}
@@ -6449,7 +6454,10 @@ func outpostRun(core, token, kind, addr, baseDN string) error {
 				"there is no safe default")
 		}
 		if addr == ":8080" {
-			addr = ":389"
+			addr = ":636"
+			if ldapInsecure {
+				addr = ":389"
+			}
 		}
 		srv := ldapd.New(ldapd.Config{
 			BaseDN:      baseDN,
@@ -6457,11 +6465,15 @@ func outpostRun(core, token, kind, addr, baseDN string) error {
 			MaxResults:  500,
 			ReadTimeout: 30 * time.Second,
 		}, client, log)
-		ln, err := net.Listen("tcp", addr)
+		ln, err := outpost.ListenLDAP(addr, tlsCert, tlsKey, ldapInsecure)
 		if err != nil {
 			return err
 		}
-		log.Info("LDAP outpost listening", "addr", addr, "base_dn", baseDN)
+		if ldapInsecure {
+			log.Warn("LDAP outpost is listening WITHOUT TLS, as -ldap-insecure asked: "+
+				"every bind sends a password in the clear", "addr", addr)
+		}
+		log.Info("LDAP outpost listening", "addr", addr, "base_dn", baseDN, "tls", !ldapInsecure)
 		return srv.Serve(ctx, ln)
 	case "radius":
 		return fmt.Errorf("the RADIUS outpost needs its shared secrets, which are " +

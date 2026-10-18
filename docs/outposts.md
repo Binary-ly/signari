@@ -15,8 +15,26 @@ signari outpost create -org <uuid> -name dmz-ldap -kind-outpost ldap
 # Where the protocol is needed, with no database anywhere near it:
 signari outpost run -core https://auth.example.com \
   -outpost-token $SIGNARI_OUTPOST_TOKEN -kind-outpost ldap \
-  -addr :389 -ldap-base-dn dc=example,dc=com
+  -tls-cert ldap.pem -tls-key ldap-key.pem -ldap-base-dn dc=example,dc=com
 ```
+
+## LDAPS
+
+An LDAP outpost serves LDAPS, on `:636` unless `-addr` says otherwise, and
+**refuses to start without `-tls-cert` and `-tls-key`**. Every simple bind
+carries a password. The outpost already refuses a plaintext `-core`, so the
+password is never in the clear between the outpost and the core; a plaintext
+listener would put it in the clear on the way in instead.
+
+StartTLS is not offered. The listener refuses the extended operation rather
+than answer success without upgrading the connection, so clients connect with
+`ldaps://`.
+
+`-ldap-insecure` (or `SIGNARI_OUTPOST_LDAP_INSECURE=1`) serves plaintext on
+`:389`, and logs a warning saying so. It exists for a listener bound to loopback
+behind something that terminates TLS, the same case `-admin-insecure` serves.
+Before this, plaintext was the only mode, so an outpost that ran without a
+certificate now needs one, or that flag.
 
 ## Why this is a small feature here
 

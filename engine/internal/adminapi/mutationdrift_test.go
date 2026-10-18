@@ -153,6 +153,24 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/proxy-hosts", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + anyOrgID(t, s) + "/proxy-hosts"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return fmt.Sprintf(`{"host":"drift-%d.example.com"}`, time.Now().UnixNano())
+			},
+		},
+		{
+			name:   "DELETE /admin/organizations/{orgID}/proxy-hosts/{host}",
+			method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				orgID := anyOrgID(t, s)
+				return "/admin/organizations/" + orgID + "/proxy-hosts/" + newDriftProxyHost(t, s, orgID)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/organizations" },
 			body: func(t *testing.T, s *Server, _ string) string {
@@ -413,6 +431,21 @@ func newDriftScope(t *testing.T, s *Server, orgID string) string {
 			`DELETE FROM core.scopes WHERE org_id = $1::uuid AND name = $2`, orgID, name)
 	})
 	return name
+}
+
+// newDriftProxyHost registers a protected host for the delete case to remove.
+func newDriftProxyHost(t *testing.T, s *Server, orgID string) string {
+	t.Helper()
+	host := fmt.Sprintf("drift-del-%d.example.com", time.Now().UnixNano())
+	if _, err := s.db.Exec(context.Background(),
+		`INSERT INTO core.proxy_hosts (org_id, host) VALUES ($1::uuid, $2)`, orgID, host); err != nil {
+		t.Fatalf("registering the fixture host: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(),
+			`DELETE FROM core.proxy_hosts WHERE org_id = $1::uuid AND host = $2`, orgID, host)
+	})
+	return host
 }
 
 func anyInstanceID(t *testing.T, s *Server) string {

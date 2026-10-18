@@ -31,6 +31,7 @@ import (
 
 	"fmt"
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/store"
 	"sort"
 	"strings"
 
@@ -46,6 +47,13 @@ type File struct {
 	Clients       []Client       `yaml:"clients"`
 	SAMLProviders []SAMLProvider `yaml:"saml_providers"`
 	RADIUSClients []RADIUSClient `yaml:"radius_clients"`
+	ProxyHosts    []ProxyHost    `yaml:"proxy_hosts"`
+}
+
+// ProxyHost is an application protected by forward authentication.
+type ProxyHost struct {
+	Host    string `yaml:"host"`
+	Enabled *bool  `yaml:"enabled"`
 }
 
 // Group is a group of people.
@@ -210,6 +218,24 @@ func (f *File) Validate() error {
 		}
 	}
 
+	seenHosts := map[string]bool{}
+	for i, h := range f.ProxyHosts {
+		host, err := store.NormaliseProxyHost(h.Host)
+		if err != nil {
+			add("proxy_hosts[%d]: %v", i, err)
+			continue
+		}
+		if host != h.Host {
+			// Written as stored, so the plan's diff and the file agree on what
+			// the host is called.
+			add("proxy_hosts[%d]: write %q as %q", i, h.Host, host)
+		}
+		if seenHosts[host] {
+			add("proxy_hosts[%d]: %q appears twice", i, host)
+		}
+		seenHosts[host] = true
+	}
+
 	if len(problems) > 0 {
 		sort.Strings(problems)
 		return fmt.Errorf("the configuration has %d problem(s):\n  %s\n\nNothing was "+
@@ -247,7 +273,7 @@ func secureURL(raw string) bool {
 // Change is one difference between the file and the deployment.
 type Change struct {
 	Action string // create, update, delete
-	Kind   string // group, client, saml_provider, radius_client
+	Kind   string // group, client, saml_provider, radius_client, proxy_host
 	Name   string
 	Detail string
 	// Destructive marks a change that removes something.

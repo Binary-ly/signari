@@ -120,6 +120,9 @@ database in front of you.
 | `GET /admin/organizations/{orgID}/scopes` | The organisation's declared scopes, plus the standard set. Needs `config:read` |
 | `PUT /admin/organizations/{orgID}/scopes` | Declare or update one. Needs `organizations:write` |
 | `DELETE /admin/organizations/{orgID}/scopes/{scope}` | Remove a declaration |
+| `GET /admin/organizations/{orgID}/proxy-hosts` | The applications [forward auth](forward-auth.md) protects. Needs `config:read` |
+| `PUT /admin/organizations/{orgID}/proxy-hosts` | Register one, or change whether it is enabled: `{"host": "grafana.example.com", "enabled": true}`. Needs `organizations:write` |
+| `DELETE /admin/organizations/{orgID}/proxy-hosts/{host}` | Remove one |
 
 **Declaring a scope adds no gate on a request.** A client already cannot ask for
 a scope it is not registered for — that check runs at `/authorize`, the device

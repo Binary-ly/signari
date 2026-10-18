@@ -159,6 +159,7 @@ An operator's own service, called to extend a decision this engine makes. See
 | `signari radius add-client` / `radius list` / `radius enable-client` / `radius disable-client` | RADIUS clients and their shared secrets |
 | `signari radius authorize` | Place a group's members on a VLAN, or name a Filter-Id the device already holds. A VLAN id is 12 bits (RFC 3580 §3.31) and is bounded by the schema. Somebody in several authorised groups gets the highest priority, ties broken by group id so the same person lands on the same VLAN every time |
 | `signari proxy check` | Check a forward-auth deployment **from outside** the network — which is why it dispatches before the database is required |
+| `signari proxy add-host` / `proxy list` / `proxy disable-host` / `proxy enable-host` / `proxy remove-host` | The applications forward auth protects: `-org <uuid> -host app.example.com` (with `:port` when not 443). Sign-in sends a person back only to a registered host. See [forward auth](forward-auth.md) |
 | `signari rac add` / `rac list` | Remote access connections |
 | `signari rac add -protocol rdp` / `vnc` / `ssh` | The protocol is a value of `-protocol`, not a command. Sessions are started from `/rac` in a browser |
 

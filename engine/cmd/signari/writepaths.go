@@ -36,6 +36,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"strings"
 
@@ -882,6 +883,164 @@ func instancePasswordBinds(ctx context.Context, conn *pgx.Conn, orgID, policy st
 	fmt.Println("\n  Somebody with a second factor enrolled (or everybody, under an unconditional")
 	fmt.Println("  mfa stage) can no longer bind with a password alone. Service accounts that")
 	fmt.Println("  bind to the directory need no second factor, or they will be refused too.")
+	return nil
+}
+
+// The forward-auth hosts: which applications behind a reverse proxy this
+// deployment protects.
+//
+// Read on every sign-in through /proxy/start -- the redirect back to the
+// application is refused unless the host is registered -- and written by
+// nothing until these commands. So every deployment of forward auth stopped at
+// the sign-in page: the person authenticated and was told the application they
+// came from was "not a registered protected host", with no command able to
+// register it.
+
+// normaliseProxyHost is store.NormaliseProxyHost, naming the flag.
+func normaliseProxyHost(raw string) (string, error) {
+	host, err := store.NormaliseProxyHost(raw)
+	if err != nil {
+		return "", fmt.Errorf("-host: %w", err)
+	}
+	return host, nil
+}
+
+// proxyHostWrite runs one change to a protected host with its audit record and
+// configuration version bump, as every other write path does.
+func proxyHostWrite(ctx context.Context, conn *pgx.Conn, orgID, host, event string,
+	change func(tx pgx.Tx) (int64, error)) error {
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	n, err := change(tx)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("no protected host %q in organisation %s", host, orgID)
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: event, OrgID: orgID, Detail: map[string]any{"host": host, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE core.config_version SET version = version + 1, bumped_at = now()
+		 WHERE id = true`); err != nil {
+		return fmt.Errorf("bumping the configuration version: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+func proxyAddHost(ctx context.Context, conn *pgx.Conn, orgID, raw string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org, the organisation whose people may use this application")
+	}
+	host, err := normaliseProxyHost(raw)
+	if err != nil {
+		return err
+	}
+	err = proxyHostWrite(ctx, conn, orgID, host, "proxy.host_added", func(tx pgx.Tx) (int64, error) {
+		tag, err := tx.Exec(ctx,
+			`INSERT INTO core.proxy_hosts (org_id, host) VALUES ($1::uuid, $2)`, orgID, host)
+		if err != nil && strings.Contains(err.Error(), "duplicate key") {
+			return 0, fmt.Errorf("%s is already a protected host in that organisation", host)
+		}
+		return tag.RowsAffected(), err
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("protected host %s registered\n", host)
+	if domain := os.Getenv("SIGNARI_PROXY_COOKIE_DOMAIN"); domain == "" {
+		fmt.Println("\n  SIGNARI_PROXY_COOKIE_DOMAIN is not set in this environment. The serving")
+		fmt.Println("  process needs it, set to the domain both this issuer and the host sit")
+		fmt.Println("  under, or the browser never sends the proxy cookie back to the host.")
+	} else if d := strings.TrimPrefix(strings.ToLower(domain), "."); hostOnly(host) != d &&
+		!strings.HasSuffix(hostOnly(host), "."+d) {
+		fmt.Printf("\n  %s is not under SIGNARI_PROXY_COOKIE_DOMAIN (%s), so the proxy cookie\n", host, domain)
+		fmt.Println("  will never reach it and sign-in will loop. Move one or the other.")
+	}
+	return nil
+}
+
+// hostOnly drops a port from host[:port].
+func hostOnly(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
+}
+
+func proxyListHosts(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT h.host, h.enabled, o.slug
+		  FROM core.proxy_hosts h
+		  JOIN core.organizations o ON o.id = h.org_id
+		 ORDER BY o.slug, h.host`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	n := 0
+	fmt.Printf("\n  %-40s %-10s %s\n", "HOST", "STATE", "ORG")
+	for rows.Next() {
+		var host, org string
+		var enabled bool
+		if err := rows.Scan(&host, &enabled, &org); err != nil {
+			return err
+		}
+		n++
+		state := "enabled"
+		if !enabled {
+			state = "disabled"
+		}
+		fmt.Printf("  %-40s %-10s %s\n", host, state, org)
+	}
+	if n == 0 {
+		fmt.Println("\n  No protected hosts. Forward auth sends nobody back to an application")
+		fmt.Println("  until its host is added with `signari proxy add-host`.")
+	}
+	return rows.Err()
+}
+
+func proxySetHostEnabled(ctx context.Context, conn *pgx.Conn, orgID, raw string, enabled bool) error {
+	host, err := normaliseProxyHost(raw)
+	if err != nil {
+		return err
+	}
+	event := "proxy.host_disabled"
+	if enabled {
+		event = "proxy.host_enabled"
+	}
+	if err := proxyHostWrite(ctx, conn, orgID, host, event, func(tx pgx.Tx) (int64, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE core.proxy_hosts SET enabled = $3 WHERE org_id = $1::uuid AND host = $2`,
+			orgID, host, enabled)
+		return tag.RowsAffected(), err
+	}); err != nil {
+		return err
+	}
+	fmt.Printf("protected host %s %s\n", host, map[bool]string{true: "enabled", false: "disabled"}[enabled])
+	return nil
+}
+
+func proxyRemoveHost(ctx context.Context, conn *pgx.Conn, orgID, raw string) error {
+	host, err := normaliseProxyHost(raw)
+	if err != nil {
+		return err
+	}
+	if err := proxyHostWrite(ctx, conn, orgID, host, "proxy.host_removed", func(tx pgx.Tx) (int64, error) {
+		tag, err := tx.Exec(ctx,
+			`DELETE FROM core.proxy_hosts WHERE org_id = $1::uuid AND host = $2`, orgID, host)
+		return tag.RowsAffected(), err
+	}); err != nil {
+		return err
+	}
+	fmt.Printf("protected host %s removed\n", host)
 	return nil
 }
 

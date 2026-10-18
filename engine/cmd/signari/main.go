@@ -445,7 +445,8 @@ func run(args []string) error {
 	memberEmail := fs.String("email-member", "", "member's email or username")
 	removeMember := fs.Bool("remove", false, "remove the member instead of adding")
 	racProtocol := fs.String("protocol", "rdp", "rdp, vnc or ssh")
-	racHost := fs.String("host", "", "hostname or address of the machine")
+	racHost := fs.String("host", "", "hostname: of the machine (rac), or of the protected "+
+		"application, with its port if not 443 (proxy add-host and friends)")
 	racPort := fs.Int("port", 0, "port (defaults to the protocol's)")
 	racUser := fs.String("login", "", "username on the remote machine")
 	racPassword := fs.String("login-password", "", "password on the remote machine")
@@ -771,6 +772,16 @@ func run(args []string) error {
 	case "radius authorize":
 		return radiusAuthorize(ctx, conn, *orgID, *groupName, *radiusVLAN,
 			*radiusFilterID, *radiusPriority, *removeMember)
+	case "proxy add-host":
+		return proxyAddHost(ctx, conn, *orgID, *racHost)
+	case "proxy list":
+		return proxyListHosts(ctx, conn)
+	case "proxy disable-host":
+		return proxySetHostEnabled(ctx, conn, *orgID, *racHost, false)
+	case "proxy enable-host":
+		return proxySetHostEnabled(ctx, conn, *orgID, *racHost, true)
+	case "proxy remove-host":
+		return proxyRemoveHost(ctx, conn, *orgID, *racHost)
 	case "admin-token create":
 		return adminTokenCreate(ctx, conn, *name, *orgID, *tokenScopes, *tokenExpires,
 			*tokenClients, *inviteGroups)

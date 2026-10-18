@@ -25,6 +25,7 @@ type current struct {
 	clients       map[string]Client
 	samlProviders map[string]SAMLProvider
 	radiusClients map[string]RADIUSClient
+	proxyHosts    map[string]ProxyHost
 }
 
 // read loads the current state for one organisation.
@@ -34,6 +35,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		clients:       map[string]Client{},
 		samlProviders: map[string]SAMLProvider{},
 		radiusClients: map[string]RADIUSClient{},
+		proxyHosts:    map[string]ProxyHost{},
 	}
 
 	rows, err := tx.Query(ctx, `
@@ -121,6 +123,23 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 	}
 	rows.Close()
 
+	rows, err = tx.Query(ctx, `
+		SELECT host, enabled FROM core.proxy_hosts WHERE org_id = $1::uuid`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var h ProxyHost
+		var enabled bool
+		if err := rows.Scan(&h.Host, &enabled); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		h.Enabled = &enabled
+		c.proxyHosts[h.Host] = h
+	}
+	rows.Close()
+
 	return c, nil
 }
 
@@ -188,6 +207,19 @@ func BuildPlan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool
 		}
 	}
 
+	for _, h := range f.ProxyHosts {
+		want := h.Enabled == nil || *h.Enabled
+		have, ok := cur.proxyHosts[h.Host]
+		if !ok {
+			p.Add(Change{Action: "create", Kind: "proxy_host", Name: h.Host})
+			continue
+		}
+		if *have.Enabled != want {
+			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host,
+				Detail: fmt.Sprintf("enabled %v → %v", *have.Enabled, want)})
+		}
+	}
+
 	if !prune {
 		sortPlan(p)
 		return p, nil
@@ -207,6 +239,10 @@ func BuildPlan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool
 	}
 	for _, r := range f.RADIUSClients {
 		fileRadius[r.Network] = true
+	}
+	fileHosts := map[string]bool{}
+	for _, h := range f.ProxyHosts {
+		fileHosts[h.Host] = true
 	}
 
 	for name := range cur.groups {
@@ -231,6 +267,12 @@ func BuildPlan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool
 		if !inFile(fileRadius, name) {
 			p.Add(Change{Action: "delete", Kind: "radius_client", Name: name,
 				Destructive: true, Detail: "this network device stops authenticating"})
+		}
+	}
+	for name := range cur.proxyHosts {
+		if !inFile(fileHosts, name) {
+			p.Add(Change{Action: "delete", Kind: "proxy_host", Name: name, Destructive: true,
+				Detail: "sign-in stops returning people to this application"})
 		}
 	}
 
@@ -481,6 +523,20 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		}
 	}
 
+	for _, h := range f.ProxyHosts {
+		c, ok := planned("proxy_host", h.Host)
+		if !ok || c.Action == "delete" {
+			continue
+		}
+		enabled := h.Enabled == nil || *h.Enabled
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO core.proxy_hosts (org_id, host, enabled) VALUES ($1::uuid, $2, $3)
+			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled`,
+			orgID, h.Host, enabled); err != nil {
+			return fmt.Errorf("proxy host %q: %w", h.Host, err)
+		}
+	}
+
 	// Deletions last, so a plan that both creates and deletes never leaves a gap
 	// where neither exists.
 	for _, c := range plan.Changes {
@@ -503,6 +559,9 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 			_, err = tx.Exec(ctx,
 				`DELETE FROM core.radius_clients WHERE org_id = $1::uuid AND network = $2::cidr`,
 				orgID, c.Name)
+		case "proxy_host":
+			_, err = tx.Exec(ctx,
+				`DELETE FROM core.proxy_hosts WHERE org_id = $1::uuid AND host = $2`, orgID, c.Name)
 		}
 		if err != nil {
 			return fmt.Errorf("deleting %s %q: %w", c.Kind, c.Name, err)

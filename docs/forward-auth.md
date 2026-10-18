@@ -49,13 +49,24 @@ proxy set from the original request, so it is attacker-influenced. An allow-list
 is used rather than a "same domain" pattern, because a hostname an attacker
 controls under your domain would satisfy a pattern.
 
-```sql
-INSERT INTO core.proxy_hosts (org_id, host, enabled)
-VALUES ('<org-uuid>', 'n8n.example.com', true);
+```sh
+signari proxy add-host -org <org-uuid> -host n8n.example.com
+signari proxy list
+signari proxy disable-host -org <org-uuid> -host n8n.example.com   # or enable-host, remove-host
 ```
 
-The host is stored exactly as the browser sends it, **including a non-default
-port** (`n8n.example.com:8443`).
+The same is `PUT /admin/organizations/{orgID}/proxy-hosts` in the
+[admin API](admin-api.md), and `proxy_hosts:` in a
+[configuration file](config-as-code.md). Each change is audited and bumps the
+configuration version.
+
+The host is written as the browser sends it, **including a non-default port**
+(`n8n.example.com:8443`). It is lower-cased, and a scheme, path or query is
+refused rather than guessed at. Until these commands existed, raw SQL was the
+only way to register a host, and nothing in the product could. Every
+deployment that followed the documentation as far as the CLI therefore stopped
+at the sign-in page: the person authenticated, and was then told the
+application they came from was not a registered protected host.
 
 **3. Identity headers must come from the auth response, never from the client.**
 This is the classic forward-auth vulnerability. If the proxy passes the client's

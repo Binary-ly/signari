@@ -166,6 +166,12 @@ func (s *Server) Routes() http.Handler {
 	route("PUT /admin/organizations/{orgID}/scopes", ScopeOrganizationsWrite, s.declareScope)
 	route("DELETE /admin/organizations/{orgID}/scopes/{scope}",
 		ScopeOrganizationsWrite, s.deleteScope)
+
+	// Forward-auth protected hosts.
+	route("GET /admin/organizations/{orgID}/proxy-hosts", ScopeConfigRead, s.listProxyHosts)
+	route("PUT /admin/organizations/{orgID}/proxy-hosts", ScopeOrganizationsWrite, s.putProxyHost)
+	route("DELETE /admin/organizations/{orgID}/proxy-hosts/{host}",
+		ScopeOrganizationsWrite, s.deleteProxyHost)
 	route("GET /admin/audit-events", ScopeAuditRead, s.listAuditEvents)
 	route("GET /admin/config-version", ScopeConfigRead, s.configVersion)
 

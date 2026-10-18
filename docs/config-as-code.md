@@ -34,6 +34,11 @@ saml_providers:
 radius_clients:
   - name: office-ap
     network: 10.0.1.0/24
+
+proxy_hosts:                  # applications behind forward auth
+  - host: grafana.example.com
+  - host: wiki.example.com:8443
+    enabled: false
 ```
 
 ## It plans before it applies

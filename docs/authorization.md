@@ -217,6 +217,21 @@ is in. `search/subject` expands a group grant to its **members**, because "who c
 read this" is a question about people and answering `group:finance` is true and
 useless.
 
+**Every search result is one an evaluation of the same question allows.** Each
+candidate the relation graph finds is evaluated in full: the action's `require`
+condition, `subject_active`, the operator's provider veto, everything
+`/access/v1/evaluation` checks, all through the same function. Until October 2026
+resource and subject search answered from the relation graph alone. A document
+whose `can_edit` required MFA was therefore listed for a subject with no second
+factor, and a deactivated account was listed under an action requiring an active
+one. A PEP renders the list it gets and then acts on it.
+
+One page evaluates **at most 200 candidates**, because each costs what an
+evaluation costs and a provider veto is a network call. A page can therefore come
+back short, or empty, with a `next_token`. The token resumes after the last
+candidate *evaluated*, not the last one returned, so following tokens to the end
+visits every candidate exactly once.
+
 ## Things the wire format gets wrong elsewhere
 
 **A denial is `200 {"decision": false}`.** Not 403. The HTTP status says whether

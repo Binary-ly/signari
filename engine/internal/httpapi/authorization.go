@@ -482,24 +482,83 @@ func (s *Server) handleAuthzSearchResource(w http.ResponseWriter, r *http.Reques
 		authzError(w, http.StatusBadRequest, perr.Error())
 		return
 	}
-	ids, more, err := store.ObjectsWith(ctx, s.db, orgID, req.Subject.Type,
-		req.Subject.ID, relations, req.Resource.Type, facts.Groups, limit, after)
+	ids, more, cursor, err := s.decidedPage(ctx, orgID, limit, after,
+		func(after string, n int) ([]string, bool, error) {
+			return store.ObjectsWith(ctx, s.db, orgID, req.Subject.Type,
+				req.Subject.ID, relations, req.Resource.Type, facts.Groups, n, after)
+		},
+		func(id string) authzen.Request {
+			return authzen.Request{Subject: *req.Subject, Action: *req.Action,
+				Resource: authzen.Resource{Type: req.Resource.Type, ID: id}, Context: req.Context}
+		})
 	if err != nil {
 		s.log.Error("searching resources", "err", err)
 		authzError(w, http.StatusInternalServerError, "the search could not be run")
 		return
 	}
 	items := make([]authzen.Item, 0, len(ids))
-	last := ""
 	for _, id := range ids {
 		items = append(items, authzen.Item{Type: req.Resource.Type, ID: id})
-		last = id
 	}
 	echoRequestID(w, r)
 	writeJSONResponse(w, http.StatusOK, authzen.SearchResponse{
 		Results: items,
-		Page:    pageResponse(req, items, more, last),
+		Page:    pageResponse(req, items, more, cursor),
 	})
+}
+
+// searchScan bounds how many candidates one page of a search runs through the
+// full evaluation. Every candidate costs what an evaluation costs, and a
+// provider veto is a network call, so an unbounded page is a way to make the
+// PDP do arbitrary work on one request.
+const searchScan = 200
+
+// decidedPage fills one page of a search with candidates that decide() allows.
+//
+// The relation lookup alone is not the answer. It skipped the action's
+// condition, the operator's provider veto and whatever else decide() checks, so
+// a search listed documents an evaluation of the same triple refused --
+// AuthZEN's search exists so a PEP can render a list it may then act on, and a
+// list containing what it may not is worse than no list. Each candidate is
+// asked the same question an evaluation would ask, through the same function.
+//
+// The cursor is the last candidate SCANNED, not the last one returned, so the
+// next page resumes after everything already considered. A page may come back
+// short, or empty, with a next token when the scan stopped at searchScan.
+func (s *Server) decidedPage(ctx context.Context, orgID string, limit int, after string,
+	fetch func(after string, n int) ([]string, bool, error),
+	ask func(id string) authzen.Request) (allowed []string, more bool, cursor string, err error) {
+
+	want := limit
+	if want <= 0 || want > searchScan {
+		want = searchScan
+	}
+	cursor = after
+	scanned := 0
+	for {
+		batch, rest, err := fetch(cursor, want)
+		if err != nil {
+			return nil, false, "", err
+		}
+		for i, id := range batch {
+			resp, err := s.decide(ctx, orgID, ask(id))
+			if err != nil {
+				return nil, false, "", err
+			}
+			cursor, scanned = id, scanned+1
+			if resp.Decision {
+				allowed = append(allowed, id)
+			}
+			if len(allowed) == want || scanned == searchScan {
+				// Stopped early: whatever is left of this batch, and whatever
+				// the store had beyond it, is for the next page.
+				return allowed, i < len(batch)-1 || rest, cursor, nil
+			}
+		}
+		if !rest {
+			return allowed, false, cursor, nil
+		}
+	}
 }
 
 // handleAuthzSearchSubject answers "who may act on this".
@@ -536,23 +595,28 @@ func (s *Server) handleAuthzSearchSubject(w http.ResponseWriter, r *http.Request
 		authzError(w, http.StatusBadRequest, perr.Error())
 		return
 	}
-	ids, more, err := store.SubjectsWith(ctx, s.db, orgID, relations,
-		req.Resource.Type, req.Resource.ID, limit, after)
+	ids, more, cursor, err := s.decidedPage(ctx, orgID, limit, after,
+		func(after string, n int) ([]string, bool, error) {
+			return store.SubjectsWith(ctx, s.db, orgID, relations,
+				req.Resource.Type, req.Resource.ID, n, after)
+		},
+		func(id string) authzen.Request {
+			return authzen.Request{Subject: authzen.Subject{Type: "user", ID: id},
+				Action: *req.Action, Resource: *req.Resource, Context: req.Context}
+		})
 	if err != nil {
 		s.log.Error("searching subjects", "err", err)
 		authzError(w, http.StatusInternalServerError, "the search could not be run")
 		return
 	}
 	items := make([]authzen.Item, 0, len(ids))
-	last := ""
 	for _, id := range ids {
 		items = append(items, authzen.Item{Type: "user", ID: id})
-		last = id
 	}
 	echoRequestID(w, r)
 	writeJSONResponse(w, http.StatusOK, authzen.SearchResponse{
 		Results: items,
-		Page:    pageResponse(req, items, more, last),
+		Page:    pageResponse(req, items, more, cursor),
 	})
 }
 

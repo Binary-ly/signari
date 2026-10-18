@@ -316,7 +316,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 		orgID, groups = rule.OrgID, rule.DefaultGroups
 	}
 
-	userID, err := s.createAccount(ctx, orgID, email, password, groups)
+	userID, groups, err := s.createAccount(ctx, orgID, email, password, groups, invitationID == "")
 	if err != nil {
 		if invitationID != "" {
 			// Give it back. A duplicate address or a refused password should not
@@ -356,22 +356,30 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 // One transaction. A user with no credential cannot sign in and cannot recover
 // -- there is nothing to send a reset to that proves anything -- so a partial
 // success here is an account that has to be deleted by hand.
+//
+// It returns the groups actually joined. selfSignup is true when no invitation
+// was involved, and then a group whose members may impersonate is never
+// joined. The rule's default groups are given to anyone at an allowed domain,
+// so such a group in that list would give impersonation to whoever signs up.
+// That is the same reason directory and SCIM sync may not reach such a group.
+// An invitation names one person and comes from the operator, so it is left to
+// the operator.
 func (s *Server) createAccount(ctx context.Context, orgID, email, password string,
-	groups []string) (string, error) {
+	groups []string, selfSignup bool) (string, []string, error) {
 
 	handle := make([]byte, 64)
 	if _, err := io.ReadFull(rand.Reader, handle); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	hasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
 	hash, err := hasher.Hash(ctx, password)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -381,42 +389,50 @@ func (s *Server) createAccount(ctx context.Context, orgID, email, password strin
 		VALUES ($1::uuid, $2, $3) RETURNING id::text`, orgID, handle, email).Scan(&userID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
-			return "", errAddressTaken
+			return "", nil, errAddressTaken
 		}
-		return "", err
+		return "", nil, err
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm)
 		VALUES ($1::uuid, $2::uuid, $3, 'argon2id')`, userID, orgID, hash); err != nil {
-		return "", err
+		return "", nil, err
 	}
+	joined := []string{}
 	for _, g := range groups {
 		// The group must already exist. Creating one here would let an
 		// invitation invent a group name, and group names are what policies are
 		// written against.
 		var groupID string
+		var mayImpersonate bool
 		err := tx.QueryRow(ctx,
-			`SELECT id::text FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
-			orgID, g).Scan(&groupID)
+			`SELECT id::text, may_impersonate FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
+			orgID, g).Scan(&groupID, &mayImpersonate)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				s.log.Warn("an invitation named a group that does not exist",
 					"group", g, "org", orgID)
 				continue
 			}
-			return "", err
+			return "", nil, err
+		}
+		if selfSignup && mayImpersonate {
+			s.log.Error("the signup rule names a group whose members may impersonate; "+
+				"the new account was not added to it", "group", g, "org", orgID)
+			continue
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.group_members (group_id, user_id, org_id)
 			VALUES ($1::uuid, $2::uuid, $3::uuid)
 			ON CONFLICT DO NOTHING`, groupID, userID, orgID); err != nil {
-			return "", err
+			return "", nil, err
 		}
+		joined = append(joined, g)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return userID, nil
+	return userID, joined, nil
 }
 
 var errAddressTaken = errors.New("an account with that address already exists")

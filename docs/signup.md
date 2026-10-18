@@ -72,6 +72,14 @@ want, so it appears in the shell history of whoever did it.
 "Anyone may sign up" is almost never what an organisation means. "Anyone with an
 `@acme.com` address" usually is, and a checkbox cannot express the difference.
 
+A self-signup never joins a group whose members may impersonate, even when
+`-groups` names one. The rule's groups go to anyone at an allowed domain, so
+that group would hand impersonation to whoever signs up. The account is created
+without that membership, the engine logs an error naming the group, and the
+`user.created` audit record lists only the groups that were actually joined.
+An invitation names one person and is sent by an operator, so its groups are
+joined as written.
+
 ## Rate limiting
 
 Ten signups per address per hour. This endpoint writes rows and, where mail is

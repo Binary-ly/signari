@@ -39,7 +39,8 @@ says nothing.
 | | |
 |---|---|
 | **Nobody may, by default** | A capability on a group (`may_impersonate`), granted to nobody. A feature arriving switched on for whoever is in a group called "admins" is a privilege escalation delivered by an upgrade |
-| **Granting it takes database credentials** | `signari group impersonation -org <uuid> -group <name> -grant`. Deliberately **not** in the Admin API: a `groups:write` token is issued for day-to-day administration, and letting one confer impersonation would turn every such token into a way to become anybody. The API reports which groups hold it and refuses to set it, on create and on patch alike |
+| **Granting it takes database credentials** | `signari group impersonation -org <uuid> -group <name> -grant`. Deliberately **not** in the Admin API: a `groups:write` token is issued for day-to-day administration, and letting one confer impersonation would turn every such token into a way to become anybody. The API reports which groups hold it and refuses to set it, on create and on patch alike. Joining or leaving such a group through the API, and writes on its members, need `privileged-users:write` as well ([admin-api.md](admin-api.md#groups)) |
+| **Never another administrator** | Nobody who may impersonate can be impersonated. Acting as another administrator gives the actor that administrator's reach too, and the episode would be recorded as a support visit when it was a takeover |
 | **A reason is required** | And stored. An organisation that cannot answer "why was this account accessed" does not have support access, it has a back door |
 | **Never yourself** | Impersonating yourself launders an action into an unattributable one |
 | **Never across organisations** | RLS does *not* catch this — the engine is exempt by design and this runs as the engine |

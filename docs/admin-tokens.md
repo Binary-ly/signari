@@ -40,6 +40,7 @@ wholesale, which is exactly the situation being replaced.
 | `subjects:erase` | `POST /admin/subjects/{id}/erase` |
 | `organizations:write` | `POST /admin/organizations`. Useless to an organisation-scoped token — see below |
 | `audit:read` | `GET /admin/audit-events`. **Not implied by any write scope** — see below |
+| `privileged-users:write` | Needed as well as the route's own scope to write on a user who may impersonate, or on a group that confers it (including its membership). See [admin-api.md](admin-api.md#groups) |
 
 **A write scope implies the matching read scope.** `clients:write` can read a
 client without also being granted `clients:read` — a token that may change a
@@ -54,6 +55,13 @@ password.
 
 **`subjects:erase` is separate from `users:write`** because a token that may
 rename a user should not thereby be able to destroy one irreversibly.
+
+**`privileged-users:write` is separate because the alternative is a ladder.**
+Without it, a `users:write` token could change the e-mail address of someone
+who may impersonate and then recover their account, and a `groups:write` token
+could add its own operator to a group that may impersonate. Either way the
+lesser credential becomes the greater one. Only a few tokens need this scope.
+Most do not, and they keep working on everyone else.
 
 ## Narrowing a token to named objects
 

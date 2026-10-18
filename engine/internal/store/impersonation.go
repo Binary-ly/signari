@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -82,6 +84,18 @@ func BeginImpersonation(ctx context.Context, tx pgx.Tx, orgID, actorID, subjectI
 			ErrImpersonationRefused)
 	}
 
+	// Nor someone who may impersonate. Acting as another administrator gives the
+	// actor that administrator's reach as well as their name, and the episode
+	// would record a support visit when what happened was a takeover.
+	_, privileged, _, err := PrivilegedUser(ctx, tx, subjectID)
+	if err != nil {
+		return im, err
+	}
+	if privileged {
+		return im, fmt.Errorf("%w: that user may impersonate others, and nobody who "+
+			"can is impersonated", ErrImpersonationRefused)
+	}
+
 	// An impersonated session cannot start another. Otherwise the actor recorded
 	// on the second episode is the person being impersonated on the first, and
 	// the chain back to a real administrator is broken at exactly the point
@@ -99,7 +113,7 @@ func BeginImpersonation(ctx context.Context, tx pgx.Tx, orgID, actorID, subjectI
 			"impersonation cannot be chained", ErrImpersonationRefused)
 	}
 
-	err := tx.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO core.impersonations
 			(org_id, actor_id, subject_id, reason, expires_at, correlation_id)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, now() + $5::interval, $6)
@@ -244,4 +258,51 @@ func MayImpersonate(ctx context.Context, q Querier, orgID, userID string) (bool,
 		return may, nil
 	}
 	return false, rows.Err()
+}
+
+// PrivilegedUser reports whether a user can act as other people, and which
+// organisation they belong to. found is false when there is no such user.
+//
+// Privileged means a member of a group that may impersonate. This is the one
+// definition. The Admin API uses it to decide which writes need
+// privileged-users:write, and BeginImpersonation uses it to refuse
+// impersonating such a person, so the two cannot disagree about who is
+// protected.
+func PrivilegedUser(ctx context.Context, q rowQuerier, userID string) (orgID string, privileged, found bool, err error) {
+	if uuid.Validate(userID) != nil {
+		return "", false, false, nil
+	}
+	err = q.QueryRow(ctx, `
+		SELECT u.org_id::text, EXISTS (
+			SELECT 1
+			  FROM core.group_members m
+			  JOIN core.groups g ON g.id = m.group_id
+			 WHERE m.user_id = u.id AND g.org_id = u.org_id AND g.may_impersonate)
+		  FROM core.users u
+		 WHERE u.id = $1::uuid`, userID).Scan(&orgID, &privileged)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, false, nil
+	}
+	if err != nil {
+		return "", false, false, err
+	}
+	return orgID, privileged, true, nil
+}
+
+// PrivilegedGroup reports whether membership of a group makes a person
+// privileged (see PrivilegedUser), and which organisation the group belongs to.
+func PrivilegedGroup(ctx context.Context, q rowQuerier, groupID string) (orgID string, privileged, found bool, err error) {
+	if uuid.Validate(groupID) != nil {
+		return "", false, false, nil
+	}
+	err = q.QueryRow(ctx,
+		`SELECT org_id::text, may_impersonate FROM core.groups WHERE id = $1::uuid`,
+		groupID).Scan(&orgID, &privileged)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, false, nil
+	}
+	if err != nil {
+		return "", false, false, err
+	}
+	return orgID, privileged, true, nil
 }

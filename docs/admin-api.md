@@ -308,6 +308,27 @@ greater privilege obtained from the lesser credential. It stays a CLI operation,
 where the person running it is on the host. There is a test asserting a request
 body carrying it has no effect.
 
+**Writes that touch impersonation also need `privileged-users:write`.** Setting
+the flag was never possible here, but joining a flagged group was, and joining
+is what grants the power. The same went for users: a `users:write` token could
+change a flagged member's e-mail address, remove their factors, set their
+attributes or delete them. Each of these let the lesser credential take over or
+remove the greater one. The following are now refused with
+`403 privileged_target` unless the token also holds `privileged-users:write`:
+
+- any write on a group that may impersonate, including adding or removing a
+  member;
+- any write on a user who belongs to such a group: `PATCH` and `DELETE` on the
+  user, factor removal, attributes and erasure.
+
+The refusal is written to the audit trail as `admin.privileged_refused`.
+Ending a privileged user's sessions is the exception and still needs only
+`users:write`. It only takes access away, and an incident responder has to be
+able to sign out a compromised administrator with the token they already hold.
+A token scoped to another organisation gets that organisation's usual
+refusal, so it cannot learn which ids belong to administrators. The OpenAPI
+document marks the affected operations with `x-privileged-scope`.
+
 A membership may not cross organisations: a group decides application access, so
 joining a user from another tenant is refused with 400 even when the token could
 act on both.

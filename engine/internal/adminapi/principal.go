@@ -54,6 +54,12 @@ const (
 	// provisioning script that needs to look up users should not thereby be able
 	// to read every person's authentication history.
 	ScopeAuditRead = "audit:read"
+	// ScopePrivilegedUsersWrite is needed, in addition to a route's own scope,
+	// to write on a user who may impersonate others or on a group that lets its
+	// members do so (see privileged.go). Without it the lesser credential could
+	// become the greater: users:write could take over such an account and
+	// groups:write could join such a group.
+	ScopePrivilegedUsersWrite = "privileged-users:write"
 	// ScopeAll is what the break-glass environment token carries. It is not
 	// grantable to a database token: a stored credential that can do everything
 	// is the thing this package exists to stop handing out.
@@ -64,7 +70,7 @@ const (
 var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
 	ScopeSubjectsErase, ScopeUsersRead, ScopeClientsRead,
 	ScopeGroupsRead, ScopeGroupsWrite, ScopeOrganizationsWrite,
-	ScopeAuditRead}
+	ScopeAuditRead, ScopePrivilegedUsersWrite}
 
 // impliedBy says which scope a write scope satisfies on its own.
 //

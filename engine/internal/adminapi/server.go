@@ -144,20 +144,30 @@ func (s *Server) Routes() http.Handler {
 		mux.HandleFunc(pattern, s.auth(scope, h))
 		s.recordOperation(pattern, scope)
 	}
+	// privileged is route for a write on a user or a group, which needs
+	// privileged-users:write as well when the target is privileged (see
+	// privileged.go). TestEveryWriteOnAUserOrGroupGuardsPrivilegedTargets
+	// derives the routes that need it from this table, so a write on a user
+	// registered with plain route fails there.
+	privileged := func(pattern, scope string, target privilegedTarget, h http.HandlerFunc) {
+		mux.HandleFunc(pattern, s.auth(scope, s.requirePrivileged(target, h)))
+		s.recordOperation(pattern, scope)
+		s.ops[len(s.ops)-1].privileged = true
+	}
 
 	route("PATCH /admin/clients/{clientID}", ScopeClientsWrite, s.patchClient)
 	route("DELETE /admin/clients/{clientID}", ScopeClientsWrite, s.deleteClient)
 	route("POST /admin/users", ScopeUsersWrite, s.createUser)
 	route("POST /admin/clients", ScopeClientsWrite, s.createClient)
 	route("POST /admin/clients/{clientID}/rotate-secret", ScopeClientsWrite, s.rotateClientSecret)
-	route("PATCH /admin/users/{userID}", ScopeUsersWrite, s.patchUser)
-	route("DELETE /admin/users/{userID}", ScopeUsersWrite, s.deleteUser)
+	privileged("PATCH /admin/users/{userID}", ScopeUsersWrite, targetUser, s.patchUser)
+	privileged("DELETE /admin/users/{userID}", ScopeUsersWrite, targetUser, s.deleteUser)
 	route("GET /admin/users/{userID}/factors", ScopeUsersRead, s.listUserFactors)
 	// Two patterns rather than an optional segment: the kinds a user may hold
 	// several of need the credential named, and the ones keyed on the user must
 	// not accept an id that would be silently ignored.
-	route("DELETE /admin/users/{userID}/factors/{kind}", ScopeUsersWrite, s.deleteUserFactor)
-	route("DELETE /admin/users/{userID}/factors/{kind}/{factorID}", ScopeUsersWrite, s.deleteUserFactor)
+	privileged("DELETE /admin/users/{userID}/factors/{kind}", ScopeUsersWrite, targetUser, s.deleteUserFactor)
+	privileged("DELETE /admin/users/{userID}/factors/{kind}/{factorID}", ScopeUsersWrite, targetUser, s.deleteUserFactor)
 	route("POST /admin/organizations", ScopeOrganizationsWrite, s.createOrganization)
 
 	// The scope catalogue. Registered unconditionally — unlike attributes, a
@@ -189,18 +199,20 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/groups", ScopeGroupsRead, s.listGroups)
 	route("GET /admin/groups/{groupID}", ScopeGroupsRead, s.getGroup)
 	route("POST /admin/groups", ScopeGroupsWrite, s.createGroup)
-	route("PATCH /admin/groups/{groupID}", ScopeGroupsWrite, s.patchGroup)
-	route("DELETE /admin/groups/{groupID}", ScopeGroupsWrite, s.deleteGroup)
+	privileged("PATCH /admin/groups/{groupID}", ScopeGroupsWrite, targetGroup, s.patchGroup)
+	privileged("DELETE /admin/groups/{groupID}", ScopeGroupsWrite, targetGroup, s.deleteGroup)
 	route("GET /admin/groups/{groupID}/members", ScopeGroupsRead, s.listGroupMembers)
-	route("PUT /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, s.addGroupMember)
-	route("DELETE /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, s.removeGroupMember)
+	privileged("PUT /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, targetGroup, s.addGroupMember)
+	privileged("DELETE /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, targetGroup, s.removeGroupMember)
 
 	// Sessions. Reading is part of seeing a user; ending one is acting on them,
-	// so the scopes follow users:* rather than getting a third pair.
+	// so the scopes follow users:* rather than getting a third pair. Ending
+	// sessions is plain route even for a privileged user: it only withdraws
+	// access (see privileged.go).
 	route("GET /admin/users/{userID}/sessions", ScopeUsersRead, s.listUserSessions)
 	route("DELETE /admin/users/{userID}/sessions", ScopeUsersWrite, s.revokeUserSessions)
 	route("DELETE /admin/sessions/{sid}", ScopeUsersWrite, s.revokeSession)
-	route("POST /admin/subjects/{subjectID}/erase", ScopeSubjectsErase, s.eraseSubject)
+	privileged("POST /admin/subjects/{subjectID}/erase", ScopeSubjectsErase, targetUser, s.eraseSubject)
 
 	// User attributes. Registered only when a root key is available, because a
 	// personal attribute is sealed under a subject key and cannot be read
@@ -210,7 +222,7 @@ func (s *Server) Routes() http.Handler {
 		route("GET /admin/organizations/{orgID}/attributes", ScopeConfigRead, s.listAttributes)
 		route("PUT /admin/organizations/{orgID}/attributes", ScopeOrganizationsWrite, s.declareAttribute)
 		route("GET /admin/users/{userID}/attributes", ScopeUsersRead, s.getUserAttributes)
-		route("PUT /admin/users/{userID}/attributes", ScopeUsersWrite, s.setUserAttributes)
+		privileged("PUT /admin/users/{userID}/attributes", ScopeUsersWrite, targetUser, s.setUserAttributes)
 
 		// Claim mappers. Creating one decides that a relying party receives a
 		// fact about every user who has it, so it takes the same scope as

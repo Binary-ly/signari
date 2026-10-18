@@ -44,6 +44,9 @@ type operation struct {
 	path    string
 	scope   string
 	summary string
+	// privileged marks a write that also needs privileged-users:write when
+	// its target may impersonate (see privileged.go).
+	privileged bool
 }
 
 // recordOperation notes a route as Routes() registers it.
@@ -145,6 +148,15 @@ func (s *Server) openAPI() map[string]any {
 			resp["412"] = map[string]any{
 				"description": "The configuration version moved; nothing was written.",
 			}
+		}
+		// The second scope is conditional on the target, so it cannot go in
+		// `security`: listing it there would claim every call needs it.
+		if op.privileged {
+			entry["x-privileged-scope"] = ScopePrivilegedUsersWrite
+			resp := entry["responses"].(map[string]any)
+			resp["403"] = map[string]any{"description": "The token lacks " + op.scope +
+				", or is scoped to another organisation, or the target may impersonate " +
+				"others and the token lacks " + ScopePrivilegedUsersWrite + "."}
 		}
 		item[op.method] = entry
 	}

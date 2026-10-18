@@ -2,9 +2,14 @@ package directory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/store"
 )
 
 // Applying a plan to the local directory.
@@ -50,9 +55,27 @@ func Apply(ctx context.Context, db *pgxpool.Pool, sourceID, orgID string, p *Pla
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	skipped := map[string]int{}
 	for _, a := range p.Actions {
 		switch a.Kind {
 		case "create":
+			// An existing account with this address is adopted, as a person who
+			// signed up before the sync began -- unless they may act as other
+			// users. A directory describes the people it manages, not the
+			// administrators of this deployment, and an adopted administrator's
+			// address would then be the directory's to change.
+			var existing string
+			if err := tx.QueryRow(ctx, `
+				SELECT id::text FROM core.users WHERE org_id = $1::uuid AND lower(email) = lower($2)`,
+				orgID, a.Email).Scan(&existing); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("looking up %s: %w", a.Email, err)
+			}
+			if skip, err := privilegedSkipped(ctx, tx, orgID, sourceID, existing, a); err != nil {
+				return err
+			} else if skip {
+				skipped[a.Kind]++
+				continue
+			}
 			var userID string
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO core.users (org_id, email, user_handle, status)
@@ -77,6 +100,12 @@ func Apply(ctx context.Context, db *pgxpool.Pool, sourceID, orgID string, p *Pla
 			}
 
 		case "update":
+			if skip, err := privilegedSkipped(ctx, tx, orgID, sourceID, a.UserID, a); err != nil {
+				return err
+			} else if skip {
+				skipped[a.Kind]++
+				continue
+			}
 			if _, err := tx.Exec(ctx, `
 				UPDATE core.users SET email = $2, updated_at = now() WHERE id = $1::uuid`,
 				a.UserID, a.Email); err != nil {
@@ -127,6 +156,8 @@ func Apply(ctx context.Context, db *pgxpool.Pool, sourceID, orgID string, p *Pla
 	}
 
 	create, update, deactivate, _ := p.Counts()
+	create -= skipped["create"]
+	update -= skipped["update"]
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.directory_sources
 		SET last_sync_at = now(), last_error = NULL, last_created = $2,
@@ -136,6 +167,26 @@ func Apply(ctx context.Context, db *pgxpool.Pool, sourceID, orgID string, p *Pla
 	}
 
 	return tx.Commit(ctx)
+}
+
+// privilegedSkipped reports whether an action would adopt or re-address a
+// person who may act as other users (store.PrivilegedUser), and records in the
+// audit trail that it was skipped. Skipped rather than failing the run: one
+// administrator who shares an address with a directory entry must not stop
+// everybody else's provisioning. Deactivation is never skipped -- a departed
+// administrator must stop getting in.
+func privilegedSkipped(ctx context.Context, tx pgx.Tx, orgID, sourceID, userID string, a Action) (bool, error) {
+	if userID == "" {
+		return false, nil
+	}
+	_, privileged, _, err := store.PrivilegedUser(ctx, tx, userID)
+	if err != nil || !privileged {
+		return false, err
+	}
+	return true, audit.Write(ctx, tx, audit.Event{
+		Type: "directory.privileged_skipped", OrgID: orgID, SubjectID: userID,
+		Detail: map[string]any{"source_id": sourceID, "action": a.Kind, "remote_id": a.RemoteID},
+	})
 }
 
 // RecordFailure notes why a sync did not complete.

@@ -61,6 +61,13 @@ the person locked out of everything they owned. `core.directory_links` is keyed
 on the upstream's immutable id, and a remote record without one is skipped rather
 than matched by address.
 
+A new remote record whose address matches an existing local account adopts it,
+unless that person may act as other users. Such a person is never adopted, and
+a linked person who later came to administer is never re-addressed by the
+directory. Each skip is recorded as `directory.privileged_skipped`, and the rest
+of the run carries on. Deactivation is never skipped, because a departed
+administrator must stop getting in.
+
 ## A short list is never success
 
 Both adapters treat a failure part-way through pagination as an **error**, never

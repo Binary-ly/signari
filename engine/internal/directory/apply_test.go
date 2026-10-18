@@ -193,3 +193,91 @@ func TestApplyRefusesAnUnsafePlan(t *testing.T) {
 		t.Fatal("an unsafe plan was applied")
 	}
 }
+
+// A directory entry sharing an administrator's address does not adopt them, and
+// a linked person who later came to administer is not re-addressed by the
+// directory. Deactivating them still goes through: a departed administrator
+// must stop getting in.
+func TestApplyNeverAdoptsOrReaddressesAPrivilegedPerson(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	orgID, sourceID := fixture(t, pool)
+	suffix := rnd(t)
+
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var groupID, adminID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO core.groups (org_id, name, display_name, may_impersonate)
+		VALUES ($1::uuid, $2, 'Admins', true) RETURNING id::text`, orgID, "admins-"+suffix).Scan(&groupID); err != nil {
+		t.Fatal(err)
+	}
+	adminEmail := "admin-" + suffix + "@example.test"
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO core.users (org_id, email, status, user_handle)
+		VALUES ($1::uuid, $2, 'active', decode(md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text)||
+		        md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text),'hex'))
+		RETURNING id::text`, orgID, adminEmail).Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	exec(`INSERT INTO core.group_members (group_id, user_id, org_id) VALUES ($1::uuid, $2::uuid, $3::uuid)`,
+		groupID, adminID, orgID)
+
+	sync := func(remote []RemoteUser) {
+		t.Helper()
+		local, err := LoadLocal(ctx, pool, sourceID, orgID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan := BuildPlan(remote, local, "deactivate", 100)
+		if err := Apply(ctx, pool, sourceID, orgID, plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(sql string, args ...any) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, sql, args...).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	plainEmail := "plain-" + suffix + "@example.test"
+	sync([]RemoteUser{
+		{ID: "g-admin", Email: adminEmail, Name: "Admin"},
+		{ID: "g-plain", Email: plainEmail, Name: "Plain"},
+	})
+	if n := count(`SELECT count(*) FROM core.directory_links WHERE source_id = $1::uuid AND user_id = $2::uuid`,
+		sourceID, adminID); n != 0 {
+		t.Fatal("the directory adopted an administrator by address")
+	}
+	if n := count(`SELECT count(*) FROM core.audit_events
+	                WHERE event_type = 'directory.privileged_skipped' AND subject_id = $1::uuid`, adminID); n != 1 {
+		t.Errorf("the skipped adoption left %d audit records, want 1", n)
+	}
+	var plainID string
+	if err := pool.QueryRow(ctx, `SELECT user_id::text FROM core.directory_links
+	                               WHERE source_id = $1::uuid AND remote_id = 'g-plain'`, sourceID).Scan(&plainID); err != nil {
+		t.Fatalf("an ordinary person was not provisioned alongside: %v", err)
+	}
+
+	exec(`INSERT INTO core.group_members (group_id, user_id, org_id) VALUES ($1::uuid, $2::uuid, $3::uuid)`,
+		groupID, plainID, orgID)
+	sync([]RemoteUser{
+		{ID: "g-admin", Email: adminEmail, Name: "Admin"},
+		{ID: "g-plain", Email: "moved-" + suffix + "@elsewhere.test", Name: "Plain"},
+	})
+	if n := count(`SELECT count(*) FROM core.users WHERE id = $1::uuid AND email = $2`, plainID, plainEmail); n != 1 {
+		t.Fatal("the directory re-addressed a person who now administers")
+	}
+
+	sync([]RemoteUser{{ID: "g-admin", Email: adminEmail, Name: "Admin"}})
+	if n := count(`SELECT count(*) FROM core.users WHERE id = $1::uuid AND status = 'deactivated'`, plainID); n != 1 {
+		t.Fatal("an administrator removed upstream was not deactivated")
+	}
+}

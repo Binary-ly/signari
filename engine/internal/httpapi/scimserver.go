@@ -248,6 +248,9 @@ func (s *Server) scimCreateUser(w http.ResponseWriter, r *http.Request, src *sto
 
 	created, err := store.UpsertSCIMUser(ctx, s.db, src, in)
 	if err != nil {
+		if s.scimForbidden(w, r, src, err) {
+			return
+		}
 		var conflict *store.SCIMConflictError
 		if errors.As(err, &conflict) {
 			w.Header().Set("Content-Type", scimContentType)
@@ -322,6 +325,9 @@ func (s *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request,
 
 	u, err := store.ReplaceSCIMUser(ctx, s.db, src, id, in)
 	if err != nil {
+		if s.scimForbidden(w, r, src, err) {
+			return
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeSCIMError(w, http.StatusNotFound, "no such user")
 			return
@@ -364,6 +370,9 @@ func (s *Server) scimPatchUser(w http.ResponseWriter, r *http.Request,
 
 	u, err := store.PatchSCIMUser(ctx, s.db, src, id, patch)
 	if err != nil {
+		if s.scimForbidden(w, r, src, err) {
+			return
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeSCIMError(w, http.StatusNotFound, "no such user")
 			return
@@ -393,8 +402,34 @@ func (s *Server) scimDeleteUser(w http.ResponseWriter, r *http.Request,
 		writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 		return
 	}
+	if u.Kept {
+		// Deactivated rather than deleted: the person may act as others.
+		s.auditDetached(ctx, audit.Event{
+			Type: "scim.privileged_kept", OrgID: src.OrgID, SubjectID: u.UserID,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"source": src.Slug, "external_id": u.ExternalID},
+		})
+	}
 	s.auditSCIMChange(ctx, src, u, "scim.user_deprovisioned")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// scimForbidden answers a change the source may not make (store.SCIMForbiddenError)
+// with 403, records the attempt, and reports whether it did. An upstream
+// retries a 500 forever; it stops on a 4xx.
+func (s *Server) scimForbidden(w http.ResponseWriter, r *http.Request,
+	src *store.SCIMSource, err error) bool {
+	var forbidden *store.SCIMForbiddenError
+	if !errors.As(err, &forbidden) {
+		return false
+	}
+	s.auditDetached(r.Context(), audit.Event{
+		Type: "scim.privileged_refused", OrgID: src.OrgID,
+		CorrelationID: correlationID(r.Context()),
+		Detail:        map[string]any{"source": src.Slug, "method": r.Method, "path": r.URL.Path},
+	})
+	writeSCIMError(w, http.StatusForbidden, forbidden.Error())
+	return true
 }
 
 // auditSCIMChange records a provisioning change against the person it affected.

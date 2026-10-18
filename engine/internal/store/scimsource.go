@@ -42,6 +42,9 @@ type SCIMUser struct {
 	Active      bool
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	// Kept is set by a delete that deactivated the person instead, because
+	// they may act as other users.
+	Kept bool
 }
 
 // SCIMConflictError reports a uniqueness violation, so the handler can answer
@@ -52,6 +55,34 @@ type SCIMUser struct {
 type SCIMConflictError struct{ Detail string }
 
 func (e *SCIMConflictError) Error() string { return e.Detail }
+
+// SCIMForbiddenError is a change a provisioning source's credential may not
+// make, answered 403 (RFC 7644 §3.12: "Operation is not permitted based on the
+// supplied authorization").
+type SCIMForbiddenError struct{ Detail string }
+
+func (e *SCIMForbiddenError) Error() string { return e.Detail }
+
+// refuseIfPrivileged refuses an upstream's adoption or rewrite of a person who
+// may act as other users (PrivilegedUser, the one definition).
+//
+// A source adopted an existing local account by email, administrators
+// included, and could then point its address somewhere the upstream controls:
+// a password reset away from an account that may impersonate anybody. An
+// upstream is trusted to describe the people it manages, not the people who
+// administer this one.
+func refuseIfPrivileged(ctx context.Context, tx pgx.Tx, userID, what string) error {
+	_, privileged, _, err := PrivilegedUser(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	if privileged {
+		return &SCIMForbiddenError{Detail: "this person may act as other users, so " +
+			"provisioning may not " + what + " them; an administrator of this " +
+			"deployment can"}
+	}
+	return nil
+}
 
 // FindSCIMSourceByToken resolves a bearer token hash to its source.
 func FindSCIMSourceByToken(ctx context.Context, db *pgxpool.Pool, hash []byte) (
@@ -221,8 +252,13 @@ func UpsertSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 			}
 			return out, err
 		}
-	} else if err := applyUserFields(ctx, tx, userID, nil, boolPtr(in.Active)); err != nil {
-		return out, err
+	} else {
+		if err := refuseIfPrivileged(ctx, tx, userID, "adopt"); err != nil {
+			return out, err
+		}
+		if err := applyUserFields(ctx, tx, userID, nil, boolPtr(in.Active)); err != nil {
+			return out, err
+		}
 	}
 
 	var resourceID string
@@ -356,12 +392,22 @@ func DeleteSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if src.OnDelete == "delete" {
+	// A person who may act as others is deactivated, never deleted, whatever
+	// the source's policy. The upstream's intent -- they no longer get in -- is
+	// met, sessions included; removing an administrator's account outright is
+	// left to an administrator here. Refusing instead would leave a departed
+	// administrator signed in, which is the worse failure.
+	_, privileged, _, err := PrivilegedUser(ctx, tx, u.UserID)
+	if err != nil {
+		return out, err
+	}
+	if src.OnDelete == "delete" && !privileged {
 		if _, err := tx.Exec(ctx, `DELETE FROM core.users WHERE id = $1::uuid`,
 			u.UserID); err != nil {
 			return out, err
 		}
 	} else {
+		u.Kept = src.OnDelete == "delete"
 		f := false
 		if err := applyUserFields(ctx, tx, u.UserID, nil, &f); err != nil {
 			return out, err
@@ -385,6 +431,19 @@ func applyUserFields(ctx context.Context, tx pgx.Tx, userID string,
 	email *string, active *bool) error {
 
 	if email != nil && *email != "" {
+		// Only a change of address is refused for a privileged person; the
+		// same address resent on every PUT is not a rewrite.
+		var unchanged bool
+		if err := tx.QueryRow(ctx,
+			`SELECT lower(COALESCE(email,'')) = lower($2) FROM core.users WHERE id = $1::uuid`,
+			userID, *email).Scan(&unchanged); err != nil {
+			return err
+		}
+		if !unchanged {
+			if err := refuseIfPrivileged(ctx, tx, userID, "change the address of"); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE core.users SET email = $2 WHERE id = $1::uuid`,
 			userID, *email); err != nil {

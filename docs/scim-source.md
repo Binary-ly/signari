@@ -41,6 +41,21 @@ created, and the person locked out of everything they owned.
 
 A create without `externalId` is refused, with that reasoning in the message.
 
+## A source never takes over an administrator
+
+A create whose address matches an existing local account adopts that account
+rather than duplicating it. That covers somebody who signed up before
+provisioning was turned on. There is one exception: a person who **may act as
+other users** (a member of a group that may impersonate) is not adopted, and
+the create is answered `403`. The same applies to changing such a person's
+address through a PUT or PATCH. Resending the address they already have is
+fine, and so is switching them off.
+
+A source is trusted to describe the people it manages. An administrator it
+adopted would have an address the upstream could change, and that is one
+password reset away from an account that may become anybody. Every refusal is
+recorded as `scim.privileged_refused`.
+
 ## Retries are free
 
 
@@ -51,6 +66,12 @@ times.
 
 
 `-on-deactivate delete` is available and prints a warning saying what it costs.
+Under it, a person who may act as other users is still only deactivated. The
+upstream's intent, that they stop getting in, is met, and so is the removal of
+their sessions. The answer is `204`, and the trail records
+`scim.privileged_kept`. Removing an administrator's account outright is left to
+an administrator of this deployment. Refusing the DELETE instead would leave a
+departed administrator signed in.
 
 ## Deactivation ends sessions
 

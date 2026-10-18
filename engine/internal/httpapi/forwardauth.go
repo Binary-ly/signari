@@ -58,8 +58,12 @@ type proxyClaims struct {
 	Issuer  string `json:"iss"`
 	Subject string `json:"sub"`
 	SID     string `json:"sid"`
-	Email   string `json:"email,omitempty"`
-	Expiry  int64  `json:"exp"`
+	// OrgID is the organisation the person signed in to, which decides the
+	// hosts they may reach. Signed with the rest, so it is ours and not the
+	// browser's.
+	OrgID  string `json:"org"`
+	Email  string `json:"email,omitempty"`
+	Expiry int64  `json:"exp"`
 }
 
 // handleProxyVerify is the endpoint the reverse proxy calls per request.
@@ -101,16 +105,32 @@ func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A token naming no session or no organisation is one issued before both
+	// were required. Asked to sign in again rather than honoured: without a
+	// session nothing can revoke it, and without an organisation nothing can
+	// say which applications it reaches.
+	if pc.SID == "" || pc.OrgID == "" {
+		s.denyProxy(w, r, "proxy token predates per-host authorization; sign in again")
+		return
+	}
+
 	// The live session is rechecked on every request. Without this the proxy
 	// cookie keeps working for its full lifetime after the user signs out --
 	// which is exactly the "logout does not work" failure this project spent a
 	// day making visible elsewhere.
-	if pc.SID != "" {
-		live, err := store.SessionLive(ctx, s.db, pc.SID)
-		if err != nil || !live {
-			s.denyProxy(w, r, "the session behind this proxy token has ended")
-			return
-		}
+	live, err := store.SessionLive(ctx, s.db, pc.SID)
+	if err != nil || !live {
+		s.denyProxy(w, r, "the session behind this proxy token has ended")
+		return
+	}
+
+	// Authorization, which this endpoint did not do at all. A valid cookie
+	// passed every protected host of every organisation: anybody who could
+	// sign in anywhere in the deployment reached the payroll dashboard of a
+	// tenant they had never heard of.
+	if reason, ok := s.authorizeProxyHost(r, pc); !ok {
+		s.forbidProxy(w, reason)
+		return
 	}
 
 	// Set by US, from the verified token. Never copied from the request.
@@ -120,6 +140,56 @@ func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Forwarded-Email", pc.Email)
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// authorizeProxyHost decides whether this person may reach the host the proxy
+// is asking about: it must be one of their organisation's registered, enabled
+// hosts, and the access policy -- keyed "proxy:<host>" as a relying party is
+// keyed by its client ID -- must allow it.
+//
+// The network, device and travel conditions are evaluated as unknown. The
+// request here is the proxy's, so its address and TLS state are the proxy's
+// own, and a `from_networks` rule read against them would let everybody in
+// from inside the office the proxy sits in. Until the person's address can be
+// taken from a trusted proxy, those conditions refuse rather than guess.
+func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims) (string, bool) {
+	ctx := r.Context()
+	host := strings.ToLower(firstHeader(r, "X-Forwarded-Host"))
+	if host == "" {
+		return "the proxy did not say which application it is asking about (X-Forwarded-Host)", false
+	}
+	var registered bool
+	if err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.proxy_hosts
+		                WHERE org_id = $1::uuid AND lower(host) = $2 AND enabled)`,
+		pc.OrgID, host).Scan(&registered); err != nil {
+		s.log.Error("checking a protected host", "err", err)
+		return "the protected host could not be checked", false
+	}
+	if !registered {
+		return "this application is not one of your organisation's protected hosts", false
+	}
+
+	mfa, amr := sessionFactors(ctx, s.db, pc.SID)
+	asked := r.Clone(ctx)
+	asked.RemoteAddr, asked.TLS = "", nil
+	if pd := s.checkAccessPolicy(ctx, asked, pc.OrgID, "proxy:"+host, pc.Subject, "", mfa, amr); pd != nil {
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: pc.OrgID, SubjectID: pc.Subject,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "proxy", "host": host},
+		})
+		return pd.Message, false
+	}
+	return "", true
+}
+
+// forbidProxy answers 403: the person is signed in and may not reach this host.
+// Not 401, which would send them back to sign in, be let through by the IdP,
+// and arrive here again -- a loop that tells nobody anything.
+func (s *Server) forbidProxy(w http.ResponseWriter, reason string) {
+	w.Header().Set("X-Signari-Reason", reason)
+	w.WriteHeader(http.StatusForbidden)
 }
 
 // denyProxy answers 401 with where to go next.
@@ -194,6 +264,12 @@ func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sid, _, _ := store.ResolveSessionCookie(ctx, s.db, store.HashToken(sessionCookie(r)))
+	if sid == "" {
+		// A proxy token with no session behind it could not be revoked by
+		// signing out, and verify refuses one.
+		writeError(w, http.StatusInternalServerError, "server_error", "the session could not be read")
+		return
+	}
 	var email string
 	_ = s.db.QueryRow(ctx,
 		`SELECT COALESCE(email,'') FROM core.users WHERE id = $1::uuid`, userID).Scan(&email)
@@ -204,7 +280,7 @@ func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tok, err := tokens.NewSigner(key).SignJSON(proxyClaims{
-		Issuer: s.cfg.Issuer, Subject: userID, SID: sid, Email: email,
+		Issuer: s.cfg.Issuer, Subject: userID, SID: sid, OrgID: orgID, Email: email,
 		Expiry: time.Now().Add(proxyTTL).Unix(),
 	}, typProxy)
 	if err != nil {

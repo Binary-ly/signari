@@ -119,6 +119,7 @@ SAML entity ID:
 | SAML and WS-Federation | in the one function that signs the assertion for both. A SAML refusal goes back to the service provider as `RequestDenied`; WS-Federation answers `403` |
 | the device grant and CIBA | when the person presses approve. A refusal is recorded as a denial, so the waiting device or client is told `access_denied` rather than left polling |
 | every refresh | before the new tokens are minted. A refusal is `invalid_grant`, and the refresh token is **not** revoked: lifting the rule, or restoring the membership, restores the grant |
+| forward auth | on every request to a protected application, keyed `proxy:<host>`. Network, device and travel conditions refuse there, because the request comes from the proxy and carries the proxy's address — see [forward auth](forward-auth.md#who-may-reach-which-application) |
 
 Until October 2026 the list stopped at the first row and WS-Federation. A deny
 rule for a client blocked its browser sign-ins and still let through its

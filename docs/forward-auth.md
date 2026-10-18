@@ -199,6 +199,40 @@ the answer actually matters. It looks for:
 A clean run is evidence, not a guarantee. It covers the paths and methods listed
 in the output, from wherever it ran — nothing more, and the command says so.
 
+## Who may reach which application
+
+A valid proxy cookie is not enough. On every request the verify endpoint
+checks three things:
+
+1. **The host is one of the signed-in person's organisation's protected hosts,
+   and it is enabled.** The host comes from `X-Forwarded-Host`, which the proxy
+   must send (the configurations below do). If a person from another
+   organisation, an unregistered host or a disabled host is involved, or no
+   host is named, the answer is `403` and no identity headers are sent.
+2. **The access policy allows it**, keyed `proxy:<host>` the way a relying party
+   is keyed by its client ID. So a rule like
+
+   ```yaml
+   policies:
+     - name: payroll-is-for-finance
+       when: {client: "proxy:payroll.example.com"}
+       require: {groups: [finance], mfa: true}
+   ```
+
+   decides who reaches that application. A refusal is `403`, with the rule's
+   message in `X-Signari-Reason`.
+3. **Network, device and travel conditions are treated as unknown, so they
+   refuse.** The request that reaches the verify endpoint comes from the proxy,
+   so its address is the proxy's own. A `from_networks` rule checked against it
+   would let everybody in from inside the office the proxy sits in.
+
+`403` and not `401`: the person is signed in and may not reach this
+application. A `401` would send them back to sign in, the IdP would let them
+through, and they would arrive here again in a loop.
+
+Until October 2026 none of this was checked. Anyone who could sign in anywhere
+in the deployment passed every protected host of every organisation.
+
 ## What the app receives
 
 | Header | Contents |

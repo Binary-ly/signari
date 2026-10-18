@@ -669,7 +669,7 @@ func scimTargetForGroups(ctx context.Context, conn *pgx.Conn, slug string) (scim
 // tying the code to the application that asked for it.
 func clientSetPKCE(ctx context.Context, conn *pgx.Conn, clientID string, required bool) error {
 	if clientID == "" {
-		return fmt.Errorf("give -client")
+		return fmt.Errorf("give -client-id")
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {

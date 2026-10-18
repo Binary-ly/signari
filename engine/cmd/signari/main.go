@@ -2373,7 +2373,7 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 	if len(res.ClientsNowRequiringPKCE) > 0 {
 		fmt.Printf("\nThese confidential clients now require PKCE, as every client here does.\n" +
 			"An application that sends no code_challenge is refused at its first sign-in;\n" +
-			"for one that cannot send it, run `signari client set-pkce -client <id> -require-pkce=false`:\n")
+			"for one that cannot send it, run `signari client set-pkce -client-id <id> -require-pkce=false`:\n")
 		for _, id := range res.ClientsNowRequiringPKCE {
 			fmt.Printf("  %s\n", id)
 		}
@@ -8138,7 +8138,7 @@ func warnUndriven(f *flow.File) {
 // only the absence of a proof.
 func clientSetDPoP(ctx context.Context, conn *pgx.Conn, clientID string, required bool) error {
 	if clientID == "" {
-		return fmt.Errorf("give -client")
+		return fmt.Errorf("give -client-id")
 	}
 	tag, err := conn.Exec(ctx, `
 		UPDATE core.clients SET dpop_bound_access_tokens = $2, updated_at = now()
@@ -8159,7 +8159,7 @@ func clientSetDPoP(ctx context.Context, conn *pgx.Conn, clientID string, require
 
 func clientSetExchangeContainment(ctx context.Context, conn *pgx.Conn, clientID string, on bool) error {
 	if clientID == "" {
-		return fmt.Errorf("give -client")
+		return fmt.Errorf("give -client-id")
 	}
 	tag, err := conn.Exec(ctx, `
 		UPDATE core.clients SET exchange_requires_audience_match = $2, updated_at = now()

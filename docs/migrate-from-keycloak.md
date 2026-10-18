@@ -28,7 +28,7 @@ applies to. Check each one before you switch DNS, and opt out any that cannot
 send a challenge:
 
 ```sh
-signari client set-pkce -client <id> -require-pkce=false
+signari client set-pkce -client-id <id> -require-pkce=false
 ```
 
 You can also send `PATCH /admin/clients/{id}` with `{"require_pkce": false}`.

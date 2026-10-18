@@ -110,7 +110,7 @@ absence of a proof.
 > from the client that do not contain the DPoP header**.
 
 ```sh
-signari client set-dpop -client payments -dpop-bound
+signari client set-dpop -client-id payments -dpop-bound
 ```
 
 Every token request from `payments` that carries no DPoP proof is then refused
@@ -139,7 +139,7 @@ issuing bearer tokens, and the belief is what it acts on.
 To unpin:
 
 ```sh
-signari client set-dpop -client payments
+signari client set-dpop -client-id payments
 ```
 
 The default is `false` because §5.2 says it is, and because any other default

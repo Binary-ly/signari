@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"signari.dev/engine/internal/clientip"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/config"
 	"signari.dev/engine/internal/kerberos"
@@ -1549,6 +1550,17 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		return fmt.Errorf("SIGNARI_MFA_FAILURE_LIMIT: %w", err)
 	}
 	srv.SetFactorFailureLimit(failureLimit)
+
+	// The client address behind a reverse proxy. Fatal when inconsistent, for
+	// the same reason as the limit above: a deployment that named its proxies
+	// wrongly and started anyway would share one rate-limit bucket among every
+	// client while believing it did not.
+	ips, err := clientip.Parse(os.Getenv("SIGNARI_CLIENT_IP_SOURCE"),
+		os.Getenv("SIGNARI_TRUSTED_PROXIES"))
+	if err != nil {
+		return err
+	}
+	srv.SetClientIPResolver(ips)
 
 	// OpenID Federation keys, loaded only if this instance has any.
 	//

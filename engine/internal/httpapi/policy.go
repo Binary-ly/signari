@@ -178,14 +178,14 @@ func (s *Server) checkAccessPolicy(ctx context.Context, r *http.Request,
 	return &d
 }
 
-// clientIP extracts the caller's address for a network condition.
+// clientIP extracts the caller's address for a network condition or a budget.
 //
-// From the socket, NOT from X-Forwarded-For. A header any caller can set is not
-// a location -- honouring it would let anybody claim to be inside the office
-// network by adding one line to their request. Deployments behind a proxy need
-// the proxy to be trusted and the address taken from a configured position in
-// the chain, which is a decision an operator has to make explicitly rather than
-// something to guess at here.
+// From r.RemoteAddr, which withClientIP has already resolved: the socket, or,
+// behind a proxy the operator named in SIGNARI_TRUSTED_PROXIES, the rightmost
+// hop of the forwarding chain that is not one of those proxies. Never a header
+// read here. A header any caller can set is not a location, and honouring it
+// would let anybody claim to be inside the office network, or spend somebody
+// else's budget, by adding one line to their request.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

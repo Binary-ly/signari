@@ -75,6 +75,12 @@ tls:
 extraEnv: {}
   # SIGNARI_SMTP_HOST: smtp.example.com
   # SIGNARI_AUDIT_WEBHOOK_URL: https://siem.example.com/ingest
+  #
+  # Behind an ingress, name it, or every client shares the ingress's address
+  # for rate limits, captcha and network policy (docs/configuration.md,
+  # "Behind a reverse proxy"). The engine logs a warning when this is missing.
+  # SIGNARI_TRUSTED_PROXIES: 10.42.0.0/16   # the ingress controller's pod CIDR
+  # SIGNARI_CLIENT_IP_SOURCE: x-forwarded-for
 
 resources:
   requests:

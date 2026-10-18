@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/captcha"
+	"signari.dev/engine/internal/clientip"
 	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/fidomds"
@@ -167,11 +168,22 @@ type Server struct {
 	// factor off. Zero -- a Server built as a literal -- means the NIST ceiling;
 	// read through failureLimit().
 	factorFailureLimit int
+
+	// clientIPs decides which address a request came from (see withClientIP).
+	// nil reads the socket, which is right when nothing is in front.
+	clientIPs *clientip.Resolver
+	// unconfiguredProxyWarning fires the warning about forwarding headers
+	// arriving with no trusted proxy configured, once per process.
+	unconfiguredProxyWarning sync.Once
 }
 
 // SetFactorFailureLimit supplies how many consecutive wrong codes disable a
 // second factor, already checked by store.FactorFailureLimit.
 func (s *Server) SetFactorFailureLimit(n int) { s.factorFailureLimit = n }
+
+// SetClientIPResolver supplies how the client address is read behind a proxy,
+// from SIGNARI_CLIENT_IP_SOURCE and SIGNARI_TRUSTED_PROXIES.
+func (s *Server) SetClientIPResolver(r *clientip.Resolver) { s.clientIPs = r }
 
 func (s *Server) failureLimit() int {
 	if s.factorFailureLimit <= 0 {
@@ -377,7 +389,9 @@ func (s *Server) Routes() http.Handler {
 		// small next to labels that are always "other".
 		inner = s.metrics.Middleware(inner)
 	}
-	return s.withCorrelation(s.withRecovery(s.withSecurityHeaders(s.withCORS(inner))))
+	// withClientIP outermost, so the correlation log line, the recovery log
+	// line and everything inside them name the same client.
+	return s.withClientIP(s.withCorrelation(s.withRecovery(s.withSecurityHeaders(s.withCORS(inner)))))
 }
 
 // recordingMux is an http.ServeMux that also declares each pattern to the
@@ -707,9 +721,10 @@ const (
 func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool {
 	ctx := r.Context()
 
-	// The address comes from the socket, never from a header. X-Forwarded-For is
-	// set by whoever sends it, so honouring it here would let an attacker spend
-	// somebody else's budget and keep their own.
+	// The address withClientIP resolved, never a header read here.
+	// X-Forwarded-For is set by whoever sends it, so honouring it from anyone but
+	// a named proxy would let an attacker spend somebody else's budget and keep
+	// their own.
 	ip := clientIP(r)
 	if ip == "" {
 		ip = "unknown"

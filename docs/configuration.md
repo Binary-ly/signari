@@ -77,6 +77,37 @@ effect at all.
 | `SIGNARI_INSECURE_ISSUER` | `1` permits an `http://` issuer. Development only |
 | `SIGNARI_PROXY_COOKIE_DOMAIN` | Parent domain for the forward-auth cookie |
 
+## Behind a reverse proxy
+
+| | |
+|---|---|
+| `SIGNARI_TRUSTED_PROXIES` | Comma-separated addresses or CIDR prefixes of the proxies in front of the engine, such as the ingress controller's pod network |
+| `SIGNARI_CLIENT_IP_SOURCE` | `socket` (default), `x-forwarded-for` or `forwarded` (the RFC 7239 header) |
+
+Every per-address decision keys on the client address: the sign-in and
+client-secret failure budgets, the captcha, and access-policy network rules.
+Behind a proxy the socket address belongs to the proxy, so with neither
+variable set every client shares one bucket. Twenty wrong passwords from anyone
+then lock everyone out for five minutes, and two hundred wrong client secrets
+lock out every confidential client.
+
+When a request arrives from one of the trusted proxies, the client is the
+rightmost address in the forwarding chain that is not itself a trusted proxy.
+The entries to the left of it were written by the client and are ignored. A
+request from any other address is answered by its socket, whatever headers it
+carries. A hop that is not an address ends the walk and the proxy's address is
+used.
+
+The engine refuses to start on a configuration that protects nothing: a prefix
+that covers every address (`0.0.0.0/0`, `::/0`), a header source with no
+trusted proxy, or trusted proxies with no header to read. When forwarding
+headers arrive from a private or loopback address and no proxy is trusted, it
+logs one warning saying so.
+
+```sh
+SIGNARI_TRUSTED_PROXIES=10.42.0.0/16 SIGNARI_CLIENT_IP_SOURCE=x-forwarded-for signari serve
+```
+
 ## Mail
 
 Without a host and a from-address, recovery links and email codes are **written

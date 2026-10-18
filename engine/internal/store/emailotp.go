@@ -94,13 +94,13 @@ func IssueEmailOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string) (code
 }
 
 func issueEmailCode(ctx context.Context, tx pgx.Tx, userID, purpose string) (code, address string, err error) {
-	var lastSent, verifiedAt *time.Time
+	var lastSent, verifiedAt, disabledAt *time.Time
 	var proved string
 	var pending *string
 	err = tx.QueryRow(ctx, `
-		SELECT address, pending_address, verified_at, last_sent_at
+		SELECT address, pending_address, verified_at, last_sent_at, disabled_at
 		FROM core.email_otp_credentials
-		WHERE user_id = $1::uuid FOR UPDATE`, userID).Scan(&proved, &pending, &verifiedAt, &lastSent)
+		WHERE user_id = $1::uuid FOR UPDATE`, userID).Scan(&proved, &pending, &verifiedAt, &lastSent, &disabledAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", "", ErrNoEmailOTP
@@ -109,7 +109,9 @@ func issueEmailCode(ctx context.Context, tx pgx.Tx, userID, purpose string) (cod
 	}
 	switch purpose {
 	case emailCodeSignIn:
-		if verifiedAt == nil {
+		// A disabled factor is sent nothing: a code it would refuse is only
+		// more for somebody to guess at.
+		if verifiedAt == nil || disabledAt != nil {
 			return "", "", ErrNoEmailOTP
 		}
 		address = proved
@@ -143,10 +145,39 @@ func issueEmailCode(ctx context.Context, tx pgx.Tx, userID, purpose string) (cod
 //
 // A correct code is destroyed whether or not the rest of the sign-in succeeds: a
 // one-time code that survives its use is not one-time. An enrolment code is
-// refused here, and so is any code while the address is unproved.
-func VerifyEmailOTP(ctx context.Context, tx pgx.Tx, userID, submitted string) (bool, error) {
-	ok, _, err := checkEmailCode(ctx, tx, userID, submitted, emailCodeSignIn)
-	return ok, err
+// refused here, and so is any code while the address is unproved or the factor
+// disabled.
+//
+// guessed reports a wrong guess against a live sign-in code, for the caller to
+// charge with RecordEmailOTPFailure once it knows no other factor took the
+// code -- as RecordTOTPFailure is charged. A right code resets the count.
+func VerifyEmailOTP(ctx context.Context, tx pgx.Tx, userID, submitted string) (ok, guessed bool, err error) {
+	ok, _, guessed, err = checkEmailCode(ctx, tx, userID, submitted, emailCodeSignIn)
+	return ok, guessed, err
+}
+
+// RecordEmailOTPFailure counts one consecutive wrong guess at the email
+// factor, and disables it at ceiling (0136).
+//
+// Each code allowed five guesses and a new one came every minute or so, with
+// nothing counting across codes: about 960 guesses a day at a six-digit code,
+// indefinitely, where an authenticator app is switched off at the ceiling.
+func RecordEmailOTPFailure(ctx context.Context, tx pgx.Tx, userID string, ceiling int) (FactorFailure, error) {
+	var f FactorFailure
+	err := tx.QueryRow(ctx, `
+		UPDATE core.email_otp_credentials
+		SET failed_attempts = failed_attempts + 1,
+		    disabled_at = CASE WHEN failed_attempts + 1 >= $2 THEN now() END,
+		    updated_at = now()
+		WHERE user_id = $1::uuid AND disabled_at IS NULL
+		RETURNING disabled_at IS NOT NULL`, userID, ceiling).Scan(&f.Disabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FactorFailure{}, nil
+	}
+	if err != nil {
+		return FactorFailure{}, fmt.Errorf("recording an email code failure: %w", err)
+	}
+	return f, nil
 }
 
 // ConfirmEmailOTPEnrolment checks a submitted ENROLMENT code. On success the
@@ -156,41 +187,46 @@ func VerifyEmailOTP(ctx context.Context, tx pgx.Tx, userID, submitted string) (b
 // somewhere else, so the caller can tell that address it has stopped receiving
 // codes -- the one notice an attacker who redirected the factor cannot suppress.
 func ConfirmEmailOTPEnrolment(ctx context.Context, tx pgx.Tx, userID, submitted string) (ok bool, replaced string, err error) {
-	return checkEmailCode(ctx, tx, userID, submitted, emailCodeEnrol)
+	ok, replaced, _, err = checkEmailCode(ctx, tx, userID, submitted, emailCodeEnrol)
+	return ok, replaced, err
 }
 
-func checkEmailCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose string) (bool, string, error) {
+func checkEmailCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose string) (
+	ok bool, replaced string, guessed bool, err error) {
+
+	const none = false
 	var storedHash []byte
-	var expires, verifiedAt *time.Time
+	var expires, verifiedAt, disabledAt *time.Time
 	var attempts int
 	var codePurpose, pending *string
 	var proved string
-	err := tx.QueryRow(ctx, `
-		SELECT code_hash, code_expires_at, attempts, code_purpose, address, pending_address, verified_at
+	err = tx.QueryRow(ctx, `
+		SELECT code_hash, code_expires_at, attempts, code_purpose, address, pending_address,
+		       verified_at, disabled_at
 		FROM core.email_otp_credentials WHERE user_id = $1::uuid FOR UPDATE`, userID).
-		Scan(&storedHash, &expires, &attempts, &codePurpose, &proved, &pending, &verifiedAt)
+		Scan(&storedHash, &expires, &attempts, &codePurpose, &proved, &pending, &verifiedAt, &disabledAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return false, "", nil
+			return false, "", none, nil
 		}
-		return false, "", err
+		return false, "", none, err
 	}
 	if storedHash == nil || expires == nil || time.Now().After(*expires) {
-		return false, "", nil
+		return false, "", none, nil
 	}
 	if codePurpose == nil || *codePurpose != purpose {
-		return false, "", nil
+		return false, "", none, nil
 	}
-	if purpose == emailCodeSignIn && verifiedAt == nil {
-		return false, "", nil
+	if purpose == emailCodeSignIn && (verifiedAt == nil || disabledAt != nil) {
+		return false, "", none, nil
 	}
 	if purpose == emailCodeEnrol && pending == nil {
-		return false, "", nil
+		return false, "", none, nil
 	}
 	if attempts >= EmailOTPMaxAttempts {
 		// Budget gone. The code stays dead until a new one is requested, which is
 		// what stops five guesses becoming five hundred.
-		return false, "", nil
+		return false, "", none, nil
 	}
 
 	sum := sha256.Sum256([]byte(submitted))
@@ -198,35 +234,36 @@ func checkEmailCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose s
 		if _, uerr := tx.Exec(ctx, `
 			UPDATE core.email_otp_credentials SET attempts = attempts + 1, updated_at = now()
 			WHERE user_id = $1::uuid`, userID); uerr != nil {
-			return false, "", uerr
+			return false, "", none, uerr
 		}
-		return false, "", nil
+		// A guess at the factor itself, for the caller to charge across codes.
+		return false, "", purpose == emailCodeSignIn, nil
 	}
 
 	if purpose == emailCodeSignIn {
 		if _, err := tx.Exec(ctx, `
 			UPDATE core.email_otp_credentials
 			SET code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, attempts = 0,
-			    updated_at = now()
+			    failed_attempts = 0, updated_at = now()
 			WHERE user_id = $1::uuid`, userID); err != nil {
-			return false, "", err
+			return false, "", none, err
 		}
-		return true, "", nil
+		return true, "", none, nil
 	}
 
-	var replaced string
 	if verifiedAt != nil && !strings.EqualFold(proved, *pending) {
 		replaced = proved
 	}
+	// Proving an address again is how a disabled factor comes back.
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.email_otp_credentials
 		SET address = pending_address, pending_address = NULL, verified_at = now(),
 		    code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, attempts = 0,
-		    updated_at = now()
+		    failed_attempts = 0, disabled_at = NULL, updated_at = now()
 		WHERE user_id = $1::uuid`, userID); err != nil {
-		return false, "", err
+		return false, "", none, err
 	}
-	return true, replaced, nil
+	return true, replaced, none, nil
 }
 
 // newNumericCode returns n digits, uniformly.

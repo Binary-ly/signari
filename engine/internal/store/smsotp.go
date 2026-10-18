@@ -152,12 +152,12 @@ func IssueSMSOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string) (code, 
 }
 
 func issueSMSCode(ctx context.Context, tx pgx.Tx, userID, purpose string) (code, number string, err error) {
-	var lastSent, verifiedAt *time.Time
+	var lastSent, verifiedAt, disabledAt *time.Time
 	var proved string
 	var pending *string
 	err = tx.QueryRow(ctx, `
-		SELECT number, pending_number, verified_at, last_sent_at FROM core.sms_otp_credentials
-		WHERE user_id = $1::uuid FOR UPDATE`, userID).Scan(&proved, &pending, &verifiedAt, &lastSent)
+		SELECT number, pending_number, verified_at, last_sent_at, disabled_at FROM core.sms_otp_credentials
+		WHERE user_id = $1::uuid FOR UPDATE`, userID).Scan(&proved, &pending, &verifiedAt, &lastSent, &disabledAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", "", ErrNoSMSOTP
@@ -166,7 +166,9 @@ func issueSMSCode(ctx context.Context, tx pgx.Tx, userID, purpose string) (code,
 	}
 	switch purpose {
 	case smsCodeSignIn:
-		if verifiedAt == nil {
+		// A disabled factor is sent nothing: a code it would refuse is only
+		// more for somebody to guess at, and costs a message.
+		if verifiedAt == nil || disabledAt != nil {
 			return "", "", ErrNoSMSOTP
 		}
 		number = proved
@@ -200,10 +202,34 @@ func issueSMSCode(ctx context.Context, tx pgx.Tx, userID, purpose string) (code,
 //
 // A correct code is destroyed whether or not the rest of the sign-in succeeds:
 // a one-time code that survives its use is not one-time. An enrolment code is
-// refused here, and so is any code while no number is proved.
-func VerifySMSOTP(ctx context.Context, tx pgx.Tx, userID, submitted string) (bool, error) {
-	ok, _, err := checkSMSCode(ctx, tx, userID, submitted, smsCodeSignIn)
-	return ok, err
+// refused here, and so is any code while no number is proved or the factor is
+// disabled.
+//
+// guessed reports a wrong guess against a live sign-in code, for the caller to
+// charge with RecordSMSOTPFailure, as VerifyEmailOTP does.
+func VerifySMSOTP(ctx context.Context, tx pgx.Tx, userID, submitted string) (ok, guessed bool, err error) {
+	ok, _, guessed, err = checkSMSCode(ctx, tx, userID, submitted, smsCodeSignIn)
+	return ok, guessed, err
+}
+
+// RecordSMSOTPFailure counts one consecutive wrong guess at the SMS factor, and
+// disables it at ceiling (0136), as RecordEmailOTPFailure does for email.
+func RecordSMSOTPFailure(ctx context.Context, tx pgx.Tx, userID string, ceiling int) (FactorFailure, error) {
+	var f FactorFailure
+	err := tx.QueryRow(ctx, `
+		UPDATE core.sms_otp_credentials
+		SET failed_attempts = failed_attempts + 1,
+		    disabled_at = CASE WHEN failed_attempts + 1 >= $2 THEN now() END,
+		    updated_at = now()
+		WHERE user_id = $1::uuid AND disabled_at IS NULL
+		RETURNING disabled_at IS NOT NULL`, userID, ceiling).Scan(&f.Disabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FactorFailure{}, nil
+	}
+	if err != nil {
+		return FactorFailure{}, fmt.Errorf("recording an SMS code failure: %w", err)
+	}
+	return f, nil
 }
 
 // ConfirmSMSOTPEnrolment checks a submitted ENROLMENT code. On success the
@@ -213,41 +239,46 @@ func VerifySMSOTP(ctx context.Context, tx pgx.Tx, userID, submitted string) (boo
 // somewhere else, so the caller can tell that number it has stopped receiving
 // codes -- the one notice somebody who redirected the factor cannot suppress.
 func ConfirmSMSOTPEnrolment(ctx context.Context, tx pgx.Tx, userID, submitted string) (ok bool, replaced string, err error) {
-	return checkSMSCode(ctx, tx, userID, submitted, smsCodeEnrol)
+	ok, replaced, _, err = checkSMSCode(ctx, tx, userID, submitted, smsCodeEnrol)
+	return ok, replaced, err
 }
 
-func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose string) (bool, string, error) {
+func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose string) (
+	ok bool, replaced string, guessed bool, err error) {
+
+	const none = false
 	var storedHash []byte
-	var expires, verifiedAt *time.Time
+	var expires, verifiedAt, disabledAt *time.Time
 	var attempts int
 	var codePurpose, pending *string
 	var proved string
-	err := tx.QueryRow(ctx, `
-		SELECT code_hash, code_expires_at, attempts, code_purpose, number, pending_number, verified_at
+	err = tx.QueryRow(ctx, `
+		SELECT code_hash, code_expires_at, attempts, code_purpose, number, pending_number,
+		       verified_at, disabled_at
 		FROM core.sms_otp_credentials WHERE user_id = $1::uuid FOR UPDATE`, userID).
-		Scan(&storedHash, &expires, &attempts, &codePurpose, &proved, &pending, &verifiedAt)
+		Scan(&storedHash, &expires, &attempts, &codePurpose, &proved, &pending, &verifiedAt, &disabledAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return false, "", nil
+			return false, "", none, nil
 		}
-		return false, "", err
+		return false, "", none, err
 	}
 	if storedHash == nil || expires == nil || time.Now().After(*expires) {
-		return false, "", nil
+		return false, "", none, nil
 	}
 	if codePurpose == nil || *codePurpose != purpose {
-		return false, "", nil
+		return false, "", none, nil
 	}
-	if purpose == smsCodeSignIn && verifiedAt == nil {
-		return false, "", nil
+	if purpose == smsCodeSignIn && (verifiedAt == nil || disabledAt != nil) {
+		return false, "", none, nil
 	}
 	if purpose == smsCodeEnrol && pending == nil {
-		return false, "", nil
+		return false, "", none, nil
 	}
 	if attempts >= SMSOTPMaxAttempts {
 		// Budget gone. The code stays dead until a new one is requested, which
 		// is what stops five guesses becoming five hundred.
-		return false, "", nil
+		return false, "", none, nil
 	}
 
 	sum := sha256.Sum256([]byte(submitted))
@@ -255,25 +286,26 @@ func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose str
 		if _, uerr := tx.Exec(ctx, `
 			UPDATE core.sms_otp_credentials SET attempts = attempts + 1, updated_at = now()
 			WHERE user_id = $1::uuid`, userID); uerr != nil {
-			return false, "", uerr
+			return false, "", none, uerr
 		}
-		return false, "", nil
+		// A guess at the factor itself, for the caller to charge across codes.
+		return false, "", purpose == smsCodeSignIn, nil
 	}
 
 	if purpose == smsCodeSignIn {
 		if _, err := tx.Exec(ctx, `
 			UPDATE core.sms_otp_credentials
 			SET code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, attempts = 0,
-			    updated_at = now()
+			    failed_attempts = 0, updated_at = now()
 			WHERE user_id = $1::uuid`, userID); err != nil {
-			return false, "", err
+			return false, "", none, err
 		}
-		return true, "", nil
+		return true, "", none, nil
 	}
 
 	// The proof that the number belongs to the person enrolling it rather than
-	// to whoever their typo reached.
-	var replaced string
+	// to whoever their typo reached. Proving a number again is also how a
+	// disabled factor comes back.
 	if verifiedAt != nil && proved != *pending {
 		replaced = proved
 	}
@@ -281,11 +313,11 @@ func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose str
 		UPDATE core.sms_otp_credentials
 		SET number = pending_number, pending_number = NULL, verified_at = now(),
 		    code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, attempts = 0,
-		    updated_at = now()
+		    failed_attempts = 0, disabled_at = NULL, updated_at = now()
 		WHERE user_id = $1::uuid`, userID); err != nil {
-		return false, "", err
+		return false, "", none, err
 	}
-	return true, replaced, nil
+	return true, replaced, none, nil
 }
 
 // RemoveSMSOTP deletes the factor.

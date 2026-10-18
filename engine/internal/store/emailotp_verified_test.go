@@ -124,7 +124,7 @@ func TestAnEmailEnrolmentCodeCannotSignInAndASignInCodeCannotEnrol(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := VerifyEmailOTP(ctx, tx, userID, enrolCode); ok {
+	if ok, _, _ := VerifyEmailOTP(ctx, tx, userID, enrolCode); ok {
 		t.Fatal("a code sent to an address being enrolled satisfied a sign-in challenge")
 	}
 
@@ -150,10 +150,10 @@ func TestAnEmailSignInCodeIsSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := VerifyEmailOTP(ctx, tx, userID, code); err != nil || !ok {
+	if ok, _, err := VerifyEmailOTP(ctx, tx, userID, code); err != nil || !ok {
 		t.Fatalf("a correct sign-in code was refused (ok=%v err=%v)", ok, err)
 	}
-	if ok, _ := VerifyEmailOTP(ctx, tx, userID, code); ok {
+	if ok, _, _ := VerifyEmailOTP(ctx, tx, userID, code); ok {
 		t.Fatal("a sign-in code was accepted twice")
 	}
 }

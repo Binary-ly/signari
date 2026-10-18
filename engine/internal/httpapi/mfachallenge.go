@@ -403,6 +403,12 @@ func (s *Server) factorsDisabled(ctx context.Context, orgID, userID string, disa
 		case factorRecoveryCodes:
 			err = s.notifyAccount(ctx, userID, tr.Text("mail.recoverycodes.disabled.subject"),
 				tr.Text("mail.recoverycodes.disabled.body"), tr.Text("sms.recoverycodes.disabled"))
+		case factorEmailOTP:
+			err = s.notifyAccount(ctx, userID, tr.Text("mail.emailotp.disabled.subject"),
+				tr.Text("mail.emailotp.disabled.body"), tr.Text("sms.emailotp.disabled"))
+		case factorSMSOTP:
+			err = s.notifyAccount(ctx, userID, tr.Text("mail.smsotp.disabled.subject"),
+				tr.Text("mail.smsotp.disabled.body"), tr.Text("sms.smsotp.disabled"))
 		}
 		if err != nil {
 			s.log.Error("telling the account holder a factor was disabled",
@@ -415,6 +421,8 @@ func (s *Server) factorsDisabled(ctx context.Context, orgID, userID string, disa
 const (
 	factorTOTP          = "totp"
 	factorRecoveryCodes = "recovery_codes"
+	factorEmailOTP      = "email_otp"
+	factorSMSOTP        = "sms_otp"
 )
 
 // secondFactorResult is what one presented code did.
@@ -463,7 +471,8 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 	// Email code next. Checked before recovery codes because it is the factor a
 	// user who chose it will actually be holding -- and because a recovery code
 	// is the last resort, not the second guess.
-	if ok, eerr := store.VerifyEmailOTP(ctx, tx, userID, strings.TrimSpace(code)); eerr != nil {
+	ok, emailGuessed, eerr := store.VerifyEmailOTP(ctx, tx, userID, strings.TrimSpace(code))
+	if eerr != nil {
 		return res, eerr
 	} else if ok {
 		return secondFactorResult{AMR: []string{"otp"}, OK: true}, nil
@@ -478,7 +487,8 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 	// from an authenticator app in every record and every policy decision --
 	// documenting the weakness and then erasing it in the one field that
 	// machines read.
-	if ok, serr := store.VerifySMSOTP(ctx, tx, userID, strings.TrimSpace(code)); serr != nil {
+	ok, smsGuessed, serr := store.VerifySMSOTP(ctx, tx, userID, strings.TrimSpace(code))
+	if serr != nil {
 		return res, serr
 	} else if ok {
 		return secondFactorResult{AMR: []string{oauth.AMRSMS}, OK: true}, nil
@@ -513,6 +523,27 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 		}
 		if f.Disabled {
 			res.Disabled = append(res.Disabled, factorRecoveryCodes)
+		}
+	}
+	// Email and SMS codes are charged as TOTP is: once nothing took the code,
+	// and only where a live code was guessed at. They had no ceiling across
+	// codes at all -- about 960 guesses a day, indefinitely.
+	if emailGuessed {
+		f, err := store.RecordEmailOTPFailure(ctx, tx, userID, s.failureLimit())
+		if err != nil {
+			return res, err
+		}
+		if f.Disabled {
+			res.Disabled = append(res.Disabled, factorEmailOTP)
+		}
+	}
+	if smsGuessed {
+		f, err := store.RecordSMSOTPFailure(ctx, tx, userID, s.failureLimit())
+		if err != nil {
+			return res, err
+		}
+		if f.Disabled {
+			res.Disabled = append(res.Disabled, factorSMSOTP)
 		}
 	}
 	return res, nil

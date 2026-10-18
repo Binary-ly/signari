@@ -84,7 +84,7 @@ func TestAnotherNumberIsPendingUntilProved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ok, err := store.VerifySMSOTP(ctx, tx, f.userID, enrolCode)
+	ok, _, err := store.VerifySMSOTP(ctx, tx, f.userID, enrolCode)
 	_ = tx.Rollback(ctx)
 	if err != nil || ok {
 		t.Fatalf("an enrolment code passed as a sign-in code (%v, %v)", ok, err)

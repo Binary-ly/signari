@@ -51,10 +51,19 @@ attacker would accumulate guesses against a widening set.
 | lifetime | 10 minutes |
 | resend interval | 60 seconds |
 | attempts per code | 5 |
+| wrong codes in a row, across codes | 100, then the factor is switched off |
 | stored as | SHA-256, compared in constant time |
 
 A correct code is destroyed on use, whether or not the rest of the sign-in
 succeeds. A one-time code that survives its use is not one-time.
+
+**A hundred wrong codes in a row switch the factor off**, the same ceiling an
+authenticator app has. The holder is told, and no more codes are sent or
+accepted until an address is proved again. The account still asks for a second
+factor, and the way in is a recovery code or another method. Five guesses per
+code, with a new code every minute and nothing counting across codes, came to
+about 960 guesses a day at a six-digit code, indefinitely. A right code resets
+the count.
 
 The database enforces that a pending code always has an expiry
 (`email_otp_code_has_expiry`), so a row cannot carry a code that never dies.

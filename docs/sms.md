@@ -145,6 +145,7 @@ password exactly which number to attack at the mobile operator.
 | code lifetime | **5 minutes** — shorter than email's ten; a text arrives in seconds and sits on a lock screen |
 | resend interval | 60s — every message costs money, and a resend button with no floor spends somebody else's budget |
 | attempts per code | 5 |
+| wrong codes in a row, across codes | 100, then the factor is switched off and the holder told, as an authenticator app is. No code is sent or accepted until a number is proved again. A right code resets the count |
 | one live code | "send another" replaces, never accumulates |
 
 A misconfigured gateway is **fatal at startup**, not a silent fallback to no

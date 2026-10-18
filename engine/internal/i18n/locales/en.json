@@ -289,5 +289,11 @@
   "sms.emailotp.enrolled": "Email was just set up as a second sign-in step on your account. If this was not you, sign in and review your sign-in methods.",
   "mail.emailotp.moved.subject": "Sign-in codes will no longer come to this address",
   "mail.emailotp.moved.body": "The second sign-in step on your account was just moved to a different email address. Codes will no longer be sent here.\n\nIf you did this, there is nothing to do.\n\nIf you did NOT, someone else has access to your account and has taken over your sign-in codes. Change your password now and contact your administrator.",
-  "sms.smsotp.moved": "Sign-in codes for your account will no longer be texted to this number: they were just moved to another one. If this was not you, change your password now and contact your administrator."
+  "sms.smsotp.moved": "Sign-in codes for your account will no longer be texted to this number: they were just moved to another one. If this was not you, change your password now and contact your administrator.",
+  "mail.emailotp.disabled.subject": "Email sign-in codes were switched off after too many wrong codes",
+  "mail.emailotp.disabled.body": "Too many wrong codes in a row were entered for the email sign-in step on your account, so it has been switched off and no more codes will be sent or accepted.\n\nOnly someone who already entered your password can reach that step. If it was not you, change your password now.\n\nTo sign in, use a recovery code or another sign-in method, then set up email codes again. If you have no other way in, contact your administrator.",
+  "sms.emailotp.disabled": "Email sign-in codes on your account were switched off after too many wrong codes. If this was not you, change your password now.",
+  "mail.smsotp.disabled.subject": "Text message sign-in codes were switched off after too many wrong codes",
+  "mail.smsotp.disabled.body": "Too many wrong codes in a row were entered for the text message sign-in step on your account, so it has been switched off and no more codes will be sent or accepted.\n\nOnly someone who already entered your password can reach that step. If it was not you, change your password now.\n\nTo sign in, use a recovery code or another sign-in method, then set up text message codes again. If you have no other way in, contact your administrator.",
+  "sms.smsotp.disabled": "Text message sign-in codes on your account were switched off after too many wrong codes. If this was not you, change your password now."
 }

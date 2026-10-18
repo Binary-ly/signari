@@ -68,6 +68,14 @@ deployment that followed the documentation as far as the CLI therefore stopped
 at the sign-in page: the person authenticated, and was then told the
 application they came from was not a registered protected host.
 
+A host belongs to **one organisation in the whole deployment**. Registering a
+host that another organisation already protects is refused: `409 host_taken`
+from the admin API, and an error from the CLI and from `signari apply`. The
+verify endpoint lets in people from the organisation that registered the host.
+When two organisations could both register it, the second one's administrator
+could let their own people into the first one's application, with identity
+headers carrying whatever the second organisation said about them.
+
 **3. Identity headers must come from the auth response, never from the client.**
 This is the classic forward-auth vulnerability. If the proxy passes the client's
 `X-Forwarded-User` through, anyone can claim to be anyone by setting a header.

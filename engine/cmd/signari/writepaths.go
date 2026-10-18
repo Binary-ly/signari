@@ -1053,6 +1053,11 @@ func proxyAddHost(ctx context.Context, conn *pgx.Conn, orgID, raw string) error 
 	err = proxyHostWrite(ctx, conn, orgID, host, "proxy.host_added", func(tx pgx.Tx) (int64, error) {
 		tag, err := tx.Exec(ctx,
 			`INSERT INTO core.proxy_hosts (org_id, host) VALUES ($1::uuid, $2)`, orgID, host)
+		if err != nil && strings.Contains(err.Error(), "proxy_hosts_host_key") {
+			return 0, fmt.Errorf("%s is already a protected host, in this or another "+
+				"organisation; a host is unique across the deployment, because verify "+
+				"admits whoever's organisation registered it", host)
+		}
 		if err != nil && strings.Contains(err.Error(), "duplicate key") {
 			return 0, fmt.Errorf("%s is already a protected host in that organisation", host)
 		}

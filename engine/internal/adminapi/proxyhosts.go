@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/store"
@@ -81,11 +82,21 @@ func (s *Server) putProxyHost(w http.ResponseWriter, r *http.Request) {
 			Detail: map[string]any{"host": host, "enabled": enabled},
 		})
 	})
+	var pg *pgconn.PgError
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
 		return
 	case errors.Is(err, errCrossOrg):
 		writeCrossOrg(w, err)
+		return
+	case errors.As(err, &pg) && pg.ConstraintName == "proxy_hosts_host_key":
+		// Held by another organisation (or by this one in other letters). A
+		// host is unique across the deployment: verify admits whoever's
+		// organisation registered it.
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":  "host_taken",
+			"detail": "this host is already registered as a protected host",
+		})
 		return
 	case err != nil:
 		s.log.Error("setting a protected host", "org_id", orgID, "err", err)

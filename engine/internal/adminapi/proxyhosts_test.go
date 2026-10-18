@@ -10,6 +10,50 @@ import (
 	"time"
 )
 
+// A host one organisation protects cannot be registered by another: verify
+// admits whoever's organisation registered the host, so a second registration
+// let another tenant's people through the first tenant's proxy (0134).
+func TestAHostAnotherOrganisationProtectsIsRefused(t *testing.T) {
+	s, _ := newTestServer(t)
+	org := anyOrgID(t, s)
+	var other string
+	if err := s.db.QueryRow(context.Background(), `
+		INSERT INTO core.organizations (instance_id, slug, display_name)
+		SELECT instance_id, 'ph-' || substr(gen_random_uuid()::text, 1, 8), 'Other'
+		  FROM core.organizations WHERE id = $1::uuid RETURNING id::text`, org).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	host := fmt.Sprintf("payroll-%d.example.com", time.Now().UnixNano())
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.proxy_hosts WHERE host = $1`, host)
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.organizations WHERE id = $1::uuid`, other)
+	})
+	put := func(orgID, h string) (int, map[string]any) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		s.Routes().ServeHTTP(rec, adminReq(t, http.MethodPut,
+			"/admin/organizations/"+orgID+"/proxy-hosts", fmt.Sprintf(`{"host":%q}`, h), ""))
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+	if code, body := put(org, host); code != http.StatusOK {
+		t.Fatalf("the first registration answered %d %v", code, body)
+	}
+	if code, body := put(other, host); code != http.StatusConflict || body["error"] != "host_taken" {
+		t.Fatalf("another organisation registering the same host answered %d %v, want 409 host_taken",
+			code, body)
+	}
+	var owners int
+	if err := s.db.QueryRow(context.Background(),
+		`SELECT count(DISTINCT org_id) FROM core.proxy_hosts WHERE lower(host) = $1`, host).Scan(&owners); err != nil {
+		t.Fatal(err)
+	}
+	if owners != 1 {
+		t.Fatalf("the host is registered by %d organisations", owners)
+	}
+}
+
 // Protected hosts through the admin API: register, list, disable, remove, each
 // bumping the configuration version and leaving an audit record.
 func TestProtectedHostsCanBeManagedThroughTheAdminAPI(t *testing.T) {

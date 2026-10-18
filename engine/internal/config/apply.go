@@ -541,6 +541,12 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 			INSERT INTO core.proxy_hosts (org_id, host, enabled) VALUES ($1::uuid, $2, $3)
 			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled`,
 			orgID, h.Host, enabled); err != nil {
+			var pg *pgconn.PgError
+			if errors.As(err, &pg) && pg.ConstraintName == "proxy_hosts_host_key" {
+				return fmt.Errorf("proxy host %q is registered by another organisation; a "+
+					"protected host is unique across the deployment, because verify admits "+
+					"whoever's organisation registered it", h.Host)
+			}
 			return fmt.Errorf("proxy host %q: %w", h.Host, err)
 		}
 	}

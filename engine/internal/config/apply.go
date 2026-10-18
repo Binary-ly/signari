@@ -2,11 +2,13 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/store"
@@ -491,6 +493,12 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 			RETURNING id::text`,
 			orgID, sp.EntityID, firstNonEmpty(sp.Name, sp.EntityID), nameID,
 			enabled).Scan(&id); err != nil {
+			var pg *pgconn.PgError
+			if errors.As(err, &pg) && pg.ConstraintName == "saml_providers_entity_id_key" {
+				return fmt.Errorf("saml provider %q is registered by another organisation; "+
+					"entity IDs are unique across the deployment, because an AuthnRequest "+
+					"names only its entity ID and the SSO endpoint names no organisation", sp.EntityID)
+			}
 			return fmt.Errorf("saml provider %q: %w", sp.EntityID, err)
 		}
 		if _, err := tx.Exec(ctx,

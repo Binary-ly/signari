@@ -2708,7 +2708,9 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return fmt.Errorf("a service provider with entity id %q is already registered "+
-				"in that organisation", entityID)
+				"in this deployment. Entity IDs are unique across organisations: an "+
+				"AuthnRequest names only its entity ID and the SSO endpoint names no "+
+				"organisation, so two registrations would be answered at random", entityID)
 		}
 		return err
 	}

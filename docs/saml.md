@@ -19,6 +19,24 @@ Then point the application at `https://auth.example.com/saml/metadata`.
 | `GET /saml/sso` | HTTP-Redirect binding |
 | `POST /saml/sso` | HTTP-POST binding |
 
+## One entity ID, one organisation
+
+An entity ID can be registered by only one organisation in a deployment.
+`saml add-sp` and `signari apply` both refuse a second registration and say
+which rule they are applying, and migration 0130 will not run over a database
+that already has a duplicate. The reason is that an AuthnRequest names only its
+issuer, a WS-Federation `wtrealm` does the same, and these endpoints do not name
+an organisation either. With two rows for one entity ID, each request was
+answered with one of them at random. The other tenant's certificate checked the
+signature, its ACS URLs received the assertion and its attribute release decided
+what went into it.
+
+The second registration is refused rather than the sign-in. If ambiguity were
+refused at sign-in, any tenant could switch off another tenant's SAML sign-in
+just by registering the same entity ID. A SaaS application that sends the same
+entity ID for every customer can therefore serve only one organisation per
+deployment, until the endpoints carry the organisation (see *Not yet built*).
+
 ## What was built against, and why it looks like this
 
 Before writing any of it, the published advisories for the three most-used Go
@@ -412,6 +430,10 @@ key and IV.
   before then.
 - **Decrypting inbound encrypted `NameID`s.** We encrypt outbound assertions; we
   do not accept encrypted identifiers in inbound requests.
+- **Per-organisation SSO endpoints and IdP entity IDs.** These would let two
+  tenants register the same service provider, which is the usual shape of a
+  SaaS application. Until they exist, an entity ID belongs to one organisation
+  (see above).
 
 Each is absent from the metadata document as well as from this list — the rule
 that an endpoint enters discovery only once it works applies here too.

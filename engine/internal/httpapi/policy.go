@@ -12,7 +12,6 @@ import (
 
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/policy"
-	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/risk"
 	"signari.dev/engine/internal/store"
 )
@@ -99,6 +98,10 @@ func (s *Server) reloadPolicies(ctx context.Context) {
 // checkAccessPolicy evaluates the policy for one authorization.
 //
 // Returns nil when access is permitted, or a message for the person refused.
+//
+// r is the person's own request. It is nil at a refresh-token grant, where the
+// request is the application's server's and carries nothing about where the
+// person is: the decision is then made as policy.Request.Refresh describes.
 func (s *Server) checkAccessPolicy(ctx context.Context, r *http.Request,
 	orgID, clientID, userID, scope string, mfa bool, amr []string) *policy.Decision {
 
@@ -120,30 +123,33 @@ func (s *Server) checkAccessPolicy(ctx context.Context, r *http.Request,
 			Message: "Access could not be checked. Please try again."}
 	}
 
-	// The travel check runs only when a policy actually asks about it. Resolving
-	// a position and querying history on every authorization would be work done
-	// for nothing in the deployments -- most of them -- whose policy never
-	// mentions it.
-	impossible := false
-	if f.UsesImpossibleTravel() {
-		impossible = s.impossibleTravel(ctx, userID, clientIP(r))
-	}
-
-	// Device posture, likewise only when a rule asks. Evaluating it always would
-	// verify a certificate chain on every authorization for the deployments --
-	// most of them -- whose policy never mentions a device.
-	var device posture.State
-	if f.UsesDevicePosture() {
-		device = s.posture.Evaluate(r)
-		s.log.Debug("device posture", "managed", device.Managed,
-			"compliant", device.Compliant, "source", device.Source)
-	}
-
-	d := f.Evaluate(policy.Request{
+	req := policy.Request{
 		Client: clientID, Scope: scope, Groups: groups, MFA: mfa, AMR: amr,
-		IP: clientIP(r), ImpossibleTravel: impossible,
-		DeviceManaged: device.Managed, DeviceCompliant: device.Compliant,
-	})
+		Refresh: r == nil,
+	}
+	if r != nil {
+		req.IP = clientIP(r)
+
+		// The travel check runs only when a policy actually asks about it.
+		// Resolving a position and querying history on every authorization
+		// would be work done for nothing in the deployments -- most of them --
+		// whose policy never mentions it.
+		if f.UsesImpossibleTravel() {
+			req.ImpossibleTravel = s.impossibleTravel(ctx, userID, req.IP)
+		}
+
+		// Device posture, likewise only when a rule asks. Evaluating it always
+		// would verify a certificate chain on every authorization for the
+		// deployments -- most of them -- whose policy never mentions a device.
+		if f.UsesDevicePosture() {
+			device := s.posture.Evaluate(r)
+			s.log.Debug("device posture", "managed", device.Managed,
+				"compliant", device.Compliant, "source", device.Source)
+			req.DeviceManaged, req.DeviceCompliant = device.Managed, device.Compliant
+		}
+	}
+
+	d := f.Evaluate(req)
 	if d.Allowed {
 		return nil
 	}

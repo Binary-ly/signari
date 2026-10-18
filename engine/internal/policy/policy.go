@@ -153,6 +153,17 @@ type Request struct {
 	// conditions are covered by the file's own tests without an MDM.
 	DeviceManaged   bool `yaml:"device_managed"`
 	DeviceCompliant bool `yaml:"device_compliant"`
+
+	// Refresh is a refresh-token grant: the application's server asking again
+	// for a person who is not there. Who they are is checked again -- groups,
+	// deny rules, the factors their session recorded -- because those can change
+	// after the grant was issued, and a person removed from a group must stop
+	// receiving tokens for what the group admitted them to. Where they are is
+	// not: the network, device and travel conditions describe the browser at
+	// sign-in, were checked then, and the request at hand comes from the
+	// application's server, whose address and lack of a device certificate say
+	// nothing about the person.
+	Refresh bool `yaml:"refresh"`
 }
 
 // Decision is the result.
@@ -363,6 +374,10 @@ func (c Conditions) satisfiedBy(req Request) bool {
 	}
 	if c.MFA && !req.MFA {
 		return false
+	}
+	if req.Refresh {
+		// The where-from conditions below were checked at sign-in; see Request.
+		return true
 	}
 	if c.DeviceManaged && !req.DeviceManaged {
 		return false

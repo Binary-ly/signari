@@ -24,6 +24,7 @@ const (
 	StatusNoPassive         = "urn:oasis:names:tc:SAML:2.0:status:NoPassive"
 	StatusAuthnFailed       = "urn:oasis:names:tc:SAML:2.0:status:AuthnFailed"
 	StatusInvalidNameID     = "urn:oasis:names:tc:SAML:2.0:status:InvalidNameIDPolicy"
+	StatusRequestDenied     = "urn:oasis:names:tc:SAML:2.0:status:RequestDenied"
 	confirmationBearer      = "urn:oasis:names:tc:SAML:2.0:cm:bearer"
 	AuthnContextPassword    = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
 	AuthnContextMFA         = "urn:oasis:names:tc:SAML:2.0:ac:classes:MultiFactorAuthentication"

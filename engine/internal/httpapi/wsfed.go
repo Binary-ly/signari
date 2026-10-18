@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -111,12 +112,6 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mfa, amr := sessionFactors(ctx, s.db, sid)
-	if pd := s.checkAccessPolicy(ctx, r, orgID, realm, userID, "openid", mfa, amr); pd != nil {
-		writeError(w, http.StatusForbidden, "access_denied", pd.Message)
-		return
-	}
-
 	// The assertion is produced by the SAML path and lifted out of the response
 	// it comes wrapped in.
 	//
@@ -124,9 +119,15 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request) {
 	// the whole reason this endpoint is safe: the audience restriction, subject
 	// confirmation, authentication context and attribute mapping are the ones
 	// the SAML side already gets right, and encryption keeps working without a
-	// second code path knowing about it.
+	// second code path knowing about it. The access policy is applied there too,
+	// for both protocols.
 	v := &saml.Validated{ACSURL: dest}
-	doc, _, err := s.issueSAMLAssertion(ctx, v, p, sid, userID, orgID)
+	doc, _, err := s.issueSAMLAssertion(ctx, r, v, p, sid, userID, orgID)
+	var denied *policyDenied
+	if errors.As(err, &denied) {
+		writeError(w, http.StatusForbidden, "access_denied", denied.d.Message)
+		return
+	}
 	if err != nil {
 		s.log.Error("building the ws-federation assertion", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")

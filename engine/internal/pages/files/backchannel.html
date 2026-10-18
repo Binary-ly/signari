@@ -1,6 +1,7 @@
 {{define "title"}}{{T "backchannel.title"}}{{end}}
 {{define "content"}}
 <h1>{{T "backchannel.title"}}</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 {{if not .Requests}}
 <p>{{T "backchannel.empty"}}</p>
 {{else}}

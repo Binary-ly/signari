@@ -135,6 +135,28 @@ func PendingBackchannelFor(ctx context.Context, db *pgxpool.Pool, userID string)
 	return out, rows.Err()
 }
 
+// PendingBackchannelRequest loads one person's waiting request, scoped in the
+// query exactly as PendingBackchannelFor and DecideBackchannel are: theirs,
+// pending, unexpired. Anything else is ErrDeviceCodeUnknown.
+func PendingBackchannelRequest(ctx context.Context, db *pgxpool.Pool, id, userID string) (*DeviceAuthorization, error) {
+	d := &DeviceAuthorization{}
+	err := db.QueryRow(ctx, `
+		SELECT id::text, org_id::text, client_id, scope, resource, status, user_id::text,
+		       interval_s, expires_at
+		FROM core.device_authorizations
+		WHERE id = $1::uuid AND user_id = $2::uuid AND flow = 'ciba'
+		  AND status = 'pending' AND expires_at > now()`, id, userID).
+		Scan(&d.ID, &d.OrgID, &d.ClientID, &d.Scope, &d.Resource, &d.Status, &d.UserID,
+			&d.Interval, &d.ExpiresAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrDeviceCodeUnknown
+		}
+		return nil, err
+	}
+	return d, nil
+}
+
 // DecideBackchannel records one person's answer to one request.
 //
 // The user id is part of the WHERE clause, not checked by the caller

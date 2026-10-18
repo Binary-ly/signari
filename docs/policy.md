@@ -108,6 +108,31 @@ decorative behind a proxy that strips the address.
 **Group membership and MFA are read at decision time**, not from anything cached
 on the session — the same rule the group claims follow.
 
+## Where it is asked
+
+At every way into a relying party or service provider, keyed by its client ID or
+SAML entity ID:
+
+| | |
+|---|---|
+| the authorization endpoint, the portal, remote access | when the person signs in |
+| SAML and WS-Federation | in the one function that signs the assertion for both. A SAML refusal goes back to the service provider as `RequestDenied`; WS-Federation answers `403` |
+| the device grant and CIBA | when the person presses approve. A refusal is recorded as a denial, so the waiting device or client is told `access_denied` rather than left polling |
+| every refresh | before the new tokens are minted. A refusal is `invalid_grant`, and the refresh token is **not** revoked: lifting the rule, or restoring the membership, restores the grant |
+
+Until October 2026 the list stopped at the first row and WS-Federation. A deny
+rule for a client blocked its browser sign-ins and still let through its
+smart-TV, SAML and CIBA ones, plus every refresh of a token it had already
+issued.
+
+**A refresh re-checks who the person is, not where they are.** Groups, deny
+rules and the factors the session recorded are evaluated again. Someone removed
+from the group a rule demands stops receiving tokens at the next refresh. The
+network, device and travel conditions are skipped (`refresh: true` in a test
+case says the same). They describe the browser at sign-in and were checked
+then. A refresh request comes from the application's server, and that server's
+address and lack of a device certificate say nothing about the person.
+
 ## Verified against the running server
 
 With a rule requiring a `security-cleared` group:

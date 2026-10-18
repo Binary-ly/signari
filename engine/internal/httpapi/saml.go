@@ -13,6 +13,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/store"
 )
@@ -244,7 +245,21 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, acs, err := s.issueSAMLAssertion(ctx, validated, provider, sid, userID, orgID)
+	doc, acs, err := s.issueSAMLAssertion(ctx, r, validated, provider, sid, userID, orgID)
+	var denied *policyDenied
+	if errors.As(err, &denied) {
+		// Told to the service provider as a SAML refusal, at the ACS URL the
+		// request was validated against, so it can show its own page rather
+		// than leave the person on ours with nowhere to go.
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+			Detail: map[string]any{"reason": "access_policy", "rule": denied.d.Rule,
+				"entity_id": provider.EntityID},
+		})
+		s.postSAMLStatus(w, r, validated, provider, saml.StatusRequestDenied, denied.d.Message, relayState)
+		return
+	}
 	if err != nil {
 		s.log.Error("issuing SAML assertion", "entity_id", provider.EntityID, "err", err,
 			"correlation_id", correlationID(ctx))
@@ -253,6 +268,12 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 	}
 	s.postSAMLResponse(w, r, acs, doc, relayState)
 }
+
+// policyDenied is an access-policy refusal, carried as an error so a caller
+// can answer it as a refusal rather than as a failure.
+type policyDenied struct{ d *policy.Decision }
+
+func (e *policyDenied) Error() string { return "refused by the access policy: " + e.d.Message }
 
 // errSPNotUsable is a service provider this session may not receive an
 // assertion for.
@@ -363,8 +384,8 @@ func samlResumeQuery(encoded, relayState, method, originalQuery string) string {
 	return q.Encode()
 }
 
-func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *saml.Provider,
-	sid, userID, orgID string) (doc string, acs string, err error) {
+func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *saml.Validated,
+	p *saml.Provider, sid, userID, orgID string) (doc string, acs string, err error) {
 
 	// Again here, though every caller checks first: this is the one function
 	// that produces a signed assertion for SAML and WS-Federation alike, and
@@ -372,6 +393,16 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 	// later inherits the refusal rather than having to remember it.
 	if err := checkSPUsable(p, orgID); err != nil {
 		return "", "", err
+	}
+
+	// The access policy, keyed by the entity ID as a relying party's is keyed by
+	// its client ID. Here rather than in each handler because SAML was never
+	// checked at all: a deny rule written for a service provider refused
+	// WS-Federation and let the same application's SAML sign-ins through, while
+	// the WS-Federation page said both were gated.
+	mfa, amr := sessionFactors(ctx, s.db, sid)
+	if pd := s.checkAccessPolicy(ctx, r, orgID, p.EntityID, userID, "openid", mfa, amr); pd != nil {
+		return "", "", &policyDenied{d: pd}
 	}
 
 	tx, err := s.db.Begin(ctx)

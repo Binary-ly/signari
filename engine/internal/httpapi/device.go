@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
@@ -304,6 +305,23 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 
 	switch r.PostForm.Get("decision") {
 	case "approve":
+		// The access policy, as at the authorization endpoint. The device grant
+		// is a way to sign a person in to a relying party, and it was the one
+		// that never asked: a deny rule for a client refused its browser
+		// sign-ins and approved its smart-TV ones.
+		mfa, amr := sessionFactors(ctx, s.db, sid)
+		if pd := s.checkAccessPolicy(ctx, r, orgID, d.ClientID, userID, d.Scope, mfa, amr); pd != nil {
+			s.auditDetached(ctx, audit.Event{
+				Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+				ClientID: d.ClientID, CorrelationID: correlationID(ctx),
+				Detail: map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "device"},
+			})
+			// Refused as a denial, so the waiting device is told access_denied
+			// rather than left polling until the code expires.
+			s.refuseDeviceAuthorization(ctx, d)
+			render("", pd.Message, nil)
+			return
+		}
 		if err := store.ApproveDeviceAuthorization(ctx, s.db, d.ID, userID, sid); err != nil {
 			render("", "That request is no longer waiting. Start again on the device.", nil)
 			return
@@ -314,25 +332,32 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		s.releaseCIBAPush(ctx, d)
 		s.renderPage(w, r, "device", map[string]any{"Done": true})
 	case "deny":
-		if err := store.DenyDeviceAuthorization(ctx, s.db, d.ID); err != nil {
-			s.log.Error("denying a device authorization", "err", err)
-		}
-		// §10 notifies on the RESULT, not on approval. A ping client left
-		// polling after a refusal is exactly the wait this mode removes.
-		s.releaseCIBAPing(ctx, d.ID)
-		// A denial has no tokens to push. §10.3 defines the push callback as a
-		// token delivery, so the parked row is dropped rather than delivered
-		// empty. A ping client is told about a refusal because it would otherwise
-		// poll forever; a push client is not waiting on anything it can stop.
-		if err := store.DiscardCIBAPush(ctx, s.db, d.ID); err != nil {
-			s.log.Error("discarding a denied CIBA push", "err", err, "request_id", d.ID)
-		}
+		s.refuseDeviceAuthorization(ctx, d)
 		s.renderPage(w, r, "device", map[string]any{"Denied": true})
 	default:
 		// First POST: the code was right, so show what is being authorised and
 		// ask. The confirmation step is the only place a phished user is told
 		// what they are actually approving.
 		render(oauth.FormatUserCode(typed), "", d)
+	}
+}
+
+// refuseDeviceAuthorization denies a waiting request and tells whoever waits.
+// Shared by a person pressing deny and the access policy refusing an approval,
+// so both end the wait the same way.
+func (s *Server) refuseDeviceAuthorization(ctx context.Context, d *store.DeviceAuthorization) {
+	if err := store.DenyDeviceAuthorization(ctx, s.db, d.ID); err != nil {
+		s.log.Error("denying a device authorization", "err", err)
+	}
+	// §10 notifies on the RESULT, not on approval. A ping client left
+	// polling after a refusal is exactly the wait this mode removes.
+	s.releaseCIBAPing(ctx, d.ID)
+	// A denial has no tokens to push. §10.3 defines the push callback as a
+	// token delivery, so the parked row is dropped rather than delivered
+	// empty. A ping client is told about a refusal because it would otherwise
+	// poll forever; a push client is not waiting on anything it can stop.
+	if err := store.DiscardCIBAPush(ctx, s.db, d.ID); err != nil {
+		s.log.Error("discarding a denied CIBA push", "err", err, "request_id", d.ID)
 	}
 }
 

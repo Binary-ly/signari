@@ -302,7 +302,6 @@ func (s *Server) handleCIBAGrant(w http.ResponseWriter, r *http.Request, clientI
 
 // handleBackchannelRequests shows the person what is waiting for them.
 func (s *Server) handleBackchannelRequests(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/requests"), http.StatusSeeOther)
@@ -313,7 +312,13 @@ func (s *Server) handleBackchannelRequests(w http.ResponseWriter, r *http.Reques
 		s.decideBackchannel(w, r, sid, userID, orgID)
 		return
 	}
+	s.renderBackchannel(w, r, userID, "")
+}
 
+// renderBackchannel lists the requests waiting on one person, with a refusal
+// to explain when there is one.
+func (s *Server) renderBackchannel(w http.ResponseWriter, r *http.Request, userID, refusal string) {
+	ctx := r.Context()
 	pending, err := store.PendingBackchannelFor(ctx, s.db, userID)
 	if err != nil {
 		s.log.Error("listing backchannel requests", "err", err)
@@ -338,8 +343,11 @@ func (s *Server) handleBackchannelRequests(w http.ResponseWriter, r *http.Reques
 			Expires:        expiresIn(printer, time.Until(p.ExpiresAt)),
 		})
 	}
+	// The refusal is rendered with the page's ordinary status: renderPage sets
+	// the frame and content-security headers, and a status written before it
+	// would send the page without them.
 	s.renderPage(w, r, "backchannel", map[string]any{
-		"Requests": rows, "CSRF": csrf, "CSRFField": csrfFormField,
+		"Requests": rows, "CSRF": csrf, "CSRFField": csrfFormField, "Error": refusal,
 	})
 }
 
@@ -377,6 +385,27 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 	id := r.PostForm.Get("id")
 	approve := r.PostForm.Get("decision") == "approve"
 
+	// The access policy, as at the authorization endpoint. CIBA signs a person
+	// in to a relying party like any other grant, and it was one of the ways in
+	// that never asked. A refusal is recorded as a denial, so the client hears
+	// access_denied rather than waiting for the request to expire.
+	refusal := ""
+	if approve {
+		if d, err := store.PendingBackchannelRequest(ctx, s.db, id, userID); err == nil {
+			mfa, amr := sessionFactors(ctx, s.db, sid)
+			if pd := s.checkAccessPolicy(ctx, r, orgID, d.ClientID, userID, d.Scope, mfa, amr); pd != nil {
+				s.auditDetached(ctx, audit.Event{
+					Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+					ClientID: d.ClientID, CorrelationID: correlationID(ctx),
+					Detail: map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "ciba"},
+				})
+				approve, refusal = false, pd.Message
+			}
+		}
+		// Not theirs, decided or expired: DecideBackchannel below refuses it with
+		// the one answer, so nothing here says whether it exists.
+	}
+
 	// The session's user is passed to the store, which puts it in the WHERE
 	// clause. Approving somebody else's request is therefore not something this
 	// handler has to remember to prevent.
@@ -396,6 +425,10 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"request_id": id},
 		})
+	}
+	if refusal != "" {
+		s.renderBackchannel(w, r, userID, refusal)
+		return
 	}
 	http.Redirect(w, r, "/account/requests", http.StatusSeeOther)
 }

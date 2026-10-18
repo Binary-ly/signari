@@ -1383,6 +1383,28 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		scopes = requested
 	}
 
+	// The access policy, again, at every refresh. A person removed from the
+	// group a rule demands, or a client a new deny rule names, used to keep
+	// receiving tokens for as long as the lineage lived -- the policy was asked
+	// once, at the authorization endpoint, and never after. Decided as
+	// policy.Request.Refresh describes: who the person is and what their session
+	// proved, not where the application's server is calling from. Not revoked on
+	// refusal: the next refresh asks again, so restoring the membership restores
+	// the grant.
+	mfa, amr := sessionFactors(ctx, tx, grant.SessionID)
+	if pd := s.checkAccessPolicy(ctx, nil, grant.OrgID, c.ClientID, grant.UserID,
+		strings.Join(scopes, " "), mfa, amr); pd != nil {
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: grant.OrgID, SubjectID: grant.UserID,
+			ClientID: c.ClientID, CorrelationID: correlationID(ctx),
+			Detail: map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "refresh"},
+		})
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "the access policy no longer allows this grant: " + pd.Message,
+			Status:      http.StatusBadRequest})
+		return
+	}
+
 	resp, newHash, err := s.mintFromGrant(ctx, tx, c, grant, scopes)
 	if err != nil {
 		s.log.Error("minting from refresh", "err", err)

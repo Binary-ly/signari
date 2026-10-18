@@ -80,6 +80,9 @@ func (s *Server) handlePasskeySignal(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	creds, err := store.CredentialsForUser(ctx, tx, userID)
+	// A read, and the only one the transaction is for: released before the
+	// relying party is read from the pool.
+	_ = tx.Rollback(ctx)
 	if err != nil {
 		s.log.Error("listing passkeys for a signal", "err", err)
 		writeJSONResponse(w, http.StatusInternalServerError,
@@ -118,7 +121,7 @@ func (s *Server) handlePasskeySignal(w http.ResponseWriter, r *http.Request) {
 	// credential was created with makes every signal a no-op -- silently.
 	var handle []byte
 	var email, username string
-	if err := tx.QueryRow(ctx, `
+	if err := s.db.QueryRow(ctx, `
 		SELECT user_handle, COALESCE(email,''), COALESCE(username,'')
 		FROM core.users WHERE id = $1::uuid AND org_id = $2::uuid`,
 		userID, orgID).Scan(&handle, &email, &username); err != nil {

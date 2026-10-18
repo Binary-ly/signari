@@ -63,7 +63,11 @@ func newFlowCache() *flowCache { return &flowCache{byOrg: map[string]*flow.File{
 // refreshes in the background. The window is already thirty seconds wide by
 // design; making it thirty seconds and a bit, rather than deadlocking, is not a
 // trade worth agonising over.
-func (s *Server) flowFor(ctx context.Context, orgID string, on flow.Designation) *flow.Flow {
+//
+// q is what the first load of the process reads through: the caller's own
+// transaction when it holds one, since loading from the pool there takes a
+// second connection.
+func (s *Server) flowFor(ctx context.Context, q dbReader, orgID string, on flow.Designation) *flow.Flow {
 	s.flows.mu.RLock()
 	fresh := time.Since(s.flows.loadedAt) < flowRefresh
 	everLoaded := s.flows.everLoaded
@@ -75,7 +79,7 @@ func (s *Server) flowFor(ctx context.Context, orgID string, on flow.Designation)
 		// Once per process. Serving the built-in flow here instead would mean the
 		// first sign-ins after a restart silently ran a different journey than the
 		// operator applied.
-		s.reloadFlows(ctx)
+		s.reloadFlowsFrom(ctx, q)
 		s.flows.mu.RLock()
 		f = s.flows.byOrg[orgID]
 		s.flows.mu.RUnlock()
@@ -130,8 +134,12 @@ func (s *Server) refreshFlowsInBackground() {
 	}()
 }
 
-func (s *Server) reloadFlows(ctx context.Context) {
-	rows, err := s.db.Query(ctx, `SELECT org_id::text, document FROM core.sign_in_flows`)
+func (s *Server) reloadFlows(ctx context.Context) { s.reloadFlowsFrom(ctx, s.db) }
+
+// reloadFlowsFrom is reloadFlows reading through q, for the first load a
+// sign-in walk makes while it holds its transaction.
+func (s *Server) reloadFlowsFrom(ctx context.Context, q dbReader) {
+	rows, err := q.Query(ctx, `SELECT org_id::text, document FROM core.sign_in_flows`)
 	if err != nil {
 		s.log.Error("loading sign-in flows", "err", err)
 		return
@@ -356,7 +364,7 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 	userID, orgID string, amr []string, authzQuery string) signInDecision {
 
 	ctx := r.Context()
-	fl := s.flowFor(ctx, orgID, flow.Authentication)
+	fl := s.flowFor(ctx, tx, orgID, flow.Authentication)
 	if fl == nil {
 		// No flow at all, not even the built-in one. Fall through to the session:
 		// the subject has already been proved by the time this is called, so
@@ -414,6 +422,9 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 				// a step, and holding the sign-in for one would be a dead end.
 				continue
 			}
+			// The walk's transaction is abandoned once a stage takes the
+			// response, and released before that stage renders.
+			_ = tx.Rollback(ctx)
 			s.beginPrompt(w, r, userID, orgID, amr, authzQuery, pending[0])
 			return decisionHandled
 
@@ -432,6 +443,7 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			if reason == "" {
 				reason = "Your password needs to be changed before you continue."
 			}
+			_ = tx.Rollback(ctx)
 			s.beginPasswordChange(w, r, userID, orgID, amr, authzQuery, reason)
 			return decisionHandled
 
@@ -482,13 +494,33 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 						"Please contact your administrator.")
 				return decisionHandled
 			}
-			if s.beginMFAChallenge(w, r, userID, orgID, authzQuery, amr) {
-				// Duo is unreachable, the deployment fails open, and there is
-				// nothing else to present. Recorded in this transaction and the
-				// walk carries on to the session, on a password alone and saying so.
+			// Duo is asked through this transaction first, because one answer
+			// keeps the walk in it: unreachable, failing open, and nothing else
+			// to present. Then it is recorded here and the walk carries on to the
+			// session, on a password alone and saying so.
+			probe := s.probeDuo(ctx, tx, userID, orgID)
+			if probe.failsOpen() {
+				if aerr := audit.Write(ctx, tx, audit.Event{
+					Type: "mfa.duo_unavailable", OrgID: orgID, SubjectID: userID,
+					CorrelationID: correlationID(ctx),
+					Detail:        map[string]any{"fail_open": true},
+				}); aerr != nil {
+					s.log.Error("recording Duo's absence", "err", aerr)
+				}
 				s.recordDuoFailOpen(ctx, tx, orgID, userID)
 				waived = true
 				continue
+			}
+			// Every other answer takes over the response: a redirect to Duo, a
+			// refusal, or the code prompt, which sends codes and renders. The
+			// walk's transaction is abandoned on these paths, so it is released
+			// before any of them takes a connection of its own.
+			_ = tx.Rollback(ctx)
+			if s.challengeMFA(w, r, probe, userID, orgID, authzQuery, amr) {
+				// The probe said Duo would not fail open, and challengeMFA acts on
+				// that probe, so this is unreachable. Refused rather than signed
+				// in if it ever is: the transaction is gone.
+				s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 			}
 			return decisionHandled
 
@@ -520,7 +552,9 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 func (s *Server) FlowDemandsMFA(ctx context.Context, db signInReader,
 	orgID, userID, authzQuery string, amr []string) (demanded, enrolled bool) {
 
-	fl := s.flowFor(ctx, orgID, flow.Authentication)
+	// Called before the sign-in's transaction opens, so the first load of the
+	// process, if this is it, reads from the pool as it always did.
+	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
 	if fl == nil {
 		return false, false
 	}
@@ -557,7 +591,7 @@ func (s *Server) BindDemandsMFA(ctx context.Context, orgID, userID string) (bool
 	if err != nil {
 		return false, err
 	}
-	fl := s.flowFor(ctx, orgID, flow.Authentication)
+	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
 	if fl == nil {
 		return enrolled, nil
 	}

@@ -184,18 +184,18 @@ func (s *Server) continueSAMLLogoutChain(w http.ResponseWriter, r *http.Request,
 	}
 
 	if next != nil {
+		// Committed before the next request is built. Building reads the
+		// provider and signs, each on a connection of its own, and both outcomes
+		// below committed the advance anyway.
+		if err := tx.Commit(ctx); err != nil {
+			return false
+		}
 		url, err := s.logoutRedirectFor(ctx, *next, token)
 		if err != nil {
 			s.log.Error("building the next logout request", "entity_id", next.EntityID, "err", err)
 			// Skip the provider we cannot build for rather than stranding the
 			// user mid-chain.
-			if err := tx.Commit(ctx); err == nil {
-				return s.continueSAMLLogoutChain(w, r, token, true)
-			}
-			return false
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return false
+			return s.continueSAMLLogoutChain(w, r, token, true)
 		}
 		http.Redirect(w, r, url, http.StatusSeeOther)
 		return true

@@ -252,7 +252,7 @@ func TestTheFlowIsConsultedAtAll(t *testing.T) {
 	f := newSignInFixture(t)
 
 	// Before: the built-in flow.
-	if fl := f.srv.flowFor(context.Background(), f.orgID, flow.Authentication); fl == nil ||
+	if fl := f.srv.flowFor(context.Background(), f.srv.db, f.orgID, flow.Authentication); fl == nil ||
 		fl.Name != "default-sign-in" {
 		t.Fatalf("expected the built-in flow with no document applied, got %v", fl)
 	}
@@ -271,7 +271,7 @@ flows:
         expect: [password, session]
 `)
 
-	fl := f.srv.flowFor(context.Background(), f.orgID, flow.Authentication)
+	fl := f.srv.flowFor(context.Background(), f.srv.db, f.orgID, flow.Authentication)
 	if fl == nil || fl.Name != "something-else-entirely" {
 		t.Fatalf("the applied flow is not what the server resolved: %v", fl)
 	}
@@ -315,7 +315,7 @@ func TestAStaleFlowCacheDoesNotStarveTheConnectionPool(t *testing.T) {
 			}
 			defer func() { _ = tx.Rollback(ctx) }()
 			// The lookup that used to want a second connection.
-			if fl := f.srv.flowFor(ctx, f.orgID, flow.Authentication); fl == nil {
+			if fl := f.srv.flowFor(ctx, f.srv.db, f.orgID, flow.Authentication); fl == nil {
 				done <- context.Canceled
 				return
 			}

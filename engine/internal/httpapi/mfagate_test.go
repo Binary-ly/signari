@@ -58,7 +58,9 @@ func mfaStageBlock(t *testing.T, src string) string {
 func TestTheMFAStageIsActedOnBySequencer(t *testing.T) {
 	block := mfaStageBlock(t, flowdriveSource(t))
 
-	if !strings.Contains(block, "beginMFAChallenge") {
+	// challengeMFA is beginMFAChallenge with Duo probed through the walk's
+	// transaction (1.45); either name is the challenge.
+	if !strings.Contains(block, "beginMFAChallenge") && !strings.Contains(block, "challengeMFA") {
 		t.Fatal("the mfa stage no longer starts a challenge. Whatever it does now, a " +
 			"flow that demands a second factor is not getting one, and every caller " +
 			"of completeSignIn reaches a session on one factor")

@@ -60,16 +60,85 @@ const (
 // startDuo sends the browser to Duo, or reports why it cannot.
 func (s *Server) startDuo(w http.ResponseWriter, r *http.Request,
 	userID, orgID, authzQuery string, amr []string) duoOutcome {
+	return s.actOnDuo(w, r, s.probeDuo(r.Context(), s.db, userID, orgID),
+		userID, orgID, authzQuery, amr)
+}
 
-	ctx := r.Context()
+// duoProbe is everything startDuo has to know before it acts: whether Duo
+// applies to this person, and whether it answers.
+//
+// Gathered apart from acting so the sign-in walk can ask through its own
+// transaction and act only after releasing it. The walk has to know whether
+// Duo fails open before it lets go, because then it carries on in that
+// transaction; every other outcome takes over the response, and rendering,
+// redirecting and auditing each take a connection of their own.
+type duoProbe struct {
+	kind        duoProbeKind
+	cfg         *duo.Config
+	username    string
+	err         error // what made it broken, or the health check's error
+	otherFactor bool
+	otherErr    error
+}
 
-	cfg, err := store.LoadDuoIntegration(ctx, s.db, orgID, s.cfg.Root,
+type duoProbeKind int
+
+const (
+	probeNotUsed duoProbeKind = iota
+	probeBroken
+	probeUnreachable
+	probeReady
+)
+
+// failsOpen reports the one outcome that lets a sign-in carry on without a
+// second factor.
+func (p duoProbe) failsOpen() bool {
+	return p.kind == probeUnreachable && p.cfg.FailOpen && p.otherErr == nil && !p.otherFactor
+}
+
+// probeDuo reads through q and asks Duo's health endpoint. It writes no
+// response and records nothing.
+func (s *Server) probeDuo(ctx context.Context, q dbReader, userID, orgID string) duoProbe {
+	cfg, err := store.LoadDuoIntegration(ctx, q, orgID, s.cfg.Root,
 		s.duoRedirectURI(), s.cfg.AllowInsecureIssuer)
 	switch {
 	case errors.Is(err, store.ErrNoDuoIntegration):
-		// Not configured. Nothing to do, and the other factors follow.
-		return duoNotUsed
+		return duoProbe{kind: probeNotUsed}
 	case err != nil:
+		return duoProbe{kind: probeBroken, err: err}
+	}
+	username, err := store.DuoUsernameFor(ctx, q, userID)
+	if err != nil {
+		// Not enrolled is ordinary: this organisation uses Duo and this person
+		// has another factor. A real error is not, and is logged.
+		if !errors.Is(err, store.ErrNoDuoEnrollment) {
+			s.log.Error("reading the Duo enrollment", "err", err)
+		}
+		return duoProbe{kind: probeNotUsed}
+	}
+	p := duoProbe{kind: probeReady, cfg: cfg, username: username}
+	if herr := cfg.HealthCheck(ctx); herr != nil {
+		p.kind, p.err = probeUnreachable, herr
+		if cfg.FailOpen {
+			p.otherFactor, p.otherErr = store.HasFactorOtherThanDuo(ctx, q, userID)
+		}
+	}
+	return p
+}
+
+// actOnDuo does what the probe found: sends the browser to Duo, renders the
+// refusal, or reports that the code prompt follows or that Duo failed open.
+func (s *Server) actOnDuo(w http.ResponseWriter, r *http.Request, p duoProbe,
+	userID, orgID, authzQuery string, amr []string) duoOutcome {
+
+	ctx := r.Context()
+	cfg, duoUsername := p.cfg, p.username
+	switch p.kind {
+	case probeNotUsed:
+		// Not configured, or not enrolled. The other factors follow.
+		return duoNotUsed
+	case probeBroken:
+		err := p.err
 		// Configured and BROKEN -- an unsealable secret, an override refused, a
 		// database error. Falling through here was the first version's
 		// behaviour and it is wrong: a user enrolled in Duo and nothing else is
@@ -87,18 +156,9 @@ func (s *Server) startDuo(w http.ResponseWriter, r *http.Request,
 		return duoTookOver
 	}
 
-	duoUsername, err := store.DuoUsernameFor(ctx, s.db, userID)
-	if err != nil {
-		// Not enrolled is ordinary: this organisation uses Duo and this person
-		// has another factor. A real error is not, and is logged.
-		if !errors.Is(err, store.ErrNoDuoEnrollment) {
-			s.log.Error("reading the Duo enrollment", "err", err)
-		}
-		return duoNotUsed
-	}
-
-	// Health check BEFORE the redirect.
-	if herr := cfg.HealthCheck(ctx); herr != nil {
+	// Health checked BEFORE the redirect, by the probe.
+	if p.kind == probeUnreachable {
+		herr := p.err
 		s.log.Error("Duo is unreachable", "err", herr, "fail_open", cfg.FailOpen,
 			"correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
@@ -121,7 +181,7 @@ func (s *Server) startDuo(w http.ResponseWriter, r *http.Request,
 			// So: if anything else can be presented, ask for that. It is a
 			// working factor and it is strictly better than none. Only when
 			// there is nothing else does fail-open actually mean sign them in.
-			other, oerr := store.HasFactorOtherThanDuo(ctx, s.db, userID)
+			other, oerr := p.otherFactor, p.otherErr
 			if oerr != nil {
 				s.log.Error("checking for another factor", "err", oerr)
 				s.federationError(w, r, "Something went wrong. Please try again.")

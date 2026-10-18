@@ -96,7 +96,7 @@ var recoveryDrivableStages = map[flow.StageName]bool{
 func (s *Server) recoveryPlan(ctx context.Context, orgID string, st flow.State,
 	fallback []flow.StageName) (plan []flow.StageName, unsupported flow.StageName, name string) {
 
-	fl := s.flowFor(ctx, orgID, flow.Recovery)
+	fl := s.flowFor(ctx, s.db, orgID, flow.Recovery)
 	plan = fallback
 	if fl != nil {
 		plan = fl.Plan(st)

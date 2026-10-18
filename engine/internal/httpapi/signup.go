@@ -141,7 +141,7 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 	// falls back to the built-in flow, and if even that is unavailable the fixed
 	// sequence below runs so a configuration read cannot stop anyone signing up.
 	orgID, _ := s.defaultOrg(ctx)
-	fl := s.flowFor(ctx, orgID, flow.Enrolment)
+	fl := s.flowFor(ctx, s.db, orgID, flow.Enrolment)
 	state := flow.State{
 		// Presence of the captcha stage in the plan already encodes "a challenge is
 		// required": the default stage is `{stage: captcha, when: captcha_required}`,

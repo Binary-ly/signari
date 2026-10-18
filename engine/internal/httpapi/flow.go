@@ -1852,6 +1852,10 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 		// path that could spend it funnels back through here and would be denied
 		// again, so this is not closing a hole -- it is not leaving a live
 		// credential in a browser we have just refused.
+		//
+		// The walk released the transaction on a denial; said again here, where
+		// the refusal is rendered, so the order cannot drift.
+		_ = tx.Rollback(ctx)
 		s.clearPending(w)
 		s.renderLogin(w, r, authzQuery,
 			"You cannot sign in at the moment. Please contact your administrator.")
@@ -2503,6 +2507,7 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 	}
 	if err := store.CompleteMigration(ctx, tx, pending.UserID, pending.OrgID,
 		pending.Source.ID, hash); err != nil {
+		_ = tx.Rollback(ctx)
 		s.log.Error("completing migration", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 		return true
@@ -2512,6 +2517,7 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"source": pending.Source.DisplayName},
 	}); err != nil {
+		_ = tx.Rollback(ctx)
 		s.log.Error("auditing migration", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 		return true

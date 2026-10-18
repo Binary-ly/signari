@@ -42,8 +42,9 @@ type DuoChallenge struct {
 	AMRSoFar    []string
 }
 
-// LoadDuoIntegration reads and unseals an organisation's Duo configuration.
-func LoadDuoIntegration(ctx context.Context, db *pgxpool.Pool, orgID string,
+// LoadDuoIntegration reads and unseals an organisation's Duo configuration,
+// through a pool or the sign-in walk's own transaction.
+func LoadDuoIntegration(ctx context.Context, db rowQuerier, orgID string,
 	root *keys.RootKey, redirectURI string, allowInsecure bool) (*duo.Config, error) {
 
 	var clientID, apiHost string
@@ -80,7 +81,7 @@ func LoadDuoIntegration(ctx context.Context, db *pgxpool.Pool, orgID string,
 }
 
 // DuoUsernameFor returns the Duo username for a local user.
-func DuoUsernameFor(ctx context.Context, db *pgxpool.Pool, userID string) (string, error) {
+func DuoUsernameFor(ctx context.Context, db rowQuerier, userID string) (string, error) {
 	var name string
 	err := db.QueryRow(ctx,
 		`SELECT duo_username FROM core.duo_enrollments WHERE user_id = $1::uuid`,

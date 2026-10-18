@@ -68,6 +68,14 @@ type pendingClaims struct {
 // had one.
 func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 	userID, orgID, authzQuery string, amr []string) (failedOpen bool) {
+	return s.challengeMFA(w, r, s.probeDuo(r.Context(), s.db, userID, orgID),
+		userID, orgID, authzQuery, amr)
+}
+
+// challengeMFA is beginMFAChallenge with Duo already probed, for a caller that
+// probed while holding a transaction and has since released it.
+func (s *Server) challengeMFA(w http.ResponseWriter, r *http.Request, p duoProbe,
+	userID, orgID, authzQuery string, amr []string) (failedOpen bool) {
 
 	// Duo takes the browser away entirely, so it is offered BEFORE the code
 	// form is rendered -- a page asking for a code the person will never receive
@@ -78,7 +86,7 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 	// When Duo is configured but unreachable and the deployment fails closed,
 	// startDuo renders the refusal itself; when it is not configured, or the
 	// user is not enrolled, the ordinary code prompt follows.
-	switch s.startDuo(w, r, userID, orgID, authzQuery, amr) {
+	switch s.actOnDuo(w, r, p, userID, orgID, authzQuery, amr) {
 	case duoTookOver:
 		return false
 	case duoFailedOpen:
@@ -264,6 +272,8 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 
 	res, err := s.verifySecondFactor(ctx, tx, pending.Subject, code)
 	if err != nil {
+		// Released before rendering, which takes a connection of its own.
+		_ = tx.Rollback(ctx)
 		s.log.Error("verifying second factor", "err", err)
 		s.renderMFA(w, r, pending.Authz, "Something went wrong. Please try again.")
 		return

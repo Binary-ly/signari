@@ -103,6 +103,7 @@ func (s *Server) startFederation(w http.ResponseWriter, r *http.Request, linking
 		ReturnTo: s.validFederationReturn(r.URL.Query().Get("return")),
 	})
 	if err != nil {
+		_ = tx.Rollback(ctx)
 		s.log.Error("beginning federated login", "err", err)
 		s.federationError(w, r, "Something went wrong. Please try again.")
 		return
@@ -171,6 +172,9 @@ func (s *Server) handleFederatedCallback(w http.ResponseWriter, r *http.Request)
 
 	pending, err := store.ConsumeFederatedLogin(ctx, tx, state, c.Value)
 	if err != nil {
+		// Released before the error page: rendering takes a connection of its
+		// own, and this is reached by anybody with a callback URL.
+		_ = tx.Rollback(ctx)
 		s.log.Info("federated callback refused", "slug", slug, "err", err,
 			"correlation_id", correlationID(ctx))
 		s.federationError(w, r, err.Error())
@@ -179,6 +183,7 @@ func (s *Server) handleFederatedCallback(w http.ResponseWriter, r *http.Request)
 	if pending.ProviderID != provider.ID {
 		// The state belongs to a different provider. Continuing would exchange a
 		// code at one provider using state issued for another.
+		_ = tx.Rollback(ctx)
 		s.federationError(w, r, "That sign-in link does not match this provider.")
 		return
 	}
@@ -217,11 +222,17 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// Every refusal from here releases the transaction before rendering, which
+	// takes a connection of its own.
+	fail := func(msg string) {
+		_ = tx.Rollback(ctx)
+		s.federationError(w, r, msg)
+	}
 
 	existing, err := store.FindFederatedIdentity(ctx, tx, provider.ID, ext.Subject)
 	if err != nil {
 		s.log.Error("looking up the federated identity", "err", err)
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		fail("Something went wrong. Please try again.")
 		return
 	}
 
@@ -232,7 +243,7 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		sameEmail, err = store.FindLocalUserByEmail(ctx, tx, provider.OrgID, ext.Email)
 		if err != nil {
 			s.log.Error("checking for a local account with that address", "err", err)
-			s.federationError(w, r, "Something went wrong. Please try again.")
+			fail("Something went wrong. Please try again.")
 			return
 		}
 	}
@@ -244,7 +255,7 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		LinkRequested:          pending.LinkUserID != "",
 	})
 	if err != nil {
-		s.federationError(w, r, "The provider did not return enough information to sign you in.")
+		fail("The provider did not return enough information to sign you in.")
 		return
 	}
 
@@ -262,7 +273,7 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		userID = decision.UserID
 		if err := store.LinkFederatedIdentity(ctx, tx, provider.ID, userID, provider.OrgID, ext, verified); err != nil {
 			s.log.Error("linking the external account", "err", err)
-			s.federationError(w, r, "That account is already linked to someone else.")
+			fail("That account is already linked to someone else.")
 			return
 		}
 		if aerr := audit.Write(ctx, tx, audit.Event{
@@ -278,12 +289,12 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		userID, err = store.CreateUserFromExternal(ctx, tx, provider.OrgID, ext, verified)
 		if err != nil {
 			s.log.Error("creating a user from an external identity", "err", err)
-			s.federationError(w, r, "Something went wrong. Please try again.")
+			fail("Something went wrong. Please try again.")
 			return
 		}
 		if err := store.LinkFederatedIdentity(ctx, tx, provider.ID, userID, provider.OrgID, ext, verified); err != nil {
 			s.log.Error("linking a newly created user", "err", err)
-			s.federationError(w, r, "Something went wrong. Please try again.")
+			fail("Something went wrong. Please try again.")
 			return
 		}
 		if aerr := audit.Write(ctx, tx, audit.Event{
@@ -308,7 +319,7 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		}); aerr == nil {
 			_ = tx.Commit(ctx)
 		}
-		s.federationError(w, r, decision.Reason)
+		fail(decision.Reason)
 		return
 	}
 

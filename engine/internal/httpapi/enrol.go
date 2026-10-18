@@ -209,6 +209,8 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 
 	pending, err := store.LoadTOTPEnrolment(ctx, tx, userID, s.cfg.Root)
 	if errors.Is(err, store.ErrTOTPEnrolmentOld) {
+		// Released before rendering, which takes a connection of its own.
+		_ = tx.Rollback(ctx)
 		csrf, _ := s.csrfToken(w, r)
 		htmlPageHeaders(w)
 		s.renderPage(w, r, "enrol", map[string]any{
@@ -230,6 +232,7 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		// wrong, and locking someone out of enrolment for mistyping would be a
 		// self-inflicted denial of service. Nothing about the user's current
 		// factor has changed.
+		_ = tx.Rollback(ctx)
 		csrf, _ := s.csrfToken(w, r)
 		s.renderPage(w, r, "enrol", map[string]any{
 			"Secret": "", "URI": "", "CSRF": csrf, "CSRFField": csrfFormField,

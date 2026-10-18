@@ -258,6 +258,8 @@ func (s *Server) handleRecoverCancel(w http.ResponseWriter, r *http.Request) {
 			s.log.Error("committing recovery cancellation", "err", err)
 		}
 	}
+	// Released before rendering, which takes a connection of its own.
+	_ = tx.Rollback(ctx)
 
 	// The same page either way. A cancel link is clicked from an email, sometimes
 	// twice, sometimes by a scanner that prefetches it; "already cancelled" would
@@ -283,6 +285,11 @@ func (s *Server) handleResetGet(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	req, lerr := store.LookupRecovery(r.Context(), tx, hash, time.Now())
+	// Released before anything is rendered. Rendering reads the brand from the
+	// pool, and this page is reached with no account, no CSRF token and no
+	// limit: a few dozen requests each holding one connection and waiting for
+	// another stalled every endpoint that needs the database.
+	_ = tx.Rollback(r.Context())
 	csrf, cerr := s.csrfToken(w, r)
 	if cerr != nil {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
@@ -327,14 +334,19 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := s.db.Begin(ctx)
+	// The token is read in a transaction of its own and released at once. What
+	// follows renders, reads the flow and the password history, and hashes, and
+	// none of it may hold a connection while it takes another: this page is
+	// reached by anybody holding a link. The write at the end is its own short
+	// transaction, and ConsumeRecovery re-checks the token there, so a link
+	// spent or cancelled in between is still refused.
+	rtx, err := s.db.Begin(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	req, err := store.LookupRecovery(ctx, tx, hash, time.Now())
+	req, err := store.LookupRecovery(ctx, rtx, hash, time.Now())
+	_ = rtx.Rollback(ctx)
 	if err != nil {
 		// Pending and invalid are shown the same way here. By the time a form is
 		// being submitted, the difference only matters to someone probing.
@@ -383,11 +395,11 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	// the token is validated rather than before. That is the right way round: a
 	// message about password length must not tell somebody holding a stale link
 	// that it was otherwise valid.
-	previous, perr := store.RecentPasswordHashes(ctx, tx, req.UserID, s.pwPolicy.HistoryDepth)
+	previous, perr := store.RecentPasswordHashes(ctx, s.db, req.UserID, s.pwPolicy.HistoryDepth)
 	if perr != nil {
 		s.log.Error("reading password history", "err", perr)
 	}
-	identity, _ := store.EmailForUser(ctx, tx, req.UserID)
+	identity, _ := store.EmailForUser(ctx, s.db, req.UserID)
 	if res, cerr := s.pwPolicy.Check(ctx, password, identity, previous, s.hasher); cerr != nil {
 		s.renderPage(w, r, "reset", map[string]any{
 			"Ready": true, "Token": r.PostForm.Get("token"), "Error": cerr.Error(),
@@ -398,6 +410,20 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 			"correlation_id", correlationID(ctx))
 	}
 
+	newHash, err := s.hasher.Hash(ctx, password)
+	if err != nil {
+		s.log.Error("hashing the new password", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	// The outgoing hash is recorded BEFORE it is replaced. Doing it afterwards
 	// would file the new password as a previous one and refuse it next time.
 	if s.pwPolicy.HistoryDepth > 0 {
@@ -405,14 +431,8 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 			s.log.Error("recording the retired password", "err", err)
 		}
 	}
-
-	newHash, err := s.hasher.Hash(ctx, password)
-	if err != nil {
-		s.log.Error("hashing the new password", "err", err)
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
-	}
 	if err := store.ConsumeRecovery(ctx, tx, req.ID, req.UserID, newHash); err != nil {
+		_ = tx.Rollback(ctx)
 		s.log.Error("consuming recovery", "err", err)
 		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
 		return

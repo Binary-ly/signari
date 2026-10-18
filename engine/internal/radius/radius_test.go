@@ -375,6 +375,46 @@ func TestReplaceClientsRevokesADevice(t *testing.T) {
 	}
 }
 
+// The most specific network wins, whichever order the rows arrive in: a /24
+// controller inside a /16 building is checked against the controller's secret.
+func TestTheMostSpecificNetworkChoosesTheSecret(t *testing.T) {
+	_, building, _ := net.ParseCIDR("10.20.0.0/16")
+	_, controller, _ := net.ParseCIDR("10.20.30.0/24")
+	_, host, _ := net.ParseCIDR("10.20.30.40/32")
+	b := Client{Net: building, Secret: "the-building-secret-long-enough", Name: "building"}
+	c := Client{Net: controller, Secret: "the-controller-secret-long-enough", Name: "controller"}
+	h := Client{Net: host, Secret: "the-one-host-secret-long-enough", Name: "host"}
+
+	for _, order := range [][]Client{{b, c, h}, {h, c, b}, {c, h, b}} {
+		srv, err := New(Config{Clients: order}, &fakeAuth{},
+			slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for ip, want := range map[string]string{
+			"10.20.30.40": "host", "10.20.30.41": "controller", "10.20.1.1": "building",
+		} {
+			got, ok := srv.clientFor(&net.UDPAddr{IP: net.ParseIP(ip), Port: 5000})
+			if !ok || got.Name != want {
+				t.Errorf("order %s,%s,%s: %s matched %q, want %q",
+					order[0].Name, order[1].Name, order[2].Name, ip, got.Name, want)
+			}
+		}
+	}
+
+	// Two entries for one network cannot come from the database; given anyway,
+	// the packet is not checked against whichever came first.
+	dup := Client{Net: controller, Secret: "a-different-secret-long-enough", Name: "dup"}
+	srv, err := New(Config{Clients: []Client{c, dup}}, &fakeAuth{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := srv.clientFor(&net.UDPAddr{IP: net.ParseIP("10.20.30.41"), Port: 5000}); ok {
+		t.Errorf("an ambiguous source matched %q", got.Name)
+	}
+}
+
 // TestReplaceClientsAcceptsEmpty is a correction to a guard that blocked the
 // feature it shipped with.
 //

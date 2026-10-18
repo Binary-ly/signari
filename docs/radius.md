@@ -17,6 +17,11 @@ SIGNARI_RADIUS_ORG_ID=<org-uuid> \
   signari serve
 ```
 
+Networks may overlap. A packet is checked against the **most specific** network
+that contains its source address, so a `/24` for a controller inside a `/16`
+for the building uses the controller's secret. Two entries for exactly the same
+network are refused when they are added.
+
 ## A correction
 
 An earlier version of this page documented `SIGNARI_RADIUS_CLIENTS` as the way to

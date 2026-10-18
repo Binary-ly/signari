@@ -170,7 +170,16 @@ func New(cfg Config, auth Authenticator, log *slog.Logger) (*Server, error) {
 		eapTLS: cfg.EAPTLS, sessions: newEAPSessions()}, nil
 }
 
-// clientFor finds the configured device for a source address.
+// clientFor finds the configured device for a source address: the most
+// specific network that contains it.
+//
+// The first match used to win, in whatever order the rows came back. With a
+// /16 for a building and a /24 for the controller inside it, a packet from the
+// controller was checked against whichever secret the database returned first,
+// so it could be refused for a correct secret, or verified under the
+// building's. A tie at the same length cannot come from the database, which
+// keeps one row per network per organisation; one that arrives anyway is
+// refused rather than resolved by order.
 func (s *Server) clientFor(addr net.Addr) (Client, bool) {
 	host, _, err := net.SplitHostPort(addr.String())
 	if err != nil {
@@ -184,12 +193,24 @@ func (s *Server) clientFor(addr net.Addr) (Client, bool) {
 	clients := s.clients
 	s.clientsMu.RUnlock()
 
+	var best Client
+	bestLen, tied := -1, false
 	for _, c := range clients {
-		if c.Net.Contains(ip) {
-			return c, true
+		if c.Net == nil || !c.Net.Contains(ip) {
+			continue
+		}
+		ones, _ := c.Net.Mask.Size()
+		switch {
+		case ones > bestLen:
+			best, bestLen, tied = c, ones, false
+		case ones == bestLen:
+			tied = true
 		}
 	}
-	return Client{}, false
+	if bestLen < 0 || tied {
+		return Client{}, false
+	}
+	return best, true
 }
 
 // Serve answers packets until the context is cancelled.

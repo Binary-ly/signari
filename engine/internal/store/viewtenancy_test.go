@@ -43,6 +43,20 @@ import (
 // belonging to somebody else? That has no false positives, and it also catches a
 // leak the proxy would miss -- a view over a FORCE-protected table that filters
 // on the wrong column.
+//
+// # The row this test could not see, and why "0 of 3" was wrong
+//
+// logout_deliveries was in fact leaking. core.outbox has no org_id and no
+// row-level security; the view took its tenant from a LEFT JOIN to core.clients.
+// For another tenant's notice the join found no visible client, so the row came
+// back with org_id NULL -- client id, session id, user id and error intact. The
+// first version of this test counted `org_id IS NOT NULL AND org_id <> $1`,
+// which excluded exactly those rows, and the measurement above was taken on a
+// database whose three outbox rows had no client at all.
+//
+// A NULL tenant column is now counted as foreign, and a second pass asserts the
+// opposite direction the console relies on: with no organisation selected,
+// every tenant-scoped view returns nothing.
 func TestNoCoreV1ViewReturnsAnotherTenantsRow(t *testing.T) {
 	dsn := os.Getenv("SIGNARI_TEST_DSN")
 	if dsn == "" {
@@ -122,8 +136,10 @@ func TestNoCoreV1ViewReturnsAnotherTenantsRow(t *testing.T) {
 
 	for _, tg := range targets {
 		var foreign int
+		// IS NULL counts: a row whose tenant column the view could not fill is a
+		// row the view could not scope, not a row that belongs to nobody.
 		q := fmt.Sprintf(
-			`SELECT count(*) FROM core_v1.%s WHERE %s IS NOT NULL AND %s::text <> $1`,
+			`SELECT count(*) FROM core_v1.%s WHERE %s IS NULL OR %s::text <> $1`,
 			tg.view, tg.col, tg.col)
 		if err := conn.QueryRow(ctx, q, org).Scan(&foreign); err != nil {
 			// A view the admin role cannot read at all is not a leak.
@@ -131,11 +147,28 @@ func TestNoCoreV1ViewReturnsAnotherTenantsRow(t *testing.T) {
 			continue
 		}
 		if foreign > 0 {
-			t.Errorf("core_v1.%s returned %d row(s) belonging to another tenant while "+
-				"scoped to %s. A core_v1 view runs with the owner's privileges, and the "+
-				"owner bypasses row-level security unless the table FORCEs it — check "+
-				"that every table this view reads has a policy AND the FORCE",
+			t.Errorf("core_v1.%s returned %d row(s) belonging to another tenant, or to no "+
+				"tenant it could establish, while scoped to %s. A core_v1 view runs with "+
+				"the owner's privileges, and the owner bypasses row-level security unless "+
+				"the table FORCEs it — check that every table this view reads has a policy "+
+				"AND the FORCE, and that an outer join cannot let an unscoped row through",
 				tg.view, foreign, org)
+		}
+	}
+
+	// Fails closed: with no organisation selected, nothing comes back at all.
+	if _, err := conn.Exec(ctx, "SELECT set_config('app.org_id', '', false)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tg := range targets {
+		var n int
+		if err := conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM core_v1.%s`, tg.view)).Scan(&n); err != nil {
+			t.Logf("skipping core_v1.%s: %v", tg.view, err)
+			continue
+		}
+		if n > 0 {
+			t.Errorf("core_v1.%s returned %d row(s) with no organisation selected; a console "+
+				"session that has not set app.org_id must see nothing", tg.view, n)
 		}
 	}
 }

@@ -6,6 +6,7 @@ use App\Models\LogoutDelivery;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Tests\Concerns\SeedsEngineState;
 use Tests\TestCase;
 
 /**
@@ -18,6 +19,8 @@ use Tests\TestCase;
  */
 class LogoutDeliveryTest extends TestCase
 {
+    use SeedsEngineState;
+
     private array $ids = [];
 
     protected function tearDown(): void
@@ -26,15 +29,19 @@ class LogoutDeliveryTest extends TestCase
             DB::connection('maintenance')->table('core.outbox')
                 ->whereIn('id', $this->ids)->delete();
         }
+        $this->removePlantedEngineState();
 
         parent::tearDown();
     }
 
-    /** A client id, read with the boundary respected. */
-    private function seededClient(): ?string
+    /** Runs $fn on the console's own connection inside an organisation context. */
+    private function asOrg(string $orgId, callable $fn): mixed
     {
-        return DB::connection('maintenance')
-            ->selectOne('SELECT client_id FROM core.clients LIMIT 1')?->client_id;
+        return DB::transaction(function () use ($orgId, $fn) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $orgId]);
+
+            return $fn();
+        });
     }
 
     private function queue(string $clientId, int $attempts, ?string $delivered, ?string $error): int
@@ -52,21 +59,19 @@ class LogoutDeliveryTest extends TestCase
 
     public function test_delivery_states_are_distinguished(): void
     {
-        // Read through the MAINTENANCE role, not as the console. The admin has no
-        // privilege on schema core (ADR-004) -- reaching past core_v1 in a test
-        // would be testing something the product cannot do.
-        $client = $this->seededClient();
-        if ($client === null) {
-            $this->markTestSkipped('no seeded client');
-        }
+        // Planted through the maintenance connection; read back as the console,
+        // inside its organisation, because that is the only way the product can
+        // read it (ADR-004).
+        $org = $this->plantOrganisation();
+        $client = $this->plantClient($org);
 
         $delivered = $this->queue($client, 1, '2026-01-01 00:00:00+00', null);
         $pending = $this->queue($client, 2, null, 'connection refused');
         // Eight attempts is the retry budget. Past it, nobody is coming back.
         $parked = $this->queue($client, 8, null, '502 Bad Gateway');
 
-        $rows = LogoutDelivery::query()->whereIn('id', [$delivered, $pending, $parked])
-            ->get()->keyBy('id');
+        $rows = $this->asOrg($org, fn () => LogoutDelivery::query()
+            ->whereIn('id', [$delivered, $pending, $parked])->get()->keyBy('id'));
 
         $this->assertSame('delivered', $rows[$delivered]->status);
         $this->assertSame('pending', $rows[$pending]->status);
@@ -89,25 +94,50 @@ class LogoutDeliveryTest extends TestCase
         (new LogoutDelivery)->save();
     }
 
+    /**
+     * Another tenant's deliveries must be invisible, and so must deliveries with
+     * no organisation context at all.
+     *
+     * core.outbox carries no org_id, so the view takes its tenant from the
+     * client. When it LEFT JOINed core.clients, a row whose client was hidden by
+     * row-level security still came through -- client id, session id, user id
+     * and error intact, only the organisation columns blanked -- so every
+     * tenant's sign-outs were readable from any console session.
+     */
+    public function test_another_tenants_deliveries_are_invisible(): void
+    {
+        $org = $this->plantOrganisation();
+        $mine = $this->queue($this->plantClient($org), 8, null, 'mine');
+
+        $other = $this->plantOrganisation();
+        $theirs = $this->queue($this->plantClient($other), 8, null, 'theirs');
+
+        $visible = $this->asOrg($org, fn () => LogoutDelivery::query()
+            ->whereIn('id', [$mine, $theirs])->pluck('id')->all());
+        $this->assertSame([$mine], $visible, 'another organisation\'s logout delivery is visible');
+
+        $unscoped = LogoutDelivery::query()->whereIn('id', [$mine, $theirs])->count();
+        $this->assertSame(0, $unscoped, 'logout deliveries are visible with no organisation context');
+    }
+
     /** The screen renders with real rows, which the empty state never proves. */
     public function test_screen_renders_with_rows(): void
     {
-        $org = DB::selectOne('SELECT id::text AS id FROM core_v1.organizations LIMIT 1');
-        $client = $this->seededClient();
-        if ($org === null || $client === null) {
-            $this->markTestSkipped('no seeded org or client');
-        }
+        $org = $this->plantOrganisation();
+        $client = $this->plantClient($org);
         $this->queue($client, 8, null, 'connection refused');
 
         $operator = new User;
         $operator->name = 'Operator';
         $operator->email = 'op-'.Str::random(8).'@example.test';
         $operator->password = bcrypt('irrelevant');
-        $operator->org_id = $org->id;
+        $operator->org_id = $org;
         $operator->save();
 
         try {
-            $this->actingAs($operator)->get('/admin/logout-deliveries')->assertOk();
+            $this->actingAs($operator)->get('/admin/logout-deliveries')
+                ->assertOk()
+                ->assertSee('connection refused');
         } finally {
             $operator->delete();
         }

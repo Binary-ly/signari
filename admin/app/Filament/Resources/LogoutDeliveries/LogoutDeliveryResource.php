@@ -29,6 +29,12 @@ class LogoutDeliveryResource extends Resource
         return __('logout delivery');
     }
 
+    // See EngineClientResource: the default plural is English.
+    public static function getPluralModelLabel(): string
+    {
+        return __('Logout deliveries');
+    }
+
     /**
      * The count of PARKED deliveries, not of all rows. A badge showing "1,204
      * logouts" is noise; one showing "3" next to a red dot is the number an

@@ -75,6 +75,7 @@
     "logout configured, no certificate": "تسجيل الخروج مضبوط، بلا شهادة",
     "logout delivery": "تسليم تسجيل الخروج",
     "Logout delivery": "تسليم تسجيل الخروج",
+    "Logout deliveries": "عمليات تسليم تسجيل الخروج",
     "Matched EXACTLY. No wildcards, no trailing-slash tolerance.": "تُطابَق حرفيًا. لا أحرف بدل، ولا تسامح مع الشرطة المائلة في النهاية.",
     "Members": "الأعضاء",
     "Migration": "الترحيل",

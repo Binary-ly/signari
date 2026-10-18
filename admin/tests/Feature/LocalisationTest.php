@@ -72,6 +72,27 @@ class LocalisationTest extends TestCase
             'sidebar stays English while the buttons around it do not.');
     }
 
+    public function test_no_resource_label_is_pluralised_by_an_english_rule(): void
+    {
+        // A resource without getPluralModelLabel gets Filament's default, which
+        // applies an English plural to the translated singular: the Arabic
+        // clients screen was titled "عميلs". A Latin letter joined to an Arabic
+        // one is that. A separate word in Latin script is allowed, because
+        // protocol names such as RADIUS and SAML are written that way.
+        app()->setLocale('ar');
+        $resources = glob(app_path('Filament/Resources/*/*Resource.php'));
+        $this->assertGreaterThan(5, count($resources), 'No resources were found; the glob is wrong.');
+
+        foreach ($resources as $file) {
+            $class = 'App\\Filament\\Resources\\'.basename(dirname($file)).'\\'.basename($file, '.php');
+            foreach (['getModelLabel', 'getPluralModelLabel', 'getNavigationLabel'] as $label) {
+                $this->assertDoesNotMatchRegularExpression(
+                    '/\p{Arabic}[A-Za-z]|[A-Za-z]\p{Arabic}/u', $class::$label(),
+                    "$class::$label() joins Latin and Arabic letters in one word under the Arabic locale.");
+            }
+        }
+    }
+
     public function test_the_arabic_catalogue_covers_every_string_the_console_uses(): void
     {
         $used = $this->stringsPassedThroughTranslation();

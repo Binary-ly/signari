@@ -43,6 +43,12 @@ class EngineUserResource extends Resource
         return __('Users');
     }
 
+    // See EngineClientResource: the default plural is English.
+    public static function getPluralModelLabel(): string
+    {
+        return __('Users');
+    }
+
     public static function table(Table $table): Table
     {
         return EngineUsersTable::configure($table);

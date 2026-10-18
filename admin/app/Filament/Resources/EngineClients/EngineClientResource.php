@@ -29,6 +29,13 @@ class EngineClientResource extends Resource
         return __('Clients');
     }
 
+    // Without it Filament pluralises the translated singular with an English
+    // rule, and the Arabic page title read "عميلs".
+    public static function getPluralModelLabel(): string
+    {
+        return __('Clients');
+    }
+
     protected static ?int $navigationSort = 2;
 
     protected static ?string $recordTitleAttribute = 'client_id';

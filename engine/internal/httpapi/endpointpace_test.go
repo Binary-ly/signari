@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +19,9 @@ func TestPushedRequestsArePacedPerAddress(t *testing.T) {
 	clearOfWindowEdge(t, parPerAddressWindow)
 	addr := freshAddress()
 	push := func() int {
+		// The fixture's client is public, which is what is paced per address.
 		req := httptest.NewRequest(http.MethodPost, "/oauth2/par", strings.NewReader(url.Values{
-			"client_id": {"nobody-" + addr}, "response_type": {"code"},
+			"client_id": {f.clientID}, "response_type": {"code"},
 			"redirect_uri": {"https://rp.test/cb"}, "scope": {"openid"},
 		}.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -36,6 +38,46 @@ func TestPushedRequestsArePacedPerAddress(t *testing.T) {
 	if code := push(); code != http.StatusTooManyRequests {
 		t.Fatalf("pushed request %d from one address in a minute gave %d, want 429",
 			parPerAddressLimit+1, code)
+	}
+}
+
+// A confidential client's pushes come from its own servers, one per sign-in,
+// often from one egress address. Paced per address, it was capped at sixty
+// sign-ins a minute on the endpoint FAPI 2.0 requires; it is paced as itself
+// once it has authenticated.
+func TestAConfidentialClientIsPacedAsItselfNotByAddress(t *testing.T) {
+	f := newTokenFixture(t)
+	clearOfWindowEdge(t, parPerAddressWindow)
+	secret, hash := newTestSecret(t)
+	if _, err := f.pool.Exec(context.Background(), `
+		UPDATE core.clients SET client_type = 'confidential', client_secret_hash = $2
+		 WHERE client_id = $1`, f.clientID, hash); err != nil {
+		t.Fatal(err)
+	}
+	addr := freshAddress()
+	for i := 0; i < 100; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/oauth2/par", strings.NewReader(url.Values{
+			"client_id": {f.clientID}, "client_secret": {secret}, "response_type": {"code"},
+			"redirect_uri": {"https://rp.test/cb"}, "scope": {"openid"},
+			"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
+			"code_challenge_method": {"S256"},
+		}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = addr + ":443"
+		rec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("push %d from one address answered %d: %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	var byAddress int
+	if err := f.pool.QueryRow(context.Background(),
+		`SELECT COALESCE(sum(count), 0) FROM core.rate_limits WHERE bucket_key = $1`,
+		"par:ip:"+addr).Scan(&byAddress); err != nil {
+		t.Fatal(err)
+	}
+	if byAddress != 0 {
+		t.Errorf("an authenticated client's pushes were charged to its address (%d)", byAddress)
 	}
 }
 

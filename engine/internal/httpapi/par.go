@@ -21,11 +21,19 @@ import (
 )
 
 // parPerAddressLimit pushed requests are accepted from one address per
-// parPerAddressWindow. Each authorization a person starts pushes one, so this
-// is far above a browser's need and bounds a script.
+// parPerAddressWindow for a public client. Each authorization a person starts
+// pushes one, so this is far above a browser's need and bounds a script.
+//
+// A confidential client is paced per client instead, once it has
+// authenticated, at parPerClientLimit. Its pushes come from its own servers,
+// often one egress address, and one per sign-in: sixty a minute per address
+// capped a relying party at sixty sign-ins a minute, on the endpoint FAPI 2.0
+// requires. The client ceiling still bounds what a leaked secret can make this
+// server store (each row lives parLifetime).
 const (
 	parPerAddressLimit  = 60
 	parPerAddressWindow = time.Minute
+	parPerClientLimit   = 6000
 )
 
 // Pushed Authorization Requests (RFC 9126).
@@ -78,22 +86,6 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	// because the valid one happened to come first.
 	if err := refuseDuplicateParams(r.PostForm); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-
-	// Paced per address. Every pushed request is a stored row, and a public
-	// client authenticates nothing here, so there was no limit at all on how
-	// many rows a stranger could have this server write.
-	res, rerr := store.AllowRate(ctx, s.db, "par:ip:"+clientIP(r), parPerAddressLimit, parPerAddressWindow)
-	if rerr != nil {
-		s.log.Error("checking the PAR rate limit", "err", rerr)
-		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
-		return
-	}
-	if !res.Allowed {
-		w.Header().Set("Retry-After", "60")
-		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable",
-			"too many pushed requests from this address")
 		return
 	}
 
@@ -152,6 +144,28 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 				Description: "client authentication failed", Status: http.StatusUnauthorized})
 			return
 		}
+	}
+
+	// Paced before anything is stored. Every pushed request is a row, and a
+	// public client authenticates nothing here, so there was once no limit at
+	// all on how many rows a stranger could have this server write: a public
+	// client is paced per address. An authenticated confidential client is
+	// paced as itself (parPerClientLimit). A failed authentication stores
+	// nothing and is metered by the client-authentication budgets.
+	key, limit, why := "par:ip:"+clientIP(r), parPerAddressLimit, "too many pushed requests from this address"
+	if c.Type == "confidential" {
+		key, limit, why = "par:client:"+c.ClientID, parPerClientLimit, "too many pushed requests from this client"
+	}
+	res, rerr := store.AllowRate(ctx, s.db, key, limit, parPerAddressWindow)
+	if rerr != nil {
+		s.log.Error("checking the PAR rate limit", "err", rerr)
+		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
+		return
+	}
+	if !res.Allowed {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable", why)
+		return
 	}
 
 	// Validated NOW, with the same rules the authorization endpoint applies.

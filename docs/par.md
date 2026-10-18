@@ -72,11 +72,21 @@ turning it on breaks any integration that has not moved — but without it PAR i
 advisory: a client that can also send a plain request has gained an option, not
 the integrity property.
 
-**Sixty pushes per address per minute.** Every push is a stored row, and a
-public client authenticates nothing here, so before this a stranger could have
-the server write rows without limit. A browser pushes one per sign-in. A request
-over the limit gets `429` with `Retry-After`, and a database error refuses
-rather than waving the push through.
+**Sixty pushes per address per minute for a public client.** Every push is a
+stored row, and a public client authenticates nothing here, so before this a
+stranger could have the server write rows without limit. A browser pushes one
+per sign-in.
+
+**6,000 per minute per confidential client**, counted after it authenticates
+and not by address. A confidential relying party pushes from its own servers,
+one push per sign-in, often all from one egress address. Counted per address,
+such a client could start only sixty sign-ins a minute, on the endpoint
+FAPI 2.0 requires. The per-client ceiling still limits what a leaked secret can
+make the server store. A failed authentication stores nothing and is metered by
+the client-authentication budgets.
+
+A request over either limit gets `429` with `Retry-After`. A database error is
+refused rather than waved through.
 
 ## Duplicate parameters are refused
 

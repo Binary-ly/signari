@@ -1,9 +1,11 @@
 # Build stage.
 #
-# Pinned to a specific Go minor: the FIPS module version is selected by the
-# toolchain (GOFIPS140), so "whatever go:latest is today" would silently change
-# which cryptographic module the binary carries.
-FROM golang:1.26 AS build
+# Pinned to a specific Go release, not just the minor: the FIPS module version is
+# selected by the toolchain (GOFIPS140), so "whatever go:latest is today" would
+# silently change which cryptographic module the binary carries, and the patch
+# release is the security floor go.mod declares (the official image builds with
+# GOTOOLCHAIN=local, so an older image refuses rather than upgrades).
+FROM golang:1.26.9 AS build
 
 WORKDIR /src
 

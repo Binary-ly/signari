@@ -136,6 +136,28 @@ success is not the same as a tool having run. I had carried "govulncheck is
 clean" forward from an earlier run rather than re-running it after adding SAML,
 federation, SCIM and LDAP.
 
+### Seven weeks later: twelve more, and a module
+
+Nothing had changed in this code; the world had. The next run on go1.26.6 found
+twelve standard-library advisories reachable from the engine and one in a module:
+
+| advisory | package | why it mattered here |
+|---|---|---|
+| GO-2026-6599, GO-2026-6600 | `html/template` | every page we render |
+| GO-2026-6603, GO-2026-6610, GO-2026-6611, GO-2026-6612, GO-2026-6617 | `net/http` (HTTP/2) | memory, CPU and crash in the server; malformed framing accepted by the transport |
+| GO-2026-6605, GO-2026-6613 | `net/http` (HTTP/1) | connection desynchronisation around CONNECT |
+| GO-2026-6608 | `net/textproto`, `mime/multipart` | header-size limit bypass on every request |
+| GO-2026-6609 | `net/http` | unbounded Range header parsing |
+| GO-2026-6607 | `crypto/tls` | malformed ECH extension references |
+| GO-2026-6629 | `golang.org/x/text` | panic in PRECIS, which normalises usernames |
+
+All are fixed in **go1.26.9** and `golang.org/x/text` v0.41.0, now the floor in
+`go.mod` and the build image. The Terraform provider had fifteen of its own
+(gRPC authorization bypass and memory exhaustion among them), fixed by the same
+toolchain and newer `grpc`, `x/net` and `x/text`. A clean result is only true on
+the day it was produced, so CI runs govulncheck on every change rather than this
+page recording a verdict.
+
 
 ## SHA-1 in `internal/saml/encrypt.go`
 

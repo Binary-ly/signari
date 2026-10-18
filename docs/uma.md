@@ -125,7 +125,7 @@ values the person was never shown.
 > parties to pre-registered redirection URIs defined in [RFC6749] unless such
 > URIs are also pre-registered specifically as claims redirection URIs.
 
-    signari client set-claims-redirects -client web \
+    signari client set-claims-redirects -client-id web \
       -claims-redirect-uris https://app.example/uma/return
 
 They are a separate column and a separate list, even when they are the same host.

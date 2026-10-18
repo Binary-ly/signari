@@ -101,7 +101,7 @@ signari rac add \
   -name "Finance desktop" \
   -protocol rdp \
   -host 10.0.4.21 \
-  -username svc-desk \
+  -login svc-desk \
   -password '…' \
   -group finance
 ```

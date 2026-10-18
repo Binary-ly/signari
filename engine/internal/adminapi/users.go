@@ -92,6 +92,21 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hashed BEFORE the write, not inside it. mutateIf holds the configuration
+	// version for the length of its transaction, and every administrative
+	// write queues behind it. Argon2 waits for a slot in the hasher the
+	// sign-in paths share, so under a sign-in flood one user created with a
+	// password held every write in the deployment until a slot came free.
+	var hash string
+	if req.Password != "" {
+		var herr error
+		if hash, herr = s.hasher.Hash(ctx, req.Password); herr != nil {
+			s.log.Error("hashing the password", "err", herr)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "temporarily_unavailable"})
+			return
+		}
+	}
+
 	var userID string
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		// The 64-byte user_handle is generated HERE and never derived from the
@@ -110,10 +125,6 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.Password != "" {
-			hash, herr := s.hasher.Hash(ctx, req.Password)
-			if herr != nil {
-				return fmt.Errorf("hashing the password: %w", herr)
-			}
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
 				VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)`,
@@ -234,6 +245,17 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	pre, preOK := s.readPrecondition(w, r)
 	if !preOK {
 		return
+	}
+
+	// Hashed before the write takes the configuration version, as at create.
+	var newHash string
+	if req.Password != nil {
+		var herr error
+		if newHash, herr = s.hasher.Hash(ctx, *req.Password); herr != nil {
+			s.log.Error("hashing the password", "err", herr)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "temporarily_unavailable"})
+			return
+		}
 	}
 
 	var orgID string
@@ -365,10 +387,6 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 					s.log.Error("recording the retired password", "err", rerr)
 				}
 			}
-			hash, herr := s.hasher.Hash(ctx, *req.Password)
-			if herr != nil {
-				return fmt.Errorf("hashing the password: %w", herr)
-			}
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
 				VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)
@@ -380,7 +398,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 					-- administrator has just deliberately set for them.
 					must_change = false, must_change_reason = NULL,
 					last_breach_check = NULL`,
-				userID, orgID, hash); err != nil {
+				userID, orgID, newHash); err != nil {
 				return err
 			}
 			// An administrator setting a password is a credential change, and every

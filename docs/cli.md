@@ -91,7 +91,7 @@ existed, and the test that exists to catch exactly that could not see this table
 
 | | |
 |---|---|
-| `signari idp add` / `idp list` | An upstream OIDC or OAuth provider |
+| `signari idp add` / `idp list` | An upstream OIDC or OAuth provider. The `-slug` is **unique across the deployment**, not per organisation: it is the sign-in URL (`/login/with/<slug>`), which names no organisation. Two organisations sharing one used to route it at random between them |
 | `signari idp assertions` | Allow or refuse RFC 7523 assertions from a provider. See [jwt-bearer.md](jwt-bearer.md) |
 | `signari idp add-issuer` | Register a key-publishing issuer (GitHub Actions, Kubernetes) for the jwt-bearer grant |
 | `signari client set-assertion-issuers` | Which issuers' assertions a client may exchange. Empty permits none. See [jwt-bearer.md](jwt-bearer.md) |

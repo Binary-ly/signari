@@ -2120,6 +2120,16 @@ func status(ctx context.Context, conn *pgx.Conn) error {
 
 // firstOrg returns the only organisation, creating a default one if the instance
 // has none. Development convenience; the admin API owns this in production.
+// errSlugTaken explains a refused identity provider slug. Unique across the
+// deployment, not per organisation (0129): the slug is the sign-in URL, and the
+// URL names no organisation.
+func errSlugTaken(slug string) error {
+	return fmt.Errorf("the slug %q is already taken by an identity provider in this deployment. "+
+		"Slugs are unique across organisations because they are the sign-in URL "+
+		"(/login/with/%s), which names no organisation; choose another, such as %q",
+		slug, slug, slug+"-"+"yourorg")
+}
+
 func firstOrg(ctx context.Context, conn *pgx.Conn) (string, error) {
 	var orgID string
 	err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).Scan(&orgID)
@@ -2841,8 +2851,7 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 		authorizeURL, tokenURL, userinfoURL, jwksURL,
 		preset.Scopes, allowSignup, allowLinking, trustEmail && kind == "oidc"); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a provider with slug %q is already registered in that "+
-				"organisation", slug)
+			return errSlugTaken(slug)
 		}
 		return err
 	}
@@ -3148,6 +3157,9 @@ func idpAddIssuer(ctx context.Context, conn *pgx.Conn, orgID, slug, name, issuer
 		VALUES ($1::uuid, $2, $3, 'assertion', '', $4, $5, false, false, true, false)
 		RETURNING id::text`, orgID, slug, name, issuer, jwks).Scan(&id)
 	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return errSlugTaken(slug)
+		}
 		return fmt.Errorf("registering the issuer: %w", err)
 	}
 
@@ -5389,8 +5401,7 @@ func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID
 		RETURNING id::text`,
 		orgID, slug, name, allowSignup, allowLinking, trustEmail).Scan(&providerID); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a provider with slug %q is already registered in that "+
-				"organisation", slug)
+			return errSlugTaken(slug)
 		}
 		return err
 	}

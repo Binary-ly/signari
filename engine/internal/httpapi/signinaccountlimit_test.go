@@ -34,6 +34,7 @@ import (
 // the status code reports a hole that is not there.
 func TestOneAccountIsProtectedFromManyAddresses(t *testing.T) {
 	f := newSignInFixture(t)
+	clearOfWindowEdge(t, signInPerAccountWindow)
 
 	if _, err := f.pool.Exec(context.Background(),
 		`DELETE FROM core.rate_limits WHERE bucket_key LIKE 'signin:%'`); err != nil {

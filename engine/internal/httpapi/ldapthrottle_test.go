@@ -129,9 +129,26 @@ func cleanupBuckets(t *testing.T, a *LDAPAuthenticator, ctx context.Context, key
 	})
 }
 
+// clearOfWindowEdge waits, when needed, so that spending a budget does not
+// straddle the edge of a rate-limit window.
+//
+// The windows are fixed, keyed by the clock (store.AllowRate says why), so
+// failures spent across an edge land in two windows and neither reaches the
+// limit. That made the address-budget test fail about one run in a few hundred,
+// in a full suite whose load stretched its twenty binds over a window edge, with
+// a message blaming the limiter. Waiting is cheaper than a test nobody believes.
+func clearOfWindowEdge(t *testing.T, window time.Duration) {
+	t.Helper()
+	const need = 20 * time.Second
+	if left := window - time.Duration(time.Now().UnixNano()%int64(window)); left < need {
+		time.Sleep(left + 250*time.Millisecond)
+	}
+}
+
 // Guessing at ONE ACCOUNT is bounded, however many addresses it comes from.
 func TestAnLDAPBindIsRefusedOnceTheAccountBudgetIsSpent(t *testing.T) {
 	a, ctx := ldapAuthFixture(t)
+	clearOfWindowEdge(t, signInPerAccountWindow)
 	user := uniqueName(t)
 	cleanupBuckets(t, a, ctx, "signin:fail:user:"+strings.ToLower(user))
 
@@ -163,6 +180,7 @@ func TestAnLDAPBindIsRefusedOnceTheAccountBudgetIsSpent(t *testing.T) {
 // reach thirty on any of them. The address budget is the half that stops it.
 func TestAnLDAPBindIsRefusedOnceTheAddressBudgetIsSpent(t *testing.T) {
 	a, ctx := ldapAuthFixture(t)
+	clearOfWindowEdge(t, signInPerIPWindow)
 	peerCtx, ip := peerContext(ctx, t)
 	cleanupBuckets(t, a, ctx, "signin:fail:ip:"+ip)
 
@@ -191,6 +209,7 @@ func TestAnLDAPBindIsRefusedOnceTheAddressBudgetIsSpent(t *testing.T) {
 // the form, because they guard the same credential.
 func TestTheLDAPAndFormBudgetsAreTheSameBudget(t *testing.T) {
 	a, ctx := ldapAuthFixture(t)
+	clearOfWindowEdge(t, signInPerAccountWindow)
 	user := uniqueName(t)
 	key := "signin:fail:user:" + strings.ToLower(user)
 	cleanupBuckets(t, a, ctx, key)
@@ -224,6 +243,7 @@ func TestTheLDAPAndFormBudgetsAreTheSameBudget(t *testing.T) {
 // administrator can see a cause for.
 func TestABindRefusedForThrottlingIsNotChargedAgain(t *testing.T) {
 	a, ctx := ldapAuthFixture(t)
+	clearOfWindowEdge(t, signInPerAccountWindow)
 	user := uniqueName(t)
 	key := "signin:fail:user:" + strings.ToLower(user)
 	cleanupBuckets(t, a, ctx, key)

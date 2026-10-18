@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math/rand/v2"
 	"os"
@@ -69,9 +68,22 @@ func ldapAuthFixture(t *testing.T) (*LDAPAuthenticator, context.Context) {
 		// one on the unknown-user path, and a full-size Argon2 parameter set
 		// times thirty iterations would make the run minutes long for nothing.
 		hasher: passwords.NewHasher(8),
-		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-		via:    "ldap",
+		// Errors go to the test's own log. Charging a failure is logged and not
+		// surfaced -- correctly, for a bind -- so a write that failed under the
+		// suite's load used to leave a budget test reporting "not throttled"
+		// with nothing to say why.
+		log: slog.New(slog.NewTextHandler(testLogWriter{t},
+			&slog.HandlerOptions{Level: slog.LevelError})),
+		via: "ldap",
 	}, ctx
+}
+
+// testLogWriter sends a logger's output to t.Log, so it is shown with a failure.
+type testLogWriter struct{ t *testing.T }
+
+func (w testLogWriter) Write(p []byte) (int, error) {
+	w.t.Log(strings.TrimSpace(string(p)))
+	return len(p), nil
 }
 
 // uniqueName returns an identifier no other run has used.

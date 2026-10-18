@@ -47,20 +47,26 @@ type Verifier struct {
 }
 
 func New() *Verifier {
-	return &Verifier{
-		client: &http.Client{
-			// Short. This sits on the login path, and a slow third party must not
-			// hold a connection open long enough to be a denial of service against
-			// our own sign-in.
-			Timeout: 8 * time.Second,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				// A token endpoint does not redirect. Following one would forward
-				// the user's password to wherever the redirect pointed, which is
-				// the worst possible way to lose a credential.
-				return http.ErrUseLastResponse
-			},
-		},
+	return NewWithClient(&http.Client{})
+}
+
+// NewWithClient is New over a transport the caller chooses, such as a dialer
+// that refuses internal addresses or a test server's trust root. The timeout
+// and the redirect refusal are applied to a copy of it either way, because
+// neither is a matter of configuration.
+func NewWithClient(c *http.Client) *Verifier {
+	cp := *c
+	// Short. This sits on the login path, and a slow third party must not
+	// hold a connection open long enough to be a denial of service against
+	// our own sign-in.
+	cp.Timeout = 8 * time.Second
+	cp.CheckRedirect = func(*http.Request, []*http.Request) error {
+		// A token endpoint does not redirect. Following one would forward
+		// the user's password to wherever the redirect pointed, which is
+		// the worst possible way to lose a credential.
+		return http.ErrUseLastResponse
 	}
+	return &Verifier{client: &cp}
 }
 
 // Verify forwards the credentials to the source provider.

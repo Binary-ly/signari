@@ -2364,6 +2364,12 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 
 	case verr != nil:
 		store.RecordDelegationFailure(ctx, s.db, pending.Source.ID, "rejected")
+		// Charged like any wrong password, to the address, the account and the
+		// captcha. It was charged to none of them, so guessing an account that
+		// had not migrated yet was unlimited, and every guess was forwarded to
+		// the old provider in this server's name.
+		s.captcha.RecordFailure(ctx, r.RemoteAddr)
+		s.recordSignInFailure(ctx, r)
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: pending.OrgID, SubjectID: pending.UserID,
 			CorrelationID: correlationID(ctx),

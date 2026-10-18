@@ -53,7 +53,7 @@ func TestTheTokenProviderIsAskedWithNoConnectionHeld(t *testing.T) {
 	})
 
 	asked := 0
-	f.srv.providerHTTP = func(time.Duration) *http.Client {
+	f.srv.outboundHTTP = func(time.Duration) *http.Client {
 		return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			asked++
 			actx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)

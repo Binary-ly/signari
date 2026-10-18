@@ -36,6 +36,8 @@ import (
 
 	"github.com/go-webauthn/webauthn/metadata"
 	"github.com/google/uuid"
+
+	"signari.dev/engine/internal/safedial"
 )
 
 // maxBLOB caps how much is read from a URL source. The real BLOB is a few
@@ -323,8 +325,10 @@ func NewFromEnv(getenv func(string) string, log *slog.Logger) *Resolver {
 		return nil
 	}
 	return &Resolver{
-		src:  src,
-		log:  log,
-		http: &http.Client{Timeout: 30 * time.Second},
+		src: src,
+		log: log,
+		// safedial like every other configured destination. A mirror inside
+		// the network is named in SIGNARI_OUTBOUND_ALLOW_PRIVATE.
+		http: safedial.Client(30 * time.Second),
 	}
 }

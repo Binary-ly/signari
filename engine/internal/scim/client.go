@@ -26,6 +26,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"signari.dev/engine/internal/safedial"
 )
 
 const (
@@ -154,9 +156,10 @@ type Client struct {
 	http   *http.Client
 }
 
+// NewClient talks to t over hc, or over safedial's client when hc is nil.
 func NewClient(t Target, hc *http.Client) *Client {
 	if hc == nil {
-		hc = &http.Client{Timeout: defaultTimeout}
+		hc = safedial.Client(defaultTimeout)
 	}
 	return &Client{target: t, http: hc}
 }

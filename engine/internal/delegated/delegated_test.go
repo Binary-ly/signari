@@ -95,6 +95,23 @@ func TestPlaintextEndpointIsRefused(t *testing.T) {
 	}
 }
 
+// A source endpoint on a private address is refused before the connection
+// opens, so the password is never offered to it. A failed TLS handshake would
+// also stop it, but only after connecting, and only until the internal service
+// presents a certificate the system trusts.
+func TestASourceOnAPrivateAddressIsNotDialled(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the password reached a loopback source")
+	}))
+	defer srv.Close()
+
+	err := New().Verify(context.Background(),
+		Source{Kind: "oidc_password", TokenEndpoint: srv.URL, ClientID: "c"}, "alice", "pw")
+	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "refusing to connect") {
+		t.Fatalf("err = %v, want the dialler's refusal", err)
+	}
+}
+
 // A token endpoint does not redirect. Following one would forward the user's
 // password to wherever the redirect pointed.
 func TestRedirectsAreNotFollowed(t *testing.T) {

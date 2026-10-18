@@ -65,19 +65,32 @@ property worth re-checking rather than assuming: render a page and look for any
 
 ## Operator-configured destinations
 
-An operator names these. They are trusted to the same degree as the binary's own
-configuration.
+An operator names these. That does not make them safe to dial wherever they
+point: a stored setting can be changed by anyone holding the right admin scope,
+and a name can start resolving somewhere else after it was saved. So every HTTP
+destination here goes through `safedial` too, and one that really is internal is
+named in `SIGNARI_OUTBOUND_ALLOW_PRIVATE` (see
+[configuration](configuration.md#internal-destinations)).
 
 | Destination | Package | Notes |
 |---|---|---|
-| SMTP host | `mail` | **refuses to send at all** if the server does not offer STARTTLS |
-| LDAP/AD directory | `directory/ldapsource` | TLS with `MinVersion` 1.2; `InsecureSkipVerify` deliberately absent |
-| SMS gateway | `sms/gateway` | |
-| SCIM target | `scim/client` | outbound provisioning |
-| SSF transmitter | `ssf/receive` | Shared Signals stream |
-| OpenID Federation trust anchors | `oidfed/fetch` | plus intermediates discovered while resolving a chain |
-| Outpost callbacks | `outpost` | |
+| SMTP host | `mail` | **refuses to send at all** if the server does not offer STARTTLS. Not HTTP; dialled directly |
+| LDAP/AD directory | `directory/ldapsource`, `delegated/ldapbind` | TLS with `MinVersion` 1.2; `InsecureSkipVerify` deliberately absent. Not HTTP; a directory is internal by nature and is dialled directly |
+| SMS gateway | `sms/gateway` | `safedial`; a loopback webhook URL is allowed because the operator wrote that address down |
+| Duo API host | `duo` | `safedial` |
+| SCIM target | `scim/client` | `safedial`, with `SIGNARI_SCIM_CA_BUNDLE` as its roots when set |
+| SSF transmitter keys | `ssf/receive` | `safedial`; fetched when a token names a key id not yet seen, which the sender chooses |
+| Upstream identity provider | `httpapi/federation` | `safedial` for the token endpoint and userinfo |
+| jwt-bearer issuer keys | `httpapi/jwtbearer` | `safedial`; fetched before anyone has authenticated |
+| Old provider behind delegated sign-in | `delegated` | `safedial`; the request carries a password |
+| FIDO metadata mirror | `fidomds` | `safedial` |
+| OpenID Federation trust anchors | `oidfed/fetch` | `safedial`, plus intermediates discovered while resolving a chain |
+| Outpost callbacks | `outpost` | the outpost agent calling its own engine; not a request the engine makes |
 | A URL passed to `signari proxycheck` / logout test | `proxycheck`, `logouttest` | diagnostics, run by hand, not by the server |
+
+`TestEveryOutboundClientIsSafedialsOrListed` keeps this true. A client built
+anywhere outside `safedial` fails the build unless it is listed with the reason
+its destination cannot come from configuration or a request.
 
 ## Destinations a CLIENT can choose — the SSRF surface
 

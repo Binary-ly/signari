@@ -14,6 +14,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 
 	"signari.dev/engine/internal/jsonstrict"
+	"signari.dev/engine/internal/safedial"
 )
 
 // ErrNotVerified means the token failed a check before anything was acted on.
@@ -153,8 +154,15 @@ func (f *KeyFetcher) client() *http.Client {
 	if t <= 0 {
 		t = 5 * time.Second
 	}
-	return &http.Client{Timeout: t}
+	return keyClient(t)
 }
+
+// keyClient is safedial's: a source's JWKS URI is a stored setting, fetched
+// whenever a token names a key id not yet seen, which a sender chooses. A
+// variable so this package's tests can reach a transmitter on loopback.
+var keyClient = safeKeyClient
+
+func safeKeyClient(t time.Duration) *http.Client { return safedial.Client(t) }
 
 // Keys returns the source's key set, fetching if needed.
 func (f *KeyFetcher) Keys(ctx context.Context, jwksURI string, wantKID string) (

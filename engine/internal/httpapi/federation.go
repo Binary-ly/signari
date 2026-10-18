@@ -187,7 +187,7 @@ func (s *Server) handleFederatedCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	hc := &http.Client{Timeout: federationTimeout}
+	hc := s.outboundClient(federationTimeout)
 	tokens, err := provider.ExchangeCode(ctx, hc, s.federationRedirectURI(slug), code, pending.CodeVerifier)
 	if err != nil {
 		s.log.Error("exchanging the external authorization code", "slug", slug, "err", err,

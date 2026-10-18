@@ -214,6 +214,18 @@ func TestAuthorizeURLCarriesTheUsernameSigned(t *testing.T) {
 	}
 }
 
+// A stored API host that resolves into the private network is refused at dial
+// time, before the signed request leaves.
+func TestAnAPIHostOnAPrivateAddressIsRefused(t *testing.T) {
+	c := testConfig("")
+	c.HTTP = nil
+	c.APIHost = "127.0.0.1:9"
+	err := c.HealthCheck(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "refusing to connect") {
+		t.Fatalf("err = %v, want the dialler's refusal", err)
+	}
+}
+
 func TestHealthCheck(t *testing.T) {
 	var gotAssertion string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

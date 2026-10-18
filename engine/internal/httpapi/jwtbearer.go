@@ -119,7 +119,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	}
 
 	// Step two: the signature, against that provider's published keys only.
-	hc := &http.Client{Timeout: federationTimeout}
+	hc := s.outboundClient(federationTimeout)
 	payload, err := federation.VerifyAssertion(ctx, hc, &s.assertionKeys, *provider, assertion)
 	if err != nil {
 		s.log.Info("jwt-bearer: assertion did not verify",

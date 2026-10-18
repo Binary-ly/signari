@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"sort"
@@ -26,6 +27,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
+	"signari.dev/engine/internal/safedial"
 )
 
 // RFC 7523 §2.1, end to end and adversarially.
@@ -103,6 +105,11 @@ func newAssertionFixture(t *testing.T) *assertionFixture {
 	}, pool, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The key server is on loopback, which the real client refuses; this one
+	// is the real client told about loopback, so the dialler stays in the path.
+	f.srv.outboundHTTP = func(d time.Duration) *http.Client {
+		return safedial.ClientAllowing(d, netip.MustParsePrefix("127.0.0.1/32"))
 	}
 
 	if err := pool.QueryRow(ctx, `
@@ -219,6 +226,19 @@ func (f *assertionFixture) grant(t *testing.T, assertion string, extra url.Value
 	var body map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
 	return rec.Code, body
+}
+
+// The provider's key URL is an operator setting, and a setting that points at
+// loopback is a request into this host made on a stranger's say-so: the
+// assertion arrives before anyone has authenticated. Refused unless the
+// operator named the address.
+func TestAnUpstreamWhoseKeysAreOnAPrivateAddressIsRefusedByDefault(t *testing.T) {
+	f := newAssertionFixture(t)
+	f.srv.outboundHTTP = nil
+	code, body := f.grant(t, f.assert(t, nil), nil)
+	if code == http.StatusOK {
+		t.Fatalf("keys were fetched from loopback with nothing allowing it: %v", body)
+	}
 }
 
 func TestAValidAssertionMintsATokenForTheLinkedUser(t *testing.T) {

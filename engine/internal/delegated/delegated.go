@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"signari.dev/engine/internal/safedial"
 )
 
 var (
@@ -46,8 +48,12 @@ type Verifier struct {
 	client *http.Client
 }
 
+// New forwards through safedial: the source's token endpoint is a stored
+// setting, and the request carries a password, so a source that resolves or
+// redirects into the private network is refused before anything is sent. An
+// old provider that is internal is named in SIGNARI_OUTBOUND_ALLOW_PRIVATE.
 func New() *Verifier {
-	return NewWithClient(&http.Client{})
+	return NewWithClient(safedial.Client(0))
 }
 
 // NewWithClient is New over a transport the caller chooses, such as a dialer

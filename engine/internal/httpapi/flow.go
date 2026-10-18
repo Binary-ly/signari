@@ -608,7 +608,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		if _, verr := oauth.ValidateCodeRedemption(req, c, &peeked.GrantRecord,
 			dpopThumbprintFrom(ctx), time.Now()); verr == nil {
 			early = peeked
-			hook, hookErr = store.ConsultTokenProvider(ctx, s.db, s.providerClient, s.log,
+			hook, hookErr = store.ConsultTokenProvider(ctx, s.db, s.outboundClient, s.log,
 				peeked.OrgID, tokenHookRequest(peeked, c.ClientID, req.GrantType))
 		}
 	}
@@ -688,7 +688,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// and not s.db: a second connection taken while holding one deadlocks the
 	// pool under concurrent redemptions (it hung the suite for eight minutes once).
 	if early == nil || !sameRedemption(early, consumed) {
-		hook, hookErr = store.ConsultTokenProvider(ctx, tx, s.providerClient, s.log,
+		hook, hookErr = store.ConsultTokenProvider(ctx, tx, s.outboundClient, s.log,
 			consumed.OrgID, tokenHookRequest(consumed, c.ClientID, req.GrantType))
 	}
 	if herr := hookErr; herr != nil {

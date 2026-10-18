@@ -1,9 +1,12 @@
 package safedial
 
 import (
+	"crypto/x509"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -84,6 +87,131 @@ func TestTheDiallerRefusesLoopbackHoweverItIsSpelled(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "refusing to connect") {
 		t.Fatalf("err = %v, want the guard's refusal", err)
+	}
+}
+
+// An allow-list that admits everything, or the metadata address, is the
+// guard switched off under another name, so it is refused at startup.
+func TestTheAllowListRefusesWhatWouldSwitchTheGuardOff(t *testing.T) {
+	t.Cleanup(func() { _ = AllowPrivate("") })
+	for _, c := range []struct{ list, want string }{
+		{"0.0.0.0/0", "covers every address"},
+		{"::/0", "covers every address"},
+		{"10.0.0.0/8, 0.0.0.0/0", "covers every address"},
+		{"::ffff:0:0/96", "covers every address"},
+		{"::ffff:169.254.169.254", "metadata"},
+		{"169.254.0.0/16", "metadata"},
+		{"169.254.169.254", "metadata"},
+		{"128.0.0.0/1", "metadata"},
+		{"not-an-address", "not an address"},
+		{"10.0.0.0/33", "not an address"},
+	} {
+		if err := AllowPrivate(c.list); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("AllowPrivate(%q) = %v, want it refused mentioning %q", c.list, err, c.want)
+		}
+	}
+	if err := AllowPrivate(" 10.20.0.0/16 , 192.168.7.9 ,, fd00:1::/32 "); err != nil {
+		t.Fatalf("an ordinary internal list was refused: %v", err)
+	}
+}
+
+// The allow-list widens what may be reached by exactly what it names.
+func TestTheAllowListPermitsWhatItNamesAndNothingElse(t *testing.T) {
+	t.Cleanup(func() { _ = AllowPrivate("") })
+	if err := AllowPrivate("10.20.0.0/16,::ffff:192.168.7.9"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		ip   string
+		want bool
+	}{
+		{"10.20.3.4", true},
+		{"192.168.7.9", true},
+		{"::ffff:10.20.3.4", true}, // the same address in its mapped form
+		{"10.21.0.1", false},
+		{"192.168.7.10", false},
+		{"127.0.0.1", false},
+		{"169.254.169.254", false},
+		{"8.8.8.8", true}, // public addresses never needed the list
+	} {
+		if got := permitted(net.ParseIP(c.ip), nil); got != c.want {
+			t.Errorf("permitted(%s) = %v, want %v", c.ip, got, c.want)
+		}
+	}
+
+	// A per-client allowance cannot reach the metadata address either.
+	if permitted(net.ParseIP("169.254.169.254"), []netip.Prefix{netip.MustParsePrefix("169.254.0.0/16")}) {
+		t.Error("a per-client allowance reached the metadata address")
+	}
+}
+
+// End to end through the dialler: loopback is refused by default, reachable
+// once allowed for one client, and still refused for every other client.
+func TestAClientAllowanceIsThatClientsAlone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "reached")
+	}))
+	defer srv.Close()
+	loop := netip.MustParsePrefix("127.0.0.1/32")
+
+	resp, err := ClientAllowing(0, loop).Get(srv.URL)
+	if err != nil {
+		t.Fatalf("the allowed client was refused: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp, err := Client(0).Get(srv.URL); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("an allowance given to one client reached loopback from another")
+	}
+}
+
+// Trusting an internal certificate authority and reaching the internal network
+// are two decisions. The first alone is still refused at the dialler; with the
+// address allowed as well, the request completes over the private roots.
+func TestTrustingAPrivateCADoesNotOpenThePrivateNetwork(t *testing.T) {
+	t.Cleanup(func() { _ = AllowPrivate("") })
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "reached")
+	}))
+	defer srv.Close()
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+
+	if resp, err := ClientTrusting(0, roots).Get(srv.URL); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("a trusted certificate opened loopback")
+	} else if !strings.Contains(err.Error(), "refusing to connect") {
+		t.Fatalf("err = %v, want the dialler's refusal", err)
+	}
+
+	if err := AllowPrivate("127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := ClientTrusting(0, roots).Get(srv.URL)
+	if err != nil {
+		t.Fatalf("allowed and trusted, still refused: %v", err)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestCheckURLAgreesWithTheAllowList(t *testing.T) {
+	t.Cleanup(func() { _ = AllowPrivate("") })
+	if err := CheckURL("https://10.20.0.5/hook"); err == nil {
+		t.Fatal("a private address was accepted before anything allowed it")
+	} else if !strings.Contains(err.Error(), "SIGNARI_OUTBOUND_ALLOW_PRIVATE") {
+		t.Errorf("the refusal does not say how to allow it: %v", err)
+	}
+	// The metadata address is not offered the way out, because there is none.
+	if err := CheckURL("https://169.254.169.254/"); err == nil ||
+		strings.Contains(err.Error(), "SIGNARI_OUTBOUND_ALLOW_PRIVATE") {
+		t.Errorf("metadata refusal = %v, want it refused with no allow-list hint", err)
+	}
+	if err := AllowPrivate("10.20.0.0/16"); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckURL("https://10.20.0.5/hook"); err != nil {
+		t.Fatalf("an allowed address was refused at save time but would be dialled: %v", err)
 	}
 }
 

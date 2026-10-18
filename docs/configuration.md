@@ -327,7 +327,41 @@ See [CAPTCHA](captcha.md).
 | `SIGNARI_CA_BUNDLE` | Roots for outbound calls |
 | `SIGNARI_ALLOW_PRIVATE_DELIVERY` | Permit logout and event delivery to private, loopback and link-local addresses. **Off by default.** A `backchannel_logout_uri` is chosen by the *client*, so without the check a registered client can have this server POST a signed logout token into your internal network on every sign-out. Set `1` only if your relying parties genuinely are internal. Trusting an internal CA (`SIGNARI_CA_BUNDLE`) is a different decision and does not imply this one. |
 | `SIGNARI_SCIM_CA_BUNDLE` | Roots for SCIM targets specifically |
+| `SIGNARI_OUTBOUND_ALLOW_PRIVATE` | Comma-separated addresses or prefixes, such as `10.20.0.0/16,192.168.7.9`, that outbound requests may reach although they are private. **Empty by default.** See [Internal destinations](#internal-destinations) below |
 | `SIGNARI_ADMIN_TOKEN` | Bearer token for the admin API |
+
+### Internal destinations
+
+Every request the engine makes to a destination that comes from configuration
+goes through one dialler, which checks the **address** at connect time, after
+the name has been resolved. That includes webhooks, providers, an upstream
+identity provider's token endpoint and keys, a jwt-bearer issuer's keys, an SSF
+source's keys, SCIM targets, the old provider behind delegated sign-in, the SMS
+gateway, Duo's API host and the FIDO metadata mirror. Private, loopback,
+link-local and the special-purpose ranges are refused, and so is a redirect into
+them.
+
+When one of those really is inside your network, name it in
+`SIGNARI_OUTBOUND_ALLOW_PRIVATE`. That widens what may be reached by exactly
+what you list, for every one of the paths above, and the refusal message names
+the setting. Two values are refused at startup, because each would switch the
+check off under another name:
+
+- a prefix of length zero (`0.0.0.0/0`, `::/0`, `::ffff:0:0/96`);
+- anything covering the cloud metadata address `169.254.169.254`, which no
+  destination needs and which is the first thing a forged request asks for.
+
+`signari idp add` (discovery) and `signari idp add-issuer` (the issuer's keys)
+apply the same list, so an internal issuer fails when you add it rather than at
+the first sign-in.
+
+An SMS webhook on loopback (`SIGNARI_SMS_WEBHOOK_URL=http://127.0.0.1:…`) is
+reachable without the list: you wrote that exact address down. The allowance
+covers loopback only, and a redirect from it is still checked.
+
+`SIGNARI_ALLOW_PRIVATE_DELIVERY` is the older, wider switch for logout and event
+delivery. It turns the check off for those paths entirely. If your relying
+parties are internal, prefer listing their addresses here.
 
 ## Appearance
 

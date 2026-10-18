@@ -2,11 +2,14 @@ package safedial
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -40,10 +43,15 @@ type ErrBlocked struct {
 }
 
 func (e *ErrBlocked) Error() string {
-	return fmt.Sprintf("refusing to connect to %s (%s): it is a private, loopback "+
+	msg := fmt.Sprintf("refusing to connect to %s (%s): it is a private, loopback "+
 		"or link-local address, and an outbound request from the identity "+
 		"provider to one is how an internal service gets reached from outside",
 		e.Host, e.IP)
+	if a, err := netip.ParseAddr(e.IP); err == nil && a.Unmap() != metadataAddr {
+		msg += "; a destination that is meant to be internal is named in " +
+			"SIGNARI_OUTBOUND_ALLOW_PRIVATE"
+	}
+	return msg
 }
 
 // Blocked reports whether an address is one we refuse.
@@ -136,31 +144,118 @@ func embeddedIPv4(a netip.Addr) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
+// allowed are the private destinations the operator named in
+// SIGNARI_OUTBOUND_ALLOW_PRIVATE: an old identity provider being migrated off
+// inside the network, an internal SCIM target. Empty is the default and means
+// none.
+var allowed atomic.Pointer[[]netip.Prefix]
+
+var metadataAddr = netip.MustParseAddr("169.254.169.254")
+
+// AllowPrivate sets SIGNARI_OUTBOUND_ALLOW_PRIVATE, comma-separated addresses
+// or prefixes that outbound requests may reach although they are private.
+//
+// Refused: a prefix of length zero, which is every address, and one that
+// covers the cloud metadata address, which no destination needs and which is
+// the first thing a forged request asks for.
+func AllowPrivate(list string) error {
+	var out []netip.Prefix
+	for _, raw := range strings.Split(list, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		var p netip.Prefix
+		var err error
+		if strings.Contains(raw, "/") {
+			p, err = netip.ParsePrefix(raw)
+		} else {
+			var a netip.Addr
+			if a, err = netip.ParseAddr(raw); err == nil {
+				p = netip.PrefixFrom(a, a.BitLen())
+			}
+		}
+		// Addresses are compared unmapped, so an IPv4-mapped prefix is written
+		// back as the IPv4 one it means: ::ffff:0:0/96 is 0.0.0.0/0.
+		if err == nil && p.Addr().Is4In6() && p.Bits() >= 96 {
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
+		switch {
+		case err != nil:
+			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q is not an address or a prefix", raw)
+		case p.Bits() == 0:
+			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q covers every address; name "+
+				"the internal destinations instead", raw)
+		case p.Contains(metadataAddr):
+			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q covers the cloud metadata "+
+				"address 169.254.169.254, which no destination needs", raw)
+		}
+		out = append(out, p.Masked())
+	}
+	allowed.Store(&out)
+	return nil
+}
+
+// permitted reports whether the dialler may connect to ip: it is not blocked,
+// or it is a private address the operator allowed, or one this client allows.
+// The metadata address is never permitted.
+func permitted(ip net.IP, extra []netip.Prefix) bool {
+	if !Blocked(ip) {
+		return true
+	}
+	a, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	a = a.Unmap()
+	if a == metadataAddr {
+		return false
+	}
+	list := extra
+	if p := allowed.Load(); p != nil {
+		list = append(append([]netip.Prefix(nil), *p...), extra...)
+	}
+	for _, p := range list {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
 // Control is a net.Dialer Control function that refuses blocked addresses.
 //
 // Control runs AFTER the name has been resolved and BEFORE the socket connects,
 // which is the only point where the address is known and nothing has been sent.
 // Checking earlier checks a name; checking later has already connected.
-func Control(network, address string, _ syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		host = address
+func Control(network, address string, c syscall.RawConn) error {
+	return controlWith(nil)(network, address, c)
+}
+
+func controlWith(extra []netip.Prefix) func(string, string, syscall.RawConn) error {
+	return func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			host = address
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			// Control is called with a resolved address. A name here means
+			// something upstream changed, and refusing is the safe reading.
+			return &ErrBlocked{Host: address, IP: "unresolved"}
+		}
+		if !permitted(ip, extra) {
+			return &ErrBlocked{Host: address, IP: ip.String()}
+		}
+		return nil
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		// Control is called with a resolved address. A name here means something
-		// upstream changed, and refusing is the safe reading.
-		return &ErrBlocked{Host: address, IP: "unresolved"}
-	}
-	if Blocked(ip) {
-		return &ErrBlocked{Host: address, IP: ip.String()}
-	}
-	return nil
 }
 
 // Transport returns an http.Transport that will not reach private addresses.
-func Transport() *http.Transport {
-	d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second, Control: Control}
+func Transport() *http.Transport { return transportWith(nil) }
+
+func transportWith(extra []netip.Prefix) *http.Transport {
+	d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second, Control: controlWith(extra)}
 	return &http.Transport{
 		DialContext:           d.DialContext,
 		TLSHandshakeTimeout:   5 * time.Second,
@@ -178,13 +273,19 @@ func Transport() *http.Transport {
 // Control -- a 302 into the private range is refused exactly like a direct
 // attempt. Not refusing redirects outright, because subscribers do move and a
 // permanent redirect is a normal thing for a URL to do.
-func Client(timeout time.Duration) *http.Client {
+func Client(timeout time.Duration) *http.Client { return ClientAllowing(timeout) }
+
+// ClientAllowing is Client that may also reach the given prefixes, for one
+// destination an operator wrote down explicitly, such as an SMS gateway on
+// loopback. Wider allowances belong in SIGNARI_OUTBOUND_ALLOW_PRIVATE, where
+// they are visible.
+func ClientAllowing(timeout time.Duration, extra ...netip.Prefix) *http.Client {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: Transport(),
+		Transport: transportWith(extra),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 3 {
 				return fmt.Errorf("too many redirects")
@@ -198,6 +299,18 @@ func Client(timeout time.Duration) *http.Client {
 			return nil
 		},
 	}
+}
+
+// ClientTrusting is Client with its own certificate roots, for a destination
+// behind an internal certificate authority. Which certificates are trusted and
+// which addresses may be reached are separate decisions: trusting a private CA
+// does not open the private network, which SIGNARI_OUTBOUND_ALLOW_PRIVATE does.
+func ClientTrusting(timeout time.Duration, roots *x509.CertPool) *http.Client {
+	c := Client(timeout)
+	c.Transport.(*http.Transport).TLSClientConfig = &tls.Config{
+		RootCAs: roots, MinVersion: tls.VersionTLS12,
+	}
+	return c
 }
 
 // CheckURL is a cheap pre-flight for the moment a subscription is SAVED.
@@ -218,7 +331,9 @@ func CheckURL(raw string) error {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && Blocked(ip) {
+	// The same judgement as the dialler, allow-list included, so a destination
+	// the operator permitted is not refused at save time and then reached.
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && !permitted(ip, nil) {
 		return (&ErrBlocked{Host: host, IP: ip.String()})
 	}
 	// Names are resolved rather than pattern-matched: "localhost" is not the only
@@ -231,7 +346,7 @@ func CheckURL(raw string) error {
 		return nil
 	}
 	for _, ip := range ips {
-		if Blocked(ip) {
+		if !permitted(ip, nil) {
 			return &ErrBlocked{Host: host, IP: ip.String()}
 		}
 	}

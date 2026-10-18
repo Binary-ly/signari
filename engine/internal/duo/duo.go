@@ -37,9 +37,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
+
+	"signari.dev/engine/internal/safedial"
 )
 
 const (
@@ -112,11 +115,20 @@ func (c *Config) SetInsecureBaseURL(base string, allowInsecure bool) error {
 	return nil
 }
 
+// client is safedial's: the API host is a stored setting, and one that names or
+// resolves to a private address would have the engine sign requests into its
+// own network every time somebody signs in.
 func (c *Config) client() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: 15 * time.Second}
+	if c.testBase != "" {
+		// A deployment that has said it is not production, pointing Duo at a
+		// stand-in beside it.
+		return safedial.ClientAllowing(15*time.Second,
+			netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128"))
+	}
+	return safedial.Client(15 * time.Second)
 }
 
 func (c *Config) baseURL() string {

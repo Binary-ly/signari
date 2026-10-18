@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormaliseNumber(t *testing.T) {
@@ -155,6 +156,32 @@ func TestWebhookSend(t *testing.T) {
 	}
 	if auth != "Bearer abc" {
 		t.Fatalf("auth header %q", auth)
+	}
+}
+
+// Allowing the loopback gateway the operator configured allows that, not the
+// private network behind it: a redirect onward is dialled through the same
+// check, and refused before anything connects.
+func TestALoopbackGatewayCannotRedirectIntoThePrivateNetwork(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://10.255.255.1/send", http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	s := &WebhookSender{URL: srv.URL}
+	s.Timeout = 3 * time.Second
+	err := s.Send(context.Background(), Message{To: "+447700900123", Body: "code"})
+	if err == nil || !strings.Contains(err.Error(), "refusing to connect") {
+		t.Fatalf("err = %v, want the dialler's refusal of 10.255.255.1", err)
+	}
+
+	// And an address on loopback the operator did not write down is refused
+	// like any other private one.
+	other := &WebhookSender{URL: "https://127.0.0.2:9/send"}
+	other.Timeout = 3 * time.Second
+	if err := other.Send(context.Background(), Message{To: "+1", Body: "x"}); err == nil ||
+		!strings.Contains(err.Error(), "refusing to connect") {
+		t.Fatalf("err = %v, want 127.0.0.2 refused", err)
 	}
 }
 

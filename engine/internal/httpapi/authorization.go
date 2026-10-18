@@ -364,7 +364,7 @@ func (s *Server) consultAuthorizeProvider(ctx context.Context, orgID string,
 	}
 
 	var answer providerAnswer
-	callErr := p.Call(ctx, s.providerClient(p.Timeout), req, &answer)
+	callErr := p.Call(ctx, s.outboundClient(p.Timeout), req, &answer)
 
 	if callErr != nil {
 		// Logged either way. A fail_open provider that has silently stopped
@@ -437,14 +437,16 @@ func combineProviderAnswer(name string, proceed bool, callErr error,
 	}, true
 }
 
-// providerClient is the HTTP client used for provider calls.
+// outboundClient is the HTTP client for provider calls and for requests to an
+// upstream identity provider.
 //
-// safedial, so a provider URL that resolves into the private network is refused
-// at DIAL time as well as at registration. The two checks are not redundant: DNS
-// can change between them, which is the whole rebinding technique.
-func (s *Server) providerClient(timeout time.Duration) *http.Client {
-	if s.providerHTTP != nil {
-		return s.providerHTTP(timeout)
+// safedial, so a URL that resolves into the private network is refused at DIAL
+// time as well as at registration. The two checks are not redundant: DNS can
+// change between them, which is the whole rebinding technique. An upstream that
+// really is internal is named in SIGNARI_OUTBOUND_ALLOW_PRIVATE.
+func (s *Server) outboundClient(timeout time.Duration) *http.Client {
+	if s.outboundHTTP != nil {
+		return s.outboundHTTP(timeout)
 	}
 	return safedial.Client(timeout)
 }

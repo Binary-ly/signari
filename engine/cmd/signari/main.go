@@ -76,6 +76,7 @@ import (
 	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/proxycheck"
 	"signari.dev/engine/internal/radius"
+	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/sms"
@@ -219,6 +220,12 @@ flags:
 func run(args []string) error {
 	if len(args) == 0 {
 		return usage()
+	}
+	// Before any command runs, because import, sync and serve all reach
+	// destinations an operator named, and a malformed list must stop the
+	// process rather than leave the private network closed or wide open.
+	if err := safedial.AllowPrivate(os.Getenv("SIGNARI_OUTBOUND_ALLOW_PRIVATE")); err != nil {
+		return err
 	}
 
 	fs := flag.NewFlagSet("signari", flag.ContinueOnError)
@@ -2873,7 +2880,10 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 			return fmt.Errorf("a generic OIDC provider needs -issuer, so its endpoints " +
 				"and signing keys can be discovered")
 		}
-		d, derr := federation.Discover(ctx, &http.Client{Timeout: 15 * time.Second}, issuer)
+		// The engine reaches these endpoints through safedial at sign-in, so
+		// discovery does too: an internal issuer fails here, with the setting
+		// that allows it, instead of at the first sign-in.
+		d, derr := federation.Discover(ctx, safedial.Client(15*time.Second), issuer)
 		if derr != nil {
 			return fmt.Errorf("discovering %s: %w", issuer, derr)
 		}
@@ -3200,7 +3210,7 @@ func idpAddIssuer(ctx context.Context, conn *pgx.Conn, orgID, slug, name, issuer
 	// immediately. A trust anchor whose keys cannot be read is not a trust
 	// anchor, it is a provider that refuses everything for a reason nobody can
 	// see from the outside.
-	set, err := federation.FetchJWKS(ctx, &http.Client{Timeout: 15 * time.Second}, jwks)
+	set, err := federation.FetchJWKS(ctx, safedial.Client(15*time.Second), jwks)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", jwks, err)
 	}
@@ -3307,9 +3317,12 @@ func idpAssertions(ctx context.Context, conn *pgx.Conn, slug string, allow bool)
 // It ADDS to the system pool rather than replacing it, so configuring an
 // internal CA does not silently stop public targets from verifying.
 func scimHTTPClient() (*http.Client, error) {
+	// safedial either way: a target's base URL is stored, and the sync sends
+	// it a bearer token that can create and delete accounts. A target inside
+	// the network is named in SIGNARI_OUTBOUND_ALLOW_PRIVATE.
 	bundle := os.Getenv("SIGNARI_SCIM_CA_BUNDLE")
 	if bundle == "" {
-		return &http.Client{Timeout: 30 * time.Second}, nil
+		return safedial.Client(30 * time.Second), nil
 	}
 	pem, err := os.ReadFile(bundle)
 	if err != nil {
@@ -3322,12 +3335,7 @@ func scimHTTPClient() (*http.Client, error) {
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("%s contains no certificates", bundle)
 	}
-	return &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
-		},
-	}, nil
+	return safedial.ClientTrusting(30*time.Second, pool), nil
 }
 
 // scimAdd registers a provisioning target.

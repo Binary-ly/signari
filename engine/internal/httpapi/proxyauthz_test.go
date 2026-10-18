@@ -133,6 +133,40 @@ func TestTheAccessPolicyDecidesWhoReachesAProtectedHost(t *testing.T) {
 	}
 }
 
+// A proxy that copies an identity header from the auth response only when the
+// response carries one leaves the client's own copy on the forwarded request
+// otherwise. So for somebody with no address on record the response must still
+// carry X-Forwarded-Email -- empty -- on the wire, or the client chooses it.
+func TestEveryIdentityHeaderIsSentEvenWhenEmpty(t *testing.T) {
+	pa := newProxyAuthz(t)
+	tok := pa.token(t, pa.f.orgID) // proxyClaims with no Email
+
+	ts := httptest.NewServer(pa.f.srv.Routes())
+	defer ts.Close()
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/proxy/verify", nil)
+	req.AddCookie(&http.Cookie{Name: ProxyCookieName, Value: tok})
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", pa.own)
+	req.Header.Set("X-Forwarded-Email", "ceo@victim.test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("verify answered %d", resp.StatusCode)
+	}
+	for _, h := range []string{"X-Forwarded-User", "X-Forwarded-Sub", "X-Forwarded-Email"} {
+		if _, present := resp.Header[h]; !present {
+			t.Errorf("%s is absent from the response, so a copy-if-present proxy keeps the "+
+				"client's own value", h)
+		}
+	}
+	if got := resp.Header.Get("X-Forwarded-Email"); got != "" {
+		t.Errorf("X-Forwarded-Email is %q for a token with no address", got)
+	}
+}
+
 // The request at verify is the proxy's. Its address is the proxy's own, and a
 // network rule read against it would admit everybody from inside the office the
 // proxy sits in.

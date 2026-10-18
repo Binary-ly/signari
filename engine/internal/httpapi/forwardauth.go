@@ -74,17 +74,6 @@ type proxyClaims struct {
 func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Identity headers are STRIPPED before anything else.
-	//
-	// A client that sends its own X-Forwarded-User must not have it survive to
-	// the application. Most forward-auth setups pass the proxy's response headers
-	// through, so a header the caller supplied and we failed to overwrite becomes
-	// an identity the application trusts. This is the classic forward-auth
-	// vulnerability, and it is a two-line defence.
-	for _, h := range []string{"X-Forwarded-User", "X-Forwarded-Email", "X-Forwarded-Sub"} {
-		w.Header().Del(h)
-	}
-
 	c, err := r.Cookie(ProxyCookieName)
 	if err != nil || c.Value == "" {
 		s.denyProxy(w, r, "no proxy session")
@@ -134,11 +123,19 @@ func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set by US, from the verified token. Never copied from the request.
+	//
+	// EVERY identity header, every time, empty when there is nothing to say.
+	// The client's own X-Forwarded-Email is on the request the proxy will
+	// forward, and this response is the only thing that can overwrite it: a
+	// proxy that copies a header from the auth response only when the response
+	// carries one leaves the client's value in place whenever this one is
+	// absent. So a person with no address on record could hand the application
+	// any address they liked. There used to be a loop here deleting these from
+	// the response before anything was written -- from an empty map, which is
+	// to say it did nothing.
 	w.Header().Set("X-Forwarded-User", pc.Subject)
 	w.Header().Set("X-Forwarded-Sub", pc.Subject)
-	if pc.Email != "" {
-		w.Header().Set("X-Forwarded-Email", pc.Email)
-	}
+	w.Header().Set("X-Forwarded-Email", pc.Email)
 	w.WriteHeader(http.StatusOK)
 }
 

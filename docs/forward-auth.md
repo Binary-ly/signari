@@ -72,10 +72,16 @@ application they came from was not a registered protected host.
 This is the classic forward-auth vulnerability. If the proxy passes the client's
 `X-Forwarded-User` through, anyone can claim to be anyone by setting a header.
 
-Signari deletes those headers before doing anything else, then sets them itself
-from the verified token — but that only protects its half. The proxy must be
-configured to read them from the auth response, which is what
-`auth_request_set` does below.
+Signari sends **all three** identity headers on every `200`, taken from the
+verified token, and sends `X-Forwarded-Email` **empty** when the account has no
+address. The empty header matters. Suppose a proxy copies a header from the
+auth response only when the response carries it. If the header were left out,
+the client's own `X-Forwarded-Email` would reach the application unchanged, and
+a person with no address on record could claim any address. Check your proxy's
+behaviour rather than relying on either assumption. This page used to say Signari "deletes those headers before doing
+anything else". The code did delete them, but from its own empty response, so
+nothing was protected. The proxy must still read the headers from the auth
+response, which is what `auth_request_set` does below.
 
 ## nginx
 
@@ -239,7 +245,7 @@ in the deployment passed every protected host of every organisation.
 |---|---|
 | `X-Forwarded-User` | the user's uuid |
 | `X-Forwarded-Sub` | the same uuid, for apps expecting `sub` |
-| `X-Forwarded-Email` | the email, when the account has one |
+| `X-Forwarded-Email` | the email, or **empty** when the account has none — present either way, so a client-sent copy is overwritten |
 
 The user id is sent rather than the email because an email can change and can be
 reassigned; the uuid is the stable identity.

@@ -17,34 +17,27 @@ func newProxyServer() *Server {
 	}
 }
 
-// TestProxyVerifyStripsCallerIdentityHeaders is the test for the vulnerability
-// this endpoint exists to avoid.
-//
-// A forward-auth setup copies the auth server's RESPONSE headers onto the
-// upstream request. So a header the caller sent that we echo -- or merely fail
-// to overwrite -- arrives at the application as an authenticated identity. The
-// caller here is unauthenticated and is claiming to be an administrator.
-func TestProxyVerifyStripsCallerIdentityHeaders(t *testing.T) {
+// TestAnUnauthenticatedCallerClaimingAnIdentityIsRefused: the caller has no
+// cookie and sends the identity headers itself. The answer is 401 and the
+// response asserts nobody. (An earlier version of this test pre-filled the
+// recorder's response headers to "prove" they were deleted; no server's
+// response starts out holding the request's headers, so it tested a loop that
+// did nothing. The property that matters on the success path is in
+// TestEveryIdentityHeaderIsSentEvenWhenEmpty.)
+func TestAnUnauthenticatedCallerClaimingAnIdentityIsRefused(t *testing.T) {
 	s := newProxyServer()
 
 	for _, h := range []string{"X-Forwarded-User", "X-Forwarded-Email", "X-Forwarded-Sub"} {
 		req := httptest.NewRequest(http.MethodGet, "/proxy/verify", nil)
 		req.Header.Set(h, "admin@evil.test")
 		rec := httptest.NewRecorder()
-
-		// Some proxies pre-populate the recorder's headers from the request.
-		// Simulating that is the only way to prove we DELETE rather than merely
-		// decline to set.
-		rec.Header().Set(h, "admin@evil.test")
-
 		s.handleProxyVerify(rec, req)
 
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("%s: unauthenticated request got %d, want 401", h, rec.Code)
 		}
 		if got := rec.Header().Get(h); got != "" {
-			t.Errorf("%s survived to the response as %q; the application would "+
-				"treat that as a signed-in user", h, got)
+			t.Errorf("%s appeared on the refusal as %q", h, got)
 		}
 	}
 }

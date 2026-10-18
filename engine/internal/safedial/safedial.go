@@ -47,7 +47,7 @@ func (e *ErrBlocked) Error() string {
 		"or link-local address, and an outbound request from the identity "+
 		"provider to one is how an internal service gets reached from outside",
 		e.Host, e.IP)
-	if a, err := netip.ParseAddr(e.IP); err == nil && a.Unmap() != metadataAddr {
+	if a, err := netip.ParseAddr(e.IP); err == nil && !isMetadata(a) {
 		msg += "; a destination that is meant to be internal is named in " +
 			"SIGNARI_OUTBOUND_ALLOW_PRIVATE"
 	}
@@ -152,6 +152,37 @@ var allowed atomic.Pointer[[]netip.Prefix]
 
 var metadataAddr = netip.MustParseAddr("169.254.169.254")
 
+// metadataPrefixes are the metadata address and every IPv6 form that carries
+// it, which Blocked already judges by the IPv4 inside: NAT64's well-known
+// prefix, the IPv4-compatible form, and 6to4, whose whole /48 embeds it. An
+// allow-list entry overlapping any of them would reopen the metadata service
+// through a translator.
+var metadataPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("169.254.169.254/32"),
+	netip.MustParsePrefix("64:ff9b::a9fe:a9fe/128"),
+	netip.MustParsePrefix("::a9fe:a9fe/128"),
+	netip.MustParsePrefix("2002:a9fe:a9fe::/48"),
+}
+
+// isMetadata reports whether a is the metadata address, however spelled.
+func isMetadata(a netip.Addr) bool {
+	a = a.Unmap()
+	if a == metadataAddr {
+		return true
+	}
+	v4, ok := embeddedIPv4(a)
+	return ok && v4 == metadataAddr
+}
+
+func overlapsMetadata(p netip.Prefix) bool {
+	for _, m := range metadataPrefixes {
+		if p.Overlaps(m) {
+			return true
+		}
+	}
+	return false
+}
+
 // AllowPrivate sets SIGNARI_OUTBOUND_ALLOW_PRIVATE, comma-separated addresses
 // or prefixes that outbound requests may reach although they are private.
 //
@@ -186,7 +217,7 @@ func AllowPrivate(list string) error {
 		case p.Bits() == 0:
 			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q covers every address; name "+
 				"the internal destinations instead", raw)
-		case p.Contains(metadataAddr):
+		case overlapsMetadata(p):
 			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q covers the cloud metadata "+
 				"address 169.254.169.254, which no destination needs", raw)
 		}
@@ -208,7 +239,7 @@ func permitted(ip net.IP, extra []netip.Prefix) bool {
 		return false
 	}
 	a = a.Unmap()
-	if a == metadataAddr {
+	if isMetadata(a) {
 		return false
 	}
 	list := extra

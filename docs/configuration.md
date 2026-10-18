@@ -361,6 +361,9 @@ check off under another name:
 - a prefix of length zero (`0.0.0.0/0`, `::/0`, `::ffff:0:0/96`);
 - anything covering the cloud metadata address `169.254.169.254`, which no
   destination needs and which is the first thing a forged request asks for.
+  That includes the IPv6 forms that carry it, so `64:ff9b::/96` (NAT64) and
+  `2002::/16` (6to4) are refused too. Listing them would reopen the metadata
+  service through a translator.
 
 `signari idp add` (discovery) and `signari idp add-issuer` (the issuer's keys)
 apply the same list, so an internal issuer fails when you add it rather than at

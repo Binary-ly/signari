@@ -100,6 +100,11 @@ func TestTheAllowListRefusesWhatWouldSwitchTheGuardOff(t *testing.T) {
 		{"10.0.0.0/8, 0.0.0.0/0", "covers every address"},
 		{"::ffff:0:0/96", "covers every address"},
 		{"::ffff:169.254.169.254", "metadata"},
+		// The IPv6 forms that carry it, which Blocked judges by the IPv4 inside.
+		{"64:ff9b::/96", "metadata"},
+		{"2002::/16", "metadata"},
+		{"2002:a9fe:a9fe:1::/64", "metadata"},
+		{"::a9fe:a9fe", "metadata"},
 		{"169.254.0.0/16", "metadata"},
 		{"169.254.169.254", "metadata"},
 		{"128.0.0.0/1", "metadata"},
@@ -139,9 +144,20 @@ func TestTheAllowListPermitsWhatItNamesAndNothingElse(t *testing.T) {
 		}
 	}
 
-	// A per-client allowance cannot reach the metadata address either.
-	if permitted(net.ParseIP("169.254.169.254"), []netip.Prefix{netip.MustParsePrefix("169.254.0.0/16")}) {
-		t.Error("a per-client allowance reached the metadata address")
+	// A per-client allowance cannot reach the metadata address either, in any
+	// of its spellings.
+	for _, c := range []struct{ ip, allowance string }{
+		{"169.254.169.254", "169.254.0.0/16"},
+		{"64:ff9b::a9fe:a9fe", "64:ff9b::/96"},
+		{"2002:a9fe:a9fe::1", "2002::/16"},
+	} {
+		if permitted(net.ParseIP(c.ip), []netip.Prefix{netip.MustParsePrefix(c.allowance)}) {
+			t.Errorf("an allowance of %s reached the metadata address as %s", c.allowance, c.ip)
+		}
+	}
+	// While the same translators to an ordinary internal address stay allowable.
+	if !permitted(net.ParseIP("64:ff9b::a14:1"), []netip.Prefix{netip.MustParsePrefix("64:ff9b::/96")}) {
+		t.Error("an allowed NAT64 path to 10.20.0.1 was refused")
 	}
 }
 

@@ -82,7 +82,7 @@ func (s *Server) listClients(w http.ResponseWriter, r *http.Request) {
 		  FROM core.clients
 		 WHERE ($1 = '' OR client_id > $1)
 		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
-		   AND ($4::text[] IS NULL OR lower(client_id) = ANY($4::text[]))
+		   AND ($4::text[] IS NULL OR client_id = ANY($4::text[]))
 		 ORDER BY client_id
 		 LIMIT $3`,
 		cursor, orgFilter(ctx), limit+1, clientFilter(ctx))

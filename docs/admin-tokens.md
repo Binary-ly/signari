@@ -91,6 +91,11 @@ and grants all of it instead.
 Reads are narrowed as well as writes. A read boundary that does not match the
 write boundary is one an integrator will find and use.
 
+**Client ids match exactly.** They are case-sensitive keys, so `app` and `APP`
+are two clients, and a token for one cannot touch the other. The comparison was
+once case-insensitive, and such a token could read and disable both. Group ids
+are uuids and match in their canonical form, however they are written.
+
 **`audit:read` is not implied by any write scope.** The implication rule exists
 so a token that may change a thing can see *that thing*; the audit trail is not
 that thing, it is the record of everyone who touched it. Granting `users:write`

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/store"
 )
 
 // Scopes. Deliberately few. A permission model nobody can hold in their head is
@@ -124,12 +126,27 @@ func (p *Principal) MayActOnGroup(groupID string) error {
 // Written once because the two call sites must not drift: a copy that treated
 // empty as unrestricted for groups and not for clients would be a boundary that
 // holds for one object kind, which reads as enforced and is not.
+//
+// Compared as each kind's key is compared everywhere else. A client id is a
+// case-sensitive key, so it matches exactly: compared without case, a token
+// for `app` could act on a different client called `APP`. A group id is a
+// uuid, so it matches in the canonical form PostgreSQL stores.
 func (p *Principal) mayActOnObject(kind, id string, allowed []string) error {
 	if allowed == nil {
 		return nil
 	}
+	if kind == "group" {
+		if c, ok := store.CanonicalUUID(id); ok {
+			id = c
+		}
+	}
 	for _, a := range allowed {
-		if strings.EqualFold(a, id) {
+		if kind == "group" {
+			if c, ok := store.CanonicalUUID(a); ok {
+				a = c
+			}
+		}
+		if a == id {
 			return nil
 		}
 	}
@@ -339,12 +356,14 @@ func orgFilter(ctx context.Context) *string {
 // `= ANY('{}')` is false. This is the same distinction mayActOnObject draws.
 // Lower-cased, because mayActOnObject compares without case. Fails closed
 // without a principal.
+// clientFilter is the token's client allow-list as given: client ids are
+// case-sensitive keys and match exactly (see mayActOnObject).
 func clientFilter(ctx context.Context) []string {
 	p, ok := principalFrom(ctx)
 	if !ok {
 		return []string{}
 	}
-	return lowered(p.ClientIDs)
+	return p.ClientIDs
 }
 
 func groupFilter(ctx context.Context) []string {

@@ -12,6 +12,7 @@
 package passkeys
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -263,6 +264,30 @@ func (r *Relying) FinishLogin(u *User, sd webauthn.SessionData, req *http.Reques
 // returned.
 func (r *Relying) FinishDiscoverableLogin(h webauthn.DiscoverableUserHandler, sd webauthn.SessionData, req *http.Request) (*webauthn.Credential, error) {
 	return r.w.FinishDiscoverableLogin(h, sd, req)
+}
+
+// Reason renders a ceremony failure for the operator's log.
+//
+// go-webauthn's error prints only its Details, and many of its refusals carry
+// the explanation in the type and debug fields alone, so a refused
+// registration logged as err="" -- nothing to tell a forged attestation from a
+// wrong origin. Logged, never returned: the caller tells the browser only that
+// the response was rejected.
+func Reason(err error) string {
+	var pe *protocol.Error
+	if !errors.As(err, &pe) {
+		return fmt.Sprint(err)
+	}
+	parts := []string{}
+	for _, p := range []string{pe.Type, pe.Details, pe.DevInfo} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	if pe.Err != nil {
+		parts = append(parts, pe.Err.Error())
+	}
+	return strings.Join(parts, ": ")
 }
 
 func contains(hay []string, needle string) bool {

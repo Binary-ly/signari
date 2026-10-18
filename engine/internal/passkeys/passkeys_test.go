@@ -7,6 +7,28 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 )
 
+// A refusal whose explanation is only in the type and debug fields still says
+// something in the log; it once logged as err="".
+func TestAReasonCarriesWhatTheLibraryPutOutsideDetails(t *testing.T) {
+	err := error(protocol.ErrMetadata.WithInfo("the chain does not reach the catalogue's roots"))
+	if err.Error() != "" {
+		t.Skip("the library now prints more than Details; Reason may be redundant")
+	}
+	got := Reason(err)
+	for _, want := range []string{protocol.ErrMetadata.Type, "does not reach"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Reason(%#v) = %q, missing %q", err, got, want)
+		}
+	}
+	if got := Reason(errOther("plain")); got != "plain" {
+		t.Errorf("a plain error renders as %q", got)
+	}
+}
+
+type errOther string
+
+func (e errOther) Error() string { return string(e) }
+
 // An instance with no rp_id must refuse to build a relying party rather than
 // guess. Guessing produces credentials bound to a value nobody chose, and the
 // value is permanent once a passkey exists.

@@ -266,7 +266,7 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		// Logged with the reason, returned without it: attestation failures are
 		// detailed and would tell an attacker exactly which check they tripped.
-		s.log.Info("registration failed verification", "err", err)
+		s.log.Info("registration failed verification", "err", passkeys.Reason(err))
 		writeError(w, http.StatusBadRequest, "invalid_request", "the authenticator response was rejected")
 		return
 	}
@@ -571,7 +571,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 
 	cred, err := rp.FinishDiscoverableLogin(handler, *sd, r)
 	if err != nil {
-		s.log.Info("passkey assertion rejected", "err", err)
+		s.log.Info("passkey assertion rejected", "err", passkeys.Reason(err))
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, CorrelationID: correlationID(ctx),
 			Detail: map[string]any{"reason": "passkey_assertion_rejected"},

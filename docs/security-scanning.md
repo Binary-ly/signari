@@ -1,10 +1,16 @@
 # Static analysis
 
 ```sh
-cd engine
-govulncheck ./...
-gosec -exclude=G101 ./...
+cd engine && govulncheck ./...
+scripts/gosec-check.sh        # from the repository root
 ```
+
+`scripts/gosec-check.sh` runs `gosec -exclude=G101` and compares its findings,
+per rule and per file, with [`engine/gosec-baseline.txt`](../engine/gosec-baseline.txt).
+It fails on any finding the baseline does not already account for, and reports
+any count that has fallen so the baseline can be lowered in the same change. The
+baseline is the reviewed list, with the reason for each class beside it; a total
+on its own let a new finding hide behind one that had gone away.
 
 ## gosec
 
@@ -246,6 +252,33 @@ The rules stay on. A false positive that costs an hour of live verification once
 is a better trade than switching off the rule that would have caught the real one.
 
 **Baseline: 53, all reviewed.** Verified against `signari serve`, not by reading.
+
+### 53 to 71, and the two that were real
+
+The next run found 73. Twenty findings had arrived with new code and newer rules,
+and each was traced to its source rather than added to the total:
+
+- **G116, Trojan Source — real.** `internal/i18n/printer.go` held its two isolate
+  characters as raw bytes, and two test files held fifteen more invisible
+  characters the same way. Now written as escapes, and
+  `TestNoInvisibleFormattingCharacterIsWrittenRaw` fails the build on any raw
+  bidirectional, zero-width or separator character in a tracked file.
+- **G114 — real, if minor.** The remote-access test harness served with no header
+  deadline; it now has one.
+- **G115 ×3** in `internal/radius/authorization.go` — `taggedInteger` splits a
+  three-octet RFC 2868 value into bytes on purpose, and is called with constants.
+- **G705** — the trust-mark endpoint writes a JWT under its own media type with
+  `nosniff`; no browser renders it as HTML.
+- **G117, G203, G204, G301, G306** — a protocol field named `access_token`;
+  catalogue text marked safe only after every value is escaped; `kadmin` argv
+  with no shell; ejected theme templates and a QR image written world-readable,
+  none of them secrets.
+- **G710 rose to 14** with the logout chain, federation return and Duo: every
+  destination again resolves through a registered value, configuration, or the
+  same-origin check in `parkedReturn`.
+
+**Baseline: 71**, listed by rule and file in `engine/gosec-baseline.txt` and
+enforced by `scripts/gosec-check.sh`.
 
 ## A fourth sweep: exported functions nothing calls
 

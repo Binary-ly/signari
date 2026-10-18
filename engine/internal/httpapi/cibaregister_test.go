@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
 // CIBA §4 makes `backchannel_token_delivery_mode` REQUIRED client metadata. This
@@ -70,8 +69,13 @@ func registrationToken(t *testing.T, f *tokenFixture) string {
 // per address per hour, and httptest's default 192.0.2.1 would carry every
 // run's registrations into the same bucket until a later run is refused.
 func freshAddress() string {
-	n := time.Now().UnixNano()
-	return fmt.Sprintf("198.51.%d.%d", (n/251)%250+1, n%250+1)
+	// Random, not clock-derived. The clock on macOS counts in microseconds, so
+	// UnixNano()%250 was always 0 and every address ended in .1: 250 addresses
+	// shared across every run in the hour, and the 21st registration from one
+	// of them was refused as a burst.
+	var b [2]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("198.51.%d.%d", int(b[0])%250+1, int(b[1])%250+1)
 }
 
 func registerWithMode(t *testing.T, f *tokenFixture, mode string) (int, string) {

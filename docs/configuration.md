@@ -139,6 +139,33 @@ See [SMS](sms.md), including why it is the weakest factor offered here.
 | `SIGNARI_SMS_TWILIO_SID`, `SIGNARI_SMS_TWILIO_TOKEN` | Twilio credentials |
 | `SIGNARI_SMS_WEBHOOK_URL`, `SIGNARI_SMS_WEBHOOK_AUTH` | For any other provider. Must be https: the body carries a live code |
 
+## Second-factor guessing
+
+| | |
+|---|---|
+| `SIGNARI_MFA_FAILURE_LIMIT` | Consecutive wrong codes before an authenticator app, or an account's set of recovery codes, is **switched off** rather than paused. Default and maximum **100**, the ceiling NIST SP 800-63B §3.2.2 sets; minimum 10. Anything else is **fatal at startup** |
+
+Three limits sit at the code step, and only the last is this setting:
+
+- **A pause.** Five wrong authenticator codes lock it for five minutes, and each
+  further failure locks it again.
+- **A rate.** Ten wrong codes per account per fifteen minutes, and the sign-in
+  form's own per-address budget (twenty per five minutes), answer `429` with
+  `Retry-After`. The account limit covers every kind of code, so an account whose
+  second factor is not an authenticator app is bounded too.
+- **A ceiling.** At the limit the factor is disabled: its codes are refused,
+  right or wrong, until the person re-enrols (an authenticator app) or generates
+  a new set (recovery codes) after signing in another way, or an operator removes
+  it with `DELETE /admin/users/{userID}/factors/totp` or `…/factors/recovery`.
+  The account holder is told on every channel they have, and the audit trail
+  records `mfa.factor_disabled`. A disabled factor still counts as the account's
+  second factor, so switching it off never leaves a password that signs in alone.
+
+A wrong code is counted against the factor it could have been: six digits
+against the authenticator app, twenty recovery-code characters against the
+recovery codes. Only somebody who already entered the password reaches this
+step, so unlike a password counter these cannot be used to lock out a stranger.
+
 ## Audit streaming
 
 Forwarding the audit trail to a logically separate system (ASVS V16.4.3). Off

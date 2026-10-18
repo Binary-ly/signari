@@ -53,6 +53,10 @@ var factorTables = map[string]bool{
 	// them for a code their phone cannot produce. It becomes a factor only by
 	// being moved into totp_credentials on confirmation.
 	"totp_enrolments": false,
+
+	// A count of wrong recovery codes, not a credential. It removes a way in
+	// (the recovery codes, at the ceiling); it is never a way in itself.
+	"recovery_code_failures": false,
 }
 
 // TestEveryFactorTableIsChecked fails when a second-factor table exists that

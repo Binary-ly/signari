@@ -235,6 +235,14 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 	code := r.PostForm.Get("code")
 	const generic = "That code is not valid."
 
+	ip := clientIP(r)
+	if ip == "" {
+		ip = "unknown"
+	}
+	if !s.allowSecondFactorAttempt(ctx, w, pending.Subject, ip) {
+		return
+	}
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -242,27 +250,30 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	amr, ok, err := s.verifySecondFactor(ctx, tx, pending.Subject, code)
+	res, err := s.verifySecondFactor(ctx, tx, pending.Subject, code)
 	if err != nil {
 		s.log.Error("verifying second factor", "err", err)
 		s.renderMFA(w, r, pending.Authz, "Something went wrong. Please try again.")
 		return
 	}
-	if !ok {
+	if !res.OK {
 		// Committed: the failure counter and any lockout must persist even
 		// though the sign-in did not. Rolling back here would make the lockout
 		// unreachable, since every failed attempt would undo its own record.
 		if err := tx.Commit(ctx); err != nil {
 			s.log.Error("committing failed second factor", "err", err)
 		}
+		s.recordSecondFactorFailure(ctx, pending.Subject, ip)
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: pending.OrgID, SubjectID: pending.Subject,
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"reason": "bad_second_factor"},
 		})
+		s.factorsDisabled(ctx, pending.OrgID, pending.Subject, res.Disabled)
 		s.renderMFA(w, r, pending.Authz, generic)
 		return
 	}
+	amr := res.AMR
 
 	// Both factors are now proven. amr records what ACTUALLY happened, and acr is
 	// derived from it rather than asserted.
@@ -279,27 +290,151 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, full, pending.Authz)
 }
 
-// verifySecondFactor accepts either a TOTP code or a recovery code.
+// The second-factor guessing budget.
+//
+// Two limits, both charged only by a wrong code and read before one is checked,
+// in the same way as the password step (allowSignInAttempt):
+//
+//   - Per account, keyed by the user the password step proved. Unlike the sign-in
+//     form's per-account key this one cannot be chosen by a stranger: only
+//     somebody holding the password reaches the code step, so it can be tight.
+//     It is what bounds recovery-code guessing for an account whose second
+//     factor is not an authenticator app, which had no limit at all.
+//   - Per address, the sign-in form's own `signin:fail:ip:` bucket. A guess is a
+//     guess whichever box it was typed into; two doors onto one budget, for the
+//     reason ldapauth.go gives.
+//
+// The per-factor counters in store (the TOTP pause, and the consecutive ceiling
+// that disables a factor) sit under these and are what NIST SP 800-63B §3.2.2
+// asks for. These bound the rate; those bound the total.
+const (
+	secondFactorPerAccountLimit  = 10
+	secondFactorPerAccountWindow = 15 * time.Minute
+)
+
+func secondFactorAccountKey(userID string) string { return "mfa:fail:user:" + userID }
+
+// allowSecondFactorAttempt answers 429 and returns false when either budget is
+// spent. ip is empty where the client's address is not the person's -- an
+// outpost relaying for a desktop -- and then only the account is checked.
+func (s *Server) allowSecondFactorAttempt(ctx context.Context, w http.ResponseWriter, userID, ip string) bool {
+	check := func(key string, limit int, window time.Duration) bool {
+		n, err := store.CountRate(ctx, s.db, key, window)
+		if err != nil {
+			// Fail closed, as the password step does: verifying the code needs
+			// the database one query later anyway.
+			s.log.Error("checking the second-factor rate limit", "err", err)
+			writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
+			return false
+		}
+		if n >= limit {
+			s.tooManyAttempts(w, window)
+			return false
+		}
+		return true
+	}
+	if ip != "" && !check("signin:fail:ip:"+ip, signInPerIPLimit, signInPerIPWindow) {
+		return false
+	}
+	return check(secondFactorAccountKey(userID), secondFactorPerAccountLimit,
+		secondFactorPerAccountWindow)
+}
+
+// recordSecondFactorFailure charges a wrong code to both budgets.
+func (s *Server) recordSecondFactorFailure(ctx context.Context, userID, ip string) {
+	if ip != "" {
+		if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+ip,
+			signInPerIPLimit, signInPerIPWindow); err != nil {
+			s.log.Error("recording a second-factor failure", "err", err)
+		}
+	}
+	if _, err := store.AllowRate(ctx, s.db, secondFactorAccountKey(userID),
+		secondFactorPerAccountLimit, secondFactorPerAccountWindow); err != nil {
+		s.log.Error("recording a second-factor failure", "err", err)
+	}
+}
+
+// factorsDisabled records and announces each factor a failed code switched off.
+//
+// Called after the failure is committed. The account holder is told on every
+// channel they have, in their own language: whoever disabled the factor holds
+// their password, so the notice is the thing that tells them to change it.
+func (s *Server) factorsDisabled(ctx context.Context, orgID, userID string, disabled []string) {
+	for _, factor := range disabled {
+		s.auditDetached(ctx, audit.Event{
+			Type: "mfa.factor_disabled", OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+			Detail: map[string]any{
+				"factor": factor, "reason": "consecutive_failures",
+				"limit": s.failureLimit(),
+			},
+		})
+		s.log.Warn("second factor disabled after consecutive failures",
+			"user_id", userID, "factor", factor, "limit", s.failureLimit())
+
+		tr := s.notifierFor(ctx, userID)
+		var err error
+		switch factor {
+		case factorTOTP:
+			err = s.notifyAccount(ctx, userID, tr.Text("mail.totp.disabled.subject"),
+				tr.Text("mail.totp.disabled.body"), tr.Text("sms.totp.disabled"))
+		case factorRecoveryCodes:
+			err = s.notifyAccount(ctx, userID, tr.Text("mail.recoverycodes.disabled.subject"),
+				tr.Text("mail.recoverycodes.disabled.body"), tr.Text("sms.recoverycodes.disabled"))
+		}
+		if err != nil {
+			s.log.Error("telling the account holder a factor was disabled",
+				"user_id", userID, "factor", factor, "err", err)
+		}
+	}
+}
+
+// The factors a failed code can disable, as named in the audit record.
+const (
+	factorTOTP          = "totp"
+	factorRecoveryCodes = "recovery_codes"
+)
+
+// secondFactorResult is what one presented code did.
+type secondFactorResult struct {
+	AMR []string
+	OK  bool
+	// Disabled names each factor this failure switched off, for the caller to
+	// record and announce once the failure is committed.
+	Disabled []string
+}
+
+// verifySecondFactor accepts a TOTP, email, SMS or recovery code.
 //
 // Recovery codes are tried only after TOTP fails, so a recovery code is never
 // consumed by a user who simply mistyped their authenticator code.
-func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code string) ([]string, bool, error) {
+//
+// A wrong code is charged to each factor it could have been a guess at -- the
+// authenticator when it has the authenticator's shape, the recovery codes when
+// it has theirs -- because §3.2.2 counts failures per authenticator, and a
+// mistyped six-digit code charged to the recovery codes would let ordinary
+// typing errors disable the codes kept for the day the phone is gone. Email and
+// SMS codes count their own attempts per code (store.VerifyEmailOTP).
+func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code string) (secondFactorResult, error) {
+	var res secondFactorResult
 	cred, err := store.LoadTOTP(ctx, tx, userID, s.cfg.Root)
 	switch {
-	case errors.Is(err, store.ErrTOTPLocked):
-		return nil, false, nil
+	case errors.Is(err, store.ErrTOTPLocked), errors.Is(err, store.ErrTOTPDisabled):
+		// Not tried and not charged. The other factors still are, each with its
+		// own limit -- which is what lets somebody whose authenticator an
+		// attacker paused or disabled sign in with a recovery code.
 	case errors.Is(err, store.ErrNoTOTP):
-		// No authenticator; a recovery code is the only second factor available.
+		// No authenticator; the other factors are what is available.
 	case err != nil:
-		return nil, false, err
+		return res, err
 	default:
 		counter, verr := mfa.Verify(cred.Secret, code, time.Now(), cred.Digits,
 			cred.Period, mfa.DefaultSkew, cred.LastCounter)
 		if verr == nil {
 			if err := store.RecordTOTPSuccess(ctx, tx, userID, counter); err != nil {
-				return nil, false, err
+				return res, err
 			}
-			return []string{"otp"}, true, nil
+			return secondFactorResult{AMR: []string{"otp"}, OK: true}, nil
 		}
 	}
 
@@ -307,9 +442,9 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 	// user who chose it will actually be holding -- and because a recovery code
 	// is the last resort, not the second guess.
 	if ok, eerr := store.VerifyEmailOTP(ctx, tx, userID, strings.TrimSpace(code)); eerr != nil {
-		return nil, false, eerr
+		return res, eerr
 	} else if ok {
-		return []string{"otp"}, true, nil
+		return secondFactorResult{AMR: []string{"otp"}, OK: true}, nil
 	}
 
 	// SMS. The amr value is "sms", NOT "otp".
@@ -322,28 +457,43 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 	// documenting the weakness and then erasing it in the one field that
 	// machines read.
 	if ok, serr := store.VerifySMSOTP(ctx, tx, userID, strings.TrimSpace(code)); serr != nil {
-		return nil, false, serr
+		return res, serr
 	} else if ok {
-		return []string{oauth.AMRSMS}, true, nil
+		return secondFactorResult{AMR: []string{oauth.AMRSMS}, OK: true}, nil
 	}
 
 	used, err := store.ConsumeRecoveryCode(ctx, tx, userID, code)
 	if err != nil {
-		return nil, false, err
+		return res, err
 	}
 	if used {
 		// `rba` is not right and `otp` would overstate it: a recovery code is a
 		// possession factor the user wrote down. RFC 8176 has no better value,
 		// so `otp` is used and the audit record carries the distinction.
-		return []string{"otp"}, true, nil
+		return secondFactorResult{AMR: []string{"otp"}, OK: true}, nil
 	}
 
-	if cred != nil {
-		if _, err := store.RecordTOTPFailure(ctx, tx, userID); err != nil {
-			return nil, false, err
+	// cred is nil when the authenticator was absent, paused or disabled: only
+	// one that was actually tried is charged.
+	if cred != nil && mfa.Plausible(code, cred.Digits) {
+		f, err := store.RecordTOTPFailure(ctx, tx, userID, s.failureLimit())
+		if err != nil {
+			return res, err
+		}
+		if f.Disabled {
+			res.Disabled = append(res.Disabled, factorTOTP)
 		}
 	}
-	return nil, false, nil
+	if store.CouldBeRecoveryCode(code) {
+		f, err := store.RecordRecoveryCodeFailure(ctx, tx, userID, s.failureLimit())
+		if err != nil {
+			return res, err
+		}
+		if f.Disabled {
+			res.Disabled = append(res.Disabled, factorRecoveryCodes)
+		}
+	}
+	return res, nil
 }
 
 func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, authzQuery, msg string) {

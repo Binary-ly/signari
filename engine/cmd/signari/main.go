@@ -1514,6 +1514,24 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// Needed to unseal personal user attributes for operator-defined claims.
 	srv.SetRootKey(root)
 
+	// Consecutive wrong codes before a second factor is switched off. Fatal when
+	// malformed or out of range, like the SMS gateway above: a deployment that
+	// asked for a stricter limit and silently got the default has a weaker
+	// control than it believes.
+	failureLimit := 0
+	if v := os.Getenv("SIGNARI_MFA_FAILURE_LIMIT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("SIGNARI_MFA_FAILURE_LIMIT is not a number: %q", v)
+		}
+		failureLimit = n
+	}
+	failureLimit, err = store.FactorFailureLimit(failureLimit)
+	if err != nil {
+		return fmt.Errorf("SIGNARI_MFA_FAILURE_LIMIT: %w", err)
+	}
+	srv.SetFactorFailureLimit(failureLimit)
+
 	// OpenID Federation keys, loaded only if this instance has any.
 	//
 	// A deployment that is not in a federation has none, and that is the

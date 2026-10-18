@@ -130,17 +130,32 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		factors, verified, verr := s.verifySecondFactor(ctx, tx, userID, body.Code)
+		// The browser's code step and this one draw on one budget per account.
+		// No address: the client here is the outpost, and charging its address
+		// would let one person's typing lock every desktop behind it out. The
+		// outpost token has its own ceiling (outpost.go).
+		if !s.allowSecondFactorAttempt(ctx, w, userID, "") {
+			return
+		}
+		res, verr := s.verifySecondFactor(ctx, tx, userID, body.Code)
 		if verr != nil {
 			s.log.Error("verifying a desktop second factor", "err", verr)
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
-		if !verified {
+		if !res.OK {
+			// Committed, as on the browser's code step: rolling back would undo
+			// the failure count with the sign-in, and the lockout and the ceiling
+			// would never be reached from here. They were not, until this.
+			if err := tx.Commit(ctx); err != nil {
+				s.log.Error("committing a failed desktop second factor", "err", err)
+			}
+			s.recordSecondFactorFailure(ctx, userID, "")
+			s.factorsDisabled(ctx, orgID, userID, res.Disabled)
 			refuse("wrong second factor")
 			return
 		}
-		amr = append(amr, factors...)
+		amr = append(amr, res.AMR...)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

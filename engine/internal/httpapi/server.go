@@ -162,6 +162,22 @@ type Server struct {
 	// the fixed claim set still works, so a Server built without a root key
 	// serves ordinary OIDC rather than failing.
 	root *keys.RootKey
+
+	// factorFailureLimit is how many consecutive wrong codes switch a second
+	// factor off. Zero -- a Server built as a literal -- means the NIST ceiling;
+	// read through failureLimit().
+	factorFailureLimit int
+}
+
+// SetFactorFailureLimit supplies how many consecutive wrong codes disable a
+// second factor, already checked by store.FactorFailureLimit.
+func (s *Server) SetFactorFailureLimit(n int) { s.factorFailureLimit = n }
+
+func (s *Server) failureLimit() int {
+	if s.factorFailureLimit <= 0 {
+		return store.MaxConsecutiveFactorFailures
+	}
+	return s.factorFailureLimit
 }
 
 // SetRootKey supplies the key that unwraps subject keys.

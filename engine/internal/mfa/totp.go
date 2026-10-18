@@ -133,21 +133,38 @@ var ErrReplay = fmt.Errorf("mfa: code has already been used")
 // ErrInvalidCode is every other failure, deliberately undifferentiated.
 var ErrInvalidCode = fmt.Errorf("mfa: code is invalid")
 
+// Plausible reports whether a submission could match any code of this length:
+// exactly that many decimal digits once surrounding space is trimmed. Verify
+// refuses everything else before computing anything, so a caller can use this
+// to charge a failure only to a credential the submission was a guess at.
+func Plausible(code string, digits int) bool {
+	code = strings.TrimSpace(code)
+	if digits <= 0 {
+		digits = DefaultDigits
+	}
+	if len(code) != digits {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		if code[i] < '0' || code[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // Verify checks a code and returns the counter it matched.
 //
 // lastUsed is the highest counter this credential has already accepted; pass 0
 // for a credential that has never been used. The caller MUST persist the
 // returned counter, or replay protection does not exist.
 func Verify(secret []byte, code string, now time.Time, digits int, period time.Duration, skew int, lastUsed int64) (int64, error) {
+	if !Plausible(code, digits) {
+		return 0, ErrInvalidCode
+	}
 	code = strings.TrimSpace(code)
 	if digits <= 0 {
 		digits = DefaultDigits
-	}
-	if len(code) != digits {
-		return 0, ErrInvalidCode
-	}
-	if _, err := strconv.Atoi(code); err != nil {
-		return 0, ErrInvalidCode
 	}
 	if skew < 0 {
 		skew = 0

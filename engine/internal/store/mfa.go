@@ -29,11 +29,41 @@ const (
 	// not to hand an attacker a way to lock a victim out by failing on their
 	// behalf -- a long lockout turns a defence into a denial of service.
 	TOTPLockout = 5 * time.Minute
+
+	// MaxConsecutiveFactorFailures is where a pause becomes a switch-off. The
+	// lockout above re-arms on every failure after the fifth, so on its own it
+	// allowed about 288 guesses a day for as long as anybody cared to keep
+	// going. NIST SP 800-63B §3.2.2: "The verifier SHALL limit consecutive
+	// failed authentication attempts using a specific authenticator on a single
+	// subscriber account to no more than 100 by disabling that authenticator".
+	//
+	// A deployment may set it lower (SIGNARI_MFA_FAILURE_LIMIT), never higher.
+	// Only someone who already passed the password step can spend these, so
+	// unlike a password counter it is not a way to lock a stranger out.
+	MaxConsecutiveFactorFailures = 100
+	// MinConsecutiveFactorFailures is the lowest that may be configured. Below
+	// it, a phone with a drifting clock and a user retyping the same stale code
+	// switches their own authenticator off.
+	MinConsecutiveFactorFailures = 10
 )
+
+// FactorFailureLimit returns the ceiling to apply, given what was configured:
+// zero means the default, and anything outside the allowed range is refused.
+func FactorFailureLimit(configured int) (int, error) {
+	if configured == 0 {
+		return MaxConsecutiveFactorFailures, nil
+	}
+	if configured < MinConsecutiveFactorFailures || configured > MaxConsecutiveFactorFailures {
+		return 0, fmt.Errorf("the second-factor failure limit must be between %d and %d, not %d",
+			MinConsecutiveFactorFailures, MaxConsecutiveFactorFailures, configured)
+	}
+	return configured, nil
+}
 
 var (
 	ErrNoTOTP           = errors.New("store: no TOTP credential")
 	ErrTOTPLocked       = errors.New("store: TOTP credential is locked")
+	ErrTOTPDisabled     = errors.New("store: TOTP credential was disabled after repeated failures")
 	ErrNoTOTPEnrolment  = errors.New("store: no TOTP enrolment in progress")
 	ErrTOTPEnrolmentOld = errors.New("store: the TOTP enrolment has expired; start again")
 )
@@ -150,7 +180,8 @@ func CompleteTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, counte
 			confirmed_at = now(),
 			last_used_counter = EXCLUDED.last_used_counter,
 			failed_attempts = 0,
-			locked_until = NULL`, userID, counter)
+			locked_until = NULL,
+			disabled_at = NULL`, userID, counter)
 	if err != nil {
 		return false, fmt.Errorf("confirming the TOTP credential: %w", err)
 	}
@@ -167,14 +198,15 @@ func CompleteTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, counte
 func LoadTOTP(ctx context.Context, tx pgx.Tx, userID string, root *keys.RootKey) (*TOTPCredential, error) {
 	var sealed []byte
 	var digits, period int
-	var confirmedAt, lockedUntil *time.Time
+	var confirmedAt, lockedUntil, disabledAt *time.Time
 	var lastCounter int64
 
 	err := tx.QueryRow(ctx, `
-		SELECT secret_enc, digits, period_secs, confirmed_at, last_used_counter, locked_until
+		SELECT secret_enc, digits, period_secs, confirmed_at, last_used_counter, locked_until,
+		       disabled_at
 		FROM core.totp_credentials WHERE user_id = $1::uuid
 		FOR UPDATE`, userID).
-		Scan(&sealed, &digits, &period, &confirmedAt, &lastCounter, &lockedUntil)
+		Scan(&sealed, &digits, &period, &confirmedAt, &lastCounter, &lockedUntil, &disabledAt)
 	if err == pgx.ErrNoRows {
 		return nil, ErrNoTOTP
 	}
@@ -184,6 +216,9 @@ func LoadTOTP(ctx context.Context, tx pgx.Tx, userID string, root *keys.RootKey)
 
 	// Checked before decrypting: a locked credential should cost an attacker a
 	// lookup, not an unwrap.
+	if disabledAt != nil {
+		return nil, ErrTOTPDisabled
+	}
 	if lockedUntil != nil && time.Now().Before(*lockedUntil) {
 		return nil, ErrTOTPLocked
 	}
@@ -221,20 +256,40 @@ func RecordTOTPSuccess(ctx context.Context, tx pgx.Tx, userID string, counter in
 	return nil
 }
 
-// RecordTOTPFailure increments the counter and locks on the threshold.
-func RecordTOTPFailure(ctx context.Context, tx pgx.Tx, userID string) (locked bool, err error) {
-	err = tx.QueryRow(ctx, `
+// FactorFailure is what one failed code did to a factor.
+type FactorFailure struct {
+	// Locked is the short TOTP pause; recovery codes have no pause, only the
+	// ceiling.
+	Locked bool
+	// Disabled is true only for the failure that switched the factor off, so
+	// the account holder is told once rather than on every later attempt.
+	Disabled bool
+}
+
+// RecordTOTPFailure increments the counter, locks on the threshold, and
+// disables the credential on the ceiling (see MaxConsecutiveFactorFailures).
+//
+// failed_attempts is reset only by a success, so it is the CONSECUTIVE count
+// §3.2.2 asks for. A credential already disabled is left alone: nothing tries
+// it, so nothing should be counting against it.
+func RecordTOTPFailure(ctx context.Context, tx pgx.Tx, userID string, ceiling int) (FactorFailure, error) {
+	var f FactorFailure
+	err := tx.QueryRow(ctx, `
 		UPDATE core.totp_credentials
 		SET failed_attempts = failed_attempts + 1,
 		    locked_until = CASE WHEN failed_attempts + 1 >= $2
-		                        THEN now() + $3::interval ELSE locked_until END
-		WHERE user_id = $1::uuid
-		RETURNING locked_until IS NOT NULL AND locked_until > now()`,
-		userID, MaxTOTPFailures, TOTPLockout.String()).Scan(&locked)
-	if err != nil {
-		return false, fmt.Errorf("recording TOTP failure: %w", err)
+		                        THEN now() + $3::interval ELSE locked_until END,
+		    disabled_at = CASE WHEN failed_attempts + 1 >= $4 THEN now() END
+		WHERE user_id = $1::uuid AND disabled_at IS NULL
+		RETURNING locked_until IS NOT NULL AND locked_until > now(), disabled_at IS NOT NULL`,
+		userID, MaxTOTPFailures, TOTPLockout.String(), ceiling).Scan(&f.Locked, &f.Disabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FactorFailure{}, nil
 	}
-	return locked, nil
+	if err != nil {
+		return FactorFailure{}, fmt.Errorf("recording TOTP failure: %w", err)
+	}
+	return f, nil
 }
 
 // recoveryAlphabet excludes characters people confuse when reading a code they
@@ -258,6 +313,12 @@ func GenerateRecoveryCodes(ctx context.Context, tx pgx.Tx, userID, orgID string,
 		`DELETE FROM core.recovery_codes WHERE user_id = $1::uuid`, userID); err != nil {
 		return nil, fmt.Errorf("clearing old recovery codes: %w", err)
 	}
+	// A new set starts with a clean count. The failures were guesses at codes
+	// that no longer exist, and a set disabled for them is the set being
+	// replaced.
+	if err := ClearRecoveryCodeFailures(ctx, tx, userID); err != nil {
+		return nil, err
+	}
 
 	out := make([]string, 0, count)
 	for i := 0; i < count; i++ {
@@ -280,6 +341,10 @@ func GenerateRecoveryCodes(ctx context.Context, tx pgx.Tx, userID, orgID string,
 // Single use, enforced by the UPDATE's own WHERE clause rather than a read
 // followed by a write: two simultaneous attempts with the same code must not
 // both succeed, and only the atomic form guarantees that.
+//
+// A set disabled by RecordRecoveryCodeFailure accepts nothing, the right code
+// included: after a hundred consecutive wrong ones the next right one is as
+// likely to be the hundred-and-first guess as the account holder.
 func ConsumeRecoveryCode(ctx context.Context, tx pgx.Tx, userID, code string) (bool, error) {
 	normalised := normaliseRecoveryCode(code)
 	if normalised == "" {
@@ -288,12 +353,66 @@ func ConsumeRecoveryCode(ctx context.Context, tx pgx.Tx, userID, code string) (b
 	tag, err := tx.Exec(ctx, `
 		UPDATE core.recovery_codes
 		SET used_at = now()
-		WHERE user_id = $1::uuid AND code_hash = $2 AND used_at IS NULL`,
+		WHERE user_id = $1::uuid AND code_hash = $2 AND used_at IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM core.recovery_code_failures f
+		                   WHERE f.user_id = $1::uuid AND f.disabled_at IS NOT NULL)`,
 		userID, hashRecoveryCode(normalised))
 	if err != nil {
 		return false, fmt.Errorf("consuming recovery code: %w", err)
 	}
-	return tag.RowsAffected() == 1, nil
+	if tag.RowsAffected() != 1 {
+		return false, nil
+	}
+	// Consecutive failures: an accepted code ends the run.
+	if err := ClearRecoveryCodeFailures(ctx, tx, userID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// RecordRecoveryCodeFailure counts one wrong recovery code against the account
+// and disables the set on the ceiling (see MaxConsecutiveFactorFailures).
+// Disabled is true only for the failure that disabled it.
+//
+// Counted per account rather than per code because the guess is not at a code:
+// a submission is checked against every unused code at once, so the set is the
+// authenticator §3.2.2 is talking about. An account with no unused code has no
+// set to guess at, and nothing is counted -- or announced as disabled.
+func RecordRecoveryCodeFailure(ctx context.Context, tx pgx.Tx, userID string, ceiling int) (FactorFailure, error) {
+	var f FactorFailure
+	err := tx.QueryRow(ctx, `
+		INSERT INTO core.recovery_code_failures (user_id, org_id, failed_attempts, disabled_at)
+		SELECT u.id, u.org_id, 1, CASE WHEN 1 >= $2 THEN now() END
+		  FROM core.users u
+		 WHERE u.id = $1::uuid
+		   AND EXISTS (SELECT 1 FROM core.recovery_codes c
+		                WHERE c.user_id = u.id AND c.used_at IS NULL)
+		ON CONFLICT (user_id) DO UPDATE SET
+			failed_attempts = core.recovery_code_failures.failed_attempts + 1,
+			disabled_at = CASE WHEN core.recovery_code_failures.failed_attempts + 1 >= $2
+			                   THEN now() END,
+			updated_at = now()
+		WHERE core.recovery_code_failures.disabled_at IS NULL
+		RETURNING disabled_at IS NOT NULL`, userID, ceiling).Scan(&f.Disabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Already disabled (or no such user): nothing is counting.
+		return FactorFailure{}, nil
+	}
+	if err != nil {
+		return FactorFailure{}, fmt.Errorf("recording a recovery code failure: %w", err)
+	}
+	return f, nil
+}
+
+// ClearRecoveryCodeFailures forgets the count and re-enables the set: called
+// when a code is accepted, when the set is regenerated, and when an operator
+// removes it.
+func ClearRecoveryCodeFailures(ctx context.Context, tx pgx.Tx, userID string) error {
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM core.recovery_code_failures WHERE user_id = $1::uuid`, userID); err != nil {
+		return fmt.Errorf("clearing recovery code failures: %w", err)
+	}
+	return nil
 }
 
 // RemainingRecoveryCodes drives the "you have N codes left" warning. Running out
@@ -324,7 +443,7 @@ func RemainingRecoveryCodes(ctx context.Context, tx pgx.Tx, userID string) (int,
 // than breaking anything, and it is still the kind of thing that has no reason
 // to be here: rejection sampling removes it for a loop nobody will notice.
 func newRecoveryCode() (string, error) {
-	const chars = 20
+	const chars = recoveryCodeLength
 	// The largest multiple of the alphabet that fits in a byte. Anything at or
 	// above it is redrawn rather than folded, which is what removes the bias.
 	const limit = 256 - (256 % len(recoveryAlphabet)) // 248 for 31 symbols
@@ -346,6 +465,19 @@ func newRecoveryCode() (string, error) {
 		}
 	}
 	return sb.String(), nil
+}
+
+// recoveryCodeLength is how many alphabet characters a code has, separators
+// not counted.
+const recoveryCodeLength = 20
+
+// CouldBeRecoveryCode reports whether a submission has the shape of a recovery
+// code once normalised, so a failure is charged to the recovery codes only when
+// it could have been one. A mistyped six-digit authenticator code is not a guess
+// at a recovery code, and charging it as one would let ordinary typing errors
+// disable the codes a person keeps for the day the authenticator is gone.
+func CouldBeRecoveryCode(s string) bool {
+	return len(normaliseRecoveryCode(s)) == recoveryCodeLength
 }
 
 // normaliseRecoveryCode accepts what a person actually types: any case, with or

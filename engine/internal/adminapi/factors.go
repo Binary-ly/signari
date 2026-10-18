@@ -71,13 +71,19 @@ var factorKinds = map[string]struct {
 	// keyed says the table holds one row per credential rather than one per
 	// user, so a delete needs the credential's own id.
 	keyed bool
+	// whole says a keyed kind may also be removed all at once, without an id.
+	// Recovery codes are one authenticator spread over several rows: the
+	// listing never shows their ids (it would be a list of the codes' handles
+	// for no purpose), and the support call is "remove this person's codes",
+	// including a set switched off for too many wrong attempts.
+	whole bool
 }{
 	"totp":      {table: "totp_credentials"},
 	"email_otp": {table: "email_otp_credentials"},
 	"sms_otp":   {table: "sms_otp_credentials"},
 	"duo":       {table: "duo_enrollments"},
 	"webauthn":  {table: "webauthn_credentials", keyed: true},
-	"recovery":  {table: "recovery_codes", keyed: true},
+	"recovery":  {table: "recovery_codes", keyed: true, whole: true},
 }
 
 type factorSummary struct {
@@ -90,7 +96,11 @@ type factorSummary struct {
 	// Confirmed distinguishes an enrolment that was completed from one that was
 	// started and abandoned. An unconfirmed TOTP row is not a usable factor and
 	// reporting it as one would have a support desk delete the wrong thing.
-	Confirmed bool   `json:"confirmed"`
+	Confirmed bool `json:"confirmed"`
+	// Disabled is a factor switched off for too many consecutive wrong codes:
+	// still the account's second factor, accepting nothing. The answer to "why
+	// does my authenticator not work", which is otherwise a mystery.
+	Disabled  bool   `json:"disabled,omitempty"`
 	CreatedAt string `json:"created_at,omitempty"`
 	LastUsed  string `json:"last_used_at,omitempty"`
 }
@@ -123,14 +133,16 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 	// behind that never worked.
 	var totpConfirmed *string
 	var totpCreated string
+	var totpDisabled bool
 	err := s.db.QueryRow(ctx, `
-		SELECT confirmed_at::text, created_at::text
+		SELECT confirmed_at::text, created_at::text, disabled_at IS NOT NULL
 		FROM core.totp_credentials WHERE user_id = $1::uuid`, userID).
-		Scan(&totpConfirmed, &totpCreated)
+		Scan(&totpConfirmed, &totpCreated, &totpDisabled)
 	switch {
 	case err == nil:
 		out = append(out, factorSummary{
-			Type: "totp", Confirmed: totpConfirmed != nil, CreatedAt: totpCreated,
+			Type: "totp", Confirmed: totpConfirmed != nil, Disabled: totpDisabled,
+			CreatedAt: totpCreated,
 		})
 	case !errors.Is(err, pgx.ErrNoRows):
 		s.log.Error("listing totp", "err", err)
@@ -190,9 +202,13 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 	// Recovery codes are reported as a COUNT of unused ones, never listed. A
 	// list would be the codes themselves.
 	var unused int
+	var recoveryDisabled bool
 	if err := s.db.QueryRow(ctx, `
-		SELECT count(*) FROM core.recovery_codes
-		WHERE user_id = $1::uuid AND used_at IS NULL`, userID).Scan(&unused); err != nil {
+		SELECT (SELECT count(*) FROM core.recovery_codes
+		         WHERE user_id = $1::uuid AND used_at IS NULL),
+		       EXISTS (SELECT 1 FROM core.recovery_code_failures
+		                WHERE user_id = $1::uuid AND disabled_at IS NOT NULL)`,
+		userID).Scan(&unused, &recoveryDisabled); err != nil {
 		s.log.Error("counting recovery codes", "err", err)
 	}
 
@@ -209,7 +225,10 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 		"user_id":               userID,
 		"factors":               out,
 		"recovery_codes_unused": unused,
-		"has_second_factor":     hasSecond,
+		// Switched off for too many wrong attempts: the unused codes above
+		// exist and none is accepted.
+		"recovery_codes_disabled": recoveryDisabled,
+		"has_second_factor":       hasSecond,
 	})
 }
 
@@ -227,7 +246,7 @@ func (s *Server) deleteUserFactor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	factorID := r.PathValue("factorID")
-	if spec.keyed && factorID == "" {
+	if spec.keyed && factorID == "" && !spec.whole {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "factor_id_required",
 			"detail": "a user may hold several of these, so the one to remove " +
@@ -262,7 +281,7 @@ func (s *Server) deleteUserFactor(w http.ResponseWriter, r *http.Request) {
 		// boundary undone by an omitted clause.
 		var tag pgconn.CommandTag
 		var execErr error
-		if spec.keyed {
+		if spec.keyed && factorID != "" {
 			tag, execErr = tx.Exec(ctx,
 				`DELETE FROM core.`+spec.table+` WHERE user_id = $1::uuid AND id = $2::uuid`,
 				userID, factorID)
@@ -276,6 +295,13 @@ func (s *Server) deleteUserFactor(w http.ResponseWriter, r *http.Request) {
 		removed = tag.RowsAffected()
 		if removed == 0 {
 			return errNotFound
+		}
+		// The whole set gone, its count of wrong attempts goes with it, so a
+		// set generated afterwards does not inherit a disabled state.
+		if kind == "recovery" && factorID == "" {
+			if err := store.ClearRecoveryCodeFailures(ctx, tx, userID); err != nil {
+				return err
+			}
 		}
 
 		// See the file comment: the sessions are the point, not a side effect.

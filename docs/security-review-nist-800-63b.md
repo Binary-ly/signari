@@ -157,12 +157,34 @@ implements what we implement.
 |---|---|
 | §3.1.4 single-factor OTP: "Verifiers **SHALL** accept a given OTP only once while it is valid to provide replay resistance" | **met** — the last accepted counter is stored per credential and a repeat is refused (`TestReplayIsRefused`) |
 | §3.1.2 look-up secrets: "A secret from a look-up secret authenticator **SHALL** be used successfully only once" | **met** — recovery codes are consumed by `UPDATE … WHERE used_at IS NULL`, so the row is spent by the statement that finds it and a concurrent second use affects no rows |
-| §3.2.2 rate limiting: "The verifier **SHALL** limit consecutive failed authentication attempts using a specific authenticator on a single subscriber account to no more than 100 **by disabling that authenticator**" | **met for TOTP; deliberately deviated for passwords** — see below |
+| §3.2.2 rate limiting: "The verifier **SHALL** limit consecutive failed authentication attempts using a specific authenticator on a single subscriber account to no more than 100 **by disabling that authenticator**" | **met for authenticator apps and recovery codes since October 2026; deliberately deviated for passwords** — see below |
 
 ### The deviation, stated rather than glossed
 
-**TOTP meets it comfortably.** `MaxTOTPFailures = 5` locks the credential, which
-is twenty times tighter than the ceiling the SHALL sets.
+**Authenticator apps and recovery codes meet it, since October 2026.** This row
+used to say TOTP met it "comfortably", because `MaxTOTPFailures = 5` locks the
+credential. That was wrong. The lock is a five-minute pause, and every failure
+after the fifth paused it again, forever. It never disabled anything. So the
+ceiling was not twenty times tighter than the SHALL: it did not exist. The real
+limit was a rate, about 288 guesses a day for as long as the attacker kept going.
+Recovery codes were not counted at all.
+
+Now the failure that reaches 100 consecutive wrong codes (or a lower
+`SIGNARI_MFA_FAILURE_LIMIT`) sets `disabled_at`. The authenticator app, or the
+account's set of recovery codes, then accepts nothing until it is re-enrolled,
+regenerated or removed by an operator. A success resets the count, so it really
+is *consecutive*. A wrong code is charged only to the authenticator it could have
+been: six digits to the app, twenty recovery-code characters to the codes. The
+holder is notified, and `mfa.factor_disabled` is audited. Tests:
+`TestTheCeilingFailureDisablesTheAuthenticator`,
+`TestRecoveryCodesAreDisabledAtTheCeiling`,
+`TestTheCeilingFailureDisablesTheFactorAndTellsTheHolder`.
+
+The objection below does not apply here, and the reason is specific. Only
+somebody who has already passed the password step can reach the code step. That
+person can disable a factor, but a stranger cannot. And a disabled factor still
+counts as the account's second factor, so disabling it never lets a password sign
+in alone.
 
 **Passwords do not meet it as written.** The protection is a *windowed rate
 limit* — 30 failures per 15 minutes per account, 20 per 5 minutes per address —
@@ -249,10 +271,10 @@ loss, compromise, revocation. This review had never opened it.
 
 | Requirement | Signari |
 |---|---|
-| §4.1.2.1: "When an authenticator is added, the CSP **SHALL** notify the subscriber via a mechanism independent of the transaction binding the new authenticator" | **not met** — see below |
+| §4.1.2.1: "When an authenticator is added, the CSP **SHALL** notify the subscriber via a mechanism independent of the transaction binding the new authenticator" | **met except for SMS.** Passkeys have been covered since 20 August 2026 (see *Account Notifications* below), authenticator apps and email codes since October 2026, and regenerated recovery codes as well. Binding an SMS number still sends nothing. The section below is kept as the record of the gap |
 | §4.3: "**SHALL** suspend, invalidate, or destroy compromised authenticators … promptly following compromise detection" | met — a credential can be removed from the account screen, and a session compromise revokes the refresh lineage |
 | §4.5: "**SHALL** promptly invalidate authenticators when a subscriber account ceases to exist …, when requested by the subscriber, when the authenticator is compromised …" | met |
-| §4.5: "**SHOULD** notify the subscriber when an authenticator is invalidated" | not met, same cause |
+| §4.5: "**SHOULD** notify the subscriber when an authenticator is invalidated" | met for passkey removal (see *§4.5 Invalidation* below), and for an authenticator app or a set of recovery codes disabled at §3.2.2's ceiling |
 
 ### The gap: adding an authenticator is silent
 
@@ -314,10 +336,12 @@ and §5 (session management) have now each been read against source. §6, §7 an
 — Security, Privacy and Customer Experience Considerations — are **informative**
 and carry no verifier SHALLs.
 
-One unmet SHALL stands: **§4.1.2.1's binding notification** (TODO 9h). One
-deliberate deviation stands: **§3.2.2's consecutive-failure limit** for passwords
-(TODO 9e), taken to avoid a targeted denial-of-service. Everything else in the
-normative sections is met, and now says where.
+When this was written, one SHALL was unmet: **§4.1.2.1's binding notification**
+(TODO 9h). It has since been closed for every authenticator except an SMS number.
+One deliberate deviation stands: **§3.2.2's consecutive-failure limit** for
+passwords (TODO 9e), taken to avoid a targeted denial of service. The authenticator
+half of §3.2.2 was recorded here as met, and it was not; October 2026 corrects
+that above. Everything else in the normative sections is met, and says where.
 
 ## Syncable authenticators and account notifications (20 August 2026)
 
@@ -377,10 +401,13 @@ credential list is a page nobody visits.
 
 > "CSPs SHALL support at least two notification addresses per subscriber account."
 
-**Still unmet.** We model one email address per user, so the notice reaches
-exactly one place — and if that mailbox is the one the attacker holds, it reaches
-nobody who matters. Recorded as **9l**: which channels to support is a decision
-about the product, and the schema and send path follow from it.
+**Met since this was written.** Every security notice now goes out through
+`notifyAccount`, which sends to the account's email address and, when the account
+has one, its verified SMS number (`accountChannels` in `httpapi/notify.go`). A
+number that was never verified is left out: an address the account does not
+control is worse than none. The text below is kept as the record. At the time,
+only one email address was modelled per user, so a notice reached exactly one
+place, and if the attacker held that mailbox it reached nobody who mattered.
 
 ## §4.5 Invalidation: the subscriber could not request it (21 August 2026)
 

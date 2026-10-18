@@ -219,10 +219,11 @@ func TestFailuresLockTheCredential(t *testing.T) {
 	enrol(t, tx, userID, orgID, root)
 
 	for i := 1; i <= MaxTOTPFailures; i++ {
-		locked, err := RecordTOTPFailure(ctx, tx, userID)
+		f, err := RecordTOTPFailure(ctx, tx, userID, MaxConsecutiveFactorFailures)
 		if err != nil {
 			t.Fatal(err)
 		}
+		locked := f.Locked
 		if i < MaxTOTPFailures && locked {
 			t.Fatalf("locked after only %d failures", i)
 		}

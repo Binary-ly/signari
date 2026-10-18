@@ -72,6 +72,8 @@ var mustBeReachable = []capability{
 		"provisioned target"},
 	{"DeleteGroup", "a group provisioned to a target can never be removed from it, " +
 		"so deprovisioning is one-way"},
+	{"SetFactorFailureLimit", "SIGNARI_MFA_FAILURE_LIMIT is documented and parsed, " +
+		"and a deployment that set it stricter still disables factors at 100"},
 }
 
 // This test is NOT sufficient, and knowing why is the point.

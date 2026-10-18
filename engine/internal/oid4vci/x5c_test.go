@@ -146,12 +146,17 @@ func TestAnX5CChainIsAcceptedOnlyWhenItReachesAConfiguredRoot(t *testing.T) {
 	// RFC 7515 §4.1.6 uses base64, not base64url. Every other JOSE value is
 	// base64url, so this is the encoding people get wrong.
 	t.Run("base64url is not base64", func(t *testing.T) {
-		bad := []any{base64.RawURLEncoding.EncodeToString(leaf.Raw)}
-		if _, err := ParseX5CChain(bad); err == nil {
-			// RawURL happens to decode as valid base64 only when there is no
-			// padding difference; assert the parse either fails or yields a
-			// chain that does not verify.
-			c, _ := ParseX5CChain(bad)
+		// A certificate whose base64url and base64 encodings are the same string
+		// -- no '-' or '_', and a length needing no padding -- is valid base64,
+		// and accepting it is right. A random key now and then gives such a
+		// certificate, which made this case fail for doing the correct thing. So
+		// issue until the two encodings differ, and the case tests what it names.
+		cert := leaf
+		for base64.RawURLEncoding.EncodeToString(cert.Raw) == base64.StdEncoding.EncodeToString(cert.Raw) {
+			cert, _ = root.issue(t, "wallet", now.Add(time.Hour))
+		}
+		bad := []any{base64.RawURLEncoding.EncodeToString(cert.Raw)}
+		if c, err := ParseX5CChain(bad); err == nil {
 			if _, verr := ResolveX5CKey(c, pool, string(jose.ES256), now); verr == nil {
 				t.Error("a base64url-encoded certificate was accepted")
 			}

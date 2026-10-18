@@ -211,6 +211,16 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 			Status: http.StatusInternalServerError})
 		return
 	}
+	// The token is what the credential endpoint will be shown, and the offer is
+	// what it may be exchanged for. Recorded in the same transaction, so there
+	// is no token without the record (see store.IssuableConfigurations).
+	if rerr := store.RecordPreAuthorizedToken(ctx, tx, stored.ID, resp.jti); rerr != nil {
+		s.log.Error("recording the token a pre-authorized code minted", "err", rerr,
+			"correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "server_error",
+			Status: http.StatusInternalServerError})
+		return
+	}
 	if cerr := tx.Commit(ctx); cerr != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})

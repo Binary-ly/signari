@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -119,6 +120,61 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Revoked and ended are read now, as userinfo reads them (ADR-007). This
+	// endpoint checked neither, so a token its client had revoked went on
+	// minting credentials until it expired.
+	if revoked, rerr := store.GrantRevoked(ctx, s.db, claims.GrantID); rerr != nil || revoked {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
+			`error_description="The authorization behind this token has been revoked"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if revoked, rerr := store.JTIRevoked(ctx, s.db, claims.JTI); rerr != nil || revoked {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
+			`error_description="The access token has been revoked"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if claims.SessionID != "" {
+		if live, lerr := store.IsSessionLive(ctx, s.db, claims.SessionID); lerr != nil || !live {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
+				`error_description="The session has ended"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+	}
+
+	// What this token may be exchanged for: the configurations of the offer that
+	// minted it (migration 0133). Any other token audienced here -- a sign-in
+	// token from an unrelated client -- used to mint any configuration for its
+	// subject. §8.3.1.1 answers a token that "does not contain an Access Token
+	// that enables issuance of a requested Credential" with an RFC 6750 error.
+	issuable, ierr := store.IssuableConfigurations(ctx, s.db, claims.JTI, claims.Subject)
+	if ierr != nil {
+		s.log.Error("reading what a token may be exchanged for", "err", ierr)
+		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	if len(issuable) == 0 {
+		s.log.Info("credential endpoint refused a token no offer minted",
+			"client_id", claims.ClientID, "correlation_id", correlationID(ctx))
+		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
+			`error_description="This access token was not issued for credential issuance"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if !slices.Contains(issuable, req.ConfigurationID) {
+		// The token is good for issuance, of something else: RFC 6750 §3.1's
+		// insufficient_scope, which is a 403.
+		s.log.Info("credential endpoint refused a configuration the offer did not name",
+			"requested", req.ConfigurationID, "offered", issuable,
+			"correlation_id", correlationID(ctx))
+		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="insufficient_scope", `+
+			`error_description="This access token does not authorize issuing that credential"`)
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
 	var orgID string
 	oerr := s.db.QueryRow(ctx,
 		`SELECT org_id::text FROM core.users WHERE id = $1::uuid`,
@@ -137,7 +193,9 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, known := configs[req.ConfigurationID]
 	if !known {
-		writeCredentialError(w, http.StatusBadRequest, "unsupported_credential_type",
+		// §8.3.1.2's code (specs/oid4vci.txt:1914). Reached when the offer names
+		// a configuration that has since been removed.
+		writeCredentialError(w, http.StatusBadRequest, "unknown_credential_configuration",
 			"this issuer does not offer the credential configuration "+req.ConfigurationID)
 		return
 	}

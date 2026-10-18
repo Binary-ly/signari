@@ -765,6 +765,10 @@ type tokenResponse struct {
 	// array: a client that never asked should not have to distinguish "you got
 	// nothing" from "this server does not do that".
 	AuthorizationDetails []rar.Detail `json:"authorization_details,omitempty"`
+
+	// jti is the access token's, for a grant that records which token it
+	// minted. Unexported, so it never reaches the response body.
+	jti string
 }
 
 // mintSet issues the access token, ID token, and -- when offline_access was
@@ -933,6 +937,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		TokenType: bearerOrDPoP(jkt),
 		ExpiresIn: int(tokens.DefaultAccessTokenTTL.Seconds()),
 		Scope:     joinScopes(scopes),
+		jti:       jti,
 	}
 
 	// An ID token is an authentication statement, so it is only minted where

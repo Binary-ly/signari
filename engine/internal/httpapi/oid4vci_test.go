@@ -74,6 +74,41 @@ func preAuthForm(code, txCode string) url.Values {
 	return v
 }
 
+// The token the grant hands out is the one the credential endpoint honours,
+// for what the offer named: the redemption records it (migration 0133), and
+// without that record the endpoint refuses every token it is shown.
+func TestARedeemedOffersTokenMintsTheOfferedCredential(t *testing.T) {
+	f := newTokenFixture(t)
+	f.allowPreAuthGrant(t)
+	if _, err := f.pool.Exec(context.Background(), `
+		INSERT INTO core.credential_configurations
+			(org_id, config_id, vct, always_claims, selective_claims, lifetime, display_name)
+		VALUES ($1::uuid, 'TestCredential', 'https://signari.test/test',
+		        ARRAY['sub'], ARRAY['email'], interval '30 days', 'Test')`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(),
+			`DELETE FROM core.credential_configurations WHERE org_id = $1::uuid`, f.orgID)
+	})
+
+	status, body := f.post(t, preAuthForm(f.preAuth(t, "", 5*time.Minute), ""))
+	if status != http.StatusOK {
+		t.Fatalf("redemption gave %d: %v", status, body)
+	}
+	token := asString(body["access_token"])
+
+	wa := newWallet(t)
+	_, nb := f.postJSON(t, "/oid4vci/nonce", "", "")
+	nonce, _ := nb["c_nonce"].(string)
+	status, resp := f.postJSON(t, "/oid4vci/credential", token,
+		`{"credential_configuration_id":"TestCredential","proofs":{"jwt":[`+
+			mustJSONString(t, wa.proof(t, f.srv.cfg.Issuer, nonce))+`]}}`)
+	if status != http.StatusOK {
+		t.Fatalf("the redeemed token could not mint the offered credential: %d %v", status, resp)
+	}
+}
+
 // THE case §6.1 describes: a wallet redeems sending no client_id.
 //
 // "the client_id parameter is only needed when a form of Client Authentication

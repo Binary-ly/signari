@@ -192,6 +192,31 @@ GET  /.well-known/openid-credential-issuer   §12.2
 
 Format: **SD-JWT VC**, `draft-ietf-oauth-sd-jwt-vc-18` (10 August 2026).
 
+### Which tokens it accepts
+
+Only a token that a redeemed offer minted, and only for the configurations that
+offer named. §5.1.2 has the issuer read what a token authorizes as the issuance
+of particular credential types (`specs/oid4vci.txt:1332`). §8.3.1.1 answers a
+token that does not enable the requested one with an RFC 6750 error. So:
+
+| The token | The answer |
+|---|---|
+| minted by no offer, such as a sign-in token for any client | `401`, `error="invalid_token"` |
+| from an offer that did not name the requested configuration | `403`, `error="insufficient_scope"` |
+| from an offer naming a configuration since removed | `400`, `unknown_credential_configuration` (§8.3.1.2) |
+| revoked, or from a revoked grant or an ended session | `401`, read at the request as userinfo reads it |
+
+The redemption records the access token it minted on the offer (migration 0133),
+in the minting transaction. That is the binding, rather than an
+`authorization_details` claim: returning `openid_credential` details obliges the
+wallet to use the `credential_identifiers` that come with them (§6.2), which is
+the request form listed under what is still not built.
+
+**Until October 2026 this endpoint accepted any access token audienced to the
+issuer.** A sign-in token from an unrelated client minted any configuration for
+its subject, bound to whatever key the caller proved, and a token its client had
+revoked kept minting until it expired.
+
 ### Why SD-JWT rather than a plain signed credential
 
 An ordinary credential is all-or-nothing. To prove you are over 18, you hand over
@@ -332,7 +357,9 @@ The access token was obtained by redeeming a pre-authorized code **with no
   only SD-JWT VC, so adding it is a migration rather than a rewrite.
 - **Deferred issuance** (§9) and the **notification endpoint** (§11).
 - **Credential response encryption** (§10) and encrypted requests.
-- The **authorization code flow** variant (`issuer_state`).
+- The **authorization code flow** variant (`issuer_state`), and with it
+  `openid_credential` authorization details and `credential_identifier`
+  requests.
 - **`x5c` proof form** — a certificate chain we would have to trust. Accepting one
   without doing that work is accepting a proof we did not verify.
 

@@ -126,6 +126,9 @@ var columnClass = map[string]string{
 	"organizations.password_only_binds":       "public",
 	"outbox.subject_key":                      "public",
 	"rate_limits.bucket_key":                  "public",
+	// A token's identifier, not the token: it is in the token's own claims,
+	// and knowing it lets nobody present the token.
+	"preauthorized_codes.access_token_jti": "public",
 
 	// Columns nothing reads or writes. Recorded rather than left unclassified so
 	// that this test does not have to be edited if one of them is ever wired up

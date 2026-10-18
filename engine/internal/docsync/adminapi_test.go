@@ -34,11 +34,13 @@ import (
 // it hides exactly the drift it exists to catch.
 
 var (
-	// Both registration forms: `route(...)`, which also records the operation for
-	// the OpenAPI document, and `mux.HandleFunc`, which still registers the
-	// unauthenticated document endpoint. Matching only the first would make this
-	// guard blind to exactly the route that has no scope.
-	adminRoute = regexp.MustCompile(`(?:mux\.HandleFunc|route)\("((?:GET|POST|PUT|PATCH|DELETE) /admin/[^"]*)"`)
+	// A route pattern as the first argument of any call, whatever the function
+	// is called: `route(...)`, `privileged(...)` and `mux.HandleFunc` today.
+	// This once listed the wrapper names. When writes on users and groups moved
+	// to `privileged(...)`, ten routes became invisible to it and the document
+	// was reported as inventing them. A name list goes blind again the next
+	// time a wrapper is added, and for a route that has no wrapper at all.
+	adminRoute = regexp.MustCompile(`\("((?:GET|POST|PUT|PATCH|DELETE) /admin/[^"]*)"`)
 	// Routes appear in the document as `METHOD /admin/...` inside a table cell.
 	docRoute = regexp.MustCompile("`((?:GET|POST|PUT|PATCH|DELETE) /admin/[^`]*)`")
 )

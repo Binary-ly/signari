@@ -17,6 +17,24 @@ import (
 
 const testToken = "0123456789abcdef0123456789abcdef" // 32 chars
 
+// routerOnly builds the route table with no database behind it, for tests that
+// read the registrations rather than call them. A root key is set so the
+// conditional attribute routes are registered too.
+func routerOnly(t *testing.T) *Server {
+	t.Helper()
+	s, err := New(nil, slog.New(slog.NewTextHandler(os.Stderr, nil)), testToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetRootKey(root)
+	s.Routes()
+	return s
+}
+
 func newTestServer(t *testing.T) (*Server, *pgxpool.Pool) {
 	t.Helper()
 	dsn := os.Getenv("SIGNARI_TEST_DSN")

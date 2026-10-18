@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -540,20 +541,34 @@ func TestTheMutatingRouteListCoversEveryRegisteredRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// mux.HandleFunc("METHOD /admin/...", ...) for the methods that write.
-	// Matches both registration forms. `route(...)` is the one that also records
-	// the operation for the OpenAPI document; `mux.HandleFunc` remains for the
-	// unauthenticated document endpoint itself.
+	// A route pattern for a method that writes, as the first argument of any
+	// call. It does not depend on the wrapper's name.
 	//
-	// This regex went blind once already: Routes() moved from mux.HandleFunc to
-	// route() and this guard silently matched nothing. It reported that rather
-	// than passing, because of the count check below -- which is the only reason
-	// the change did not land with every precondition assertion quietly skipped.
-	re := regexp.MustCompile(`(?:mux\.HandleFunc|route)\("(POST|PATCH|PUT|DELETE) (/admin/[^"]*)"`)
-	found := re.FindAllStringSubmatch(string(src), -1)
+	// This regex went blind twice. The first time, Routes() moved from
+	// mux.HandleFunc to route() and it matched nothing, which the count check
+	// below reported. The second time, writes on users and groups moved to
+	// privileged() and it stopped seeing ten of them. The count stayed above the
+	// floor, so nothing reported it. The router's own operation table is
+	// therefore read as well, and the two must agree.
+	re := regexp.MustCompile(`\("(POST|PATCH|PUT|DELETE) (/admin/[^"]*)"`)
+	found := map[string]bool{}
+	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
+		found[m[1]+" "+m[2]] = true
+	}
 	if len(found) < 8 {
 		t.Fatalf("only %d mutating registrations parsed out of server.go; the regex "+
 			"has stopped matching and this guard is checking nothing", len(found))
+	}
+	s := routerOnly(t)
+	for _, op := range s.ops {
+		if op.method == "get" {
+			continue
+		}
+		name := strings.ToUpper(op.method) + " " + op.path
+		if !found[name] {
+			t.Errorf("%s is registered and the source scan did not see it, so the "+
+				"scan has gone blind to a registration form", name)
+		}
 	}
 
 	listed := map[string]bool{}
@@ -562,12 +577,12 @@ func TestTheMutatingRouteListCoversEveryRegisteredRoute(t *testing.T) {
 	}
 
 	var missing []string
-	for _, m := range found {
-		name := m[1] + " " + m[2]
+	for name := range found {
 		if !listed[name] {
 			missing = append(missing, "  "+name)
 		}
 	}
+	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Errorf("%d mutating route(s) are registered but absent from "+
 			"allMutatingRoutes():\n%s\n\nEach is currently exempt from both the "+

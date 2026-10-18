@@ -38,7 +38,10 @@ func TestATextMessageOutsideTheCountryListIsNotSent(t *testing.T) {
 	if !errors.Is(err, errSMSRefused) || len(texter.messages()) != 0 {
 		t.Fatalf("a number outside the list gave %v and %d message(s) sent", err, len(texter.messages()))
 	}
-	if err := f.srv.sendSMS(ctx, f.userID, sms.Message{To: "+447700900123", Body: "code"}); err != nil {
+	// A number of this run's own: the daily ceiling now holds for the whole day,
+	// so a fixed number is spent by earlier runs.
+	listed := fmt.Sprintf("+4477%09d", time.Now().UnixNano()%1_000_000_000)
+	if err := f.srv.sendSMS(ctx, f.userID, sms.Message{To: listed, Body: "code"}); err != nil {
 		t.Fatalf("a listed number was refused: %v", err)
 	}
 	var audited int

@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"signari.dev/engine/internal/sms"
 )
@@ -43,7 +45,9 @@ func TestAnAccountSecurityNoticeReachesEveryChannel(t *testing.T) {
 	ctx := context.Background()
 
 	const email = "two-channel@example.test"
-	const number = "+15005550006"
+	// A number of this run's own: the per-number daily ceiling holds for the
+	// whole day, so a fixed number is spent by earlier runs.
+	number := fmt.Sprintf("+1500%07d", time.Now().UnixNano()%10_000_000)
 	if _, err := f.pool.Exec(ctx,
 		`UPDATE core.users SET email = $2 WHERE id = $1::uuid`, f.userID, email); err != nil {
 		t.Fatal(err)

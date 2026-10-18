@@ -1,9 +1,13 @@
 package docsync
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -101,6 +105,23 @@ var declaredCaches = []declaredCache{
 	},
 }
 
+// timeHeldButNotConfiguration are Server fields that keep a time, which is
+// how timeBoundFields finds a cache, and hold nothing an administrator
+// configures in the database. Each says what it holds instead; a field must
+// still exist to stay here.
+var timeHeldButNotConfiguration = map[string]string{
+	"jwks":       "a rate-limit bucket: request counts per window, not configuration",
+	"login":      "a rate-limit bucket: request counts per window, not configuration",
+	"device":     "a rate-limit bucket: request counts per window, not configuration",
+	"register":   "a rate-limit bucket: request counts per window, not configuration",
+	"federation": "a rate-limit bucket: request counts per window, not configuration",
+	"captcha": "the captcha verifier, configured from the environment at startup; " +
+		"its time is a request timeout, and it reads nothing from the database",
+	"pwPolicy": "the password policy, configured from the environment at startup; " +
+		"its times are rules, not the age of anything held",
+	"originsExpire": "the expiry of originsCache, declared with it",
+}
+
 // serverField is one line of the Server struct: a field name and its type.
 var serverField = regexp.MustCompile(`^\t([a-zA-Z][A-Za-z0-9]*)\s+([^/]+?)\s*(//.*)?$`)
 
@@ -130,6 +151,128 @@ func cacheFields(src string) []string {
 	return out
 }
 
+// timeBoundFields returns the Server fields whose type, followed into this
+// package or any other engine package, is a struct that keeps a time.Time or
+// a time.Duration: something held now and judged by when it was got. That is
+// what a cache is, whatever it is called. `ssfKeys` is a *ssf.KeyFetcher, a
+// cache named for neither, and the name-and-type match could see it only
+// through an exception written for it by hand.
+func timeBoundFields(t *testing.T, root string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	parsed := map[string][]*ast.File{}
+	load := func(dir string) []*ast.File {
+		if fs, ok := parsed[dir]; ok {
+			return fs
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			parsed[dir] = nil
+			return nil
+		}
+		var files []*ast.File
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+				continue
+			}
+			f, perr := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, 0)
+			if perr != nil {
+				t.Fatal(perr)
+			}
+			files = append(files, f)
+		}
+		parsed[dir] = files
+		return files
+	}
+	engine := filepath.Join(root, "engine")
+	dirOf := func(f *ast.File, alias string) string {
+		for _, imp := range f.Imports {
+			p := strings.Trim(imp.Path.Value, `"`)
+			name := p[strings.LastIndex(p, "/")+1:]
+			if imp.Name != nil {
+				name = imp.Name.Name
+			}
+			if name == alias && strings.HasPrefix(p, "signari.dev/engine/") {
+				return filepath.Join(engine, strings.TrimPrefix(p, "signari.dev/engine/"))
+			}
+		}
+		return ""
+	}
+	find := func(dir, name string) (*ast.StructType, *ast.File) {
+		for _, f := range load(dir) {
+			for _, d := range f.Decls {
+				gd, ok := d.(*ast.GenDecl)
+				if !ok {
+					continue
+				}
+				for _, s := range gd.Specs {
+					if ts, ok := s.(*ast.TypeSpec); ok && ts.Name.Name == name {
+						st, _ := ts.Type.(*ast.StructType)
+						return st, f
+					}
+				}
+			}
+		}
+		return nil, nil
+	}
+	var holdsTime func(dir string, file *ast.File, expr ast.Expr, depth int) bool
+	holdsTime = func(dir string, file *ast.File, expr ast.Expr, depth int) bool {
+		if depth > 3 {
+			return false
+		}
+		switch e := expr.(type) {
+		case *ast.StarExpr:
+			return holdsTime(dir, file, e.X, depth)
+		case *ast.ArrayType:
+			return holdsTime(dir, file, e.Elt, depth)
+		case *ast.MapType:
+			return holdsTime(dir, file, e.Value, depth)
+		case *ast.SelectorExpr:
+			x, ok := e.X.(*ast.Ident)
+			if !ok {
+				return false
+			}
+			if x.Name == "time" {
+				return e.Sel.Name == "Time" || e.Sel.Name == "Duration"
+			}
+			if d := dirOf(file, x.Name); d != "" {
+				if st, f := find(d, e.Sel.Name); st != nil {
+					return structHoldsTime(st, func(fe ast.Expr) bool { return holdsTime(d, f, fe, depth+1) })
+				}
+			}
+		case *ast.Ident:
+			if st, f := find(dir, e.Name); st != nil {
+				return structHoldsTime(st, func(fe ast.Expr) bool { return holdsTime(dir, f, fe, depth+1) })
+			}
+		}
+		return false
+	}
+
+	httpapi := filepath.Join(engine, "internal", "httpapi")
+	server, file := find(httpapi, "Server")
+	if server == nil {
+		t.Fatal("httpapi has no Server struct")
+	}
+	var out []string
+	for _, fld := range server.Fields.List {
+		if holdsTime(httpapi, file, fld.Type, 0) {
+			for _, n := range fld.Names {
+				out = append(out, n.Name)
+			}
+		}
+	}
+	return out
+}
+
+func structHoldsTime(st *ast.StructType, check func(ast.Expr) bool) bool {
+	for _, f := range st.Fields.List {
+		if check(f.Type) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestEveryConfigConsumerThatCachesIsDeclared(t *testing.T) {
 	root := repoRoot(t)
 	src, err := os.ReadFile(filepath.Join(root, "engine", "internal", "httpapi", "server.go"))
@@ -145,6 +288,18 @@ func TestEveryConfigConsumerThatCachesIsDeclared(t *testing.T) {
 	found := cacheFields(string(src))
 	if len(found) < 3 {
 		t.Fatalf("found only %v caching fields on Server; the struct is not being read", found)
+	}
+	timed := timeBoundFields(t, root)
+	for _, name := range timed {
+		if timeHeldButNotConfiguration[name] == "" && !slices.Contains(found, name) {
+			found = append(found, name)
+		}
+	}
+	for name := range timeHeldButNotConfiguration {
+		if !slices.Contains(timed, name) {
+			t.Errorf("timeHeldButNotConfiguration names %q, which no Server field "+
+				"holding a time is called any more; remove it", name)
+		}
 	}
 	seen := map[string]bool{}
 	for _, name := range found {
@@ -163,8 +318,7 @@ func TestEveryConfigConsumerThatCachesIsDeclared(t *testing.T) {
 	// been deleted leaves a note describing a delay the system no longer has,
 	// which is the same class of wrongness this file exists to stop.
 	for _, c := range declaredCaches {
-		// ssfKeys is a *ssf.KeyFetcher: a cache by behaviour, named for neither.
-		if !seen[c.symbol] && c.symbol != "ssfKeys" {
+		if !seen[c.symbol] {
 			t.Errorf("declaredCaches names %q, which no longer exists in "+
 				"httpapi/server.go", c.symbol)
 		}

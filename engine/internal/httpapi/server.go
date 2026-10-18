@@ -864,7 +864,7 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		// startup: adding one should take effect immediately, and an operator who
 		// has to restart the engine to see their new sign-in button will assume it
 		// is broken.
-		"Providers": s.externalProviders(r.Context()),
+		"Providers": s.externalProviders(r.Context(), s.loginOrg(r.Context(), authzQuery), authzQuery),
 		// Only when this request actually needs one. In adaptive mode a person
 		// signing in normally never sees a widget at all.
 		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),

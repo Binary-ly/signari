@@ -15,7 +15,7 @@
 </form>
 <p class="alt" id="passkey-row" hidden><button type="button" id="passkey-signin">{{T "login.passkey"}}</button></p>
 {{if .Providers}}<div class="alt">
-{{range .Providers}}<p><a class="ext" href="/login/with/{{.Slug}}">{{T "login.continuewith" .}}</a></p>{{end}}
+{{range .Providers}}<p><a class="ext" href="{{.Href}}">{{T "login.continuewith" .}}</a></p>{{end}}
 </div>{{end}}
 <script src="/passkey.js"></script>
 {{end}}

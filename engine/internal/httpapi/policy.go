@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -16,83 +17,104 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
-// Access policy evaluation at the authorization endpoint.
+// Access policy evaluation at every way into a relying party.
 //
-// # Loaded, cached, and re-checked
+// # Read on every decision
 //
-// The policy is read from the database and held in memory, because it is
-// consulted on every authorization and a query there is a query on the login
-// path. It is refreshed on a timer rather than per request.
+// Which document is in force is asked of the database on every decision: one
+// indexed row, its digest only. The document is fetched and parsed again only
+// when the digest has changed, so the parse is memoised and the decision is not.
 //
-// The cache holds only a policy that PARSED AND PASSED ITS OWN TESTS. A file
-// that fails is refused at load and the previous one stays in force -- a broken
-// policy must never become an absent policy, because "absent" means "allow
-// everything" and that is the one outcome nobody would choose deliberately.
+// It used to be a full reload on a thirty-second timer, undeclared, for a
+// document whose rules include `deny: true` -- a security-negative decision,
+// which ADR-007 says is never served from a snapshot. A deny rule written to
+// shut a client out took up to half a minute to start working on each node, and
+// the guard meant to catch undeclared caches matched field names and could not
+// see a field called `policies`.
+//
+// Only a policy that PARSED AND PASSED ITS OWN TESTS is ever used. A stored
+// document that fails -- possible only if it was written directly, bypassing
+// `policy apply` -- keeps the previous one in force, and with no previous one
+// refuses everything: a broken policy must never become an absent policy,
+// because "absent" means "allow everything" and that is the one outcome nobody
+// would choose deliberately.
 
 type policyCache struct {
-	mu       sync.RWMutex
-	byOrg    map[string]*policy.File
-	loadedAt time.Time
+	mu    sync.Mutex
+	byOrg map[string]policyEntry
 }
 
-const policyRefresh = 30 * time.Second
+// policyEntry is the parse of one organisation's document.
+type policyEntry struct {
+	// digest is md5(document) of the row this entry answers for. A broken
+	// document is recorded too, so it is reported once rather than re-parsed
+	// and logged on every request.
+	digest string
+	file   *policy.File
+}
 
 func newPolicyCache() *policyCache {
-	return &policyCache{byOrg: map[string]*policy.File{}}
+	return &policyCache{byOrg: map[string]policyEntry{}}
 }
 
-// policyFor returns the policy in force, refreshing if stale.
+// refuseEverything stands in for a policy that will not load and has no
+// predecessor.
+var refuseEverything = &policy.File{Version: 1, Default: "deny"}
+
+// policyFor returns the policy in force for an organisation, as it is in the
+// database now.
 func (s *Server) policyFor(ctx context.Context, orgID string) *policy.File {
-	s.policies.mu.RLock()
-	fresh := time.Since(s.policies.loadedAt) < policyRefresh
-	f := s.policies.byOrg[orgID]
-	s.policies.mu.RUnlock()
-	if fresh {
-		return f
-	}
-	s.reloadPolicies(ctx)
-
-	s.policies.mu.RLock()
-	defer s.policies.mu.RUnlock()
-	return s.policies.byOrg[orgID]
-}
-
-func (s *Server) reloadPolicies(ctx context.Context) {
-	rows, err := s.db.Query(ctx, `SELECT org_id::text, document FROM core.access_policies`)
-	if err != nil {
-		s.log.Error("loading access policies", "err", err)
-		return
-	}
-	defer rows.Close()
-
-	loaded := map[string]*policy.File{}
-	for rows.Next() {
-		var orgID, doc string
-		if err := rows.Scan(&orgID, &doc); err != nil {
-			continue
-		}
-		f, perr := policy.Parse([]byte(doc))
-		if perr != nil {
-			// The stored document no longer passes its own tests -- which can only
-			// happen if it was written directly to the database, bypassing
-			// `policy apply`. Logged loudly and the PREVIOUS policy kept: dropping
-			// it would silently widen access.
-			s.log.Error("the stored access policy will not load; keeping the previous one",
-				"org_id", orgID, "err", perr)
-			s.policies.mu.RLock()
-			if prev := s.policies.byOrg[orgID]; prev != nil {
-				loaded[orgID] = prev
-			}
-			s.policies.mu.RUnlock()
-			continue
-		}
-		loaded[orgID] = f
-	}
-
 	s.policies.mu.Lock()
-	s.policies.byOrg = loaded
-	s.policies.loadedAt = time.Now()
+	cached, have := s.policies.byOrg[orgID]
 	s.policies.mu.Unlock()
+
+	// The document travels only when it differs from the one already parsed.
+	var digest string
+	var doc *string
+	err := s.db.QueryRow(ctx, `
+		SELECT md5(document), CASE WHEN md5(document) = $2 THEN NULL ELSE document END
+		  FROM core.access_policies WHERE org_id = $1::uuid`, orgID, cached.digest).
+		Scan(&digest, &doc)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		s.policies.mu.Lock()
+		delete(s.policies.byOrg, orgID)
+		s.policies.mu.Unlock()
+		return nil
+	case err != nil:
+		// The database could not say. The last answer it gave is the best
+		// available; the request this decision belongs to needs the same
+		// database a moment later and is unlikely to get further.
+		s.log.Error("reading the access policy", "org_id", orgID, "err", err)
+		if have {
+			return cached.file
+		}
+		return refuseEverything
+	case have && digest == cached.digest, doc == nil:
+		// Unchanged. (The document is NULL exactly when its digest is the one
+		// asked about, computed in the same statement.)
+		return cached.file
+	}
+
+	entry := policyEntry{digest: digest}
+	f, perr := policy.Parse([]byte(*doc))
+	switch {
+	case perr == nil:
+		entry.file = f
+	case have:
+		s.log.Error("the stored access policy will not load; keeping the previous one",
+			"org_id", orgID, "err", perr)
+		entry.file = cached.file
+	default:
+		s.log.Error("the stored access policy will not load and there is no previous one; "+
+			"refusing every authorization in this organisation until it is fixed",
+			"org_id", orgID, "err", perr)
+		entry.file = refuseEverything
+	}
+	s.policies.mu.Lock()
+	s.policies.byOrg[orgID] = entry
+	s.policies.mu.Unlock()
+	return entry.file
 }
 
 // checkAccessPolicy evaluates the policy for one authorization.

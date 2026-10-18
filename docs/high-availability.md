@@ -136,24 +136,20 @@ it.
 A database error reads as **zero**, not as "challenge everybody": the sign-in is
 about to fail for the same reason, and adding a puzzle to it helps nobody.
 
-## Policy propagation, measured
+## Policy propagation
 
-Each instance caches the policy and reloads on a 30-second timer, so two
-instances can briefly enforce different versions.
+Every instance asks the database which access policy is in force on every
+decision. That is one indexed row: the document's digest, and the document itself
+only when the digest has changed. So a new rule applies on the next request, on
+every instance, and no two instances enforce different versions.
 
-Measured rather than assumed. A deny rule was applied on one instance's
-database, then both were polled:
-
-```
-t+05s  A=400  B=400   ← both refusing, with the operator's own message
-```
-
-Worst case is the 30-second window; in practice both had reloaded on the first
-poll. That bound is small enough that a `LISTEN`/`NOTIFY` channel — and the
-long-lived connection it needs — is not worth its complexity for a
-configuration change. It would be worth it for an emergency revocation, and
-revocation does not go through this path: sessions and tokens are read from the
-database on use.
+This page used to describe a 30-second reload timer, measured at five seconds in
+practice and judged small enough. The judgement was wrong for this case. A rule
+can say `deny: true`, and this engine never serves a security-negative decision
+from a snapshot. A deny rule written to shut a client out must work on the
+next request, not after up to half a minute on whichever instance the attacker's
+request happens to reach. Parsing is still memoised, so the cost is the digest
+query, not a parse.
 
 ## Outbox delivery: correct, and holding a connection for four minutes
 

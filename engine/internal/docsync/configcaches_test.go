@@ -82,10 +82,53 @@ var declaredCaches = []declaredCache{
 		why: "Trusted issuers' signing keys for the RFC 7523 jwt-bearer grant. " +
 			"Remote, same reasoning as ssfKeys.",
 	},
+	{
+		symbol: "policies",
+		delays: false,
+		why: "Access policies, memoised by the digest of each organisation's " +
+			"document. The digest is read on every decision, so a new rule -- " +
+			"a deny rule included -- applies on the next request. It was a " +
+			"thirty-second reload until 1.10, invisible to this test because " +
+			"the field is not called anything-cache.",
+	},
+	{
+		symbol: "flows",
+		delays: true,
+		why: "Sign-in flows, refreshed every thirty seconds and served stale " +
+			"while one goroutine reloads: a synchronous reload inside " +
+			"completeSignIn's transaction deadlocked the pool under load " +
+			"(flowdrive.go). A flow change takes up to that long per node.",
+	},
 }
 
-// cacheField matches a struct field or variable whose name says it is a cache.
-var cacheField = regexp.MustCompile(`(?m)^\s+([a-zA-Z][A-Za-z0-9]*[Cc]ache[A-Za-z0-9]*)\s+[\[\*a-zA-Z]`)
+// serverField is one line of the Server struct: a field name and its type.
+var serverField = regexp.MustCompile(`^\t([a-zA-Z][A-Za-z0-9]*)\s+([^/]+?)\s*(//.*)?$`)
+
+// cacheFields returns the fields of httpapi's Server whose NAME OR TYPE says
+// they cache. By type as well as by name: the access policy cache was a field
+// called `policies` of type *policyCache, and a guard that read field names
+// alone could not see it.
+func cacheFields(src string) []string {
+	start := strings.Index(src, "type Server struct {")
+	if start < 0 {
+		return nil
+	}
+	body := src[start:]
+	if end := strings.Index(body, "\n}\n"); end >= 0 {
+		body = body[:end]
+	}
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		m := serverField.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		if strings.Contains(strings.ToLower(m[1]+" "+m[2]), "cache") {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
 
 func TestEveryConfigConsumerThatCachesIsDeclared(t *testing.T) {
 	root := repoRoot(t)
@@ -99,13 +142,12 @@ func TestEveryConfigConsumerThatCachesIsDeclared(t *testing.T) {
 		declared[c.symbol] = true
 	}
 
+	found := cacheFields(string(src))
+	if len(found) < 3 {
+		t.Fatalf("found only %v caching fields on Server; the struct is not being read", found)
+	}
 	seen := map[string]bool{}
-	for _, m := range cacheField.FindAllStringSubmatch(string(src), -1) {
-		name := m[1]
-		// The type name itself is not an instance of one.
-		if strings.HasSuffix(name, "JWKSCache") {
-			continue
-		}
+	for _, name := range found {
 		seen[name] = true
 		if !declared[name] {
 			t.Errorf("%s caches state on the Server and is not declared in "+
@@ -121,7 +163,8 @@ func TestEveryConfigConsumerThatCachesIsDeclared(t *testing.T) {
 	// been deleted leaves a note describing a delay the system no longer has,
 	// which is the same class of wrongness this file exists to stop.
 	for _, c := range declaredCaches {
-		if !seen[c.symbol] && c.symbol != "ssfKeys" && c.symbol != "assertionKeys" {
+		// ssfKeys is a *ssf.KeyFetcher: a cache by behaviour, named for neither.
+		if !seen[c.symbol] && c.symbol != "ssfKeys" {
 			t.Errorf("declaredCaches names %q, which no longer exists in "+
 				"httpapi/server.go", c.symbol)
 		}

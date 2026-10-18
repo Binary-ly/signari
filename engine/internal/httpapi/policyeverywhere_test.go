@@ -26,7 +26,8 @@ import (
 // and every refresh of a token it had already issued.
 
 // applyPolicy installs an access policy for one organisation, as `signari policy
-// apply` would, and reloads the server's copy synchronously.
+// apply` would. Nothing is reloaded: the server reads which document is in
+// force on every decision, which is what these tests also show.
 func applyPolicy(t *testing.T, srv *Server, pool *pgxpool.Pool, orgID, doc string) {
 	t.Helper()
 	ctx := context.Background()
@@ -36,7 +37,6 @@ func applyPolicy(t *testing.T, srv *Server, pool *pgxpool.Pool, orgID, doc strin
 		orgID, doc); err != nil {
 		t.Fatalf("applying the policy: %v", err)
 	}
-	srv.reloadPolicies(ctx)
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM core.access_policies WHERE org_id = $1::uuid`, orgID)
 	})
@@ -48,7 +48,6 @@ func removePolicy(t *testing.T, srv *Server, pool *pgxpool.Pool, orgID string) {
 		`DELETE FROM core.access_policies WHERE org_id = $1::uuid`, orgID); err != nil {
 		t.Fatal(err)
 	}
-	srv.reloadPolicies(context.Background())
 }
 
 // denyClient is a policy refusing one client (or SAML entity ID) outright.
@@ -65,9 +64,9 @@ tests:
     given: {client: %q}
     expect: deny
   - name: others are not
-    given: {client: "someone-else"}
+    given: {client: %q}
     expect: allow
-`, client, client)
+`, client, client, "not-"+client)
 }
 
 // ---- SAML ------------------------------------------------------------------

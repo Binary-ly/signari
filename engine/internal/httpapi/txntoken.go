@@ -27,6 +27,38 @@ import (
 // See internal/txntoken for what the format is and why it matters.
 
 // handleTxnToken issues or replaces a Transaction Token.
+// txnSubjectRefused writes a refusal and reports true when a transaction token
+// may not name subject to the workload c: a person through the same
+// organisation and access-policy check as every non-interactive grant
+// (grantRefusedByPolicy), a client by requiring it to be in c's organisation.
+func (s *Server) txnSubjectRefused(w http.ResponseWriter, r *http.Request, c *clients.Client,
+	subject, sid, scope string) bool {
+
+	ctx := r.Context()
+	var isPerson bool
+	if err := s.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM core.users WHERE id::text = $1)`, subject).Scan(&isPerson); err != nil {
+		s.log.Error("txn-token: resolving the subject", "err", err)
+		writeTokenError(w, &oauth.TokenError{Code: "server_error",
+			Status: http.StatusInternalServerError})
+		return true
+	}
+	if isPerson {
+		return s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, subject, sid, scope, "txn_token")
+	}
+	// A machine subject, from a client-credentials token: the client it names
+	// must belong where the workload does.
+	if sc, err := s.lookupClient(ctx, subject); err != nil || sc == nil || sc.OrgID != c.OrgID {
+		s.log.Info("txn-token: subject outside the workload's organisation",
+			"caller", c.ClientID, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "this token would name a subject outside this workload's organisation",
+			Status:      http.StatusBadRequest})
+		return true
+	}
+	return false
+}
+
 func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clients.Client) {
 	ctx := r.Context()
 
@@ -85,6 +117,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 
 	now := time.Now()
 	var out txntoken.Claims
+	var subjectSession string
 
 	switch req.SubjectTokenType {
 	case txntoken.TokenType:
@@ -227,6 +260,15 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		if subject.Expiry > 0 && out.Expiry > subject.Expiry {
 			out.Expiry = subject.Expiry
 		}
+		subjectSession = subject.SessionID
+	}
+
+	// The token names its subject to this workload, so the questions every
+	// other grant asks are asked here: is the subject in this workload's
+	// organisation, and, for a person, does the access policy let them reach
+	// this client. Neither was asked, on the first hop or on a replacement.
+	if s.txnSubjectRefused(w, r, c, out.Subject, subjectSession, out.Scope) {
+		return
 	}
 
 	key, err := s.cfg.Keys.Active(keys.ES256)

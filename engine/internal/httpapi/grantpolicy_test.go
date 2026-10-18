@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/txntoken"
 	"signari.dev/engine/internal/uma"
 )
 
@@ -128,6 +129,33 @@ func TestAGrantNamingAPersonFromAnotherOrganisationIsRefused(t *testing.T) {
 	rec = httptest.NewRecorder()
 	if f.srv.grantRefusedByPolicy(rec, r, f.orgID, f.clientID, f.userID, "", "", "test") {
 		t.Fatalf("the person's own organisation was refused: %s", rec.Body.String())
+	}
+}
+
+// A transaction token names its subject to the asking workload, on the first
+// hop and on every replacement, so the policy is asked about both. Neither was.
+func TestATransactionTokenIsRefusedWhenThePolicyDeniesTheWorkload(t *testing.T) {
+	f := newTokenFixture(t)
+	f.enableExchange(t)
+	subject := f.mintAccessTokenWithScope(t, []string{"read"})
+	const accessToken = "urn:ietf:params:oauth:token-type:access_token"
+
+	// A first hop before the rule, to replace once it is in force.
+	status, body := f.txnToken(t, subject, accessToken, "read")
+	if status != http.StatusOK {
+		t.Fatalf("the first hop gave %d: %v", status, body)
+	}
+	first, _ := body["access_token"].(string)
+
+	applyPolicy(t, f.srv, f.pool, f.orgID, denyClient(f.clientID))
+	status, body = f.txnToken(t, subject, accessToken, "read")
+	refusedByPolicy(t, status, body)
+	status, body = f.txnToken(t, first, txntoken.TokenType, "read")
+	refusedByPolicy(t, status, body)
+
+	removePolicy(t, f.srv, f.pool, f.orgID)
+	if status, body := f.txnToken(t, subject, accessToken, "read"); status != http.StatusOK {
+		t.Fatalf("with the rule lifted the first hop gave %d %v", status, body)
 	}
 }
 

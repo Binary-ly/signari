@@ -40,7 +40,14 @@ var issuesWithoutAPolicyCheck = map[string]string{
 // the helper the non-interactive grants share.
 var askingFunctions = map[string]bool{
 	"checkAccessPolicy": true, "checkAccessPolicyIn": true, "grantRefusedByPolicy": true,
+	// grantRefusedByPolicy for a person, the organisation check for a client.
+	"txnSubjectRefused": true,
 }
+
+// tokenClaimTypes are the claim sets whose literal means a token is being
+// issued: access tokens, and transaction tokens, which a review found issued
+// with no check because this guard counted only the first.
+var tokenClaimTypes = map[string]bool{"tokens.AccessTokenClaims": true, "txntoken.Claims": true}
 
 func TestEveryIssuingPathAsksTheAccessPolicy(t *testing.T) {
 	fset := token.NewFileSet()
@@ -71,15 +78,19 @@ func TestEveryIssuingPathAsksTheAccessPolicy(t *testing.T) {
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.CompositeLit:
-				if sel, ok := x.Type.(*ast.SelectorExpr); ok && sel.Sel.Name == "AccessTokenClaims" {
-					issues[name] = true
+				if sel, ok := x.Type.(*ast.SelectorExpr); ok {
+					if pkg, ok := sel.X.(*ast.Ident); ok && tokenClaimTypes[pkg.Name+"."+sel.Sel.Name] {
+						issues[name] = true
+					}
 				}
 			case *ast.CallExpr:
 				var callee string
 				switch fn := x.Fun.(type) {
 				case *ast.SelectorExpr:
 					callee = fn.Sel.Name
-					if pkg, ok := fn.X.(*ast.Ident); ok && pkg.Name == "saml" && callee == "BuildResponse" {
+					if pkg, ok := fn.X.(*ast.Ident); ok &&
+						(pkg.Name == "saml" && callee == "BuildResponse" ||
+							pkg.Name == "txntoken" && callee == "Replace") {
 						issues[name] = true
 					}
 				case *ast.Ident:

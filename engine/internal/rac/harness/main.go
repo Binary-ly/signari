@@ -137,7 +137,10 @@ func main() {
 	})
 
 	log.Printf("harness on http://%s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, mux))
+	// A header deadline but no read or write deadline: the WebSocket session is
+	// meant to outlive any fixed request timeout.
+	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+	log.Fatal(srv.ListenAndServe())
 }
 
 // recordingPeer is the production adapter plus a note of what came back.

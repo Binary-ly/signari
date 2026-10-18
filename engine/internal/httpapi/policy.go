@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/risk"
@@ -237,6 +238,60 @@ func sessionFactors(ctx context.Context, db interface {
 	// factor, so a passkey with no user verification satisfied a policy that
 	// requires MFA.
 	return oauth.IsMultiFactor(amr), amr
+}
+
+// grantRefusedByPolicy asks, for a grant that issues a token for a person
+// without a sign-in in front of it, the question /authorize asks before a code
+// exists: is this person in this client's organisation, and does the access
+// policy let them reach it. It writes the refusal and reports true when the
+// answer is no.
+//
+// The token-exchange, jwt-bearer, UMA and pre-authorized code grants issued
+// with neither question asked, so an operator's deny rule on a client was
+// honoured at its sign-in page and nowhere a token could be got without one.
+// The factors are those of the session behind the token when there is one,
+// and none otherwise: a rule that demands MFA is not met by a grant that
+// proved nothing.
+//
+// Called before the grant opens a transaction (guard 0.08e), and listed by
+// name in TestEveryIssuingPathAsksTheAccessPolicy as an asking function.
+func (s *Server) grantRefusedByPolicy(w http.ResponseWriter, r *http.Request, orgID, clientID,
+	userID, sid, scope, via string) bool {
+
+	ctx := r.Context()
+	var userOrg string
+	if err := s.db.QueryRow(ctx, `SELECT org_id::text FROM core.users WHERE id::text = $1`,
+		userID).Scan(&userOrg); err != nil || userOrg != orgID {
+		s.log.Info("a grant named a person outside the client's organisation",
+			"client_id", clientID, "via", via, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "this grant does not name a person this client may act for",
+			Status:      http.StatusBadRequest})
+		return true
+	}
+
+	mfa, amr := false, []string(nil)
+	if sid != "" {
+		mfa, amr = sessionFactors(ctx, s.db, sid)
+	}
+	// No request, as for a refresh: who the person is, not where they are.
+	// These calls come from a server or a wallet, and its address and its lack
+	// of a device certificate say nothing about the person.
+	pd := s.checkAccessPolicy(ctx, nil, orgID, clientID, userID, scope, mfa, amr)
+	if pd == nil {
+		return false
+	}
+	s.log.Info("access refused by policy", "client_id", clientID, "via", via,
+		"rule", pd.Rule, "correlation_id", correlationID(ctx))
+	s.auditDetached(ctx, audit.Event{
+		Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID, ClientID: clientID,
+		CorrelationID: correlationID(ctx),
+		Detail:        map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": via},
+	})
+	writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+		Description: "the access policy does not allow this: " + pd.Message,
+		Status:      http.StatusBadRequest})
+	return true
 }
 
 // impossibleTravel reports whether this sign-in could not have followed the

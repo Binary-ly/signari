@@ -138,6 +138,14 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// The access policy, asked at redemption rather than when the operator
+	// minted the offer: a deny rule written in between applies to the holder.
+	// No session, so a rule demanding MFA is not met.
+	if s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, stored.UserID, "", "",
+		"pre_authorized_code") {
+		return
+	}
+
 	// The transaction code, compared in constant time against the stored hash.
 	//
 	// A wrong one charges an attempt and does NOT spend the offer. That ordering

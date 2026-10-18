@@ -174,6 +174,14 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		writeUMAError(w, uerr)
 		return
 	}
+	// An RPT names the requesting party once there is one, so the access
+	// policy is asked whether that person may reach this client, as for any
+	// other token issued for them. The PDP below answers a different question:
+	// whether the resource owner lets them have these permissions.
+	if party.userID != "" && s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, party.userID, "",
+		r.PostForm.Get("scope"), "uma") {
+		return
+	}
 
 	subject := authzen.Subject{Type: "client", ID: c.ClientID}
 	if party.userID != "" {

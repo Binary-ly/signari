@@ -2659,6 +2659,16 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		return
 	}
 
+	// The exchanged token is for the subject, issued to this client, so it is
+	// this client's question to put to the access policy, with the factors of
+	// the session the subject token came from. And the subject must be in this
+	// client's organisation: a token audienced here from another tenant's
+	// client was otherwise exchangeable into one issued under this tenant.
+	if s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, subject.Subject, subject.SessionID,
+		strings.Join(granted, " "), "token_exchange") {
+		return
+	}
+
 	key, err := s.cfg.Keys.Active(keys.Algorithm(c.IDTokenAlg))
 	if err != nil {
 		s.log.Error("token exchange: no active key", "err", err)

@@ -119,12 +119,19 @@ SAML entity ID:
 | SAML and WS-Federation | in the one function that signs the assertion for both. A SAML refusal goes back to the service provider as `RequestDenied`; WS-Federation answers `403` |
 | the device grant and CIBA | when the person presses approve. A refusal is recorded as a denial, so the waiting device or client is told `access_denied` rather than left polling |
 | every refresh | before the new tokens are minted. A refusal is `invalid_grant`, and the refresh token is **not** revoked: lifting the rule, or restoring the membership, restores the grant |
+| token exchange, the jwt-bearer grant, UMA (once a person is identified) and the OID4VCI pre-authorized code | before the token is minted, and like a refresh: who the person is, not where. The factors are those of the session behind an exchanged token; the other three have none, so **a rule requiring MFA refuses them**. A refusal is `invalid_grant`; a refused pre-authorized code is not spent. The person must also be in the client's organisation |
 | forward auth | on every request to a protected application, keyed `proxy:<host>`. Network, device and travel conditions refuse there, because the request comes from the proxy and carries the proxy's address — see [forward auth](forward-auth.md#who-may-reach-which-application) |
 
 Until October 2026 the list stopped at the first row and WS-Federation. A deny
 rule for a client blocked its browser sign-ins and still let through its
 smart-TV, SAML and CIBA ones, plus every refresh of a token it had already
-issued.
+issued. The four grants in the last row of issuers were found later the same
+month, by a test that follows the code from every function that mints a token
+or builds an assertion back to its route, and fails where no check is on the
+way (`TestEveryIssuingPathAsksTheAccessPolicy`). The authorization code, device
+and CIBA redemptions are listed there with the place their check happens. The
+client-credentials grant is listed as asking nothing, because it has no person,
+and a catch-all rule about people would refuse every machine client.
 
 **A refresh re-checks who the person is, not where they are.** Groups, deny
 rules and the factors the session recorded are evaluated again. Someone removed

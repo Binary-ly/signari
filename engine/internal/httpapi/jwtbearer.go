@@ -190,6 +190,13 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		return
 	}
 
+	// The access policy, as /authorize would ask it. No session: the assertion
+	// proves the upstream vouched, not which factors anybody presented here.
+	if s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, userID, "",
+		r.PostForm.Get("scope"), "jwt_bearer") {
+		return
+	}
+
 	// Step five: replay. Above RFC 7523, which makes this optional.
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

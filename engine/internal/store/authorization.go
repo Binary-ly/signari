@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/authzen"
+	"signari.dev/engine/internal/oauth"
 )
 
 // Relations, the model, and the facts an authorization decision is made from.
@@ -349,8 +350,10 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 		return f, nil
 	}
 
+	// amr only: whether the session is multi-factor is derived from the methods
+	// actually used, never read back from a stored acr (oauth.ACRFromAMR).
 	rows, err = q.Query(ctx, `
-		SELECT amr, COALESCE(acr,'0')
+		SELECT amr
 		  FROM core.sessions
 		 WHERE sid = $1 AND org_id = $2::uuid AND user_id = $3::uuid
 		   AND revoked_at IS NULL AND not_after > now()`, sid, orgID, userID)
@@ -360,21 +363,16 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 	defer rows.Close()
 	if rows.Next() {
 		var amr []string
-		var acr string
-		if err := rows.Scan(&amr, &acr); err != nil {
+		if err := rows.Scan(&amr); err != nil {
 			return f, err
 		}
 		f.FromSession = true
-		for _, m := range amr {
-			// RFC 8176 method names. `pwd` alone is not a second factor.
-			switch m {
-			case "otp", "hwk", "swk", "mfa", "sms", "face", "fpt", "user", "pin":
-				f.MFA = true
-			}
-		}
-		if acr == "urn:signari:mfa" || acr == "2" {
-			f.MFA = true
-		}
+		// The same predicate as every other MFA decision. This used to list
+		// "user" and "pin" among the methods that alone made a session
+		// multi-factor, so a passkey with no user verification -- one factor --
+		// satisfied an `mfa` requirement in the PDP while failing it everywhere
+		// else, and it also trusted the stored acr.
+		f.MFA = oauth.IsMultiFactor(amr)
 	}
 	return f, rows.Err()
 }

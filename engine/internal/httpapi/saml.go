@@ -373,7 +373,9 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 	// go stale.
 	sessionIndex := sid
 
-	acr, amr, authTime, err := store.SessionAuthContext(ctx, tx, sid)
+	// The stored acr is not used: the authentication context is derived from
+	// the methods actually used (samlAuthnContext).
+	_, amr, authTime, err := store.SessionAuthContext(ctx, tx, sid)
 	if err != nil {
 		return "", "", err
 	}
@@ -438,7 +440,7 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 			// The context reflects what the user ACTUALLY did, not what was asked
 			// for. Claiming multi-factor for a password-only session is a lie the
 			// service provider makes access decisions on.
-			AuthnContext: samlAuthnContext(acr, amr),
+			AuthnContext: samlAuthnContext(amr),
 			Attributes:   attrs,
 		},
 	}, key.KID(), key.Signer(), certDER)
@@ -474,14 +476,12 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 // anything other than "0", and a password-only session carries acr "1". So
 // every ordinary login claimed MFA. It was caught by comparing a live assertion
 // against the session row that produced it, not by reading the code.
-func samlAuthnContext(acr string, amr []string) string {
-	for _, m := range amr {
-		switch m {
-		case oauth.AMROTP, oauth.AMRHardwareKey, oauth.AMRMFA:
-			return saml.AuthnContextMFA
-		}
-	}
-	if acr == oauth.ACRMultiFactor || acr == oauth.ACRPapeMultiFactor {
+//
+// It then claimed MFA for a single hardware key, so a passkey used without user
+// verification -- one factor -- satisfied a service provider's step-up. Now the
+// one predicate every MFA decision uses (oauth.IsMultiFactor).
+func samlAuthnContext(amr []string) string {
+	if oauth.IsMultiFactor(amr) {
 		return saml.AuthnContextMFA
 	}
 	return saml.AuthnContextPassword

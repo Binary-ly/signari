@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
 
@@ -53,7 +54,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, sessionRow{
 			SID:       ss.SID,
 			UserAgent: describeUserAgent(ss.UserAgent),
-			How:       describeAuth(ss.ACR, ss.AMR),
+			How:       describeAuth(ss.AMR),
 			Signed:    ss.CreatedAt.Format("2 January 2006, 15:04 UTC"),
 			Current:   ss.Current,
 		})
@@ -173,14 +174,21 @@ func revokeScope(target string) string {
 
 // describeAuth returns the MESSAGE KEY for how a session signed in, so the
 // template renders it in the reader's language via {{T .How}} rather than this
-// function deciding the words. acr/amr are the only inputs, read at list time.
-func describeAuth(acr string, amr []string) string {
+// function deciding the words. Derived from amr alone, through the same
+// predicate every MFA decision uses: this once labelled every password session
+// "more than one factor", because a password session's acr is "1" and the test
+// was acr != "0".
+func describeAuth(amr []string) string {
+	multi := oauth.IsMultiFactor(amr)
+	// Which label, not whether it was multi-factor: that is `multi`.
+	passkey := slices.Contains(amr, "webauthn") || slices.Contains(amr, oauth.AMRHardwareKey) ||
+		slices.Contains(amr, "swk")
 	switch {
-	case slices.Contains(amr, "webauthn") || slices.Contains(amr, "hwk") || slices.Contains(amr, "swk"):
+	case passkey:
 		return "sessions.how.passkey"
-	case slices.Contains(amr, "otp") || slices.Contains(amr, "sms") || slices.Contains(amr, "mfa"):
+	case multi && slices.Contains(amr, oauth.AMRPassword):
 		return "sessions.how.mfa"
-	case acr != "" && acr != "0":
+	case multi:
 		return "sessions.how.multifactor"
 	default:
 		return "sessions.how.password"

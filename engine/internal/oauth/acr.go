@@ -102,6 +102,18 @@ func ACRFromAMR(amr []string) string {
 	return ACRSingleFactor
 }
 
+// IsMultiFactor reports whether a session's authentication methods add up to
+// multi-factor authentication.
+//
+// The ONE predicate every decision uses -- the access policy, the AuthZEN PDP,
+// the SAML authentication context, the session list. There were four, and they
+// disagreed: the PDP counted `user` or `pin` alone as MFA, the access policy and
+// SAML counted a single possession factor, and the session list called a
+// password session multi-factor. So a passkey used without user verification
+// passed an MFA requirement in three places and failed it in the fourth.
+// TestThereIsOneMultiFactorPredicate fails the build if a fifth appears.
+func IsMultiFactor(amr []string) bool { return ACRFromAMR(amr) == ACRMultiFactor }
+
 // satisfies reports whether an achieved context meets a requested one.
 func satisfies(achieved, requested string) bool {
 	switch requested {

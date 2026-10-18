@@ -182,21 +182,18 @@ func clientIP(r *http.Request) string {
 func sessionFactors(ctx context.Context, db interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, sid string) (bool, []string) {
-	var acr string
 	var amr []string
 	if err := db.QueryRow(ctx,
-		`SELECT acr, amr FROM core.sessions WHERE sid = $1`, sid).Scan(&acr, &amr); err != nil {
+		`SELECT amr FROM core.sessions WHERE sid = $1`, sid).Scan(&amr); err != nil {
 		// Unknown means NOT multi-factor, and no factors. Guessing the other way
 		// would satisfy an MFA requirement for a session we could not read.
 		return false, nil
 	}
-	for _, m := range amr {
-		switch m {
-		case oauth.AMROTP, oauth.AMRHardwareKey, oauth.AMRMFA, oauth.AMRSMS:
-			return true, amr
-		}
-	}
-	return acr == oauth.ACRMultiFactor || acr == oauth.ACRPapeMultiFactor, amr
+	// The one predicate (oauth.IsMultiFactor), derived from the methods used
+	// and never from a stored acr. This used to accept any single possession
+	// factor, so a passkey with no user verification satisfied a policy that
+	// requires MFA.
+	return oauth.IsMultiFactor(amr), amr
 }
 
 // impossibleTravel reports whether this sign-in could not have followed the

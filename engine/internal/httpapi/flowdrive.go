@@ -542,7 +542,7 @@ func (s *Server) FlowDemandsMFA(ctx context.Context, db signInReader,
 // one caller. It was still wrong, and the moment another path is routed through
 // the sequencer it would have become reachable and quiet.
 func hasSecondFactorAMR(amr []string) bool {
-	return oauth.ACRFromAMR(amr) == oauth.ACRMultiFactor
+	return oauth.IsMultiFactor(amr)
 }
 
 // evaluatedConditions are the conditions the sign-in path actually answers.

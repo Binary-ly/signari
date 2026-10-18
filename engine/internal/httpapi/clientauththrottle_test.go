@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -168,6 +169,40 @@ func TestFailuresFromOneSourceAreEventuallyRefused(t *testing.T) {
 	if s.clientAuthAllowed(ctx, r, client) {
 		t.Errorf("still allowed after %d failures; the budget does not bind",
 			clientAuthPerPairLimit+1)
+	}
+}
+
+// A choke point is one only if nothing goes round it. /introspect and /revoke
+// compared the secret themselves, beside the comment above the choke point
+// saying they arrived through it: no budget, and no way in for a client that
+// authenticates with a key, a certificate or an attestation. So no file but
+// clientauth.go may call verifyClientSecret.
+func TestNothingComparesAClientSecretOutsideTheChokePoint(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := regexp.MustCompile(`\.verifyClientSecret\(`)
+	found := 0
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := len(call.FindAllIndex(b, -1))
+		found += n
+		if n > 0 && e.Name() != "clientauth.go" {
+			t.Errorf("%s calls verifyClientSecret directly. Authenticate the client through "+
+				"authenticateConfidentialClient instead: a direct comparison skips the "+
+				"failure budget and refuses every client that holds no secret", e.Name())
+		}
+	}
+	if found == 0 {
+		t.Fatal("no call to verifyClientSecret was found at all, so this guard is reading " +
+			"the wrong thing")
 	}
 }
 

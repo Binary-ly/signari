@@ -60,9 +60,19 @@ func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.
 		writeTokenError(w, aerr)
 		return nil, false
 	}
+	// Through the one place a confidential client proves itself, as /token does.
+	// This compared the secret directly, so introspection and revocation
+	// consulted no failure budget, which made them an unmetered place to guess a
+	// secret. It also refused every client registered for private_key_jwt,
+	// mutual TLS or attestation, which hold no secret to compare.
 	if c.Type == "confidential" {
-		ok, err := s.verifyClientSecret(ctx, c, req.ClientSecret)
-		if err != nil || !ok {
+		if err := s.authenticateConfidentialClient(ctx, r, c, req.ClientSecret); err != nil {
+			s.log.Info("client authentication failed", "client_id", c.ClientID, "err", err,
+				"correlation_id", correlationID(ctx))
+			if isAttestationFailure(c, err) {
+				s.writeAttestationError(w, r, c, err)
+				return nil, false
+			}
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
 				Description: "client authentication failed", Status: http.StatusUnauthorized})
 			return nil, false

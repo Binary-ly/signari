@@ -152,6 +152,27 @@ func TestTheAuditReadDeclaresThatItDoesNotVerifyTheChain(t *testing.T) {
 	}
 }
 
+// A deployment-wide event -- one with no organisation -- must not break the read.
+//
+// The handler scanned org_id into a plain string, and SQL NULL into a Go string
+// is an error, so any page that included such an event answered 500. With
+// `limit=1` that meant the read failed whenever the newest event in the
+// deployment happened to have no organisation, which is why it surfaced as an
+// intermittent failure in an unrelated test rather than as a bug.
+func TestADeploymentWideEventDoesNotBreakTheAuditRead(t *testing.T) {
+	s, _ := newTestServer(t)
+	marker := fmt.Sprintf("deploymentwide-%d", time.Now().UnixNano())
+	writeFixtureEvents(t, s, "", "", marker, 1)
+
+	page := getAuditPage(t, s, "?event_type="+marker)
+	if len(page.Events) != 1 {
+		t.Fatalf("got %d events, want the 1 deployment-wide event", len(page.Events))
+	}
+	if page.Events[0].OrgID != "" {
+		t.Errorf("a deployment-wide event reported org_id %q, want null", page.Events[0].OrgID)
+	}
+}
+
 // A malformed cursor or timestamp is a 400, not a 500.
 func TestMalformedAuditQueriesAreRefusedClearly(t *testing.T) {
 	s, _ := newTestServer(t)

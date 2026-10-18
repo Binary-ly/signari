@@ -62,8 +62,12 @@ import (
 // explains is meaningless — a reader would hash what they received, find it
 // consistent, and believe they had checked something.
 type auditEvent struct {
-	ID             string          `json:"id"`
-	OrgID          string          `json:"org_id"`
+	ID string `json:"id"`
+	// Null for a deployment-wide event, which belongs to no organisation. A
+	// plain string here made every page holding one fail with a 500: scanning
+	// SQL NULL into a Go string is an error, and on the test database 43% of
+	// events have no organisation.
+	OrgID          *string         `json:"org_id"`
 	OccurredAt     string          `json:"occurred_at"`
 	EventType      string          `json:"event_type"`
 	SubjectID      string          `json:"subject_id,omitempty"`

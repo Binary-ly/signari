@@ -81,14 +81,41 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 	// session cookie could guess the account's password here without limit and
 	// take it to every other site the person reuses it on. Two doors onto one
 	// credential share one budget, as the LDAP bind does.
-	identity, _ := store.EmailForUser(ctx, s.db, userID)
-	budget := []struct {
+	//
+	// One per-account bucket for each name the form accepts for this person,
+	// since the form keys on what was typed. It keyed on the email alone, so
+	// everybody without one -- in every organisation -- shared the bucket
+	// "signin:fail:user:", and one person's wrong guesses stopped the rest
+	// changing their passwords. Every account has one name or the other
+	// (users_has_an_identifier); should one ever have neither, the bucket is
+	// still its own and never the empty key.
+	var email, username string
+	if err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(email,''), COALESCE(username,'') FROM core.users WHERE id = $1::uuid`,
+		userID).Scan(&email, &username); err != nil {
+		s.log.Error("reading the account's names", "err", err)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	identity := email
+	if identity == "" {
+		identity = username
+	}
+	type bucket struct {
 		key    string
 		limit  int
 		window time.Duration
-	}{
-		{"signin:fail:ip:" + clientIP(r), signInPerIPLimit, signInPerIPWindow},
-		{"signin:fail:user:" + strings.ToLower(identity), signInPerAccountLimit, signInPerAccountWindow},
+	}
+	budget := []bucket{{"signin:fail:ip:" + clientIP(r), signInPerIPLimit, signInPerIPWindow}}
+	names := map[string]bool{}
+	for _, n := range []string{email, username} {
+		if n = strings.ToLower(strings.TrimSpace(n)); n != "" && !names[n] {
+			names[n] = true
+			budget = append(budget, bucket{"signin:fail:user:" + n, signInPerAccountLimit, signInPerAccountWindow})
+		}
+	}
+	if len(names) == 0 {
+		budget = append(budget, bucket{"signin:fail:account:" + userID, signInPerAccountLimit, signInPerAccountWindow})
 	}
 	for _, b := range budget {
 		n, err := store.CountRate(ctx, s.db, b.key, b.window)

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,12 +12,14 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidc"
+	"signari.dev/engine/internal/store"
 )
 
 // The current-password check at /account/password was unmetered, so a stolen
@@ -56,6 +59,55 @@ func TestTheCurrentPasswordCheckSpendsTheSignInBudget(t *testing.T) {
 	}
 	if hash() != before {
 		t.Fatal("the refused change still replaced the password")
+	}
+}
+
+// People with a username and no email shared one current-password bucket, keyed
+// "signin:fail:user:" with nothing after it, in every organisation: one
+// person's wrong guesses stopped all the others changing their passwords.
+func TestAnAccountWithoutAnEmailHasACurrentPasswordBudgetOfItsOwn(t *testing.T) {
+	f, cookie := enrolFixture(t)
+	clearOfWindowEdge(t, signInPerAccountWindow)
+	clearSignInBucket(t, f.pool)
+	ctx := context.Background()
+	username := fmt.Sprintf("nomail-%d", time.Now().UnixNano())
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE core.users SET email = NULL, username = $2 WHERE id = $1::uuid`, f.userID, username); err != nil {
+		t.Fatal(err)
+	}
+	fill := func(key string) {
+		t.Helper()
+		t.Cleanup(func() {
+			_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.rate_limits WHERE bucket_key = $1`, key)
+		})
+		for i := 0; i < signInPerAccountLimit; i++ {
+			if _, err := store.AllowRate(ctx, f.pool, key, signInPerAccountLimit, signInPerAccountWindow); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	change := func(newPassword string) string {
+		t.Helper()
+		return f.formPost(t, cookie, "/account/password", "/account/password", url.Values{
+			"current": {signInTestPassword}, "password": {newPassword}, "confirm": {newPassword},
+		}).Body.String()
+	}
+
+	// Its own budget -- the one the sign-in form charges for its username --
+	// binds. First, because a refusal changes nothing and keeps the session.
+	own := "signin:fail:user:" + username
+	fill(own)
+	if body := change("yet-another-new-passphrase-2026"); !strings.Contains(body, "Too many") {
+		t.Fatal("an email-less account whose own budget is spent could still try its current password")
+	}
+	if _, err := f.pool.Exec(ctx, `DELETE FROM core.rate_limits WHERE bucket_key = $1`, own); err != nil {
+		t.Fatal(err)
+	}
+
+	// Somebody else without an email spent the bucket they all used to share.
+	fill("signin:fail:user:")
+	if body := change("an-entirely-new-passphrase-2026"); strings.Contains(body, "Too many") {
+		t.Fatal("another email-less account's wrong guesses stopped this one changing its password")
 	}
 }
 

@@ -894,7 +894,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if serr := s.sendSMS(ctx, userID, sms.Message{
+		if serr := s.sendSMS(ctx, userID, smsCode, sms.Message{
 			To: to,
 			Body: fmt.Sprintf("%s: your verification code is %s. It expires in %d minutes.",
 				s.cfg.Issuer, code, int(store.SMSOTPLifetime.Minutes())),

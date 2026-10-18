@@ -34,14 +34,14 @@ func TestATextMessageOutsideTheCountryListIsNotSent(t *testing.T) {
 	f.srv.SetSMSPolicy(smsPolicy(t, map[string]string{"SIGNARI_SMS_ALLOWED_PREFIXES": "+44, +1"}))
 	ctx := context.Background()
 
-	err := f.srv.sendSMS(ctx, f.userID, sms.Message{To: "+88212345678", Body: "code"})
+	err := f.srv.sendSMS(ctx, f.userID, smsCode, sms.Message{To: "+88212345678", Body: "code"})
 	if !errors.Is(err, errSMSRefused) || len(texter.messages()) != 0 {
 		t.Fatalf("a number outside the list gave %v and %d message(s) sent", err, len(texter.messages()))
 	}
 	// A number of this run's own: the daily ceiling now holds for the whole day,
 	// so a fixed number is spent by earlier runs.
 	listed := fmt.Sprintf("+4477%09d", time.Now().UnixNano()%1_000_000_000)
-	if err := f.srv.sendSMS(ctx, f.userID, sms.Message{To: listed, Body: "code"}); err != nil {
+	if err := f.srv.sendSMS(ctx, f.userID, smsCode, sms.Message{To: listed, Body: "code"}); err != nil {
 		t.Fatalf("a listed number was refused: %v", err)
 	}
 	var audited int
@@ -63,15 +63,41 @@ func TestOneNumberGetsAtMostItsDailyAllowance(t *testing.T) {
 	number := fmt.Sprintf("+4477%09d", time.Now().UnixNano()%1_000_000_000)
 
 	for i := 0; i < 3; i++ {
-		if err := f.srv.sendSMS(ctx, f.userID, sms.Message{To: number, Body: "code"}); err != nil {
+		if err := f.srv.sendSMS(ctx, f.userID, smsCode, sms.Message{To: number, Body: "code"}); err != nil {
 			t.Fatalf("message %d within the allowance was refused: %v", i+1, err)
 		}
 	}
-	if err := f.srv.sendSMS(ctx, f.userID, sms.Message{To: number, Body: "code"}); !errors.Is(err, errSMSRefused) {
+	if err := f.srv.sendSMS(ctx, f.userID, smsCode, sms.Message{To: number, Body: "code"}); !errors.Is(err, errSMSRefused) {
 		t.Fatalf("the fourth message to one number in a day gave %v, want a refusal", err)
 	}
 	if n := len(texter.messages()); n != 3 {
 		t.Fatalf("%d messages reached the gateway, want 3", n)
+	}
+}
+
+// Notices draw on an allowance of their own. A reset request, which anybody
+// can make for anybody, texts a notice; sharing the allowance let enough of
+// them stop a person -- or, through the organisation's ceiling, everybody --
+// receiving a sign-in code.
+func TestNoticesCannotSpendTheAllowanceCodesComeFrom(t *testing.T) {
+	f := newSignInFixture(t)
+	texter := &captureTexter{}
+	f.srv.texter = texter
+	f.srv.SetSMSPolicy(smsPolicy(t, map[string]string{
+		"SIGNARI_SMS_NUMBER_DAILY_LIMIT": "2", "SIGNARI_SMS_ORG_DAILY_LIMIT": "1000000"}))
+	ctx := context.Background()
+	number := fmt.Sprintf("+4479%09d", time.Now().UnixNano()%1_000_000_000)
+
+	for i := 0; i < 2; i++ {
+		if err := f.srv.sendSMS(ctx, f.userID, smsNotice, sms.Message{To: number, Body: "notice"}); err != nil {
+			t.Fatalf("notice %d within its allowance was refused: %v", i+1, err)
+		}
+	}
+	if err := f.srv.sendSMS(ctx, f.userID, smsNotice, sms.Message{To: number, Body: "notice"}); !errors.Is(err, errSMSRefused) {
+		t.Fatalf("a notice past its own allowance gave %v, want a refusal", err)
+	}
+	if err := f.srv.sendSMS(ctx, f.userID, smsCode, sms.Message{To: number, Body: "code"}); err != nil {
+		t.Fatalf("a sign-in code after the notices' allowance was spent was refused: %v", err)
 	}
 }
 
@@ -85,12 +111,12 @@ func TestAnOrganisationGetsAtMostItsDailyAllowance(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		to := fmt.Sprintf("+4478%09d", (base+int64(i))%1_000_000_000)
-		if err := f.srv.sendSMS(ctx, f.userID, sms.Message{To: to, Body: "code"}); err != nil {
+		if err := f.srv.sendSMS(ctx, f.userID, smsCode, sms.Message{To: to, Body: "code"}); err != nil {
 			t.Fatalf("message %d within the organisation's allowance was refused: %v", i+1, err)
 		}
 	}
 	to := fmt.Sprintf("+4478%09d", (base+7)%1_000_000_000)
-	if err := f.srv.sendSMS(ctx, f.userID, sms.Message{To: to, Body: "code"}); !errors.Is(err, errSMSRefused) {
+	if err := f.srv.sendSMS(ctx, f.userID, smsCode, sms.Message{To: to, Body: "code"}); !errors.Is(err, errSMSRefused) {
 		t.Fatalf("a third message for the organisation, to a fresh number, gave %v, want a refusal", err)
 	}
 }

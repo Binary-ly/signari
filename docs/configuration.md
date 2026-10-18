@@ -196,8 +196,15 @@ See [SMS](sms.md), including why it is the weakest factor offered here.
 | `SIGNARI_SMS_TWILIO_SID`, `SIGNARI_SMS_TWILIO_TOKEN` | Twilio credentials |
 | `SIGNARI_SMS_WEBHOOK_URL`, `SIGNARI_SMS_WEBHOOK_AUTH` | For any other provider. Must be https: the body carries a live code |
 | `SIGNARI_SMS_ALLOWED_PREFIXES` | Comma-separated E.164 prefixes of the countries you serve, such as `+1,+44`. A number outside the list cannot be enrolled and is sent nothing. Unset allows every country; `signari doctor` and the startup log both say so |
-| `SIGNARI_SMS_NUMBER_DAILY_LIMIT` | Messages one number may be sent per 24 hours, default `10` |
-| `SIGNARI_SMS_ORG_DAILY_LIMIT` | Messages one organisation may send per 24 hours, default `1000`. Raise it for a large organisation that uses SMS sign-in daily |
+| `SIGNARI_SMS_NUMBER_DAILY_LIMIT` | Messages one number may be sent per 24 hours, default `10`. Codes and account notices each get this many |
+| `SIGNARI_SMS_ORG_DAILY_LIMIT` | Messages one organisation may send per 24 hours, default `1000`. Codes and account notices each get this many. Raise it for a large organisation that uses SMS sign-in daily |
+
+Codes (sign-in and enrolment) and account notices draw on separate allowances.
+Anybody can request a password reset for anybody, and each request texts a
+notice. When the two shared one allowance, enough requests stopped a person
+receiving sign-in codes, and enough across an organisation stopped everyone in
+it. Notices are still capped, by their own ceiling, so the most a deployment
+can be billed is twice each limit.
 
 Text messages are the one factor where an attacker can spend your money. A
 number on a high-cost range earns whoever leases that range a share of every

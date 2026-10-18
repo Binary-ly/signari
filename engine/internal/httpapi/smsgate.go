@@ -24,7 +24,14 @@ import (
 // day, and so may its organisation. A refusal is audited, counted and returned
 // as errSMSRefused, and nothing is sent. TestNoTextMessageBypassesTheGate keeps
 // this the only caller of the gateway.
-func (s *Server) sendSMS(ctx context.Context, userID string, m sms.Message) error {
+//
+// Codes and notices draw on separate allowances of the same size. They shared
+// one, and a reset request -- which anybody can make for anybody, and which
+// texts a notice -- spent the allowance a person's sign-in codes come from:
+// enough requests and the person could not receive a code, and enough across
+// an organisation and nobody in it could. A notice can no longer cost anybody
+// a code; what it costs the operator is still capped, by its own ceiling.
+func (s *Server) sendSMS(ctx context.Context, userID string, kind smsKind, m sms.Message) error {
 	if s.texter == nil {
 		return errors.New("no SMS gateway is configured")
 	}
@@ -39,12 +46,16 @@ func (s *Server) sendSMS(ctx context.Context, userID string, m sms.Message) erro
 		return fmt.Errorf("finding the organisation for a text message: %w", err)
 	}
 	perNumber, perOrg := s.smsPolicy.Limits()
+	prefix := "sms:"
+	if kind == smsNotice {
+		prefix = "sms:notice:"
+	}
 	for _, b := range []struct {
 		key, outcome, why string
 		limit             int
 	}{
-		{"sms:number:" + m.To, "refused_number_budget", "this number's daily allowance is spent", perNumber},
-		{"sms:org:" + orgID, "refused_org_budget", "the organisation's daily allowance is spent " +
+		{prefix + "number:" + m.To, "refused_number_budget", "this number's daily allowance is spent", perNumber},
+		{prefix + "org:" + orgID, "refused_org_budget", "the organisation's daily allowance is spent " +
 			"(SIGNARI_SMS_ORG_DAILY_LIMIT)", perOrg},
 	} {
 		res, err := store.AllowRate(ctx, s.db, b.key, b.limit, 24*time.Hour)
@@ -65,6 +76,16 @@ func (s *Server) sendSMS(ctx context.Context, userID string, m sms.Message) erro
 	s.countSMS("sent")
 	return nil
 }
+
+// smsKind says which allowance a text message draws on.
+type smsKind int
+
+const (
+	// smsCode is a one-time code: the sign-in challenge or enrolment.
+	smsCode smsKind = iota
+	// smsNotice tells the person something happened to their account.
+	smsNotice
+)
 
 var errSMSRefused = errors.New("the text message was refused")
 

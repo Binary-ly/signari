@@ -51,14 +51,25 @@ type SMSOTPCredential struct {
 	OrgID    string
 	Number   string
 	Verified bool
+	// Pending is a number being enrolled, until a code sent to it comes back.
+	Pending string
 }
 
-// EnrollSMSOTP records the factor against a number, UNVERIFIED.
+// The two kinds of code, kept apart in code_purpose (0135).
+const (
+	smsCodeSignIn = "signin"
+	smsCodeEnrol  = "enrol"
+)
+
+// EnrollSMSOTP records a number the person wants codes sent to.
 //
-// Not a second factor yet. It becomes one when VerifySMSOTP succeeds against a
-// code sent to that number -- see MarkSMSOTPVerified. Enrolling and trusting in
-// one step means a typo enrols somebody else's phone, and the account's owner
-// is then locked out by their own security setting.
+// It goes into pending_number and nowhere else. The number that already works
+// -- if there is one -- stays the factor until a code sent to the new one comes
+// back. This function once wrote the new number over it and cleared
+// verified_at, so one POST from any live session switched the factor off and
+// pointed the account at a number of the session holder's choosing (0135). A
+// first-time row is created unverified, so it is not a second factor yet
+// either: a typo would otherwise enrol somebody else's phone.
 func EnrollSMSOTP(ctx context.Context, tx pgx.Tx, userID, orgID, rawNumber string) (
 	string, error) {
 
@@ -66,17 +77,14 @@ func EnrollSMSOTP(ctx context.Context, tx pgx.Tx, userID, orgID, rawNumber strin
 	if err != nil {
 		return "", err
 	}
-	// Re-enrolling a different number clears any verification: the new number
-	// has proven nothing.
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.sms_otp_credentials (user_id, org_id, number)
-		VALUES ($1::uuid, $2::uuid, $3)
+		INSERT INTO core.sms_otp_credentials (user_id, org_id, number, pending_number)
+		VALUES ($1::uuid, $2::uuid, $3, $3)
 		ON CONFLICT (user_id) DO UPDATE SET
-			number = EXCLUDED.number,
-			verified_at = CASE WHEN core.sms_otp_credentials.number = EXCLUDED.number
-			                   THEN core.sms_otp_credentials.verified_at
-			                   ELSE NULL END,
-			code_hash = NULL, code_expires_at = NULL, attempts = 0,
+			pending_number = EXCLUDED.pending_number,
+			-- Any code in flight is invalidated: one sent for a different
+			-- purpose or number must not complete this enrolment.
+			code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, attempts = 0,
 			updated_at = now()`,
 		userID, orgID, number); err != nil {
 		return "", fmt.Errorf("enrolling the SMS factor: %w", err)
@@ -91,10 +99,11 @@ func LoadSMSOTP(ctx context.Context, q interface {
 
 	c := &SMSOTPCredential{UserID: userID}
 	var verifiedAt *time.Time
+	var pending *string
 	err := q.QueryRow(ctx, `
-		SELECT org_id::text, number, verified_at
+		SELECT org_id::text, number, verified_at, pending_number
 		FROM core.sms_otp_credentials WHERE user_id = $1::uuid`, userID).
-		Scan(&c.OrgID, &c.Number, &verifiedAt)
+		Scan(&c.OrgID, &c.Number, &verifiedAt, &pending)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNoSMSOTP
@@ -102,6 +111,9 @@ func LoadSMSOTP(ctx context.Context, q interface {
 		return nil, err
 	}
 	c.Verified = verifiedAt != nil
+	if pending != nil {
+		c.Pending = *pending
+	}
 	return c, nil
 }
 
@@ -123,21 +135,46 @@ func HasVerifiedSMS(ctx context.Context, q interface {
 	return ok, err
 }
 
-// IssueSMSOTP generates a code and returns it with the number to send it to.
+// IssueSMSOTP generates a SIGN-IN code for the proved number and returns it
+// with that number.
 //
-// Replaces any pending code rather than adding to it: "send another" must not
-// leave the previous one live, or a patient attacker accumulates guesses
-// against a widening set of valid codes.
+// Refuses (ErrNoSMSOTP) while no number is proved. Replaces any outstanding code
+// rather than adding to it: "send another" must not leave the previous one
+// live, or a patient attacker accumulates guesses against a widening set of
+// valid codes.
 func IssueSMSOTP(ctx context.Context, tx pgx.Tx, userID string) (code, number string, err error) {
-	var lastSent *time.Time
+	return issueSMSCode(ctx, tx, userID, smsCodeSignIn)
+}
+
+// IssueSMSOTPEnrolment generates an ENROLMENT code for the pending number.
+func IssueSMSOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string) (code, number string, err error) {
+	return issueSMSCode(ctx, tx, userID, smsCodeEnrol)
+}
+
+func issueSMSCode(ctx context.Context, tx pgx.Tx, userID, purpose string) (code, number string, err error) {
+	var lastSent, verifiedAt *time.Time
+	var proved string
+	var pending *string
 	err = tx.QueryRow(ctx, `
-		SELECT number, last_sent_at FROM core.sms_otp_credentials
-		WHERE user_id = $1::uuid FOR UPDATE`, userID).Scan(&number, &lastSent)
+		SELECT number, pending_number, verified_at, last_sent_at FROM core.sms_otp_credentials
+		WHERE user_id = $1::uuid FOR UPDATE`, userID).Scan(&proved, &pending, &verifiedAt, &lastSent)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", "", ErrNoSMSOTP
 		}
 		return "", "", err
+	}
+	switch purpose {
+	case smsCodeSignIn:
+		if verifiedAt == nil {
+			return "", "", ErrNoSMSOTP
+		}
+		number = proved
+	case smsCodeEnrol:
+		if pending == nil {
+			return "", "", ErrNoSMSOTP
+		}
+		number = *pending
 	}
 	if lastSent != nil && time.Since(*lastSent) < SMSOTPResendInterval {
 		return "", "", ErrSMSOTPTooSoon
@@ -150,40 +187,67 @@ func IssueSMSOTP(ctx context.Context, tx pgx.Tx, userID string) (code, number st
 	sum := sha256.Sum256([]byte(code))
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.sms_otp_credentials
-		SET code_hash = $2, code_expires_at = now() + $3::interval,
+		SET code_hash = $2, code_expires_at = now() + $3::interval, code_purpose = $4,
 		    attempts = 0, last_sent_at = now(), updated_at = now()
 		WHERE user_id = $1::uuid`,
-		userID, sum[:], fmt.Sprintf("%d seconds", int(SMSOTPLifetime.Seconds()))); err != nil {
+		userID, sum[:], fmt.Sprintf("%d seconds", int(SMSOTPLifetime.Seconds())), purpose); err != nil {
 		return "", "", err
 	}
 	return code, number, nil
 }
 
-// VerifySMSOTP checks a submitted code and consumes it on success.
+// VerifySMSOTP checks a submitted SIGN-IN code and consumes it on success.
 //
 // A correct code is destroyed whether or not the rest of the sign-in succeeds:
-// a one-time code that survives its use is not one-time.
+// a one-time code that survives its use is not one-time. An enrolment code is
+// refused here, and so is any code while no number is proved.
 func VerifySMSOTP(ctx context.Context, tx pgx.Tx, userID, submitted string) (bool, error) {
+	ok, _, err := checkSMSCode(ctx, tx, userID, submitted, smsCodeSignIn)
+	return ok, err
+}
+
+// ConfirmSMSOTPEnrolment checks a submitted ENROLMENT code. On success the
+// pending number becomes the proved one, and the factor counts from then on.
+//
+// replaced is the previously proved number when the enrolment moved the factor
+// somewhere else, so the caller can tell that number it has stopped receiving
+// codes -- the one notice somebody who redirected the factor cannot suppress.
+func ConfirmSMSOTPEnrolment(ctx context.Context, tx pgx.Tx, userID, submitted string) (ok bool, replaced string, err error) {
+	return checkSMSCode(ctx, tx, userID, submitted, smsCodeEnrol)
+}
+
+func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose string) (bool, string, error) {
 	var storedHash []byte
-	var expires *time.Time
+	var expires, verifiedAt *time.Time
 	var attempts int
+	var codePurpose, pending *string
+	var proved string
 	err := tx.QueryRow(ctx, `
-		SELECT code_hash, code_expires_at, attempts
+		SELECT code_hash, code_expires_at, attempts, code_purpose, number, pending_number, verified_at
 		FROM core.sms_otp_credentials WHERE user_id = $1::uuid FOR UPDATE`, userID).
-		Scan(&storedHash, &expires, &attempts)
+		Scan(&storedHash, &expires, &attempts, &codePurpose, &proved, &pending, &verifiedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
+			return false, "", nil
 		}
-		return false, err
+		return false, "", err
 	}
 	if storedHash == nil || expires == nil || time.Now().After(*expires) {
-		return false, nil
+		return false, "", nil
+	}
+	if codePurpose == nil || *codePurpose != purpose {
+		return false, "", nil
+	}
+	if purpose == smsCodeSignIn && verifiedAt == nil {
+		return false, "", nil
+	}
+	if purpose == smsCodeEnrol && pending == nil {
+		return false, "", nil
 	}
 	if attempts >= SMSOTPMaxAttempts {
 		// Budget gone. The code stays dead until a new one is requested, which
 		// is what stops five guesses becoming five hundred.
-		return false, nil
+		return false, "", nil
 	}
 
 	sum := sha256.Sum256([]byte(submitted))
@@ -191,30 +255,37 @@ func VerifySMSOTP(ctx context.Context, tx pgx.Tx, userID, submitted string) (boo
 		if _, uerr := tx.Exec(ctx, `
 			UPDATE core.sms_otp_credentials SET attempts = attempts + 1, updated_at = now()
 			WHERE user_id = $1::uuid`, userID); uerr != nil {
-			return false, uerr
+			return false, "", uerr
 		}
-		return false, nil
+		return false, "", nil
 	}
 
+	if purpose == smsCodeSignIn {
+		if _, err := tx.Exec(ctx, `
+			UPDATE core.sms_otp_credentials
+			SET code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, attempts = 0,
+			    updated_at = now()
+			WHERE user_id = $1::uuid`, userID); err != nil {
+			return false, "", err
+		}
+		return true, "", nil
+	}
+
+	// The proof that the number belongs to the person enrolling it rather than
+	// to whoever their typo reached.
+	var replaced string
+	if verifiedAt != nil && proved != *pending {
+		replaced = proved
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.sms_otp_credentials
-		SET code_hash = NULL, code_expires_at = NULL, attempts = 0, updated_at = now()
+		SET number = pending_number, pending_number = NULL, verified_at = now(),
+		    code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, attempts = 0,
+		    updated_at = now()
 		WHERE user_id = $1::uuid`, userID); err != nil {
-		return false, err
+		return false, "", err
 	}
-	return true, nil
-}
-
-// MarkSMSOTPVerified completes enrolment.
-//
-// Called only after a code sent to the number came back, which is the proof
-// that the number belongs to the person enrolling it rather than to whoever
-// their typo reached.
-func MarkSMSOTPVerified(ctx context.Context, tx pgx.Tx, userID string) error {
-	_, err := tx.Exec(ctx, `
-		UPDATE core.sms_otp_credentials SET verified_at = now(), updated_at = now()
-		WHERE user_id = $1::uuid AND verified_at IS NULL`, userID)
-	return err
+	return true, replaced, nil
 }
 
 // RemoveSMSOTP deletes the factor.

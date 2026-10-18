@@ -288,5 +288,6 @@
   "mail.emailotp.enrolled.body": "Email was just set up as a second sign-in step for your account, and sign-in codes will go to the address that was confirmed.\n\nIf you did this, there is nothing to do.\n\nIf you did NOT, someone else may have access to your account: sign in, review your sign-in methods, and change your password.",
   "sms.emailotp.enrolled": "Email was just set up as a second sign-in step on your account. If this was not you, sign in and review your sign-in methods.",
   "mail.emailotp.moved.subject": "Sign-in codes will no longer come to this address",
-  "mail.emailotp.moved.body": "The second sign-in step on your account was just moved to a different email address. Codes will no longer be sent here.\n\nIf you did this, there is nothing to do.\n\nIf you did NOT, someone else has access to your account and has taken over your sign-in codes. Change your password now and contact your administrator."
+  "mail.emailotp.moved.body": "The second sign-in step on your account was just moved to a different email address. Codes will no longer be sent here.\n\nIf you did this, there is nothing to do.\n\nIf you did NOT, someone else has access to your account and has taken over your sign-in codes. Change your password now and contact your administrator.",
+  "sms.smsotp.moved": "Sign-in codes for your account will no longer be texted to this number: they were just moved to another one. If this was not you, change your password now and contact your administrator."
 }

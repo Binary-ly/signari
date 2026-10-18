@@ -112,6 +112,16 @@ Enrolling and trusting in one step means a typo puts a stranger's phone between
 somebody and their own account — and they find out at the worst possible moment,
 already locked out.
 
+**Moving to another number works the same way.** The new number is held as
+pending, and the number that already works stays the factor and keeps
+receiving sign-in codes until a code sent to the new one comes back. Then the
+old number is texted to say codes will no longer come to it. The send step used
+to overwrite the working number and mark the factor unverified at once. So one
+request from any signed-in session switched SMS off for the account and aimed
+it at a number of that session's choosing, without a code being entered. An
+enrolment code and a sign-in code are kept apart, and neither is accepted in
+place of the other.
+
 ## Numbers are E.164 or refused
 
 ```

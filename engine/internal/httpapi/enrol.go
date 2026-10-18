@@ -752,13 +752,14 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		cred, lerr := store.LoadSMSOTP(ctx, s.db, userID)
 		switch {
+		case lerr == nil && cred.Pending != "":
+			// A number being enrolled and not yet proven. Resume where they left
+			// off rather than starting again: the number is already stored and
+			// re-typing it is another chance to mistype it. A proved number, if
+			// there is one, keeps receiving sign-in codes meanwhile.
+			render("verify", sms.RedactNumber(cred.Pending), "")
 		case lerr == nil && cred.Verified:
 			render("enrolled", sms.RedactNumber(cred.Number), "")
-		case lerr == nil:
-			// Enrolled but never proven. Resume where they left off rather than
-			// starting again: the number is already stored and re-typing it is
-			// another chance to mistype it.
-			render("verify", sms.RedactNumber(cred.Number), "")
 		default:
 			render("start", "", "")
 		}
@@ -791,7 +792,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		okCode, verr := store.VerifySMSOTP(ctx, tx, userID,
+		okCode, replaced, verr := store.ConfirmSMSOTPEnrolment(ctx, tx, userID,
 			strings.TrimSpace(r.PostForm.Get("code")))
 		if verr != nil {
 			s.log.Error("verifying an SMS enrolment code", "err", verr)
@@ -802,20 +803,25 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			render("verify", "", "That code is not right, or it has expired.")
 			return
 		}
-		if merr := store.MarkSMSOTPVerified(ctx, tx, userID); merr != nil {
-			s.log.Error("marking the SMS factor verified", "err", merr)
-			render("verify", "", "Something went wrong. Try again.")
-			return
-		}
 		if aerr := audit.Write(ctx, tx, audit.Event{
 			Type: "mfa.sms_enrolled", OrgID: orgID, SubjectID: userID,
 			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"replaced": replaced != ""},
 		}); aerr != nil {
 			s.log.Error("recording the SMS enrolment", "err", aerr)
 		}
 		if cerr := tx.Commit(ctx); cerr != nil {
 			render("verify", "", "Something went wrong. Try again.")
 			return
+		}
+		// The number codes used to go to hears that they no longer will -- the
+		// one notice somebody who moved the factor cannot suppress.
+		if replaced != "" {
+			if serr := s.sendSMS(ctx, userID, smsNotice, sms.Message{
+				To: replaced, Body: s.notifierFor(ctx, userID).Text("sms.smsotp.moved"),
+			}); serr != nil {
+				s.log.Warn("telling the previous number its codes have moved", "err", serr)
+			}
 		}
 		cred, _ := store.LoadSMSOTP(ctx, s.db, userID)
 		number := ""
@@ -877,7 +883,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		code, to, ierr := store.IssueSMSOTP(ctx, tx, userID)
+		code, to, ierr := store.IssueSMSOTPEnrolment(ctx, tx, userID)
 		switch {
 		case errors.Is(ierr, store.ErrSMSOTPTooSoon):
 			// A live code is already on its way. Moving to the verify step is

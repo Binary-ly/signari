@@ -109,7 +109,8 @@ func (r *Resolver) Source() Source {
 }
 
 // ClientIP returns the client address for req, without a port. A nil Resolver
-// reads the socket.
+// reads the socket. It is "" when a trusted proxy's Forwarded header cannot be
+// parsed because a client left a quoted string open in it.
 func (r *Resolver) ClientIP(req *http.Request) string {
 	peer, ok := addrOf(req.RemoteAddr)
 	if !ok {
@@ -128,7 +129,18 @@ func (r *Resolver) ClientIP(req *http.Request) string {
 		}
 	} else {
 		for _, v := range req.Header.Values("Forwarded") {
-			chain = append(chain, forwardedFor(v)...)
+			hops, ok := forwardedFor(v)
+			if !ok {
+				// A quote left open may hold the hop our proxy appended, so
+				// nothing on the line can be placed. Unknown, NOT the peer: the
+				// client chose to be unplaceable, and the peer is the proxy's
+				// own, usually internal, address -- answering it would hand
+				// anyone who sends this header whatever a from_networks rule
+				// grants the proxy's range. Every per-address decision treats
+				// "" as unknown: budgets share one bucket, network rules fail.
+				return ""
+			}
+			chain = append(chain, hops...)
 		}
 	}
 
@@ -161,11 +173,16 @@ func (r *Resolver) isTrusted(a netip.Addr) bool {
 	return false
 }
 
-// forwardedFor returns the for= values of one Forwarded header, in order.
-func forwardedFor(header string) []string {
-	var out []string
-	for _, element := range splitQuoted(header, ',') {
-		for _, pair := range splitQuoted(element, ';') {
+// forwardedFor returns the for= values of one Forwarded header, in order. ok
+// is false when a quoted string in it never closes.
+func forwardedFor(header string) (out []string, ok bool) {
+	elements, ok := splitQuoted(header, ',')
+	if !ok {
+		return nil, false
+	}
+	for _, element := range elements {
+		pairs, _ := splitQuoted(element, ';')
+		for _, pair := range pairs {
 			k, v, ok := strings.Cut(strings.TrimSpace(pair), "=")
 			if !ok || !strings.EqualFold(strings.TrimSpace(k), "for") {
 				continue
@@ -173,24 +190,34 @@ func forwardedFor(header string) []string {
 			out = append(out, strings.Trim(strings.TrimSpace(v), `"`))
 		}
 	}
-	return out
+	return out, true
 }
 
-// splitQuoted splits on sep outside double quotes, so a quoted
+// splitQuoted splits on sep outside quoted strings, so a quoted
 // "[2001:db8::1]:4711" stays one value.
-func splitQuoted(s string, sep rune) []string {
-	var out []string
-	quoted, start := false, 0
+//
+// A value is a token or a quoted-string (RFC 7239 §4), and inside a
+// quoted-string a backslash escapes the next character (RFC 9110 §5.6.4,
+// quoted-pair). ok is false when a quoted string is still open at the end.
+// That is the case to refuse: a client sending `for=1.2.3.4;by="` left the
+// quote open, the comma and hop its proxy appended to the same line landed
+// inside it, and the client's own for= was the only one left to believe.
+func splitQuoted(s string, sep rune) (parts []string, ok bool) {
+	quoted, escaped, start := false, false, 0
 	for i, c := range s {
 		switch {
+		case escaped:
+			escaped = false
+		case quoted && c == '\\':
+			escaped = true
 		case c == '"':
 			quoted = !quoted
 		case c == sep && !quoted:
-			out = append(out, s[start:i])
+			parts = append(parts, s[start:i])
 			start = i + 1
 		}
 	}
-	return append(out, s[start:])
+	return append(parts, s[start:]), !quoted
 }
 
 // addrOf parses an address that may carry a port or IPv6 brackets.

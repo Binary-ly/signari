@@ -59,6 +59,17 @@ func TestTheClientIsTheRightmostAddressThatIsNotATrustedProxy(t *testing.T) {
 			request("10.0.0.2:5000", "Forwarded", "for=6.6.6.6, for=198.51.100.1;by=10.0.0.2"), "198.51.100.1"},
 		{"Forwarded, a hidden identifier ends the walk", fwd,
 			request("10.0.0.2:5000", "Forwarded", "for=198.51.100.1, for=_hidden"), "10.0.0.2"},
+		// The client leaves a quote open; its proxy appends the real hop to
+		// the same line, inside the quote. Neither the client's choice nor the
+		// proxy's own address: unknown.
+		{"Forwarded, an unterminated quote swallowing the proxy's hop is unknown", fwd,
+			request("10.0.0.2:5000", "Forwarded", `for=1.2.3.4;by=", for=198.51.100.1`), ""},
+		{"Forwarded, an escaped quote does not close the string", fwd,
+			request("10.0.0.2:5000", "Forwarded", `for=1.2.3.4;by="\", for=198.51.100.1`), ""},
+		{"Forwarded, an escaped quote inside a closed string is one value", fwd,
+			request("10.0.0.2:5000", "Forwarded", `for=6.6.6.6;by="a\"b", for=198.51.100.1`), "198.51.100.1"},
+		{"Forwarded, an unterminated quote on any line is unknown", fwd,
+			request("10.0.0.2:5000", "Forwarded", `for=1.2.3.4;by="`, "Forwarded", "for=198.51.100.1"), ""},
 		{"the socket source ignores headers", nil,
 			request("10.0.0.2:5000", "X-Forwarded-For", "198.51.100.1"), "10.0.0.2"},
 	} {

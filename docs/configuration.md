@@ -115,6 +115,15 @@ request from any other address is answered by its socket, whatever headers it
 carries. A hop that is not an address ends the walk and the proxy's address is
 used.
 
+A `Forwarded` header with a quoted string that never closes is not read at all,
+and the client address is unknown. Unknown means the shared `unknown` budget,
+and it fails every network rule. Such a header could only have come from a
+client. A client that sends `for=1.2.3.4;by="` leaves the quote open, so the
+hop its proxy appends to the same line ends up inside the quote. Reading the
+header anyway would let the client choose its own address. Using the proxy's
+address instead would give the client whatever a network rule allows the
+proxy's range.
+
 The engine refuses to start on a configuration that protects nothing: a prefix
 that covers every address (`0.0.0.0/0`, `::/0`), a header source with no
 trusted proxy, or trusted proxies with no header to read. When forwarding

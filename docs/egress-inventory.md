@@ -106,6 +106,16 @@ a hostname that resolves to 169.254.169.254 is refused even though the name
 looked fine — and each redirect hop is dialled through the same check, so a 302
 into the private range is refused exactly like a direct attempt.
 
+The check also covers the special-purpose ranges that Go's address predicates
+treat as ordinary public unicast: `0.0.0.0/8`, the shared address space
+`100.64.0.0/10` (where some clouds put their metadata service), `192.0.0.0/24`,
+the benchmarking range `198.18.0.0/15`, `240.0.0.0/4` with broadcast, and the
+IPv6 discard prefix. An IPv6 address that carries an IPv4 one is judged by that
+IPv4 address: NAT64's well-known prefix, 6to4 and the deprecated
+IPv4-compatible form. So `64:ff9b::a9fe:a9fe` is refused as the metadata
+service it reaches through a translator. Teredo and NAT64's local-use prefix
+are refused outright.
+
 > **This sentence was wrong when this document was written, and the correction is
 > the reason the document was worth writing.** It said "every outbound connection
 > from these paths", and back-channel logout delivery did not go through

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"syscall"
 	"time"
@@ -47,8 +48,11 @@ func (e *ErrBlocked) Error() string {
 
 // Blocked reports whether an address is one we refuse.
 //
-// Everything that is not ordinary public unicast. Listing the ranges by name
-// would miss one; asking what KIND of address it is does not.
+// Everything that is not ordinary public unicast. Go's predicates are asked
+// first, because asking what KIND of address it is covers whole classes. They
+// leave several special-purpose ranges looking like public unicast, though,
+// and do not look inside IPv6 forms that carry an IPv4 address. Those are the
+// `refused` table and embeddedIPv4 below.
 func Blocked(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -75,7 +79,61 @@ func Blocked(ip net.IP) bool {
 	if len(ip) == net.IPv6len && ip[0]&0xfe == 0xfc {
 		return true
 	}
+
+	a, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	a = a.Unmap()
+	for _, p := range refused {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	// An IPv6 address that carries an IPv4 one is that IPv4 address to anything
+	// translating it, so the IPv4 address is asked about. Without this,
+	// 64:ff9b::a9fe:a9fe (the metadata service, through a NAT64 gateway) and
+	// 2002:7f00:1:: (loopback, through a 6to4 relay) were permitted.
+	if v4, ok := embeddedIPv4(a); ok {
+		return Blocked(net.IP(v4.AsSlice()))
+	}
 	return false
+}
+
+// refused are the ranges the predicates above do not see, which Go's
+// IsPrivate, IsLoopback and the rest leave as ordinary unicast.
+var refused = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),      // "this network": reaches the host itself on many stacks
+	netip.MustParsePrefix("100.64.0.0/10"),  // shared address space (carrier NAT), where some clouds put metadata
+	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking, routed inside networks that use it
+	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, and the broadcast address
+	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 for local use: a translator inside the network
+	netip.MustParsePrefix("2001::/32"),      // Teredo, whose IPv4 address is obfuscated rather than embedded
+	netip.MustParsePrefix("100::/64"),       // discard-only
+}
+
+var (
+	nat64     = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFour = netip.MustParsePrefix("2002::/16")
+	v4compat  = netip.MustParsePrefix("::/96")
+)
+
+// embeddedIPv4 returns the IPv4 address an IPv6 address carries: the last four
+// bytes for NAT64's well-known prefix and the deprecated IPv4-compatible form,
+// bytes two to five for 6to4.
+func embeddedIPv4(a netip.Addr) (netip.Addr, bool) {
+	if !a.Is6() {
+		return netip.Addr{}, false
+	}
+	b := a.As16()
+	switch {
+	case nat64.Contains(a), v4compat.Contains(a) && a != netip.IPv6Unspecified() && a != netip.IPv6Loopback():
+		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
+	case sixToFour.Contains(a):
+		return netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), true
+	}
+	return netip.Addr{}, false
 }
 
 // Control is a net.Dialer Control function that refuses blocked addresses.

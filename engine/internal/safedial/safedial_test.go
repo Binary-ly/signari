@@ -31,9 +31,33 @@ func TestBlockedCoversTheAddressesThatMatter(t *testing.T) {
 		{"::ffff:127.0.0.1", true, "loopback wearing an IPv6 shape"},
 		{"::ffff:10.0.0.1", true, "RFC 1918 wearing an IPv6 shape"},
 
+		// The ranges Go's predicates leave as public unicast.
+		{"0.1.2.3", true, "'this network'"},
+		{"100.64.0.1", true, "shared address space, where some clouds put metadata"},
+		{"100.100.100.200", true, "shared address space"},
+		{"192.0.0.8", true, "IETF protocol assignments"},
+		{"198.18.0.1", true, "benchmarking"},
+		{"198.19.255.255", true, "benchmarking, upper end"},
+		{"240.0.0.1", true, "reserved"},
+		{"255.255.255.255", true, "broadcast"},
+		{"100::1", true, "discard-only"},
+		// IPv6 forms that carry an IPv4 address are asked about that address.
+		{"64:ff9b::a9fe:a9fe", true, "the metadata service through a NAT64 gateway"},
+		{"64:ff9b::7f00:1", true, "loopback through NAT64"},
+		{"64:ff9b:1::1", true, "NAT64 for local use"},
+		{"2002:7f00:1::", true, "loopback through a 6to4 relay"},
+		{"2002:a00:1::", true, "10.0.0.1 through 6to4"},
+		{"2001::1", true, "Teredo"},
+		{"::7f00:1", true, "loopback in the deprecated IPv4-compatible form"},
+
 		{"93.184.216.34", false, "ordinary public unicast"},
 		{"8.8.8.8", false, "ordinary public unicast"},
 		{"2606:2800:220:1::1", false, "ordinary public unicast, IPv6"},
+		{"64:ff9b::808:808", false, "8.8.8.8 through NAT64 is still 8.8.8.8"},
+		{"2002:808:808::", false, "8.8.8.8 through 6to4"},
+		{"198.20.0.1", false, "just past the benchmarking range"},
+		{"100.128.0.1", false, "just past the shared address space"},
+		{"192.0.2.1", false, "documentation; unroutable, and the provider tests rely on it being permitted"},
 	} {
 		got := Blocked(net.ParseIP(c.ip))
 		if got != c.blocked {

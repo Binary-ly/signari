@@ -261,14 +261,20 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 	// The same query the sign-in form uses, including its status check: a
 	// deactivated account must not be able to bind, and duplicating the rule
 	// here is how the two paths drift apart.
+	// In the listener's organisation, in the query. It used to match the name in
+	// every organisation and then refuse a row from the wrong one -- so when two
+	// tenants held the same user name, QueryRow picked one of them and the right
+	// person's bind failed whenever it picked the other. An empty orgID (a test
+	// fixture) matches any.
 	var userID, orgID, hash string
 	err = a.db.QueryRow(ctx, `
 		SELECT u.id::text, u.org_id::text, pc.hash
 		FROM core.users u
 		JOIN core.password_credentials pc ON pc.user_id = u.id
 		WHERE u.status = 'active' AND pc.is_current
+		  AND ($2 = '' OR u.org_id::text = $2)
 		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))`,
-		username).Scan(&userID, &orgID, &hash)
+		username, a.orgID).Scan(&userID, &orgID, &hash)
 	found := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("looking up the credential: %w", err)

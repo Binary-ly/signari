@@ -175,7 +175,8 @@ func (s *Server) handleOutpostAuthenticate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	auth := NewLDAPAuthenticator(s.db, passwords.NewHasher(passwords.MemoryBudgetMiB), orgID, s.log)
+	auth := NewLDAPAuthenticator(s.db, passwords.NewHasher(passwords.MemoryBudgetMiB), orgID, s.log).
+		WithMFAGate(s.BindDemandsMFA)
 	ident, err := auth.Authenticate(r.Context(), body.Username, body.Password)
 	if err != nil {
 		// One answer for every reason. An outpost sits somewhere less trusted by

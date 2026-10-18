@@ -44,6 +44,10 @@ password correct for this user" as fast as the core answers. That is unavoidable
   from somewhere new is visible rather than inferred.
 - It cannot change anything, mint a session, or read more of the directory than
   a client bound to the local listener could.
+- **Somebody under an MFA mandate is refused** when their organisation is set to
+  `refuse_when_mfa`, which is the default since migration 0128. LDAP and RADIUS
+  carry only a password. See
+  [a password alone, and a second factor](ldap.md#a-password-alone-and-a-second-factor).
 
 Revocation is immediate: `enabled = false` and the next bind is refused.
 

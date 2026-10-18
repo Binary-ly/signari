@@ -531,6 +531,9 @@ func run(args []string) error {
 	sessionBehaviour := fs.String("when-exceeded", "deny",
 		"what happens at the limit: deny the new sign-in, or evict_oldest to end the "+
 			"least recently authenticated session and let the new one through")
+	passwordBinds := fs.String("binds", "",
+		"allow, or refuse_when_mfa: whether LDAP binds, RADIUS PAP and outposts, which carry "+
+			"only a password, may sign in somebody the sign-in flow would ask for a second factor")
 	setEnabled := fs.Bool("enabled", true, "whether the object is in service")
 	onMissing := fs.String("on-missing", "",
 		"what a directory sync does with somebody the directory no longer returns: "+
@@ -682,6 +685,8 @@ func run(args []string) error {
 		return groupImpersonation(ctx, conn, *orgID, *groupName, *grantPower)
 	case "instance session-limit":
 		return instanceSessionLimit(ctx, conn, *orgID, *sessionMax, *sessionBehaviour)
+	case "instance password-binds":
+		return instancePasswordBinds(ctx, conn, *orgID, *passwordBinds)
 	case "webauthn policy":
 		return webauthnPolicySet(ctx, conn, *orgID, *attestation, *aaguids)
 	case "webauthn show":
@@ -1697,7 +1702,8 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			// directory to anyone who can reach the port.
 			AllowAnonymousSearch: os.Getenv("SIGNARI_LDAP_ANONYMOUS_SEARCH") == "1",
 			WriteGroup:           ldapWriteGroup,
-		}, httpapi.NewLDAPAuthenticator(pool, ldapHasher, ldapOrgID, log), log)
+		}, httpapi.NewLDAPAuthenticator(pool, ldapHasher, ldapOrgID, log).
+			WithMFAGate(srv.BindDemandsMFA), log)
 
 		if ldapWriteGroup != "" {
 			ldapSrv = ldapSrv.WithWriter(httpapi.NewLDAPWriter(pool, ldapHasher,
@@ -1784,7 +1790,8 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		}
 
 		radiusAuth := httpapi.NewRADIUSAuthenticator(pool,
-			passwords.NewHasher(passwords.MemoryBudgetMiB), radiusOrgID, log)
+			passwords.NewHasher(passwords.MemoryBudgetMiB), radiusOrgID, log).
+			WithMFAGate(srv.BindDemandsMFA)
 		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg},
 			radiusAuth, log)
 		if rerr2 != nil {

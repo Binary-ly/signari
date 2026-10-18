@@ -538,6 +538,31 @@ func (s *Server) FlowDemandsMFA(ctx context.Context, db signInReader,
 	return true, facts.Holds(string(flow.CondHasSecondFactor))
 }
 
+// BindDemandsMFA reports whether the sign-in flow would ask this person for a
+// second factor after a password, for the protocols that can carry nothing
+// else (LDAPAuthenticator.WithMFAGate).
+//
+// Not FlowDemandsMFA, because that one treats a failed enrolment lookup as "no
+// factor" -- harmless on the browser path, where completeSignIn asks again
+// inside its transaction, and a bypass here, where nothing asks again. The
+// lookup is made first and its error returned, and the caller refuses on it.
+func (s *Server) BindDemandsMFA(ctx context.Context, orgID, userID string) (bool, error) {
+	enrolled, err := store.HasSecondFactor(ctx, s.db, userID)
+	if err != nil {
+		return false, err
+	}
+	fl := s.flowFor(ctx, orgID, flow.Authentication)
+	if fl == nil {
+		return enrolled, nil
+	}
+	facts := &signInFacts{s: s, ctx: ctx, db: s.db, orgID: orgID, userID: userID}
+	facts.setKnown(flow.CondHasSecondFactor, enrolled)
+	// No relying party asked for anything: a bind has no authorization request.
+	facts.setKnown(flow.CondClientRequiresMFA, false)
+	facts.setKnown(flow.CondCaptchaRequired, false)
+	return fl.WillRun(flow.StageMFA, facts), nil
+}
+
 // hasSecondFactorAMR reports whether the factors already proved satisfy an mfa
 // stage.
 //

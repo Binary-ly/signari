@@ -32,6 +32,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -40,6 +41,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
 )
@@ -813,6 +815,73 @@ func instanceSessionLimit(ctx context.Context, conn *pgx.Conn, orgID string,
 	}
 	fmt.Println("\n  Existing sessions over the limit are not ended now; the rule applies at")
 	fmt.Println("  the next sign-in.")
+	return nil
+}
+
+// instancePasswordBinds decides whether the protocols that carry only a password
+// -- LDAP binds, RADIUS PAP, the LDAP and RADIUS outposts -- may sign in somebody
+// the sign-in flow would ask for a second factor (0128).
+//
+// Audited and version-bumped in the write's transaction, as the admin API does
+// it: this is a security setting, and "who let the VPN accept passwords alone,
+// and when" is a question the audit trail must be able to answer.
+func instancePasswordBinds(ctx context.Context, conn *pgx.Conn, orgID, policy string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	switch policy {
+	case store.PasswordBindsAllow, store.PasswordBindsRefuseWhenMFA:
+	default:
+		return fmt.Errorf("-binds must be %s or %s, not %q",
+			store.PasswordBindsAllow, store.PasswordBindsRefuseWhenMFA, policy)
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var previous string
+	if err := tx.QueryRow(ctx, `
+		SELECT password_only_binds FROM core.organizations WHERE id = $1::uuid FOR UPDATE`,
+		orgID).Scan(&previous); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no organisation %s", orgID)
+		}
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE core.organizations SET password_only_binds = $2 WHERE id = $1::uuid`,
+		orgID, policy); err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "org.password_only_binds_set", OrgID: orgID,
+		Detail: map[string]any{"from": previous, "to": policy, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE core.config_version SET version = version + 1, bumped_at = now()
+		 WHERE id = true`); err != nil {
+		return fmt.Errorf("bumping the configuration version: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	if policy == store.PasswordBindsAllow {
+		fmt.Println("password-only binds: allowed")
+		fmt.Println("\n  LDAP binds, RADIUS PAP and outposts accept a correct password from anybody,")
+		fmt.Println("  including people the sign-in page would ask for a second factor. A stolen")
+		fmt.Println("  password is enough on those protocols. `signari doctor` will say so.")
+		return nil
+	}
+	fmt.Println("password-only binds: refused when the sign-in flow would ask for a second factor")
+	fmt.Println("\n  Somebody with a second factor enrolled (or everybody, under an unconditional")
+	fmt.Println("  mfa stage) can no longer bind with a password alone. Service accounts that")
+	fmt.Println("  bind to the directory need no second factor, or they will be refused too.")
 	return nil
 }
 

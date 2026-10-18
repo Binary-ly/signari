@@ -144,6 +144,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkAuthenticatorAllowList(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkPasswordOnlyBinds(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	if err := checkNotificationChannels(ctx, conn, r); err != nil {
 		return nil, err
 	}
@@ -280,6 +283,62 @@ func checkAuthenticatorAllowList(ctx context.Context, conn interface {
 				"can be anchored, or remove the allow-list with `signari webauthn policy`")
 	}
 	return nil
+}
+
+// checkPasswordOnlyBinds names each organisation where a password alone signs in
+// over LDAP, RADIUS PAP or an outpost, whatever its sign-in flow demands.
+//
+// Those protocols carry nothing but a password. An organisation set to `allow`
+// (every organisation that existed before 0128) has a sign-in page that asks
+// for a second factor and a directory port beside it that does not, which is an
+// MFA mandate with a side door. Reported only where the side door is open: an
+// LDAP or RADIUS listener serving the organisation, or an enabled outpost of
+// either kind.
+func checkPasswordOnlyBinds(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
+	r.ran("password-only binds")
+	rows, err := conn.Query(ctx, `
+		SELECT o.id::text, o.slug,
+		       EXISTS (SELECT 1 FROM core.outposts p
+		                WHERE p.org_id = o.id AND p.enabled AND p.kind IN ('ldap', 'radius'))
+		  FROM core.organizations o
+		 WHERE o.password_only_binds = 'allow'
+		 ORDER BY o.slug`)
+	if err != nil {
+		return fmt.Errorf("checking password-only binds: %w", err)
+	}
+	defer rows.Close()
+
+	listener := func(addrVar, orgVar, id string) bool {
+		return os.Getenv(addrVar) != "" && os.Getenv(orgVar) == id
+	}
+	for rows.Next() {
+		var id, slug string
+		var outpost bool
+		if err := rows.Scan(&id, &slug, &outpost); err != nil {
+			return err
+		}
+		var doors []string
+		if listener("SIGNARI_LDAP_ADDR", "SIGNARI_LDAP_ORG_ID", id) {
+			doors = append(doors, "the LDAP listener")
+		}
+		if listener("SIGNARI_RADIUS_ADDR", "SIGNARI_RADIUS_ORG_ID", id) {
+			doors = append(doors, "the RADIUS listener")
+		}
+		if outpost {
+			doors = append(doors, "an LDAP or RADIUS outpost")
+		}
+		if len(doors) == 0 {
+			continue
+		}
+		r.add(Warning, "password-only binds",
+			fmt.Sprintf("organisation %q accepts a password alone through %s, even from people "+
+				"its sign-in page would ask for a second factor", slug, strings.Join(doors, " and ")),
+			fmt.Sprintf("`signari instance password-binds -org %s -binds refuse_when_mfa`, once "+
+				"the service accounts that bind there have no second factor", id))
+	}
+	return rows.Err()
 }
 
 // checkProviderHooks reports a registered provider whose hook nothing consults.

@@ -37,6 +37,12 @@ func NewRADIUSAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID st
 	}
 }
 
+// WithMFAGate is LDAPAuthenticator.WithMFAGate, for the same reason: RADIUS PAP
+// carries a password and nothing else.
+func (a *RADIUSAuthenticator) WithMFAGate(g MFAGate) *RADIUSAuthenticator {
+	return &RADIUSAuthenticator{inner: a.inner.WithMFAGate(g)}
+}
+
 // Authenticate reports whether the credential is valid, and nothing else.
 //
 // The identity is discarded on purpose. RADIUS replies carry no user attributes

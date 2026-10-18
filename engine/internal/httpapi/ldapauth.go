@@ -47,7 +47,16 @@ type LDAPAuthenticator struct {
 	// would be recorded as an LDAP bind -- and an investigation asking "how did
 	// this account authenticate" would be told the wrong answer confidently.
 	via string
+	// demandsMFA answers whether the sign-in flow would ask this person for a
+	// second factor after a password (Server.BindDemandsMFA). nil falls back to
+	// whether they have one enrolled, which is the built-in flow's answer and
+	// misses only an operator's unconditional mfa stage.
+	demandsMFA MFAGate
 }
+
+// MFAGate reports whether the sign-in flow would demand a second factor of a
+// person who has proved only a password.
+type MFAGate func(ctx context.Context, orgID, userID string) (bool, error)
 
 func NewLDAPAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID string,
 	log *slog.Logger) *LDAPAuthenticator {
@@ -55,6 +64,35 @@ func NewLDAPAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID stri
 		log = slog.Default()
 	}
 	return &LDAPAuthenticator{db: db, hasher: hasher, orgID: orgID, log: log, via: "ldap"}
+}
+
+// WithMFAGate supplies the flow's answer to "would this person be asked for a
+// second factor", so an organisation that refuses password-only binds refuses
+// exactly the people its sign-in page would challenge.
+func (a *LDAPAuthenticator) WithMFAGate(g MFAGate) *LDAPAuthenticator {
+	c := *a
+	c.demandsMFA = g
+	return &c
+}
+
+// errMFARequired is a correct password the organisation will not accept alone.
+// Answered as a refusal like any other -- the protocol layer collapses it into
+// invalid credentials -- and deliberately not errLDAPInvalid, so it is not
+// charged to the guessing budget: the password was right, and charging it would
+// let a VPN client retrying in a loop spend the person's budget at the sign-in
+// page too.
+var errMFARequired = errors.New("a second factor is required and this protocol cannot carry one")
+
+// refusesPasswordOnly applies core.organizations.password_only_binds (0128).
+func (a *LDAPAuthenticator) refusesPasswordOnly(ctx context.Context, orgID, userID string) (bool, error) {
+	refuses, err := store.RefusesPasswordOnlyBinds(ctx, a.db, orgID)
+	if err != nil || !refuses {
+		return false, err
+	}
+	if a.demandsMFA != nil {
+		return a.demandsMFA(ctx, orgID, userID)
+	}
+	return store.HasSecondFactor(ctx, a.db, userID)
 }
 
 // withVia returns a copy labelling its audit events differently.
@@ -256,6 +294,20 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 			Detail: map[string]any{"via": a.via, "reason": "bad_password"},
 		})
 		return nil, errLDAPInvalid
+	}
+
+	// After the password, so the answer and its timing are the same as for a
+	// wrong one: a refusal here must not tell a guesser the password was right.
+	refuse, err := a.refusesPasswordOnly(ctx, orgID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("checking whether a password alone is accepted: %w", err)
+	}
+	if refuse {
+		a.audit(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			Detail: map[string]any{"via": a.via, "reason": "second_factor_required"},
+		})
+		return nil, errMFARequired
 	}
 
 	id, err := a.Lookup(ctx, username)

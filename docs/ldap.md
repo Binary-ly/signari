@@ -122,6 +122,38 @@ discloses nothing, and because reporting it as a bad password sends an operator
 to rotate a credential that was correct while the guessing run that actually
 spent the budget stays invisible.
 
+### A password alone, and a second factor
+
+A bind carries a password and nothing else. RADIUS PAP and the outposts (see
+[outposts](outposts.md)) are the same. Each organisation decides what happens
+when the person binding is someone its sign-in page would ask for a second
+factor: under the built-in flow, anybody who has one enrolled; under an
+unconditional `mfa` stage, everybody.
+
+| `password_only_binds` | A correct password from such a person |
+|---|---|
+| `refuse_when_mfa` | refused, answered as `invalidCredentials` (49) like any other failure, and audited as `login.failed` with reason `second_factor_required`. **The default for organisations created since migration 0128** |
+| `allow` | accepted. The value every older organisation keeps until changed, so an upgrade does not stop a VPN working |
+
+Set it with `signari instance password-binds -org <id> -binds refuse_when_mfa`.
+`signari doctor` names every organisation still set to `allow` that has an LDAP
+or RADIUS listener or outpost: under `allow`, a sign-in page that demands a
+second factor sits next to a port that does not, and a stolen password only has
+to be typed into a VPN prompt.
+
+The refusal is checked **after** the password. So the timing and the answer are
+the same as for a wrong password, and a guesser learns nothing from it. It is
+**not charged** to the guessing budget, because the password was right: a client
+retrying it in a loop would otherwise spend the person's budget at the sign-in
+page as well. If whether the person has a second factor cannot be read, the bind
+is refused.
+
+Service accounts that bind to the directory should have no second factor
+enrolled, or `refuse_when_mfa` refuses them too. Carrying a code with the
+password (a `;123456` suffix, RADIUS Access-Challenge) is the full answer. It is
+not built yet, and when it is, this setting will decide only what happens
+without one.
+
 ## Verified against
 
 `ldapsearch` and `ldapwhoami` from OpenLDAP, and `go-ldap` in the test suite —

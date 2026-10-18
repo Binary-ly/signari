@@ -153,6 +153,11 @@ front end with its own quiet password check routes around every control the rest
 of the system has, so `RADIUSAuthenticator` is a thin wrapper over the LDAP
 shim's authenticator rather than its own query.
 
+The same path also decides what PAP does for somebody the sign-in page would ask
+for a second factor. PAP carries only a password, so an organisation set to
+`refuse_when_mfa` sends an Access-Reject (the default since migration 0128). See
+[a password alone, and a second factor](ldap.md#a-password-alone-and-a-second-factor).
+
 The identity is discarded: an Access-Accept carries no user attributes here,
 because a network device did not ask for a directory and should not be handed
 one.

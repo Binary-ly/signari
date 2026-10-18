@@ -84,6 +84,17 @@ func TestTheLastPasskeyCannotBeRemoved(t *testing.T) {
 	}
 }
 
+// A malformed id is an unknown passkey. It answered 500: the name lookup's cast
+// failed, and the delete then ran in the transaction that failure aborted.
+func TestAMalformedPasskeyIDIsNoSuchPasskey(t *testing.T) {
+	f := newTokenFixture(t)
+	for _, id := range []string{"x", "not-a-uuid", "D57890C1C9AE4817B3BD5D98434A00D0X"} {
+		if code, body := f.deletePasskey(t, id); code != http.StatusNotFound {
+			t.Errorf("deleting passkey %q gave %d %s, want 404", id, code, body)
+		}
+	}
+}
+
 // Somebody else's credential must not be removable, and the answer must not
 // reveal whether the id exists.
 func TestAnotherUsersPasskeyCannotBeRemoved(t *testing.T) {

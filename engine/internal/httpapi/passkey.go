@@ -863,6 +863,15 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "id is required")
 		return
 	}
+	// Answered as an unknown passkey, and before the transaction: the lookup
+	// below casts the id, and a failed cast aborted the transaction the delete
+	// then ran in, so any malformed id answered 500.
+	canonical, valid := store.CanonicalUUID(id)
+	if !valid {
+		writeError(w, http.StatusNotFound, "not_found", "no such passkey")
+		return
+	}
+	id = canonical
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

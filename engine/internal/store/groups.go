@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // GroupsForUser returns the group names a user belongs to, filtered by what a
@@ -20,7 +19,15 @@ import (
 //
 // It costs one indexed query per token. That is the correct price for a value
 // downstream software makes access decisions on.
-func GroupsForUser(ctx context.Context, db *pgxpool.Pool, userID, clientID string) ([]string, error) {
+//
+// db is a pool or the caller's transaction. Token minting passes its
+// transaction: reading from the pool while holding one takes a second
+// connection, and enough concurrent redemptions each waiting for theirs leave
+// the pool with no connection to give any of them.
+func GroupsForUser(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, userID, clientID string) ([]string, error) {
 	// Release is an ALLOW-LIST. A client with no row gets nothing, which is what
 	// makes "add a client" a decision that does not silently disclose the
 	// organisation's internal structure.
@@ -99,7 +106,9 @@ func GroupsForSAML(ctx context.Context, tx pgx.Tx, userID, providerID string) (a
 // For the account page and the admin API only. Deliberately a different
 // function from GroupsForUser so that a caller reaching for "the user's groups"
 // on a token path cannot get the unfiltered set by accident.
-func AllGroupsForUser(ctx context.Context, db *pgxpool.Pool, userID string) ([]string, error) {
+func AllGroupsForUser(ctx context.Context, db interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, userID string) ([]string, error) {
 	rows, err := db.Query(ctx, `
 		SELECT g.name FROM core.group_members m
 		JOIN core.groups g ON g.id = m.group_id

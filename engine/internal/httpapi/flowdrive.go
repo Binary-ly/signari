@@ -392,6 +392,10 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			return decisionSession
 
 		case flow.StageDeny:
+			// The caller abandons the transaction on a denial, so it is released
+			// here, before the refusal is recorded on a connection of its own.
+			// Recording it first held two connections, which deadlocks the pool.
+			_ = tx.Rollback(ctx)
 			s.auditDetached(ctx, audit.Event{
 				Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
 				CorrelationID: correlationID(ctx),
@@ -464,7 +468,9 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 				// Demanded of everybody, and this account has nothing enrolled.
 				// Refused rather than waved through: skipping would mean the control
 				// holds for every account except the ones it was written to catch.
-				// Same answer the password path gave before this moved.
+				// Same answer the password path gave before this moved. The caller
+				// abandons the transaction on this path; released first, as above.
+				_ = tx.Rollback(ctx)
 				s.auditDetached(ctx, audit.Event{
 					Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
 					CorrelationID: correlationID(ctx),

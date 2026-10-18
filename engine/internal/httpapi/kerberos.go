@@ -108,6 +108,9 @@ func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		s.log.Info("kerberos principal has no account", "principal", principal,
 			"looked_for", username, "correlation_id", correlationID(ctx))
+		// Released before the refusal is recorded: the record is a second
+		// connection, and taking one while holding this deadlocks the pool.
+		_ = tx.Rollback(ctx)
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: orgID,
 			CorrelationID: correlationID(ctx),

@@ -443,6 +443,9 @@ func combineProviderAnswer(name string, proceed bool, callErr error,
 // at DIAL time as well as at registration. The two checks are not redundant: DNS
 // can change between them, which is the whole rebinding technique.
 func (s *Server) providerClient(timeout time.Duration) *http.Client {
+	if s.providerHTTP != nil {
+		return s.providerHTTP(timeout)
+	}
 	return safedial.Client(timeout)
 }
 

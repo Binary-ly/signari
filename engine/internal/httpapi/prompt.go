@@ -131,11 +131,16 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 	// Recorded in the audit trail as well as the response table. "When did they
 	// accept the terms" is asked later by somebody who does not have access to
 	// the application database and does have the audit export.
-	s.auditDetached(ctx, audit.Event{
+	// In the answer's own transaction, so the record and the answer commit
+	// together. A detached write took a second connection while this one was
+	// held.
+	if aerr := audit.Write(ctx, tx, audit.Event{
 		Type: "prompt.answered", OrgID: pending.OrgID, SubjectID: pending.Subject,
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"prompt": p.Slug},
-	})
+	}); aerr != nil {
+		s.log.Error("auditing a prompt answer", "err", aerr)
+	}
 
 	// Back into the funnel. Any remaining prompt is picked up by the same check,
 	// so several in sequence need no special handling.

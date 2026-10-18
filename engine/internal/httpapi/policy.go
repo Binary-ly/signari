@@ -63,7 +63,7 @@ var refuseEverything = &policy.File{Version: 1, Default: "deny"}
 
 // policyFor returns the policy in force for an organisation, as it is in the
 // database now.
-func (s *Server) policyFor(ctx context.Context, orgID string) *policy.File {
+func (s *Server) policyFor(ctx context.Context, q dbReader, orgID string) *policy.File {
 	s.policies.mu.Lock()
 	cached, have := s.policies.byOrg[orgID]
 	s.policies.mu.Unlock()
@@ -71,7 +71,7 @@ func (s *Server) policyFor(ctx context.Context, orgID string) *policy.File {
 	// The document travels only when it differs from the one already parsed.
 	var digest string
 	var doc *string
-	err := s.db.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT md5(document), CASE WHEN md5(document) = $2 THEN NULL ELSE document END
 		  FROM core.access_policies WHERE org_id = $1::uuid`, orgID, cached.digest).
 		Scan(&digest, &doc)
@@ -126,8 +126,23 @@ func (s *Server) policyFor(ctx context.Context, orgID string) *policy.File {
 // person is: the decision is then made as policy.Request.Refresh describes.
 func (s *Server) checkAccessPolicy(ctx context.Context, r *http.Request,
 	orgID, clientID, userID, scope string, mfa bool, amr []string) *policy.Decision {
+	return s.checkAccessPolicyIn(ctx, s.db, r, orgID, clientID, userID, scope, mfa, amr)
+}
 
-	f := s.policyFor(ctx, orgID)
+// dbReader is a pool or a transaction.
+type dbReader interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+// checkAccessPolicyIn is checkAccessPolicy reading through q, for a caller that
+// holds a transaction: the refresh grant asks while holding one, and reading
+// the policy and the memberships from the pool there took a second connection,
+// which deadlocks the pool under concurrent refreshes.
+func (s *Server) checkAccessPolicyIn(ctx context.Context, q dbReader, r *http.Request,
+	orgID, clientID, userID, scope string, mfa bool, amr []string) *policy.Decision {
+
+	f := s.policyFor(ctx, q, orgID)
 	if f == nil {
 		return nil
 	}
@@ -135,7 +150,7 @@ func (s *Server) checkAccessPolicy(ctx context.Context, r *http.Request,
 	// Groups read fresh, like every other authorization decision that depends on
 	// them. A policy consulting a cached membership would enforce yesterday's
 	// answer.
-	groups, err := store.AllGroupsForUser(ctx, s.db, userID)
+	groups, err := store.AllGroupsForUser(ctx, q, userID)
 	if err != nil {
 		s.log.Error("reading groups for a policy decision", "err", err)
 		// Fail CLOSED only when a policy exists: we cannot evaluate a rule that

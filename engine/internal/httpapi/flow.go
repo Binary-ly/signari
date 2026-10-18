@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -592,6 +593,26 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The operator's token provider, asked BEFORE the transaction opens. It is
+	// an HTTP call of up to its timeout, and asking it inside the transaction
+	// held a pool connection and the code's row lock that long on every
+	// redemption, which a slow provider turned into pool exhaustion. The code
+	// is read without being consumed and the same local checks are run on it,
+	// so the provider still sees only a redemption this engine would approve.
+	// A code's columns never change; the transaction below confirms it is the
+	// same record it consumes, and asks again inside if it is not.
+	var early *store.ConsumedCode
+	var hook store.TokenHookResult
+	var hookErr error
+	if peeked, perr := store.PeekCode(ctx, s.db, store.HashToken(req.Code)); perr == nil {
+		if _, verr := oauth.ValidateCodeRedemption(req, c, &peeked.GrantRecord,
+			dpopThumbprintFrom(ctx), time.Now()); verr == nil {
+			early = peeked
+			hook, hookErr = store.ConsultTokenProvider(ctx, s.db, s.providerClient, s.log,
+				peeked.OrgID, tokenHookRequest(peeked, c.ClientID, req.GrantType))
+		}
+	}
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
@@ -659,24 +680,18 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// deciding whether to withdraw an issuance already approved. It can turn an
 	// allow into a deny and can never turn a deny into an allow, because on a
 	// refused redemption it is not reached at all.
-	// `tx`, NOT s.db. The transaction is already open at this point, so taking a
-	// second connection from the pool to read one row is a deadlock: under
-	// concurrent redemptions every goroutine holds a transaction and waits for a
-	// connection that only another goroutine's completion can free. It hung the
-	// suite for eight minutes before this was found, which is what a pool
-	// exhaustion looks like from the outside -- nothing crashes, everything
-	// stops.
 	//
-	// Reading inside the transaction is also the correct snapshot: the provider
-	// registration is read as of the same instant as the code being redeemed.
-	if hook, herr := store.ConsultTokenProvider(ctx, tx,
-		s.providerClient, s.log, consumed.OrgID, store.TokenHookRequest{
-			Subject:  consumed.UserID,
-			ClientID: c.ClientID,
-			Scopes:   consumed.Scopes,
-			Grant:    req.GrantType,
-			OrgID:    consumed.OrgID,
-		}); herr != nil {
+	// Asked above, before the transaction, on the same record. Asked again here
+	// only if what was consumed differs from what was read, which a code's
+	// immutability rules out, but which would otherwise issue a token the
+	// provider was never asked about. Inside the transaction, the read uses `tx`
+	// and not s.db: a second connection taken while holding one deadlocks the
+	// pool under concurrent redemptions (it hung the suite for eight minutes once).
+	if early == nil || !sameRedemption(early, consumed) {
+		hook, hookErr = store.ConsultTokenProvider(ctx, tx, s.providerClient, s.log,
+			consumed.OrgID, tokenHookRequest(consumed, c.ClientID, req.GrantType))
+	}
+	if herr := hookErr; herr != nil {
 		s.log.Error("consulting the token provider", "err", herr)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
@@ -687,14 +702,17 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("token issuance vetoed by the operator's provider",
 			"client_id", c.ClientID, "reason", hook.Reason,
 			"correlation_id", correlationID(ctx))
+		// Committed before the veto is recorded on a connection of its own.
+		// Recording it first held two, which with a one-connection pool waited
+		// forever.
+		if err := tx.Commit(ctx); err != nil {
+			s.log.Error("committing code consumption after a provider veto", "err", err)
+		}
 		s.auditDetached(ctx, audit.Event{
 			Type: "token.vetoed", OrgID: consumed.OrgID, SubjectID: consumed.UserID,
 			ClientID: c.ClientID, CorrelationID: correlationID(ctx),
 			Detail: map[string]any{"reason": hook.Reason},
 		})
-		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing code consumption after a provider veto", "err", err)
-		}
 		writeTokenError(w, &oauth.TokenError{
 			Code:        "access_denied",
 			Description: "this authorization was refused",
@@ -715,6 +733,22 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// tokenHookRequest is what the operator's token provider is told about a
+// redemption, built one way whether it is asked before or inside the
+// transaction.
+func tokenHookRequest(c *store.ConsumedCode, clientID, grant string) store.TokenHookRequest {
+	return store.TokenHookRequest{
+		Subject: c.UserID, ClientID: clientID, Scopes: c.Scopes, Grant: grant, OrgID: c.OrgID,
+	}
+}
+
+// sameRedemption reports whether the code read before the transaction is the
+// one consumed inside it, in everything the token provider was told.
+func sameRedemption(read, consumed *store.ConsumedCode) bool {
+	return read.UserID == consumed.UserID && read.OrgID == consumed.OrgID &&
+		read.ClientID == consumed.ClientID && slices.Equal(read.Scopes, consumed.Scopes)
 }
 
 type tokenResponse struct {
@@ -1104,7 +1138,8 @@ func (s *Server) addProfileClaims(ctx context.Context, tx pgx.Tx,
 		// removed from at lunchtime.
 		// The audience IS the client id for an ID token, which is what the
 		// release policy is keyed on.
-		groups, err := store.GroupsForUser(ctx, s.db, userID, claims.Audience)
+		// In the minting transaction, never the pool: see store.GroupsForUser.
+		groups, err := store.GroupsForUser(ctx, tx, userID, claims.Audience)
 		if err != nil {
 			return fmt.Errorf("loading group membership for %s: %w", userID, err)
 		}
@@ -1392,8 +1427,11 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	// refusal: the next refresh asks again, so restoring the membership restores
 	// the grant.
 	mfa, amr := sessionFactors(ctx, tx, grant.SessionID)
-	if pd := s.checkAccessPolicy(ctx, nil, grant.OrgID, c.ClientID, grant.UserID,
+	if pd := s.checkAccessPolicyIn(ctx, tx, nil, grant.OrgID, c.ClientID, grant.UserID,
 		strings.Join(scopes, " "), mfa, amr); pd != nil {
+		// Released before the refusal is recorded on a connection of its own;
+		// nothing here is committed on a refusal anyway.
+		_ = tx.Rollback(ctx)
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: grant.OrgID, SubjectID: grant.UserID,
 			ClientID: c.ClientID, CorrelationID: correlationID(ctx),

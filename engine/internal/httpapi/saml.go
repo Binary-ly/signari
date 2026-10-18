@@ -477,6 +477,15 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 		}
 	}
 
+	// Everything the assertion says has been read. Committed before it is
+	// signed: the signer is a crypto.Signer that may be a remote key service,
+	// and signing with the transaction open held a pool connection across that
+	// call. The record of who received it is written after, in its own
+	// transaction, and the document is returned only once that commits.
+	if err := tx.Commit(ctx); err != nil {
+		return "", "", err
+	}
+
 	lifetime := time.Duration(p.LifetimeSeconds) * time.Second
 	doc, err = saml.BuildResponse(saml.ResponseInput{
 		Issuer:      s.samlEntityID(),
@@ -505,10 +514,15 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 		return "", "", err
 	}
 
-	if err := store.RecordSAMLParticipant(ctx, tx, sid, p.ID, orgID, sessionIndex, nameID); err != nil {
+	record, err := s.db.Begin(ctx)
+	if err != nil {
 		return "", "", err
 	}
-	if err := audit.Write(ctx, tx, audit.Event{
+	defer func() { _ = record.Rollback(ctx) }()
+	if err := store.RecordSAMLParticipant(ctx, record, sid, p.ID, orgID, sessionIndex, nameID); err != nil {
+		return "", "", err
+	}
+	if err := audit.Write(ctx, record, audit.Event{
 		Type: "saml.assertion_issued", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx),
 		Detail: map[string]any{
@@ -517,7 +531,7 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 	}); err != nil {
 		return "", "", err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := record.Commit(ctx); err != nil {
 		return "", "", err
 	}
 	return doc, v.ACSURL, nil

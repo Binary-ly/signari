@@ -186,11 +186,11 @@ func FindFederatedIdentity(ctx context.Context, tx pgx.Tx, providerID, subject s
 // and they should sign in to it first. It is never a reason to link, and the
 // decision function in internal/federation treats its result as a refusal
 // trigger rather than a match.
-func FindLocalUserByEmail(ctx context.Context, tx pgx.Tx, orgID, email string) (userID string, err error) {
+func FindLocalUserByEmail(ctx context.Context, q rowQuerier, orgID, email string) (userID string, err error) {
 	if email == "" {
 		return "", nil
 	}
-	err = tx.QueryRow(ctx, `
+	err = q.QueryRow(ctx, `
 		SELECT id::text FROM core.users
 		WHERE org_id = $1::uuid AND lower(email) = lower($2) AND status = 'active'`,
 		orgID, email).Scan(&userID)

@@ -143,6 +143,46 @@ func ConsumeCode(ctx context.Context, tx pgx.Tx, hash []byte) (*ConsumedCode, er
 	return &c, nil
 }
 
+// PeekCode reads an unspent code without consuming it, from the pool.
+//
+// For work that must not happen inside the redemption's transaction: the
+// operator's token provider is an HTTP call of up to its timeout, and making it
+// with the transaction open held a pool connection and the code's row lock for
+// that long on every redemption. A code's columns never change, so what is read
+// here is what ConsumeCode will return. If the code is spent in between, the
+// consume reports it and the peek's answer is discarded.
+func PeekCode(ctx context.Context, db rowQuerier, hash []byte) (*ConsumedCode, error) {
+	var c ConsumedCode
+	var challenge, method, nonce, jkt *string
+	err := db.QueryRow(ctx, `
+		SELECT org_id::text, client_id, sid, user_id::text, redirect_uri, scopes,
+		       code_challenge, code_challenge_method, nonce, resources, expires_at,
+		       dpop_jkt, authorization_details
+		  FROM core.authorization_codes
+		 WHERE code_hash = $1 AND consumed_at IS NULL`, hash).
+		Scan(&c.OrgID, &c.ClientID, &c.SessionID, &c.UserID, &c.RedirectURI, &c.Scopes,
+			&challenge, &method, &nonce, &c.Resources, &c.ExpiresAt, &jkt, &c.Details)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrCodeUnknown
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading authorization code: %w", err)
+	}
+	if challenge != nil {
+		c.CodeChallenge = *challenge
+	}
+	if method != nil {
+		c.CodeChallengeMethod = *method
+	}
+	if nonce != nil {
+		c.Nonce = *nonce
+	}
+	if jkt != nil {
+		c.DPoPJKT = *jkt
+	}
+	return &c, nil
+}
+
 // nullIfEmpty maps "" to SQL NULL. An empty challenge is not a challenge, and
 // storing it as "" is what broke the CHECK constraint that 0005 replaced.
 func nullIfEmpty(s string) *string {

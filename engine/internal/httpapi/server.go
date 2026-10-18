@@ -169,6 +169,13 @@ type Server struct {
 	// read through failureLimit().
 	factorFailureLimit int
 
+	// providerHTTP replaces the SSRF-safe client for provider calls. Never set
+	// outside this package's tests, which use it to answer a provider call
+	// in-process: the real client refuses a local server, by design (see
+	// authzprovider_test.go), so without it no test could observe what the
+	// engine holds while a provider is being asked.
+	providerHTTP func(time.Duration) *http.Client
+
 	// smsPolicy bounds text messages: countries and daily ceilings (smsgate.go).
 	// The zero value allows any country under the default ceilings.
 	smsPolicy sms.Policy

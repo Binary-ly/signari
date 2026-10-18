@@ -66,13 +66,11 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	body.Username = strings.TrimSpace(body.Username)
 
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
+	// No transaction until the second factor, which is the only write here.
+	// This used to hold one from the first lookup, through the Argon2
+	// verification, and across the factor and budget checks that each took a
+	// second connection from the pool. A burst of desktop logins could then fill
+	// the pool with transactions that were each waiting for one more connection.
 	refuse := func(reason string) {
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: orgID,
@@ -87,7 +85,7 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication refused")
 	}
 
-	userID, err := store.FindLocalUserByEmail(ctx, tx, orgID, body.Username)
+	userID, err := store.FindLocalUserByEmail(ctx, s.db, orgID, body.Username)
 	if err != nil || userID == "" {
 		refuse("no such user")
 		return
@@ -98,7 +96,7 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var stored string
-	if err := tx.QueryRow(ctx, `
+	if err := s.db.QueryRow(ctx, `
 		SELECT hash FROM core.password_credentials WHERE user_id = $1::uuid`,
 		userID).Scan(&stored); err != nil {
 		refuse("no password credential")
@@ -137,6 +135,12 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 		if !s.allowSecondFactorAttempt(ctx, w, userID, "") {
 			return
 		}
+		tx, err := s.db.Begin(ctx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
 		res, verr := s.verifySecondFactor(ctx, tx, userID, body.Code)
 		if verr != nil {
 			s.log.Error("verifying a desktop second factor", "err", verr)
@@ -155,12 +159,11 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 			refuse("wrong second factor")
 			return
 		}
+		if err := tx.Commit(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
 		amr = append(amr, res.AMR...)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
 	}
 
 	s.auditDetached(ctx, audit.Event{

@@ -165,11 +165,16 @@ func (s *Server) handlePasswordChangePost(w http.ResponseWriter, r *http.Request
 		s.log.Error("terminating sessions after a password change", "err", terr)
 	}
 
-	s.auditDetached(ctx, audit.Event{
+	// In the change's own transaction: it commits with the change or not at
+	// all. A detached write here took a second pool connection while this one
+	// was held, which deadlocks the pool under load.
+	if aerr := audit.Write(ctx, tx, audit.Event{
 		Type: "password.changed", OrgID: pending.OrgID, SubjectID: pending.Subject,
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"required": true, "reason": reason},
-	})
+	}); aerr != nil {
+		s.log.Error("auditing a password change", "err", aerr)
+	}
 
 	// Back into the funnel. The flag is now clear, so this step does not repeat.
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, pending.AMR, pending.Authz)

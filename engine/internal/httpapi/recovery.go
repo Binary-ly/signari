@@ -25,6 +25,19 @@ import (
 // SECOND: EVERY REGISTERED CHANNEL IS NOTIFIED, not just the one used to
 // request. The whole design assumes the requester may be an attacker holding one
 // mailbox; telling only that mailbox would defeat it entirely.
+//
+// THIRD: REQUESTS ARE PACED. Each one writes a row, supersedes the link before
+// it, and sends mail and possibly an SMS, and there was no limit at all. Anyone
+// could fill a person's inbox, run up the SMS bill, and keep the victim's own
+// link from ever working by superseding it every few seconds. A request over
+// the pace does nothing (no row, no supersede, no message) and answers with the
+// same page, so the limit is not an oracle either.
+const (
+	recoveryPerAccountMinute = 1 // and the earlier link stays valid
+	recoveryPerAccountHour   = 5
+	recoveryPerAddressLimit  = 20
+	recoveryPerAddressWindow = time.Hour
+)
 
 // handleRecoverGet shows the "forgot password" form.
 func (s *Server) handleRecoverGet(w http.ResponseWriter, r *http.Request) {
@@ -88,8 +101,11 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The work happens regardless of whether the account exists, and the same
-	// page is always returned. See the file comment.
-	if identifier != "" {
+	// page is always returned. See the file comment. The address is paced
+	// before anything is looked up, so a sweep across many addresses costs a
+	// lookup only within its allowance.
+	if identifier != "" && s.allowRecovery(ctx, "recover:ip:"+clientIP(r),
+		recoveryPerAddressLimit, recoveryPerAddressWindow) {
 		if err := s.beginRecovery(ctx, identifier); err != nil {
 			// Logged, never surfaced: the error text distinguishes "no such user"
 			// from "SMTP is down", and only one of those is the caller's business.
@@ -114,11 +130,30 @@ func (s *Server) beginRecovery(ctx context.Context, identifier string) error {
 	}
 	var first error
 	for _, c := range found {
+		// Paced per account, both windows charged, before the earlier request is
+		// superseded: an account over the pace keeps the link it already has.
+		minute := s.allowRecovery(ctx, "recover:user:min:"+c.userID, recoveryPerAccountMinute, time.Minute)
+		hour := minute && s.allowRecovery(ctx, "recover:user:hour:"+c.userID, recoveryPerAccountHour, time.Hour)
+		if !hour {
+			continue
+		}
 		if err := s.beginRecoveryFor(ctx, c.userID, c.orgID); err != nil && first == nil {
 			first = err
 		}
 	}
 	return first
+}
+
+// allowRecovery charges one request to a bucket and reports whether it was
+// within the limit. A database error refuses: nothing is sent, and the person
+// asks again, which is better than an unmetered window opened by a fault.
+func (s *Server) allowRecovery(ctx context.Context, key string, limit int, window time.Duration) bool {
+	res, err := store.AllowRate(ctx, s.db, key, limit, window)
+	if err != nil {
+		s.log.Error("checking the recovery pace", "err", err, "correlation_id", correlationID(ctx))
+		return false
+	}
+	return res.Allowed
 }
 
 // beginRecoveryFor starts recovery for one account.

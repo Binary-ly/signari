@@ -115,6 +115,14 @@ the account's. That is deliberate: `/recover` answers identically whether or not
 an account exists, and a journey that varied by account would be an enumeration
 oracle wearing a configuration setting.
 
+Requests at `/recover` are paced whatever the flow says. An account gets at most
+one reset link a minute and five an hour, and one address may make twenty
+requests an hour. A request over the pace writes nothing and sends nothing. In
+particular it does not supersede the link the person already has, so an
+attacker cannot keep a victim's link from ever working by asking again every
+few seconds. It answers with the same page as any other request, so the pace
+gives nothing away.
+
 Recovery counts fewer factors on purpose. A flow that resets a password by asking
 for the password is not a recovery flow, and one that asks for the second factor
 from the phone that was lost is a support ticket. What counts: `email_otp`,

@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // CIBA §4 makes `backchannel_token_delivery_mode` REQUIRED client metadata. This
@@ -64,6 +66,14 @@ func registrationToken(t *testing.T, f *tokenFixture) string {
 	return tok
 }
 
+// freshAddress is an address no earlier request used. Registration is limited
+// per address per hour, and httptest's default 192.0.2.1 would carry every
+// run's registrations into the same bucket until a later run is refused.
+func freshAddress() string {
+	n := time.Now().UnixNano()
+	return fmt.Sprintf("198.51.%d.%d", (n/251)%250+1, n%250+1)
+}
+
 func registerWithMode(t *testing.T, f *tokenFixture, mode string) (int, string) {
 	t.Helper()
 	body := `{"redirect_uris":["https://rp.test/cb"],"client_name":"m"`
@@ -73,6 +83,7 @@ func registerWithMode(t *testing.T, f *tokenFixture, mode string) (int, string) 
 	body += `}`
 
 	req := httptest.NewRequest(http.MethodPost, "/oauth2/register", strings.NewReader(body))
+	req.RemoteAddr = freshAddress() + ":443"
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+registrationToken(t, f))
 	rec := httptest.NewRecorder()

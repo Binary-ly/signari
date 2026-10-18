@@ -44,7 +44,7 @@ elsewhere — the client tries, fails, and blames its own configuration.
 | scopes | intersected with an allow-list, default `openid profile email` |
 | client type | public unless `allow_confidential` |
 | initial access tokens | optional use count, optional expiry, revocable |
-| rate limit | shared with the device endpoint |
+| rate limit | 20 attempts per address per hour, counted before anything else, then a shared allowance of three a second that only a caller allowed to register can spend. The shared allowance used to be spent before that check, so anybody could exhaust it with garbage |
 
 **Refuse, never evict.** At the ceiling, registration is refused — deleting
 somebody's working client to make room for a stranger's is worse than refusing

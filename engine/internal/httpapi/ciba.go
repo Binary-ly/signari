@@ -11,6 +11,13 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
+// cibaPerUserLimit approval prompts may be put in front of one person per
+// cibaPerUserWindow, whatever client asks.
+const (
+	cibaPerUserLimit  = 5
+	cibaPerUserWindow = 10 * time.Minute
+)
+
 // Client-Initiated Backchannel Authentication, CIBA Core 1.0 (Final, 2021-09-01).
 //
 //	POST /oauth2/backchannel      client authenticates -> auth_req_id
@@ -142,6 +149,24 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("resolving a CIBA subject", "err", err)
 		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
 			Code: "server_error", Description: "unavailable"})
+		return
+	}
+
+	// Paced per person. Each request puts an approval prompt in front of them,
+	// and there was no limit, so any client allowed CIBA could fill one
+	// person's queue until an approval was given to make it stop. CIBA §13
+	// (specs/ciba.html, "Authentication Error Response") gives access_denied
+	// with 403 for a request the OP has decided to deny, which this is.
+	res, rerr := store.AllowRate(ctx, s.db, "ciba:user:"+userID, cibaPerUserLimit, cibaPerUserWindow)
+	if rerr != nil {
+		s.log.Error("checking the CIBA per-user limit", "err", rerr)
+		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
+			Code: "server_error", Description: "unavailable"})
+		return
+	}
+	if !res.Allowed {
+		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusForbidden,
+			Code: "access_denied", Description: "too many requests for this user; try again later"})
 		return
 	}
 

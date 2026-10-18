@@ -72,6 +72,12 @@ turning it on breaks any integration that has not moved — but without it PAR i
 advisory: a client that can also send a plain request has gained an option, not
 the integrity property.
 
+**Sixty pushes per address per minute.** Every push is a stored row, and a
+public client authenticates nothing here, so before this a stranger could have
+the server write rows without limit. A browser pushes one per sign-in. A request
+over the limit gets `429` with `Retry-After`, and a database error refuses
+rather than waving the push through.
+
 ## Duplicate parameters are refused
 
 RFC 6749 §3.1 says a request must not include a parameter more than once. The

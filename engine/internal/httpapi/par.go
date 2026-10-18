@@ -17,6 +17,15 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/store"
+)
+
+// parPerAddressLimit pushed requests are accepted from one address per
+// parPerAddressWindow. Each authorization a person starts pushes one, so this
+// is far above a browser's need and bounds a script.
+const (
+	parPerAddressLimit  = 60
+	parPerAddressWindow = time.Minute
 )
 
 // Pushed Authorization Requests (RFC 9126).
@@ -69,6 +78,22 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	// because the valid one happened to come first.
 	if err := refuseDuplicateParams(r.PostForm); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	// Paced per address. Every pushed request is a stored row, and a public
+	// client authenticates nothing here, so there was no limit at all on how
+	// many rows a stranger could have this server write.
+	res, rerr := store.AllowRate(ctx, s.db, "par:ip:"+clientIP(r), parPerAddressLimit, parPerAddressWindow)
+	if rerr != nil {
+		s.log.Error("checking the PAR rate limit", "err", rerr)
+		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
+		return
+	}
+	if !res.Allowed {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable",
+			"too many pushed requests from this address")
 		return
 	}
 

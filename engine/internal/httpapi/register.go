@@ -13,6 +13,13 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
+// registrationsPerAddress registration attempts are accepted from one address
+// per registrationAddressWindow, before any other work.
+const (
+	registrationsPerAddress   = 20
+	registrationAddressWindow = time.Hour
+)
+
 // Dynamic client registration, RFC 7591, with RFC 7592 management.
 //
 //	POST   /oauth2/register                 register
@@ -71,15 +78,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Rate limited whether or not it is open: this endpoint writes rows.
 	//
-	// Its OWN bucket. This shared the device flow's limiter, which meant the two
-	// endpoints could not be tuned apart -- and when the device limit was
-	// widened to stop one address locking out every television in the
-	// deployment, dynamic registration would have silently been widened with
-	// it. Sharing a limiter couples two unrelated decisions and the coupling is
-	// invisible at both call sites.
-	if !s.register.Allow() {
+	// Per address first, in the database, so one caller's attempts are bounded
+	// on every instance and spend only that caller's allowance.
+	res, rerr := store.AllowRate(ctx, s.db, "register:ip:"+clientIP(r),
+		registrationsPerAddress, registrationAddressWindow)
+	if rerr != nil {
+		s.log.Error("checking the registration rate limit", "err", rerr)
+		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
+		return
+	}
+	if !res.Allowed {
 		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable",
-			"too many registrations just now")
+			"too many registrations from this address")
 		return
 	}
 
@@ -99,6 +109,22 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// a caller which would let them map where registration is open.
 		writeError(w, http.StatusUnauthorized, "invalid_token",
 			"registration is not available with these credentials")
+		return
+	}
+
+	// The shared bucket, spent only by a caller allowed to register. It was
+	// spent before that check, so anybody could exhaust it with garbage and
+	// keep every real registration out.
+	//
+	// Its OWN bucket. This shared the device flow's limiter, which meant the two
+	// endpoints could not be tuned apart -- and when the device limit was
+	// widened to stop one address locking out every television in the
+	// deployment, dynamic registration would have silently been widened with
+	// it. Sharing a limiter couples two unrelated decisions and the coupling is
+	// invisible at both call sites.
+	if !s.register.Allow() {
+		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable",
+			"too many registrations just now")
 		return
 	}
 

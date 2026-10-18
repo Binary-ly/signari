@@ -50,23 +50,29 @@ func TestSweepTerminatesExpiredSessionsAndNotifiesRelyingParties(t *testing.T) {
 
 	sid := plantExpiredSession(t, pool)
 
-	st, err := RunOnce(ctx, pool, discard())
-	if err != nil {
-		t.Fatalf("RunOnce: %v", err)
-	}
-	if st.Skipped {
-		t.Fatal("the pass was skipped; another holder had the lock")
-	}
-	if st.SessionsSwept < 1 {
-		t.Fatalf("swept %d sessions, want at least the one planted", st.SessionsSwept)
-	}
-
+	// As many passes as it takes, as the minute-by-minute loop would make. A
+	// pass sweeps the oldest sessionBatch expired sessions, and the shared test
+	// database can hold more than that, older than this one, written by other
+	// packages a moment ago: one pass then sweeps theirs and this test reported
+	// the janitor broken.
 	var reason string
 	var revoked bool
-	if err := pool.QueryRow(ctx, `
-		SELECT COALESCE(revocation_reason, ''), revoked_at IS NOT NULL
-		FROM core.sessions WHERE sid = $1`, sid).Scan(&reason, &revoked); err != nil {
-		t.Fatal(err)
+	for pass := 0; pass < 20 && !revoked; pass++ {
+		st, err := RunOnce(ctx, pool, discard())
+		if err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+		if st.Skipped {
+			continue // another holder had the lock; the next pass will get it
+		}
+		if err := pool.QueryRow(ctx, `
+			SELECT COALESCE(revocation_reason, ''), revoked_at IS NOT NULL
+			FROM core.sessions WHERE sid = $1`, sid).Scan(&reason, &revoked); err != nil {
+			t.Fatal(err)
+		}
+		if !revoked && st.SessionsSwept == 0 {
+			break // nothing left to sweep and ours was not among it
+		}
 	}
 	if !revoked {
 		t.Error("the expired session is still live after a sweep")
@@ -128,10 +134,15 @@ func TestSweepIsIdempotent(t *testing.T) {
 		return at
 	}
 
-	if _, err := RunOnce(ctx, pool, discard()); err != nil {
-		t.Fatalf("first pass: %v", err)
+	// The first pass is as many as it takes to reach this session, for the
+	// reason given in the test above.
+	var first *time.Time
+	for pass := 0; pass < 20 && first == nil; pass++ {
+		if _, err := RunOnce(ctx, pool, discard()); err != nil {
+			t.Fatalf("first pass: %v", err)
+		}
+		first = revokedAt("after the first pass")
 	}
-	first := revokedAt("after the first pass")
 	if first == nil {
 		t.Fatal("the first pass did not terminate the expired session, so the " +
 			"second pass could not demonstrate anything")

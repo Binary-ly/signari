@@ -317,6 +317,10 @@ func run(args []string) (err error) {
 	ldapFlavour := fs.String("ldap-flavour", "openldap", "openldap, ad or freeipa")
 	ldapStartTLS := fs.Bool("ldap-start-tls", true, "upgrade a plaintext connection with StartTLS")
 	ldapCA := fs.String("ldap-ca", "", "PEM file of roots that verify the directory server")
+	fetchGroups := fs.Bool("fetch-groups", false,
+		"fetch each person's group memberships, so mapped groups are reconciled (dir add, dir set)")
+	groupAttribute := fs.String("group-attribute", "",
+		"the LDAP attribute listing a person's groups; empty reads memberOf (dir add, dir set)")
 	dirDomain := fs.String("domain", "", "Google Workspace domain")
 	dirImpersonate := fs.String("impersonate", "", "administrator the service account acts as")
 	dirTenant := fs.String("tenant", "", "Entra tenant id (read from the credential file)")
@@ -861,13 +865,14 @@ func run(args []string) (err error) {
 	case "dir add":
 		return dirAdd(ctx, conn, *orgID, *kind, *slug, *name, *file, *dirDomain,
 			*dirImpersonate, *dirTenant, *dirFilter, *ldapURL, *ldapBindDN,
-			*ldapPassword, *ldapBaseDN, *ldapFlavour, *ldapCA, *ldapStartTLS)
+			*ldapPassword, *ldapBaseDN, *ldapFlavour, *ldapCA, *ldapStartTLS, *fetchGroups, *groupAttribute)
 	case "dir sync":
 		return dirSync(ctx, conn, *orgID, *slug, *apply)
 	case "dir group-map":
 		return dirGroupMap(ctx, conn, *orgID, *slug, *remoteGroup, *groupName, *removeMember)
 	case "dir set":
-		return dirSet(ctx, conn, *orgID, *slug, *onMissing, *maxDeactivate, fs, *setEnabled, *dryRun)
+		return dirSet(ctx, conn, *orgID, *slug, *onMissing, *maxDeactivate, fs, *setEnabled, *dryRun,
+			*fetchGroups, *groupAttribute)
 	case "dir list":
 		return dirList(ctx, conn, *orgID)
 	case "rac add":
@@ -5319,11 +5324,13 @@ func clientSetTLS(ctx context.Context, conn *pgx.Conn, clientID, subjectDN, sanD
 // dirAdd registers a directory source.
 func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPath,
 	domain, impersonate, tenant, filter, ldapURL, ldapBindDN, ldapPassword,
-	ldapBaseDN, ldapFlavour, ldapCAPath string, ldapStartTLS bool) error {
+	ldapBaseDN, ldapFlavour, ldapCAPath string, ldapStartTLS, fetchGroups bool, groupAttr string) error {
 
 	switch {
 	case orgID == "" || slug == "":
 		return fmt.Errorf("give -org and -slug")
+	case groupAttr != "" && kind != "ldap":
+		return fmt.Errorf("-group-attribute is for an ldap source; Google and Entra report groups by API")
 	case kind != "google" && kind != "entra" && kind != "ldap":
 		return fmt.Errorf("-kind must be google, entra or ldap for a directory source "+
 			"(got %q; that flag is shared with `idp add`, which uses different values)", kind)
@@ -5407,14 +5414,17 @@ func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPa
 		INSERT INTO core.directory_sources
 			(org_id, kind, slug, display_name, credentials_enc, domain, impersonate,
 			 tenant_id, user_filter, ldap_url, ldap_bind_dn, ldap_base_dn,
-			 ldap_flavour, ldap_start_tls, ldap_ca_pem)
+			 ldap_flavour, ldap_start_tls, ldap_ca_pem, fetch_groups, ldap_group_attribute)
 		VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), NULLIF($8,''), $9,
 		        NULLIF($10,''), NULLIF($11,''), NULLIF($12,''), NULLIF($13,''), $14,
-		        NULLIF($15,''))
+		        NULLIF($15,''), $16, NULLIF($17,''))
 		RETURNING id::text`,
 		orgID, kind, slug, name, sealed, domain, impersonate, tenant, filter,
 		ldapURL, ldapBindDN, ldapBaseDN, ldapFlavour, ldapStartTLS,
-		ldapCA).Scan(&id); err != nil {
+		ldapCA, fetchGroups, groupAttr).Scan(&id); err != nil {
+		if strings.Contains(err.Error(), "ldap_group_attribute") {
+			return fmt.Errorf("-group-attribute is an attribute name, such as memberOf")
+		}
 		if strings.Contains(err.Error(), "duplicate key") {
 			return fmt.Errorf("a source with slug %q already exists in that organisation", slug)
 		}
@@ -5439,8 +5449,8 @@ func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply b
 	}
 
 	var id, orgID, kind, credsEnc, domain, impersonate, tenant, filter, onMissing string
-	var lURL, lBindDN, lBaseDN, lFlavour, lCA string
-	var lStartTLS bool
+	var lURL, lBindDN, lBaseDN, lFlavour, lCA, lGroupAttr string
+	var lStartTLS, fetchGroups bool
 	var sealed []byte
 	var dryRun bool
 	var maxPct int
@@ -5450,11 +5460,11 @@ func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply b
 		       on_missing, dry_run, max_deactivate_percent,
 		       COALESCE(ldap_url,''), COALESCE(ldap_bind_dn,''),
 		       COALESCE(ldap_base_dn,''), COALESCE(ldap_flavour,''), ldap_start_tls,
-		       COALESCE(ldap_ca_pem,'')
+		       COALESCE(ldap_ca_pem,''), fetch_groups, COALESCE(ldap_group_attribute, 'memberOf')
 		FROM core.directory_sources WHERE id = $1::uuid AND enabled`, sourceID).
 		Scan(&id, &orgID, &kind, &sealed, &domain, &impersonate, &tenant, &filter,
 			&onMissing, &dryRun, &maxPct,
-			&lURL, &lBindDN, &lBaseDN, &lFlavour, &lStartTLS, &lCA)
+			&lURL, &lBindDN, &lBaseDN, &lFlavour, &lStartTLS, &lCA, &fetchGroups, &lGroupAttr)
 	if err != nil {
 		return fmt.Errorf("no enabled directory source with slug %q: %w", slug, err)
 	}
@@ -5483,28 +5493,43 @@ func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply b
 			return perr
 		}
 		remote, err = (&directory.GoogleSource{
-			Creds: creds, Impersonate: impersonate, Domain: domain, Query: filter,
+			Creds: creds, Impersonate: impersonate, Domain: domain, Query: filter, Groups: fetchGroups,
 		}).Fetch(ctx)
 	case "entra":
 		creds, perr := directory.ParseEntraCredentials(raw)
 		if perr != nil {
 			return perr
 		}
-		remote, err = (&directory.EntraSource{Creds: creds, Filter: filter}).Fetch(ctx)
+		remote, err = (&directory.EntraSource{Creds: creds, Filter: filter, Groups: fetchGroups}).Fetch(ctx)
 	case "ldap":
-		var pool *x509.CertPool
+		var cas *x509.CertPool
 		if lCA != "" {
-			pool = x509.NewCertPool()
-			if !pool.AppendCertsFromPEM([]byte(lCA)) {
+			cas = x509.NewCertPool()
+			if !cas.AppendCertsFromPEM([]byte(lCA)) {
 				return fmt.Errorf("the stored CA bundle for %q contains no certificates", slug)
 			}
 		}
-		remote, err = (&directory.LDAPSource{
-			CAs: pool,
+		src := &directory.LDAPSource{
+			CAs: cas,
 			URL: lURL, BindDN: lBindDN, Password: string(raw), BaseDN: lBaseDN,
 			Filter: filter, Flavour: directory.LDAPFlavour(lFlavour),
 			StartTLS: lStartTLS,
-		}).Fetch(ctx)
+		}
+		if fetchGroups {
+			// The attribute was never assigned, so no LDAP sync fetched a group.
+			src.GroupAttribute = lGroupAttr
+			if src.Flavour == directory.FlavourAD {
+				// The groups a mapping names, resolved through nesting.
+				mappings, merr := directory.LoadGroupMappings(ctx, pool, id)
+				if merr != nil {
+					return merr
+				}
+				for _, m := range mappings {
+					src.NestedGroups = append(src.NestedGroups, m.RemoteGroup)
+				}
+			}
+		}
+		remote, err = src.Fetch(ctx)
 	}
 	if err != nil {
 		directory.RecordFailure(ctx, pool, id, err)
@@ -5537,7 +5562,7 @@ func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply b
 	}
 	fmt.Println("\n  Applied.")
 
-	if err := syncDirectoryGroups(ctx, pool, id, orgID, remote, maxPct); err != nil {
+	if err := syncDirectoryGroups(ctx, pool, id, orgID, remote, maxPct, fetchGroups); err != nil {
 		directory.RecordFailure(ctx, pool, id, err)
 		return err
 	}
@@ -5560,9 +5585,14 @@ func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply b
 // the two the same would propose removing every governed membership in the
 // organisation on the first run against a source that never fetched them.
 //
-// So: no mappings, or no user reporting any group, means no plan at all.
+// So: no mappings, or a source that does not fetch groups, means no plan at
+// all. Whether it fetches is the source's setting (`dir set -fetch-groups`),
+// not a guess from what came back: guessing from "somebody reported a group"
+// meant a sync in which everybody had left every mapped group could never
+// remove a membership, since nobody then reported any. The removal ceiling is
+// what stands between a bad fetch and those removals.
 func syncDirectoryGroups(ctx context.Context, pool *pgxpool.Pool, sourceID, orgID string,
-	remote []directory.RemoteUser, maxPct int) error {
+	remote []directory.RemoteUser, maxPct int, fetchesGroups bool) error {
 
 	mappings, err := directory.LoadGroupMappings(ctx, pool, sourceID)
 	if err != nil {
@@ -5571,18 +5601,10 @@ func syncDirectoryGroups(ctx context.Context, pool *pgxpool.Pool, sourceID, orgI
 	if len(mappings) == 0 {
 		return nil
 	}
-
-	reported := false
-	for _, u := range remote {
-		if len(u.Groups) > 0 {
-			reported = true
-			break
-		}
-	}
-	if !reported {
-		fmt.Println("\n  Group mappings are configured but this source reported no")
-		fmt.Println("  group memberships, so nothing was changed. Set the source's")
-		fmt.Println("  group attribute (usually memberOf) to enable group sync.")
+	if !fetchesGroups {
+		fmt.Println("\n  Group mappings are configured but this source does not fetch")
+		fmt.Println("  group memberships, so nothing was changed. `signari dir set")
+		fmt.Println("  -fetch-groups` turns it on.")
 		return nil
 	}
 

@@ -113,6 +113,33 @@ Against the real schema and a faithful fake of each API:
 | a page failing mid-fetch | error, and no partial list returned |
 | `mail` empty in Entra | falls back to `userPrincipalName` |
 
+## Groups
+
+A sync reconciles group membership only when the source fetches groups, and
+only for groups an operator mapped:
+
+```sh
+signari dir set -org <uuid> -slug corp -fetch-groups
+signari dir group-map -org <uuid> -slug corp \
+  -remote-group 'cn=engineering,ou=groups,dc=example,dc=com' -group engineering
+```
+
+| Source | What a group is called | Nesting | Needs |
+|---|---|---|---|
+| LDAP | its DN, from `memberOf` or `-group-attribute` | Active Directory: resolved for each mapped group with the in-chain matching rule; elsewhere, direct only | read access to the attribute |
+| Entra | its object id | transitive (`transitiveMemberOf`) | `GroupMember.Read.All` |
+| Google | its address | direct only | `admin.directory.group.readonly` delegated |
+
+The names are chosen so a mapping cannot be claimed from upstream. A display
+name is not unique, and anybody able to create a group could give one the name
+of a mapped group; an id, an address or a DN cannot be reused that way.
+
+A source that does not fetch groups changes no membership, which is different
+from a source saying somebody is in no groups. Removals are bounded by the
+same ceiling as deactivations. Fetching is off by default because it needs more
+of the upstream than reading users does. Until October 2026 no source fetched a
+group at all, so group mappings changed nothing.
+
 ## What is not verified
 
 The **LDAP** source has been run against a real OpenLDAP server, over TLS with a

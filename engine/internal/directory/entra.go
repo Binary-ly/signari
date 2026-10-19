@@ -42,6 +42,10 @@ type EntraSource struct {
 	Creds *EntraCredentials
 	// Filter is OData, empty for everybody.
 	Filter string
+	// Groups asks Graph for each person's groups (2.02), reported by object
+	// id: a display name is not unique, and anybody who can create a group
+	// could name one after a mapped group. Needs GroupMember.Read.All.
+	Groups bool
 
 	Client   *http.Client
 	BaseURL  string // overridden in tests
@@ -159,7 +163,69 @@ func (e *EntraSource) Fetch(ctx context.Context) ([]RemoteUser, error) {
 		// re-reads page one forever.
 		next = body.NextLink
 	}
+	if e.Groups {
+		for i := range out {
+			ids, err := e.groupIDs(ctx, token, out[i].ID)
+			if err != nil {
+				return nil, err
+			}
+			out[i].Groups = ids
+		}
+	}
 	return out, nil
+}
+
+// groupIDs is every group a person is in, at any depth: transitiveMemberOf,
+// because memberOf would leave somebody in a nested group outside the group a
+// mapping names. Every page or an error.
+func (e *EntraSource) groupIDs(ctx context.Context, token, userID string) ([]string, error) {
+	q := url.Values{}
+	q.Set("$select", "id")
+	q.Set("$top", "999")
+	next := e.baseURL() + "/v1.0/users/" + url.PathEscape(userID) +
+		"/transitiveMemberOf/microsoft.graph.group?" + q.Encode()
+	ids := []string{}
+	for page := 0; next != ""; page++ {
+		if page > 100 {
+			return nil, fmt.Errorf("the groups of %s did not terminate after %d pages", userID, page)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, next, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := e.client().Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("reading the groups of %s: %w", userID, err)
+		}
+		var body struct {
+			Value []struct {
+				ID string `json:"id"`
+			} `json:"value"`
+			NextLink string `json:"@odata.nextLink"`
+			Error    struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		decErr := json.NewDecoder(resp.Body).Decode(&body)
+		status := resp.StatusCode
+		_ = resp.Body.Close()
+		if status != http.StatusOK {
+			msg := body.Error.Message
+			if status == http.StatusForbidden {
+				msg += " -- group sync needs the GroupMember.Read.All application permission"
+			}
+			return nil, fmt.Errorf("Microsoft Graph answered %d for the groups of %s: %s", status, userID, msg)
+		}
+		if decErr != nil {
+			return nil, fmt.Errorf("Graph's group answer did not parse: %w", decErr)
+		}
+		for _, g := range body.Value {
+			ids = append(ids, g.ID)
+		}
+		next = body.NextLink
+	}
+	return ids, nil
 }
 
 func (e *EntraSource) accessToken(ctx context.Context) (string, error) {

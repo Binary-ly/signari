@@ -1685,7 +1685,7 @@ func scimSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, ena
 // a sensible default and no way to change it, so an operator who found 20% wrong
 // for their organisation had no move at all.
 func dirSet(ctx context.Context, conn *pgx.Conn, orgID, slug, onMissing string, maxPercent int,
-	fs *flag.FlagSet, enabled, dryRun bool) error {
+	fs *flag.FlagSet, enabled, dryRun, fetchGroups bool, groupAttr string) error {
 
 	if slug == "" {
 		return fmt.Errorf("give -slug")
@@ -1723,9 +1723,33 @@ func dirSet(ctx context.Context, conn *pgx.Conn, orgID, slug, onMissing string, 
 	if set["dry-run"] {
 		changes = append(changes, "dry-run")
 	}
+	// Group sync (2.02): whether memberships are fetched, and for LDAP from
+	// which attribute; empty returns it to memberOf.
+	if set["fetch-groups"] {
+		changes = append(changes, "fetch-groups")
+	}
+	if set["group-attribute"] {
+		changes = append(changes, "group-attribute")
+	}
 	if len(changes) == 0 {
-		return fmt.Errorf("give at least one of -on-missing, -max-deactivate, -enabled " +
-			"or -dry-run")
+		return fmt.Errorf("give at least one of -on-missing, -max-deactivate, -enabled, " +
+			"-dry-run, -fetch-groups or -group-attribute")
+	}
+	if set["fetch-groups"] || set["group-attribute"] {
+		var fetchArg any
+		if set["fetch-groups"] {
+			fetchArg = fetchGroups
+		}
+		if _, err := conn.Exec(ctx, `
+			UPDATE core.directory_sources
+			   SET fetch_groups         = COALESCE($2::boolean, fetch_groups),
+			       ldap_group_attribute = CASE WHEN $3 THEN NULLIF($4::text, '') ELSE ldap_group_attribute END
+			 WHERE id = $1::uuid`, sourceID, fetchArg, set["group-attribute"], groupAttr); err != nil {
+			if strings.Contains(err.Error(), "ldap_group_attribute") {
+				return fmt.Errorf("-group-attribute is an attribute name, such as memberOf")
+			}
+			return err
+		}
 	}
 
 	var onMissingArg, maxArg, enabledArg, dryArg any
@@ -1757,13 +1781,19 @@ func dirSet(ctx context.Context, conn *pgx.Conn, orgID, slug, onMissing string, 
 
 	var om string
 	var mp int
-	var en, dr bool
+	var en, dr, fg bool
+	var ga string
 	_ = conn.QueryRow(ctx, `
-		SELECT on_missing, max_deactivate_percent, enabled, dry_run
-		FROM core.directory_sources WHERE id = $1::uuid`, sourceID).Scan(&om, &mp, &en, &dr)
+		SELECT on_missing, max_deactivate_percent, enabled, dry_run, fetch_groups,
+		       COALESCE(ldap_group_attribute, 'memberOf')
+		FROM core.directory_sources WHERE id = $1::uuid`, sourceID).Scan(&om, &mp, &en, &dr, &fg, &ga)
 
 	fmt.Printf("%s:\n  enabled        : %t\n  dry run        : %t\n"+
-		"  on missing     : %s\n  max deactivate : %d%%\n", slug, en, dr, om, mp)
+		"  on missing     : %s\n  max deactivate : %d%%\n  fetch groups   : %t\n",
+		slug, en, dr, om, mp, fg)
+	if fg {
+		fmt.Printf("  group attribute: %s (ldap)\n", ga)
+	}
 	if om == "deactivate" {
 		fmt.Println("\n  People the directory stops returning will be DEACTIVATED here. Preview")
 		fmt.Println("  every run first -- `signari dir sync -slug " + slug + "` shows the plan")

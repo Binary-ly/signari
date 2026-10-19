@@ -65,6 +65,11 @@ var mustBeReachable = []capability{
 	{"BuildGroupPlan", "a configured directory group mapping never changes any " +
 		"membership"},
 	{"LoadGroupMappings", "the same, from the other end"},
+	{"groupIDs", "an Entra source never reports a group, so its mappings change " +
+		"nothing (2.02: no source fetched one)"},
+	{"groupEmails", "the same for a Google Workspace source"},
+	{"addNestedMembers", "somebody in a group nested inside a mapped Active Directory " +
+		"group reads as outside it"},
 	{"VerifyLDAP", "a migration configured to verify against the old directory " +
 		"cannot authenticate anybody"},
 	{"SetMigrationSource", "nothing can configure the old provider, so delegated " +

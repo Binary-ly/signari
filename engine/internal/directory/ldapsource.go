@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -69,6 +70,14 @@ type LDAPSource struct {
 	// absence of the setting is what says "this source has nothing to say about
 	// groups" rather than "this source says nobody is in any".
 	GroupAttribute string
+
+	// NestedGroups are the mapped groups whose members are resolved through
+	// nesting, Active Directory only (2.02). `memberOf` lists the groups an
+	// account is in directly, so somebody in "Developers", itself a member of
+	// the mapped "Engineering", reads as outside Engineering. AD answers the
+	// transitive question with the LDAP_MATCHING_RULE_IN_CHAIN rule,
+	// 1.2.840.113556.1.4.1941: one search per mapped group.
+	NestedGroups []string
 
 	// StartTLS upgrades a plaintext connection. Ignored for ldaps://.
 	StartTLS bool
@@ -255,7 +264,40 @@ func (s *LDAPSource) Fetch(ctx context.Context) ([]RemoteUser, error) {
 			"a rename; refusing rather than importing them under an unstable key",
 			missingID, missingID+len(out), idAttr)
 	}
+	if s.Flavour == FlavourAD && s.GroupAttribute != "" {
+		if err := s.addNestedMembers(conn, filter, idAttr, pageSize, out); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
+}
+
+// addNestedMembers adds each mapped group to the people AD says are in it at
+// any depth. A failed search is an error, never a partial answer: a missing
+// page would read as people leaving the group.
+func (s *LDAPSource) addNestedMembers(conn ldapConn, userFilter, idAttr string, pageSize uint32,
+	users []RemoteUser) error {
+	index := make(map[string]int, len(users))
+	for i, u := range users {
+		index[u.ID] = i
+	}
+	for _, group := range s.NestedGroups {
+		filter := "(&" + userFilter + "(memberOf:1.2.840.113556.1.4.1941:=" + ldap.EscapeFilter(group) + "))"
+		res, err := conn.SearchWithPaging(ldap.NewSearchRequest(
+			s.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,
+			0, 0, false, filter, []string{idAttr}, nil), pageSize)
+		if err != nil {
+			return fmt.Errorf("resolving the members of %q through nested groups: %w", group, err)
+		}
+		for _, e := range res.Entries {
+			i, ok := index[s.immutableID(e, idAttr)]
+			if !ok || slices.Contains(users[i].Groups, group) {
+				continue
+			}
+			users[i].Groups = append(users[i].Groups, group)
+		}
+	}
+	return nil
 }
 
 // immutableID reads the flavour's stable identifier.

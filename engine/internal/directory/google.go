@@ -73,6 +73,10 @@ type GoogleSource struct {
 	Domain      string
 	// Query is Google's user search syntax, empty for everybody.
 	Query string
+	// Groups asks for each person's groups (2.02), reported by the group's
+	// address, which is unique in the domain. The Directory API lists direct
+	// memberships only. Needs ScopeGroupRead delegated as well.
+	Groups bool
 
 	Client *http.Client
 	// BaseURL is overridden in tests. Production leaves it empty.
@@ -197,7 +201,79 @@ func (g *GoogleSource) Fetch(ctx context.Context) ([]RemoteUser, error) {
 
 		pageToken = body.NextPageToken
 		if pageToken == "" {
-			return out, nil
+			break
+		}
+	}
+	if g.Groups {
+		groupToken, err := g.tokenForScope(ctx, ScopeGroupRead)
+		if err != nil {
+			return nil, err
+		}
+		for i := range out {
+			emails, err := g.groupEmails(ctx, groupToken, out[i].ID)
+			if err != nil {
+				return nil, err
+			}
+			out[i].Groups = emails
+		}
+	}
+	return out, nil
+}
+
+// ScopeGroupRead reads which groups a person is in, for group sync.
+const ScopeGroupRead = "https://www.googleapis.com/auth/admin.directory.group.readonly"
+
+// groupEmails is every group a person is directly in. Every page or an error.
+func (g *GoogleSource) groupEmails(ctx context.Context, token, userKey string) ([]string, error) {
+	emails := []string{}
+	pageToken := ""
+	for page := 0; ; page++ {
+		if page > 100 {
+			return nil, fmt.Errorf("the groups of %s did not terminate after %d pages", userKey, page)
+		}
+		q := url.Values{}
+		q.Set("userKey", userKey)
+		q.Set("maxResults", "200")
+		if pageToken != "" {
+			q.Set("pageToken", pageToken)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+			g.baseURL()+"/admin/directory/v1/groups?"+q.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := g.client().Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("reading the groups of %s: %w", userKey, err)
+		}
+		var body struct {
+			Groups []struct {
+				Email string `json:"email"`
+			} `json:"groups"`
+			NextPageToken string `json:"nextPageToken"`
+			Error         struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		decErr := json.NewDecoder(resp.Body).Decode(&body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			msg := body.Error.Message
+			if resp.StatusCode == http.StatusForbidden {
+				msg += " -- group sync needs " + ScopeGroupRead + " granted to the service account"
+			}
+			return nil, fmt.Errorf("Google answered %d for the groups of %s: %s", resp.StatusCode, userKey, msg)
+		}
+		if decErr != nil {
+			return nil, fmt.Errorf("Google's group answer did not parse: %w", decErr)
+		}
+		for _, gr := range body.Groups {
+			emails = append(emails, gr.Email)
+		}
+		pageToken = body.NextPageToken
+		if pageToken == "" {
+			return emails, nil
 		}
 	}
 }

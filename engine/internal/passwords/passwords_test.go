@@ -236,7 +236,9 @@ func TestSupportedPrefixesMatchesVerify(t *testing.T) {
 			t.Errorf("Verify handles %q but SupportedPrefixes does not advertise it; "+
 				"migration tooling will tell an operator those passwords cannot transfer", p)
 		}
-		if !CanVerify(p + "whatever") {
+		// The fourth character of a phpass-family hash is its iteration
+		// count; "B" is 2^13, inside the ceiling ("w" would be 2^60).
+		if !CanVerify(p + "Bwhatever") {
 			t.Errorf("CanVerify says no to %q, which Verify handles", p)
 		}
 	}

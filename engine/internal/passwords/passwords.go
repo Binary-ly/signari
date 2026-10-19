@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"golang.org/x/text/unicode/norm"
@@ -73,7 +74,101 @@ const (
 	// still bounded. pbkdf2.Key is linear in this, so an unbounded value is a
 	// direct multiplier on CPU per failed sign-in.
 	pbkdf2MaxIterations = 10_000_000
+
+	// phpass and Drupal 7 store n and iterate 2^n times, and the format allows
+	// n up to 30. Measured where this was written, 2^20 took 0.14 s with MD5 and
+	// 0.19 s with SHA-512, so 2^30 is over two minutes of CPU on every attempt
+	// against the account, failed or not. It used to be accepted.
+	phpassMaxLog2 = 20
+
+	// bcrypt's format allows cost 31, and each step doubles the work: cost 15
+	// measured 2 s, so 31 is about three days. It used to be accepted.
+	bcryptMaxCost = 15
+
+	// scrypt and Keycloak's PBKDF2, bounded in foreign.go.
+	scryptMaxLn           = 20
+	scryptMaxN            = 1 << scryptMaxLn
+	scryptMaxR            = 32
+	scryptMaxP            = 16
+	keycloakMaxIterations = 1_000_000
 )
+
+// CostRefusal says why verifying stored would cost more than this process
+// allows, or nil: a parameter above the ceilings above, or more memory than
+// the shared hasher's whole budget, which acquire refuses on every attempt.
+//
+// Read from the hash's own parameters, hashing nothing, so an importer can ask
+// it before an account is created -- CanVerify does -- and Verify asks it
+// before taking a slot. Both reading this one function is what keeps "imported
+// as verifiable" and "verifies at sign-in" the same answer: they disagreed, and
+// an Argon2id hash declaring 600 MiB, under the 1 GiB parse ceiling and over
+// the 512 MiB budget, was imported and then refused at every sign-in.
+//
+// A hash this does not recognise, or cannot parse, is not its business: Verify
+// refuses those as a mismatch and CanVerify by prefix.
+func CostRefusal(stored string) error {
+	return costRefusal(stored, Shared().budgetKiB)
+}
+
+func costRefusal(stored string, budgetKiB int64) error {
+	if kib := memoryKiB(stored); kib > budgetKiB {
+		return fmt.Errorf("it needs %d MiB to verify and the process allows %d MiB for all "+
+			"verifications together", kib/1024, budgetKiB/1024)
+	}
+	parts := strings.Split(stored, "$")
+	switch {
+	case strings.HasPrefix(stored, "$argon2id$") && len(parts) > 3:
+		var m, t, p int64
+		if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err == nil &&
+			(m > argonMaxMemoryKiB || t > argonMaxTime || p > argonMaxThreads) {
+			return fmt.Errorf("argon2id m=%d,t=%d,p=%d is above the ceiling m=%d,t=%d,p=%d",
+				m, t, p, argonMaxMemoryKiB, argonMaxTime, argonMaxThreads)
+		}
+	case strings.HasPrefix(stored, "$2a$"), strings.HasPrefix(stored, "$2b$"),
+		strings.HasPrefix(stored, "$2y$"):
+		if cost, err := bcrypt.Cost([]byte(stored)); err == nil && cost > bcryptMaxCost {
+			return fmt.Errorf("bcrypt cost %d is above the ceiling %d", cost, bcryptMaxCost)
+		}
+	case strings.HasPrefix(stored, "$P$"), strings.HasPrefix(stored, "$H$"),
+		strings.HasPrefix(stored, "$S$"):
+		if len(stored) > 3 {
+			if n := strings.IndexByte(itoa64, stored[3]); n > phpassMaxLog2 {
+				return fmt.Errorf("2^%d iterations is above the ceiling 2^%d", n, phpassMaxLog2)
+			}
+		}
+	case strings.HasPrefix(stored, "pbkdf2_sha256$") && len(parts) > 1:
+		if iter, err := strconv.Atoi(parts[1]); err == nil && iter > pbkdf2MaxIterations {
+			return fmt.Errorf("%d PBKDF2 iterations is above the ceiling %d", iter, pbkdf2MaxIterations)
+		}
+	case strings.HasPrefix(stored, "$scrypt$") && len(parts) > 2:
+		var ln, r, p int
+		for _, kv := range strings.Split(parts[2], ",") {
+			k, v, _ := strings.Cut(kv, "=")
+			n, _ := strconv.Atoi(v)
+			switch k {
+			case "ln":
+				ln = n
+			case "r":
+				r = n
+			case "p":
+				p = n
+			}
+		}
+		if ln > scryptMaxLn || r > scryptMaxR || p > scryptMaxP {
+			return fmt.Errorf("scrypt ln=%d,r=%d,p=%d is above the ceiling ln=%d,r=%d,p=%d",
+				ln, r, p, scryptMaxLn, scryptMaxR, scryptMaxP)
+		}
+	case strings.HasPrefix(stored, "$keycloak$") && len(parts) == 4:
+		if raw, err := base64.RawStdEncoding.DecodeString(parts[2]); err == nil {
+			var cd keycloakCredential
+			if json.Unmarshal(raw, &cd) == nil && cd.Iterations > keycloakMaxIterations {
+				return fmt.Errorf("%d PBKDF2 iterations is above the ceiling %d",
+					cd.Iterations, keycloakMaxIterations)
+			}
+		}
+	}
+	return nil
+}
 
 // Hasher owns the concurrency budget for password hashing.
 //
@@ -260,6 +355,11 @@ func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 // the credential.
 func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsRehash bool, err error) {
 	password = Normalize(password)
+	// Before a slot is taken: a hash that costs more than this process allows
+	// never verifies, and the ceiling is the same one CanVerify asked at import.
+	if err := costRefusal(stored, h.budgetKiB); err != nil {
+		return false, fmt.Errorf("%w: %v; reset the password", ErrMismatch, err)
+	}
 	h.inFlight.Add(1)
 	defer h.inFlight.Add(-1)
 	kib := memoryKiB(stored)
@@ -441,10 +541,14 @@ func SupportedPrefixes() []string {
 // The question migration tooling actually asks, and the one an operator needs
 // answered BEFORE importing rather than after: an account imported with a hash
 // nothing can verify is an account nobody can sign in to.
+//
+// A recognised format whose parameters cost more than Verify allows is not
+// verifiable either (CostRefusal says why). It used to be reported verifiable
+// and imported, and then refused at every sign-in.
 func CanVerify(stored string) bool {
 	for _, p := range SupportedPrefixes() {
 		if strings.HasPrefix(stored, p) {
-			return true
+			return CostRefusal(stored) == nil
 		}
 	}
 	return false

@@ -201,9 +201,13 @@ func ImportAuthentik(ctx context.Context, tx pgx.Tx, orgID string, exp *Authenti
 		if !passwords.CanVerify(u.Password) {
 			// Named rather than imported without a credential. An account nobody
 			// can sign in to is worse than one that was refused out loud.
+			reason := fmt.Sprintf("password format %q cannot be verified here",
+				hashFormatName(u.Password))
+			if err := passwords.CostRefusal(u.Password); err != nil {
+				reason = fmt.Sprintf("its password hash costs more than this server verifies: %v", err)
+			}
 			res.UsersSkipped = append(res.UsersSkipped, fmt.Sprintf(
-				"%s (password format %q cannot be verified here; they must use "+
-					"recovery or delegated sign-in)", identifier, hashFormatName(u.Password)))
+				"%s (%s; they must use recovery or delegated sign-in)", identifier, reason))
 			continue
 		}
 

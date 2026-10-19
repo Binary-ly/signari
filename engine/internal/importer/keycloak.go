@@ -129,6 +129,15 @@ func Import(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm,
 				identifier+" (no importable password; they must use recovery or delegated sign-in)")
 			continue
 		}
+		// The same question sign-in will ask. A credential whose iteration
+		// count is over the ceiling was imported and then refused at every
+		// attempt, which is the account nobody can sign in to, created anyway.
+		if err := passwords.CostRefusal(hash); err != nil {
+			res.UsersSkipped = append(res.UsersSkipped, fmt.Sprintf(
+				"%s (its password hash costs more than this server verifies: %v; they must "+
+					"use recovery or delegated sign-in)", identifier, err))
+			continue
+		}
 		if dryRun {
 			res.UsersCreated++
 			continue

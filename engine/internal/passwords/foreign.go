@@ -55,7 +55,7 @@ func verifyPHPass(stored, password string) error {
 		return ErrMismatch
 	}
 	countLog2 := strings.IndexByte(itoa64, stored[3])
-	if countLog2 < 7 || countLog2 > 30 {
+	if countLog2 < 7 || countLog2 > phpassMaxLog2 {
 		return ErrMismatch
 	}
 	count := 1 << uint(countLog2)
@@ -81,7 +81,7 @@ func verifyDrupal7(stored, password string) error {
 		return ErrMismatch
 	}
 	countLog2 := strings.IndexByte(itoa64, stored[3])
-	if countLog2 < 7 || countLog2 > 30 {
+	if countLog2 < 7 || countLog2 > phpassMaxLog2 {
 		return ErrMismatch
 	}
 	count := 1 << uint(countLog2)
@@ -216,7 +216,7 @@ func verifyScrypt(stored, password string) error {
 	}
 	// Bounded so a malicious or corrupt import cannot ask for gigabytes of
 	// memory on the login path.
-	if N > 1<<20 || r > 32 || p > 16 {
+	if N > scryptMaxN || r > scryptMaxR || p > scryptMaxP {
 		return ErrMismatch
 	}
 	got, err := scrypt.Key([]byte(password), salt, N, r, p, len(want))
@@ -260,7 +260,7 @@ func VerifyKeycloak(credentialDataJSON, secretDataJSON, password string) error {
 	if err != nil {
 		return ErrMismatch
 	}
-	if cd.Iterations <= 0 || cd.Iterations > 1_000_000 || len(want) == 0 {
+	if cd.Iterations <= 0 || cd.Iterations > keycloakMaxIterations || len(want) == 0 {
 		return ErrMismatch
 	}
 

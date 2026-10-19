@@ -16,6 +16,11 @@ hold, and redirect URIs. The point of importing a secret rather than issuing a
 new one is that the application does not have to be touched: migration becomes a
 DNS change instead of a change to every downstream app.
 
+A password credential whose `hashIterations` is above one million is **skipped
+and named** with the count, because sign-in will not spend that much on one
+attempt. Such users sign in through recovery or delegated sign-in. It used to
+be imported, and then refused at every attempt.
+
 ## PKCE is required of every imported client
 
 Every client created here requires a PKCE challenge, imported ones included.

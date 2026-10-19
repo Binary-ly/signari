@@ -62,6 +62,19 @@ it tested for `argon2` where the stored form is `$argon2id$`, so a perfectly
 importable hash was reported as unrecognised. A test now requires the two to
 agree.
 
+"Verifiable" also means affordable. A hash whose own parameters cost more than
+sign-in will spend is skipped and named, with the parameter that is too high:
+
+- more than 10 million PBKDF2 iterations;
+- 2^20 phpass or Drupal 7 rounds;
+- bcrypt cost 15;
+- an Argon2id or scrypt hash needing more memory than the 512 MiB the process
+  allows for all verifications together.
+
+Sign-in refuses the same hash, before doing any work, through the same check.
+The importer used to ask only whether the format was known, so such an account
+was imported and then refused at every attempt.
+
 ## What is deliberately not imported
 
 - **Inactive users**, named in the skip list. Importing them as active would

@@ -227,17 +227,14 @@ func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int, opts Options
 	}
 	// One `migrate` at a time, and the ledger read once the lock is held: a
 	// second run started alongside the first waits, then finds nothing left.
-	var free bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, migrationLock).Scan(&free); err != nil {
-		return nil, fmt.Errorf("taking the migration lock: %w", err)
-	}
-	if !free {
-		if opts.Waiting != nil {
-			opts.Waiting()
-		}
-		if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLock); err != nil {
-			return nil, fmt.Errorf("waiting for the migration lock: %w", err)
-		}
+	//
+	// Waited for by polling, between statements, never inside one. A session
+	// blocked in pg_advisory_lock() holds a transaction open, and CREATE INDEX
+	// CONCURRENTLY waits for every open transaction to end -- so the first run
+	// building an index waited for the second, which waited for the first,
+	// and the database broke the deadlock by failing the migration.
+	if err := waitForMigrationLock(ctx, conn, opts.Waiting); err != nil {
+		return nil, err
 	}
 	defer func() { _, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrationLock) }()
 
@@ -269,6 +266,32 @@ func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int, opts Options
 		applied = append(applied, m)
 	}
 	return applied, nil
+}
+
+// lockPoll is how often a waiting run asks for the migration lock again.
+const lockPoll = 250 * time.Millisecond
+
+// waitForMigrationLock takes the migration lock, asking again every lockPoll
+// while another run holds it, and calls waiting once if it had to.
+func waitForMigrationLock(ctx context.Context, conn *pgx.Conn, waiting func()) error {
+	for told := false; ; {
+		var free bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, migrationLock).Scan(&free); err != nil {
+			return fmt.Errorf("taking the migration lock: %w", err)
+		}
+		if free {
+			return nil
+		}
+		if !told && waiting != nil {
+			waiting()
+		}
+		told = true
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for the migration lock: %w", ctx.Err())
+		case <-time.After(lockPoll):
+		}
+	}
 }
 
 // timeouts are the SET statements Options asks for, as Postgres reads them.

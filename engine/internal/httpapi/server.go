@@ -158,6 +158,9 @@ type Server struct {
 	// have to know about instrumentation.
 	metrics *metrics.Engine
 
+	// readiness are the checks /readyz runs after its database ping.
+	readiness []readinessCheck
+
 	// root unwraps subject keys, which is what a personal user attribute is
 	// sealed under. nil means operator-defined claims are not resolved at all --
 	// the fixed claim set still works, so a Server built without a root key
@@ -1173,7 +1176,26 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready"})
 		return
 	}
+	for _, c := range s.readiness {
+		if err := c.check(); err != nil {
+			s.log.Error("readiness probe failed", "check", c.name, "err", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready"})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
+}
+
+type readinessCheck struct {
+	name  string
+	check func() error
+}
+
+// AddReadinessCheck makes /readyz fail while check reports an error: a
+// condition under which this instance should stop taking traffic though its
+// database answers, such as signing keys it can no longer refresh.
+func (s *Server) AddReadinessCheck(name string, check func() error) {
+	s.readiness = append(s.readiness, readinessCheck{name: name, check: check})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

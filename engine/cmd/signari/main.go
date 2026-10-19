@@ -1524,32 +1524,20 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		return fmt.Errorf("loading signing keys: %w", err)
 	}
 
-	// Re-read them while serving. Without this the set was fixed at startup,
-	// which meant a rotation reached no relying party until every instance was
-	// restarted -- and the publish-then-promote design that makes rotation safe
-	// never actually published anything.
-	go func() {
-		t := time.NewTicker(keys.KeyRefreshInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				if err := keys.Refresh(ctx, conn, instanceID, root, set); err != nil {
-					// Logged, and the current set kept: the keys already loaded
-					// are the ones known to work.
-					log.Error("refreshing signing keys", "err", err)
-				}
-			}
-		}
-	}()
-
 	pool, err := pgxpool.New(ctx, conn.Config().ConnString())
 	if err != nil {
 		return fmt.Errorf("creating connection pool: %w", err)
 	}
 	defer pool.Close()
+
+	// Re-read them while serving. Without this the set was fixed at startup,
+	// which meant a rotation reached no relying party until every instance was
+	// restarted -- and the publish-then-promote design that makes rotation safe
+	// never actually published anything. Through the pool, which replaces a
+	// connection a failover killed; the startup connection never came back.
+	keyRefresher := &keys.Refresher{DB: pool, InstanceID: instanceID, Root: root, Live: set,
+		Interval: keys.KeyRefreshInterval, Log: log}
+	go keyRefresher.Run(ctx)
 
 	// Mail is optional to START but never optional to HAVE: without SMTP the log
 	// driver keeps account recovery working locally and warns on every send, which
@@ -1661,6 +1649,10 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		return err
 	}
 	srv.SetClientIPResolver(ips)
+	// An instance that can no longer refresh its signing keys keeps signing
+	// with the last ones it saw. After MaxMissedRefreshes in a row it leaves
+	// the load balancer rather than go on doing that unnoticed.
+	srv.AddReadinessCheck("signing_keys", keyRefresher.Healthy)
 
 	// OpenID Federation keys, loaded only if this instance has any.
 	//
@@ -2041,6 +2033,9 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		met.Registry.NewGauge("signari_password_hash_slots",
 			"How many password hashes may run at once.",
 			func() float64 { return float64(passwords.Shared().Concurrency()) })
+		met.Registry.NewGauge("signari_key_refresh_failures",
+			"Signing-key refreshes that have failed in a row; readiness fails at five.",
+			func() float64 { return float64(keyRefresher.Missed()) })
 
 		srv.SetMetrics(met)
 		go func() {

@@ -145,12 +145,17 @@ func SaveFor(ctx context.Context, tx pgx.Tx, instanceID, purpose string, k Key, 
 // It loads all three states deliberately: `next` so the JWKS can publish a key
 // before it signs, and `passive` so tokens issued before the last rotation still
 // verify. Loading only the active key is how rotation breaks verification.
-func LoadSet(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootKey) (*Set, error) {
+func LoadSet(ctx context.Context, conn Querier, instanceID string, root *RootKey) (*Set, error) {
 	return LoadSetFor(ctx, conn, instanceID, PurposeOIDC, root)
 }
 
+// Querier is what loading keys needs: a connection or the pool alike.
+type Querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // LoadSetFor reads the keys for one purpose.
-func LoadSetFor(ctx context.Context, conn *pgx.Conn, instanceID, purpose string, root *RootKey) (*Set, error) {
+func LoadSetFor(ctx context.Context, conn Querier, instanceID, purpose string, root *RootKey) (*Set, error) {
 	// OIDC keys only.
 	//
 	// `purpose` was added for OpenID Federation, whose §3.1.1 says "These
@@ -322,7 +327,7 @@ const KeyRefreshInterval = time.Minute
 // are the ones known to work, and replacing them with nothing because the
 // database was briefly unreachable would take an instance out of service for a
 // transient fault.
-func Refresh(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootKey,
+func Refresh(ctx context.Context, conn Querier, instanceID string, root *RootKey,
 	live *Set) error {
 
 	next, err := LoadSet(ctx, conn, instanceID, root)

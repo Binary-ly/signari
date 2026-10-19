@@ -338,9 +338,18 @@ func TestEveryReloadLoopInTheEntrypointIsAccountedFor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The signing-key loop moved into keys.Refresher, which main starts; its
+	// ticker is counted there, so moving a loop out of main cannot hide it.
+	refresher, err := os.ReadFile(filepath.Join(root, "engine", "internal", "keys", "refresher.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "keyRefresher.Run(") {
+		t.Error("cmd/signari no longer starts the signing-key refresher, so keys are fixed at startup")
+	}
 
 	const expected = 2 // signing keys, RADIUS clients
-	got := strings.Count(string(src), "time.NewTicker")
+	got := strings.Count(string(src), "time.NewTicker") + strings.Count(string(refresher), "time.NewTicker")
 	if got != expected {
 		t.Errorf("cmd/signari/main.go starts %d ticker loops; %d are accounted "+
 			"for (signing keys, RADIUS clients). A new one is a third consumer "+

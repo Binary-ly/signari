@@ -679,7 +679,7 @@ func run(args []string) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	conn, err := pgx.Connect(ctx, *dsn)
+	conn, err := connectDB(ctx, *dsn)
 	if err != nil {
 		return fmt.Errorf("connecting: %w", err)
 	}
@@ -1062,7 +1062,7 @@ func run(args []string) (err error) {
 func janitorOnce(ctx context.Context, conn *pgx.Conn) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	pool, err := pgxpool.New(ctx, conn.Config().ConnString())
+	pool, err := openPool(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("creating connection pool: %w", err)
 	}
@@ -1524,7 +1524,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		return fmt.Errorf("loading signing keys: %w", err)
 	}
 
-	pool, err := pgxpool.New(ctx, conn.Config().ConnString())
+	pool, err := openPool(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("creating connection pool: %w", err)
 	}
@@ -5304,7 +5304,7 @@ func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply b
 		return fmt.Errorf("unsealing the credentials: %w", err)
 	}
 
-	pool, err := pgxpool.New(ctx, conn.Config().ConnString())
+	pool, err := openPool(ctx, conn)
 	if err != nil {
 		return err
 	}

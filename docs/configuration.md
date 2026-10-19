@@ -94,6 +94,31 @@ hold a connection for as long as it liked. The remote-access tunnel is a
 WebSocket, and upgrading to one clears these deadlines for that connection, so
 a remote desktop is bounded by its session checks instead.
 
+## Database connections
+
+| | |
+|---|---|
+| `SIGNARI_DB_MAX_CONNS` | The most connections the pool holds. Default the larger of 4 and the number of CPUs |
+| `SIGNARI_DB_MIN_CONNS` | Connections the pool keeps open while idle. Default 0. Must not exceed the maximum |
+| `SIGNARI_DB_MAX_CONN_LIFETIME` | How long a connection lives before it is replaced, as a Go duration (`30m`). Default `1h` |
+| `SIGNARI_DB_MAX_CONN_IDLE` | How long an idle connection is kept, as a Go duration (`5m`). Default `30m` |
+
+The DSN's own `pool_max_conns`, `pool_min_conns`, `pool_max_conn_lifetime` and
+`pool_max_conn_idle_time` work too, and a variable here wins over them. A value
+that is not a whole number or a positive duration, or a minimum above the
+maximum, **refuses to start**: a typo that fell back to the default would look
+like a pool that had been sized, and would be found under load.
+
+Every instance of `serve` opens up to the maximum, plus the one connection it
+starts with. The sum across instances, the console and anything else that
+connects must stay under PostgreSQL's `max_connections`, or the last instance to
+grow its pool is refused connections in the middle of a sign-in. The pool also
+serves the janitor, the outbox and the signing-key refresh, so a maximum sized
+to request concurrency alone is a little short. The
+`signari_db_pool_connections_max` gauge reports the maximum the pool is running
+with, and `signari_db_pool_connections_acquired` sitting at it while latency
+climbs is the pool running out.
+
 ## Behind a reverse proxy
 
 | | |

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oauth"
 )
 
 // Metadata is the OpenID Provider configuration served at
@@ -66,6 +67,13 @@ type Metadata struct {
 	AuthorizationDetailsTypesSupported []string `json:"authorization_details_types_supported,omitempty"`
 
 	SubjectTypesSupported []string `json:"subject_types_supported"`
+
+	// AcrValuesSupported is the acr values this server derives and can satisfy
+	// when a client asks for one (oauth.ACRFromAMR and its satisfies), so a
+	// relying party need not guess what `acr_values` to send. It was absent,
+	// and a client asking for an acr it could not discover learned only from
+	// a refusal.
+	AcrValuesSupported []string `json:"acr_values_supported"`
 
 	IDTokenSigningAlgValues  []string `json:"id_token_signing_alg_values_supported"`
 	TokenEndpointAuthMethods []string `json:"token_endpoint_auth_methods_supported"`
@@ -330,6 +338,7 @@ func Build(cfg Config) (*Metadata, error) {
 			"urn:ietf:params:oauth:grant-type:jwt-bearer"},
 
 		SubjectTypesSupported:   []string{"public"},
+		AcrValuesSupported:      []string{oauth.ACRSingleFactor, oauth.ACRMultiFactor, oauth.ACRPapeMultiFactor},
 		IDTokenSigningAlgValues: algNames,
 		// private_key_jwt is advertised because it is implemented AND enforced --
 		// a client configured for it cannot fall back to a secret, which is the

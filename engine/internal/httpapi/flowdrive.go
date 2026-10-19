@@ -662,9 +662,9 @@ func (s *Server) BindDemandsMFA(ctx context.Context, orgID, userID string) (bool
 // is not a factor. A passkey that reports `user` without a hardware key or PIN
 // proves someone touched a device, not which someone."
 //
-// Currently reachable only with amr=["pwd"], because the password path is the
-// one caller. It was still wrong, and the moment another path is routed through
-// the sequencer it would have become reachable and quiet.
+// It was unreachable while the password path was the one caller, and became
+// reachable once every caller walked the sequencer. A federated sign-in reaches
+// it as ["fed", "mfa"] when the provider's MFA is trusted (`idp trust-mfa`).
 func hasSecondFactorAMR(amr []string) bool {
 	return oauth.IsMultiFactor(amr)
 }

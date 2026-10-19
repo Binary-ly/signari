@@ -71,14 +71,14 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		       client_secret, COALESCE(issuer,''), COALESCE(authorize_url,''),
 		       COALESCE(token_url,''), COALESCE(userinfo_url,''), COALESCE(jwks_url,''),
 		       scopes, allow_signup, allow_linking, require_verified_email, enabled,
-		       trust_email_verification
+		       trust_email_verification, mfa_amr, mfa_acr
 		FROM core.identity_providers
 		WHERE slug = $1`, slug).Scan(
 		&c.ID, &c.OrgID, &c.Slug, &c.DisplayName, &kind, &c.ClientID,
 		&secretSealed, &c.IssuerOverride, &c.AuthorizeOverride,
 		&c.TokenOverride, &c.UserinfoOverride, &c.JWKSOverride,
 		&c.Scopes, &c.Policy.AllowSignup, &c.Policy.AllowLinking,
-		&c.Policy.RequireVerifiedEmail, &enabled, &trustEmail)
+		&c.Policy.RequireVerifiedEmail, &enabled, &trustEmail, &c.MFAAMR, &c.MFAACR)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProviderUnknown

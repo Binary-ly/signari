@@ -1391,6 +1391,47 @@ func idpVerifiedEmail(ctx context.Context, conn *pgx.Conn, slug string, trust bo
 	return nil
 }
 
+// idpTrustMFA says which upstream amr and acr values count as multi-factor for
+// a provider (0152). Both lists are written as given; empty trusts nothing.
+func idpTrustMFA(ctx context.Context, conn *pgx.Conn, slug, amr, acr string) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	amrs, acrs := splitList(amr), splitList(acr)
+	var kind string
+	if err := conn.QueryRow(ctx, `SELECT kind FROM core.identity_providers WHERE slug = $1`,
+		slug).Scan(&kind); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no identity provider with slug %q", slug)
+		}
+		return err
+	}
+	// Only a verified ID token is read for these claims. GitHub sends none and a
+	// SAML upstream sends an assertion, so a list set on either would be a
+	// setting nothing enforces, which an operator would believe had worked.
+	if (kind == "github" || kind == "saml") && len(amrs)+len(acrs) > 0 {
+		return fmt.Errorf("%s is a %s provider, which sends no ID token for an amr or acr to be read from", slug, kind)
+	}
+	tp, err := conn.Exec(ctx,
+		`UPDATE core.identity_providers SET mfa_amr = $2, mfa_acr = $3 WHERE slug = $1`,
+		slug, amrs, acrs)
+	if err != nil {
+		return err
+	}
+	if tp.RowsAffected() == 0 {
+		return fmt.Errorf("no identity provider with slug %q", slug)
+	}
+	if len(amrs)+len(acrs) == 0 {
+		fmt.Printf("%s: no upstream claim counts as multi-factor; a sign-in through it is `fed` alone\n", slug)
+		return nil
+	}
+	fmt.Printf("%s: a verified ID token with amr in [%s] or acr in [%s] signs in as multi-factor\n",
+		slug, strings.Join(amrs, ", "), strings.Join(acrs, ", "))
+	fmt.Println("\n  The provider's word is taken for it: trust a value only from a provider")
+	fmt.Println("  that sets it when, and only when, it checked a second factor itself.")
+	return nil
+}
+
 // idpSetEnabled takes an upstream provider out of service, or puts it back.
 //
 // Disabling is what an operator does when the upstream is compromised or being

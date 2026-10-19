@@ -30,6 +30,27 @@ document omits the token endpoint. Building the preset would have meant filling
 that in from memory, which is the thing this rule exists to prevent. Use the
 generic `oidc` kind with endpoints you have checked yourself.
 
+## A provider's multi-factor authentication
+
+A sign-in through a provider records `amr: ["fed"]`: the person authenticated
+somewhere else, and nothing here says how. Under a sign-in flow with an
+unconditional `mfa` stage, somebody with no factor enrolled here is then
+refused, however strongly the provider authenticated them.
+
+```sh
+signari idp trust-mfa -slug corp -upstream-amr mfa,hwk
+signari idp trust-mfa -slug corp -upstream-acr http://schemas.openid.net/pape/policies/2007/06/multi-factor
+signari idp trust-mfa -slug corp            # trust nothing again
+```
+
+When the provider's verified ID token carries an `amr` value or an `acr` you
+named, the sign-in records `amr: ["fed", "mfa"]`, which satisfies the `mfa` stage
+and makes the session's `acr` `2`. Values you did not name count for nothing,
+so a provider cannot raise itself to multi-factor by adding a claim. Name a
+value only for a provider that sets it when, and only when, it checked a second
+factor itself. `github` and a `saml` upstream send no ID token to read these
+from, and the command refuses to set a list on either.
+
 ## Apple, and the secret that expires
 
 Every other provider issues a client secret: a string you paste in and forget.

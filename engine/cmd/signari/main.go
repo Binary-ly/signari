@@ -538,6 +538,10 @@ func run(args []string) (err error) {
 			"it MUST be short lived, and it is redeemed within seconds of being scanned")
 	credRootCert := fs.String("root-cert", "",
 		"PEM file of a CA an OID4VCI key proof's x5c chain may verify to (credential trust-root)")
+	idpMFAAMR := fs.String("upstream-amr", "",
+		"comma-separated amr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
+	idpMFAACR := fs.String("upstream-acr", "",
+		"comma-separated acr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
 	credRequireAttestation := fs.Bool("require-key-attestation", false,
 		"issue this credential only to a key a trusted attester vouches for (credential define)")
 	localeTag := fs.String("locale", "",
@@ -1054,6 +1058,8 @@ func run(args []string) (err error) {
 		return samlGroupRelease(ctx, conn, *entityID, *samlAttrName, *onlyGroups, *removeMember)
 	case "idp verified-email":
 		return idpVerifiedEmail(ctx, conn, *slug, *trustEmail)
+	case "idp trust-mfa":
+		return idpTrustMFA(ctx, conn, *slug, *idpMFAAMR, *idpMFAACR)
 	case "idp disable":
 		return idpSetEnabled(ctx, conn, *slug, false)
 	case "idp enable":

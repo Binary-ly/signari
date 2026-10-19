@@ -34,6 +34,40 @@ type Config struct {
 	AuthorizeOverride, TokenOverride, UserinfoOverride string
 	JWKSOverride, IssuerOverride                       string
 	Scopes                                             []string
+	// MFAAMR and MFAACR are the upstream ID token `amr` values and `acr`
+	// values this deployment trusts to mean the provider authenticated with
+	// more than one factor (`signari idp trust-mfa`). Empty trusts nothing.
+	MFAAMR, MFAACR []string
+}
+
+// UpstreamMFA reports whether a verified upstream payload asserts
+// multi-factor authentication in a way this provider is trusted for: an `amr`
+// value in MFAAMR, or an `acr` in MFAACR. What the provider says beyond what
+// the operator chose to trust counts for nothing.
+func (c Config) UpstreamMFA(raw []byte) bool {
+	if len(c.MFAAMR) == 0 && len(c.MFAACR) == 0 {
+		return false
+	}
+	var claims struct {
+		AMR []string `json:"amr"`
+		ACR string   `json:"acr"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return false
+	}
+	for _, m := range claims.AMR {
+		for _, trusted := range c.MFAAMR {
+			if m == trusted {
+				return true
+			}
+		}
+	}
+	for _, trusted := range c.MFAACR {
+		if claims.ACR != "" && claims.ACR == trusted {
+			return true
+		}
+	}
+	return false
 }
 
 func (c Config) authorizeURL() string { return pick(c.AuthorizeOverride, c.Preset.AuthorizeURL) }

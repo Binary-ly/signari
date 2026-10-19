@@ -11,6 +11,7 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/federation"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
 
@@ -367,9 +368,15 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 
 	// amr says how they actually authenticated: at another provider, federated.
 	// Claiming `pwd` here would tell relying parties a password was checked when
-	// none was.
-	s.completeSignIn(w, r, tx, userID, provider.OrgID,
-		[]string{"fed"}, federationAuthzQuery(pending.ReturnTo))
+	// none was. `mfa` is added when the provider's verified ID token says it
+	// authenticated with more than one factor in a way the operator chose to
+	// trust (`idp trust-mfa`); without it, a flow's unconditional `mfa` stage
+	// refused everybody who signs in through a provider and has no factor here.
+	amr := []string{"fed"}
+	if provider.UpstreamMFA(ext.RawClaims) {
+		amr = append(amr, oauth.AMRMFA)
+	}
+	s.completeSignIn(w, r, tx, userID, provider.OrgID, amr, federationAuthzQuery(pending.ReturnTo))
 }
 
 // federationAuthzQuery turns a stored return target into the parked-request

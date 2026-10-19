@@ -308,14 +308,13 @@ It does **not** control the password check, the credential lookup, the login
 throttle, or the rate limiter. Those are not sequencing decisions, and putting
 them in a file would mean an operator could turn them off.
 
-One honest limitation. `completeSignIn` has ten callers — password, passkey,
-Kerberos, Duo, and the federated sources among them — and exactly one of them,
-the password path, gates on a second factor today. The `mfa` stage is decided on
-that path only. Routing the other nine through it would start demanding a code
-from, say, a Kerberos user who happens to have TOTP enrolled: arguably an
-improvement, and not one that should arrive as a side effect of moving the
-sequence into a file. Whether those paths should gate on a second factor is a
-separate decision.
+The `mfa` stage binds every way in: password, passkey, Kerberos, Duo and the
+federated sources all reach a session through the same walk. A sign-in whose
+factors already add up to multi-factor passes the stage without being asked
+again. Otherwise the person is asked for a factor enrolled here, and under an
+unconditional stage somebody with none is refused. A federated sign-in counts
+as multi-factor only when the provider's ID token asserts it with a value you
+chose to trust; see [social-login.md](social-login.md#a-providers-multi-factor-authentication).
 
 An organisation with no flow applied runs the built-in file, so nothing changes
 until somebody applies one.

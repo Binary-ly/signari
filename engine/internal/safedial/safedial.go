@@ -47,7 +47,7 @@ func (e *ErrBlocked) Error() string {
 		"or link-local address, and an outbound request from the identity "+
 		"provider to one is how an internal service gets reached from outside",
 		e.Host, e.IP)
-	if a, err := netip.ParseAddr(e.IP); err == nil && !isMetadata(a) {
+	if a, err := netip.ParseAddr(e.IP); err == nil && !mayReachMetadata(a) {
 		msg += "; a destination that is meant to be internal is named in " +
 			"SIGNARI_OUTBOUND_ALLOW_PRIVATE"
 	}
@@ -150,37 +150,99 @@ func embeddedIPv4(a netip.Addr) (netip.Addr, bool) {
 // none.
 var allowed atomic.Pointer[[]netip.Prefix]
 
-var metadataAddr = netip.MustParseAddr("169.254.169.254")
-
-// metadataPrefixes are the metadata address and every IPv6 form that carries
-// it, which Blocked already judges by the IPv4 inside: NAT64's well-known
-// prefix, the IPv4-compatible form, and 6to4, whose whole /48 embeds it. An
-// allow-list entry overlapping any of them would reopen the metadata service
-// through a translator.
-var metadataPrefixes = []netip.Prefix{
+// metadataEndpoints are where cloud platforms hand an instance or a task its
+// credentials. No outbound destination needs one, and each is the first thing a
+// forged request asks for, so no allowance reaches them.
+//
+// The first version named 169.254.169.254 alone, and the allow-list accepted
+// any range around the others: fd00::/8 reached the IPv6 instance metadata
+// service, 100.64.0.0/10 another cloud's, and 169.254.170.0/24 the container
+// credentials endpoint.
+var metadataEndpoints = []netip.Prefix{
+	// EC2 instance metadata, the address most clouds share; and its IPv6
+	// endpoint (docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-options.html).
 	netip.MustParsePrefix("169.254.169.254/32"),
-	netip.MustParsePrefix("64:ff9b::a9fe:a9fe/128"),
-	netip.MustParsePrefix("::a9fe:a9fe/128"),
-	netip.MustParsePrefix("2002:a9fe:a9fe::/48"),
+	netip.MustParsePrefix("fd00:ec2::254/128"),
+	// ECS task credentials at 169.254.170.2
+	// (docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html),
+	// with the rest of that link-local /24 rather than one address in it.
+	netip.MustParsePrefix("169.254.170.0/24"),
+	// Alibaba Cloud ECS instance metadata
+	// (alibabacloud.com/help/en/ecs/user-guide/view-instance-metadata).
+	netip.MustParsePrefix("100.100.100.200/32"),
 }
 
-// isMetadata reports whether a is the metadata address, however spelled.
-func isMetadata(a netip.Addr) bool {
-	a = a.Unmap()
-	if a == metadataAddr {
-		return true
+// opaqueTranslators are IPv6 ranges whose IPv4 destination cannot be read off
+// the address, so whether they reach a metadata endpoint cannot be decided:
+// NAT64's local-use prefix, which RFC 8215 §5 leaves to "any kind of IPv4/IPv6
+// translation mechanism", and Teredo, whose client address RFC 4380 §4 inverts
+// bit by bit. Blocked refuses both outright; an allowance covering either is
+// refused as if it covered the metadata service, because it may.
+var opaqueTranslators = []netip.Prefix{
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/32"),
+}
+
+// metadataPrefixes are every endpoint in every form that carries it -- itself,
+// and for an IPv4 endpoint NAT64's well-known prefix, the IPv4-compatible form
+// and 6to4, which Blocked judges by the IPv4 inside -- plus the opaque
+// translators. An allow-list entry overlapping any of them would reopen a
+// metadata service, directly or through a translator.
+var metadataPrefixes = func() []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range metadataEndpoints {
+		out = append(out, p)
+		if !p.Addr().Is4() {
+			continue
+		}
+		v4 := p.Addr().As4()
+		var nat, compat, six [16]byte
+		copy(nat[:], nat64.Addr().AsSlice())
+		copy(nat[12:], v4[:])
+		copy(compat[12:], v4[:])
+		six[0], six[1] = 0x20, 0x02
+		copy(six[2:], v4[:])
+		out = append(out,
+			netip.PrefixFrom(netip.AddrFrom16(nat), 96+p.Bits()),
+			netip.PrefixFrom(netip.AddrFrom16(compat), 96+p.Bits()),
+			netip.PrefixFrom(netip.AddrFrom16(six), 16+p.Bits()))
 	}
-	v4, ok := embeddedIPv4(a)
-	return ok && v4 == metadataAddr
-}
+	return append(out, opaqueTranslators...)
+}()
 
-func overlapsMetadata(p netip.Prefix) bool {
-	for _, m := range metadataPrefixes {
-		if p.Overlaps(m) {
+func inMetadataEndpoint(a netip.Addr) bool {
+	for _, p := range metadataEndpoints {
+		if p.Contains(a) {
 			return true
 		}
 	}
 	return false
+}
+
+// mayReachMetadata reports whether a is a metadata endpoint, however spelled,
+// or an address whose destination cannot be told apart from one.
+func mayReachMetadata(a netip.Addr) bool {
+	a = a.Unmap()
+	if inMetadataEndpoint(a) {
+		return true
+	}
+	for _, p := range opaqueTranslators {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	v4, ok := embeddedIPv4(a)
+	return ok && inMetadataEndpoint(v4)
+}
+
+// overlappedMetadata returns the metadata form p covers, if any.
+func overlappedMetadata(p netip.Prefix) (netip.Prefix, bool) {
+	for _, m := range metadataPrefixes {
+		if p.Overlaps(m) {
+			return m, true
+		}
+	}
+	return netip.Prefix{}, false
 }
 
 // AllowPrivate sets SIGNARI_OUTBOUND_ALLOW_PRIVATE, comma-separated addresses
@@ -211,15 +273,17 @@ func AllowPrivate(list string) error {
 		if err == nil && p.Addr().Is4In6() && p.Bits() >= 96 {
 			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
 		}
-		switch {
-		case err != nil:
+		if err != nil {
 			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q is not an address or a prefix", raw)
-		case p.Bits() == 0:
+		}
+		if p.Bits() == 0 {
 			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q covers every address; name "+
 				"the internal destinations instead", raw)
-		case overlapsMetadata(p):
-			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q covers the cloud metadata "+
-				"address 169.254.169.254, which no destination needs", raw)
+		}
+		if m, hit := overlappedMetadata(p); hit {
+			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q covers %s, a cloud metadata "+
+				"endpoint or a translator that may reach one, which no destination needs; "+
+				"name a narrower range", raw, m)
 		}
 		out = append(out, p.Masked())
 	}
@@ -229,7 +293,7 @@ func AllowPrivate(list string) error {
 
 // permitted reports whether the dialler may connect to ip: it is not blocked,
 // or it is a private address the operator allowed, or one this client allows.
-// The metadata address is never permitted.
+// A metadata endpoint, or a translator that may reach one, is never permitted.
 func permitted(ip net.IP, extra []netip.Prefix) bool {
 	if !Blocked(ip) {
 		return true
@@ -239,7 +303,7 @@ func permitted(ip net.IP, extra []netip.Prefix) bool {
 		return false
 	}
 	a = a.Unmap()
-	if isMetadata(a) {
+	if mayReachMetadata(a) {
 		return false
 	}
 	list := extra
@@ -286,7 +350,7 @@ func controlWith(extra []netip.Prefix) func(string, string, syscall.RawConn) err
 func Transport() *http.Transport { return transportWith(nil) }
 
 // TransportAllowingPrivate opens every private and special-purpose range
-// except the cloud metadata address, which permitted refuses before any
+// except the cloud metadata endpoints, which permitted refuses before any
 // allowance is read. It is for an operator who delivers inside a network they
 // trust (SIGNARI_ALLOW_PRIVATE_DELIVERY). That switch once swapped in a plain
 // transport, and the metadata address went with everything else: a logout or

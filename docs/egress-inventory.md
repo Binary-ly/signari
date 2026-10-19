@@ -129,6 +129,14 @@ IPv4-compatible form. So `64:ff9b::a9fe:a9fe` is refused as the metadata
 service it reaches through a translator. Teredo and NAT64's local-use prefix
 are refused outright.
 
+No allowance reopens a cloud metadata endpoint: `169.254.169.254`,
+`fd00:ec2::254`, the container credentials range `169.254.170.0/24` and
+`100.100.100.200`. That covers each one in every form that carries it, and the
+two translators whose destination cannot be read. This holds for
+`SIGNARI_OUTBOUND_ALLOW_PRIVATE`, a per-client allowance and
+`SIGNARI_ALLOW_PRIVATE_DELIVERY` alike. The first version knew only the first
+address, so allowing `fd00::/8` or `100.64.0.0/10` reached the others.
+
 > **This sentence was wrong when this document was written, and the correction is
 > the reason the document was worth writing.** It said "every outbound connection
 > from these paths", and back-channel logout delivery did not go through

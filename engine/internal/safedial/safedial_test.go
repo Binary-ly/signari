@@ -120,6 +120,49 @@ func TestTheAllowListRefusesWhatWouldSwitchTheGuardOff(t *testing.T) {
 	}
 }
 
+// Every metadata endpoint, not only 169.254.169.254, in every form that carries
+// it, plus the translators whose destination cannot be read. The first version
+// refused only the one address, so each of the first four lists below reopened
+// a cloud's credentials service.
+func TestNoAllowanceReachesAnyMetadataEndpoint(t *testing.T) {
+	t.Cleanup(func() { _ = AllowPrivate("") })
+	for _, list := range []string{
+		"fd00::/8", "fd00:ec2::/32", "fd00:ec2::254", // the IPv6 instance metadata service
+		"100.64.0.0/10", "100.100.100.200", // another cloud's, in the shared address space
+		"169.254.170.0/24", "169.254.170.2", // container credentials
+		"64:ff9b::6464:64c8", "2002:a9fe:aa00::/40", "::a9fe:aa02", // the same, translated
+		"64:ff9b:1::/48", "64:ff9b:1:fffe::/96", // local-use NAT64: any mechanism, unreadable
+		"2001::/32", "2001:0:4136:e378::/64", // Teredo: the client address is inverted
+	} {
+		if err := AllowPrivate(list); err == nil || !strings.Contains(err.Error(), "metadata") {
+			t.Errorf("AllowPrivate(%q) = %v, want it refused as covering a metadata endpoint", list, err)
+		}
+	}
+	// Ranges beside them stay allowable.
+	if err := AllowPrivate("fd00:1::/32, 100.64.0.0/16, 169.254.171.0/24, 10.20.0.0/16"); err != nil {
+		t.Fatalf("an ordinary internal list beside the endpoints was refused: %v", err)
+	}
+
+	// At dial, under the widest allowance there is: what
+	// SIGNARI_ALLOW_PRIVATE_DELIVERY passes.
+	everything := []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
+	for _, ip := range []string{
+		"169.254.169.254", "fd00:ec2::254", "169.254.170.2", "100.100.100.200",
+		"::ffff:100.100.100.200", "64:ff9b::a9fe:aa02", "2002:6464:64c8::1",
+		"64:ff9b:1::a9fe:a9fe", "64:ff9b:1:fffe::a9fe:a9fe",
+		"2001:0:4136:e378:8000:63bf:5601:5601", // Teredo whose inverted client is 169.254.169.254
+	} {
+		if permitted(net.ParseIP(ip), everything) {
+			t.Errorf("an allowance of everything reached %s", ip)
+		}
+	}
+	for _, ip := range []string{"10.20.0.1", "fd00:1::5", "100.64.0.1", "169.254.171.1", "64:ff9b::a14:1"} {
+		if !permitted(net.ParseIP(ip), everything) {
+			t.Errorf("an allowance of everything refused %s, which is no metadata endpoint", ip)
+		}
+	}
+}
+
 // The allow-list widens what may be reached by exactly what it names.
 func TestTheAllowListPermitsWhatItNamesAndNothingElse(t *testing.T) {
 	t.Cleanup(func() { _ = AllowPrivate("") })

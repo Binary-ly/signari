@@ -368,7 +368,7 @@ See [CAPTCHA](captcha.md).
 | `SIGNARI_GEOIP_DB` | MaxMind database for impossible-travel checks. Not bundled and not downloaded — an identity provider that fetches a binary blob on startup has added a supply chain to the authentication path |
 | `SIGNARI_GEOIP_STATIC` | A fixed mapping, for testing |
 | `SIGNARI_CA_BUNDLE` | Roots for outbound calls |
-| `SIGNARI_ALLOW_PRIVATE_DELIVERY` | Permit logout and event delivery to private, loopback and link-local addresses. **Off by default.** A `backchannel_logout_uri` is chosen by the *client*, so without the check a registered client can have this server POST a signed logout token into your internal network on every sign-out. Set `1` only if your relying parties genuinely are internal. Even then the cloud metadata address (169.254.169.254, and its NAT64 and mapped forms) is never reached. The switch once replaced the address check with none at all, so a client's logout or CIBA notification URL could read the instance's credentials. Trusting an internal CA (`SIGNARI_CA_BUNDLE`) is a different decision and does not imply this one. |
+| `SIGNARI_ALLOW_PRIVATE_DELIVERY` | Permit logout and event delivery to private, loopback and link-local addresses. **Off by default.** A `backchannel_logout_uri` is chosen by the *client*, so without the check a registered client can have this server POST a signed logout token into your internal network on every sign-out. Set `1` only if your relying parties genuinely are internal. Even then no cloud metadata endpoint is reached, in any form that carries one (see [Internal destinations](#internal-destinations)). The switch once replaced the address check with none at all, so a client's logout or CIBA notification URL could read the instance's credentials. Trusting an internal CA (`SIGNARI_CA_BUNDLE`) is a different decision and does not imply this one. |
 | `SIGNARI_SCIM_CA_BUNDLE` | Roots for SCIM targets specifically |
 | `SIGNARI_OUTBOUND_ALLOW_PRIVATE` | Comma-separated addresses or prefixes, such as `10.20.0.0/16,192.168.7.9`, that outbound requests may reach although they are private. **Empty by default.** See [Internal destinations](#internal-destinations) below |
 | `SIGNARI_ADMIN_TOKEN` | Bearer token for the admin API |
@@ -391,11 +391,17 @@ the setting. Two values are refused at startup, because each would switch the
 check off under another name:
 
 - a prefix of length zero (`0.0.0.0/0`, `::/0`, `::ffff:0:0/96`);
-- anything covering the cloud metadata address `169.254.169.254`, which no
-  destination needs and which is the first thing a forged request asks for.
-  That includes the IPv6 forms that carry it, so `64:ff9b::/96` (NAT64) and
-  `2002::/16` (6to4) are refused too. Listing them would reopen the metadata
-  service through a translator.
+- anything covering a cloud metadata endpoint, which no destination needs and
+  which is the first thing a forged request asks for. The endpoints are
+  `169.254.169.254` and its IPv6 twin `fd00:ec2::254`, the container
+  credentials range `169.254.170.0/24`, and `100.100.100.200`. So `fd00::/8`,
+  `100.64.0.0/10` and `169.254.0.0/16` are refused, and narrower ranges beside
+  the endpoints are not. The IPv6 forms that carry an endpoint are refused too:
+  `64:ff9b::/96` (NAT64), `2002::/16` (6to4) and the IPv4-compatible form.
+  Listing any of them would reopen a metadata service through a translator.
+  So are NAT64's local-use prefix `64:ff9b:1::/48` and Teredo `2001::/32`,
+  because the IPv4 address behind them cannot be read off the address, and so
+  nothing can tell whether it is one of the endpoints.
 
 `signari idp add` (discovery) and `signari idp add-issuer` (the issuer's keys)
 apply the same list, so an internal issuer fails when you add it rather than at
@@ -406,8 +412,9 @@ reachable without the list: you wrote that exact address down. The allowance
 covers loopback only, and a redirect from it is still checked.
 
 `SIGNARI_ALLOW_PRIVATE_DELIVERY` is the older, wider switch for logout and event
-delivery. It turns the check off for those paths entirely. If your relying
-parties are internal, prefer listing their addresses here.
+delivery. It opens every private range for those paths. The metadata endpoints
+and the two translators above stay refused. If your relying parties are
+internal, prefer listing their addresses here.
 
 ## Appearance
 

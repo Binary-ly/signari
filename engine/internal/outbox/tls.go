@@ -65,9 +65,10 @@ func outboundClient(timeout time.Duration) *http.Client {
 	// The dialler decides which addresses may be reached; the TLS config decides
 	// which certificates are trusted. They are independent, so they are built
 	// independently and then combined.
+	// The opt-out opens the private network and never the metadata address.
 	var transport *http.Transport
 	if privateDeliveryAllowed() {
-		transport = &http.Transport{}
+		transport = safedial.TransportAllowingPrivate()
 	} else {
 		transport = safedial.Transport()
 	}

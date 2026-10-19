@@ -285,6 +285,17 @@ func controlWith(extra []netip.Prefix) func(string, string, syscall.RawConn) err
 // Transport returns an http.Transport that will not reach private addresses.
 func Transport() *http.Transport { return transportWith(nil) }
 
+// TransportAllowingPrivate opens every private and special-purpose range
+// except the cloud metadata address, which permitted refuses before any
+// allowance is read. It is for an operator who delivers inside a network they
+// trust (SIGNARI_ALLOW_PRIVATE_DELIVERY). That switch once swapped in a plain
+// transport, and the metadata address went with everything else: a logout or
+// CIBA notification URL, which a client chooses, could then read the
+// instance's credentials.
+func TransportAllowingPrivate() *http.Transport {
+	return transportWith([]netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")})
+}
+
 func transportWith(extra []netip.Prefix) *http.Transport {
 	d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second, Control: controlWith(extra)}
 	return &http.Transport{

@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
 	"sort"
 	"strings"
 
@@ -1407,6 +1408,21 @@ func idpSetEnabled(ctx context.Context, conn *pgx.Conn, slug string, enabled boo
 	fmt.Println("\n  Sessions already signed in through it are NOT ended. To end one")
 	fmt.Println("  person's now: PATCH /admin/users/<id> {\"active\": false} (then re-activate).")
 	return nil
+}
+
+// cliOperator names who ran this command, as its audit record does: the
+// operating-system account and the host, which is what an investigation can
+// follow, since the CLI holds a database credential and no person's.
+func cliOperator() string {
+	name := "unknown"
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		name = u.Username
+	}
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+	return name + "@" + host
 }
 
 // inviteRevoke closes an open invitation, so its link stops working at once.

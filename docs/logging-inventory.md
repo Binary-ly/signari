@@ -74,6 +74,17 @@ impersonation start/end/refusal, token exchange, credential issuance, SCIM
 provisioning, SAML and WS-Fed issuance, RAC sessions, UMA decisions, admin
 mutations, and account recovery request/cancel.
 
+**The command line is covered too.** Every `signari` command that changes
+something leaves a record. Some write their own, more specific one, for
+example `admin.identity_provider_updated` from `idp disable`. Every other
+command that wrote gets one `admin.cli_command` record. It names the command
+and the flags given, never their values, which can be secrets. It also names
+the operating-system account and host as the operator. Migration 0140's
+triggers notice that a command wrote, and whether it audited itself, so a new
+command needs no code to be covered. Until October 2026 about 115 commands
+wrote and recorded nothing, including granting impersonation, rotating keys
+and creating admin tokens.
+
 **Tamper evidence.** Each row carries `prev_hash` and `entry_hash`, chained over
 **ciphertext** so the chain stays verifiable after a crypto-shred. Migration 0043
 removed the two `ON DELETE SET NULL` foreign keys (`org_id`, `admin_token_id`)

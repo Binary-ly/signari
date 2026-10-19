@@ -217,7 +217,7 @@ flags:
 	return fmt.Errorf("no command given")
 }
 
-func run(args []string) error {
+func run(args []string) (err error) {
 	if len(args) == 0 {
 		return usage()
 	}
@@ -677,6 +677,21 @@ func run(args []string) error {
 		if _, err := conn.Exec(ctx, `SELECT set_config('signari.cli_write', 'on', false)`); err != nil {
 			return fmt.Errorf("marking this session as the operator CLI: %w", err)
 		}
+		// And every command that changed something leaves an audit record:
+		// one naming the command and the flags it was given, written once it
+		// has succeeded, unless it wrote its own (migration 0140). About 115
+		// commands wrote and audited nothing, and a list of the ones that must
+		// is a list the next command is missing from.
+		defer func() {
+			if err != nil {
+				return
+			}
+			var given []string
+			fs.Visit(func(f *flag.Flag) { given = append(given, f.Name) })
+			if _, rerr := store.RecordCLICommand(ctx, conn, cmd, given, *orgID, cliOperator()); rerr != nil {
+				err = fmt.Errorf("the command succeeded and its audit record could not be written: %w", rerr)
+			}
+		}()
 	}
 
 	switch cmd {

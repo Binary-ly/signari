@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -237,6 +238,33 @@ func TestADenyRuleRefusesACIBAApproval(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "This application is closed to you.") {
 		t.Error("the person approving was not shown the policy's message")
+	}
+}
+
+// A failed read before a CIBA decision refuses the decision. It left the
+// request unloaded, the policy check is skipped for an unloaded request, and
+// the approval went through -- past a deny rule -- having asked nobody.
+func TestAFailedReadBeforeACIBADecisionApprovesNothing(t *testing.T) {
+	f := newSignInFixture(t)
+	cookie := f.signInAndReturnCookie(t)
+	ctx := context.Background()
+	applyPolicy(t, f.srv, f.pool, f.orgID, denyClient(f.clientID))
+
+	id, err := store.CreateBackchannelAuthentication(ctx, f.pool, f.orgID, f.clientID, f.userID,
+		"openid", "", nil, store.HashToken(fmt.Sprint("ar-", time.Now().UnixNano())), 5, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.pendingBackchannel = func(context.Context, *pgxpool.Pool, string, string) (*store.DeviceAuthorization, error) {
+		return nil, errors.New("injected: the read failed")
+	}
+	rec := f.formPost(t, cookie, "/account/requests", "/account/requests",
+		url.Values{"id": {id}, "decision": {"approve"}})
+	if s := f.requestStatus(t, id); s == "approved" {
+		t.Fatalf("a failed read let the approval through past a deny rule (%d)", rec.Code)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("a failed read answered %d, want 503", rec.Code)
 	}
 }
 

@@ -177,6 +177,12 @@ type Server struct {
 	// engine holds while a provider is being asked.
 	outboundHTTP func(time.Duration) *http.Client
 
+	// pendingBackchannel replaces store.PendingBackchannelRequest when set.
+	// Never set outside this package's tests, which use it to fail the read
+	// before a CIBA decision -- the one way to show that a failed read refuses
+	// the decision rather than approving without asking the policy.
+	pendingBackchannel func(context.Context, *pgxpool.Pool, string, string) (*store.DeviceAuthorization, error)
+
 	// smsPolicy bounds text messages: countries and daily ceilings (smsgate.go).
 	// The zero value allows any country under the default ceilings.
 	smsPolicy sms.Policy

@@ -436,9 +436,22 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 	// needs the client, the scope and the person. nil when the request is not
 	// theirs, decided or expired -- DecideBackchannel then refuses it with the
 	// one answer, and nothing is delivered.
-	d, derr := store.PendingBackchannelRequest(ctx, s.db, id, userID)
-	if derr != nil {
+	pending := store.PendingBackchannelRequest
+	if s.pendingBackchannel != nil {
+		pending = s.pendingBackchannel
+	}
+	d, derr := pending(ctx, s.db, id, userID)
+	switch {
+	case errors.Is(derr, store.ErrDeviceCodeUnknown):
 		d = nil
+	case derr != nil:
+		// Nothing decided. Any other failure used to leave d nil and carry on:
+		// the policy check below is skipped for a nil request, and the approval
+		// went through having asked nobody.
+		s.log.Error("reading a backchannel request before deciding it", "err", derr,
+			"correlation_id", correlationID(ctx))
+		http.Error(w, "that request could not be checked; try again", http.StatusServiceUnavailable)
+		return
 	}
 	if approve {
 		if d != nil {

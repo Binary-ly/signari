@@ -143,46 +143,32 @@ func userLocale(ctx context.Context, conn *pgx.Conn, orgID, email, tag string) e
 // AAGUID is chosen by the authenticator being filtered. Filtering on a value the
 // filtered party supplies is not a filter, and the constraint says so rather
 // than leaving it to whoever reads the column next.
-func webauthnPolicySet(ctx context.Context, conn *pgx.Conn, orgID, conveyance, list string) error {
+func webauthnPolicySet(ctx context.Context, conn *pgx.Conn, orgID, conveyance, list string, refuseCloned bool) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
-	switch conveyance {
-	case "none", "indirect", "direct", "enterprise":
-	default:
-		return fmt.Errorf("-attestation must be none, indirect, direct or enterprise, not %q",
-			conveyance)
-	}
-
-	ids := []string{}
-	for _, a := range strings.Split(list, ",") {
-		if a = strings.TrimSpace(a); a != "" {
-			ids = append(ids, a)
-		}
-	}
-	if len(ids) > 0 && conveyance == "none" {
-		return fmt.Errorf("an allow-list needs attestation. With -attestation none the " +
-			"authenticator states its own model identifier and nothing vouches for it, " +
-			"so the list would admit any device claiming an approved one. Set " +
-			"-attestation direct")
-	}
-
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.webauthn_policy (org_id, attestation_conveyance, allowed_aaguids)
-		VALUES ($1::uuid, $2, $3::uuid[])
-		ON CONFLICT (org_id) DO UPDATE
-		   SET attestation_conveyance = EXCLUDED.attestation_conveyance,
-		       allowed_aaguids        = EXCLUDED.allowed_aaguids,
-		       updated_at             = now()`, orgID, conveyance, ids); err != nil {
-		if strings.Contains(err.Error(), "invalid input syntax for type uuid") {
-			return fmt.Errorf("an AAGUID must be a uuid, e.g. " +
-				"ee882879-721c-4913-9775-3dfcce97072a. Stored as uuids so a malformed " +
-				"one is refused here rather than silently never matching")
-		}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
 		return err
 	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	p, err := store.SetWebAuthnPolicy(ctx, tx, orgID, store.WebAuthnPolicy{
+		Conveyance: conveyance, AllowedAAGUIDs: strings.Split(list, ","), RefuseCloned: refuseCloned,
+	})
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	ids := p.AllowedAAGUIDs
 
 	fmt.Printf("attestation conveyance: %s\n", conveyance)
+	if refuseCloned {
+		fmt.Println("cloned authenticators : refused (a signature counter that did not advance)")
+	} else {
+		fmt.Println("cloned authenticators : RECORDED AND ADMITTED -- a copied key signs in")
+	}
 	if len(ids) == 0 {
 		fmt.Println("allow-list            : empty -- every authenticator is accepted")
 	} else {
@@ -202,7 +188,7 @@ func webauthnPolicySet(ctx context.Context, conn *pgx.Conn, orgID, conveyance, l
 // webauthnPolicyShow prints every organisation's authenticator policy.
 func webauthnPolicyShow(ctx context.Context, conn *pgx.Conn) error {
 	rows, err := conn.Query(ctx, `
-		SELECT o.slug, p.attestation_conveyance, p.allowed_aaguids::text[]
+		SELECT o.slug, p.attestation_conveyance, p.allowed_aaguids::text[], p.refuse_cloned
 		FROM core.webauthn_policy p
 		JOIN core.organizations o ON o.id = p.org_id
 		ORDER BY o.slug`)
@@ -211,19 +197,24 @@ func webauthnPolicyShow(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-24s %-14s %s\n", "ORGANISATION", "ATTESTATION", "ALLOWED MODELS")
+	fmt.Printf("%-24s %-14s %-9s %s\n", "ORGANISATION", "ATTESTATION", "CLONED", "ALLOWED MODELS")
 	var n int
 	for rows.Next() {
 		var slug, conveyance string
 		var ids []string
-		if err := rows.Scan(&slug, &conveyance, &ids); err != nil {
+		var refuse bool
+		if err := rows.Scan(&slug, &conveyance, &ids, &refuse); err != nil {
 			return err
 		}
 		allowed := "any"
 		if len(ids) > 0 {
 			allowed = strings.Join(ids, ", ")
 		}
-		fmt.Printf("%-24s %-14s %s\n", slug, conveyance, allowed)
+		cloned := "refused"
+		if !refuse {
+			cloned = "ADMITTED"
+		}
+		fmt.Printf("%-24s %-14s %-9s %s\n", slug, conveyance, cloned, allowed)
 		n++
 	}
 	if err := rows.Err(); err != nil {

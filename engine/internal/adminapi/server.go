@@ -196,6 +196,8 @@ func (s *Server) Routes() http.Handler {
 
 	// The scope catalogue. Registered unconditionally — unlike attributes, a
 	// scope holds no personal data and needs no subject key.
+	route("GET /admin/organizations/{orgID}/webauthn-policy", ScopeConfigRead, s.getWebAuthnPolicy)
+	route("PUT /admin/organizations/{orgID}/webauthn-policy", ScopeOrganizationsWrite, s.putWebAuthnPolicy)
 	route("GET /admin/organizations/{orgID}/scopes", ScopeConfigRead, s.listScopes)
 	route("PUT /admin/organizations/{orgID}/scopes", ScopeOrganizationsWrite, s.declareScope)
 	route("DELETE /admin/organizations/{orgID}/scopes/{scope}",

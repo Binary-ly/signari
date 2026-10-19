@@ -674,7 +674,16 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 			}); aerr != nil {
 				s.log.Error("auditing counter regression", "err", aerr)
 			}
-			if s.cfg.RefuseClonedAuthenticators {
+			// The organisation decides, on by default (migration 0143). This was a
+			// configuration field nothing assigned, so the refusal could not be
+			// switched on. A policy that cannot be read refuses: the regression
+			// has already been seen, and admitting because a row was unreadable
+			// is how a copied key gets in.
+			policy, perr := store.LoadWebAuthnPolicy(ctx, tx, resolvedOrg)
+			if perr != nil {
+				s.log.Error("reading the WebAuthn policy at a counter regression", "err", perr)
+			}
+			if perr != nil || policy.RefuseCloned {
 				if cerr := tx.Commit(ctx); cerr != nil {
 					s.log.Error("committing the counter regression audit", "err", cerr)
 				}

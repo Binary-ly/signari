@@ -102,6 +102,8 @@ var summaries = map[string]string{
 	// router it was reading.
 	"GET /admin/organizations/{orgID}/scopes":                      "The organisation's declared scopes, plus the standard set.",
 	"PUT /admin/organizations/{orgID}/scopes":                      "Declare or update a scope.",
+	"GET /admin/organizations/{orgID}/webauthn-policy":             "Read the organisation's authenticator policy.",
+	"PUT /admin/organizations/{orgID}/webauthn-policy":             "Set attestation, approved models and cloned-authenticator refusal.",
 	"DELETE /admin/organizations/{orgID}/scopes/{scope}":           "Remove a scope declaration.",
 	"GET /admin/organizations/{orgID}/proxy-hosts":                 "The applications forward auth protects.",
 	"PUT /admin/organizations/{orgID}/proxy-hosts":                 "Register a protected host, or enable or disable one.",

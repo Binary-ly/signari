@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"signari.dev/engine/internal/store"
 )
 
 // Every mutating route must honour preconditions AND bump the configuration
@@ -152,6 +155,22 @@ func allMutatingRoutes() []mutatingRoute {
 				return "/admin/organizations/" + orgID + "/scopes/" + newDriftScope(t, s, orgID)
 			},
 			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/webauthn-policy", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + anyOrgID(t, s) + "/webauthn-policy"
+			},
+			// The organisation's own policy sent back, so exercising the route
+			// changes nothing a test sharing this database relies on.
+			body: func(t *testing.T, s *Server, _ string) string {
+				p, err := store.LoadWebAuthnPolicy(context.Background(), s.db, anyOrgID(t, s))
+				if err != nil {
+					t.Fatal(err)
+				}
+				b, _ := json.Marshal(policyJSON(p))
+				return string(b)
+			},
 		},
 		{
 			name: "PUT /admin/organizations/{orgID}/proxy-hosts", method: http.MethodPut,

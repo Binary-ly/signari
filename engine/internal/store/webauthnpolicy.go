@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -22,11 +24,60 @@ type WebAuthnPolicy struct {
 	Conveyance string
 	// AllowedAAGUIDs is empty when any authenticator is acceptable.
 	AllowedAAGUIDs []string
+	// RefuseCloned refuses a sign-in whose signature counter did not advance,
+	// the sign of a copied authenticator. On unless the organisation turned it
+	// off (migration 0143).
+	RefuseCloned bool
 }
 
 // DefaultWebAuthnPolicy is what an organisation with no row gets.
 func DefaultWebAuthnPolicy() WebAuthnPolicy {
-	return WebAuthnPolicy{Conveyance: "none"}
+	return WebAuthnPolicy{Conveyance: "none", RefuseCloned: true}
+}
+
+// ErrInvalidWebAuthnPolicy wraps every reason a policy is refused.
+var ErrInvalidWebAuthnPolicy = errors.New("invalid WebAuthn policy")
+
+// SetWebAuthnPolicy validates and stores an organisation's authenticator
+// policy. The one writer, behind `signari webauthn policy` and the Admin API.
+func SetWebAuthnPolicy(ctx context.Context, tx pgx.Tx, orgID string, p WebAuthnPolicy) (WebAuthnPolicy, error) {
+	switch p.Conveyance {
+	case "none", "indirect", "direct", "enterprise":
+	default:
+		return p, fmt.Errorf("%w: attestation must be none, indirect, direct or enterprise, not %q",
+			ErrInvalidWebAuthnPolicy, p.Conveyance)
+	}
+	ids := []string{}
+	for _, a := range p.AllowedAAGUIDs {
+		if a = strings.TrimSpace(a); a == "" {
+			continue
+		}
+		u, ok := CanonicalUUID(a)
+		if !ok {
+			return p, fmt.Errorf("%w: an AAGUID must be a uuid, e.g. "+
+				"ee882879-721c-4913-9775-3dfcce97072a, not %q; stored as uuids so a malformed "+
+				"one is refused here rather than silently never matching", ErrInvalidWebAuthnPolicy, a)
+		}
+		ids = append(ids, u)
+	}
+	if len(ids) > 0 && p.Conveyance == "none" {
+		return p, fmt.Errorf("%w: an allow-list needs attestation. With none the "+
+			"authenticator states its own model identifier and nothing vouches for it, "+
+			"so the list would admit any device claiming an approved one; ask for direct",
+			ErrInvalidWebAuthnPolicy)
+	}
+	p.AllowedAAGUIDs = ids
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.webauthn_policy (org_id, attestation_conveyance, allowed_aaguids, refuse_cloned)
+		VALUES ($1::uuid, $2, $3::uuid[], $4)
+		ON CONFLICT (org_id) DO UPDATE
+		   SET attestation_conveyance = EXCLUDED.attestation_conveyance,
+		       allowed_aaguids        = EXCLUDED.allowed_aaguids,
+		       refuse_cloned          = EXCLUDED.refuse_cloned,
+		       updated_at             = now()`, orgID, p.Conveyance, ids, p.RefuseCloned); err != nil {
+		return p, err
+	}
+	return p, nil
 }
 
 // LoadWebAuthnPolicy reads an organisation's policy.
@@ -43,12 +94,12 @@ func LoadWebAuthnPolicy(ctx context.Context, q interface {
 	}
 	var aaguids []string
 	err := q.QueryRow(ctx, `
-		SELECT attestation_conveyance,
+		SELECT attestation_conveyance, refuse_cloned,
 		       COALESCE(array_agg(a::text) FILTER (WHERE a IS NOT NULL), '{}')
 		FROM core.webauthn_policy
 		LEFT JOIN LATERAL unnest(allowed_aaguids) AS a ON true
 		WHERE org_id = $1::uuid
-		GROUP BY attestation_conveyance`, orgID).Scan(&p.Conveyance, &aaguids)
+		GROUP BY attestation_conveyance, refuse_cloned`, orgID).Scan(&p.Conveyance, &p.RefuseCloned, &aaguids)
 	switch {
 	case err == pgx.ErrNoRows:
 		return DefaultWebAuthnPolicy(), nil

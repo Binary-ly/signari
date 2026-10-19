@@ -152,8 +152,6 @@ type Config struct {
 	// readable, so anything that sets this in production has no security at all.
 	AllowInsecureIssuer bool
 
-	RefuseClonedAuthenticators bool
-
 	// UILocalesSupported is the languages the sign-in pages can be rendered in.
 	// Supplied by the caller because the catalogue lives with the pages, and
 	// this package must not reach into them.

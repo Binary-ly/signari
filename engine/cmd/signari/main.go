@@ -524,6 +524,9 @@ func run(args []string) (err error) {
 	aaguids := fs.String("aaguids", "",
 		"comma-separated authenticator model identifiers (AAGUIDs, as uuids) this "+
 			"organisation accepts. Empty accepts every authenticator")
+	refuseCloned := fs.Bool("refuse-cloned", true,
+		"`webauthn policy`: refuse a passkey whose signature counter did not advance, the sign "+
+			"of a copied authenticator (false records it and signs the person in)")
 	upstreamClaim := fs.String("claim", "",
 		"claim name as the upstream provider spells it, e.g. department")
 	localAttribute := fs.String("attribute", "",
@@ -741,7 +744,7 @@ func run(args []string) (err error) {
 	case "instance password-binds":
 		return instancePasswordBinds(ctx, conn, *orgID, *passwordBinds)
 	case "webauthn policy":
-		return webauthnPolicySet(ctx, conn, *orgID, *attestation, *aaguids)
+		return webauthnPolicySet(ctx, conn, *orgID, *attestation, *aaguids, *refuseCloned)
 	case "webauthn show":
 		return webauthnPolicyShow(ctx, conn)
 	case "client set-tls":

@@ -132,7 +132,7 @@ func newSignInFixture(t *testing.T) *signInFixture {
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 		                          client_secret_hash, grant_types, scopes, require_pkce)
 		VALUES ($1,$2,'T','public','', ARRAY['authorization_code'],
-		        ARRAY['openid'], false)`, f.clientID, f.orgID); err != nil {
+		        ARRAY['openid'], true)`, f.clientID, f.orgID); err != nil {
 		t.Fatalf("fixture client: %v", err)
 	}
 	if _, err := pool.Exec(ctx,

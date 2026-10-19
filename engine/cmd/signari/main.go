@@ -2266,6 +2266,14 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect 
 	if clientID == "" || redirect == "" {
 		return fmt.Errorf("-client-id and -redirect are both required")
 	}
+	// The rule the Admin API and `client set-pkce` already apply, and the CHECK
+	// in 0137 now backs. This command alone let a public client be created
+	// without PKCE.
+	if public && !requirePKCE {
+		return fmt.Errorf("a public client must require PKCE: it holds no secret, so the " +
+			"challenge is the only proof the code reached the application that asked for " +
+			"it. Drop -require-pkce=false, or register a confidential client")
+	}
 	// Checked before it reaches the database. A redirect URI carrying a
 	// response parameter is a trap for whichever relying party reads the first
 	// occurrence -- see internal/clients/redirect.go.

@@ -39,6 +39,9 @@ func (f *signInFixture) authorizeWithACR(t *testing.T, sessionCookie string) *ht
 		"response_type": {"code"},
 		"redirect_uri":  {"https://rp.test/cb"},
 		"state":         {"s"},
+		// The fixture client is public, so it sends a challenge (0137).
+		"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
+		"code_challenge_method": {"S256"},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/oauth2/authorize?"+q.Encode(), nil)
 	if sessionCookie != "" {

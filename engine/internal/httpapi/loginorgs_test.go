@@ -56,7 +56,7 @@ func newTwoTenantLogin(t *testing.T) *twoTenantLogin {
 	if _, err := f.pool.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 		                          client_secret_hash, grant_types, scopes, require_pkce)
-		VALUES ($1, $2::uuid, 'T', 'public', '', ARRAY['authorization_code'], ARRAY['openid'], false)`,
+		VALUES ($1, $2::uuid, 'T', 'public', '', ARRAY['authorization_code'], ARRAY['openid'], true)`,
 		tl.otherClient, tl.otherOrg); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,10 @@ func (tl *twoTenantLogin) signIn(t *testing.T, clientID, password string) (strin
 	authz := ""
 	if clientID != "" {
 		authz = url.Values{"client_id": {clientID}, "response_type": {"code"},
-			"redirect_uri": {"https://rp.test/cb"}, "scope": {"openid"}}.Encode()
+			"redirect_uri": {"https://rp.test/cb"}, "scope": {"openid"},
+			// Public clients send a challenge (0137).
+			"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
+			"code_challenge_method": {"S256"}}.Encode()
 	}
 	before := time.Now()
 
@@ -156,7 +159,7 @@ func TestASessionFromAnotherOrganisationIsNoSignInForThisClient(t *testing.T) {
 	if _, err := f.pool.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 		                          client_secret_hash, grant_types, scopes, require_pkce)
-		VALUES ($1, $2::uuid, 'T', 'public', '', ARRAY['authorization_code'], ARRAY['openid'], false)`,
+		VALUES ($1, $2::uuid, 'T', 'public', '', ARRAY['authorization_code'], ARRAY['openid'], true)`,
 		otherClient, otherOrg); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +173,9 @@ func TestASessionFromAnotherOrganisationIsNoSignInForThisClient(t *testing.T) {
 	})
 	authorize := func(prompt string) *httptest.ResponseRecorder {
 		q := url.Values{"client_id": {otherClient}, "response_type": {"code"},
-			"redirect_uri": {"https://rp.test/cb"}, "scope": {"openid"}, "state": {"s"}}
+			"redirect_uri": {"https://rp.test/cb"}, "scope": {"openid"}, "state": {"s"},
+			"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
+			"code_challenge_method": {"S256"}}
 		if prompt != "" {
 			q.Set("prompt", prompt)
 		}

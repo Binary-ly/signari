@@ -137,7 +137,7 @@ database in front of you.
 | `PUT /admin/organizations/{orgID}/webauthn-policy` | Set it, the same as `signari webauthn policy`. `refuse_cloned` left out means on. An allow-list without attestation, a model id that is not a uuid, or an unknown conveyance is `400 invalid_policy`. Needs `organizations:write` |
 | `GET /admin/organizations/{orgID}/scopes` | The organisation's declared scopes, plus the standard set. Needs `config:read` |
 | `PUT /admin/organizations/{orgID}/scopes` | Declare or update one. Needs `organizations:write` |
-| `DELETE /admin/organizations/{orgID}/scopes/{scope}` | Remove a declaration |
+| `DELETE /admin/organizations/{orgID}/scopes/{scope}` | Remove a declaration. Refused while a claim mapper requires it, `409 scope_in_use` with the count, since the mapper would then release nothing |
 | `GET /admin/organizations/{orgID}/proxy-hosts` | The applications [forward auth](forward-auth.md) protects. Needs `config:read` |
 | `PUT /admin/organizations/{orgID}/proxy-hosts` | Register one, or change whether it is enabled: `{"host": "grafana.example.com", "enabled": true}`. Needs `organizations:write` |
 | `DELETE /admin/organizations/{orgID}/proxy-hosts/{host}` | Remove one |
@@ -269,6 +269,10 @@ never be the thing that widens a disclosure to everybody.
 nothing to a grant that does not carry it, so a user who declined `profile` does
 not receive a token carrying their job title anyway. Leaving it empty releases
 unconditionally, which is right for something every client needs to function.
+A scope it names must be standard or declared by the organisation, or the mapper
+is refused with `400 unknown_scope`: a typo used to make a mapper that released
+nothing to anybody and looked configured. `signari doctor` names a mapper saved
+before that check that waits for neither.
 
 **A mapper cannot write a protocol claim.** `sub`, `iss`, `aud`, `exp`, `acr`,
 `amr`, `cnf` and the rest are refused by the database. One writing `sub` would

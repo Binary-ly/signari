@@ -34,6 +34,7 @@ import (
 	"signari.dev/engine/internal/pages"
 	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/sms"
+	"signari.dev/engine/internal/store"
 	"sort"
 	"strings"
 	"time"
@@ -135,6 +136,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 		return nil, err
 	}
 	if err := checkFederationAnchor(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkClaimMapperScopes(ctx, conn, r); err != nil {
 		return nil, err
 	}
 	if err := checkAdminTokens(ctx, conn, r); err != nil {
@@ -811,6 +815,40 @@ func checkFederationAnchor(ctx context.Context, conn interface {
 			"name the entity above this one with `signari federation enable -authority-hints <url>`")
 	}
 	return nil
+}
+
+// checkClaimMapperScopes reports a claim mapper waiting for a scope no grant can
+// carry: neither standard nor declared by its organisation. The Admin API
+// refuses one since 2.33, but a mapper saved before that, with a typo in
+// required_scope, still releases nothing to anybody and looks configured.
+func checkClaimMapperScopes(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
+	r.ran("claim mapper scopes")
+	rows, err := conn.Query(ctx, `
+		SELECT o.slug, m.claim_name, m.required_scope
+		FROM core.claim_mappers m
+		JOIN core.organizations o ON o.id = m.org_id
+		WHERE m.required_scope <> ''
+		  AND m.required_scope <> ALL ($1::text[])
+		  AND NOT EXISTS (SELECT 1 FROM core.scopes s
+		                  WHERE s.org_id = m.org_id AND s.name = m.required_scope)
+		ORDER BY o.slug, m.claim_name`, store.StandardScopes)
+	if err != nil {
+		return fmt.Errorf("reading claim mappers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug, claim, scope string
+		if err := rows.Scan(&slug, &claim, &scope); err != nil {
+			return err
+		}
+		r.add(Warning, "claim mappers", fmt.Sprintf("organisation %s: the %s claim "+
+			"waits for scope %q, which is neither standard nor declared, so it is "+
+			"released to nobody", slug, claim, scope),
+			"declare the scope, or replace the mapper with one naming the scope you meant")
+	}
+	return rows.Err()
 }
 
 // checkAuthorizationModels reports a stored model requiring a fact the

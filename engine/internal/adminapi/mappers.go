@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/store"
 )
 
 // Administering claim mappers.
@@ -46,6 +47,9 @@ type mapperRequest struct {
 	AllClients    bool   `json:"all_clients"`
 	RequiredScope string `json:"required_scope"`
 }
+
+// errUnknownScope is a required_scope that is neither standard nor declared.
+var errUnknownScope = errors.New("the required scope is not declared")
 
 // createMapper declares that an attribute is released as a claim.
 func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +101,22 @@ func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
+		// The scope it waits for must be one a grant can carry: standard, or
+		// declared here. A typo otherwise made a mapper that released nothing,
+		// to anybody, while looking configured. Share-locked, so a delete of
+		// the declaration waits for this and then finds the mapper.
+		if req.RequiredScope != "" && !store.IsStandardScope(req.RequiredScope) {
+			var declared bool
+			if err := tx.QueryRow(ctx, `
+				SELECT true FROM core.scopes WHERE org_id = $1::uuid AND name = $2
+				FOR SHARE`, orgID, req.RequiredScope).Scan(&declared); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return errUnknownScope
+				}
+				return err
+			}
+		}
+
 		var client any
 		if req.ClientID != "" {
 			client = req.ClientID
@@ -142,6 +162,14 @@ func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{
 			"error":  "unknown_attribute",
 			"detail": "no attribute named " + req.Attribute + " is declared here",
+		})
+		return
+	case errors.Is(err, errUnknownScope):
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "unknown_scope",
+			"detail": req.RequiredScope + " is neither a standard scope nor one this " +
+				"organisation declares, so no grant can carry it and the mapper " +
+				"would release nothing. Declare it first",
 		})
 		return
 	case err != nil && isConstraintViolation(err, "claim_mappers_not_a_protocol_claim"):

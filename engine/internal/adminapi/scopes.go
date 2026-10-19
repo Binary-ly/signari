@@ -134,6 +134,9 @@ func (s *Server) listScopes(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// errScopeInUse is a declared scope a claim mapper still requires.
+var errScopeInUse = errors.New("a claim mapper requires the scope")
+
 func (s *Server) deleteScope(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := r.PathValue("orgID")
@@ -144,6 +147,7 @@ func (s *Server) deleteScope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var mappers int
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		if err := requireOrg(ctx, orgID); err != nil {
 			return err
@@ -157,6 +161,17 @@ func (s *Server) deleteScope(w http.ResponseWriter, r *http.Request) {
 		}
 		if tag.RowsAffected() == 0 {
 			return errNotFound
+		}
+		// Counted after the delete, in its own statement: a mapper created
+		// while the delete waited on its share lock is visible here. Deleting
+		// the scope under one would leave it releasing nothing, silently.
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM core.claim_mappers
+			WHERE org_id = $1::uuid AND required_scope = $2`, orgID, name).Scan(&mappers); err != nil {
+			return err
+		}
+		if mappers > 0 {
+			return errScopeInUse
 		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.scope_deleted", AdminTokenID: TokenIDFrom(ctx),
@@ -172,6 +187,13 @@ func (s *Server) deleteScope(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, errNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "scope_not_found"})
+		return
+	case errors.Is(err, errScopeInUse):
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "scope_in_use", "claim_mappers": mappers,
+			"detail": "claim mappers require this scope; without its declaration " +
+				"they would release nothing. Change or remove them first",
+		})
 		return
 	case err != nil:
 		s.log.Error("deleting a scope", "err", err)

@@ -515,7 +515,8 @@ func scimScope(ctx context.Context, conn *pgx.Conn, givenOrg, slug, group string
 
 	fmt.Printf("%s now provisions only members of %q\n", slug, group)
 	fmt.Println("\n  People already provisioned who are NOT in that group are handled by the")
-	fmt.Println("  target's -on-deactivate setting on the next sync. Preview it first:")
+	fmt.Println("  target's -on-deactivate setting (from `signari scim add`) on the next sync.")
+	fmt.Println("  Preview it first:")
 	fmt.Println("    signari scim sync -slug " + slug)
 	return nil
 }

@@ -90,7 +90,7 @@ func themeEject(dir string, only string, force bool) error {
 		if _, err := os.Stat(path); err == nil && !force {
 			// Never silently. An operator ejecting twice would otherwise lose the
 			// work they did between the two.
-			fmt.Printf("  skipped  %s.html (already exists; -force to overwrite)\n", n)
+			fmt.Printf("  skipped  %s.html (already exists; -theme-force to overwrite)\n", n)
 			skipped++
 			continue
 		}

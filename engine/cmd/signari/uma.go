@@ -98,7 +98,8 @@ func umaRequests(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		// exists -- and reading a compiled authorization model to find out is not
 		// a reasonable thing to ask of somebody approving a request.
 		if cands := candidateRelations(model, p); len(cands) > 0 {
-			fmt.Printf("  grant   -relation %s\n", strings.Join(cands, " | "))
+			fmt.Printf("  grant   signari uma approve -uma-request %s -relation %s\n",
+				p.ID, strings.Join(cands, " | "))
 		} else {
 			fmt.Println("  grant   NO relation in this model grants every scope asked " +
 				"for; the model has to change before this can be approved")
@@ -257,7 +258,7 @@ func umaDeny(ctx context.Context, conn *pgx.Conn, requestID string) error {
 // clientSetClaimsRedirects registers UMA claims redirection URIs.
 func clientSetClaimsRedirects(ctx context.Context, conn *pgx.Conn, clientID, uris string) error {
 	if clientID == "" {
-		return fmt.Errorf("-client is required")
+		return fmt.Errorf("-client-id is required")
 	}
 	// A non-nil empty slice, NOT nil. A nil slice reaches PostgreSQL as NULL,
 	// and clearing the list is exactly what an operator does in a hurry when a

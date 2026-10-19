@@ -4750,7 +4750,7 @@ func ssfAddStream(ctx context.Context, conn *pgx.Conn, orgID, clientID, endpoint
 	fmt.Printf("registered a stream for %s\n  endpoint : %s\n  events   : %s\n",
 		clientID, endpoint, strings.Join(list, ", "))
 	if token == "" {
-		fmt.Println("\n  No -token given. Events are still signed, so the receiver can verify\n" +
+		fmt.Println("\n  No -receiver-token given. Events are still signed, so the receiver can verify\n" +
 			"  them -- but if it requires a bearer token, every push will be refused.")
 	} else {
 		fmt.Println("\n  The token is sealed with the root key and sent as `Authorization:\n" +
@@ -6377,7 +6377,7 @@ func inviteCreate(ctx context.Context, conn *pgx.Conn, orgID, email, groups stri
 	if email != "" {
 		fmt.Printf("  only %s may accept it\n", email)
 	} else {
-		fmt.Println("  anyone holding the link may accept it -- pass -email-invite to bind it")
+		fmt.Println("  anyone holding the link may accept it -- pass -email to bind it")
 	}
 	if len(wanted) > 0 {
 		fmt.Printf("  joins: %s\n", strings.Join(wanted, ", "))
@@ -7438,7 +7438,7 @@ func eventsList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 // authzModelSet parses a model, runs its own tests, and stores it.
 func authzModelSet(ctx context.Context, conn *pgx.Conn, orgID, file string) error {
 	if orgID == "" || file == "" {
-		return fmt.Errorf("-org and -file are both required")
+		return fmt.Errorf("-org and -model-file are both required")
 	}
 	data, err := os.ReadFile(file)
 	if err != nil {

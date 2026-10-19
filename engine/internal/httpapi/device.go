@@ -468,6 +468,19 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	scopes := splitScopes(d.Scope)
+	if len(scopes) == 0 {
+		scopes = c.Scopes
+	}
+	// The device grant and CIBA's poll and ping both end here.
+	hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+		Subject: d.UserID, ClientID: c.ClientID, Scopes: scopes,
+		Grant: firstForm(r, "grant_type"), OrgID: d.OrgID})
+	if !ok {
+		return
+	}
+	ctx = hookCtx
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
@@ -475,11 +488,6 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	scopes := splitScopes(d.Scope)
-	if len(scopes) == 0 {
-		scopes = c.Scopes
-	}
 
 	// No nonce: there was no authorization request from a browser to bind one to.
 	// An id_token here asserts the authentication the person performed at the
@@ -553,6 +561,25 @@ func (s *Server) releaseCIBAPush(ctx context.Context, d *store.DeviceAuthorizati
 		return
 	}
 
+	scopes := splitScopes(d.Scope)
+	if len(scopes) == 0 {
+		scopes = c.Scopes
+	}
+	// No response to write: the client is told nothing by a refusal here, and
+	// the delivery stays parked, as it does when the mint fails.
+	hookReq := store.TokenHookRequest{Subject: d.UserID, ClientID: c.ClientID, Scopes: scopes,
+		Grant: oauth.GrantTypeCIBA, OrgID: d.OrgID}
+	hook, herr := store.ConsultTokenProvider(ctx, s.db, s.root, s.outboundClient, s.log, d.OrgID, hookReq)
+	if herr != nil {
+		s.log.Error("consulting the token provider for a CIBA push", "err", herr, "request_id", d.ID)
+		return
+	}
+	if hook.Vetoed {
+		s.recordVeto(ctx, hookReq, hook.Reason)
+		return
+	}
+	ctx = withHookClaims(ctx, hook.Claims)
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		s.log.Error("beginning a CIBA push mint", "err", err, "request_id", d.ID)
@@ -560,10 +587,6 @@ func (s *Server) releaseCIBAPush(ctx context.Context, d *store.DeviceAuthorizati
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	scopes := splitScopes(d.Scope)
-	if len(scopes) == 0 {
-		scopes = c.Scopes
-	}
 	resp, _, err := s.mintSet(ctx, tx, c, d.OrgID, d.UserID, d.SID, "", scopes,
 		d.Resource, nil, "")
 	if err != nil {

@@ -102,6 +102,38 @@ not as a decision — including a 4xx. A provider that rejects our request has n
 made a decision, and treating "I did not understand you" as an answer is how a
 contract mismatch becomes a silent authorization change.
 
+## The `token_issue` hook
+
+Called at **every grant** that issues a token: authorization code, refresh,
+client credentials, device code, CIBA (poll, ping and push), token exchange,
+transaction tokens, jwt-bearer, UMA and the pre-authorized code. It is called
+after this engine has decided to issue, and before the grant's transaction
+opens, so a slow provider holds no database connection. It is told who, which
+client, which scopes and which grant, and is given no credential:
+
+```json
+→  {"subject":"7c1e…","client_id":"web-app","scopes":["openid","offline_access"],
+    "grant_type":"refresh_token","org_id":"…"}
+
+←  {"decision": true, "claims": {"department": "research"}}
+```
+
+**`"decision": false` vetoes the issuance**: the client gets `403
+access_denied`, the provider's `reason` goes to the log and to a `token.vetoed`
+audit record, and never to the client. A vetoed refresh does not spend the
+refresh token, so if the provider allows it later the same token still works.
+The authorization code is spent either way.
+
+**`claims` go into the access token**, for the names `signari provider claims`
+allowed and no others. A claim the engine sets wins over a contributed one with
+the same name, and so does a claim mapper's. No contributed claim may take a
+name the access token defines, `cnf` and `gid` among them, even when this token
+has none. A transaction token takes the veto and not the claims, because its
+members are fixed by its draft.
+
+Until October 2026 the hook was asked at the authorization code only, and the
+claims it was allowed to contribute were checked and then thrown away.
+
 ## Constraints on a provider URL
 
 - **https only.** Refused at registration and again in the database.
@@ -119,5 +151,5 @@ contract mismatch becomes a silent authorization change.
 
 `signari provider list` reports, per hook, whether any decision point actually
 consults it — so registering a provider for a hook nothing calls tells you at
-that moment rather than leaving a control that silently never fires. Today
-`authorize` is the only hook, and it is consulted.
+that moment rather than leaving a control that silently never fires. Both hooks,
+`authorize` and `token_issue`, are consulted.

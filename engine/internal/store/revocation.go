@@ -96,6 +96,7 @@ type RefreshTokenState struct {
 	Found     bool
 	Active    bool
 	ClientID  string
+	OrgID     string
 	UserID    string
 	SID       string
 	Scopes    []string
@@ -115,12 +116,12 @@ func LookupRefreshToken(ctx context.Context, db *pgxpool.Pool, tokenHash []byte)
 	var sid *string
 
 	err := db.QueryRow(ctx, `
-		SELECT f.client_id, f.user_id::text, f.sid, t.scopes, t.expires_at,
+		SELECT f.client_id, f.org_id::text, f.user_id::text, f.sid, t.scopes, t.expires_at,
 		       t.consumed_at, f.revoked_at
 		FROM core.refresh_tokens t
 		JOIN core.refresh_token_families f ON f.id = t.family_id
 		WHERE t.token_hash = $1`, tokenHash).
-		Scan(&st.ClientID, &st.UserID, &sid, &st.Scopes, &st.ExpiresAt, &consumed, &familyRevoked)
+		Scan(&st.ClientID, &st.OrgID, &st.UserID, &sid, &st.Scopes, &st.ExpiresAt, &consumed, &familyRevoked)
 	if err == pgx.ErrNoRows {
 		return st, nil
 	}

@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -165,6 +167,25 @@ func (c IDTokenClaims) MarshalJSON() ([]byte, error) {
 		out[k] = v
 	}
 	return json.Marshal(out)
+}
+
+// accessTokenFields is every claim name AccessTokenClaims defines, whether a
+// given token carries it or not. An operator-defined claim may take none of
+// them: a bearer token omits `cnf`, and a mapped or provider-contributed `cnf`
+// would make it look bound to whoever reads it; an extra `gid` would tie it to
+// somebody else's grant. All of them are protocol claims, unlike the ID token's
+// optional profile claims, which a mapper may legitimately supply.
+var accessTokenFields = jsonFieldNames(reflect.TypeOf(AccessTokenClaims{}))
+
+func jsonFieldNames(t reflect.Type) map[string]bool {
+	out := map[string]bool{}
+	for i := 0; i < t.NumField(); i++ {
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			out[name] = true
+		}
+	}
+	return out
 }
 
 // Signer mints tokens with a specific key.
@@ -431,7 +452,7 @@ func (c AccessTokenClaims) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	for k, v := range c.Extra {
-		if _, taken := out[k]; taken {
+		if _, taken := out[k]; taken || accessTokenFields[k] {
 			continue
 		}
 		out[k] = v

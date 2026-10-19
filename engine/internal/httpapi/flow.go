@@ -785,30 +785,19 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	} else if hook.Vetoed {
-		// The provider's reason goes to the log and the audit trail, never to
-		// the client: it is written by somebody outside this deployment and must
-		// not become part of an OAuth error a stranger reads.
-		s.log.Warn("token issuance vetoed by the operator's provider",
-			"client_id", c.ClientID, "reason", hook.Reason,
-			"correlation_id", correlationID(ctx))
 		// Committed before the veto is recorded on a connection of its own.
 		// Recording it first held two, which with a one-connection pool waited
-		// forever.
+		// forever. The code is spent either way: a vetoed code is not retried.
 		if err := tx.Commit(ctx); err != nil {
 			s.log.Error("committing code consumption after a provider veto", "err", err)
 		}
-		s.auditDetached(ctx, audit.Event{
-			Type: "token.vetoed", OrgID: consumed.OrgID, SubjectID: consumed.UserID,
-			ClientID: c.ClientID, CorrelationID: correlationID(ctx),
-			Detail: map[string]any{"reason": hook.Reason},
-		})
-		writeTokenError(w, &oauth.TokenError{
-			Code:        "access_denied",
-			Description: "this authorization was refused",
-			Status:      http.StatusForbidden,
-		})
+		s.refuseVetoedIssuance(ctx, w, tokenHookRequest(consumed, c.ClientID, req.GrantType), hook.Reason)
 		return
 	}
+	// What the provider contributed goes into the access token, which it did
+	// not before 2.03: the claims were filtered against the allow-list and
+	// then dropped.
+	ctx = withHookClaims(ctx, hook.Claims)
 
 	resp, err := s.mintTokens(ctx, tx, c, consumed)
 	if err != nil {
@@ -993,7 +982,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		accessExtra = mapped
 	}
 
-	at, err := signer.SignJSON(tokens.AccessTokenClaims{
+	at, err := signAccessToken(ctx, signer, tokens.AccessTokenClaims{
 		Issuer:    issuer,
 		Subject:   userID,
 		Audience:  audience,
@@ -1009,7 +998,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		AuthorizationDetails: detailClaim,
 		GrantID:              familyID,
 		Extra:                accessExtra,
-	}, tokens.TypAccessToken)
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1299,6 +1288,12 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 			Status:      http.StatusBadRequest})
 		return
 	}
+	// The subject is the client itself.
+	hookCtx, ok := s.consultTokenHook(r.Context(), w, store.TokenHookRequest{
+		Subject: c.ClientID, ClientID: c.ClientID, Scopes: scopes, Grant: req.GrantType, OrgID: c.OrgID})
+	if !ok {
+		return
+	}
 
 	alg := keys.Algorithm(c.IDTokenAlg)
 	key, err := s.cfg.Keys.Active(alg)
@@ -1340,7 +1335,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 	// consequence; this path simply never called it.
 	ccJKT := dpopThumbprintFrom(r.Context())
 
-	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
+	at, err := signAccessToken(hookCtx, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
 		Subject:  c.ClientID,
 		Audience: []string{c.ClientID},
@@ -1352,7 +1347,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 		Scope:    joinScopes(scopes),
 		// No SessionID: nothing to tie this to, and inventing one would make
 		// logout appear to cover a token it cannot.
-	}, tokens.TypAccessToken)
+	})
 	if err != nil {
 		s.log.Error("signing client_credentials token", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
@@ -1382,6 +1377,28 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	oldHash := store.HashToken(req.RefreshToken)
+
+	// The operator's token provider, about a refresh this engine would grant,
+	// read without spending the token and asked before the transaction holds a
+	// connection. A veto refused the authorization code and was then ignored
+	// by every refresh after it (2.03); now it is refused here, and the token
+	// is not rotated, so a provider that relents later is not met by a spent one.
+	if peek, perr := store.LookupRefreshToken(ctx, s.db, oldHash); perr == nil &&
+		peek.Active && peek.ClientID == c.ClientID {
+		scopes := peek.Scopes
+		if req.Scope != "" {
+			scopes = splitScopes(req.Scope)
+		}
+		hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+			Subject: peek.UserID, ClientID: c.ClientID, Scopes: scopes,
+			Grant: "refresh_token", OrgID: peek.OrgID})
+		if !ok {
+			return
+		}
+		ctx = hookCtx
+	}
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
@@ -1389,7 +1406,6 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	oldHash := store.HashToken(req.RefreshToken)
 	grant, rerr := store.RotateRefreshToken(ctx, tx, oldHash)
 
 	if errors.Is(rerr, store.ErrRefreshReused) {
@@ -2915,6 +2931,14 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 
 	exchangeJKT := dpopThumbprintFrom(ctx)
 
+	// About the person the token is still for, issued to the calling client.
+	hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+		Subject: subject.Subject, ClientID: c.ClientID, Scopes: granted,
+		Grant: oauth.GrantTypeTokenExchange, OrgID: c.OrgID})
+	if !ok {
+		return
+	}
+
 	// The calling client's lifetime, and never past the subject token's own
 	// expiry: exchange delegates what the subject token carries, it does not
 	// extend it. Five minutes for everybody hid the question; a per-client
@@ -2925,7 +2949,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	if subject.Expiry > 0 && subject.Expiry < expiry {
 		expiry = subject.Expiry
 	}
-	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
+	at, err := signAccessToken(hookCtx, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
 		Subject:  subject.Subject, // still the USER; exchange delegates, it does not impersonate
 		Audience: audience,
@@ -2953,7 +2977,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		Cnf: bindingFor(exchangeJKT, ""),
 
 		AuthorizationDetails: exchangedDetailClaim,
-	}, tokens.TypAccessToken)
+	})
 	if err != nil {
 		s.log.Error("token exchange: signing", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})

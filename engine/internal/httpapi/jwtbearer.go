@@ -223,6 +223,14 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		joinScopes(scopes), "jwt_bearer") {
 		return
 	}
+	// The operator's token provider, before the transaction below holds a
+	// connection for as long as it takes to answer.
+	hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+		Subject: userID, ClientID: c.ClientID, Scopes: scopes, Grant: oauth.GrantTypeJWTBearer, OrgID: orgID})
+	if !ok {
+		return
+	}
+	ctx = hookCtx
 
 	// Step five: replay. Above RFC 7523, which makes this optional.
 	tx, err := s.db.Begin(ctx)
@@ -271,7 +279,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	jkt := dpopThumbprintFrom(ctx)
 
 	now := time.Now()
-	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
+	at, err := signAccessToken(ctx, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
 		Subject:  userID,
 		Audience: []string{c.ClientID},
@@ -284,7 +292,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		// No SessionID. There is no browser session behind this: nothing was
 		// signed in and nothing can be signed out. Inventing one would make
 		// logout appear to cover a token it cannot reach.
-	}, tokens.TypAccessToken)
+	})
 	if err != nil {
 		s.log.Error("signing jwt-bearer token", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})

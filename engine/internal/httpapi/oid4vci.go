@@ -192,6 +192,16 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// The operator's token provider, before the code is spent, so a veto does
+	// not leave the holder an unusable offer they were never told about.
+	hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+		Subject: stored.UserID, ClientID: c.ClientID, Scopes: scopes,
+		Grant: oauth.GrantTypePreAuthorizedCode, OrgID: stored.OrgID})
+	if !ok {
+		return
+	}
+	ctx = hookCtx
+
 	// Single use, claimed atomically, and only once everything else has passed.
 	if cerr := store.ClaimPreAuthorizedCode(ctx, s.db, stored.ID); cerr != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",

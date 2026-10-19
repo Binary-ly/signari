@@ -260,7 +260,13 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 	if party.userID != "" {
 		rptSubject = party.userID
 	}
-	rpt, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
+	hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+		Subject: rptSubject, ClientID: c.ClientID, Scopes: scopes,
+		Grant: oauth.GrantTypeUMATicket, OrgID: c.OrgID})
+	if !ok {
+		return
+	}
+	rpt, err := signAccessToken(hookCtx, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.cfg.Issuer,
 		Subject:  rptSubject,
 		Audience: []string{t.ResourceServer},
@@ -269,7 +275,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		JTI:      jti,
 		ClientID: c.ClientID,
 		Scope:    joinScopes(scopes),
-	}, tokens.TypAccessToken)
+	})
 	if err != nil {
 		s.log.Error("signing an RPT", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")

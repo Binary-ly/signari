@@ -32,6 +32,7 @@ import (
 
 	"signari.dev/engine/internal/outbox"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tokens"
 )
 
 // lockID identifies the janitor's advisory lock. Any constant works as long as
@@ -96,6 +97,9 @@ type Stats struct {
 	DPoPProofsSwept int64
 	// CeremoniesSwept are spent WebAuthn challenges past their ceremony's expiry.
 	CeremoniesSwept int64
+	// OffersSwept are credential offers (pre-authorized codes) no token can
+	// still need.
+	OffersSwept int64
 	// PushedRequestsSwept are PAR handles nobody redeemed.
 	PushedRequestsSwept int64
 	// SAMLSourceStateSwept are inbound SAML requests and spent assertion records
@@ -238,6 +242,14 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 		return st, fmt.Errorf("sweeping spent WebAuthn challenges: %w", err)
 	}
 
+	// Credential offers past their expiry by more than any token minted from
+	// one can live. Each holds a code hash and the minted token's jti, and
+	// nothing removed them, so they accumulated for as long as the deployment
+	// ran.
+	if st.OffersSwept, err = store.SweepSpentPreAuthorizedCodes(ctx, tx, tokens.MaxAccessTokenTTL); err != nil {
+		return st, fmt.Errorf("sweeping spent credential offers: %w", err)
+	}
+
 	// Duo prompts nobody finished. Each row holds a live challenge state, so
 	// keeping them past expiry stores flow state for a flow nobody will finish.
 	if st.DuoChallengesSwept, err = store.PurgeExpiredDuoChallenges(ctx, tx); err != nil {
@@ -342,6 +354,7 @@ func (s Stats) Log(log *slog.Logger) {
 	add("federated_logins_swept", s.FederatedLoginsSwept)
 	add("dpop_proofs_swept", s.DPoPProofsSwept)
 	add("ceremonies_swept", s.CeremoniesSwept)
+	add("offers_swept", s.OffersSwept)
 	add("pushed_requests_swept", s.PushedRequestsSwept)
 	add("saml_source_state_swept", s.SAMLSourceStateSwept)
 	add("rate_windows_purged", s.RateWindowsPurged)

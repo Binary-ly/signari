@@ -164,11 +164,6 @@ func RecordTxCodeFailure(ctx context.Context, db Execer, id string) error {
 	return err
 }
 
-// ClaimPreAuthorizedCode marks the code redeemed, single use.
-//
-// The claim and the check are one statement, so two concurrent redemptions
-// cannot both succeed -- the same reason the authorization code path uses
-// `UPDATE ... WHERE consumed_at IS NULL RETURNING`.
 // RecordPreAuthorizedToken notes which access token a redeemed offer minted.
 // In the minting transaction, so a token exists only with its record.
 func RecordPreAuthorizedToken(ctx context.Context, db Execer, id, jti string) error {
@@ -200,6 +195,11 @@ func IssuableConfigurations(ctx context.Context, db rowQuerier, jti, userID stri
 	return ids, err
 }
 
+// ClaimPreAuthorizedCode marks the code redeemed, single use.
+//
+// The claim and the check are one statement, so two concurrent redemptions
+// cannot both succeed -- the same reason the authorization code path uses
+// `UPDATE ... WHERE consumed_at IS NULL RETURNING`.
 func ClaimPreAuthorizedCode(ctx context.Context, db Execer, id string) error {
 	tag, err := db.Exec(ctx, `
 		UPDATE core.preauthorized_codes SET redeemed_at = now()
@@ -211,4 +211,21 @@ func ClaimPreAuthorizedCode(ctx context.Context, db Execer, id string) error {
 		return fmt.Errorf("this pre-authorized code has already been used")
 	}
 	return nil
+}
+
+// SweepSpentPreAuthorizedCodes drops offers past their own expiry by more than
+// tokenTTL, the longest an access token minted from one can live.
+//
+// Not at the offer's expiry: a redeemed offer is what the credential endpoint
+// reads to learn what its token may be exchanged for (IssuableConfigurations),
+// so removing it while that token is still live would refuse a wallet holding
+// a valid token. A redemption happens before the offer expires, so an offer
+// expired by more than the token's lifetime cannot have a live token.
+func SweepSpentPreAuthorizedCodes(ctx context.Context, tx pgx.Tx, tokenTTL time.Duration) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.preauthorized_codes
+		WHERE expires_at < now() - $1::interval`, tokenTTL.String())
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }

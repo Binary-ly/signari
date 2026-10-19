@@ -96,6 +96,23 @@ var summaries = map[string]string{
 	"POST /admin/organizations":                              "Provision a tenant. Requires an unscoped token.",
 	"POST /admin/subjects/{subjectID}/erase":                 "Crypto-shred a subject. Permanent.",
 	"GET /admin/audit-events":                                "Read the audit trail. Does not verify the hash chain.",
+
+	// Thirteen operations shipped with no line here and the document said
+	// nothing about them, because the test that requires one never built the
+	// router it was reading.
+	"GET /admin/organizations/{orgID}/scopes":                      "The organisation's declared scopes, plus the standard set.",
+	"PUT /admin/organizations/{orgID}/scopes":                      "Declare or update a scope.",
+	"DELETE /admin/organizations/{orgID}/scopes/{scope}":           "Remove a scope declaration.",
+	"GET /admin/organizations/{orgID}/proxy-hosts":                 "The applications forward auth protects.",
+	"PUT /admin/organizations/{orgID}/proxy-hosts":                 "Register a protected host, or enable or disable one.",
+	"DELETE /admin/organizations/{orgID}/proxy-hosts/{host}":       "Remove a protected host.",
+	"GET /admin/organizations/{orgID}/attributes":                  "The organisation's user attribute declarations.",
+	"PUT /admin/organizations/{orgID}/attributes":                  "Declare or update a user attribute.",
+	"GET /admin/users/{userID}/attributes":                         "One user's attribute values.",
+	"PUT /admin/users/{userID}/attributes":                         "Set a user's attribute values.",
+	"GET /admin/organizations/{orgID}/claim-mappers":               "Every attribute this organisation releases as a claim.",
+	"POST /admin/organizations/{orgID}/claim-mappers":              "Release an attribute as a claim.",
+	"DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}": "Stop releasing an attribute as a claim.",
 }
 
 // OpenAPI renders the document.

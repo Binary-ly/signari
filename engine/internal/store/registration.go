@@ -251,9 +251,10 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 	if err := SetClientLogout(ctx, tx, out.ClientID, in.Logout); err != nil {
 		return nil, err
 	}
-	if in.Settings.AccessTokenTTL != nil || in.Settings.RefreshTokenTTL != nil || in.Settings.FirstParty != nil {
-		return nil, fmt.Errorf("%w: token lifetimes and consent skipping are not dynamic "+
-			"registration metadata", ErrInvalidClientSetting)
+	if in.Settings.AccessTokenTTL != nil || in.Settings.RefreshTokenTTL != nil || in.Settings.FirstParty != nil ||
+		in.Settings.IssuerAlias != nil {
+		return nil, fmt.Errorf("%w: token lifetimes, consent skipping and issuer aliases are not "+
+			"dynamic registration metadata", ErrInvalidClientSetting)
 	}
 	if err := SetClientSettings(ctx, tx, out.ClientID, in.Settings); err != nil {
 		return nil, err

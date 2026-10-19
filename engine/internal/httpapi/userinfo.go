@@ -30,7 +30,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), raw)
+	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(ctx), raw)
 	if err != nil {
 		// Logged with the reason, returned without it.
 		s.log.Info("userinfo token rejected", "err", err)

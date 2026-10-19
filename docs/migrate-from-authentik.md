@@ -158,7 +158,14 @@ is validated at write time by a database trigger against the instance's
 registered aliases — a value that reaches the token path has already been proven
 to be one this deployment legitimately claims.
 
-It is for cutover, not for permanent multi-tenancy. The alias set is read once at
-startup, which [high-availability.md](high-availability.md) records as a
-deliberate limit: changing it belongs to a migration plan, not to an operational
-action.
+```
+signari instance add-alias -alias https://auth.example.com/application/o/wiki -retire-after 2026-12-31
+signari client set-issuer-alias -client-id wiki -alias https://auth.example.com/application/o/wiki
+signari instance aliases
+signari instance retire-alias -alias https://auth.example.com/application/o/wiki
+```
+
+It is for cutover, not for permanent multi-tenancy, so give an alias a
+`-retire-after`. Aliases are read per request: one registered is accepted from
+the next request, and one past its retirement is refused from the next, with
+pinned clients minted under the deployment's own issuer from then on.

@@ -71,7 +71,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), raw)
+	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(ctx), raw)
 	if err != nil {
 		s.log.Info("credential endpoint token rejected", "err", err,
 			"correlation_id", correlationID(ctx))

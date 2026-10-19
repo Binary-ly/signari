@@ -252,10 +252,8 @@ more useful than serving a port that answers no one.
 
 ## What this still does not do
 
-Issuer aliases are still read once at startup. They exist for migration — a
-legacy issuer accepted while relying parties are moved across — and changing the
-set is part of a migration plan rather than an operational action, so a restart
-is a reasonable place to pick it up. Recorded here so it is a decision rather
-than an oversight. The three gaps listed when this page was written — policy cache
-coherence, CAPTCHA counters, outbox partitioning — are measured, fixed, or shown
-to have been a misreading, above.
+Issuer aliases were read once at startup, which made a retired alias go on being
+accepted until every instance restarted. They are now read per request, like
+every other decision about what to accept. The three gaps listed when this page
+was written — policy cache coherence, CAPTCHA counters, outbox partitioning — are
+measured, fixed, or shown to have been a misreading, above.

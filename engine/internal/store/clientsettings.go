@@ -33,6 +33,10 @@ type ClientSettings struct {
 	// FirstParty skips the consent screen for the client (migration 0010). An
 	// operator's decision only; dynamic registration never sets it.
 	FirstParty *bool
+	// IssuerAlias pins the client to a legacy issuer its instance claims, so
+	// its tokens are minted under that `iss` during a migration. Only a live
+	// alias of the client's own instance; empty clears it.
+	IssuerAlias *string
 }
 
 // ClientAlgorithms are the JWS algorithms a client may be set to sign with,
@@ -105,6 +109,32 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
+	if v := s.IssuerAlias; v != nil {
+		alias := strings.TrimSpace(*v)
+		if alias != "" {
+			// The schema's trigger (0015) checks registration; liveness too, here,
+			// since a client pinned to a retired alias would mint under the
+			// instance's own issuer from the first token.
+			var live bool
+			if err := tx.QueryRow(ctx, `
+				SELECT EXISTS (SELECT 1 FROM core.instance_issuer_aliases a
+				                 JOIN core.organizations o ON o.instance_id = a.instance_id
+				                 JOIN core.clients c ON c.org_id = o.id
+				                WHERE c.client_id = $1 AND a.issuer = $2
+				                  AND (a.retire_after IS NULL OR a.retire_after > now()))`,
+				clientID, alias).Scan(&live); err != nil {
+				return err
+			}
+			if !live {
+				return fmt.Errorf("%w: %s is not an alias this client's instance claims now; register "+
+					"it with `signari instance add-alias`", ErrInvalidClientSetting, alias)
+			}
+		}
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET issuer_alias = NULLIF($2, ''),
+			updated_at = now() WHERE client_id = $1`, clientID, alias)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -147,6 +177,7 @@ type ClientSettingsView struct {
 	IDTokenAlg      string
 	RequirePAR      bool
 	FirstParty      bool
+	IssuerAlias     string
 }
 
 // ClientSettingsOf reads a client's token settings.
@@ -156,9 +187,9 @@ func ClientSettingsOf(ctx context.Context, q interface {
 	var v ClientSettingsView
 	var access, refresh int
 	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, id_token_signed_alg,
-		       require_pushed_authorization, first_party
+		       require_pushed_authorization, first_party, COALESCE(issuer_alias, '')
 		FROM core.clients WHERE client_id = $1`, clientID).
-		Scan(&access, &refresh, &v.IDTokenAlg, &v.RequirePAR, &v.FirstParty)
+		Scan(&access, &refresh, &v.IDTokenAlg, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

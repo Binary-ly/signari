@@ -393,7 +393,9 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	out := responseParams{Code: code, State: req.State, Issuer: s.cfg.Issuer}
+	// RFC 9207's iss is the issuer as this client knows it, so a client pinned
+	// to an alias is told the alias, as its tokens are.
+	out := responseParams{Code: code, State: req.State, Issuer: s.issuerFor(c)}
 
 	// Hybrid: an id_token beside the code, bound to it by c_hash.
 	//
@@ -1339,7 +1341,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 	ccJKT := dpopThumbprintFrom(r.Context())
 
 	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
-		Issuer:   s.cfg.Issuer,
+		Issuer:   s.issuerFor(c),
 		Subject:  c.ClientID,
 		Audience: []string{c.ClientID},
 		Expiry:   now.Add(c.AccessTokenTTL()).Unix(),
@@ -2610,9 +2612,24 @@ func (s *Server) issuerFor(c *clients.Client) string {
 }
 
 // acceptedIssuers is what our own resource endpoints will honour: this
-// deployment's issuer plus any registered legacy aliases.
-func (s *Server) acceptedIssuers() []string {
-	return append([]string{s.cfg.Issuer}, s.cfg.IssuerAliases...)
+// deployment's issuer plus the legacy aliases registered and not retired.
+//
+// Read per request. It was read once at startup, so an alias registered with
+// `instance add-alias` was refused until a restart and one past its
+// retirement went on being honoured until one -- accepting tokens under an
+// issuer this deployment had stopped claiming. A failed read accepts the
+// deployment's own issuer only.
+func (s *Server) acceptedIssuers(ctx context.Context) []string {
+	out := []string{s.cfg.Issuer}
+	if s.db == nil || s.instanceID == "" {
+		return out
+	}
+	aliases, err := store.LiveIssuerAliases(ctx, s.db, s.instanceID)
+	if err != nil {
+		s.log.Error("reading issuer aliases; accepting this deployment's own issuer only", "err", err)
+		return out
+	}
+	return append(out, aliases...)
 }
 
 // decodeDetailClaim reads the RFC 9396 §9.1 claim back off a verified token.
@@ -2648,7 +2665,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 
 	// Verified first. Everything downstream reasons about what this token
 	// actually says, not what the request claims about it.
-	subject, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), ex.SubjectToken)
+	subject, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(ctx), ex.SubjectToken)
 	if err != nil {
 		s.log.Info("token exchange: subject token rejected", "err", err,
 			"caller", c.ClientID, "correlation_id", correlationID(ctx))
@@ -2715,7 +2732,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	// audit trail that the credential no longer supports.
 	actorSubject := ""
 	if ex.ActorToken != "" {
-		actor, aerr := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), ex.ActorToken)
+		actor, aerr := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(ctx), ex.ActorToken)
 		if aerr != nil {
 			s.log.Info("token exchange: actor token rejected", "err", aerr,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))

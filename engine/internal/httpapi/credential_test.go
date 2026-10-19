@@ -204,7 +204,7 @@ func TestARevokedTokenMintsNoCredential(t *testing.T) {
 	f := newTokenFixture(t)
 	configureCredential(t, f)
 	token := f.mintAccessToken(t)
-	claims, err := tokens.VerifyAccessTokenAny(f.srv.cfg.Keys, f.srv.acceptedIssuers(), token)
+	claims, err := tokens.VerifyAccessTokenAny(f.srv.cfg.Keys, f.srv.acceptedIssuers(context.Background()), token)
 	if err != nil {
 		t.Fatal(err)
 	}

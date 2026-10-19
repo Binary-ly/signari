@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,7 +123,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 	switch req.SubjectTokenType {
 	case txntoken.TokenType:
 		// A REPLACEMENT: the next hop in a chain.
-		prev, err := s.verifyTxnToken(req.SubjectToken)
+		prev, err := s.verifyTxnToken(ctx, req.SubjectToken)
 		if err != nil {
 			s.log.Info("txn-token replacement: subject token rejected", "err", err,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
@@ -173,7 +174,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		// AN INITIAL REQUEST, from an access token at the edge. The type has
 		// already been checked against section 11.2 above, so this branch is
 		// reached only for types we accept.
-		subject, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(),
+		subject, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(ctx),
 			req.SubjectToken)
 		if err != nil {
 			s.log.Info("txn-token: subject token rejected", "err", err,
@@ -314,12 +315,12 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 }
 
 // verifyTxnToken checks a presented Txn-Token and returns its claims.
-func (s *Server) verifyTxnToken(raw string) (txntoken.Claims, error) {
+func (s *Server) verifyTxnToken(ctx context.Context, raw string) (txntoken.Claims, error) {
 	var c txntoken.Claims
 	// Verified with the typ REQUIRED to be txntoken+jwt. Accepting an access
 	// token here would let one be replayed as a transaction token, which is the
 	// confusion the distinct typ exists to prevent.
-	if err := tokens.VerifyTypedJSON(s.cfg.Keys, s.acceptedIssuers(), raw,
+	if err := tokens.VerifyTypedJSON(s.cfg.Keys, s.acceptedIssuers(ctx), raw,
 		txntoken.Typ, &c); err != nil {
 		return c, err
 	}

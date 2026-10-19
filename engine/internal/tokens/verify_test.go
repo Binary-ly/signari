@@ -636,8 +636,8 @@ func TestAnIDTokenCannotBeMintedWithoutItsRequiredClaims(t *testing.T) {
 // This is not defence in depth here, because on this server the two issuers
 // share a key set. Migration 0015 gives a client an `issuer_alias`, registered
 // on the instance, so that a relying party moving from a previous provider keeps
-// seeing the old `iss` while the same keys sign both. `acceptedIssuers()` is
-// literally `append([]string{s.cfg.Issuer}, s.cfg.IssuerAliases...)`.
+// seeing the old `iss` while the same keys sign both. `acceptedIssuers` is the
+// deployment's issuer followed by every alias registered and not retired.
 //
 // So the signature check cannot separate them — it is the same key — and `iss`
 // is the only thing that does. Both checks survived mutation against the whole

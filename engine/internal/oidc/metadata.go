@@ -123,11 +123,6 @@ type Config struct {
 	Issuer string
 	Keys   *keys.Set
 
-	// IssuerAliases are legacy issuers this deployment also claims, for clients
-	// still being migrated from another provider. Tokens minted under one must
-	// still be accepted by our own userinfo and introspection.
-	IssuerAliases []string
-
 	// ProxyCookieDomain scopes the forward-auth cookie to the parent domain, so
 	// every protected subdomain receives it. Empty disables forward auth, which
 	// is the right default: a cookie domain nobody set is one nobody reasoned

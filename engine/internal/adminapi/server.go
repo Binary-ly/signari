@@ -412,6 +412,8 @@ type patchClientRequest struct {
 	// skips the consent screen.
 	RequirePushedAuthorizationRequests *bool `json:"require_pushed_authorization_requests"`
 	FirstParty                         *bool `json:"first_party"`
+	// IssuerAlias pins the client to a live alias of its instance; "" clears.
+	IssuerAlias *string `json:"issuer_alias"`
 }
 
 func (r patchClientRequest) setsLogout() bool {
@@ -431,9 +433,10 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 		s.RefreshTokenTTL = &d
 	}
 	s.IDTokenAlg = r.IDTokenSignedResponseAlg
-	s.RequirePAR, s.FirstParty = r.RequirePushedAuthorizationRequests, r.FirstParty
+	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
 	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil ||
-		r.IDTokenSignedResponseAlg != nil || r.RequirePushedAuthorizationRequests != nil || r.FirstParty != nil
+		r.IDTokenSignedResponseAlg != nil || r.RequirePushedAuthorizationRequests != nil ||
+		r.FirstParty != nil || r.IssuerAlias != nil
 }
 
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
@@ -564,6 +567,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				"id_token_signed_response_alg":          got.IDTokenAlg,
 				"require_pushed_authorization_requests": got.RequirePAR,
 				"first_party":                           got.FirstParty,
+				"issuer_alias":                          got.IssuerAlias,
 			}
 			for k, v := range lifetimes {
 				detail[k] = v

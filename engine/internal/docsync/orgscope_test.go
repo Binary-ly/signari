@@ -42,6 +42,8 @@ var globalNameKeys = map[string]string{
 		"AuthnRequest names an entity ID, not a tenant",
 	"instances.issuer": "unique since migration 0002: the issuer is the instance's own " +
 		"identity, above every organisation it hosts",
+	"instance_issuer_aliases.issuer": "unique since migration 0002: an alias is claimed by " +
+		"one instance, above every organisation it hosts, and the statements name the instance",
 	"federation_trust_marks_held.issuer": "the table has no organisation: a trust mark is " +
 		"held by the federation entity, which is the instance, and the statement names it",
 }

@@ -99,23 +99,19 @@ var knownUnwritable = map[string]string{
 	// Per-client protocol settings with no command. Each is a real gap; they
 	// cluster into a small number of `client set-*` verbs.
 	"clients.pkce_methods": "fixed at S256",
-	"clients.issuer_alias": "a client cannot be pinned to an issuer alias",
 
 	// Tables with no create path at all.
-	"instance_issuer_aliases.instance_id":  "issuer aliases cannot be registered, so issuer migration is unavailable",
-	"instance_issuer_aliases.issuer":       "the same",
-	"instance_issuer_aliases.retire_after": "the same",
-	"migration_sources.kind":               "delegated verification against an old provider cannot be configured",
-	"migration_sources.org_id":             "the same",
-	"migration_sources.display_name":       "the same",
-	"migration_sources.token_endpoint":     "the same",
-	"migration_sources.client_id":          "the same",
-	"migration_sources.client_secret_enc":  "the same",
-	"migration_sources.scope":              "the same",
-	"migration_sources.enabled":            "the same",
-	"projects.slug":                        "projects cannot be created",
-	"projects.org_id":                      "the same",
-	"projects.display_name":                "the same",
+	"migration_sources.kind":              "delegated verification against an old provider cannot be configured",
+	"migration_sources.org_id":            "the same",
+	"migration_sources.display_name":      "the same",
+	"migration_sources.token_endpoint":    "the same",
+	"migration_sources.client_id":         "the same",
+	"migration_sources.client_secret_enc": "the same",
+	"migration_sources.scope":             "the same",
+	"migration_sources.enabled":           "the same",
+	"projects.slug":                       "projects cannot be created",
+	"projects.org_id":                     "the same",
+	"projects.display_name":               "the same",
 
 	// Enable/disable switches with no command.
 	"outposts.enabled":           "an outpost cannot be taken out of service without deleting it",

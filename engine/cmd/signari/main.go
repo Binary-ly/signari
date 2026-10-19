@@ -354,6 +354,12 @@ func run(args []string) (err error) {
 	accessTTL := fs.Duration("access-ttl", 0,
 		"`client set-lifetimes`: access-token lifetime, 1m to 1h; it is also how long a revoked token keeps working")
 	refreshTTL := fs.Duration("refresh-ttl", 0, "`client set-lifetimes`: refresh-token lifetime, 5m to 8760h")
+	issuerAlias := fs.String("alias", "",
+		"`instance add-alias` / `retire-alias`: a legacy issuer URL this instance also claims; "+
+			"`client set-issuer-alias`: the alias to mint the client's tokens under (empty clears)")
+	aliasRetire := fs.String("retire-after", "",
+		"`instance add-alias`: when the alias stops being accepted, YYYY-MM-DD or RFC 3339 "+
+			"(`retire-alias`: default now)")
 	requirePAR := fs.Bool("require-par", true,
 		"`client set-par`: refuse any authorization the client did not push first (false lifts it)")
 	firstParty := fs.Bool("first-party", true,
@@ -753,6 +759,12 @@ func run(args []string) (err error) {
 		return clientSetCIBA(ctx, conn, *clientID, *cibaDelivery, *cibaNotifyURL)
 	case "group impersonation":
 		return groupImpersonation(ctx, conn, *orgID, *groupName, *grantPower)
+	case "instance add-alias":
+		return instanceAddAlias(ctx, conn, *issuerAlias, *aliasRetire)
+	case "instance retire-alias":
+		return instanceRetireAlias(ctx, conn, *issuerAlias, *aliasRetire)
+	case "instance aliases":
+		return instanceAliases(ctx, conn)
 	case "instance session-limit":
 		return instanceSessionLimit(ctx, conn, *orgID, *sessionMax, *sessionBehaviour)
 	case "instance password-binds":
@@ -778,6 +790,10 @@ func run(args []string) (err error) {
 		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL)
 	case "client set-alg":
 		return clientSetAlg(ctx, conn, *clientID, *alg)
+	case "client set-issuer-alias":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{IssuerAlias: issuerAlias},
+			map[bool]string{true: "tokens are minted under this instance's own issuer",
+				false: "tokens are minted under " + *issuerAlias}[*issuerAlias == ""])
 	case "client set-par":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RequirePAR: requirePAR},
 			map[bool]string{true: "authorization must be pushed first (RFC 9126)",
@@ -1571,25 +1587,9 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			"This must never be set outside local testing.")
 	}
 
-	// Legacy issuers this deployment also claims, so tokens minted for clients
-	// mid-migration are still accepted by our own userinfo and introspection.
-	var aliases []string
-	if rows, err := pool.Query(ctx,
-		`SELECT issuer FROM core.instance_issuer_aliases WHERE instance_id = $1::uuid
-		   AND (retire_after IS NULL OR retire_after > now())`, instanceID); err == nil {
-		for rows.Next() {
-			var a string
-			if rows.Scan(&a) == nil {
-				aliases = append(aliases, a)
-			}
-		}
-		rows.Close()
-		if len(aliases) > 0 {
-			log.Info("accepting legacy issuer aliases for migrated clients", "aliases", aliases)
-		}
-	} else {
-		log.Error("loading issuer aliases", "err", err)
-	}
+	// Legacy issuer aliases are read per request by the server (acceptedIssuers),
+	// not here: read once at startup, a newly registered alias was refused until
+	// a restart and a retired one honoured until one.
 
 	// The SMS gateway. A configuration error is FATAL rather than a fallback to
 	// no SMS: a deployment that named a gateway has stated an intention, and
@@ -1615,7 +1615,6 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 
 	srv, err := httpapi.New(oidc.Config{
 		Issuer:              issuer,
-		IssuerAliases:       aliases,
 		ProxyCookieDomain:   os.Getenv("SIGNARI_PROXY_COOKIE_DOMAIN"),
 		Keys:                set,
 		Root:                root,
@@ -8630,6 +8629,120 @@ func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string) err
 		return err
 	}
 	fmt.Printf("%s: ID and access tokens are signed with %s\n", clientID, alg)
+	return nil
+}
+
+// parseWhen reads a moment given as a date (midnight UTC) or RFC 3339.
+func parseWhen(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	return time.Parse("2006-01-02", s)
+}
+
+// instanceAddAlias registers a legacy issuer the instance `serve` would pick
+// also claims, so a migrating client can be pinned to it.
+func instanceAddAlias(ctx context.Context, conn *pgx.Conn, alias, retire string) error {
+	if alias == "" {
+		return fmt.Errorf("give -alias, the legacy issuer URL relying parties still compare against")
+	}
+	var retireAfter *time.Time
+	if retire != "" {
+		t, err := parseWhen(retire)
+		if err != nil {
+			return fmt.Errorf("-retire-after %q: want YYYY-MM-DD or RFC 3339", retire)
+		}
+		retireAfter = &t
+	}
+	instanceID, issuer, err := selectInstance(ctx, conn, os.Getenv("SIGNARI_ISSUER"))
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.AddIssuerAlias(ctx, tx, instanceID, alias, retireAfter); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s now also claims %s\n", issuer, alias)
+	if retireAfter == nil {
+		fmt.Println("  no retirement planned; aliases are for cutover, so set one with -retire-after")
+	} else {
+		fmt.Printf("  accepted until %s\n", retireAfter.UTC().Format(time.RFC3339))
+	}
+	fmt.Println("  pin a client to it with `signari client set-issuer-alias`")
+	return nil
+}
+
+// instanceRetireAlias stops accepting an alias, now unless told when.
+func instanceRetireAlias(ctx context.Context, conn *pgx.Conn, alias, retire string) error {
+	if alias == "" {
+		return fmt.Errorf("give -alias")
+	}
+	at := time.Now()
+	if retire != "" {
+		t, err := parseWhen(retire)
+		if err != nil {
+			return fmt.Errorf("-retire-after %q: want YYYY-MM-DD or RFC 3339", retire)
+		}
+		at = t
+	}
+	instanceID, issuer, err := selectInstance(ctx, conn, os.Getenv("SIGNARI_ISSUER"))
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.RetireIssuerAlias(ctx, tx, instanceID, alias, at); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s is retired from %s\n", issuer, alias, at.UTC().Format(time.RFC3339))
+	if list, err := store.IssuerAliases(ctx, conn, instanceID); err == nil {
+		for _, a := range list {
+			if a.Issuer == alias && a.Pinned > 0 {
+				fmt.Printf("  %d client(s) pinned to it get %s from then on; relying parties still "+
+					"comparing against the alias will refuse their tokens\n", a.Pinned, issuer)
+			}
+		}
+	}
+	return nil
+}
+
+// instanceAliases lists the instance's aliases and who is pinned to each.
+func instanceAliases(ctx context.Context, conn *pgx.Conn) error {
+	instanceID, issuer, err := selectInstance(ctx, conn, os.Getenv("SIGNARI_ISSUER"))
+	if err != nil {
+		return err
+	}
+	list, err := store.IssuerAliases(ctx, conn, instanceID)
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		fmt.Printf("%s claims no other issuer\n", issuer)
+		return nil
+	}
+	for _, a := range list {
+		when := "no retirement planned"
+		if a.RetireAfter != nil {
+			when = "accepted until " + a.RetireAfter.UTC().Format(time.RFC3339)
+			if !a.RetireAfter.After(time.Now()) {
+				when = "retired " + a.RetireAfter.UTC().Format(time.RFC3339)
+			}
+		}
+		fmt.Printf("%s  %s, %d client(s) pinned\n", a.Issuer, when, a.Pinned)
+	}
 	return nil
 }
 

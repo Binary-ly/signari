@@ -99,7 +99,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 			return nil, err
 		}
 		cl.AccessTokenTTL, cl.RefreshTokenTTL, cl.IDTokenAlg = &st.AccessTokenTTL, &st.RefreshTokenTTL, &st.IDTokenAlg
-		cl.RequirePAR, cl.FirstParty = &st.RequirePAR, &st.FirstParty
+		cl.RequirePAR, cl.FirstParty, cl.IssuerAlias = &st.RequirePAR, &st.FirstParty, &st.IssuerAlias
 		c.clients[id] = cl
 	}
 
@@ -372,6 +372,9 @@ func clientDiff(have, want Client) string {
 	}
 	if w, h := want.FirstParty, have.FirstParty; w != nil && h != nil && *w != *h {
 		d = append(d, "first_party")
+	}
+	if w, h := want.IssuerAlias, have.IssuerAlias; w != nil && h != nil && strings.TrimSpace(*w) != *h {
+		d = append(d, "issuer_alias")
 	}
 	return strings.Join(d, ", ")
 }

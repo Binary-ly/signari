@@ -205,7 +205,13 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	err := q.QueryRow(ctx, `
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce, pkce_methods,
-		       id_token_signed_alg, refresh_token_ttl_s, first_party, issuer_alias,
+		       id_token_signed_alg, refresh_token_ttl_s, first_party,
+		       -- The alias only while it is still claimed: past its retirement a
+		       -- token minted under it carries an issuer this deployment no longer
+		       -- accepts, so the client gets the instance's own.
+		       (SELECT a.issuer FROM core.instance_issuer_aliases a
+		         WHERE a.issuer = core.clients.issuer_alias
+		           AND (a.retire_after IS NULL OR a.retire_after > now())),
 		       may_exchange, exchange_audiences, jwt_bearer_providers,
 		       tls_subject_dn, tls_san_dns, tls_san_uri, tls_san_ip, tls_san_email,
 		       tls_thumbprint, tls_bound_tokens,

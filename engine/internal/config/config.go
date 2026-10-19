@@ -93,12 +93,16 @@ type Client struct {
 	// RequirePAR and FirstParty are the switches; each absent leaves it.
 	RequirePAR *bool `yaml:"require_pushed_authorization_requests"`
 	FirstParty *bool `yaml:"first_party"`
+	// IssuerAlias pins the client to a legacy issuer the instance claims;
+	// empty clears it, absent leaves it.
+	IssuerAlias *string `yaml:"issuer_alias"`
 }
 
 // settings is the client's part for store.SetClientSettings.
 func (c Client) settings() store.ClientSettings {
 	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL,
-		IDTokenAlg: c.IDTokenAlg, RequirePAR: c.RequirePAR, FirstParty: c.FirstParty}
+		IDTokenAlg: c.IDTokenAlg, RequirePAR: c.RequirePAR, FirstParty: c.FirstParty,
+		IssuerAlias: c.IssuerAlias}
 }
 
 // TokenExchange is whether a client may exchange tokens, and for which

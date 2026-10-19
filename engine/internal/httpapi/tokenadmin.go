@@ -114,6 +114,10 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read before the transaction opens: it takes a connection of its own, and
+	// one taken while a transaction is held is how the pool deadlocks.
+	issuers := s.acceptedIssuers(ctx)
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
@@ -133,7 +137,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 
 	if !revoked {
 		// Not a refresh token of ours. Try it as an access token.
-		if claims, verr := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), raw); verr == nil {
+		if claims, verr := tokens.VerifyAccessTokenAny(s.cfg.Keys, issuers, raw); verr == nil {
 			// Only the client's own tokens. A valid token presented by a
 			// different client is somebody else's credential, and revoking it
 			// would be a cross-client denial of service.
@@ -313,7 +317,7 @@ func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 // introspectAccessToken returns nil when raw is not one of our access tokens, so
 // the caller can try it as a refresh token.
 func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, raw string) *introspectionResponse {
-	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), raw)
+	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(ctx), raw)
 	if err != nil {
 		return nil
 	}

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -151,7 +152,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 			Description: assertionRefused, Status: http.StatusBadRequest})
 		return
 	}
-	if terr := oauth.ValidateAssertionClaims(claims, s.assertionAudiences(), time.Now()); terr != nil {
+	if terr := oauth.ValidateAssertionClaims(claims, s.assertionAudiences(ctx), time.Now()); terr != nil {
 		// The per-rule descriptions are precise and stay in the log. They are not
 		// returned: "the assertion names more than one audience" and "the
 		// assertion has no jti" describe the CALLER's own token, which is
@@ -271,7 +272,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 
 	now := time.Now()
 	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
-		Issuer:   s.cfg.Issuer,
+		Issuer:   s.issuerFor(c),
 		Subject:  userID,
 		Audience: []string{c.ClientID},
 		Expiry:   now.Add(c.AccessTokenTTL()).Unix(),
@@ -331,9 +332,10 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 // Both values are this server's own identity, so accepting either does not widen
 // what the audience check protects: an assertion addressed to somebody else still
 // matches neither.
-func (s *Server) assertionAudiences() []string {
-	out := s.acceptedIssuers()
-	for _, base := range s.acceptedIssuers() {
+func (s *Server) assertionAudiences(ctx context.Context) []string {
+	issuers := s.acceptedIssuers(ctx)
+	out := append([]string(nil), issuers...)
+	for _, base := range issuers {
 		out = append(out, strings.TrimSuffix(base, "/")+oidc.PathToken)
 	}
 	return out

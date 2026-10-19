@@ -35,6 +35,7 @@ clients:
     id_token_signed_response_alg: RS256   # ES256 (default), RS256, PS256, EdDSA
     require_pushed_authorization_requests: true   # RFC 9126; omit to leave as it is
     first_party: false           # true skips the consent screen
+    issuer_alias: https://old.example.com   # a live alias of the instance; "" clears
 
 saml_providers:
   - entity_id: urn:sharepoint:intranet

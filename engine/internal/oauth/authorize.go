@@ -257,9 +257,6 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 			return redirectErr("invalid_request",
 				fmt.Sprintf("code_challenge_method %q is not supported; use S256", method))
 		}
-		if !c.AllowsPKCEMethod(method) {
-			return redirectErr("invalid_request", "client may not use this code_challenge_method")
-		}
 		if !validChallenge(req.CodeChallenge) {
 			return redirectErr("invalid_request",
 				"code_challenge must be 43-128 characters of base64url without padding")

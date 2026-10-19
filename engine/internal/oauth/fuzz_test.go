@@ -20,7 +20,7 @@ func FuzzValidateAuthz(f *testing.F) {
 		ClientID: "x", Type: "public", Enabled: true,
 		GrantTypes: []string{"authorization_code"}, ResponseTypes: []string{"code"},
 		Scopes: []string{"openid"}, RedirectURIs: []string{"https://a.test/cb"},
-		RequirePKCE: true, PKCEMethods: []string{"S256"},
+		RequirePKCE: true,
 	}
 
 	f.Fuzz(func(t *testing.T, raw string) {

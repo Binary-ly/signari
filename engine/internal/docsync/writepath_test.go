@@ -96,10 +96,6 @@ var knownUnwritable = map[string]string{
 	"organizations.status": "a suspended organisation is still served; nothing on the request path reads it",
 	"instances.status":     "the same for an issuer",
 
-	// Per-client protocol settings with no command. Each is a real gap; they
-	// cluster into a small number of `client set-*` verbs.
-	"clients.pkce_methods": "fixed at S256",
-
 	// Tables with no create path at all.
 	"migration_sources.kind":              "delegated verification against an old provider cannot be configured",
 	"migration_sources.org_id":            "the same",

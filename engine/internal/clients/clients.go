@@ -112,7 +112,6 @@ type Client struct {
 	// migrated in that cannot be changed as a precondition of the migration; an
 	// estate should end up with it off everywhere.
 	AllowHybrid  bool
-	PKCEMethods  []string
 	IDTokenAlg   string
 	RedirectURIs []string
 
@@ -204,7 +203,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 
 	err := q.QueryRow(ctx, `
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
-		       grant_types, response_types, scopes, require_pkce, pkce_methods,
+		       grant_types, response_types, scopes, require_pkce,
 		       id_token_signed_alg, refresh_token_ttl_s, first_party,
 		       -- The alias only while it is still claimed: past its retirement a
 		       -- token minted under it carries an issuer this deployment no longer
@@ -224,7 +223,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
-			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE, &c.PKCEMethods,
+			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE,
 			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias,
 			&c.MayExchange, &c.ExchangeAudiences, &c.JWTBearerProviders,
 			&tlsDN, &tlsDNS, &tlsURI, &tlsIP, &tlsEmail,
@@ -392,9 +391,6 @@ func normaliseSet(rt string) string {
 
 // AllowsGrantType reports whether the client may use this grant.
 func (c *Client) AllowsGrantType(gt string) bool { return contains(c.GrantTypes, gt) }
-
-// AllowsPKCEMethod reports whether the method is permitted for this client.
-func (c *Client) AllowsPKCEMethod(m string) bool { return contains(c.PKCEMethods, m) }
 
 // UnknownScopes returns any requested scope the client is not registered for.
 func (c *Client) UnknownScopes(requested []string) []string {

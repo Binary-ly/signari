@@ -20,7 +20,6 @@ func testClient() *clients.Client {
 		ResponseTypes: []string{"code"},
 		Scopes:        []string{"openid", "profile", "email"},
 		RequirePKCE:   true,
-		PKCEMethods:   []string{"S256"},
 		RedirectURIs:  []string{"https://app.example.com/cb"},
 	}
 }

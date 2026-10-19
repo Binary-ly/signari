@@ -79,7 +79,16 @@ extraEnv: {}
   # Behind an ingress, name it, or every client shares the ingress's address
   # for rate limits, captcha and network policy (docs/configuration.md,
   # "Behind a reverse proxy"). The engine logs a warning when this is missing.
-  # SIGNARI_TRUSTED_PROXIES: 10.42.0.0/16   # the ingress controller's pod CIDR
+  #
+  # Name the addresses the ingress controller connects from, and nothing
+  # wider. A trusted address may say who the client is, so trusting the whole
+  # pod network (10.42.0.0/16 on k3s) lets every pod in the cluster set
+  # X-Forwarded-For, spend another client's sign-in budget, and pass a
+  # network rule. If the controller has no stable address, give it one
+  # (hostNetwork, or a node pool of its own and that pool's range), or admit
+  # only the controller to this port with a NetworkPolicy before trusting a
+  # range.
+  # SIGNARI_TRUSTED_PROXIES: 10.42.0.17,10.42.1.23   # the ingress controller's pods
   # SIGNARI_CLIENT_IP_SOURCE: x-forwarded-for
 
 resources:

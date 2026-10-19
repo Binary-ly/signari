@@ -98,7 +98,7 @@ a remote desktop is bounded by its session checks instead.
 
 | | |
 |---|---|
-| `SIGNARI_TRUSTED_PROXIES` | Comma-separated addresses or CIDR prefixes of the proxies in front of the engine, such as the ingress controller's pod network |
+| `SIGNARI_TRUSTED_PROXIES` | Comma-separated addresses or CIDR prefixes of the proxies in front of the engine: the addresses the ingress controller connects from, not the whole pod network (see below) |
 | `SIGNARI_CLIENT_IP_SOURCE` | `socket` (default), `x-forwarded-for` or `forwarded` (the RFC 7239 header) |
 
 Every per-address decision keys on the client address: the sign-in and
@@ -137,8 +137,16 @@ headers arrive from a private or loopback address and no proxy is trusted, it
 logs one warning saying so.
 
 ```sh
-SIGNARI_TRUSTED_PROXIES=10.42.0.0/16 SIGNARI_CLIENT_IP_SOURCE=x-forwarded-for signari serve
+SIGNARI_TRUSTED_PROXIES=10.42.0.17,10.42.1.23 SIGNARI_CLIENT_IP_SOURCE=x-forwarded-for signari serve
 ```
+
+Name the addresses your proxy connects from and nothing wider. A trusted
+address is believed about who the client is. Trusting a whole pod network
+(`10.42.0.0/16` on k3s) therefore lets every pod in the cluster set
+`X-Forwarded-For`, spend another client's budget and pass a network rule. If
+the proxy has no stable address, give it one, or let a NetworkPolicy admit only
+the proxy to the engine's port before you trust a range. This page and the Helm
+chart's example used to trust the whole pod network.
 
 ## Mail
 

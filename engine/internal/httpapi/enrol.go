@@ -364,11 +364,24 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 	// so a page cannot render a widget that its own policy then blocks.
 	policy := `default-src 'none'; style-src 'unsafe-inline';` + brandImgSrc(b) +
 		` form-action 'self'; frame-ancestors 'none'`
+	var script, connect []string
+	// The same rule for this server's own script: /passkey.js and the
+	// ceremony's requests, same-origin and never inline, only on a page that
+	// says it loads them.
+	if on, _ := data["PasskeyScript"].(bool); on {
+		script, connect = append(script, "'self'"), append(connect, "'self'")
+	}
 	if on, _ := data["Captcha"].(bool); on {
 		if origins := captchaOrigins(s.captcha.Provider()); origins != "" {
-			policy += `; script-src ` + origins + `; frame-src ` + origins +
-				`; connect-src ` + origins
+			script, connect = append(script, origins), append(connect, origins)
+			policy += `; frame-src ` + origins
 		}
+	}
+	if len(script) > 0 {
+		policy += `; script-src ` + strings.Join(script, " ")
+	}
+	if len(connect) > 0 {
+		policy += `; connect-src ` + strings.Join(connect, " ")
 	}
 	setCSP(w, policy)
 	w.Header().Set("X-Frame-Options", "DENY")

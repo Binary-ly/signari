@@ -78,14 +78,18 @@ function encodeAssertion(cred) {
 }
 
 async function postJSON(url, body) {
-  const r = await fetch(url, {
+  return answered(await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // Ceremony state lives in a __Host- cookie; without this the second half of
     // the ceremony arrives with no challenge and fails as "nothing in progress".
     credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body)
-  });
+  }));
+}
+
+// answered reads a JSON answer, or throws its error_description.
+async function answered(r) {
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
     // Changing how the account signs in needs a recent sign-in; the server
@@ -105,6 +109,45 @@ window.signariRegisterPasskey = async function (name) {
   const q = name ? "?name=" + encodeURIComponent(name) : "";
   return postJSON("/account/passkeys/finish" + q, encodeAttestation(cred));
 };
+
+// Removal. A form post, with the page's CSRF token, because the endpoint
+// checks one: taking a factor away is the change another origin would want.
+window.signariRemovePasskey = async function (id, csrfField) {
+  const body = new URLSearchParams();
+  body.set("id", id);
+  if (csrfField) body.set(csrfField.name, csrfField.value);
+  return answered(await fetch("/account/passkeys/delete", {
+    method: "POST", credentials: "same-origin", body: body
+  }));
+};
+
+// The account page's passkey controls, wired here for the reason the sign-in
+// button below is: an inline handler would be blocked by script-src 'self'.
+// Adding needs WebAuthn and is revealed only where it exists; removing needs
+// only this script, so its buttons are revealed whenever it runs.
+document.addEventListener("DOMContentLoaded", function () {
+  const status = document.getElementById("passkey-status");
+  const say = (m) => { if (status) status.textContent = m; };
+  const csrf = document.getElementById("passkey-csrf");
+  document.querySelectorAll(".passkey-remove").forEach(function (b) {
+    b.hidden = false;
+    b.addEventListener("click", async function () {
+      try {
+        await window.signariRemovePasskey(b.dataset.id, csrf);
+        window.location.reload();
+      } catch (e) { say(e.message); }
+    });
+  });
+  const add = document.getElementById("passkey-add");
+  if (!add || !window.PublicKeyCredential) return;
+  add.hidden = false;
+  document.getElementById("passkey-register").addEventListener("click", async function () {
+    try {
+      await window.signariRegisterPasskey(document.getElementById("passkey-name").value.trim());
+      window.location.reload();
+    } catch (e) { say(e.message); }
+  });
+});
 
 // ONE ceremony at a time, shared between conditional UI and the button.
 //
@@ -197,7 +240,13 @@ document.addEventListener("DOMContentLoaded", function () {
 // Guarded on isConditionalMediationAvailable because calling get() with
 // mediation:"conditional" on a browser that lacks it throws, and the whole page
 // then looks broken to users on older browsers.
+//
+// Only where a field asks for it (autocomplete "webauthn"). The account page
+// loads this script too, and a conditional get() started there stays pending:
+// the API permits one ceremony at a time, so it would refuse the create() the
+// "Add a passkey" button starts.
 (async function () {
+  if (!document.querySelector('input[autocomplete~="webauthn"]')) return;
   if (!window.PublicKeyCredential ||
       !PublicKeyCredential.isConditionalMediationAvailable) return;
   try {

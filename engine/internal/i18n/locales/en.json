@@ -199,6 +199,12 @@
   "account.note": "Adding a provider here is the only way to link one to this account. We never link on a matching email address alone.",
   "account.none": "No external sign-in providers are configured.",
   "account.manage": "Manage your account",
+  "account.passkeys": "Passkeys",
+  "account.passkeys.none": "No passkeys yet. A passkey signs you in with your device's screen lock instead of a password.",
+  "account.passkey.name": "Name",
+  "account.passkey.added": "Added",
+  "account.passkey.namelabel": "Name for a new passkey (optional)",
+  "account.passkey.add": "Add a passkey",
 
   "racindex.title": "Remote access",
   "racindex.notconfigured": "Remote access is not configured on this server. No <code>SIGNARI_GUACD_ADDR</code> is set, so nothing can be connected to.",

@@ -209,6 +209,12 @@
   "account.note": "الإضافة من هنا هي الطريقة الوحيدة لربط مزوّد بهذا الحساب. ولا نربط أبدًا بمجرد تطابق عنوان البريد الإلكتروني.",
   "account.none": "لم يُضبط أي مزوّد خارجي لتسجيل الدخول.",
   "account.manage": "إدارة حسابك",
+  "account.passkeys": "مفاتيح المرور",
+  "account.passkeys.none": "لا توجد مفاتيح مرور بعد. يتيح لك مفتاح المرور تسجيل الدخول بقفل شاشة جهازك بدلًا من كلمة المرور.",
+  "account.passkey.name": "الاسم",
+  "account.passkey.added": "تاريخ الإضافة",
+  "account.passkey.namelabel": "اسم لمفتاح المرور الجديد (اختياري)",
+  "account.passkey.add": "إضافة مفتاح مرور",
 
   "racindex.title": "الوصول عن بُعد",
   "racindex.notconfigured": "الوصول عن بُعد غير مضبوط على هذا الخادم. لم يُضبط <code>SIGNARI_GUACD_ADDR</code>، فلا يوجد ما يمكن الاتصال به.",

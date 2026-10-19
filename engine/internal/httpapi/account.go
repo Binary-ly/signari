@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // externalProvider is one sign-in button on the login page.
@@ -173,19 +174,54 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		providers = append(providers, p)
 	}
 
+	// The person's passkeys, to list and remove, beside the control that adds
+	// one. Registration and removal existed as endpoints, and passkey.js could
+	// drive both, and no page offered either: nobody could add a passkey.
+	passkeys, err := s.accountPasskeys(ctx, userID)
+	if err != nil {
+		s.log.Error("listing passkeys", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	setCSP(w, `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
-	w.Header().Set("X-Frame-Options", "DENY")
+	// PasskeyScript widens renderPage's policy to script-src and connect-src
+	// 'self' for /passkey.js and the ceremony's requests. Nothing inline.
 	s.renderPage(w, r, "account", map[string]any{
-		"Providers": providers, "CSRF": csrf, "CSRFField": csrfFormField,
+		"Providers": providers, "Passkeys": passkeys, "CSRF": csrf, "CSRFField": csrfFormField,
+		"PasskeyScript": true,
 	})
+}
+
+// accountPasskey is one row of the account page's passkey list.
+type accountPasskey struct {
+	ID, Name, Added string
+}
+
+func (s *Server) accountPasskeys(ctx context.Context, userID string) ([]accountPasskey, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id::text, COALESCE(NULLIF(friendly_name,''), 'Passkey'), created_at
+		  FROM core.webauthn_credentials WHERE user_id = $1::uuid ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []accountPasskey
+	for rows.Next() {
+		var p accountPasskey
+		var added time.Time
+		if err := rows.Scan(&p.ID, &p.Name, &added); err != nil {
+			return nil, err
+		}
+		p.Added = added.UTC().Format("2 Jan 2006")
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // handleAccountUnlink removes an external sign-in method.

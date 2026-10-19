@@ -25,6 +25,29 @@ td:last-child{text-align:right;white-space:nowrap}
 {{else}}
 <p class="muted">{{T "account.none"}}</p>
 {{end}}
+<h2 style="margin-top:1.5rem">{{T "account.passkeys"}}</h2>
+{{if .Passkeys}}
+<table>
+<tr><th>{{T "account.passkey.name"}}</th><th>{{T "account.passkey.added"}}</th><th></th></tr>
+{{range .Passkeys}}
+<tr>
+<td>{{.Name}}</td>
+<td>{{.Added}}</td>
+<td><button type="button" class="passkey-remove" data-id="{{.ID}}" hidden>{{T "account.remove"}}</button></td>
+</tr>
+{{end}}
+</table>
+{{else}}
+<p class="muted">{{T "account.passkeys.none"}}</p>
+{{end}}
+<div id="passkey-add" hidden>
+<input type="hidden" id="passkey-csrf" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="passkey-name">{{T "account.passkey.namelabel"}}</label>
+<input id="passkey-name" maxlength="64" autocomplete="off">
+<button type="button" id="passkey-register">{{T "account.passkey.add"}}</button>
+</div>
+<p id="passkey-status" class="muted" role="status"></p>
+<script src="/passkey.js"></script>
 <h2 style="margin-top:1.5rem">{{T "account.manage"}}</h2>
 <ul class="links">
 <li><a href="/account/password">{{T "accountpw.title"}}</a></li>

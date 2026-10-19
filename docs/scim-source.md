@@ -182,9 +182,13 @@ beside it that can drift.
 
 Filtering supports exactly `userName eq "..."` on `/Users` and
 `displayName eq "..."` on `/Groups`, which is what both upstreams
-send before every create. Anything else is a **400**, not an ignored parameter:
-ignoring an unrecognised filter returns the whole directory, and a caller
-reading the first result would then match the wrong person.
+send before every create. Anything else is a **400** with `scimType`
+`invalidFilter` (RFC 7644 Table 9), not an ignored parameter: ignoring an
+unrecognised filter returns the whole directory, and a caller reading the first
+result would then match the wrong person. The value is exactly one quoted
+string, so `userName eq "a" or userName eq "b"` is refused rather than read as a
+search for one user with an odd name, which matched nobody and invited a
+duplicate create.
 
 ## Verified against a running engine
 

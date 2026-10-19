@@ -325,23 +325,5 @@ func parseEmailValue(raw json.RawMessage) (string, error) {
 }
 
 func ParseUserNameFilter(filter string) (string, error) {
-	filter = strings.TrimSpace(filter)
-	if filter == "" {
-		return "", nil
-	}
-	lower := strings.ToLower(filter)
-	if !strings.HasPrefix(lower, "username eq ") {
-		return "", fmt.Errorf("only `userName eq \"...\"` is supported as a filter, "+
-			"got %q. Returning everything for an unrecognised filter would let a "+
-			"caller match the wrong person", filter)
-	}
-	v := strings.TrimSpace(filter[len("username eq "):])
-	if len(v) >= 2 && (v[0] == '"' && v[len(v)-1] == '"') {
-		v = v[1 : len(v)-1]
-	}
-	if v == "" {
-		return "", fmt.Errorf("the filter has no value")
-	}
-	// Unescape the one escape SCIM filters use.
-	return strings.ReplaceAll(v, `\"`, `"`), nil
+	return parseEqFilter(filter, "userName", "/Users")
 }

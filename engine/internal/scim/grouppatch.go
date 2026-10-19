@@ -268,22 +268,37 @@ func GroupNameFrom(displayName string) (string, error) {
 }
 
 func ParseDisplayNameFilter(filter string) (string, error) {
+	return parseEqFilter(filter, "displayName", "/Groups")
+}
+
+// parseEqFilter reads the one filter shape supported, `<attr> eq "<value>"`.
+//
+// The value is parsed as exactly one JSON string, which is what RFC 7644
+// Figure 1's compValue is (specs/rfc7644.txt:1142, "rules from JSON"). It was
+// taken as everything after `eq` with its outer quotes stripped, so
+// `userName eq "a" or userName eq "b"` searched for a user named
+// `a" or userName eq "b`, found none, and told the upstream nobody matched,
+// which is how an upstream comes to create a duplicate. Attribute names are
+// case-insensitive (RFC 7644 §3.4.2.2).
+func parseEqFilter(filter, attr, where string) (string, error) {
 	filter = strings.TrimSpace(filter)
 	if filter == "" {
 		return "", nil
 	}
-	lower := strings.ToLower(filter)
-	if !strings.HasPrefix(lower, "displayname eq ") {
-		return "", fmt.Errorf("only `displayName eq \"...\"` is supported as a "+
-			"filter on /Groups, got %q. Returning everything for an unrecognised "+
-			"filter would let a caller match the wrong group", filter)
+	prefix := strings.ToLower(attr) + " eq "
+	if !strings.HasPrefix(strings.ToLower(filter), prefix) {
+		return "", fmt.Errorf("only `%s eq \"...\"` is supported as a filter on %s, got %q. "+
+			"Returning everything for an unrecognised filter would let a caller match the "+
+			"wrong resource", attr, where, filter)
 	}
-	v := strings.TrimSpace(filter[len("displayname eq "):])
-	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
-		v = v[1 : len(v)-1]
+	var v string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(filter[len(prefix):])), &v); err != nil {
+		return "", fmt.Errorf("the filter's value must be one quoted string, as in "+
+			"`%s eq \"value\"`; %q is not, and no other expression is supported on %s",
+			attr, filter[len(prefix):], where)
 	}
 	if v == "" {
 		return "", fmt.Errorf("the filter has no value")
 	}
-	return strings.ReplaceAll(v, `\"`, `"`), nil
+	return v, nil
 }

@@ -68,7 +68,10 @@ func (s *Server) scimListGroups(w http.ResponseWriter, r *http.Request, src *sto
 
 	displayName, err := scim.ParseDisplayNameFilter(q.Get("filter"))
 	if err != nil {
-		writeSCIMError(w, http.StatusBadRequest, err.Error())
+		// RFC 7644 Table 9: invalidFilter covers "the specified attribute and
+		// filter comparison combination is not supported", so a client can tell
+		// a filter this server cannot answer from a malformed request.
+		writeSCIMErrorType(w, http.StatusBadRequest, "invalidFilter", err.Error())
 		return
 	}
 

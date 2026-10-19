@@ -359,11 +359,25 @@ func TestGroupFiltering(t *testing.T) {
 		t.Errorf("totalResults = %v, want 1: %v", total, body)
 	}
 
-	status, _ = f.do(t, http.MethodGet,
+	status, body = f.do(t, http.MethodGet,
 		`/scim/v2/Groups?filter=id+eq+%22whatever%22`, "")
 	if status != http.StatusBadRequest {
 		t.Errorf("an unrecognised filter gave %d; ignoring it returns everything "+
 			"and the upstream matches the wrong group", status)
+	}
+	// RFC 7644 Table 9 names the case (2.42).
+	if body["scimType"] != "invalidFilter" {
+		t.Errorf("an unsupported filter answered scimType %v, want invalidFilter", body["scimType"])
+	}
+
+	// And on Users, whose only supported filter is userName eq.
+	for _, filter := range []string{`emails+eq+%22a%40b.test%22`, `userName+co+%22a%22`,
+		`userName+eq+%22a%22+or+userName+eq+%22b%22`} {
+		status, body := f.do(t, http.MethodGet, `/scim/v2/Users?filter=`+filter, "")
+		if status != http.StatusBadRequest || body["scimType"] != "invalidFilter" {
+			t.Errorf("Users filter %s answered %d scimType %v, want 400 invalidFilter",
+				filter, status, body["scimType"])
+		}
 	}
 }
 

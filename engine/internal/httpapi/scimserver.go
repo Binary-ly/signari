@@ -199,7 +199,11 @@ func (s *Server) scimListUsers(w http.ResponseWriter, r *http.Request, src *stor
 
 	userName, err := scim.ParseUserNameFilter(q.Get("filter"))
 	if err != nil {
-		writeSCIMError(w, http.StatusBadRequest, err.Error())
+		// RFC 7644 Table 9 (specs/rfc7644.txt:3821): invalidFilter, for "the
+		// specified attribute and filter comparison combination is not
+		// supported". Only `userName eq` is, until the full grammar (7.10); a
+		// bare 400 left a client unable to tell that from a broken request.
+		writeSCIMErrorType(w, http.StatusBadRequest, "invalidFilter", err.Error())
 		return
 	}
 

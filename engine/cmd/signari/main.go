@@ -1777,14 +1777,25 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 					"directory entries, and may set any password")
 		}
 
+		// Plaintext asked for by name, as the admin listener and the LDAP outpost
+		// ask for it, and refused otherwise. Every simple bind carries a password,
+		// and a warning was the whole of the protection: a deployment whose TLS
+		// is terminated in front of the engine starts it with no certificate,
+		// which is the case the warning was written for, and the line went to a
+		// log nobody reads while passwords crossed the network in clear.
+		ldapInsecure := os.Getenv("SIGNARI_LDAP_INSECURE") == "1"
+		if tlsCert == "" && !ldapInsecure {
+			return fmt.Errorf("the LDAP listener will not take passwords in clear: pass " +
+				"-tls-cert and -tls-key, or set SIGNARI_LDAP_INSECURE=1 if it is bound to " +
+				"loopback behind a TLS terminator you control")
+		}
 		ln, err := net.Listen("tcp", ldapAddr)
 		if err != nil {
 			return fmt.Errorf("LDAP listener: %w", err)
 		}
 		if tlsCert == "" {
-			log.Warn("LDAP is listening WITHOUT TLS: every bind sends a password in the " +
-				"clear. Supply -tls-cert and -tls-key, or restrict this listener to a " +
-				"trusted network.")
+			log.Warn("LDAP is listening WITHOUT TLS, as SIGNARI_LDAP_INSECURE asks: every " +
+				"bind sends a password in the clear to whatever reaches this address")
 		} else {
 			cert, cerr := tls.LoadX509KeyPair(tlsCert, tlsKey)
 			if cerr != nil {

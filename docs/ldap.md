@@ -95,8 +95,12 @@ counter anywhere near it.
 **StartTLS is refused; LDAPS is supported.** A server that answers success to
 StartTLS without actually upgrading the connection has told the client the
 channel is protected, and the client then sends a password over it in the clear.
-Supplying `-tls-cert` makes the LDAP listener LDAPS; without one it warns loudly
-that every bind crosses the network readable.
+Supplying `-tls-cert` makes the LDAP listener LDAPS. Without one the engine
+**refuses to start** unless `SIGNARI_LDAP_INSECURE=1` asks for plaintext by
+name, the same rule as the admin API and the LDAP outpost. It used to warn and
+listen anyway, so a deployment that terminated TLS in front of the engine, and
+so started it with no certificate, took every directory password in clear with
+one log line to show for it.
 
 **A failed re-bind drops the identity.** A connection that stayed bound as its
 previous identity would let a client authenticate once and then keep the session

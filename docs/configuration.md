@@ -327,6 +327,7 @@ See [remote-access.md](remote-access.md).
 |---|---|
 | `SIGNARI_LDAP_ADDR` | Listen address |
 | `SIGNARI_LDAP_BASE_DN` | Base DN served |
+| `SIGNARI_LDAP_INSECURE` | `1` permits the LDAP listener to accept binds without TLS. Without it, a listener given no `-tls-cert` **refuses to start**, because every simple bind carries a password. It used to warn and listen anyway, which is exactly what happens behind a TLS-terminating proxy that starts the engine with no certificate. Only reasonable bound to loopback behind a terminator you control. The LDAP outpost has `SIGNARI_OUTPOST_LDAP_INSECURE` for the same decision |
 | `SIGNARI_LDAP_ORG_ID` | Required with more than one organisation |
 | `SIGNARI_LDAP_USER_ATTR` | Attribute carrying the username |
 | `SIGNARI_LDAP_ANONYMOUS_SEARCH` | Permit anonymous search. Off by default |

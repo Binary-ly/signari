@@ -329,7 +329,8 @@ func run(args []string) (err error) {
 	regUses := fs.Int("uses", 0, "how many clients this token may create (0 = unlimited)")
 	ssfEndpoint := fs.String("endpoint", "", "https URL to push Security Event Tokens to")
 	ssfToken := fs.String("receiver-token", "", "bearer token the Shared Signals receiver issued us (optional)")
-	ssfEvents := fs.String("events", "", "comma-separated event types the receiver asked for")
+	ssfEvents := fs.String("events", "",
+		"comma-separated event types: those an SSF receiver asked for, or those an events subscription receives")
 	ssfPoll := fs.Bool("poll", false, "create a poll stream (RFC 8936): the receiver pulls from /ssf/poll instead of us pushing")
 	providerURL := fs.String("provider-url", "", "https endpoint of the extension service to call")
 	providerHook := fs.String("hook", "", "which decision it extends ("+providerHookList()+")")
@@ -981,7 +982,18 @@ func run(args []string) (err error) {
 	case "authz check":
 		return authzCheck(ctx, conn, *orgID, *relSubject, *relAction, *relObject)
 	case "events subscribe":
-		return eventsSubscribe(ctx, conn, *orgID, *name, *subURL, *subEvents)
+		// -events is the name docs/events.md has always given, and it was the
+		// SSF flag here: a subscription made as documented ignored its list and
+		// received every event in the organisation. -event-types, the flag
+		// this read, still works; the two disagreeing is refused.
+		types := *subEvents
+		if *ssfEvents != "" {
+			if types != "" && types != *ssfEvents {
+				return fmt.Errorf("-events and -event-types name different lists; give one")
+			}
+			types = *ssfEvents
+		}
+		return eventsSubscribe(ctx, conn, *orgID, *name, *subURL, types)
 	case "events list":
 		return eventsList(ctx, conn, *orgID)
 	case "events remove":

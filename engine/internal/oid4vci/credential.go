@@ -97,6 +97,10 @@ type Configuration struct {
 	SelectiveClaims []string
 	Lifetime        time.Duration
 	DisplayName     string
+	// RequireKeyAttestation issues only on a proof whose key a trusted
+	// attester vouches for, and is what the metadata's
+	// key_attestations_required describes.
+	RequireKeyAttestation bool
 }
 
 // ValidateRequest applies §8.2's parameter rules.

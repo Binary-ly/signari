@@ -537,6 +537,8 @@ func run(args []string) (err error) {
 			"it MUST be short lived, and it is redeemed within seconds of being scanned")
 	credRootCert := fs.String("root-cert", "",
 		"PEM file of a CA an OID4VCI key proof's x5c chain may verify to (credential trust-root)")
+	credRequireAttestation := fs.Bool("require-key-attestation", false,
+		"issue this credential only to a key a trusted attester vouches for (credential define)")
 	localeTag := fs.String("locale", "",
 		"BCP 47 language tag for this person's security notices, e.g. de or pt-BR. "+
 			"Empty clears it, which returns them to the deployment default")
@@ -918,8 +920,14 @@ func run(args []string) (err error) {
 	case "rar list":
 		return rarList(ctx, conn)
 	case "credential define":
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var requireAttestation *bool
+		if given["require-key-attestation"] {
+			requireAttestation = credRequireAttestation
+		}
 		return credentialDefine(ctx, conn, *orgID, *credConfigs, *credVCT,
-			*credAlways, *credSelective, *credLifetime, *brandName)
+			*credAlways, *credSelective, *credLifetime, *brandName, requireAttestation)
 	case "credential list":
 		return credentialList(ctx, conn)
 	case "credential trust-root":
@@ -8257,8 +8265,13 @@ var credentialClaims = []string{"sub", "email", "email_verified", "preferred_use
 // OID4VCI §12.2: the entry becomes one key of
 // `credential_configurations_supported`, which is what a wallet reads to learn
 // what it may ask for.
+//
+// requireAttestation is nil when -require-key-attestation was not given, which
+// keeps an existing configuration's setting: redefining the claims must not
+// quietly drop a requirement somebody set.
 func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
-	always, selective string, lifetime time.Duration, displayName string) error {
+	always, selective string, lifetime time.Duration, displayName string,
+	requireAttestation *bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org")
@@ -8295,15 +8308,20 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	if lifetime > 0 {
 		interval = fmt.Sprintf("%d seconds", int(lifetime.Seconds()))
 	}
-	if _, err := conn.Exec(ctx, `
+	var required bool
+	if err := conn.QueryRow(ctx, `
 		INSERT INTO core.credential_configurations
-			(org_id, config_id, vct, always_claims, selective_claims, lifetime, display_name)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6::interval, NULLIF($7,''))
+			(org_id, config_id, vct, always_claims, selective_claims, lifetime, display_name,
+			 require_key_attestation)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6::interval, NULLIF($7,''), COALESCE($8::boolean, false))
 		ON CONFLICT (org_id, config_id) DO UPDATE
 		SET vct = EXCLUDED.vct, always_claims = EXCLUDED.always_claims,
 		    selective_claims = EXCLUDED.selective_claims,
-		    lifetime = EXCLUDED.lifetime, display_name = EXCLUDED.display_name`,
-		orgID, configID, vct, a, sel, interval, displayName); err != nil {
+		    lifetime = EXCLUDED.lifetime, display_name = EXCLUDED.display_name,
+		    require_key_attestation = COALESCE($8::boolean,
+		        credential_configurations.require_key_attestation)
+		RETURNING require_key_attestation`,
+		orgID, configID, vct, a, sel, interval, displayName, requireAttestation).Scan(&required); err != nil {
 		return fmt.Errorf("defining the credential: %w", err)
 	}
 
@@ -8317,6 +8335,10 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	}
 	if lifetime > 0 {
 		fmt.Printf("  valid for : %s\n", lifetime)
+	}
+	if required {
+		fmt.Printf("  key       : attested only (key_attestations_required); register the\n")
+		fmt.Printf("              wallet provider with `signari attester add`\n")
 	}
 	fmt.Printf("\nThe claims under `always` are visible to EVERY verifier the holder\n")
 	fmt.Printf("presents to. Only the `selective` ones can be withheld.\n")

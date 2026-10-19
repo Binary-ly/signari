@@ -25,7 +25,7 @@ func CredentialConfigurations(ctx context.Context, db Querier, orgID string) (ma
 	rows, err := db.Query(ctx, `
 		SELECT config_id, format, vct, always_claims, selective_claims,
 		       COALESCE(EXTRACT(EPOCH FROM lifetime), 0)::bigint,
-		       COALESCE(display_name, '')
+		       COALESCE(display_name, ''), require_key_attestation
 		FROM core.credential_configurations
 		WHERE org_id = $1::uuid
 		ORDER BY config_id`, orgID)
@@ -39,7 +39,7 @@ func CredentialConfigurations(ctx context.Context, db Querier, orgID string) (ma
 		var c oid4vci.Configuration
 		var seconds int64
 		if err := rows.Scan(&c.ID, &c.Format, &c.VCT, &c.AlwaysClaims,
-			&c.SelectiveClaims, &seconds, &c.DisplayName); err != nil {
+			&c.SelectiveClaims, &seconds, &c.DisplayName, &c.RequireKeyAttestation); err != nil {
 			return nil, err
 		}
 		c.Lifetime = time.Duration(seconds) * time.Second
@@ -133,8 +133,14 @@ func AllCredentialConfigurations(ctx context.Context, db Querier) (map[string]oi
 		SELECT DISTINCT ON (config_id)
 		       config_id, format, vct, always_claims, selective_claims,
 		       COALESCE(EXTRACT(EPOCH FROM lifetime), 0)::bigint,
-		       COALESCE(display_name, '')
-		FROM core.credential_configurations
+		       COALESCE(display_name, ''),
+		       -- Required if any organisation's configuration of this id
+		       -- requires it: a wallet told so sends an attestation every
+		       -- tenant accepts, and one told otherwise is refused by the
+		       -- tenant that does.
+		       EXISTS (SELECT 1 FROM core.credential_configurations r
+		               WHERE r.config_id = c.config_id AND r.require_key_attestation)
+		FROM core.credential_configurations c
 		ORDER BY config_id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing credential configurations: %w", err)
@@ -146,7 +152,7 @@ func AllCredentialConfigurations(ctx context.Context, db Querier) (map[string]oi
 		var c oid4vci.Configuration
 		var seconds int64
 		if err := rows.Scan(&c.ID, &c.Format, &c.VCT, &c.AlwaysClaims,
-			&c.SelectiveClaims, &seconds, &c.DisplayName); err != nil {
+			&c.SelectiveClaims, &seconds, &c.DisplayName, &c.RequireKeyAttestation); err != nil {
 			return nil, err
 		}
 		c.Lifetime = time.Duration(seconds) * time.Second

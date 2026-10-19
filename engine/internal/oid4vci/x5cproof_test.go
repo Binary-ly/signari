@@ -68,4 +68,28 @@ func TestAProofCarryingAnX5CChainIsReadAsOne(t *testing.T) {
 		!strings.Contains(err.Error(), "more than one of kid, jwk") {
 		t.Errorf("a proof carrying jwk and x5c gave %v, want the mutually-exclusive refusal", err)
 	}
+
+	// An attestation vouching for some other key does not make this one
+	// attested, and is refused rather than ignored, as it is for a jwk proof.
+	att := newAttester(t)
+	ctx.TrustedAttesters = []*jose.JSONWebKey{att.jwk}
+	other := newHolder(t)
+	elsewhere := att.sign(t, TypKeyAttestation, []*jose.JSONWebKey{other.jwk}, now.Unix(), now.Add(time.Hour).Unix(), "")
+	opts := (&jose.SignerOptions{}).
+		WithType(jose.ContentType(TypProof)).
+		WithHeader("x5c", chainHeader(leaf)).
+		WithHeader(jose.HeaderKey(HeaderKeyAttestation), elsewhere)
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: leafKey}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(goodProofClaims(now))
+	obj, err := signer.Sign(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatched, _ := obj.CompactSerialize()
+	if _, err := ValidateJWTProof(mismatched, ctx, now); err == nil || !strings.Contains(err.Error(), "does not vouch") {
+		t.Errorf("an x5c proof with an attestation for another key gave %v, want the coverage refusal", err)
+	}
 }

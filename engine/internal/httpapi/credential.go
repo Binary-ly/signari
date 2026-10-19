@@ -258,9 +258,15 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 
 	issued := make([]oid4vci.IssuedCredential, 0, len(proofs))
 	for _, p := range proofs {
-		key, perr := s.validateCredentialProof(ctx, claims, p, attesters, roots)
+		key, attested, perr := s.validateCredentialProof(ctx, claims, p, attesters, roots)
 		if perr != nil {
 			writeCredentialError(w, http.StatusBadRequest, "invalid_proof", perr.Error())
+			return
+		}
+		if cfg.RequireKeyAttestation && !attested {
+			writeCredentialError(w, http.StatusBadRequest, "invalid_proof",
+				"this credential is issued only to a key a trusted attester vouches for: "+
+					"send a key_attestation (Appendix D) covering the proof's key")
 			return
 		}
 		tp, terr := key.Thumbprint(crypto.SHA256)
@@ -301,17 +307,18 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, oid4vci.CredentialResponse{Credentials: issued})
 }
 
-// validateCredentialProof checks one key proof and spends its nonce.
+// validateCredentialProof checks one key proof and spends its nonce. attested
+// reports whether a trusted attester vouched for the key.
 func (s *Server) validateCredentialProof(ctx context.Context,
 	claims *tokens.AccessTokenClaims, proof string, attesters []*jose.JSONWebKey,
-	roots *x509.CertPool) (*jose.JSONWebKey, error) {
+	roots *x509.CertPool) (_ *jose.JSONWebKey, attested bool, _ error) {
 
 	// The nonce is read from the proof before validation so the right expected
 	// value can be supplied; the proof's signature is what makes it trustworthy,
 	// and the claim is compared, not believed.
 	presented := oid4vci.NonceFromProof(proof)
 	if err := store.ClaimCredentialNonce(ctx, s.db, presented); err != nil {
-		return nil, errors.New("the key proof does not carry a fresh c_nonce from " +
+		return nil, false, errors.New("the key proof does not carry a fresh c_nonce from " +
 			"this issuer's nonce endpoint")
 	}
 
@@ -326,9 +333,9 @@ func (s *Server) validateCredentialProof(ctx context.Context,
 		TrustedX5CRoots:  roots,
 	}, time.Now())
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return key.JWK, nil
+	return key.JWK, key.Attested, nil
 }
 
 // issueCredential mints one SD-JWT VC.
@@ -388,6 +395,16 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 
 	supported := map[string]any{}
 	for id, c := range configs {
+		jwtProof := map[string]any{
+			"proof_signing_alg_values_supported": oid4vci.ProofAlgNames(),
+		}
+		// specs/oid4vci.txt:2429: "If the Credential Issuer does not require a
+		// key attestation, this parameter MUST NOT be present". Present, and
+		// empty (no constraint on key_storage or user_authentication), for
+		// exactly the configurations the endpoint enforces it for.
+		if c.RequireKeyAttestation {
+			jwtProof["key_attestations_required"] = map[string]any{}
+		}
 		entry := map[string]any{
 			"format": c.Format,
 			"vct":    c.VCT,
@@ -395,9 +412,7 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 			// proof_types_supported parameter is present" — so declaring this is
 			// what makes a key proof mandatory, which is the point.
 			"proof_types_supported": map[string]any{
-				oid4vci.ProofTypeJWT: map[string]any{
-					"proof_signing_alg_values_supported": oid4vci.ProofAlgNames(),
-				},
+				oid4vci.ProofTypeJWT: jwtProof,
 			},
 			"credential_signing_alg_values_supported": []string{string(keys.ES256)},
 			// §12.2.4, and absence here is not neutral:

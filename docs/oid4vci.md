@@ -399,6 +399,23 @@ organisation's attesters for every request, so one added or removed holds at the
 next credential. Until October 2026 it read none, and every attested proof was
 refused while this page said to register one.
 
+An attestation is accepted when it is offered. To *require* one for a
+credential, define it with `-require-key-attestation`:
+
+```sh
+signari credential define -org <uuid> -credential-configuration IdentityCredential \
+  -vct https://example.com/identity -selective email -require-key-attestation
+```
+
+The credential endpoint then refuses a proof whose key no trusted attester
+vouches for, and the issuer metadata lists `key_attestations_required: {}` under
+that configuration's `jwt` proof type, empty because it puts no constraint on
+`key_storage` or `user_authentication`. It is listed for those configurations
+and no others: the specification says the member "MUST NOT be present" when the
+issuer does not require one (`specs/oid4vci.txt:2429`). An attestation that
+vouches for a key other than the one the proof is signed with is refused, for
+every key source.
+
 
 ## Harsh review of SD-JWT against RFC 9901 (August 2026)
 

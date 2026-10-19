@@ -49,6 +49,10 @@ type ProofKey struct {
 	KeyID string
 	// Nonce is the c_nonce the proof echoed, empty when none was sent.
 	Nonce string
+	// Attested is true when a key attestation from a trusted attester vouched
+	// for this key (Appendix D). A configuration that requires one is issued
+	// only on such a proof.
+	Attested bool
 }
 
 // proofClaims is the JWT body of a key proof (§F.1).
@@ -203,12 +207,15 @@ func ValidateJWTProof(raw string, ctx ProofContext, now time.Time) (*ProofKey, e
 				"by `x5c` verified to a configured root; this proof's `kid` has no " +
 				"attestation to resolve it against")
 		}
-	} else if attested != nil && !attested.Contains(h.JSONWebKey) {
-		// An attestation that does not cover the key being proved is worse than
-		// none: it makes the request look hardware-backed while the signing key
-		// is whatever the wallet chose.
+	}
+	// An attestation that does not cover the key being proved is worse than
+	// none: it makes the request look hardware-backed while the signing key is
+	// whatever the wallet chose. Checked for every key source, now that being
+	// attested decides whether a credential that requires it is issued; the
+	// `x5c` path never compared them.
+	if attested != nil && !attested.Contains(h.JSONWebKey) {
 		return nil, fmt.Errorf("the key proof carries a key_attestation that does not " +
-			"vouch for the key in the proof's jwk header")
+			"vouch for the key the proof is signed with")
 	}
 	// Defence in depth, and honestly labelled: go-jose refuses an embedded
 	// private JWK inside ParseSigned ("invalid embedded jwk, must be public
@@ -276,7 +283,7 @@ func ValidateJWTProof(raw string, ctx ProofContext, now time.Time) (*ProofKey, e
 			"issuer provided, so its freshness cannot be established")
 	}
 
-	return &ProofKey{JWK: h.JSONWebKey, Nonce: c.Nonce}, nil
+	return &ProofKey{JWK: h.JSONWebKey, Nonce: c.Nonce, Attested: attested != nil}, nil
 }
 
 // DefaultProofAlgs are the signing algorithms accepted for key proofs.

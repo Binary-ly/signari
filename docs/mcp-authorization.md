@@ -9,14 +9,14 @@ Signari's role in that picture is the **authorization server**.
 | Requirement | Level | Signari |
 |---|---|---|
 | Implement OAuth 2.1 with measures for confidential and public clients | MUST | yes |
-| Provide OAuth 2.0 Authorization Server Metadata (RFC 8414) | MUST | yes |
+| Provide OAuth 2.0 Authorization Server Metadata (RFC 8414) | MUST | yes, at `/.well-known/oauth-authorization-server` (inserted before the issuer's path, §3.1) as well as the OpenID location |
 | Support Dynamic Client Registration (RFC 7591) | SHOULD | yes, opt-in per deployment |
 | Only accept tokens valid for use with their own resources | MUST | yes — enforced at `/oauth2/userinfo` |
 | Rotate refresh tokens for public clients | MUST | yes, with reuse detection |
 | Validate exact redirect URIs against pre-registered values | MUST | yes |
 | Redirect URIs `localhost` or HTTPS only | MUST | yes |
 | All endpoints over HTTPS | MUST | yes |
-| Issue short-lived access tokens | SHOULD | 5 minutes |
+| Issue short-lived access tokens | SHOULD | 5 minutes by default; per client from one minute to an hour (`signari client set-lifetimes`) |
 | Honour RFC 8707 `resource` at both endpoints | — | yes, and it becomes `aud` |
 
 Most of this was already true, and several rows became true earlier in this

@@ -450,6 +450,16 @@ func routeLabel(pattern string) string {
 func (s *Server) mux() *http.ServeMux {
 	mux := recordingMux{http.NewServeMux()}
 	mux.HandleFunc("GET "+oidc.PathDiscovery, s.handleDiscovery)
+	// RFC 8414 §3: OAuth 2.0 Authorization Server Metadata, "at a path formed
+	// by inserting a well-known URI string into the authorization server's
+	// issuer identifier between the host component and the path component", by
+	// default /.well-known/oauth-authorization-server. The same document as
+	// the OpenID one: §3 lets a server "publish its metadata at multiple
+	// well-known locations", and its issuer is the issuer either way (§3.3).
+	// MCP clients look here first, and docs/mcp-authorization.md said it was
+	// served while it answered 404.
+	mux.HandleFunc("GET "+insertWellKnown(s.cfg.Issuer, "/.well-known/oauth-authorization-server"),
+		s.handleDiscovery)
 	mux.HandleFunc("GET "+oidc.PathJWKS, s.handleJWKS)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)

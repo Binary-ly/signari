@@ -367,9 +367,9 @@ See [CAPTCHA](captcha.md).
 |---|---|
 | `SIGNARI_GEOIP_DB` | MaxMind database for impossible-travel checks. Not bundled and not downloaded — an identity provider that fetches a binary blob on startup has added a supply chain to the authentication path |
 | `SIGNARI_GEOIP_STATIC` | A fixed mapping, for testing |
-| `SIGNARI_CA_BUNDLE` | Roots for outbound calls |
+| `SIGNARI_CA_BUNDLE` | A PEM file of certificate authorities **added** to the system roots for every outbound HTTPS call: delivery, transmitter and issuer keys, `jwks_uri`, federation, discovery, directory sync. Read once at startup, and a file that cannot be read or holds no certificate **stops the process**. It used to be read by logout and event delivery alone, so a key set behind an internal authority failed with an unknown-authority error that pointed at nothing. Trusting an authority opens no address: an internal destination is still named in `SIGNARI_OUTBOUND_ALLOW_PRIVATE` |
 | `SIGNARI_ALLOW_PRIVATE_DELIVERY` | Permit logout and event delivery to private, loopback and link-local addresses. **Off by default.** A `backchannel_logout_uri` is chosen by the *client*, so without the check a registered client can have this server POST a signed logout token into your internal network on every sign-out. Set `1` only if your relying parties genuinely are internal. Even then no cloud metadata endpoint is reached, in any form that carries one (see [Internal destinations](#internal-destinations)). The switch once replaced the address check with none at all, so a client's logout or CIBA notification URL could read the instance's credentials. Trusting an internal CA (`SIGNARI_CA_BUNDLE`) is a different decision and does not imply this one. |
-| `SIGNARI_SCIM_CA_BUNDLE` | Roots for SCIM targets specifically |
+| `SIGNARI_SCIM_CA_BUNDLE` | Authorities added for SCIM targets specifically, on top of `SIGNARI_CA_BUNDLE`. With that unset it also covers delivery, as it did before the general setting existed |
 | `SIGNARI_OUTBOUND_ALLOW_PRIVATE` | Comma-separated addresses or prefixes, such as `10.20.0.0/16,192.168.7.9`, that outbound requests may reach although they are private. **Empty by default.** See [Internal destinations](#internal-destinations) below |
 | `SIGNARI_ADMIN_TOKEN` | Bearer token for the admin API |
 

@@ -168,9 +168,10 @@ directly.
 Back-channel logout endpoints, SCIM targets and CAEP receivers are frequently
 internal services behind a private certificate authority. Without a way to trust
 one, what operators actually do is disable verification — so this adds a named
-authority to the trust store for outbound deliveries. It *adds* to the system
-pool, so trusting an internal CA does not quietly stop public endpoints from
-verifying.
+authority to the trust store for every outbound call: deliveries, and the
+receiver's fetch of a transmitter's keys, which until October 2026 ignored it.
+It *adds* to the system pool, so trusting an internal CA does not quietly stop
+public endpoints from verifying.
 
 ---
 

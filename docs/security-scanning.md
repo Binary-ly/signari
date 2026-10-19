@@ -307,6 +307,12 @@ the sign-in's transaction and the redirect happens after it is released. The
 redirect target is still `AuthorizeURL` on the configured API host. gosec simply
 no longer follows it across the two functions.
 
+**71** when `SIGNARI_CA_BUNDLE` moved into `safedial`, which reads it once at
+startup so that every outbound client trusts it, not only delivery. It is a new
+`G304` of the operator-path class above. The delivery path keeps its own
+`G304`, because it still reads the older `SIGNARI_SCIM_CA_BUNDLE` when the
+general setting is unset.
+
 ## A fourth sweep: exported functions nothing calls
 
 The three sweeps above catch unimported *packages*, documented-but-absent

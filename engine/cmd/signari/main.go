@@ -227,6 +227,12 @@ func run(args []string) error {
 	if err := safedial.AllowPrivate(os.Getenv("SIGNARI_OUTBOUND_ALLOW_PRIVATE")); err != nil {
 		return err
 	}
+	// The same moment for the same reason: a bundle that was set and cannot be
+	// read would otherwise leave every internal destination failing with an
+	// unknown-authority error that names nothing.
+	if err := safedial.TrustBundle(os.Getenv("SIGNARI_CA_BUNDLE")); err != nil {
+		return err
+	}
 
 	fs := flag.NewFlagSet("signari", flag.ContinueOnError)
 	dsn := fs.String("dsn", os.Getenv("SIGNARI_DSN"), "PostgreSQL connection string")
@@ -3357,10 +3363,9 @@ func scimHTTPClient() (*http.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading SIGNARI_SCIM_CA_BUNDLE: %w", err)
 	}
-	pool, err := x509.SystemCertPool()
-	if err != nil || pool == nil {
-		pool = x509.NewCertPool()
-	}
+	// On top of SIGNARI_CA_BUNDLE, not beside it: the general roots apply to
+	// SCIM targets too, and the narrower bundle only adds to them.
+	pool := safedial.Roots()
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("%s contains no certificates", bundle)
 	}

@@ -2,7 +2,6 @@ package outbox
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"net/http"
 	"os"
 	"strings"
@@ -73,21 +72,16 @@ func outboundClient(timeout time.Duration) *http.Client {
 		transport = safedial.Transport()
 	}
 
-	bundle := os.Getenv("SIGNARI_CA_BUNDLE")
-	if bundle == "" {
-		bundle = os.Getenv("SIGNARI_SCIM_CA_BUNDLE")
-	}
-	if bundle != "" {
+	// SIGNARI_CA_BUNDLE is already on the transport: safedial applies it to
+	// every client it builds (safedial.TrustBundle, at startup). The SCIM
+	// bundle stands in for it here only when it is unset, as it always has.
+	if bundle := os.Getenv("SIGNARI_SCIM_CA_BUNDLE"); bundle != "" && os.Getenv("SIGNARI_CA_BUNDLE") == "" {
 		if pem, err := os.ReadFile(bundle); err == nil {
-			pool, perr := x509.SystemCertPool()
-			if perr != nil || pool == nil {
-				pool = x509.NewCertPool()
-			}
 			// A bundle that does not parse is ignored rather than fatal: delivery
 			// still works for anything the system pool trusts, and refusing to
 			// start over a misconfigured optional setting would take the whole
 			// engine down for a feature nobody may be using.
-			if pool.AppendCertsFromPEM(pem) {
+			if pool := safedial.Roots(); pool.AppendCertsFromPEM(pem) {
 				transport.TLSClientConfig = &tls.Config{
 					RootCAs: pool, MinVersion: tls.VersionTLS12,
 				}

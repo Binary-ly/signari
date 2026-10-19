@@ -19,6 +19,7 @@ G304    internal/i18n/i18n.go               1      operator-configured locale di
 G304    internal/kerberos/password.go       1      operator-configured keytab
 G304    internal/outbox/tls.go              1      operator-configured CA bundle
 G304    internal/pages/pages.go             1      operator-configured theme directory
+G304    internal/safedial/safedial.go       1      operator-configured CA bundle (SIGNARI_CA_BUNDLE), read once at startup
 G306    cmd/signari/main.go                 1      QR SVG output for the operator, not a secret
 G306    cmd/signari/theme.go                1      ejected page templates, not secrets
 G703    cmd/signari/main.go                 6      operator-supplied paths, same reasoning as G304

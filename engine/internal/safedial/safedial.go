@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -362,7 +363,7 @@ func TransportAllowingPrivate() *http.Transport {
 
 func transportWith(extra []netip.Prefix) *http.Transport {
 	d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second, Control: controlWith(extra)}
-	return &http.Transport{
+	t := &http.Transport{
 		DialContext:           d.DialContext,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 10 * time.Second,
@@ -371,6 +372,59 @@ func transportWith(extra []netip.Prefix) *http.Transport {
 		ExpectContinueTimeout: 1 * time.Second,
 		MaxIdleConnsPerHost:   2,
 	}
+	if pool := roots.Load(); pool != nil {
+		t.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	}
+	return t
+}
+
+// roots are the system roots plus SIGNARI_CA_BUNDLE, or nil for the system
+// roots alone.
+var roots atomic.Pointer[x509.CertPool]
+
+// TrustBundle adds the PEM certificates in the file at path to the system
+// roots for every client built here, which is what SIGNARI_CA_BUNDLE promises:
+// roots for outbound calls. Empty means the system roots alone.
+//
+// The setting was documented that way and read by logout and event delivery
+// only, so a transmitter's keys, a jwks_uri, a federation trust anchor or an
+// issuer behind an internal authority failed with an unknown-authority error,
+// and nothing pointed at the setting that looked as if it covered them.
+//
+// It adds rather than replaces, so trusting an internal authority does not stop
+// public endpoints verifying. Which certificates are trusted and which
+// addresses may be reached stay separate: this opens no private range.
+func TrustBundle(path string) error {
+	if path == "" {
+		roots.Store(nil)
+		return nil
+	}
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("SIGNARI_CA_BUNDLE: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return fmt.Errorf("SIGNARI_CA_BUNDLE: %s holds no PEM certificate", path)
+	}
+	roots.Store(pool)
+	return nil
+}
+
+// Roots is a copy of the roots clients built here trust, for a caller adding a
+// narrower bundle of its own on top.
+func Roots() *x509.CertPool {
+	if pool := roots.Load(); pool != nil {
+		return pool.Clone()
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		return x509.NewCertPool()
+	}
+	return pool
 }
 
 // Client returns an HTTP client for calling addresses somebody else chose.

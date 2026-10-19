@@ -2,13 +2,17 @@ package safedial
 
 import (
 	"crypto/x509"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The addresses an outbound request from an identity provider must never reach.
@@ -160,6 +164,63 @@ func TestNoAllowanceReachesAnyMetadataEndpoint(t *testing.T) {
 		if !permitted(net.ParseIP(ip), everything) {
 			t.Errorf("an allowance of everything refused %s, which is no metadata endpoint", ip)
 		}
+	}
+}
+
+// SIGNARI_CA_BUNDLE is roots for outbound calls, so every client built here
+// trusts it: a JWKS behind an internal authority is fetched once the bundle
+// names that authority, and not before. It was read by delivery alone, and the
+// key fetchers failed with an unknown-authority error.
+func TestTheCABundleReachesEveryClient(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"keys":[]}`)
+	}))
+	defer srv.Close()
+	t.Cleanup(func() { _ = AllowPrivate(""); _ = TrustBundle("") })
+	if err := AllowPrivate("127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	fetch := func() error {
+		resp, err := Client(5 * time.Second).Get(srv.URL + "/jwks")
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		return err
+	}
+	if err := fetch(); err == nil || !strings.Contains(err.Error(), "certificate") {
+		t.Fatalf("an internal authority was trusted with no bundle: %v", err)
+	}
+
+	bundle := filepath.Join(t.TempDir(), "ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	if err := os.WriteFile(bundle, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := TrustBundle(bundle); err != nil {
+		t.Fatal(err)
+	}
+	if err := fetch(); err != nil {
+		t.Fatalf("the bundle's authority was not trusted by safedial.Client: %v", err)
+	}
+	if !Roots().Equal(roots.Load()) {
+		t.Error("Roots is not the pool the clients trust")
+	}
+
+	// Trusting an authority opens no address: the allowance above is what let
+	// loopback through, and without it the bundle changes nothing.
+	_ = AllowPrivate("")
+	if err := fetch(); err == nil {
+		t.Error("a CA bundle let a client reach loopback")
+	}
+
+	if err := os.WriteFile(bundle, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := TrustBundle(bundle); err == nil {
+		t.Error("a bundle with no certificate in it was accepted")
+	}
+	if err := TrustBundle(filepath.Join(t.TempDir(), "missing.pem")); err == nil {
+		t.Error("a bundle that does not exist was accepted")
 	}
 }
 

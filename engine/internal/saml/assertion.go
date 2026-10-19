@@ -25,6 +25,7 @@ const (
 	StatusAuthnFailed       = "urn:oasis:names:tc:SAML:2.0:status:AuthnFailed"
 	StatusInvalidNameID     = "urn:oasis:names:tc:SAML:2.0:status:InvalidNameIDPolicy"
 	StatusRequestDenied     = "urn:oasis:names:tc:SAML:2.0:status:RequestDenied"
+	statusVersionMismatch   = "urn:oasis:names:tc:SAML:2.0:status:VersionMismatch"
 	confirmationBearer      = "urn:oasis:names:tc:SAML:2.0:cm:bearer"
 	AuthnContextPassword    = "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
 	AuthnContextMFA         = "urn:oasis:names:tc:SAML:2.0:ac:classes:MultiFactorAuthentication"
@@ -427,11 +428,18 @@ func BuildStatusResponse(in StatusInput) (string, error) {
 
 	status := resp.CreateElement("samlp:Status")
 	code := status.CreateElement("samlp:StatusCode")
-	code.CreateAttr("Value", StatusResponder)
-	if in.Status != StatusResponder {
-		// The specific reason is a SECOND-level code. The schema allows only the
-		// top-level values here, so putting a second-level URN in the first
-		// position produces a document strict providers reject.
+	switch in.Status {
+	case StatusRequester, StatusResponder, StatusSuccess, statusVersionMismatch:
+		// A top-level code stands at the top. saml-core-2.0-os lines 1628-1629:
+		// "The value of the topmost <StatusCode> element MUST be from the
+		// top-level list", which is these four (1635-1645). Requester used to be
+		// nested under Responder, telling the provider the fault was ours.
+		code.CreateAttr("Value", in.Status)
+	default:
+		// A second-level code (NoPassive, RequestDenied) goes beneath one. The
+		// schema allows only the top-level values in the first position, so a
+		// second-level URN there produces a document strict providers reject.
+		code.CreateAttr("Value", StatusResponder)
 		sub := code.CreateElement("samlp:StatusCode")
 		sub.CreateAttr("Value", in.Status)
 	}

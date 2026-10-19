@@ -568,6 +568,10 @@ password. See [desktop-login.md](desktop-login.md).
 class; request latency; sign-ins by outcome; tokens by grant type; authentication
 failures by mechanism.
 
+The HTTP series covers the admin API as well as the protocol listener, under
+its own `/admin/…` route patterns. Until October 2026 the admin API was not
+counted at all, so every write to the deployment went unmeasured.
+
 Sign-ins and authentication failures are counted from the audit trail, so every
 sign-in path that records one (the form, LDAP, RADIUS, an outpost, Kerberos, a
 passkey) is counted. Tokens are counted where the token endpoint answers 200.

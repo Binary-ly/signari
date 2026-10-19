@@ -1706,6 +1706,16 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		go models.Run(workerCtx, fidomds.DefaultRefresh)
 	}
 
+	// The metrics engine, built here rather than beside its listener below so
+	// the admin API, which starts first, can be counted too. Built only when it
+	// will be served: instrumenting a process nobody can scrape is work done for
+	// nothing, and the nil case keeps the middleware out of both routers.
+	metricsAddr := os.Getenv("SIGNARI_METRICS_ADDR")
+	var met *metrics.Engine
+	if metricsAddr != "" {
+		met = metrics.NewEngine()
+	}
+
 	// The admin API listens on its OWN address, and is off unless one is given.
 	// It is the write surface for the entire identity provider; exposing it on
 	// the same public listener as the protocol endpoints would put it one
@@ -1716,6 +1726,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		if err != nil {
 			return fmt.Errorf("admin API: %w", err)
 		}
+		adminSrv.SetMetrics(met)
 		// Personal user attributes are sealed under the subject's key, so the
 		// attribute routes need the key that unwraps subject keys. Without it
 		// they are not registered at all.
@@ -1985,12 +1996,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// A separate address also means the usual advice ("bind it to the internal
 	// network") is something an operator can actually follow, rather than being
 	// told to put a path exception in a proxy.
-	metricsAddr := os.Getenv("SIGNARI_METRICS_ADDR")
-	if metricsAddr != "" {
-		// Built only when it will be served. Instrumenting a process nobody can
-		// scrape is work done for nothing, and the nil case is what keeps the
-		// middleware out of Routes() entirely.
-		met := metrics.NewEngine()
+	if met != nil {
 		// Sign-ins and authentication failures are counted off the audit
 		// trail, which every sign-in path already writes to.
 		audit.SetObserver(func(e audit.Event) { met.ObserveAudit(e) })

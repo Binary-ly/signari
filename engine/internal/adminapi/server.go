@@ -30,6 +30,7 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/metrics"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/ratelimit"
 	"signari.dev/engine/internal/store"
@@ -46,6 +47,10 @@ type Server struct {
 	// document is rendered from this rather than from a parallel description,
 	// so it cannot name a route that does not exist or omit one that does.
 	ops []operation
+	// metrics counts every admin request by route, method and status, on the
+	// same series as the protocol listener (the /admin/ prefix keeps them
+	// apart). Nil when nothing scrapes the process.
+	metrics *metrics.Engine
 	// hasher is the ENGINE's Argon2 configuration. Passwords set by an
 	// administrator must be written with the same parameters the login path
 	// expects; a hash produced elsewhere is a credential that may simply not
@@ -130,8 +135,26 @@ func (s *Server) SetRootKey(root *keys.RootKey) { s.root = root }
 // is part of what a caller receives. Exposing the bare mux and a separate
 // wrapper would leave two ways to serve this API, one of them unlimited -- and
 // the unlimited one is shorter to type.
+// SetMetrics instruments the admin API. Until it existed, every write to the
+// identity provider (each client disabled, each token minted, each privilege
+// granted) went unmeasured while the protocol listener counted its health
+// checks.
+func (s *Server) SetMetrics(e *metrics.Engine) { s.metrics = e }
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	handle := mux.HandleFunc
+	if s.metrics != nil {
+		// Each pattern declared to the route label set as it is registered,
+		// as the protocol router does, or every admin series would read
+		// route="other".
+		handle = func(pattern string, h func(http.ResponseWriter, *http.Request)) {
+			if i := strings.IndexByte(pattern, '/'); i >= 0 {
+				metrics.RegisterRoutePattern(pattern[i:])
+			}
+			mux.HandleFunc(pattern, h)
+		}
+	}
 
 	// route registers a handler AND records the operation, so the OpenAPI
 	// document is derived from this list rather than written beside it.
@@ -142,7 +165,7 @@ func (s *Server) Routes() http.Handler {
 	// the document that generated somebody's client.
 	s.ops = s.ops[:0]
 	route := func(pattern, scope string, h http.HandlerFunc) {
-		mux.HandleFunc(pattern, s.auth(scope, canonicalIDs(h)))
+		handle(pattern, s.auth(scope, canonicalIDs(h)))
 		s.recordOperation(pattern, scope)
 	}
 	// privileged is route for a write on a user or a group, which needs
@@ -151,7 +174,7 @@ func (s *Server) Routes() http.Handler {
 	// derives the routes that need it from this table, so a write on a user
 	// registered with plain route fails there.
 	privileged := func(pattern, scope string, target privilegedTarget, h http.HandlerFunc) {
-		mux.HandleFunc(pattern, s.auth(scope, canonicalIDs(s.requirePrivileged(target, h))))
+		handle(pattern, s.auth(scope, canonicalIDs(s.requirePrivileged(target, h))))
 		s.recordOperation(pattern, scope)
 		s.ops[len(s.ops)-1].privileged = true
 	}
@@ -238,9 +261,15 @@ func (s *Server) Routes() http.Handler {
 	// The document itself, unauthenticated. See handleOpenAPI for why: it
 	// describes the shape of the API and no data, and the same facts are already
 	// public in docs/admin-api.md.
-	mux.HandleFunc("GET /admin/openapi.json", s.handleOpenAPI)
+	handle("GET /admin/openapi.json", s.handleOpenAPI)
 
-	return s.limitArrivals(mux)
+	var inner http.Handler = mux
+	if s.metrics != nil {
+		// Innermost, next to the mux, which is the only place the matched
+		// pattern is known (see the same choice in httpapi.Routes).
+		inner = s.metrics.Middleware(mux)
+	}
+	return s.limitArrivals(inner)
 }
 
 // limitArrivals is the outermost wrapper: it runs before authentication, because

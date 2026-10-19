@@ -304,9 +304,8 @@ func (fl *Flow) checkDriven() error {
 		for _, name := range st.stageNames() {
 			if !ok[name] {
 				return fmt.Errorf("step %d is %s, which this engine does not run in a flow "+
-					"`on: %s` yet: a sign-in would walk past it and a sign-up or recovery "+
-					"would stop at it, so the flow does not say what happens. Remove it; "+
-					"what `on: %s` runs: %s", i+1, name, fl.On, fl.On, strings.Join(names, ", "))
+					"`on: %s` yet, so the journey could not do what this file says. Remove "+
+					"it; what `on: %s` runs: %s", i+1, name, fl.On, fl.On, strings.Join(names, ", "))
 			}
 		}
 	}

@@ -7,11 +7,14 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/safedial"
 )
 
 // A fake Workspace, shaped exactly like the documented Admin SDK responses.
@@ -82,6 +85,25 @@ func testSource(t *testing.T, srv *httptest.Server) *GoogleSource {
 		Domain:      "example.test",
 		BaseURL:     srv.URL,
 		Client:      srv.Client(),
+	}
+}
+
+// The token request goes to the key file's token_uri, which is data, so
+// without a client override it is dialled through safedial: a key naming an
+// internal address is refused at the dialler, not posted a signed assertion.
+func TestATokenURIOnAnInternalAddressIsNotDialled(t *testing.T) {
+	reached := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+	}))
+	t.Cleanup(srv.Close)
+	g := testSource(t, srv)
+	g.Client = nil // production's default
+
+	_, err := g.accessToken(context.Background())
+	var blocked *safedial.ErrBlocked
+	if !errors.As(err, &blocked) || reached {
+		t.Fatalf("a token_uri on loopback was dialled (reached=%v): %v", reached, err)
 	}
 }
 

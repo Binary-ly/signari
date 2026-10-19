@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/directory"
+	"signari.dev/engine/internal/safedial"
 )
 
 // Provisioning into Google Workspace, through the Admin SDK Directory API.
@@ -50,11 +51,13 @@ func (g *Google) base() string {
 	return "https://admin.googleapis.com"
 }
 
+// client is the SSRF-safe one, for the reason directory.GoogleSource's is: the
+// token request goes to the token_uri in the stored key file.
 func (g *Google) client() *http.Client {
 	if g.HTTP != nil {
 		return g.HTTP
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	return safedial.Client(30 * time.Second)
 }
 
 // bearer fetches a write-scoped token, cached until shortly before it expires.

@@ -44,7 +44,7 @@ func TestGoogleListsEveryPage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	g := &Google{BaseURL: srv.URL, Domain: "x.test", token: "t", expires: farFuture()}
+	g := &Google{BaseURL: srv.URL, Domain: "x.test", token: "t", expires: farFuture(), HTTP: srv.Client()}
 	users, err := g.ListUsers(context.Background(), 2)
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestGoogleSuspendsWithTheRightVerbAndField(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	g := &Google{BaseURL: srv.URL, token: "t", expires: farFuture()}
+	g := &Google{BaseURL: srv.URL, token: "t", expires: farFuture(), HTTP: srv.Client()}
 	if err := g.SetActive(context.Background(), "123", false); err != nil {
 		t.Fatal(err)
 	}

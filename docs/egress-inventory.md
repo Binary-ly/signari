@@ -23,7 +23,7 @@ change reaches them.
 | `hcaptcha.com/siteverify` | `captcha` | as above | as above |
 | `www.google.com/recaptcha/api/siteverify` | `captcha` | as above | as above |
 | `verifiedaccess.googleapis.com/v2` | `posture/chrome` | Chrome device-posture attestation | a posture policy demands it |
-| `admin.googleapis.com` | `provision/google` | directory sync | a sync runs |
+| `admin.googleapis.com` | `provision/google`, `directory/google` | directory sync | a sync runs. The token request goes to the service-account key's `token_uri`, normally `oauth2.googleapis.com`. It is data, not a constant, so both clients dial through `safedial`, and a key naming an internal address is refused |
 | `graph.microsoft.com`, `login.microsoftonline.com` | `provision/entra` | directory sync | a sync runs |
 
 Each is optional: none is contacted unless an operator configures the feature.

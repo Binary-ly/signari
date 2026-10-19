@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"signari.dev/engine/internal/safedial"
 )
 
 // Google Workspace, through the Admin SDK Directory API.
@@ -84,11 +86,15 @@ func (g *GoogleSource) baseURL() string {
 	return "https://admin.googleapis.com"
 }
 
+// client is the SSRF-safe one. The API host is a constant, but the token
+// request goes to the token_uri in the stored key file, which is data: a key
+// file naming an internal address had the engine post a signed assertion
+// there, through a client that would dial anything.
 func (g *GoogleSource) client() *http.Client {
 	if g.Client != nil {
 		return g.Client
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	return safedial.Client(30 * time.Second)
 }
 
 // Fetch returns every user the credential can see.

@@ -31,16 +31,16 @@ var clientsOutsideSafedial = map[string]string{
 		"only by tests",
 	"engine/internal/posture/chrome.go": "Google's Verified Access endpoint is a constant; the " +
 		"override is set only by tests",
-	"engine/internal/provision/google.go": "admin.googleapis.com is a constant; the override is " +
-		"set only by tests",
+	// Not provision/google.go or directory/google.go. They were listed here as
+	// "admin.googleapis.com is a constant", and the API host is -- but the token
+	// request goes to the token_uri in the stored key file, which is data. Both
+	// now use safedial.
 	"engine/internal/provision/entra.go": "graph.microsoft.com and login.microsoftonline.com " +
 		"are constants, the tenant only a path segment",
-	"engine/internal/directory/google.go": "admin.googleapis.com is a constant; the override " +
-		"is set only by tests",
 	"engine/internal/directory/entra.go": "graph.microsoft.com and login.microsoftonline.com " +
 		"are constants, the tenant only a path segment",
-	"engine/internal/outbox/tls.go": "safedial's transport, except under " +
-		"SIGNARI_ALLOW_PRIVATE_DELIVERY, the opt-out named for internal relying parties",
+	"engine/internal/outbox/tls.go": "safedial's transport; under SIGNARI_ALLOW_PRIVATE_DELIVERY " +
+		"safedial's private-allowing one, which still refuses the metadata address",
 	"engine/internal/outpost/outpost.go": "the outpost agent calling its own engine, run by the " +
 		"operator on their network; not the engine making a request",
 	"engine/internal/logouttest/logouttest.go": "a diagnostic run by hand against a URL the " +

@@ -96,15 +96,8 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	if bound {
-		if derr := s.proofForBoundToken(r, raw, claims.Cnf.JKT); derr != nil {
-			s.log.Info("DPoP enforcement refused a credential request", "reason", derr,
-				"correlation_id", correlationID(ctx))
-			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
-				"the access token is sender-constrained and the DPoP proof did not match"))
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
+	if s.boundTokenRefused(w, r, raw, claims.Cnf, "credential") {
+		return
 	}
 
 	var req oid4vci.CredentialRequest

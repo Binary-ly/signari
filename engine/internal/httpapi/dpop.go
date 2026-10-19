@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"signari.dev/engine/internal/clientauth"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/dpop"
 	"signari.dev/engine/internal/oauth"
@@ -82,6 +83,67 @@ func (s *Server) proofForBoundToken(r *http.Request, accessToken, tokenJKT strin
 		return fmt.Errorf("a DPoP proof is required for this token")
 	}
 	return dpop.BoundTo(&dpop.Confirmation{JKT: tokenJKT}, &dpop.Proof{JKT: jkt})
+}
+
+// certificateForBoundToken is a protected resource's check of a
+// certificate-bound access token, RFC 8705 §3 (specs/rfc8705.txt:433-438):
+//
+//	"The protected resource MUST obtain, from its TLS implementation layer,
+//	the client certificate used for mutual TLS and MUST verify that the
+//	certificate matches the certificate associated with the access token."
+//
+// The token endpoint bound tokens to the connection's certificate and no
+// resource ever read `cnf.x5t#S256`, so a certificate-bound token worked for
+// whoever held it, with or without the certificate.
+func certificateForBoundToken(r *http.Request, tokenThumbprint string) error {
+	presented := clientauth.ThumbprintFromState(r.TLS)
+	if presented == "" {
+		return errors.New("the access token is bound to a client certificate; present " +
+			"it over mutual TLS")
+	}
+	if subtle.ConstantTimeCompare([]byte(presented), []byte(tokenThumbprint)) != 1 {
+		return errors.New("the certificate on this connection is not the one the access " +
+			"token is bound to")
+	}
+	return nil
+}
+
+// boundTokenRefused is every protected resource's possession check: the DPoP
+// proof for a token carrying `cnf.jkt`, the connection's certificate for one
+// carrying `cnf.x5t#S256`, and nothing for a bearer token. It writes the
+// RFC 6750 / RFC 9449 refusal and reports true when possession is not shown.
+//
+// The scheme rule (dpop.CheckPresentation) is the caller's, before this:
+// it decides how the token was presented, which comes first.
+func (s *Server) boundTokenRefused(w http.ResponseWriter, r *http.Request, raw string,
+	cnf *tokens.Confirmation, where string) bool {
+
+	switch {
+	case cnf == nil:
+		return false
+	case cnf.JKT != "":
+		if derr := s.proofForBoundToken(r, raw, cnf.JKT); derr != nil {
+			s.log.Info("DPoP enforcement refused a request", "at", where, "reason", derr,
+				"correlation_id", correlationID(r.Context()))
+			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
+				"the access token is sender-constrained and the DPoP proof did not match"))
+			w.WriteHeader(http.StatusUnauthorized)
+			return true
+		}
+	case cnf.X5TS256 != "":
+		if cerr := certificateForBoundToken(r, cnf.X5TS256); cerr != nil {
+			s.log.Info("certificate binding refused a request", "at", where, "reason", cerr,
+				"correlation_id", correlationID(r.Context()))
+			// §3: "rejected with an error, per [RFC6750], using an HTTP 401
+			// status code and the "invalid_token" error code."
+			w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
+				`error_description="the access token is bound to a client certificate this `+
+				`connection did not present"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return true
+		}
+	}
+	return false
 }
 
 // verifyDPoPForRequest checks a proof and its replay record.
@@ -188,6 +250,21 @@ func certThumbprintFrom(ctx context.Context) string {
 // Returns nil when the subject token is not bound -- an ordinary bearer token is
 // exchanged on the strength of client authentication, as before.
 func (s *Server) requireSubjectTokenBinding(r *http.Request, subject *tokens.AccessTokenClaims) error {
+	if subject.Cnf != nil && subject.Cnf.X5TS256 != "" {
+		// The same rule for the other binding. handleToken put this
+		// connection's certificate on the context; a subject token bound to
+		// a certificate is exchanged only over a connection presenting it.
+		presented := certThumbprintFrom(r.Context())
+		if presented == "" {
+			return errors.New("the subject token is bound to a client certificate; " +
+				"present it over mutual TLS")
+		}
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(subject.Cnf.X5TS256)) != 1 {
+			return errors.New("the certificate on this connection is not the one the " +
+				"subject token is bound to")
+		}
+		return nil
+	}
 	if subject.Cnf == nil || subject.Cnf.JKT == "" {
 		return nil
 	}

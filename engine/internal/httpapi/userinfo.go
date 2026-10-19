@@ -117,15 +117,9 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if bound {
-		if derr := s.proofForBoundToken(r, raw, claims.Cnf.JKT); derr != nil {
-			s.log.Info("DPoP enforcement refused a userinfo request", "reason", derr,
-				"correlation_id", correlationID(ctx))
-			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
-				"the access token is sender-constrained and the DPoP proof did not match"))
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
+	// The proof for a DPoP-bound token, the certificate for one bound to it.
+	if s.boundTokenRefused(w, r, raw, claims.Cnf, "userinfo") {
+		return
 	}
 
 	out := map[string]any{"sub": claims.Subject}

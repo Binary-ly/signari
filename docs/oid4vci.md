@@ -375,7 +375,13 @@ header is refused rather than ignored. Accepting an unverified attestation is
 taking the wallet's word about its own security, and a wallet that sends one and
 receives a credential concludes the attestation was checked.
 
-Register one with `signari attester add`.
+Register one with `signari attester add -org <id> -name <n> -attester-jwks <file>`.
+The same registry serves attestation-based client authentication, because the
+party that vouches for a wallet's keys is the wallet's provider, which is the
+party that vouches for the wallet. The credential endpoint reads the
+organisation's attesters for every request, so one added or removed holds at the
+next credential. Until October 2026 it read none, and every attested proof was
+refused while this page said to register one.
 
 
 ## Harsh review of SD-JWT against RFC 9901 (August 2026)

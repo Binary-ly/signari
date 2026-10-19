@@ -229,9 +229,26 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	// issuance exists to prevent, so the batch is refused rather than served.
 	seenKeys := make(map[string]bool, len(proofs))
 
+	// The attesters `signari attester add` registered, read once for the batch.
+	// A key attestation in a proof is verified against these; with none it is
+	// refused, never taken on the wallet's word. Until 2.07 nothing passed them,
+	// so every attested proof was refused while the documentation said to
+	// register an attester.
+	attesterSet, aerr := s.trustedAttesters(ctx, orgID)
+	if aerr != nil {
+		s.log.Error("reading key attesters", "err", aerr, "correlation_id", correlationID(ctx))
+		writeCredentialError(w, http.StatusInternalServerError, "server_error",
+			"the trusted key attesters could not be read")
+		return
+	}
+	attesters := make([]*jose.JSONWebKey, len(attesterSet.Keys))
+	for i := range attesterSet.Keys {
+		attesters[i] = &attesterSet.Keys[i]
+	}
+
 	issued := make([]oid4vci.IssuedCredential, 0, len(proofs))
 	for _, p := range proofs {
-		key, perr := s.validateCredentialProof(ctx, claims, p)
+		key, perr := s.validateCredentialProof(ctx, claims, p, attesters)
 		if perr != nil {
 			writeCredentialError(w, http.StatusBadRequest, "invalid_proof", perr.Error())
 			return
@@ -276,7 +293,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 
 // validateCredentialProof checks one key proof and spends its nonce.
 func (s *Server) validateCredentialProof(ctx context.Context,
-	claims *tokens.AccessTokenClaims, proof string) (*jose.JSONWebKey, error) {
+	claims *tokens.AccessTokenClaims, proof string, attesters []*jose.JSONWebKey) (*jose.JSONWebKey, error) {
 
 	// The nonce is read from the proof before validation so the right expected
 	// value can be supplied; the proof's signature is what makes it trustworthy,
@@ -292,8 +309,9 @@ func (s *Server) validateCredentialProof(ctx context.Context,
 		ClientID:         claims.ClientID,
 		// An access token with no client_id came from an anonymous
 		// pre-authorized code redemption, which §F.1 says forbids `iss`.
-		Anonymous:     claims.ClientID == "",
-		ExpectedNonce: presented,
+		Anonymous:        claims.ClientID == "",
+		ExpectedNonce:    presented,
+		TrustedAttesters: attesters,
 	}, time.Now())
 	if err != nil {
 		return nil, err

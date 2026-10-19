@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,30 +15,74 @@ import (
 
 // Sources we accept Shared Signals from, and what we did with what they sent.
 
-// SourceByIssuer finds an enabled source by the issuer in a token.
+// ErrAmbiguousSource means a token's audiences name sources in more than one
+// organisation for its issuer, so nothing can say whose event it is.
+var ErrAmbiguousSource = errors.New("the token's audiences name more than one " +
+	"organisation's source for its issuer")
+
+// SourceFor finds the enabled source a token is for, by its issuer and its
+// audiences, read unverified.
 //
-// Looked up by issuer because that is the only thing we can read from the token
-// before verifying it -- and reading it is safe, since the issuer selects WHICH
-// keys to verify against rather than granting anything.
-func SourceByIssuer(ctx context.Context, q Querier, issuer string) (ssf.Source, bool, error) {
+// Both, because two organisations can trust one transmitter, and the audience
+// is what the transmitter writes to say which of them an event is for. The
+// issuer alone picked whichever tenant's row came back first, and that
+// tenant's directory resolved the subject. Reading the pair before verifying
+// is safe: it selects WHICH keys to verify against rather than granting
+// anything, and Verify checks both again.
+//
+// The pair is unique across organisations (migration 0138), so one audience
+// finds at most one source. A token naming several audiences could still name
+// two organisations' sources, and that is refused rather than resolved.
+func SourceFor(ctx context.Context, q Querier, issuer string, audiences []string) (ssf.Source, bool, error) {
 	var s ssf.Source
+	lowered := make([]string, 0, len(audiences))
+	for _, a := range audiences {
+		lowered = append(lowered, strings.ToLower(a))
+	}
 	rows, err := q.Query(ctx, `
 		SELECT id::text, org_id::text, issuer, jwks_uri, audience, allowed_events,
 		       critical_subject_members
 		  FROM core.ssf_sources
-		 WHERE issuer = $1 AND enabled`, issuer)
+		 WHERE issuer = $1 AND lower(audience) = ANY($2::text[]) AND enabled
+		 LIMIT 2`, issuer, lowered)
 	if err != nil {
 		return s, false, err
 	}
 	defer rows.Close()
-	if rows.Next() {
+	found := 0
+	for rows.Next() {
+		if found++; found > 1 {
+			return ssf.Source{}, false, ErrAmbiguousSource
+		}
 		if err := rows.Scan(&s.ID, &s.OrgID, &s.Issuer, &s.JWKSURI,
 			&s.Audience, &s.AllowedEvents, &s.CriticalSubjectMembers); err != nil {
-			return s, false, err
+			return ssf.Source{}, false, err
 		}
-		return s, true, nil
 	}
-	return s, false, rows.Err()
+	if err := rows.Err(); err != nil {
+		return ssf.Source{}, false, err
+	}
+	return s, found == 1, nil
+}
+
+// AudienceIsReceived reports whether any enabled source accepts tokens
+// addressed to one of these audiences, whatever their issuer.
+//
+// Only for choosing the registered error code when SourceFor finds nothing: a
+// token addressed to a recipient here carries an issuer that recipient does not
+// accept (`invalid_issuer`), and one addressed elsewhere is not for us at all
+// (`invalid_audience`). It selects no source.
+func AudienceIsReceived(ctx context.Context, q rowQuerier, audiences []string) (bool, error) {
+	lowered := make([]string, 0, len(audiences))
+	for _, a := range audiences {
+		lowered = append(lowered, strings.ToLower(a))
+	}
+	var ok bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.ssf_sources
+		                WHERE lower(audience) = ANY($1::text[]) AND enabled)`,
+		lowered).Scan(&ok)
+	return ok, err
 }
 
 // AddSource registers a transmitter.
@@ -60,6 +106,12 @@ func AddSource(ctx context.Context, e Execer, orgID, name, issuer, jwksURI,
 			critical_subject_members = EXCLUDED.critical_subject_members,
 			enabled = true`,
 		orgID, name, issuer, jwksURI, audience, events, criticalMembers)
+	if err != nil && strings.Contains(err.Error(), "ssf_sources_issuer_audience_key") {
+		return fmt.Errorf("another organisation already accepts events from %s addressed "+
+			"to %s; the receiver chooses a source by that pair, so it would not know whose "+
+			"they are. Use the audience the transmitter writes for this organisation",
+			issuer, audience)
+	}
 	return err
 }
 

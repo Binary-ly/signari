@@ -129,6 +129,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari scim provision-group` / `scim deprovision-group` | Create or delete a group at the target and record that we own it. Reconciliation only ever touches groups this link names, so a group the target's own administrators maintain is left alone however similar its name |
 | `signari provision add` | Provisioning targets |
 | `signari ssf add-stream` / `ssf list` | Shared Signals (CAEP/RISC) streams |
+| `signari ssf add-source` / `ssf received` | Accept Shared Signals from a transmitter, and show what it sent. An issuer and `-source-audience` together belong to **one organisation in the deployment**: the receiver chooses the source by that pair, so a second organisation registering it is refused. See [shared-signals-receiver.md](shared-signals-receiver.md#two-organisations-one-transmitter) |
 | `signari events subscribe` / `events list` | Event subscriptions — see [events.md](events.md) |
 | — | Transaction Tokens are issued at the token endpoint, not by a command — see [transaction-tokens.md](transaction-tokens.md) |
 

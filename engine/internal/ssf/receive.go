@@ -2,6 +2,7 @@ package ssf
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,6 +53,31 @@ type Source struct {
 	// that contains a Subject with a Critical member that it is unable to
 	// process." Empty is the normal case and means no member is critical.
 	CriticalSubjectMembers []string
+}
+
+// Routing reads `iss` and `aud` from a compact JWS without verifying it.
+//
+// Used ONLY to choose which source to verify against: the pair is what tells
+// two organisations trusting one transmitter apart. Choosing wrongly makes
+// verification fail, so this cannot grant anything -- but it must never be used
+// for a decision, and it is not. `aud` may be a string or an array (§4.1.8).
+func Routing(raw string) (issuer string, audiences []string, ok bool) {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 {
+		return "", nil, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", nil, false
+	}
+	var c struct {
+		Issuer   string   `json:"iss"`
+		Audience audience `json:"aud"`
+	}
+	if err := json.Unmarshal(payload, &c); err != nil || c.Issuer == "" {
+		return "", nil, false
+	}
+	return c.Issuer, c.Audience, true
 }
 
 // processableSubjectMembers are the members subjectFrom actually reads.

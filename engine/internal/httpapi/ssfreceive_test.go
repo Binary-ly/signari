@@ -69,6 +69,11 @@ func newTXServer(t *testing.T) *txServer {
 
 func (x *txServer) mint(t *testing.T, issuer, audience, jti, eventType, subject string) string {
 	t.Helper()
+	return x.mintTo(t, issuer, []string{audience}, jti, eventType, subject)
+}
+
+func (x *txServer) mintTo(t *testing.T, issuer string, audiences []string, jti, eventType, subject string) string {
+	t.Helper()
 	signer, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.ES256, Key: x.key},
 		(&jose.SignerOptions{}).WithType(jose.ContentType(ssf.TypSET)).
@@ -78,7 +83,7 @@ func (x *txServer) mint(t *testing.T, issuer, audience, jti, eventType, subject 
 	}
 	claims, _ := json.Marshal(map[string]any{
 		"iss": issuer, "jti": jti, "iat": time.Now().Unix(),
-		"aud": []string{audience},
+		"aud": audiences,
 		"events": map[string]any{eventType: map[string]any{
 			"subject": map[string]any{
 				"format": "iss_sub", "iss": issuer, "sub": subject,

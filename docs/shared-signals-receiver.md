@@ -69,6 +69,9 @@ is about.
 
 The order:
 
+0. Choose the source by the token's `iss` **and** `aud`, read unverified. That
+   only selects whose keys to verify against; every check below is made again
+   against what it selects.
 1. Parse with the algorithm list pinned. No `none`.
 2. Refuse a token carrying its own key material (`jwk`, `jku`, `x5u`).
 3. `typ` must be `secevent+jwt` — otherwise an ID token from the same issuer is a
@@ -99,6 +102,30 @@ And the whole path, against a real database with a real transmitter signing real
 tokens over TLS: **three live sessions, one signed `session-revoked`, zero live
 sessions** — with `revocation_reason = shared_signal`, named distinctly from a
 logout because they mean very different things to whoever reads the audit trail.
+
+## Two organisations, one transmitter
+
+A shared upstream sends every customer's events under one issuer and tells
+them apart by audience, so two organisations here can each have a source for
+the same `iss`. The source is therefore chosen by the **issuer and the audience
+together**, and that pair belongs to one organisation in the whole deployment:
+`ssf add-source` refuses a second organisation's registration of it, compared
+without regard to case as the audience check is.
+
+| The token | Answer |
+|---|---|
+| `iss` and `aud` match one source | verified against that source, and the subject is resolved in its organisation only |
+| `aud` lists several audiences that reach two organisations' sources | `400 invalid_audience`, and nothing is acted on. An event addressed to two tenants names nobody in particular |
+| `aud` names a recipient here that does not accept this `iss` | `400 invalid_issuer`, RFC 8935 §2.4's "the SET Issuer is invalid for the SET Recipient" |
+| `aud` names no recipient here | `400 invalid_audience`, "the SET Audience does not correspond to the SET Recipient" |
+
+Until October 2026 the source was found by issuer alone, and whichever
+organisation's row the database returned answered for both. The other
+organisation's events were refused for their audience, so it received nothing.
+Had the two shared an audience, its events would have verified and been
+resolved in the first organisation's directory, signing out somebody else's
+people. The upgrade migration refuses to run while two organisations hold one
+pair and names them, because which of them keeps it is the operator's decision.
 
 ## Replay
 

@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -32,30 +31,53 @@ func (s *Server) handleSSFReceive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The issuer is read from the UNVERIFIED payload, and used only to choose
-	// which key set to verify against. That is safe -- picking the wrong source
-	// means the signature fails -- and it is the only way to know whose keys to
-	// use before checking anything.
-	issuer, ok := unverifiedIssuer(raw)
+	// The issuer and audience are read from the UNVERIFIED payload, and used
+	// only to choose which source to verify against. That is safe -- picking
+	// the wrong source means verification fails -- and it is the only way to
+	// know whose keys to use before checking anything. Both, because two
+	// organisations can trust one transmitter and only the audience says which
+	// of them an event is for.
+	issuer, audiences, ok := ssf.Routing(raw)
 	if !ok {
 		writeSSFError(w, http.StatusBadRequest, errInvalidRequest,
 			"the request body could not be parsed as a SET")
 		return
 	}
-	src, found, err := store.SourceByIssuer(ctx, s.db, issuer)
+	src, found, err := store.SourceFor(ctx, s.db, issuer, audiences)
+	if errors.Is(err, store.ErrAmbiguousSource) {
+		// Unreachable by one audience since migration 0138. A token listing
+		// several can still name two tenants' sources, and acting for either
+		// would be a guess about whose people to sign out.
+		s.log.Warn("shared-signals event addressed to more than one organisation",
+			"issuer", issuer, "audiences", audiences, "correlation_id", correlationID(ctx))
+		writeSSFError(w, http.StatusBadRequest, errInvalidAudience,
+			"the audience names more than one recipient here; address one")
+		return
+	}
 	if err != nil {
 		s.log.Error("looking up a shared-signals source", "err", err)
 		writeSSFError(w, http.StatusInternalServerError, errInvalidRequest, "")
 		return
 	}
 	if !found {
-		// Deliberately the same shape as a verification failure. Distinguishing
-		// "we do not know that issuer" from "the signature is wrong" tells an
-		// unauthenticated caller which issuers we are configured for.
-		s.log.Info("shared-signals event from an unknown issuer",
-			"issuer", issuer, "correlation_id", correlationID(ctx))
-		// §2.4: invalid_issuer is "The SET Issuer is invalid for the SET
-		// Recipient", which is exactly this. 400 per §2.3.
+		// §2.4 distinguishes the two ways this happens. invalid_issuer is "The
+		// SET Issuer is invalid for the SET Recipient": the audience names a
+		// recipient here, which does not accept this issuer. invalid_audience is
+		// "The SET Audience does not correspond to the SET Recipient": it names
+		// nobody here. 400 either way, per §2.3.
+		received, aerr := store.AudienceIsReceived(ctx, s.db, audiences)
+		if aerr != nil {
+			s.log.Error("looking up a shared-signals audience", "err", aerr)
+			writeSSFError(w, http.StatusInternalServerError, errInvalidRequest, "")
+			return
+		}
+		s.log.Info("shared-signals event matching no source",
+			"issuer", issuer, "audiences", audiences, "correlation_id", correlationID(ctx))
+		if !received {
+			writeSSFError(w, http.StatusBadRequest, errInvalidAudience,
+				"the audience does not identify this recipient")
+			return
+		}
 		writeSSFError(w, http.StatusBadRequest, errInvalidIssuer,
 			"no source is configured for that issuer")
 		return
@@ -137,29 +159,6 @@ func (s *Server) handleSSFReceive(w http.ResponseWriter, r *http.Request) {
 		"event", event.Type, "action", action, "detail", detail)
 	// 202: accepted and acted on. RFC 8935 expects 202 with an empty body.
 	w.WriteHeader(http.StatusAccepted)
-}
-
-// unverifiedIssuer reads `iss` from a compact JWS without verifying it.
-//
-// Used ONLY to choose which key set to verify against. Choosing wrongly makes
-// the signature fail, so this cannot grant anything -- but it must never be
-// used for a decision, and it is not.
-func unverifiedIssuer(raw string) (string, bool) {
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 {
-		return "", false
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", false
-	}
-	var c struct {
-		Issuer string `json:"iss"`
-	}
-	if err := json.Unmarshal(payload, &c); err != nil || c.Issuer == "" {
-		return "", false
-	}
-	return c.Issuer, true
 }
 
 // SET error codes from the IANA registry, RFC 8935 §2.4.

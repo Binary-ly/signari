@@ -71,30 +71,31 @@ func TestAJWTBearerGrantIsRefusedWhenThePolicyDeniesTheClient(t *testing.T) {
 	}
 }
 
-// Who, not where, as for a refresh: a rule admitting the client only from an
-// office network judges the person's browser at sign-in, and a grant comes
-// from a server whose address says nothing about the person.
-func TestANetworkRuleDoesNotJudgeTheServerMakingAGrant(t *testing.T) {
+// A rule admitting the client only from an office network is not met by a
+// grant. The calling server's address says nothing about the person, and
+// unlike a refresh no sign-in to this client checked where they were. It used
+// to count as met, so the rule held at the sign-in page and not for anybody
+// holding an assertion; the calling server's own address is inside the
+// network here, so the refusal is not about that address.
+func TestANetworkRuleRefusesAGrantNobodyWatchedArrive(t *testing.T) {
 	f := newAssertionFixture(t)
 	applyPolicy(t, f.srv, f.pool, f.orgID, fmt.Sprintf(`
 version: 1
 policies:
   - name: office-only
     when: {client: %q}
-    require: {from_networks: ["10.9.9.0/24"]}
+    require: {from_networks: ["192.0.2.0/24"]}
     message: "Only from the office."
 tests:
   - name: office
-    given: {client: %q, ip: "10.9.9.5"}
+    given: {client: %q, ip: "192.0.2.5"}
     expect: allow
-  - name: elsewhere
-    given: {client: %q, ip: "192.0.2.1"}
+  - name: a grant from inside the office
+    given: {client: %q, ip: "192.0.2.5", unobserved: true}
     expect: deny
 `, f.clientID, f.clientID, f.clientID))
-	if status, body := f.grant(t, f.assert(t, nil), nil); status != http.StatusOK {
-		t.Fatalf("a network rule refused the grant by the calling server's address: %d %v",
-			status, body)
-	}
+	status, body := f.grant(t, f.assert(t, nil), nil)
+	refusedByPolicy(t, status, body)
 }
 
 // A refusal does not spend the offer: lifting the rule lets the same code in.

@@ -164,6 +164,17 @@ type Request struct {
 	// application's server, whose address and lack of a device certificate say
 	// nothing about the person.
 	Refresh bool `yaml:"refresh"`
+
+	// Unobserved is a decision nothing here watched the person arrive for: a
+	// jwt-bearer, pre-authorized code, token exchange, UMA or transaction-token
+	// grant, made by a server or a wallet with no sign-in to this client in
+	// front of it, and forward auth, whose request is the proxy's. Who they are
+	// is checked as for a refresh. Where they are cannot be, and unlike a
+	// refresh no sign-in to this client checked it earlier, so the network,
+	// device and travel conditions are NOT met. Counting them as met made a
+	// rule admitting a client only from the office decorative for every grant
+	// that does not pass through a browser.
+	Unobserved bool `yaml:"unobserved"`
 }
 
 // Decision is the result.
@@ -379,6 +390,12 @@ func (c Conditions) satisfiedBy(req Request) bool {
 		// The where-from conditions below were checked at sign-in; see Request.
 		return true
 	}
+	if req.Unobserved {
+		// Nothing checked them, now or at a sign-in; see Request. Travel too:
+		// it is met when the check could not run because a person who IS here
+		// may have no history, and a request with nobody here is not that.
+		return !c.asksWhereFrom()
+	}
 	if c.DeviceManaged && !req.DeviceManaged {
 		return false
 	}
@@ -413,6 +430,12 @@ func (c Conditions) satisfiedBy(req Request) bool {
 		}
 	}
 	return true
+}
+
+// asksWhereFrom reports whether c has a condition about where the person is or
+// what they are holding, which only a request from the person can answer.
+func (c Conditions) asksWhereFrom() bool {
+	return c.DeviceManaged || c.DeviceCompliant || c.NoImpossibleTravel || len(c.FromNetworks) > 0
 }
 
 func contains(hay []string, needle string) bool {

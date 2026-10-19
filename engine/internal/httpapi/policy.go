@@ -142,6 +142,24 @@ type dbReader interface {
 // which deadlocks the pool under concurrent refreshes.
 func (s *Server) checkAccessPolicyIn(ctx context.Context, q dbReader, r *http.Request,
 	orgID, clientID, userID, scope string, mfa bool, amr []string) *policy.Decision {
+	return s.evaluateAccessPolicy(ctx, q, r, false, orgID, clientID, userID, scope, mfa, amr)
+}
+
+// checkAccessPolicyUnobserved is checkAccessPolicy for a decision nothing here
+// watched the person arrive for: a grant made by a server or a wallet, or
+// forward auth, whose request is the proxy's. Decided as policy.Request's
+// Unobserved describes, so a network, device or travel condition refuses.
+//
+// No request is passed, deliberately rather than a copy with the address
+// removed: the caller's headers and certificate are the server's or the
+// proxy's, and a device posture read from them describes that machine.
+func (s *Server) checkAccessPolicyUnobserved(ctx context.Context,
+	orgID, clientID, userID, scope string, mfa bool, amr []string) *policy.Decision {
+	return s.evaluateAccessPolicy(ctx, s.db, nil, true, orgID, clientID, userID, scope, mfa, amr)
+}
+
+func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.Request,
+	unobserved bool, orgID, clientID, userID, scope string, mfa bool, amr []string) *policy.Decision {
 
 	f := s.policyFor(ctx, q, orgID)
 	if f == nil {
@@ -163,7 +181,7 @@ func (s *Server) checkAccessPolicyIn(ctx context.Context, q dbReader, r *http.Re
 
 	req := policy.Request{
 		Client: clientID, Scope: scope, Groups: groups, MFA: mfa, AMR: amr,
-		Refresh: r == nil,
+		Refresh: r == nil && !unobserved, Unobserved: unobserved,
 	}
 	if r != nil {
 		req.IP = clientIP(r)
@@ -274,10 +292,13 @@ func (s *Server) grantRefusedByPolicy(w http.ResponseWriter, r *http.Request, or
 	if sid != "" {
 		mfa, amr = sessionFactors(ctx, s.db, sid)
 	}
-	// No request, as for a refresh: who the person is, not where they are.
-	// These calls come from a server or a wallet, and its address and its lack
-	// of a device certificate say nothing about the person.
-	pd := s.checkAccessPolicy(ctx, nil, orgID, clientID, userID, scope, mfa, amr)
+	// Unobserved: who the person is, as for a refresh, but where they are is
+	// not met. These calls come from a server or a wallet, whose address and
+	// lack of a device certificate say nothing about the person, and unlike a
+	// refresh no sign-in to this client checked where they were. Counting the
+	// unknown as met let a jwt-bearer assertion through a rule admitting the
+	// client only from the office, which forward auth already refused.
+	pd := s.checkAccessPolicyUnobserved(ctx, orgID, clientID, userID, scope, mfa, amr)
 	if pd == nil {
 		return false
 	}

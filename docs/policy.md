@@ -119,8 +119,8 @@ SAML entity ID:
 | SAML and WS-Federation | in the one function that signs the assertion for both. A SAML refusal goes back to the service provider as `RequestDenied`; WS-Federation answers `403` |
 | the device grant and CIBA | when the person presses approve. A refusal is recorded as a denial, so the waiting device or client is told `access_denied` rather than left polling |
 | every refresh | before the new tokens are minted. A refusal is `invalid_grant`, and the refresh token is **not** revoked: lifting the rule, or restoring the membership, restores the grant |
-| token exchange, the jwt-bearer grant, UMA (once a person is identified) and the OID4VCI pre-authorized code | before the token is minted, and like a refresh: who the person is, not where. The factors are those of the session behind an exchanged token; the other three have none, so **a rule requiring MFA refuses them**. A `scope` rule is matched against the scope the token will carry, not the request's parameter: the client's whole registration when a jwt-bearer request names none or for a pre-authorized code, which has no scope parameter, and the ticket's permissions (`document:42#read`) for an RPT. A refusal is `invalid_grant`; a refused pre-authorized code is not spent. The person must also be in the client's organisation |
-| forward auth | on every request to a protected application, keyed `proxy:<host>`. Network, device and travel conditions refuse there, because the request comes from the proxy and carries the proxy's address — see [forward auth](forward-auth.md#who-may-reach-which-application) |
+| token exchange, the jwt-bearer grant, UMA (once a person is identified), transaction tokens and the OID4VCI pre-authorized code | before the token is minted. Who the person is is checked as for a refresh; **where they are is not met**, so a network, device or travel condition refuses (`unobserved: true` in a test case). The factors are those of the session behind an exchanged token; the others have none, so **a rule requiring MFA refuses them**. A `scope` rule is matched against the scope the token will carry, not the request's parameter: the client's whole registration when a jwt-bearer request names none or for a pre-authorized code, which has no scope parameter, and the ticket's permissions (`document:42#read`) for an RPT. A refusal is `invalid_grant`; a refused pre-authorized code is not spent. The person must also be in the client's organisation |
+| forward auth | on every request to a protected application, keyed `proxy:<host>`. Network, device and travel conditions refuse there, as for the grants above, because the request comes from the proxy and carries the proxy's address and headers — see [forward auth](forward-auth.md#who-may-reach-which-application) |
 
 Until October 2026 the list stopped at the first row and WS-Federation. A deny
 rule for a client blocked its browser sign-ins and still let through its
@@ -140,6 +140,32 @@ network, device and travel conditions are skipped (`refresh: true` in a test
 case says the same). They describe the browser at sign-in and were checked
 then. A refresh request comes from the application's server, and that server's
 address and lack of a device certificate say nothing about the person.
+
+**A grant nobody watched arrive does not meet a where-from condition.** The
+jwt-bearer, pre-authorized code, token exchange, UMA and transaction-token
+grants come from a server or a wallet too, but no sign-in to this client stands
+behind them, so nothing has ever checked where the person was. A network,
+device or travel condition on the client therefore **refuses** them, as it does
+at forward auth. The travel condition is met when it could not be checked for a
+person signing in, so that a first-time user is not locked out. Here nobody is
+signing in, so that reason does not apply.
+
+Until October 2026 these grants were decided like a refresh. A rule admitting a
+client only from the office network held at its sign-in page and did nothing
+for anybody holding an assertion for it. Forward auth refused the network
+condition but let the travel condition through as "not checked". Both now
+follow the one rule:
+
+```yaml
+tests:
+  - name: a grant for the office application
+    given: {client: payroll, ip: "10.1.2.3", unobserved: true}
+    expect: deny
+```
+
+To let a server use such a grant for a client restricted by network, put the
+restriction in a rule for the browser's client and give the server its own
+client.
 
 ## Verified against the running server
 

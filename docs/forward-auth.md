@@ -238,7 +238,10 @@ checks three things:
 3. **Network, device and travel conditions are treated as unknown, so they
    refuse.** The request that reaches the verify endpoint comes from the proxy,
    so its address is the proxy's own. A `from_networks` rule checked against it
-   would let everybody in from inside the office the proxy sits in.
+   would let everybody in from inside the office the proxy sits in. Until
+   October 2026 this held for the network and device conditions only. The
+   travel condition read the missing address as "not checked", counted that as
+   met, and let everybody through.
 
 `403` and not `401`: the person is signed in and may not reach this
 application. A `401` would send them back to sign in, the IdP would let them

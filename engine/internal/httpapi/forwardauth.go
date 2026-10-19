@@ -144,11 +144,14 @@ func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 // hosts, and the access policy -- keyed "proxy:<host>" as a relying party is
 // keyed by its client ID -- must allow it.
 //
-// The network, device and travel conditions are evaluated as unknown. The
-// request here is the proxy's, so its address and TLS state are the proxy's
-// own, and a `from_networks` rule read against them would let everybody in
-// from inside the office the proxy sits in. Until the person's address can be
-// taken from a trusted proxy, those conditions refuse rather than guess.
+// The network, device and travel conditions are not met. The request here is
+// the proxy's, so its address, TLS state and headers are the proxy's own, and
+// a `from_networks` rule read against them would let everybody in from inside
+// the office the proxy sits in. Until the person's address can be taken from a
+// trusted proxy, those conditions refuse rather than guess. The request used
+// to be passed with its address removed, which refused the network condition
+// and let the travel one through as "not checked", and left the device check
+// reading posture headers relayed by the proxy.
 func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims) (string, bool) {
 	ctx := r.Context()
 	host := strings.ToLower(firstHeader(r, "X-Forwarded-Host"))
@@ -168,9 +171,7 @@ func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims) (string, bo
 	}
 
 	mfa, amr := sessionFactors(ctx, s.db, pc.SID)
-	asked := r.Clone(ctx)
-	asked.RemoteAddr, asked.TLS = "", nil
-	if pd := s.checkAccessPolicy(ctx, asked, pc.OrgID, "proxy:"+host, pc.Subject, "", mfa, amr); pd != nil {
+	if pd := s.checkAccessPolicyUnobserved(ctx, pc.OrgID, "proxy:"+host, pc.Subject, "", mfa, amr); pd != nil {
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: pc.OrgID, SubjectID: pc.Subject,
 			CorrelationID: correlationID(ctx),

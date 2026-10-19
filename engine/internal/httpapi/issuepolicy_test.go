@@ -39,7 +39,8 @@ var issuesWithoutAPolicyCheck = map[string]string{
 // askingFunctions are what count as asking the policy: the check itself, and
 // the helper the non-interactive grants share.
 var askingFunctions = map[string]bool{
-	"checkAccessPolicy": true, "checkAccessPolicyIn": true, "grantRefusedByPolicy": true,
+	"checkAccessPolicy": true, "checkAccessPolicyIn": true, "checkAccessPolicyUnobserved": true,
+	"grantRefusedByPolicy": true,
 	// grantRefusedByPolicy for a person, the organisation check for a client.
 	"txnSubjectRefused": true,
 }

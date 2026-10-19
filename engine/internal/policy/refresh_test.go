@@ -53,3 +53,57 @@ tests:
 		}
 	}
 }
+
+// A grant nobody watched arrive is a refresh in who it checks and the opposite
+// in where: no sign-in to this client checked the network, device or travel
+// conditions earlier, so they are not met. Each condition alone refuses, and a
+// rule with none of them is decided by who the person is, as for a refresh.
+func TestAnUnobservedGrantDoesNotMeetWhereFromConditions(t *testing.T) {
+	f, err := Parse([]byte(`
+version: 1
+policies:
+  - name: office
+    when: {client: office}
+    require: {from_networks: ["10.0.0.0/8"]}
+  - name: managed
+    when: {client: managed}
+    require: {device_managed: true}
+  - name: compliant
+    when: {client: compliant}
+    require: {device_compliant: true}
+  - name: travel
+    when: {client: travel}
+    require: {no_impossible_travel: true}
+  - name: staff
+    when: {client: staff}
+    require: {groups: [staff]}
+tests:
+  - name: a grant for the office application is refused
+    given: {client: office, ip: "10.1.2.3", unobserved: true}
+    expect: deny
+  - name: the same address at sign-in is not
+    given: {client: office, ip: "10.1.2.3"}
+    expect: allow
+`))
+	if err != nil {
+		t.Fatalf("the file's own tests disagree with it: %v", err)
+	}
+	for _, c := range []struct {
+		req  Request
+		want bool
+	}{
+		// Whatever the caller's address or posture: it is the server's.
+		{Request{Client: "office", IP: "10.1.2.3", Unobserved: true}, false},
+		{Request{Client: "managed", DeviceManaged: true, Unobserved: true}, false},
+		{Request{Client: "compliant", DeviceManaged: true, DeviceCompliant: true, Unobserved: true}, false},
+		{Request{Client: "travel", Unobserved: true}, false},
+		{Request{Client: "staff", Groups: []string{"staff"}, Unobserved: true}, true},
+		{Request{Client: "staff", Unobserved: true}, false},
+		// A refresh still inherits its sign-in's check.
+		{Request{Client: "office", IP: "192.0.2.1", Refresh: true}, true},
+	} {
+		if got := f.Evaluate(c.req).Allowed; got != c.want {
+			t.Errorf("%+v: allowed = %v, want %v", c.req, got, c.want)
+		}
+	}
+}

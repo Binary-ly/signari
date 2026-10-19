@@ -190,3 +190,31 @@ tests:
 		t.Fatalf("a proxy inside 10.0.0.0/8 satisfied an office-only rule for everybody (status %d)", rec.Code)
 	}
 }
+
+// Travel is a where-from condition like the network one. With the address
+// removed it read as "not checked", which the condition counts as met, so a
+// rule refusing impossible travel admitted everybody the proxy asked about.
+func TestTheProxysRequestDoesNotSatisfyATravelRule(t *testing.T) {
+	pa := newProxyAuthz(t)
+	tok := pa.token(t, pa.f.orgID)
+	client := "proxy:" + pa.own
+	applyPolicy(t, pa.f.srv, pa.f.pool, pa.f.orgID, fmt.Sprintf(`
+version: 1
+policies:
+  - name: no-impossible-travel
+    when: {client: %q}
+    require: {no_impossible_travel: true}
+tests:
+  - name: a sign-in that did not travel
+    given: {client: %q}
+    expect: allow
+`, client, client))
+
+	if rec := pa.verify(t, tok, pa.own, "10.0.0.5:44321"); rec.Code != http.StatusForbidden {
+		t.Fatalf("a travel rule nothing could check admitted the proxy's request (status %d)", rec.Code)
+	}
+	removePolicy(t, pa.f.srv, pa.f.pool, pa.f.orgID)
+	if rec := pa.verify(t, tok, pa.own, "10.0.0.5:44321"); rec.Code != http.StatusOK {
+		t.Fatalf("with the rule lifted verify answered %d", rec.Code)
+	}
+}

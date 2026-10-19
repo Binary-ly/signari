@@ -496,42 +496,59 @@ func TestTheBuiltInFlowLogsNothingOnAnOrdinarySignIn(t *testing.T) {
 	}
 }
 
-// TestAConditionTheEngineCannotAnswerIsReportedOnce.
+// TestAStoredFlowOnAnUnansweredConditionIsRefusedAtLoad.
 //
-// The gap has to be visible somewhere, or an operator configures a control that
-// silently does nothing. Reported at load, once per document -- not per sign-in,
-// and not per thirty-second cache refresh.
-func TestAConditionTheEngineCannotAnswerIsReportedOnce(t *testing.T) {
+// A stored flow that steps up on a condition no sign-in evaluates -- applied
+// before Parse refused it, or written around `flow apply` -- does not load: the
+// step-up it describes never happened, and serving it would keep up the
+// pretence. The organisation is served the built-in flow, and the refusal is
+// logged once per document, not on every thirty-second reload.
+func TestAStoredFlowOnAnUnansweredConditionIsRefusedAtLoad(t *testing.T) {
 	f := newSignInFixture(t)
 	var buf bytes.Buffer
 	f.srv.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx := context.Background()
 
 	const doc = `
 version: 1
 flows:
-  - name: uses-a-signal-we-do-not-wire
+  - name: step-up-on-risk
     on: authentication
     stages:
       - password
       - {stage: mfa, when: risk_elevated}
       - session
     tests:
-      - {name: x, given: {}, expect: [password, session]}
+      - {name: calm, given: {}, expect: [password, session]}
+      - {name: risky, given: {risk_elevated: true}, expect: [password, mfa, session]}
 `
-	parsed, err := flow.Parse([]byte(doc))
-	if err != nil {
-		t.Fatalf("the test's own document does not load: %v", err)
+	if _, err := flow.Parse([]byte(doc)); err == nil {
+		t.Fatal("Parse accepted a flow branching on risk_elevated, which no sign-in evaluates")
 	}
+	// Straight into the table, as a document applied before the rule was.
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO core.sign_in_flows (org_id, document) VALUES ($1::uuid, $2)
+		ON CONFLICT (org_id) DO UPDATE SET document = EXCLUDED.document, applied_at = now()`,
+		f.orgID, doc); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(),
+			`DELETE FROM core.sign_in_flows WHERE org_id = $1::uuid`, f.orgID)
+	})
 
-	f.srv.reportInertConditions(f.orgID, doc, parsed)
+	f.srv.reloadFlows(ctx)
+	fl := f.srv.flowFor(ctx, f.pool, f.orgID, flow.Authentication)
+	if fl == nil || fl.Name != "default-sign-in" {
+		t.Fatalf("the organisation is served %v, want the built-in default-sign-in", flowNameOf(fl))
+	}
 	first := buf.String()
-	if !strings.Contains(first, "risk_elevated") {
-		t.Fatalf("a condition the sign-in path does not evaluate was not reported:\n%s", first)
+	if !strings.Contains(first, "risk_elevated") || !strings.Contains(first, "built-in") {
+		t.Fatalf("the refusal was not logged naming the condition and what is served instead:\n%s", first)
 	}
 
-	// Reloading the same document must not say it again.
 	buf.Reset()
-	f.srv.reportInertConditions(f.orgID, doc, parsed)
+	f.srv.reloadFlows(ctx)
 	if buf.Len() > 0 {
 		t.Errorf("the same document was reported twice; the cache reloads every %s, so "+
 			"this would repeat forever:\n%s", flowRefresh, buf.String())

@@ -301,9 +301,17 @@ func (fl *Flow) validate() error {
 			if err := checkCondition(st.When); err != nil {
 				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
 			}
+			if err := checkAnswered(fl.On, st.Stage, st.When); err != nil {
+				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
+			}
 		default:
 			if err := validateGroup(st.OneOf); err != nil {
 				return fmt.Errorf("step %d: %w", i+1, err)
+			}
+			for j, b := range st.OneOf {
+				if err := checkAnswered(fl.On, b.Stage, b.When); err != nil {
+					return fmt.Errorf("step %d, one_of branch %d (%s): %w", i+1, j+1, b.Stage, err)
+				}
 			}
 		}
 	}

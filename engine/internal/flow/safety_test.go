@@ -340,7 +340,7 @@ flows:
     on: authentication
     stages:
       - one_of:
-          - {stage: password, when: not user_is_new}
+          - {stage: password, when: not user_has_passkey}
           - {stage: captcha}
       - session
     tests:
@@ -351,6 +351,9 @@ flows:
 	if err == nil {
 		t.Fatal("a one_of with a branch that proves nothing was accepted; taking that " +
 			"branch reaches the session unauthenticated")
+	}
+	if !strings.Contains(err.Error(), "without proving who the subject is") {
+		t.Fatalf("refused for the wrong reason: %v", err)
 	}
 }
 
@@ -468,13 +471,13 @@ flows:
     on: authentication
     stages:
       - identify
-      - {stage: create_user, when: user_is_new}
+      - create_user
       - password
       - session
     tests:
       - name: existing user
         given: {}
-        expect: [identify, password, session]
+        expect: [identify, create_user, password, session]
 `))
 	if err == nil {
 		t.Fatal("an authentication flow that can create accounts was accepted")

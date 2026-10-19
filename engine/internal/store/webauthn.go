@@ -220,6 +220,19 @@ func CountCredentials(ctx context.Context, tx pgx.Tx, userID string) (int, error
 	return n, nil
 }
 
+// HasPasskey reports whether a user has at least one authenticator: the
+// `user_has_passkey` flow condition.
+func HasPasskey(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID string) (bool, error) {
+	var any bool
+	if err := db.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM core.webauthn_credentials WHERE user_id = $1::uuid)`, userID).Scan(&any); err != nil {
+		return false, fmt.Errorf("checking for a passkey: %w", err)
+	}
+	return any, nil
+}
+
 // CanGoPasswordless reports whether it is safe to let this user remove their
 // password. See MinCredentialsForPasswordless for why the answer is not one.
 func CanGoPasswordless(ctx context.Context, tx pgx.Tx, userID string) (bool, error) {

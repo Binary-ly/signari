@@ -101,6 +101,22 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, r, "signup", data)
 }
 
+// enrolmentFacts answers the conditions an enrolment flow may branch on:
+// flow.Answered(flow.Enrolment), which TestEveryConditionAFlowCanUseIsAnswered
+// holds this to.
+func (s *Server) enrolmentFacts(ctx context.Context, remoteAddr string) flow.State {
+	return flow.State{
+		// Presence of the captcha stage in the plan already encodes "a challenge is
+		// required": the default stage is `{stage: captcha, when: captcha_required}`,
+		// so Plan includes it exactly when it would have run before.
+		string(flow.CondCaptchaRequired): s.captcha.Required(ctx, remoteAddr),
+		// No account exists yet, so no subject has a pending prompt. An enrolment
+		// `prompt` stage is visited and passes, as the sign-in walker does when
+		// nothing is outstanding.
+		string(flow.CondPromptsPending): false,
+	}
+}
+
 // handleSignupPost creates the account.
 func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -142,16 +158,7 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 	// sequence below runs so a configuration read cannot stop anyone signing up.
 	orgID, _ := s.defaultOrg(ctx)
 	fl := s.flowFor(ctx, s.db, orgID, flow.Enrolment)
-	state := flow.State{
-		// Presence of the captcha stage in the plan already encodes "a challenge is
-		// required": the default stage is `{stage: captcha, when: captcha_required}`,
-		// so Plan includes it exactly when it would have run before.
-		string(flow.CondCaptchaRequired): s.captcha.Required(ctx, r.RemoteAddr),
-		// No account exists yet, so no subject has a pending prompt. An enrolment
-		// `prompt` stage is visited and passes, as the sign-in walker does when
-		// nothing is outstanding.
-		string(flow.CondPromptsPending): false,
-	}
+	state := s.enrolmentFacts(ctx, r.RemoteAddr)
 
 	plan := []flow.StageName{flow.StageCaptcha, flow.StageCreateUser, flow.StageDone}
 	if fl != nil {

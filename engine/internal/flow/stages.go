@@ -225,6 +225,75 @@ var allConditions = []Condition{
 	CondFederatedSource,
 }
 
+// answered is which conditions each journey this engine drives can evaluate.
+//
+// The language names fifteen and the sign-in path used to answer four. The rest
+// read false every time, so `{stage: deny, when: risk_elevated}` parsed, passed
+// the file's own tests (which set the condition true) and never refused
+// anybody: a control looked at once and trusted thereafter. A driven flow that
+// branches on a condition outside its journey's set is refused at parse, by
+// name, and so by `flow test`, `flow apply` and the engine's load alike.
+//
+// Widen a set only in step with an evaluator. internal/httpapi's
+// TestEveryConditionAFlowCanUseIsAnswered compares these with the evaluators
+// in both directions.
+//
+// captcha_required is absent from the sign-in set on purpose: a sign-in
+// decides the challenge at the form, before the flow is walked, so the walk
+// reads it false. It may guard the captcha stage there (checkAnswered), which
+// is the one place false is the truth.
+var answered = map[Designation][]Condition{
+	Authentication: {
+		CondHasSecondFactor, CondHasPasskey, CondPasswordChangeRequired,
+		CondPromptsPending, CondClientRequiresMFA,
+	},
+	// No account exists yet, so nothing is pending for it: false is the
+	// answer, not the absence of one.
+	Enrolment: {CondCaptchaRequired, CondPromptsPending},
+	Recovery:  {CondCaptchaRequired},
+}
+
+// Answered lists the conditions a journey of designation d evaluates.
+func Answered(d Designation) []Condition {
+	return append([]Condition(nil), answered[d]...)
+}
+
+// conditionName is a `when:` expression without its `not`.
+func conditionName(expr string) string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(expr), "not "))
+}
+
+// checkAnswered refuses a condition the journey a flow is for cannot evaluate.
+// An undriven designation is exempt: nothing walks it, and flow test and flow
+// apply already say so about the whole flow.
+func checkAnswered(on Designation, stage StageName, expr string) error {
+	if expr == "" || !on.Driven() {
+		return nil
+	}
+	name := conditionName(expr)
+	if on == Authentication && Condition(name) == CondCaptchaRequired {
+		if stage == StageCaptcha {
+			return nil
+		}
+		return fmt.Errorf("`when: %s` guards %s, but a sign-in settles the captcha at the "+
+			"form before this flow is walked, so here it always reads false. In an "+
+			"authentication flow it may guard only the captcha stage", expr, stage)
+	}
+	for _, c := range answered[on] {
+		if string(c) == name {
+			return nil
+		}
+	}
+	names := make([]string, 0, len(answered[on]))
+	for _, c := range answered[on] {
+		names = append(names, string(c))
+	}
+	sort.Strings(names)
+	return fmt.Errorf("`when: %s`: a flow `on: %s` cannot evaluate %s yet, so it would "+
+		"always read false and %s would never run (or, negated, always run). Remove it; "+
+		"what `on: %s` evaluates: %s", expr, on, name, stage, on, strings.Join(names, ", "))
+}
+
 func isCondition(s string) bool {
 	for _, c := range allConditions {
 		if string(c) == s {

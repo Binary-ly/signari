@@ -247,14 +247,14 @@ flows:
     on: authentication
     stages:
       - password
-      - {stage: mfa, when: not network_trusted}
+      - {stage: mfa, when: not user_has_passkey}
       - session
     tests:
-      - name: off the office network
+      - name: no passkey
         given: {}
         expect: [password, mfa, session]
-      - name: on it
-        given: {network_trusted: true}
+      - name: a passkey holder
+        given: {user_has_passkey: true}
         expect: [password, session]
 `)
 	if _, ok := f.Flow("sign-in"); !ok {
@@ -301,7 +301,7 @@ flows:
     on: authentication
     stages:
       - password
-      - {stage: session, when: not risk_elevated}
+      - {stage: session, when: not prompts_pending}
     tests:
       - name: x
         given: {}
@@ -409,7 +409,7 @@ flows:
     on: authentication
     stages:
       - one_of:
-          - {stage: deny, when: risk_elevated}
+          - {stage: deny, when: client_requires_mfa}
           - {stage: password}
       - session
     tests:
@@ -448,17 +448,17 @@ flows:
     on: authentication
     stages:
       - one_of:
-          - {stage: certificate, when: device_managed}
           - {stage: passkey, when: user_has_passkey}
+          - {stage: certificate, when: user_has_second_factor}
           - {stage: password}
       - session
     tests:
-      - name: managed device, also has a passkey
-        given: {device_managed: true, user_has_passkey: true}
-        expect: [certificate, session]
-      - name: passkey only
-        given: {user_has_passkey: true}
+      - name: a passkey and a second factor
+        given: {user_has_passkey: true, user_has_second_factor: true}
         expect: [passkey, session]
+      - name: a second factor only
+        given: {user_has_second_factor: true}
+        expect: [certificate, session]
       - name: neither
         given: {}
         expect: [password, session]

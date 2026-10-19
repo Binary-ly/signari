@@ -57,6 +57,15 @@ func (s *Server) recoveryOffered(ctx context.Context) bool {
 	return unsupported == "" && !recoveryDenied(plan)
 }
 
+// recoveryFacts answers the conditions a recovery flow may branch on:
+// flow.Answered(flow.Recovery), which TestEveryConditionAFlowCanUseIsAnswered
+// holds this to.
+func (s *Server) recoveryFacts(ctx context.Context, remoteAddr string) flow.State {
+	return flow.State{
+		string(flow.CondCaptchaRequired): s.captcha.Required(ctx, remoteAddr),
+	}
+}
+
 // handleRecoverGet shows the "forgot password" form.
 func (s *Server) handleRecoverGet(w http.ResponseWriter, r *http.Request) {
 	csrf, err := s.csrfToken(w, r)
@@ -87,11 +96,7 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 	// security requirement and not a shortcut.
 	orgID, _ := s.defaultOrg(ctx)
 	plan, unsupported, flowName := s.recoveryPlan(ctx, orgID,
-		flow.State{
-			string(flow.CondCaptchaRequired): s.captcha.Required(ctx, r.RemoteAddr),
-		},
-		recoveryRequestFallback,
-	)
+		s.recoveryFacts(ctx, r.RemoteAddr), recoveryRequestFallback)
 	if unsupported != "" {
 		s.refuseRecoveryStage(w, r, unsupported, flowName)
 		return

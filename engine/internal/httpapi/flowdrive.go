@@ -35,8 +35,8 @@ type flowCache struct {
 	// hundred concurrent sign-ins produce one query rather than a hundred.
 	refreshing sync.Mutex
 	inFlight   bool
-	// reported remembers which documents have already had their inert conditions
-	// reported, so a thirty-second reload does not repeat the message forever.
+	// reported remembers which stored documents have already been reported as
+	// refused, so a thirty-second reload does not repeat the message forever.
 	reportedMu sync.Mutex
 	reported   map[string]bool
 }
@@ -154,20 +154,29 @@ func (s *Server) reloadFlowsFrom(ctx context.Context, q dbReader) {
 		}
 		f, perr := flow.Parse([]byte(doc))
 		if perr != nil {
-			// Written straight to the table, bypassing `signari flow apply`. The
-			// PREVIOUS flow is kept rather than dropped: dropping it falls back to
-			// the built-in journey, which is a different journey than the operator
-			// believes is running, changing under them without a word.
-			s.log.Error("the stored sign-in flow will not load; keeping the previous one",
-				"org_id", orgID, "err", perr)
+			// Written straight to the table, bypassing `signari flow apply`, or
+			// applied before a rule that now refuses it -- a condition no journey
+			// evaluates, since 2.20. The PREVIOUS flow is kept rather than
+			// dropped: dropping it falls back to the built-in journey, which is a
+			// different journey than the operator believes is running. A process
+			// that never loaded this document has no previous one and serves the
+			// built-in flow; the log says which, and `signari doctor` reports it.
 			s.flows.mu.RLock()
-			if prev := s.flows.byOrg[orgID]; prev != nil {
+			prev := s.flows.byOrg[orgID]
+			s.flows.mu.RUnlock()
+			if prev != nil {
 				loaded[orgID] = prev
 			}
-			s.flows.mu.RUnlock()
+			if s.firstReport(orgID, doc) {
+				serving := "the built-in flows"
+				if prev != nil {
+					serving = "the previous flow"
+				}
+				s.log.Error("the stored sign-in flow will not load; serving "+serving,
+					"org_id", orgID, "err", perr)
+			}
 			continue
 		}
-		s.reportInertConditions(orgID, doc, f)
 		loaded[orgID] = f
 	}
 
@@ -214,6 +223,9 @@ type signInFacts struct {
 	db     signInReader
 	orgID  string
 	userID string
+	// authzQuery is the parked authorization request, which answers
+	// client_requires_mfa. Empty where there is none, as for a bind.
+	authzQuery string
 
 	promptsOnce bool
 	prompts     []prompts.Prompt
@@ -243,41 +255,56 @@ func (f *signInFacts) Holds(name string) bool {
 	if v, ok := f.known[name]; ok {
 		return v
 	}
+	// A condition with no evaluator reads false. Parse refuses a sign-in flow
+	// that branches on one, except captcha_required guarding the captcha
+	// stage, which the form has already settled; so false here is either that
+	// or a stored document that bypassed Parse.
 	var v bool
-	switch flow.Condition(name) {
-	case flow.CondHasSecondFactor:
-		enrolled, err := store.HasSecondFactor(f.ctx, f.db, f.userID)
-		if err != nil {
-			f.s.log.Error("checking second factor", "err", err)
-		}
-		v = enrolled
-	case flow.CondPromptsPending:
-		v = len(f.pendingPrompts()) > 0
-	case flow.CondPasswordChangeRequired:
-		must, reason, err := store.PasswordChangeRequired(f.ctx, f.db, f.userID)
-		if err != nil {
-			f.s.log.Error("checking whether a password change is required", "err", err)
-		}
-		v, f.changeReason = must, reason
-		f.changeKnown = true
-	default:
-		// A condition this path does not answer: either it is decided earlier
-		// (captcha, at the form) or the signal is not wired into sign-in yet
-		// (device posture, risk, network). False, so the stage it guards is
-		// skipped.
-		//
-		// NOT logged here. This runs on every sign-in, and the built-in file
-		// itself mentions captcha_required -- so a warning here fired on every
-		// successful login of every deployment, about the default configuration.
-		// The same information is reported once at load, by
-		// reportInertConditions.
-		v = false
+	if eval, ok := signInConditions[flow.Condition(name)]; ok {
+		v = eval(f)
 	}
 	if f.known == nil {
 		f.known = map[string]bool{}
 	}
 	f.known[name] = v
 	return v
+}
+
+// signInConditions are the evaluators behind flow.Answered(flow.Authentication),
+// and TestEveryConditionAFlowCanUseIsAnswered holds the two to the same set: a
+// condition answered here and not there is refused at parse for no reason, and
+// one listed there and not answered here reads false while the flow that names
+// it believes it is guarded.
+var signInConditions = map[flow.Condition]func(f *signInFacts) bool{
+	flow.CondHasSecondFactor: func(f *signInFacts) bool {
+		enrolled, err := store.HasSecondFactor(f.ctx, f.db, f.userID)
+		if err != nil {
+			f.s.log.Error("checking second factor", "err", err)
+		}
+		return enrolled
+	},
+	flow.CondHasPasskey: func(f *signInFacts) bool {
+		has, err := store.HasPasskey(f.ctx, f.db, f.userID)
+		if err != nil {
+			f.s.log.Error("checking for a passkey", "err", err)
+		}
+		return has
+	},
+	flow.CondPromptsPending: func(f *signInFacts) bool {
+		return len(f.pendingPrompts()) > 0
+	},
+	flow.CondPasswordChangeRequired: func(f *signInFacts) bool {
+		must, reason, err := store.PasswordChangeRequired(f.ctx, f.db, f.userID)
+		if err != nil {
+			f.s.log.Error("checking whether a password change is required", "err", err)
+		}
+		f.changeReason = reason
+		f.changeKnown = true
+		return must
+	},
+	flow.CondClientRequiresMFA: func(f *signInFacts) bool {
+		return clientRequiresMFA(f.authzQuery)
+	},
 }
 
 // setKnown records a condition the caller has already decided.
@@ -373,10 +400,9 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 		return decisionSession
 	}
 
-	facts := &signInFacts{s: s, ctx: ctx, db: tx, orgID: orgID, userID: userID}
-	facts.setKnown(flow.CondClientRequiresMFA, clientRequiresMFA(authzQuery))
-	// Settled at the sign-in form, before the flow is walked. Recording it as
-	// known keeps the walker from treating it as an unanswerable condition.
+	facts := &signInFacts{s: s, ctx: ctx, db: tx, orgID: orgID, userID: userID, authzQuery: authzQuery}
+	// Settled at the sign-in form, before the flow is walked, which is why
+	// Parse lets it guard nothing but the captcha stage.
 	facts.setKnown(flow.CondCaptchaRequired, false)
 
 	// Whether Duo already failed open for this sign-in -- on the password path,
@@ -558,8 +584,7 @@ func (s *Server) FlowDemandsMFA(ctx context.Context, db signInReader,
 	if fl == nil {
 		return false, false
 	}
-	facts := &signInFacts{s: s, ctx: ctx, db: db, orgID: orgID, userID: userID}
-	facts.setKnown(flow.CondClientRequiresMFA, clientRequiresMFA(authzQuery))
+	facts := &signInFacts{s: s, ctx: ctx, db: db, orgID: orgID, userID: userID, authzQuery: authzQuery}
 	facts.setKnown(flow.CondCaptchaRequired, false)
 
 	if hasSecondFactorAMR(amr) {
@@ -627,62 +652,22 @@ func hasSecondFactorAMR(amr []string) bool {
 	return oauth.IsMultiFactor(amr)
 }
 
-// evaluatedConditions are the conditions the sign-in path actually answers.
-//
-// The language defines more than this. That is deliberate -- a flow can be
-// written against a signal before the signal is wired in -- but the gap has to be
-// visible, or an operator configures a control that silently does nothing, which
-// is the failure this codebase keeps finding in other systems.
-var evaluatedConditions = map[flow.Condition]bool{
-	flow.CondHasSecondFactor:        true,
-	flow.CondPromptsPending:         true,
-	flow.CondPasswordChangeRequired: true,
-	flow.CondClientRequiresMFA:      true,
-}
-
-// conditionsDecidedElsewhere are answered before the flow is consulted, so
-// reporting them as inert would be wrong -- the stage they guard did run, just
-// not under the sequencer.
-var conditionsDecidedElsewhere = map[flow.Condition]string{
-	flow.CondCaptchaRequired: "decided at the sign-in form, before the flow is walked",
-}
-
-// reportInertConditions says once, at load, which parts of a flow do nothing.
+// firstReport reports whether this organisation's document has not been
+// reported as refused before.
 //
 // Once per distinct document, not once per reload: the cache refreshes every
 // thirty seconds, and a message repeated twice a minute forever is noise rather
 // than information.
-func (s *Server) reportInertConditions(orgID, doc string, f *flow.File) {
+func (s *Server) firstReport(orgID, doc string) bool {
 	sum := sha256.Sum256([]byte(doc))
 	key := orgID + ":" + hex.EncodeToString(sum[:8])
 
 	s.flows.reportedMu.Lock()
+	defer s.flows.reportedMu.Unlock()
 	if s.flows.reported == nil {
 		s.flows.reported = map[string]bool{}
 	}
 	already := s.flows.reported[key]
 	s.flows.reported[key] = true
-	s.flows.reportedMu.Unlock()
-	if already {
-		return
-	}
-
-	for i := range f.Flows {
-		fl := &f.Flows[i]
-		for _, c := range fl.Conditions() {
-			cond := flow.Condition(c)
-			if evaluatedConditions[cond] {
-				continue
-			}
-			if why, ok := conditionsDecidedElsewhere[cond]; ok {
-				s.log.Debug("flow condition is settled before the flow runs",
-					"org_id", orgID, "flow", fl.Name, "condition", c, "reason", why)
-				continue
-			}
-			s.log.Warn("this flow branches on a condition the sign-in path does not "+
-				"evaluate; the stage it guards will never run. Remove it, or the "+
-				"control it looks like is not one",
-				"org_id", orgID, "flow", fl.Name, "condition", c)
-		}
-	}
+	return !already
 }

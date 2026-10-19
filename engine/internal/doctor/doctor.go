@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/i18n"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/migrate"
@@ -123,6 +124,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 		return nil, err
 	}
 	if err := checkPolicy(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkSignInFlows(ctx, conn, r); err != nil {
 		return nil, err
 	}
 	if err := checkAdminTokens(ctx, conn, r); err != nil {
@@ -710,6 +714,41 @@ func checkPolicy(ctx context.Context, conn *pgx.Conn, r *Report) error {
 			"that may be correct. If not, write one and apply it with `signari policy apply`")
 	}
 	return nil
+}
+
+// checkSignInFlows reports a stored flow the engine refuses to load.
+//
+// `signari flow apply` parses before it stores, so such a row was written
+// before a rule existed or around the command. The engine then runs the last
+// flow that loaded or the built-in one, which is not the journey the operator
+// applied, and says so only in its log. Critical, because the difference is
+// who gets asked for what on the way in: a flow that branched on a condition
+// no journey evaluates (refused since 2.20) is the expected case.
+func checkSignInFlows(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
+	r.ran("sign-in flows")
+	rows, err := conn.Query(ctx, `
+		SELECT o.slug, f.document FROM core.sign_in_flows f
+		JOIN core.organizations o ON o.id = f.org_id ORDER BY o.slug`)
+	if err != nil {
+		return fmt.Errorf("reading sign-in flows: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug, doc string
+		if err := rows.Scan(&slug, &doc); err != nil {
+			return err
+		}
+		if _, perr := flow.Parse([]byte(doc)); perr != nil {
+			r.add(Critical, "flows", fmt.Sprintf("the sign-in flow applied to %s does not load, "+
+				"so that organisation is running the last flow that did or the built-in one: %v",
+				slug, perr),
+				"fix the file and apply it again with `signari flow apply`, which refuses "+
+					"exactly what the engine refuses")
+		}
+	}
+	return rows.Err()
 }
 
 func checkAdminTokens(ctx context.Context, conn *pgx.Conn, r *Report) error {

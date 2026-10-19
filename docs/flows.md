@@ -169,20 +169,30 @@ makes a typo an error rather than a stage that silently never runs. It is also
 what makes the analysis possible: these are the only things a flow can branch on,
 so "every path" is a set that can be walked.
 
-**Not all of them are wired in yet**, and the difference matters — a condition
-the engine cannot answer is false, so the stage it guards never runs, and a
-control that never runs is not a control.
+**A flow may branch only on what its journey evaluates.** A condition the
+engine cannot answer would read false every time, so a step-up written as
+`{stage: mfa, when: risk_elevated}` would pass its own tests (which set the
+condition true) and never ask anybody for anything. Such a flow is refused when
+it is parsed, naming the condition: by `signari flow test`, by `signari flow
+apply` and by the engine's load alike.
 
-| condition | today |
+| `on:` | conditions it evaluates |
 |---|---|
-| `user_has_second_factor`, `prompts_pending`, `password_change_required`, `client_requires_mfa` | **evaluated** |
-| `captcha_required` | decided at the sign-in form, before the flow is walked |
-| the rest | not yet evaluated — treated as false |
+| `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
+| `enrolment` | `captcha_required`, `prompts_pending` (always false: there is no account yet to have one) |
+| `recovery` | `captcha_required` |
+| `unenrolment` | not judged: nothing walks this designation |
 
-Applying a flow that branches on one of "the rest" logs a warning naming the
-condition and the flow, once per document. It is not refused: writing a flow
-against a signal before the signal is wired in is reasonable, being surprised by
-it later is not.
+The rest of the list (`user_is_new`, `consent_required`, `risk_elevated`,
+`device_managed`, `device_compliant`, `network_trusted`, `kerberos_available`,
+`migration_pending`, `federated_source`) is part of the language, so a file
+naming one is understood rather than mistaken for a typo, and no journey
+evaluates it yet.
+
+A flow stored before this rule existed, or written to the table directly, no
+longer loads. That organisation is served the last flow that loaded, or the
+built-in one after a restart. The engine logs the refusal once per document,
+and `signari doctor` reports it as critical, naming the organisation.
 
 ### `one_of`
 

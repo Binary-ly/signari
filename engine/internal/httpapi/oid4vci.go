@@ -138,11 +138,36 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Two scopes are withheld, and both follow from there being no session:
+	//
+	//   - `openid` asks for an authentication statement about a person. Nothing
+	//     here authenticated anybody — the operator vouched for the holder when
+	//     they minted the offer, at some earlier time, by some means this server
+	//     never saw. An id_token would assert an `auth_time` and an `amr` that
+	//     did not happen.
+	//   - `offline_access` asks for a refresh token, whose whole purpose is to
+	//     outlive the request. A refresh family is anchored to a session so that
+	//     ending the session ends the tokens; anchored to nothing, it would be a
+	//     credential with no way to revoke it short of the client.
+	//
+	// Refused rather than silently dropped where a caller could have asked for
+	// them — but a wallet cannot ask, since this grant carries no scope
+	// parameter, so there is nobody to tell. Filtering is the whole of it.
+	scopes := make([]string, 0, len(c.Scopes))
+	for _, sc := range c.Scopes {
+		if sc == "openid" || sc == "offline_access" {
+			continue
+		}
+		scopes = append(scopes, sc)
+	}
+
 	// The access policy, asked at redemption rather than when the operator
 	// minted the offer: a deny rule written in between applies to the holder.
-	// No session, so a rule demanding MFA is not met.
-	if s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, stored.UserID, "", "",
-		"pre_authorized_code") {
+	// No session, so a rule demanding MFA is not met. Asked about the scope the
+	// token will carry; this grant has no scope parameter, and asking about an
+	// empty one passed every rule written about a scope.
+	if s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, stored.UserID, "",
+		joinScopes(scopes), "pre_authorized_code") {
 		return
 	}
 
@@ -178,30 +203,8 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 	//
 	// No session id and no nonce: a pre-authorized code is issued out of band, so
 	// there is no browser session behind it. What the credential endpoint reads
-	// from the access token is its subject and its scope, which mintSet supplies.
-	//
-	// Two scopes are withheld, and both follow from there being no session:
-	//
-	//   - `openid` asks for an authentication statement about a person. Nothing
-	//     here authenticated anybody — the operator vouched for the holder when
-	//     they minted the offer, at some earlier time, by some means this server
-	//     never saw. An id_token would assert an `auth_time` and an `amr` that
-	//     did not happen.
-	//   - `offline_access` asks for a refresh token, whose whole purpose is to
-	//     outlive the request. A refresh family is anchored to a session so that
-	//     ending the session ends the tokens; anchored to nothing, it would be a
-	//     credential with no way to revoke it short of the client.
-	//
-	// Refused rather than silently dropped where a caller could have asked for
-	// them — but a wallet cannot ask, since this grant carries no scope
-	// parameter, so there is nobody to tell. Filtering is the whole of it.
-	scopes := make([]string, 0, len(c.Scopes))
-	for _, sc := range c.Scopes {
-		if sc == "openid" || sc == "offline_access" {
-			continue
-		}
-		scopes = append(scopes, sc)
-	}
+	// from the access token is its subject and its scope, which mintSet supplies,
+	// filtered above.
 	tx, terr := s.db.Begin(ctx)
 	if terr != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",

@@ -178,8 +178,14 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 	// policy is asked whether that person may reach this client, as for any
 	// other token issued for them. The PDP below answers a different question:
 	// whether the resource owner lets them have these permissions.
+	//
+	// Asked about the scope the RPT will carry, which is the ticket's
+	// permissions. The request's own `scope` parameter mints nothing here, so
+	// asking about it let the caller choose what the policy saw, and leaving it
+	// out passed every rule written about a scope.
+	scopes := uma.Scopes(t.Permissions)
 	if party.userID != "" && s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, party.userID, "",
-		r.PostForm.Get("scope"), "uma") {
+		joinScopes(scopes), "uma") {
 		return
 	}
 
@@ -242,7 +248,6 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	scopes := uma.Scopes(t.Permissions)
 	// The RPT's subject is the REQUESTING PARTY when there is one.
 	//
 	// §1.2 defines an RPT as "unique to a requesting party, client, authorization

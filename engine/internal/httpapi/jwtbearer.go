@@ -190,10 +190,36 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		return
 	}
 
+	scopes := c.Scopes
+	if raw := firstForm(r, "scope"); raw != "" {
+		scopes = splitScopes(raw)
+		if unknown := c.UnknownScopes(scopes); len(unknown) > 0 {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
+				Description: "client is not registered for scope " + unknown[0],
+				Status:      http.StatusBadRequest})
+			return
+		}
+	}
+	// `openid` asks us to state that WE authenticated this person. We did not --
+	// a third party did, and what `acr` and `amr` should then say is a question
+	// RFC 7523 does not answer and this engine has not decided. Refused with the
+	// reason rather than quietly issuing an ID token whose authentication claims
+	// would be invented.
+	if containsScope(scopes, "openid") {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
+			Description: "openid is not available to the jwt-bearer grant: the " +
+				"authentication was performed by the assertion's issuer, not here",
+			Status: http.StatusBadRequest})
+		return
+	}
+
 	// The access policy, as /authorize would ask it. No session: the assertion
 	// proves the upstream vouched, not which factors anybody presented here.
+	// Asked about the scope the token will carry, not the one requested: an
+	// absent scope parameter mints the client's whole registration, and a rule
+	// on one of those scopes was otherwise passed by leaving the parameter out.
 	if s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, userID, "",
-		r.PostForm.Get("scope"), "jwt_bearer") {
+		joinScopes(scopes), "jwt_bearer") {
 		return
 	}
 
@@ -221,29 +247,6 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: assertionRefused, Status: http.StatusBadRequest})
-		return
-	}
-
-	scopes := c.Scopes
-	if raw := firstForm(r, "scope"); raw != "" {
-		scopes = splitScopes(raw)
-		if unknown := c.UnknownScopes(scopes); len(unknown) > 0 {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
-				Description: "client is not registered for scope " + unknown[0],
-				Status:      http.StatusBadRequest})
-			return
-		}
-	}
-	// `openid` asks us to state that WE authenticated this person. We did not --
-	// a third party did, and what `acr` and `amr` should then say is a question
-	// RFC 7523 does not answer and this engine has not decided. Refused with the
-	// reason rather than quietly issuing an ID token whose authentication claims
-	// would be invented.
-	if containsScope(scopes, "openid") {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
-			Description: "openid is not available to the jwt-bearer grant: the " +
-				"authentication was performed by the assertion's issuer, not here",
-			Status: http.StatusBadRequest})
 		return
 	}
 

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -109,6 +110,93 @@ func TestAPreAuthorizedCodeIsRefusedWhenThePolicyDeniesTheClient(t *testing.T) {
 	removePolicy(t, f.srv, f.pool, f.orgID)
 	if status, body := f.post(t, preAuthForm(code, "")); status != http.StatusOK {
 		t.Fatalf("with the rule lifted the same offer gave %d %v", status, body)
+	}
+}
+
+// denyScope is a policy refusing any request that carries one scope.
+func denyScope(scope string) string {
+	return fmt.Sprintf(`
+version: 1
+policies:
+  - name: not-this-scope
+    when: {scope: %q}
+    deny: true
+    message: "This permission is closed to you."
+tests:
+  - name: refused
+    given: {client: c, scope: %q}
+    expect: deny
+  - name: others are not
+    given: {client: c, scope: "something-else"}
+    expect: allow
+`, scope, scope)
+}
+
+// The policy is asked about the scope the token carries. Each of these grants
+// mints the client's registration, or the ticket's permissions, when the
+// request names no scope, and asking about the empty parameter passed every
+// rule written about a scope by leaving it out.
+
+func TestAJWTBearerGrantWithNoScopeIsJudgedByTheScopeItMints(t *testing.T) {
+	f := newAssertionFixture(t)
+	applyPolicy(t, f.srv, f.pool, f.orgID, denyScope("api.write"))
+	status, body := f.grant(t, f.assert(t, nil), nil)
+	refusedByPolicy(t, status, body)
+
+	// Asking for the scope the rule does not mention is not refused, so the
+	// refusal above was the minted scope's.
+	if status, body := f.grant(t, f.assert(t, nil), url.Values{"scope": {"api.read"}}); status != http.StatusOK {
+		t.Fatalf("a grant for api.read alone gave %d %v", status, body)
+	}
+}
+
+func TestAPreAuthorizedCodeIsJudgedByTheScopeItMints(t *testing.T) {
+	f := newTokenFixture(t)
+	f.allowPreAuthGrant(t)
+	if _, err := f.pool.Exec(context.Background(),
+		`UPDATE core.clients SET scopes = scopes || 'vc.degree'::text WHERE client_id = $1`,
+		f.clientID); err != nil {
+		t.Fatal(err)
+	}
+	code := f.preAuth(t, "", 5*time.Minute)
+
+	applyPolicy(t, f.srv, f.pool, f.orgID, denyScope("vc.degree"))
+	status, body := f.post(t, preAuthForm(code, ""))
+	refusedByPolicy(t, status, body)
+
+	removePolicy(t, f.srv, f.pool, f.orgID)
+	if status, body := f.post(t, preAuthForm(code, "")); status != http.StatusOK {
+		t.Fatalf("with the rule lifted the same offer gave %d %v", status, body)
+	}
+}
+
+func TestAnRPTIsJudgedByThePermissionsItCarries(t *testing.T) {
+	f := newCIBAFixture(t)
+	f.allowUserOn(t, "document", "42", "viewer", f.email)
+	idToken := f.idTokenFor(t, f.userID, f.clientID, time.Hour)
+	ask := func(extra url.Values) (int, map[string]any) {
+		_, pb := f.permission(t, f.clientID, f.secret, onePermission)
+		ticket, _ := pb["ticket"].(string)
+		form := url.Values{
+			"claim_token": {idToken}, "claim_token_format": {uma.ClaimTokenFormatIDToken},
+		}
+		for k, v := range extra {
+			form[k] = v
+		}
+		return f.exchange(t, f.clientID, ticket, form)
+	}
+
+	applyPolicy(t, f.srv, f.pool, f.orgID, denyScope("document:42#read"))
+	status, body := ask(nil)
+	refusedByPolicy(t, status, body)
+	// Naming some other scope in the request does not change what the RPT
+	// would carry, so it does not change the answer either.
+	status, body = ask(url.Values{"scope": {"unrelated"}})
+	refusedByPolicy(t, status, body)
+
+	removePolicy(t, f.srv, f.pool, f.orgID)
+	if status, body := ask(nil); status != http.StatusOK {
+		t.Fatalf("with the rule lifted the RPT request gave %d %v", status, body)
 	}
 }
 

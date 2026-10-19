@@ -446,6 +446,17 @@ func (s *Server) createAccount(ctx context.Context, orgID, email, password strin
 
 var errAddressTaken = errors.New("an account with that address already exists")
 
+// signupOffered reports whether the sign-in page should link to sign-up: only
+// when self-service sign-up is open. An invitation carries its own link, and a
+// sign-up page that refuses everybody without one is not a way in.
+func (s *Server) signupOffered(ctx context.Context) bool {
+	if s.db == nil {
+		return false
+	}
+	rule, err := s.signupRule(ctx)
+	return err == nil && rule != nil
+}
+
 // signupRule reads the rule for the organisation this instance serves.
 func (s *Server) signupRule(ctx context.Context) (*store.SignupRule, error) {
 	orgID, err := s.defaultOrg(ctx)

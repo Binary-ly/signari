@@ -17,6 +17,8 @@
   "login.password": "كلمة المرور",
   "login.submit": "تسجيل الدخول",
   "login.passkey": "تسجيل الدخول بمفتاح مرور",
+  "login.forgot": "هل نسيت كلمة المرور؟",
+  "login.signup": "إنشاء حساب",
   "login.gethelp": "الحصول على مساعدة في تسجيل الدخول",
   "login.continuewith": "المتابعة باستخدام {Name}",
 

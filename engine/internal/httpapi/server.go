@@ -901,6 +901,12 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		// has to restart the engine to see their new sign-in button will assume it
 		// is broken.
 		"Providers": s.externalProviders(r.Context(), s.loginOrg(r.Context(), authzQuery), authzQuery),
+		// The ways off this page a person may need, offered only where the
+		// deployment would let them through. Neither was linked at all, so
+		// recovery and sign-up existed and nobody signing in could find them,
+		// while the sign-up page told people to use a link this page lacked.
+		"Recover": s.recoveryOffered(r.Context()),
+		"Signup":  s.signupOffered(r.Context()),
 		// Only when this request actually needs one. In adaptive mode a person
 		// signing in normally never sees a widget at all.
 		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),

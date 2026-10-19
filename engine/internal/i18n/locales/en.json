@@ -17,6 +17,8 @@
   "login.password": "Password",
   "login.submit": "Sign in",
   "login.passkey": "Sign in with a passkey",
+  "login.forgot": "Forgot your password?",
+  "login.signup": "Create an account",
   "login.gethelp": "Get help signing in",
   "login.continuewith": "Continue with {Name}",
 

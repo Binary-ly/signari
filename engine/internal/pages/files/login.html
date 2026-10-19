@@ -14,6 +14,7 @@
 {{template "captcha" .}}<button type="submit">{{T "login.submit"}}</button>
 </form>
 <p class="alt" id="passkey-row" hidden><button type="button" id="passkey-signin">{{T "login.passkey"}}</button></p>
+{{if or .Recover .Signup}}<p class="alt">{{if .Recover}}<a href="/recover">{{T "login.forgot"}}</a>{{end}}{{if and .Recover .Signup}} · {{end}}{{if .Signup}}<a href="/signup">{{T "login.signup"}}</a>{{end}}</p>{{end}}
 {{if .Providers}}<div class="alt">
 {{range .Providers}}<p><a class="ext" href="{{.Href}}">{{T "login.continuewith" .}}</a></p>{{end}}
 </div>{{end}}

@@ -39,6 +39,24 @@ const (
 	recoveryPerAddressWindow = time.Hour
 )
 
+// recoveryRequestFallback is the request half's plan when no recovery flow is
+// configured.
+var recoveryRequestFallback = []flow.StageName{flow.StageIdentify, flow.StageEmailOTP,
+	flow.StagePasswordChange, flow.StageDone}
+
+// recoveryOffered reports whether the sign-in page should link to recovery: not
+// when the operator's recovery flow denies it, and not when it needs a stage
+// this engine cannot drive, which would answer 501. Read under the default
+// organisation, as the request itself is (see recoverflow.go).
+func (s *Server) recoveryOffered(ctx context.Context) bool {
+	if s.db == nil {
+		return false // as loginOrg and externalProviders: a server with no store offers nothing
+	}
+	orgID, _ := s.defaultOrg(ctx)
+	plan, unsupported, _ := s.recoveryPlan(ctx, orgID, flow.State{}, recoveryRequestFallback)
+	return unsupported == "" && !recoveryDenied(plan)
+}
+
 // handleRecoverGet shows the "forgot password" form.
 func (s *Server) handleRecoverGet(w http.ResponseWriter, r *http.Request) {
 	csrf, err := s.csrfToken(w, r)
@@ -72,7 +90,7 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 		flow.State{
 			string(flow.CondCaptchaRequired): s.captcha.Required(ctx, r.RemoteAddr),
 		},
-		[]flow.StageName{flow.StageIdentify, flow.StageEmailOTP, flow.StagePasswordChange, flow.StageDone},
+		recoveryRequestFallback,
 	)
 	if unsupported != "" {
 		s.refuseRecoveryStage(w, r, unsupported, flowName)

@@ -77,9 +77,15 @@ script disabled still completes the sign-in one click later.
 
 ## Discovery
 
-`response_modes_supported` lists all three. `response_types_supported` stays
-`["code"]`: hybrid is per-client and off by default, and advertising it globally
-would invite every client to try something nearly all of them are refused for.
+`response_modes_supported` lists all three. `response_types_supported` is
+`["code", "code id_token"]`: OpenID Connect Discovery 1.0 §3 defines it as "the
+OAuth 2.0 response_type values that this OP supports", and this one supports the
+hybrid type for a client permitted it. Leaving it out did not keep other clients
+from asking, they are refused at the authorization endpoint either way; it kept
+the migrating applications the type exists for from asking, since a relying-party
+library that checks discovery first concludes it is unavailable. No type that
+returns an access token in the front channel is listed, and a test fails if one
+is, or if anything listed is refused.
 
 ---
 
@@ -126,6 +132,12 @@ default, and a client without it that asks for `code id_token` gets a clear
 `signari client set-hybrid` is configuring deliberately, not discovering. A server
 whose hybrid support is general would advertise the hybrid types; this one is
 code-first by design, and advertising them would invite their use.
+
+*Revised 19 October 2026:* discovery now lists `code id_token`. The posture
+above kept the type from the migrating applications that need it, whose
+libraries read discovery before asking, while every client not permitted it is
+refused at the authorization endpoint whether or not it is listed. See
+[Discovery](#discovery).
 
 ### Verdict
 

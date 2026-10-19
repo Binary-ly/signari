@@ -281,10 +281,14 @@ func Build(cfg Config) (*Metadata, error) {
 			"ES256", "ES384", "ES512", "EdDSA",
 		},
 
-		// Code only. OAuth 2.1 removes implicit and the hybrid flows, and every
-		// response type that returns a token in the front channel is a class of
-		// bug we are choosing not to have.
-		ResponseTypesSupported: []string{"code"},
+		// Code, and the one hybrid type the authorization endpoint serves to a
+		// client permitted it (`signari client set-hybrid`, for an application
+		// being migrated in). It was implemented and not listed, so a relying
+		// party library that checks discovery before asking refused to ask.
+		// Implicit and every other type returning a token in the front channel
+		// stay out: OAuth 2.1 removes them and they are a class of bug this
+		// server does not carry.
+		ResponseTypesSupported: []string{"code", "code id_token"},
 		// All three, and all three are served.
 		//
 		// This comment used to say "`query` alone... the authorize endpoint now

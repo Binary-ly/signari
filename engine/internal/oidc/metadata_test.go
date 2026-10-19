@@ -180,8 +180,15 @@ func TestWhatIsRefusedIsSaidRatherThanOmitted(t *testing.T) {
 	if !slices.Equal(md.CodeChallengeMethodsSupported, []string{"S256"}) {
 		t.Errorf("code_challenge_methods_supported is %q; plain is not accepted", md.CodeChallengeMethodsSupported)
 	}
-	if !slices.Equal(md.ResponseTypesSupported, []string{"code"}) {
-		t.Errorf("response_types_supported is %q; no token is returned in the front channel", md.ResponseTypesSupported)
+	// The code flow, and the hybrid type a client may be permitted (2.39). No
+	// access token in the front channel, ever: no type naming `token`.
+	if !slices.Equal(md.ResponseTypesSupported, []string{"code", "code id_token"}) {
+		t.Errorf("response_types_supported is %q, want what the authorization endpoint serves", md.ResponseTypesSupported)
+	}
+	for _, rt := range md.ResponseTypesSupported {
+		if slices.Contains(strings.Fields(rt), "token") {
+			t.Errorf("response_types_supported offers %q, which returns an access token in the front channel", rt)
+		}
 	}
 	if slices.Contains(md.GrantTypesSupported, "password") || slices.Contains(md.GrantTypesSupported, "implicit") {
 		t.Errorf("grant_types_supported offers a removed grant: %q", md.GrantTypesSupported)

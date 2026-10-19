@@ -366,7 +366,6 @@ func isLoopbackHost(h string) bool {
 	return h == "127.0.0.1" || h == "::1" || h == "localhost"
 }
 
-// AllowsResponseType reports whether the client may use this response_type.
 // AllowsResponseType reports whether the client may use this response type.
 //
 // Both sides are normalised first. response_type is a SET: "id_token code" and

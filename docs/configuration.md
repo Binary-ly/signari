@@ -539,6 +539,15 @@ password. See [desktop-login.md](desktop-login.md).
 class; request latency; sign-ins by outcome; tokens by grant type; authentication
 failures by mechanism.
 
+Sign-ins and authentication failures are counted from the audit trail, so every
+sign-in path that records one (the form, LDAP, RADIUS, an outpost, Kerberos, a
+passkey) is counted. Tokens are counted where the token endpoint answers 200.
+Client-authentication failures are counted where a client's secret,
+certificate or assertion is checked. Until October 2026 those three series were
+served and nothing incremented them, so they read zero however busy or
+attacked the server was. `TestEveryDeclaredMetricIsIncremented` now fails on a
+series that nothing outside a test increments.
+
 **No label ever carries an identifier** — not a user id, subject, email,
 username, client id, session id, token or IP address. This is enforced
 structurally rather than by convention: every labelled metric declares the

@@ -74,6 +74,9 @@ var mustBeReachable = []capability{
 		"so deprovisioning is one-way"},
 	{"SetFactorFailureLimit", "SIGNARI_MFA_FAILURE_LIMIT is documented and parsed, " +
 		"and a deployment that set it stricter still disables factors at 100"},
+	{"ObserveAudit", "signari_signins_total and signari_auth_failures_total are " +
+		"exported and read zero, because nothing hands the audit trail's sign-in " +
+		"events to the metrics engine"},
 }
 
 // This test is NOT sufficient, and knowing why is the point.

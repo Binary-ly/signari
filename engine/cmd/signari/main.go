@@ -1968,6 +1968,9 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		// scrape is work done for nothing, and the nil case is what keeps the
 		// middleware out of Routes() entirely.
 		met := metrics.NewEngine()
+		// Sign-ins and authentication failures are counted off the audit
+		// trail, which every sign-in path already writes to.
+		audit.SetObserver(func(e audit.Event) { met.ObserveAudit(e) })
 
 		// Pool saturation, read at scrape time rather than sampled.
 		//

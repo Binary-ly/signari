@@ -235,6 +235,9 @@ func Write(ctx context.Context, tx pgx.Tx, e Event) error {
 	// Same transaction, which is the entire point of an outbox: the event and
 	// the intent to deliver it commit together, so there is no window where the
 	// log says something happened and nothing was ever sent.
+	if observe != nil {
+		observe(e)
+	}
 	if publish != nil && e.OrgID != "" {
 		if err := publish(ctx, tx, e, detail); err != nil {
 			// NOT fatal to the audit write. A subscription that cannot be
@@ -258,6 +261,18 @@ var publish Publisher
 
 // SetPublisher installs the fan-out. Called once, at startup.
 func SetPublisher(p Publisher) { publish = p }
+
+// Observer sees every event Write appends, once it is written, for counting:
+// the metrics engine counts sign-ins and failures here, so every path that
+// audits one is counted by it. It runs before the caller commits, so a
+// transaction that then rolls back has still been counted; a counter is an
+// approximation, and the audit trail is the record.
+type Observer func(e Event)
+
+var observe Observer
+
+// SetObserver installs the observer. Called once, at startup.
+func SetObserver(o Observer) { observe = o }
 
 // chainHash binds each entry to its predecessor.
 //

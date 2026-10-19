@@ -3,6 +3,8 @@ package metrics
 import (
 	"net/http"
 	"time"
+
+	"signari.dev/engine/internal/audit"
 )
 
 // The engine's metric set.
@@ -122,7 +124,7 @@ func NewEngine() *Engine {
 		[]ValueSet{
 			set("authorization_code", "refresh_token", "client_credentials",
 				"device_code", "ciba", "token_exchange", "jwt_bearer",
-				"password", "preauthorized_code"),
+				"password", "preauthorized_code", "uma_ticket"),
 		})
 
 	e.AuthFailures = r.NewCounter("signari_auth_failures_total",
@@ -130,7 +132,7 @@ func NewEngine() *Engine {
 		[]string{"mechanism"},
 		[]ValueSet{
 			set("password", "ldap", "radius", "client_secret", "client_assertion",
-				"mfa", "passkey", "kerberos"),
+				"client_certificate", "mfa", "passkey", "kerberos"),
 		})
 
 	e.SMS = r.NewCounter("signari_sms_total",
@@ -231,4 +233,64 @@ func (e *Engine) Handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		e.Registry.Render(w)
 	})
+}
+
+// ObserveAudit counts sign-ins and authentication failures off the audit
+// trail. Installed with audit.SetObserver at startup, so every sign-in path --
+// the form, LDAP, RADIUS, an outpost, desktop, Kerberos, a passkey -- is
+// counted by the one place they all already report to, and a new path is
+// counted by being audited.
+//
+// SignIns and AuthFailures were declared, exported on /metrics and incremented
+// nowhere, so a dashboard of sign-in failures read zero through an attack.
+// Labels stay inside their declared sets; nothing about the person is read.
+func (e *Engine) ObserveAudit(ev audit.Event) {
+	switch ev.Type {
+	case audit.EventLoginSucceeded:
+		e.SignIns.Inc("succeeded")
+	case audit.EventLoginFailed:
+		reason, _ := ev.Detail["reason"].(string)
+		via, _ := ev.Detail["via"].(string)
+		outcome := signInOutcome(reason)
+		e.SignIns.Inc(outcome)
+		if outcome == "failed" {
+			if m := failureMechanism(reason, via); m != "" {
+				e.AuthFailures.Inc(m)
+			}
+		}
+	}
+}
+
+// signInOutcome sorts a failed sign-in's reason into the outcome label.
+func signInOutcome(reason string) string {
+	switch reason {
+	case "rate_limited", "throttled":
+		return "rate_limited"
+	case "access_policy", "flow_denied", "session_limit":
+		return "refused"
+	case "mfa_required_but_not_enrolled", "second_factor_required":
+		return "mfa_required"
+	}
+	return "failed"
+}
+
+// failureMechanism names what was wrong in a failed sign-in, for the
+// mechanism label, or "" when the reason is not a wrong credential.
+func failureMechanism(reason, via string) string {
+	switch {
+	case via == "ldap": // the listener and an outpost's binds alike
+		return "ldap"
+	case via == "radius":
+		return "radius"
+	case via == "kerberos":
+		return "kerberos"
+	case reason == "passkey_assertion_rejected":
+		return "passkey"
+	case reason == "bad_second_factor":
+		return "mfa"
+	case reason == "bad_password" || reason == "unknown_user" ||
+		reason == "unknown_identifier" || reason == "delegated_rejected":
+		return "password"
+	}
+	return ""
 }

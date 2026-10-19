@@ -463,8 +463,62 @@ func (s *Server) mintHybridIDToken(ctx context.Context, c *clients.Client,
 	})
 }
 
+// tokenStatus records the token endpoint's status, a Write without a
+// WriteHeader being the implicit 200.
+type tokenStatus struct {
+	http.ResponseWriter
+	code    int
+	written bool
+}
+
+func (t *tokenStatus) WriteHeader(code int) {
+	if !t.written {
+		t.code, t.written = code, true
+	}
+	t.ResponseWriter.WriteHeader(code)
+}
+
+func (t *tokenStatus) Write(b []byte) (int, error) {
+	t.written = true
+	return t.ResponseWriter.Write(b)
+}
+
+// grantLabel is a grant_type as the tokens-issued counter labels it. A value
+// outside the counter's set is contained there as "other".
+func grantLabel(grant string) string {
+	switch grant {
+	case oauth.GrantTypeDeviceCode:
+		return "device_code"
+	case oauth.GrantTypeCIBA:
+		return "ciba"
+	case oauth.GrantTypeTokenExchange:
+		return "token_exchange"
+	case oauth.GrantTypeJWTBearer:
+		return "jwt_bearer"
+	case oauth.GrantTypePreAuthorizedCode:
+		return "preauthorized_code"
+	case oauth.GrantTypeUMATicket:
+		return "uma_ticket"
+	}
+	return grant // authorization_code, refresh_token, client_credentials, password
+}
+
 // handleToken implements /oauth2/token for the authorization_code grant.
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
+	// Tokens issued, by grant, counted where every grant answers. The counter
+	// was declared and exported and incremented nowhere, so it read zero on a
+	// server issuing thousands a second. The closure reads r as reassigned
+	// below, whose form has been parsed by the time a 200 has been written.
+	if s.metrics != nil {
+		rec := &tokenStatus{ResponseWriter: w, code: http.StatusOK}
+		w = rec
+		defer func() {
+			if rec.code == http.StatusOK {
+				s.metrics.Tokens.Inc(grantLabel(r.PostFormValue("grant_type")))
+			}
+		}()
+	}
+
 	// A proof at the token endpoint accompanies no access token yet, so `ath` is
 	// absent and only the key matters. Its thumbprint becomes the binding.
 	if jkt, err := s.verifyDPoPForRequest(r, ""); err != nil {

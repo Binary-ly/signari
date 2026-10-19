@@ -39,9 +39,16 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 	if !s.clientAuthAllowed(ctx, r, c.ClientID) {
 		return fmt.Errorf("too many failed client authentications; try again shortly")
 	}
+	// Counted by mechanism (signari_auth_failures_total), which was declared
+	// and incremented nowhere: a guessing run against client secrets was
+	// visible only in the audit trail.
+	mechanism := "client_secret"
 	defer func() {
 		if err != nil {
 			s.recordClientAuthFailure(ctx, r, c.ClientID)
+			if s.metrics != nil {
+				s.metrics.AuthFailures.Inc(mechanism)
+			}
 		}
 	}()
 
@@ -56,6 +63,7 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 	// than in client_auth_methods, and because a client that presents a
 	// certificate should never fall through to a secret comparison.
 	if exp := c.TLSExpectation(); exp.Configured() {
+		mechanism = "client_certificate"
 		if err := clientauth.VerifyClientCertificate(r.TLS, exp, s.clientCAs); err != nil {
 			return fmt.Errorf("mutual-TLS client authentication failed: %w", err)
 		}
@@ -64,6 +72,7 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 
 	switch method {
 	case "private_key_jwt":
+		mechanism = "client_assertion"
 		assertionType := r.PostFormValue("client_assertion_type")
 		if assertionType != clientauth.AssertionType {
 			return fmt.Errorf("this client authenticates with private_key_jwt; "+
@@ -112,6 +121,7 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 		// before the switch because it IS a client authentication method, chosen
 		// per client like private_key_jwt -- unlike mutual TLS above, which is a
 		// property of the connection.
+		mechanism = "client_assertion"
 		return s.authenticateWithAttestation(ctx, r, c)
 
 	case "none":

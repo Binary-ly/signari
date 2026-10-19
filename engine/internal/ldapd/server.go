@@ -52,6 +52,15 @@ type Identity struct {
 	// what happens to rows that predate the column.
 	Surname   string
 	GivenName string
+
+	// BindProof is what an Authenticator that sits across a trust boundary
+	// returns from a successful bind, for the connection to hand back on every
+	// later Lookup and List (see WithBindProof). Never published as an
+	// attribute. An outpost receives one from the core, which then answers a
+	// directory request with what the person who bound may see rather than
+	// what the outpost's token may; the in-process authenticator leaves it
+	// empty, having no boundary to prove anything across.
+	BindProof string
 }
 
 // Config is one LDAP listener.
@@ -184,6 +193,22 @@ var ErrBusy = errors.New("too many recent authentication failures")
 
 type peerKey struct{}
 
+type bindProofKey struct{}
+
+// WithBindProof carries the bound identity's BindProof down to the
+// Authenticator, for the same reason the peer address travels in the context:
+// only the authenticator that issued it reads it.
+func WithBindProof(ctx context.Context, proof string) context.Context {
+	return context.WithValue(ctx, bindProofKey{}, proof)
+}
+
+// BindProof returns the proof of the connection's current bind, or "" when it
+// has none.
+func BindProof(ctx context.Context) string {
+	proof, _ := ctx.Value(bindProofKey{}).(string)
+	return proof
+}
+
 // WithPeerAddr records the address a bind arrived from.
 //
 // Exported so the value has one constructor. An Authenticator keys a guessing
@@ -258,7 +283,11 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		}
 		op := packet.Children[1]
 
-		if !s.dispatch(ctx, c, sess, messageID, op) {
+		opCtx := ctx
+		if sess.bound && sess.identity != nil && sess.identity.BindProof != "" {
+			opCtx = WithBindProof(ctx, sess.identity.BindProof)
+		}
+		if !s.dispatch(opCtx, c, sess, messageID, op) {
 			return
 		}
 	}

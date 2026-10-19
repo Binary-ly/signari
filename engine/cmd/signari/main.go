@@ -373,6 +373,9 @@ func run(args []string) (err error) {
 	outpostCore := fs.String("core", "", "URL of the Signari engine this outpost asks")
 	outpostToken := fs.String("outpost-token", "", "outpost token from `signari outpost create`")
 	outpostKind := fs.String("kind-outpost", "", "ldap, radius or proxy")
+	outpostSearchGroup := fs.String("search-group", "",
+		"`outpost create` / `outpost search-group`: group whose members may search the whole "+
+			"directory through this LDAP outpost (empty: each person sees only their own entry)")
 	// Plaintext asked for by name, as -admin-insecure is: an LDAP outpost
 	// without -tls-cert refuses to start rather than take passwords in clear.
 	outpostLDAPInsecure := fs.Bool("ldap-insecure", os.Getenv("SIGNARI_OUTPOST_LDAP_INSECURE") == "1",
@@ -911,7 +914,9 @@ func run(args []string) (err error) {
 	case "events list":
 		return eventsList(ctx, conn, *orgID)
 	case "outpost create":
-		return outpostCreate(ctx, conn, *orgID, *name, *outpostKind)
+		return outpostCreate(ctx, conn, *orgID, *name, *outpostKind, *outpostSearchGroup)
+	case "outpost search-group":
+		return outpostSetSearchGroup(ctx, conn, *orgID, *name, *outpostSearchGroup)
 	case "outpost list":
 		return outpostList(ctx, conn, *orgID)
 	case "invite create":
@@ -6409,7 +6414,30 @@ func signupShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 }
 
 // outpostCreate issues a token for a remote protocol server.
-func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind string) error {
+// checkSearchGroup refuses a search group an LDAP outpost cannot use: on
+// another kind of outpost, which never searches, or naming no group in the
+// organisation, which would read as granted while matching nobody.
+func checkSearchGroup(ctx context.Context, conn *pgx.Conn, orgID, kind, group string) error {
+	if group == "" {
+		return nil
+	}
+	if kind != "ldap" {
+		return fmt.Errorf("-search-group applies to an LDAP outpost only; a %s outpost "+
+			"does not search the directory", kind)
+	}
+	var exists bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.groups
+		WHERE org_id = $1::uuid AND name = $2)`, orgID, group).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("no group named %q in that organisation; create it with "+
+			"`signari group create` first", group)
+	}
+	return nil
+}
+
+func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind, searchGroup string) error {
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org")
@@ -6423,6 +6451,9 @@ func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind string
 			"bound to one protocol, so a leaked token costs that protocol rather "+
 			"than all of them (got %q)", kind)
 	}
+	if err := checkSearchGroup(ctx, conn, orgID, kind, searchGroup); err != nil {
+		return err
+	}
 
 	token, hash, err := store.NewInvitationToken() // same 32-byte shape
 	if err != nil {
@@ -6430,9 +6461,9 @@ func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind string
 	}
 	var id string
 	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.outposts (org_id, name, kind, token_hash)
-		VALUES ($1::uuid, $2, $3, $4) RETURNING id::text`,
-		orgID, name, kind, hash).Scan(&id); err != nil {
+		INSERT INTO core.outposts (org_id, name, kind, token_hash, search_group)
+		VALUES ($1::uuid, $2, $3, $4, NULLIF($5, '')) RETURNING id::text`,
+		orgID, name, kind, hash, searchGroup).Scan(&id); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return fmt.Errorf("an outpost called %q already exists in that organisation", name)
 		}
@@ -6460,7 +6491,8 @@ func outpostList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		return fmt.Errorf("give -org")
 	}
 	rows, err := conn.Query(ctx, `
-		SELECT name, kind, enabled, last_seen_at, COALESCE(last_seen_ip,'')
+		SELECT name, kind, enabled, last_seen_at, COALESCE(last_seen_ip,''),
+		       COALESCE(search_group, '')
 		  FROM core.outposts WHERE org_id = $1::uuid ORDER BY name`, orgID)
 	if err != nil {
 		return err
@@ -6468,10 +6500,10 @@ func outpostList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	defer rows.Close()
 	n := 0
 	for rows.Next() {
-		var name, kind, ip string
+		var name, kind, ip, group string
 		var enabled bool
 		var seen *time.Time
-		if err := rows.Scan(&name, &kind, &enabled, &seen, &ip); err != nil {
+		if err := rows.Scan(&name, &kind, &enabled, &seen, &ip, &group); err != nil {
 			return err
 		}
 		state := "enabled"
@@ -6483,13 +6515,52 @@ func outpostList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 			last = fmt.Sprintf("last seen %s ago from %s",
 				time.Since(*seen).Round(time.Second), ip)
 		}
-		fmt.Printf("  %-20s %-7s %-9s %s\n", name, kind, state, last)
+		search := ""
+		if kind == "ldap" {
+			search = "search: own entry only"
+			if group != "" {
+				search = "search: members of " + group
+			}
+		}
+		fmt.Printf("  %-20s %-7s %-9s %-36s %s\n", name, kind, state, search, last)
 		n++
 	}
 	if n == 0 {
 		fmt.Println("  no outposts registered")
 	}
 	return rows.Err()
+}
+
+// outpostSetSearchGroup sets or clears whose members may search the whole
+// directory through an LDAP outpost. Takes effect on the next request, since
+// the core reads it per call; the outpost reads it at start, so restart it too.
+func outpostSetSearchGroup(ctx context.Context, conn *pgx.Conn, orgID, name, group string) error {
+	if orgID == "" || name == "" {
+		return fmt.Errorf("give -org and -name")
+	}
+	var kind string
+	if err := conn.QueryRow(ctx, `SELECT kind FROM core.outposts
+		WHERE org_id = $1::uuid AND name = $2`, orgID, name).Scan(&kind); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no outpost called %q in that organisation", name)
+		}
+		return err
+	}
+	if err := checkSearchGroup(ctx, conn, orgID, kind, group); err != nil {
+		return err
+	}
+	if _, err := conn.Exec(ctx, `UPDATE core.outposts SET search_group = NULLIF($3, '')
+		WHERE org_id = $1::uuid AND name = $2`, orgID, name, group); err != nil {
+		return err
+	}
+	if group == "" {
+		fmt.Printf("outpost %s: each person sees only their own entry\n", name)
+	} else {
+		fmt.Printf("outpost %s: members of %s may search the whole directory\n", name, group)
+	}
+	fmt.Println("The core applies this from its next request. Restart the outpost so it")
+	fmt.Println("decides with the same value.")
+	return nil
 }
 
 // outpostRun serves a protocol against a remote core.
@@ -6534,12 +6605,20 @@ func outpostRun(core, token, kind, addr, baseDN, tlsCert, tlsKey string, ldapIns
 				addr = ":389"
 			}
 		}
+		// The search group is the registration's, which the core enforces
+		// whatever this process believes. An environment value that says
+		// otherwise is named rather than obeyed.
+		if env := os.Getenv("SIGNARI_LDAP_SEARCH_GROUP"); env != "" && env != client.SearchGroup() {
+			log.Warn("SIGNARI_LDAP_SEARCH_GROUP is ignored on an outpost: the core enforces the "+
+				"search group recorded on its registration; set it with `signari outpost search-group`",
+				"environment", env, "registration", client.SearchGroup())
+		}
 		srv := ldapd.New(ldapd.Config{
 			BaseDN:      baseDN,
 			UserAttr:    envOr("SIGNARI_LDAP_USER_ATTR", "uid"),
 			MaxResults:  500,
 			ReadTimeout: 30 * time.Second,
-			SearchGroup: os.Getenv("SIGNARI_LDAP_SEARCH_GROUP"),
+			SearchGroup: client.SearchGroup(),
 		}, client, log)
 		ln, err := outpost.ListenLDAP(addr, tlsCert, tlsKey, ldapInsecure)
 		if err != nil {

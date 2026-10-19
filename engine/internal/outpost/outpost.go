@@ -43,10 +43,11 @@ import (
 
 // Client asks a core to verify credentials.
 type Client struct {
-	core   string
-	token  string
-	http   *http.Client
-	origin string
+	core        string
+	token       string
+	http        *http.Client
+	origin      string
+	searchGroup string
 }
 
 // New returns a client for a core.
@@ -92,11 +93,12 @@ func (c *Client) Check(ctx context.Context) error {
 	switch resp.StatusCode {
 	case http.StatusOK:
 		var out struct {
-			Name string `json:"name"`
-			Kind string `json:"kind"`
+			Name        string `json:"name"`
+			Kind        string `json:"kind"`
+			SearchGroup string `json:"search_group"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&out)
-		c.origin = out.Name
+		c.origin, c.searchGroup = out.Name, out.SearchGroup
 		return nil
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return fmt.Errorf("the core refused this outpost token. It may have been "+
@@ -110,6 +112,12 @@ func (c *Client) Check(ctx context.Context) error {
 // Name is what the core calls this outpost, once Check has run.
 func (c *Client) Name() string { return c.origin }
 
+// SearchGroup is the group the core records for this outpost, once Check has
+// run: whose members may search the whole directory. The core enforces it
+// whatever the outpost believes, so the outpost takes it from there rather
+// than from its own environment, and the two cannot disagree.
+func (c *Client) SearchGroup() string { return c.searchGroup }
+
 type identityJSON struct {
 	Username    string   `json:"username"`
 	Email       string   `json:"email"`
@@ -120,6 +128,9 @@ type identityJSON struct {
 	// fallback for `sn` rather than requiring one here.
 	Surname   string `json:"sn"`
 	GivenName string `json:"given_name"`
+	// Only on an authenticate answer: what this connection presents with every
+	// later lookup and list, so the core answers for the person who bound.
+	BindProof string `json:"bind_proof,omitempty"`
 }
 
 func (i identityJSON) toLDAP() *ldapd.Identity {
@@ -127,6 +138,7 @@ func (i identityJSON) toLDAP() *ldapd.Identity {
 		Username: i.Username, Email: i.Email, DisplayName: i.DisplayName,
 		Active: i.Active, Groups: i.Groups,
 		Surname: i.Surname, GivenName: i.GivenName,
+		BindProof: i.BindProof,
 	}
 }
 
@@ -157,23 +169,28 @@ func (c *Client) AuthenticatePassword(ctx context.Context, username, password st
 	return err
 }
 
-// Lookup finds a user without a credential, for LDAP search.
+// Lookup finds a user without a credential, for LDAP search. The core answers
+// only for the person whose bind proof the connection carries: their own entry,
+// or anyone's when they are in this outpost's search group.
 func (c *Client) Lookup(ctx context.Context, username string) (*ldapd.Identity, error) {
 	var out identityJSON
 	if err := c.post(ctx, "/outpost/lookup", map[string]string{
-		"username": username,
+		"username": username, "bind_proof": ldapd.BindProof(ctx),
 	}, &out); err != nil {
 		return nil, err
 	}
 	return out.toLDAP(), nil
 }
 
-// List returns users for a subtree search.
+// List returns users for a subtree search: the directory for a member of this
+// outpost's search group, the asker's own entry for anyone else.
 func (c *Client) List(ctx context.Context, limit int) ([]*ldapd.Identity, error) {
 	var out struct {
 		Users []identityJSON `json:"users"`
 	}
-	if err := c.post(ctx, "/outpost/list", map[string]any{"limit": limit}, &out); err != nil {
+	if err := c.post(ctx, "/outpost/list", map[string]any{
+		"limit": limit, "bind_proof": ldapd.BindProof(ctx),
+	}, &out); err != nil {
 		return nil, err
 	}
 	ids := make([]*ldapd.Identity, 0, len(out.Users))

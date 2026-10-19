@@ -169,6 +169,7 @@ An operator's own service, called to extend a decision this engine makes. See
 | | |
 |---|---|
 | `signari outpost create` / `outpost list` / `outpost run` | LDAP, RADIUS, proxy and desktop outposts. An LDAP outpost serves LDAPS with `-tls-cert` and `-tls-key` (default `:636`) and refuses to start without them unless `-ldap-insecure` is given. See [outposts](outposts.md#ldaps) |
+| `signari outpost search-group` | `-org <uuid> -name <outpost> -search-group <group>`: whose members may search the whole directory through an LDAP outpost; empty clears it, and then each person sees only their own entry. Also settable at `outpost create`. The core enforces it, so a token used without a bind reads nothing. See [outposts](outposts.md#what-an-outpost-token-is-worth) |
 | — | LDAP and RADIUS are **listeners inside `signari serve`**, not commands. Set `SIGNARI_LDAP_ADDR` or `SIGNARI_RADIUS_ADDR`; each is off unless its address is. See [ldap.md](ldap.md) and [radius.md](radius.md) |
 | `signari radius add-client` / `radius list` / `radius enable-client` / `radius disable-client` | RADIUS clients and their shared secrets |
 | `signari radius authorize` | Place a group's members on a VLAN, or name a Filter-Id the device already holds. A VLAN id is 12 bits (RFC 3580 §3.31) and is bounded by the schema. Somebody in several authorised groups gets the highest priority, ties broken by group id so the same person lands on the same VLAN every time |

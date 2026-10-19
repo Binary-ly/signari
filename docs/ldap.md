@@ -78,6 +78,10 @@ Members of `SIGNARI_LDAP_WRITE_GROUP` can search as well, since they can already
 rename and delete anyone. When anonymous search is on, every connection sees
 everything, because nothing is gained by limiting bound users then.
 
+An LDAP outpost takes its search group from its registration instead, with
+`signari outpost search-group`, and the core enforces it. See
+[outposts](outposts.md#what-an-outpost-token-is-worth).
+
 Before this, any account that could bind could list the directory. If an
 application's service account searches for other users, add it to the search
 group, or its searches will come back with only its own entry. The same setting

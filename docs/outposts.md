@@ -60,11 +60,29 @@ password correct for this user" as fast as the core answers. That is unavoidable
   path already applies.
 - **Every call updates `last_seen`, with the address.** A token being exercised
   from somewhere new is visible rather than inferred.
-- It cannot change anything or mint a session. It **can** list the directory,
-  because the outpost needs that to answer members of its
-  `SIGNARI_LDAP_SEARCH_GROUP`. The search group is enforced by the outpost, so a
-  token used directly against the core sees what that group would see. Treat it
-  as a directory read credential as well as an oracle.
+- It cannot change anything or mint a session, and **on its own it reads nobody's
+  entry.** A successful bind through an LDAP outpost returns a signed bind proof
+  naming the person and the outpost. A lookup or a list must carry one, and the
+  core answers for that person as they stand now: their own entry, or the whole
+  directory when they are in the outpost's **search group**. The group is
+  recorded on the registration and enforced by the core:
+
+  ```sh
+  signari outpost create -org <uuid> -name dmz-ldap -kind-outpost ldap -search-group ldap-readers
+  signari outpost search-group -org <uuid> -name dmz-ldap -search-group ldap-readers   # or "" to clear
+  ```
+
+  With no group set, everybody behind the outpost sees only their own entry.
+  The outpost reads the group from the core when it starts, so restart it after
+  a change. `SIGNARI_LDAP_SEARCH_GROUP` is for the engine's own LDAP listener; an
+  outpost ignores it and logs that it did. **Until migration 0142** the outpost
+  enforced its group itself, and the token used directly against the core listed
+  every account in the organisation.
+
+  A bind proof lasts eight hours. That limit is not the control: the person it
+  names is read again, status and groups, on every use. After eight hours the
+  outpost's searches fail and the client binds again. An outpost older than its
+  core sends no proof, so it can still bind but not search until it is upgraded.
 - **Somebody under an MFA mandate is refused** when their organisation is set to
   `refuse_when_mfa`, which is the default since migration 0128. LDAP and RADIUS
   carry only a password. See

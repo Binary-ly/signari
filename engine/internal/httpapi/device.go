@@ -225,7 +225,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 	// Per-address is also strictly better at the job the limit exists for.
 	// Guessing comes from somewhere, so charging the source both slows the
 	// guesser and leaves everybody else unaffected.
-	if res, err := store.AllowRate(ctx, s.db, "device:ip:"+clientIP(r),
+	if res, err := store.AllowRate(ctx, s.db, "device:ip:"+budgetIP(clientIP(r)),
 		deviceAttemptsPerWindow, deviceAttemptWindow); err != nil {
 		// Fail CLOSED. This endpoint's whole protection against guessing an
 		// eight-character code is the limit; serving it unlimited because the

@@ -355,7 +355,7 @@ func (s *Server) allowSecondFactorAttempt(ctx context.Context, w http.ResponseWr
 		}
 		return true
 	}
-	if ip != "" && !check("signin:fail:ip:"+ip, signInPerIPLimit, signInPerIPWindow) {
+	if ip != "" && !check("signin:fail:ip:"+budgetIP(ip), signInPerIPLimit, signInPerIPWindow) {
 		return false
 	}
 	return check(secondFactorAccountKey(userID), secondFactorPerAccountLimit,
@@ -365,7 +365,7 @@ func (s *Server) allowSecondFactorAttempt(ctx context.Context, w http.ResponseWr
 // recordSecondFactorFailure charges a wrong code to both budgets.
 func (s *Server) recordSecondFactorFailure(ctx context.Context, userID, ip string) {
 	if ip != "" {
-		if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+ip,
+		if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+budgetIP(ip),
 			signInPerIPLimit, signInPerIPWindow); err != nil {
 			s.log.Error("recording a second-factor failure", "err", err)
 		}

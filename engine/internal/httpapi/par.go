@@ -152,7 +152,7 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	// client is paced per address. An authenticated confidential client is
 	// paced as itself (parPerClientLimit). A failed authentication stores
 	// nothing and is metered by the client-authentication budgets.
-	key, limit, why := "par:ip:"+clientIP(r), parPerAddressLimit, "too many pushed requests from this address"
+	key, limit, why := "par:ip:"+budgetIP(clientIP(r)), parPerAddressLimit, "too many pushed requests from this address"
 	if c.Type == "confidential" {
 		key, limit, why = "par:client:"+c.ClientID, parPerClientLimit, "too many pushed requests from this client"
 	}

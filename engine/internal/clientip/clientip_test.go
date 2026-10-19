@@ -7,6 +7,26 @@ import (
 	"testing"
 )
 
+// A budget counts an IPv6 client by its /64, the subnet whose addresses it can
+// step between, and an IPv4 client by its address.
+func TestABudgetCountsAnIPv6ClientByItsSubnet(t *testing.T) {
+	for in, want := range map[string]string{
+		"2001:db8:1:2:3:4:5:6":  "2001:db8:1:2::/64",
+		"2001:db8:1:2::ffff":    "2001:db8:1:2::/64",
+		"[2001:db8:1:2::7]":     "2001:db8:1:2::/64",
+		"2001:db8:1:3::1":       "2001:db8:1:3::/64",
+		"::ffff:192.0.2.7":      "192.0.2.7",
+		"192.0.2.7":             "192.0.2.7",
+		"":                      "",
+		"not an address":        "not an address",
+		"fe80::1234:5678:9:abc": "fe80::/64",
+	} {
+		if got := Budget(in); got != want {
+			t.Errorf("Budget(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func request(remote string, headers ...string) *http.Request {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = remote

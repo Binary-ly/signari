@@ -106,7 +106,7 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 		limit  int
 		window time.Duration
 	}
-	budget := []bucket{{"signin:fail:ip:" + clientIP(r), signInPerIPLimit, signInPerIPWindow}}
+	budget := []bucket{{"signin:fail:ip:" + budgetIP(clientIP(r)), signInPerIPLimit, signInPerIPWindow}}
 	names := map[string]bool{}
 	for _, n := range []string{email, username} {
 		if n = strings.ToLower(strings.TrimSpace(n)); n != "" && !names[n] {

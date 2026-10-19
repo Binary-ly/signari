@@ -182,7 +182,7 @@ func (a *LDAPAuthenticator) reserveBind(ctx context.Context, identifier string) 
 	// From the socket, never from the request. The peer is the one thing on an
 	// LDAP bind an attacker cannot choose.
 	if ip := ldapd.PeerAddr(ctx); ip != "" {
-		r, ok, err := store.ReserveRate(ctx, a.db, "signin:fail:ip:"+ip, signInPerIPLimit, signInPerIPWindow)
+		r, ok, err := store.ReserveRate(ctx, a.db, "signin:fail:ip:"+budgetIP(ip), signInPerIPLimit, signInPerIPWindow)
 		if err != nil || !ok {
 			return refuse(err)
 		}

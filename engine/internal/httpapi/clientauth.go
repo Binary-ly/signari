@@ -174,7 +174,7 @@ func (s *Server) clientAuthAllowed(ctx context.Context, r *http.Request, clientI
 	}
 
 	pair, err := store.CountRate(ctx, s.db,
-		"clientauth:fail:pair:"+clientID+":"+ip, clientAuthPerPairWindow)
+		"clientauth:fail:pair:"+clientID+":"+budgetIP(ip), clientAuthPerPairWindow)
 	if err != nil {
 		// Fail closed, for the reason allowSignInAttempt gives: authenticating a
 		// client needs the database one query later anyway, so refusing here costs
@@ -187,7 +187,7 @@ func (s *Server) clientAuthAllowed(ctx context.Context, r *http.Request, clientI
 		return false
 	}
 
-	byIP, err := store.CountRate(ctx, s.db, "clientauth:fail:ip:"+ip, clientAuthPerIPWindow)
+	byIP, err := store.CountRate(ctx, s.db, "clientauth:fail:ip:"+budgetIP(ip), clientAuthPerIPWindow)
 	if err != nil {
 		s.log.Error("checking the client authentication rate limit", "err", err)
 		return false
@@ -202,11 +202,11 @@ func (s *Server) recordClientAuthFailure(ctx context.Context, r *http.Request, c
 	if ip == "" {
 		ip = "unknown"
 	}
-	if _, err := store.AllowRate(ctx, s.db, "clientauth:fail:pair:"+clientID+":"+ip,
+	if _, err := store.AllowRate(ctx, s.db, "clientauth:fail:pair:"+clientID+":"+budgetIP(ip),
 		clientAuthPerPairLimit, clientAuthPerPairWindow); err != nil {
 		s.log.Error("recording a client authentication failure", "err", err)
 	}
-	if _, err := store.AllowRate(ctx, s.db, "clientauth:fail:ip:"+ip,
+	if _, err := store.AllowRate(ctx, s.db, "clientauth:fail:ip:"+budgetIP(ip),
 		clientAuthPerIPLimit, clientAuthPerIPWindow); err != nil {
 		s.log.Error("recording a client authentication failure", "err", err)
 	}

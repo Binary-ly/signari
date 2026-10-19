@@ -104,7 +104,7 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 	// page is always returned. See the file comment. The address is paced
 	// before anything is looked up, so a sweep across many addresses costs a
 	// lookup only within its allowance.
-	if identifier != "" && s.allowRecovery(ctx, "recover:ip:"+clientIP(r),
+	if identifier != "" && s.allowRecovery(ctx, "recover:ip:"+budgetIP(clientIP(r)),
 		recoveryPerAddressLimit, recoveryPerAddressWindow) {
 		if err := s.beginRecovery(ctx, identifier); err != nil {
 			// Logged, never surfaced: the error text distinguishes "no such user"

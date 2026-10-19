@@ -29,6 +29,13 @@ func (s *Server) withClientIP(next http.Handler) http.Handler {
 	})
 }
 
+// budgetIP is ip as a per-address budget counts it: an IPv6 address's /64
+// (clientip.Budget). Every `:ip:` budget key is built through it, so that the
+// count and the check of one budget agree and no budget can be reset by
+// stepping to the next address in the same subnet.
+// TestEveryAddressBudgetIsKeyedByItsSubnet fails on a key built without it.
+func budgetIP(ip string) string { return clientip.Budget(ip) }
+
 // warnIfBehindAnUnnamedProxy says so, once, when forwarding headers arrive from
 // a private or loopback peer while no proxy is trusted. That is the shape of a
 // deployment behind an ingress that nobody configured, in which every client

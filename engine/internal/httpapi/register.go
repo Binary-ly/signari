@@ -80,7 +80,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	//
 	// Per address first, in the database, so one caller's attempts are bounded
 	// on every instance and spend only that caller's allowance.
-	res, rerr := store.AllowRate(ctx, s.db, "register:ip:"+clientIP(r),
+	res, rerr := store.AllowRate(ctx, s.db, "register:ip:"+budgetIP(clientIP(r)),
 		registrationsPerAddress, registrationAddressWindow)
 	if rerr != nil {
 		s.log.Error("checking the registration rate limit", "err", rerr)

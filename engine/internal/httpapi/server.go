@@ -761,7 +761,7 @@ func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool
 	// 20 per five minutes, then capping at exactly the generous ceiling that
 	// replaced it. The flood protection belongs where it already was, and this
 	// belongs to guessing.
-	byIP, err := store.CountRate(ctx, s.db, "signin:fail:ip:"+ip, signInPerIPWindow)
+	byIP, err := store.CountRate(ctx, s.db, "signin:fail:ip:"+budgetIP(ip), signInPerIPWindow)
 	if err != nil {
 		// Refused, not waved through. Signing in needs the database anyway -- the
 		// credential lookup is one query later -- so failing closed here costs
@@ -808,7 +808,7 @@ func (s *Server) recordSignInFailure(ctx context.Context, r *http.Request) {
 	if ip == "" {
 		ip = "unknown"
 	}
-	if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+ip,
+	if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+budgetIP(ip),
 		signInPerIPLimit, signInPerIPWindow); err != nil {
 		s.log.Error("recording a sign-in failure", "err", err)
 	}

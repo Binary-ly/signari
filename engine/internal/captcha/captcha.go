@@ -40,6 +40,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"signari.dev/engine/internal/clientip"
 )
 
 // Mode is when a challenge is required.
@@ -319,12 +321,16 @@ func (v *Verifier) unreachable(err error) error {
 }
 
 // addrKey reduces a remote address to something worth counting.
+// addrKey is the address failures are counted under: an IPv6 address's /64,
+// as every per-address budget counts it (clientip.Budget). Keyed by the full
+// address, a client stepping to the next one in its subnet never met a
+// challenge.
 func addrKey(remoteAddr string) string {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
-		return remoteAddr
+		host = remoteAddr
 	}
-	return host
+	return clientip.Budget(host)
 }
 
 // ParseMode reads a configured mode, refusing anything it does not recognise.

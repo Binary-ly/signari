@@ -117,7 +117,7 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 	// A database error refuses. It used to wave the request through, which
 	// turned a fault in the limiter into an unlimited window for exactly the
 	// flood it exists to stop.
-	res, err := store.AllowRate(ctx, s.db, "signup:ip:"+clientIP(r), signupsPerWindow, signupWindow)
+	res, err := store.AllowRate(ctx, s.db, "signup:ip:"+budgetIP(clientIP(r)), signupsPerWindow, signupWindow)
 	if err != nil {
 		s.log.Error("checking the signup rate limit", "err", err)
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again shortly")

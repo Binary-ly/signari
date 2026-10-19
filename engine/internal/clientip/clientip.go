@@ -234,6 +234,31 @@ func addrOf(s string) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
+// Budget is the key a per-address budget counts ip under: an IPv6 address's
+// /64, and an IPv4 address as it is. "" stays "", which callers already treat
+// as unknown.
+//
+// A /64 is one subnet, and a host on it may use any of its 2^64 addresses --
+// privacy addresses rotate on their own, and choosing a fresh one is a
+// configuration line. Keyed by the full /128, every new address arrived with a
+// fresh budget, so twenty failed passwords per address was no limit at all for
+// anyone reaching the server over IPv6. The /64 is where a network ends and a
+// host begins, so it is the narrowest key a client cannot step out of by itself.
+//
+// Only for budgets. A network rule judges the address as it is, and logs
+// record it whole.
+func Budget(ip string) string {
+	a, ok := addrOf(ip)
+	switch {
+	case !ok:
+		return ip
+	case a.Is4():
+		// Unmapped, so ::ffff:192.0.2.7 and 192.0.2.7 are one budget.
+		return a.String()
+	}
+	return netip.PrefixFrom(a, 64).Masked().String()
+}
+
 func hostOnly(remote string) string {
 	if host, _, err := net.SplitHostPort(remote); err == nil {
 		return host

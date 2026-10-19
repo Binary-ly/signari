@@ -108,6 +108,12 @@ variable set every client shares one bucket. Twenty wrong passwords from anyone
 then lock everyone out for five minutes, and two hundred wrong client secrets
 lock out every confidential client.
 
+An IPv6 client is budgeted by its **/64**, not its full address. A host can
+use any address in its subnet, and privacy addresses rotate by themselves. A
+budget keyed by the /128 was reset by stepping to the next address, so it
+limited nothing. Network rules and logs still see the full address. Until
+October 2026 every budget and the captcha counter keyed the /128.
+
 When a request arrives from one of the trusted proxies, the client is the
 rightmost address in the forwarding chain that is not itself a trusted proxy.
 The entries to the left of it were written by the client and are ignored. A

@@ -125,9 +125,10 @@ func ValidateJWTProof(raw string, ctx ProofContext, now time.Time) (*ProofKey, e
 	// differ, which is the whole attack.
 	hasJWK := h.JSONWebKey != nil
 	hasKID := h.KeyID != ""
-	// x5c is read from the raw header: go-jose exposes Certificates as a
-	// verification helper rather than as the header value.
-	_, hasX5C := h.ExtraHeaders[jose.HeaderKey("x5c")]
+	// x5c is read from the protected header as it was sent. go-jose parses the
+	// header into a field of its own and leaves nothing in ExtraHeaders, where
+	// this used to look, so every x5c proof was refused as naming no key.
+	x5c, hasX5C := protectedX5C(raw)
 	present := 0
 	for _, ok := range []bool{hasJWK, hasKID, hasX5C} {
 		if ok {
@@ -187,7 +188,7 @@ func ValidateJWTProof(raw string, ctx ProofContext, now time.Time) (*ProofKey, e
 			// Appendix F.1's third key source. The chain must verify to a root
 			// this issuer was configured with; see x5c.go for why accepting a
 			// self-signed chain would make this no stronger than an inline jwk.
-			chain, cerr := ParseX5CChain(h.ExtraHeaders[jose.HeaderKey("x5c")])
+			chain, cerr := ParseX5CChain(x5c)
 			if cerr != nil {
 				return nil, fmt.Errorf("the key proof's x5c header is not usable: %w", cerr)
 			}
@@ -328,4 +329,25 @@ func NonceFromProof(raw string) string {
 		return ""
 	}
 	return c.Nonce
+}
+
+// protectedX5C returns the `x5c` member of a compact proof's protected header,
+// read only after go-jose has parsed and verified the same bytes. The chain it
+// names is trusted only once ResolveX5CKey has verified it to a root.
+func protectedX5C(raw string) (json.RawMessage, bool) {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 {
+		return nil, false
+	}
+	head, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, false
+	}
+	var h struct {
+		X5C json.RawMessage `json:"x5c"`
+	}
+	if err := json.Unmarshal(head, &h); err != nil || len(h.X5C) == 0 {
+		return nil, false
+	}
+	return h.X5C, true
 }

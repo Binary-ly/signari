@@ -535,6 +535,8 @@ func run(args []string) (err error) {
 	credTTL := fs.Duration("offer-expires", 5*time.Minute,
 		"how long the pre-authorized code lasts. Short by design: section 3.5 says "+
 			"it MUST be short lived, and it is redeemed within seconds of being scanned")
+	credRootCert := fs.String("root-cert", "",
+		"PEM file of a CA an OID4VCI key proof's x5c chain may verify to (credential trust-root)")
 	localeTag := fs.String("locale", "",
 		"BCP 47 language tag for this person's security notices, e.g. de or pt-BR. "+
 			"Empty clears it, which returns them to the deployment default")
@@ -920,6 +922,12 @@ func run(args []string) (err error) {
 			*credAlways, *credSelective, *credLifetime, *brandName)
 	case "credential list":
 		return credentialList(ctx, conn)
+	case "credential trust-root":
+		return credentialTrustRoot(ctx, conn, *orgID, *name, *credRootCert)
+	case "credential roots":
+		return credentialRoots(ctx, conn)
+	case "credential untrust-root":
+		return credentialUntrustRoot(ctx, conn, *orgID, *name)
 	case "credential offer":
 		return credentialOffer(ctx, conn, *orgID, *email, *clientID, *credConfigs,
 			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL)
@@ -8346,6 +8354,98 @@ func credentialList(ctx context.Context, conn *pgx.Conn) error {
 		fmt.Println("this deployment issues no credentials")
 	}
 	return rows.Err()
+}
+
+// credentialTrustRoot registers a CA an OID4VCI key proof's `x5c` chain may
+// verify to (0150). Without one a chain is refused, never accepted on its own
+// signature, which a self-signed certificate satisfies.
+func credentialTrustRoot(ctx context.Context, conn *pgx.Conn, orgID, name, certPath string) error {
+	if orgID == "" || name == "" || certPath == "" {
+		return fmt.Errorf("credential trust-root needs -org, -name and -root-cert")
+	}
+	blob, err := os.ReadFile(certPath)
+	if err != nil {
+		return fmt.Errorf("reading the root certificate: %w", err)
+	}
+	// Exactly one certificate, and no key. A file holding the CA's private key
+	// is a mistake worth catching when it is made: a server holding it could
+	// mint the chains it is meant to be checking.
+	var der []byte
+	for rest := blob; ; {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		switch {
+		case strings.Contains(block.Type, "PRIVATE KEY"):
+			return fmt.Errorf("%s holds a private key; register only the CA's certificate", certPath)
+		case block.Type == "CERTIFICATE" && der == nil:
+			der = block.Bytes
+		case block.Type == "CERTIFICATE":
+			return fmt.Errorf("%s holds more than one certificate; register each root under its own -name", certPath)
+		}
+	}
+	if der == nil {
+		return fmt.Errorf("%s holds no PEM certificate", certPath)
+	}
+	cert, err := store.CheckProofRoot(der, time.Now())
+	if err != nil {
+		return err
+	}
+	if err := store.SetCredentialProofRoot(ctx, conn, orgID, name, der); err != nil {
+		return err
+	}
+	fmt.Printf("trusted %q for x5c key proofs: %s, until %s\n", name, cert.Subject,
+		cert.NotAfter.Format(time.DateOnly))
+	return nil
+}
+
+// credentialRoots lists the roots x5c key proofs may verify to.
+func credentialRoots(ctx context.Context, conn *pgx.Conn) error {
+	rows, err := conn.Query(ctx, `
+		SELECT org_id::text, name, certificate FROM core.credential_proof_roots
+		ORDER BY org_id, name`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var org, name string
+		var der []byte
+		if err := rows.Scan(&org, &name, &der); err != nil {
+			return err
+		}
+		found = true
+		subject, until := "(does not parse)", ""
+		if cert, perr := x509.ParseCertificate(der); perr == nil {
+			subject, until = cert.Subject.String(), cert.NotAfter.Format(time.DateOnly)
+		}
+		fmt.Printf("%s  %s  %s  until %s\n", org, name, subject, until)
+	}
+	if !found {
+		fmt.Println("no roots: x5c key proofs are refused")
+	}
+	return rows.Err()
+}
+
+// credentialUntrustRoot withdraws a root. Chains to it are refused from the
+// next credential request, since the endpoint reads the roots on each one.
+func credentialUntrustRoot(ctx context.Context, conn *pgx.Conn, orgID, name string) error {
+	if orgID == "" || name == "" {
+		return fmt.Errorf("credential untrust-root needs -org and -name")
+	}
+	tag, err := conn.Exec(ctx, `DELETE FROM core.credential_proof_roots
+		WHERE org_id = $1::uuid AND name = $2`, orgID, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no root named %q in organisation %s", name, orgID)
+	}
+	fmt.Printf("no longer trusted for x5c key proofs: %q\n", name)
+	return nil
 }
 
 // attesterAdd registers a trusted Client Attester,

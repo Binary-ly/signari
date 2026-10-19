@@ -360,8 +360,24 @@ The access token was obtained by redeeming a pre-authorized code **with no
 - The **authorization code flow** variant (`issuer_state`), and with it
   `openid_credential` authorization details and `credential_identifier`
   requests.
-- **`x5c` proof form** — a certificate chain we would have to trust. Accepting one
-  without doing that work is accepting a proof we did not verify.
+
+## `x5c` key proofs — built
+
+A proof may name its key with an `x5c` chain, leaf first, instead of `jwk`. The
+chain must verify, with each certificate in its validity window, to a CA the
+organisation registered:
+
+```sh
+signari credential trust-root -org <id> -name wallet-provider -root-cert ./ca.pem
+signari credential roots
+signari credential untrust-root -org <id> -name wallet-provider
+```
+
+With none registered every `x5c` proof is refused. It is never accepted on its
+own signature, which a self-signed certificate satisfies. The file must hold one
+CA certificate and no private key. A server holding the CA's key could mint the
+chains it is meant to be checking. The roots are read on every credential
+request, so a withdrawal holds at the next one.
 
 ## Key attestation (Appendix D) — built
 

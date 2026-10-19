@@ -102,6 +102,7 @@ var columnClass = map[string]string{
 
 	// Public or non-secret material.
 	"clients.tls_thumbprint":             "public",
+	"credential_proof_roots.certificate": "public",
 	"signing_keys.certificate":           "public",
 	"users.user_handle":                  "public",
 	"webauthn_credentials.aaguid":        "public",

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -245,10 +246,19 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	for i := range attesterSet.Keys {
 		attesters[i] = &attesterSet.Keys[i]
 	}
+	// And the roots an `x5c` chain may verify to (`signari credential
+	// trust-root`). Nil when there are none, which refuses every chain.
+	roots, rerr := store.CredentialProofRoots(ctx, s.db, orgID)
+	if rerr != nil {
+		s.log.Error("reading credential proof roots", "err", rerr, "correlation_id", correlationID(ctx))
+		writeCredentialError(w, http.StatusInternalServerError, "server_error",
+			"the trusted proof roots could not be read")
+		return
+	}
 
 	issued := make([]oid4vci.IssuedCredential, 0, len(proofs))
 	for _, p := range proofs {
-		key, perr := s.validateCredentialProof(ctx, claims, p, attesters)
+		key, perr := s.validateCredentialProof(ctx, claims, p, attesters, roots)
 		if perr != nil {
 			writeCredentialError(w, http.StatusBadRequest, "invalid_proof", perr.Error())
 			return
@@ -293,7 +303,8 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 
 // validateCredentialProof checks one key proof and spends its nonce.
 func (s *Server) validateCredentialProof(ctx context.Context,
-	claims *tokens.AccessTokenClaims, proof string, attesters []*jose.JSONWebKey) (*jose.JSONWebKey, error) {
+	claims *tokens.AccessTokenClaims, proof string, attesters []*jose.JSONWebKey,
+	roots *x509.CertPool) (*jose.JSONWebKey, error) {
 
 	// The nonce is read from the proof before validation so the right expected
 	// value can be supplied; the proof's signature is what makes it trustworthy,
@@ -312,6 +323,7 @@ func (s *Server) validateCredentialProof(ctx context.Context,
 		Anonymous:        claims.ClientID == "",
 		ExpectedNonce:    presented,
 		TrustedAttesters: attesters,
+		TrustedX5CRoots:  roots,
 	}, time.Now())
 	if err != nil {
 		return nil, err

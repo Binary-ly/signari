@@ -51,6 +51,14 @@ type Resolver struct {
 // because an operator who wrote either believes something is protected that
 // is not.
 func Parse(source, trusted string) (*Resolver, error) {
+	return ParseFor(source, trusted, false)
+}
+
+// ParseFor is Parse for a deployment where some listener reads a PROXY
+// protocol header from the trusted proxies (internal/proxyproto). Then the
+// socket address already is the client's, and a proxy list with no forwarding
+// header to read is the configuration of a TCP balancer rather than a mistake.
+func ParseFor(source, trusted string, proxyProtocol bool) (*Resolver, error) {
 	r := &Resolver{source: Source(strings.ToLower(strings.TrimSpace(source)))}
 	if r.source == "" {
 		r.source = Socket
@@ -92,7 +100,7 @@ func Parse(source, trusted string) (*Resolver, error) {
 	case r.source != Socket && len(r.trusted) == 0:
 		return nil, fmt.Errorf("SIGNARI_CLIENT_IP_SOURCE=%s needs SIGNARI_TRUSTED_PROXIES: "+
 			"a forwarding header is believed only from a proxy you named", r.source)
-	case r.source == Socket && len(r.trusted) > 0:
+	case r.source == Socket && len(r.trusted) > 0 && !proxyProtocol:
 		return nil, errors.New("SIGNARI_TRUSTED_PROXIES is set but SIGNARI_CLIENT_IP_SOURCE " +
 			"is socket, so no header would be read; set the source to x-forwarded-for " +
 			"or forwarded")
@@ -162,6 +170,14 @@ func (r *Resolver) ClientIP(req *http.Request) string {
 	}
 	// Every hop was one of ours: the request began inside the trusted network.
 	return last.String()
+}
+
+// Trusts reports whether a is one of the proxies the operator named.
+func (r *Resolver) Trusts(a netip.Addr) bool {
+	if r == nil {
+		return false
+	}
+	return r.isTrusted(a.Unmap())
 }
 
 func (r *Resolver) isTrusted(a netip.Addr) bool {

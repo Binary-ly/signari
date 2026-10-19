@@ -75,6 +75,7 @@ import (
 	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/proxycheck"
+	"signari.dev/engine/internal/proxyproto"
 	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/saml"
@@ -1630,8 +1631,16 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// the same reason as the limit above: a deployment that named its proxies
 	// wrongly and started anyway would share one rate-limit bucket among every
 	// client while believing it did not.
-	ips, err := clientip.Parse(os.Getenv("SIGNARI_CLIENT_IP_SOURCE"),
-		os.Getenv("SIGNARI_TRUSTED_PROXIES"))
+	proxied, err := proxyProtocolListeners()
+	if err != nil {
+		return err
+	}
+	if len(proxied) > 0 && strings.TrimSpace(os.Getenv("SIGNARI_TRUSTED_PROXIES")) == "" {
+		return fmt.Errorf("SIGNARI_PROXY_PROTOCOL needs SIGNARI_TRUSTED_PROXIES: a PROXY header " +
+			"is read only from a balancer you named, never from whoever connects")
+	}
+	ips, err := clientip.ParseFor(os.Getenv("SIGNARI_CLIENT_IP_SOURCE"),
+		os.Getenv("SIGNARI_TRUSTED_PROXIES"), len(proxied) > 0)
 	if err != nil {
 		return err
 	}
@@ -1842,6 +1851,8 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		if err != nil {
 			return fmt.Errorf("LDAP listener: %w", err)
 		}
+		// Below TLS, where a balancer puts it: the header precedes the handshake.
+		ln = withProxyProtocol(ln, proxied["ldap"], ips)
 		if tlsCert == "" {
 			log.Warn("LDAP is listening WITHOUT TLS, as SIGNARI_LDAP_INSECURE asks: every " +
 				"bind sends a password in the clear to whatever reaches this address")
@@ -2076,13 +2087,19 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		}
 	}()
 
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("HTTP listener: %w", err)
+	}
+	ln = withProxyProtocol(ln, proxied["http"], ips)
+
 	if tlsCert == "" || tlsKey == "" {
 		log.Info("serving over plaintext HTTP", "addr", addr, "issuer", issuer,
 			"algs", set.Algorithms())
 		log.Warn("no TLS configured: browsers will refuse to store the __Host- session " +
 			"cookie over plaintext on any host except localhost, so sign-in will silently " +
 			"fail to persist. Supply -tls-cert and -tls-key outside local testing.")
-		if err := h.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := h.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil
@@ -2117,11 +2134,36 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		},
 	}
 	log.Info("serving over HTTPS", "addr", addr, "issuer", issuer, "algs", set.Algorithms())
-	if err := h.ListenAndServeTLS(tlsCert, tlsKey); err != nil &&
+	if err := h.ServeTLS(ln, tlsCert, tlsKey); err != nil &&
 		!errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// proxyProtocolListeners reads SIGNARI_PROXY_PROTOCOL: the listeners whose
+// trusted peers must open every connection with a PROXY v2 header.
+func proxyProtocolListeners() (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, v := range strings.Split(os.Getenv("SIGNARI_PROXY_PROTOCOL"), ",") {
+		switch v = strings.ToLower(strings.TrimSpace(v)); v {
+		case "":
+		case "http", "ldap":
+			out[v] = true
+		default:
+			return nil, fmt.Errorf("SIGNARI_PROXY_PROTOCOL: %q is not a listener; name http, ldap or both", v)
+		}
+	}
+	return out, nil
+}
+
+// withProxyProtocol puts a PROXY v2 reader in front of ln when that listener
+// is behind a TCP balancer. See internal/proxyproto.
+func withProxyProtocol(ln net.Listener, on bool, ips *clientip.Resolver) net.Listener {
+	if !on {
+		return ln
+	}
+	return &proxyproto.Listener{Listener: ln, Trusted: ips.Trusts}
 }
 
 // shutdownDrain is how long to keep serving after being told to stop.

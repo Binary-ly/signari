@@ -100,6 +100,7 @@ a remote desktop is bounded by its session checks instead.
 |---|---|
 | `SIGNARI_TRUSTED_PROXIES` | Comma-separated addresses or CIDR prefixes of the proxies in front of the engine: the addresses the ingress controller connects from, not the whole pod network (see below) |
 | `SIGNARI_CLIENT_IP_SOURCE` | `socket` (default), `x-forwarded-for` or `forwarded` (the RFC 7239 header) |
+| `SIGNARI_PROXY_PROTOCOL` | `http`, `ldap` or both, comma-separated: the listeners behind a **TCP** balancer that sends a PROXY protocol v2 header. Needs `SIGNARI_TRUSTED_PROXIES` (see below) |
 
 Every per-address decision keys on the client address: the sign-in and
 client-secret failure budgets, the captcha, and access-policy network rules.
@@ -147,6 +148,34 @@ address is believed about who the client is. Trusting a whole pod network
 the proxy has no stable address, give it one, or let a NetworkPolicy admit only
 the proxy to the engine's port before you trust a range. This page and the Helm
 chart's example used to trust the whole pod network.
+
+### Behind a TCP balancer
+
+A balancer that forwards TCP rather than HTTP has no header to write, so every
+connection to the LDAP listener, or to an HTTP listener behind it, carried the
+balancer's address. Every bind and sign-in shared one budget. PROXY protocol
+version 2 is how such a balancer says who the client was. Name the balancer and
+the listeners it sits in front of:
+
+```sh
+SIGNARI_TRUSTED_PROXIES=10.0.0.5 SIGNARI_PROXY_PROTOCOL=ldap,http signari serve
+```
+
+On those listeners, a connection **from a trusted address must begin with a v2
+header**. Without one it is dropped, as the specification requires: the
+receiver "MUST not try to guess whether the protocol header is present or not"
+(HAProxy's proxy-protocol.txt, §2). A `LOCAL` header, which a balancer sends for
+its own health checks, is served as the balancer. A connection from any other
+address is served as itself, and its first bytes are not read as a header. So a
+client that writes a PROXY header of its own reaches the LDAP or HTTP parser
+with it, and is refused there. Only version 2, the binary form, is read.
+
+With PROXY protocol on, trusted proxies and `SIGNARI_CLIENT_IP_SOURCE=socket`
+is a valid combination, since the socket address is then the client's. An HTTP
+proxy in front of a PROXY-speaking balancer can still add `X-Forwarded-For`,
+and the header is believed only from the addresses you trusted, as above.
+Until October 2026 there was no way to run a listener behind a TCP balancer
+without the shared budget.
 
 ## Mail
 

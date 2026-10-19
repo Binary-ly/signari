@@ -3,6 +3,7 @@ package clientip
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -115,5 +116,33 @@ func TestAConfigurationThatProtectsNothingIsRefused(t *testing.T) {
 	}
 	if r, err := Parse("", ""); err != nil || r.Source() != Socket {
 		t.Errorf("the default is not the socket: %v %v", r, err)
+	}
+}
+
+// Behind a TCP balancer that sends a PROXY header, the socket already is the
+// client and the trusted list names the balancer: the one combination Parse
+// refuses as protecting nothing is then the configuration that works.
+func TestTrustedProxiesWithTheSocketSourceAreAcceptedForAPROXYBalancer(t *testing.T) {
+	r, err := ParseFor("socket", "10.0.0.5, 2001:db8::/64", true)
+	if err != nil {
+		t.Fatalf("a PROXY balancer's configuration was refused: %v", err)
+	}
+	for addr, want := range map[string]bool{
+		"10.0.0.5": true, "::ffff:10.0.0.5": true, "2001:db8::9": true,
+		"10.0.0.6": false, "2001:db9::9": false,
+	} {
+		if got := r.Trusts(netip.MustParseAddr(addr)); got != want {
+			t.Errorf("Trusts(%s) = %v, want %v", addr, got, want)
+		}
+	}
+	if _, err := ParseFor("socket", "10.0.0.5", false); err == nil {
+		t.Error("without a PROXY listener the same configuration was accepted")
+	}
+	if _, err := ParseFor("socket", "0.0.0.0/0", true); err == nil {
+		t.Error("a balancer list covering every address was accepted")
+	}
+	var nilResolver *Resolver
+	if nilResolver.Trusts(netip.MustParseAddr("10.0.0.5")) {
+		t.Error("no resolver trusted an address")
 	}
 }

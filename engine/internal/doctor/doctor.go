@@ -772,29 +772,79 @@ func checkPolicy(ctx context.Context, conn *pgx.Conn, r *Report) error {
 // no journey evaluates (refused since 2.20) is the expected case.
 func checkSignInFlows(ctx context.Context, conn interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
 }, r *Report) error {
 	r.ran("sign-in flows")
 	rows, err := conn.Query(ctx, `
-		SELECT o.slug, f.document FROM core.sign_in_flows f
+		SELECT o.id::text, o.slug, f.document FROM core.sign_in_flows f
 		JOIN core.organizations o ON o.id = f.org_id ORDER BY o.slug`)
 	if err != nil {
 		return fmt.Errorf("reading sign-in flows: %w", err)
 	}
-	defer rows.Close()
+	type applied struct {
+		orgID, slug string
+		fl          *flow.Flow
+	}
+	var loaded []applied
 	for rows.Next() {
-		var slug, doc string
-		if err := rows.Scan(&slug, &doc); err != nil {
+		var orgID, slug, doc string
+		if err := rows.Scan(&orgID, &slug, &doc); err != nil {
+			rows.Close()
 			return err
 		}
-		if _, perr := flow.Parse([]byte(doc)); perr != nil {
+		file, perr := flow.Parse([]byte(doc))
+		if perr != nil {
 			r.add(Critical, "flows", fmt.Sprintf("the sign-in flow applied to %s does not load, "+
 				"so that organisation is running the last flow that did or the built-in one: %v",
 				slug, perr),
 				"fix the file and apply it again with `signari flow apply`, which refuses "+
 					"exactly what the engine refuses")
+			continue
+		}
+		for i := range file.Flows {
+			if file.Flows[i].On == flow.Authentication {
+				loaded = append(loaded, applied{orgID, slug, &file.Flows[i]})
+			}
 		}
 	}
-	return rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// A flow that loads and refuses a way in the organisation uses (2.49). A
+	// sign-in's proving stage must be the proof presented, so a flow naming
+	// only password, written when the walker passed every such stage, now
+	// refuses everybody who signs in with a passkey or through a provider.
+	for _, a := range loaded {
+		for _, use := range []struct {
+			stage flow.StageName
+			query string
+			what  string
+		}{
+			{flow.StagePasskey, `SELECT count(DISTINCT w.user_id) FROM core.webauthn_credentials w
+				JOIN core.users u ON u.id = w.user_id WHERE u.org_id = $1::uuid AND u.status = 'active'`,
+				"people hold passkeys"},
+			{flow.StageFederated, `SELECT count(*) FROM core.identity_providers
+				WHERE org_id = $1::uuid AND enabled`, "upstream providers are enabled"},
+		} {
+			if a.fl.AdmitsProof(use.stage) {
+				continue
+			}
+			var n int
+			if err := conn.QueryRow(ctx, use.query, a.orgID).Scan(&n); err != nil {
+				return err
+			}
+			if n > 0 {
+				r.add(Warning, "flows", fmt.Sprintf("in %s %d %s, and the sign-in flow %q applied "+
+					"to it refuses a %s sign-in", a.slug, n, use.what, a.fl.Name, use.stage),
+					fmt.Sprintf("a sign-in's proving stage must be the proof presented; add "+
+						"`{stage: %s, when: proved_by_%s}` to a one_of with the password, or "+
+						"leave it out on purpose", use.stage, use.stage))
+			}
+		}
+	}
+	return nil
 }
 
 // checkFederationAnchor reports a stored OpenID Federation configuration with no

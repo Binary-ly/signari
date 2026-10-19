@@ -63,6 +63,29 @@ flows:
 		}
 	}
 
+	// It loads, and it refuses a way in the organisation uses (2.49): only a
+	// password is admitted, and a provider is enabled.
+	if _, err := tx.Exec(ctx, `INSERT INTO core.identity_providers (org_id, slug, display_name, kind, client_id)
+		VALUES ($1::uuid, 'flows-probe-idp', 'probe', 'oidc', 'x')`, orgID); err != nil {
+		t.Fatal(err)
+	}
+	r = &Report{}
+	if err := checkSignInFlows(ctx, tx, r); err != nil {
+		t.Fatal(err)
+	}
+	refusesProvider := false
+	for _, f := range r.Findings {
+		if strings.Contains(f.Summary, "flows-probe") {
+			refusesProvider = strings.Contains(f.Summary, "refuses a federated sign-in") && f.Severity == Warning
+		}
+	}
+	if !refusesProvider {
+		t.Errorf("a password-only flow in an organisation with an enabled provider was not reported: %v", r.Findings)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM core.identity_providers WHERE slug = 'flows-probe-idp'`); err != nil {
+		t.Fatal(err)
+	}
+
 	refused := strings.Replace(loads, "[password, session]", "[password, {stage: mfa, when: risk_elevated}, session]", 1)
 	if _, err := tx.Exec(ctx, `UPDATE core.sign_in_flows SET document = $2 WHERE org_id = $1::uuid`,
 		orgID, refused); err != nil {

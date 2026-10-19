@@ -2,6 +2,7 @@ package flow
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -87,6 +88,38 @@ flows:
 	} {
 		if _, err := Parse([]byte(flowOf(c[0], c[1]))); err != nil {
 			t.Errorf("%s was refused: %v", c[0], err)
+		}
+	}
+}
+
+// Which ways in a flow admits, for doctor to name the ones it refuses that an
+// organisation uses (2.49).
+func TestAFlowSaysWhichSignInProofsItAdmits(t *testing.T) {
+	builtin, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := []StageName{StagePassword, StagePasskey, StageKerberos, StageFederated}
+	for _, s := range all {
+		if !builtin.Flows[0].AdmitsProof(s) {
+			t.Errorf("the built-in sign-in does not admit %s", s)
+		}
+	}
+	for stages, admits := range map[string][]StageName{
+		"[passkey, session]":           {StagePasskey},
+		"[password, mfa, session]":     {StagePassword},
+		"[mfa, session]":               all,
+		"[password, deny]":             nil,
+		"[federated, prompt, session]": {StageFederated},
+	} {
+		f, err := Parse([]byte(oneFlow(Authentication, stages)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range all {
+			if got, want := f.Flows[0].AdmitsProof(s), slices.Contains(admits, s); got != want {
+				t.Errorf("%s admits %s: %v, want %v", stages, s, got, want)
+			}
 		}
 	}
 }

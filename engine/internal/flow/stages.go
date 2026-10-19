@@ -363,6 +363,56 @@ func (fl *Flow) checkOneProof() error {
 	return nil
 }
 
+// AdmitsProof reports whether an authentication flow signs in somebody who
+// arrived by stage's proof: some journey with that route's proved_by true and
+// no other, ending in a session, asks for no other sign-in proof. doctor uses
+// it to say when an applied flow refuses a way in the organisation uses.
+// A flow with too many conditions to enumerate is taken to admit it, so the
+// answer only ever warns about what is certain.
+func (fl *Flow) AdmitsProof(stage StageName) bool {
+	want, ok := signInProofs[stage]
+	if !ok || fl.On != Authentication {
+		return false
+	}
+	conds := fl.Conditions()
+	if len(conds) > maxEnumeratedConditions {
+		return true
+	}
+	other := map[string]bool{}
+	for _, c := range signInProofs {
+		if c != want {
+			other[string(c)] = true
+		}
+	}
+	for mask := 0; mask < 1<<len(conds); mask++ {
+		st, impossible := State{string(want): true}, false
+		for i, c := range conds {
+			if c == string(want) {
+				continue
+			}
+			st[c] = mask&(1<<i) != 0
+			impossible = impossible || (st[c] && other[c])
+		}
+		if impossible {
+			continue
+		}
+		plan := fl.Plan(st)
+		if len(plan) == 0 || plan[len(plan)-1] != StageSession {
+			continue
+		}
+		admitted := true
+		for _, s := range plan {
+			if _, proof := signInProofs[s]; proof && s != stage {
+				admitted = false
+			}
+		}
+		if admitted {
+			return true
+		}
+	}
+	return false
+}
+
 // Drivable lists the stages a journey of designation d runs.
 func Drivable(d Designation) []StageName {
 	return append([]StageName(nil), drivable[d]...)

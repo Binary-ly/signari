@@ -126,6 +126,20 @@ the port is a user-enumeration oracle for anyone who can reach it.
 **Unsupported filters match nothing.** Failing open on a filter we cannot parse
 would answer it with the entire directory.
 
+**The search base and scope are honoured.** Every person is a direct child of
+the base DN, so a one-level search reaches people only from the base DN, a
+subtree search reaches everyone from the base DN or one person from that
+person's DN, and a search based anywhere else, `ou=groups,…` for instance,
+returns nobody. Until October 2026 any one-level or subtree search under the
+base returned the whole directory, wherever it was based.
+
+**A critical control is refused.** This server applies no request controls, so
+an operation carrying one marked critical is not performed and is answered
+`unavailableCriticalExtension` (12), as RFC 4511 §4.1.11 requires; a
+non-critical control is ignored. Critical controls used to be ignored too, so a
+client that made, say, a server-side sort a condition of its search got the
+search without it.
+
 **One organisation per listener, stated explicitly.** LDAP has no way to express
 a tenant — the DN is the only input, and the client chooses it. Inferring the
 organisation from attacker-controlled data and getting it wrong means binding
@@ -344,7 +358,8 @@ password-verification oracle and nothing more.
 
 ## Not implemented
 
-Referrals, aliases, paged results, substring and approximate filters, and SASL.
+Referrals, aliases, paged results and every other request control, substring
+and approximate filters, and SASL.
 Substring filters in particular are absent on purpose: they ask the server to do
 open-ended work on behalf of whoever opened the connection.
 

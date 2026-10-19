@@ -283,6 +283,26 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		}
 		op := packet.Children[1]
 
+		// RFC 4511 §4.1.11 (specs/rfc4511.txt:766-771): a critical control the
+		// server does not apply means it "MUST NOT perform the operation" and
+		// answers unavailableCriticalExtension. None is applied here, so every
+		// critical one is refused. They were ignored: a client asking for, say,
+		// a server-side sort it relies on got the operation done without it.
+		// Unbind's criticality MUST be ignored, and abandon has no response.
+		if len(packet.Children) > 2 && op.Tag != appUnbindRequest {
+			if oid, critical := criticalControl(packet.Children[2]); critical {
+				if op.Tag == appAbandonRequest {
+					continue
+				}
+				if !s.write(c, newMessage(messageID, newResult(responseTag(op.Tag),
+					resultUnavailableCriticalExtension, "",
+					"the critical control "+oid+" is not supported by this server"))) {
+					return
+				}
+				continue
+			}
+		}
+
 		opCtx := ctx
 		if sess.bound && sess.identity != nil && sess.identity.BindProof != "" {
 			opCtx = WithBindProof(ctx, sess.identity.BindProof)
@@ -290,6 +310,42 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		if !s.dispatch(opCtx, c, sess, messageID, op) {
 			return
 		}
+	}
+}
+
+// criticalControl reports the first control marked critical in an
+// LDAPMessage's controls ([0] SEQUENCE OF Control, RFC 4511 §4.1.11), and its
+// type. A malformed controls element is treated as critical: refusing is the
+// reading that cannot perform an operation the client meant to constrain.
+func criticalControl(p *ber.Packet) (string, bool) {
+	if p.ClassType != ber.ClassContext || p.Tag != 0 {
+		return "", false
+	}
+	for _, ctl := range p.Children {
+		if len(ctl.Children) == 0 {
+			return "(malformed)", true
+		}
+		oid := ber.DecodeString(ctl.Children[0].Data.Bytes())
+		if len(ctl.Children) > 1 && ctl.Children[1].Tag == ber.TagBoolean {
+			if v, ok := ctl.Children[1].Value.(bool); ok && v {
+				return oid, true
+			}
+		}
+	}
+	return "", false
+}
+
+// responseTag is the response a request is answered in.
+func responseTag(request ber.Tag) ber.Tag {
+	switch request {
+	case appSearchRequest:
+		return appSearchResultDone
+	case appExtendedRequest:
+		return appExtendedResponse
+	default:
+		// Bind, Modify, Add, Del, ModifyDN and Compare: each response is the
+		// request's tag plus one (RFC 4511 §4.2 to §4.10).
+		return request + 1
 	}
 }
 
@@ -629,19 +685,59 @@ func (s *Server) ownEntry(ctx context.Context, sess *session, req *searchRequest
 		}
 	}
 	e := s.entryFor(self)
-	if !req.Filter.Matches(e) {
+	if !s.scopeReaches(req, s.dnFor(self.Username)) || !req.Filter.Matches(e) {
 		return nil, nil
 	}
 	return []*entry{e}, nil
 }
 
+// scopeReaches reports whether a search's base and scope include the person
+// entry at dn, which is always a child of the configured base DN.
+//
+// The base was checked only for lying under the configured one, so a one-level
+// or subtree search based at `ou=groups,…`, or at a person, returned every
+// person in the directory. RFC 4511 §4.5.1.2 scopes are about where entries
+// are, and a person's entry is in exactly one place. (A base-object search was
+// already exact: usernameFromDN requires the rest of the DN to be the base.)
+func (s *Server) scopeReaches(req *searchRequest, dn string) bool {
+	base := normalDN(req.BaseDN)
+	switch req.Scope {
+	case scopeBaseObject:
+		return base == normalDN(dn)
+	case scopeSingleLevel:
+		return base == normalDN(s.cfg.BaseDN)
+	default:
+		return base == normalDN(s.cfg.BaseDN) || base == normalDN(dn)
+	}
+}
+
+// normalDN lowercases a DN and drops the spaces clients put around its commas
+// and equals signs, so `uid=a, dc=x` and `UID=a,DC=x` compare equal.
+func normalDN(dn string) string {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(dn)), ",")
+	for i, p := range parts {
+		attr, value, ok := strings.Cut(p, "=")
+		if ok {
+			parts[i] = strings.TrimSpace(attr) + "=" + strings.TrimSpace(value)
+		} else {
+			parts[i] = strings.TrimSpace(p)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
 // entriesFor resolves a search to entries.
 func (s *Server) entriesFor(ctx context.Context, req *searchRequest, limit int) ([]*entry, error) {
 	// A base-object search on a specific user DN is the common shape: an
-	// application binds as a service account and reads one person.
-	if req.Scope == scopeBaseObject {
+	// application binds as a service account and reads one person. So is a
+	// subtree search based on that DN, which reaches the same one entry.
+	if req.Scope == scopeBaseObject ||
+		(req.Scope == scopeWholeSubtree && normalDN(req.BaseDN) != normalDN(s.cfg.BaseDN)) {
 		username, err := s.usernameFromDN(req.BaseDN)
 		if err != nil {
+			return nil, nil
+		}
+		if !s.scopeReaches(req, s.dnFor(username)) {
 			return nil, nil
 		}
 		id, err := s.auth.Lookup(ctx, username)
@@ -652,6 +748,11 @@ func (s *Server) entriesFor(ctx context.Context, req *searchRequest, limit int) 
 		if req.Filter.Matches(e) {
 			return []*entry{e}, nil
 		}
+		return nil, nil
+	}
+	// The people are the base DN's children and nobody else's: a one-level
+	// search anywhere else reaches none of them.
+	if normalDN(req.BaseDN) != normalDN(s.cfg.BaseDN) {
 		return nil, nil
 	}
 
@@ -760,9 +861,8 @@ func (s *Server) usernameFromDN(dn string) (string, error) {
 }
 
 func (s *Server) underBase(dn string) bool {
-	dn = strings.TrimSpace(dn)
-	return equalFold(dn, s.cfg.BaseDN) || strings.HasSuffix(strings.ToLower(dn),
-		","+strings.ToLower(s.cfg.BaseDN))
+	dn, base := normalDN(dn), normalDN(s.cfg.BaseDN)
+	return dn == base || strings.HasSuffix(dn, ","+base)
 }
 
 // writeRootDSE answers the pre-bind capability probe.

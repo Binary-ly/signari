@@ -73,14 +73,17 @@ const (
 	resultProtocolError          = 2
 	resultTimeLimitExceeded      = 3
 	resultAuthMethodNotSupported = 7
-	resultNoSuchAttribute        = 16
-	resultUndefinedAttributeType = 17
-	resultConstraintViolation    = 19
-	resultAttributeOrValueExists = 20
-	resultNoSuchObject           = 32
-	resultInvalidDNSyntax        = 34
-	resultInvalidCredentials     = 49
-	resultInsufficientAccess     = 50
+	// A critical control this server does not apply. RFC 4511 §4.1.11,
+	// specs/rfc4511.txt:766-771: such an operation MUST NOT be performed.
+	resultUnavailableCriticalExtension = 12
+	resultNoSuchAttribute              = 16
+	resultUndefinedAttributeType       = 17
+	resultConstraintViolation          = 19
+	resultAttributeOrValueExists       = 20
+	resultNoSuchObject                 = 32
+	resultInvalidDNSyntax              = 34
+	resultInvalidCredentials           = 49
+	resultInsufficientAccess           = 50
 	// "Indicates that the server is too busy to service the operation."
 	// RFC 4511 s4.1.9, specs/rfc4511.txt:2904.
 	resultBusy                      = 51

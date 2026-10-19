@@ -45,6 +45,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
 )
@@ -1945,6 +1946,132 @@ func racSetParameters(ctx context.Context, conn *pgx.Conn, orgID, slug, raw stri
 	}
 	sort.Strings(names)
 	fmt.Printf("%s: %s, from the next connection\n", slug, strings.Join(names, ", "))
+	return nil
+}
+
+// migrationSourceAdd configures the provider an organisation is migrating off
+// (2.01): an OAuth provider's password grant, or the LDAP directory itself.
+// Nothing could create one, so delegated verification could not be switched
+// on. The source is created disabled, and a replaced one keeps its state.
+func migrationSourceAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, name, tokenEndpoint, ldapURL,
+	clientID, secret, scope, template string, startTLS bool, caPath string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	c := store.MigrationSourceConfig{DisplayName: name, ClientID: clientID, ClientSecret: secret, Scope: scope}
+	switch kind {
+	case "oidc", "oidc_password":
+		c.Kind, c.URL = "oidc_password", tokenEndpoint
+		if ldapURL != "" || template != "" || caPath != "" {
+			return fmt.Errorf("-ldap-url, -bind-dn-template and -ldap-ca are for -kind ldap")
+		}
+	case "ldap":
+		c.Kind, c.URL, c.BindDNTemplate, c.StartTLS = "ldap", ldapURL, template, startTLS
+		if tokenEndpoint != "" {
+			return fmt.Errorf("-token-endpoint is for -kind oidc_password")
+		}
+		if caPath != "" {
+			raw, err := os.ReadFile(caPath)
+			if err != nil {
+				return err
+			}
+			c.CAPEM = string(raw)
+		}
+	default:
+		return fmt.Errorf("-kind is oidc_password or ldap for a migration source")
+	}
+	var root *keys.RootKey
+	if secret != "" {
+		var err error
+		if root, err = rootKey(); err != nil {
+			return err
+		}
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := store.SetMigrationSource(ctx, tx, root, orgID, c); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return migrationSourceShow(ctx, conn, orgID)
+}
+
+// migrationSourceSetEnabled switches delegated verification on or off.
+func migrationSourceSetEnabled(ctx context.Context, conn *pgx.Conn, orgID string, enabled bool) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetMigrationSourceEnabled(ctx, tx, orgID, enabled); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return migrationSourceShow(ctx, conn, orgID)
+}
+
+// migrationSourceRemove deletes the source.
+func migrationSourceRemove(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.RemoveMigrationSource(ctx, tx, orgID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Println("migration source removed. People still pending cannot sign in with a password")
+	fmt.Println("until they reset it or a source is configured again.")
+	return nil
+}
+
+// migrationSourceShow reports the source and how the cutover is going.
+func migrationSourceShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	s, err := store.MigrationSourceOf(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	state := "disabled"
+	if s.Enabled {
+		state = "ENABLED"
+	}
+	fmt.Printf("migration source %q (%s), %s\n  url      : %s\n", s.DisplayName, s.Kind, state, s.URL)
+	if s.Kind == "ldap" {
+		fmt.Printf("  bind dn  : %s\n  starttls : %v\n  own CA   : %v\n", s.BindDNTemplate, s.StartTLS, s.HasCA)
+	} else {
+		fmt.Printf("  client   : %s (secret %v)\n  scope    : %s\n", s.ClientID, s.HasSecret, s.Scope)
+	}
+	fmt.Printf("  people   : %d pending, %d migrated through it\n", s.Pending, s.Migrated)
+	fmt.Printf("  verified : %d accepted, %d refused or unreachable", s.Successes, s.Failures)
+	if s.LastError != "" {
+		fmt.Printf("; last: %s", s.LastError)
+	}
+	fmt.Println()
+	if s.Enabled {
+		fmt.Println("\n  While enabled, the password a pending person types is sent to this source to be")
+		fmt.Println("  checked, and kept here as a hash when it is accepted.")
+	} else {
+		fmt.Println("\n  `signari migration-source enable` starts verifying against it.")
+	}
 	return nil
 }
 

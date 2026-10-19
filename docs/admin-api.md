@@ -249,6 +249,9 @@ Which attribute becomes which claim, where, and for whom.
 | `GET /admin/organizations/{orgID}/claim-mappers` | Everything this organisation releases. Needs `config:read` |
 | `POST /admin/organizations/{orgID}/claim-mappers` | Release an attribute as a claim. Needs `organizations:write` |
 | `DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}` | Stop releasing it |
+| `GET /admin/organizations/{orgID}/migration-source` | The provider this organisation is migrating off, without its secret, and how the cutover is going: people pending, people migrated through it, verifications accepted and refused. Needs `config:read`; `404 migration_source_not_found` when there is none |
+| `PUT /admin/organizations/{orgID}/migration-source` | Create or replace it: `kind` `oidc_password` (`url` an https token endpoint, `client_id`, `client_secret`, `scope`) or `ldap` (`url` `ldaps://`, or `ldap://` with `start_tls`, a `bind_dn_template` with `{username}` once, and optionally `ca_pem`). A new source is disabled; `enabled` switches it, and is left as it is when absent. An empty `client_secret` keeps the stored one. Anything the verifier would refuse is `400 invalid_migration_source`. Needs `organizations:write`. See [password migration](password-migration.md) |
+| `DELETE /admin/organizations/{orgID}/migration-source` | Remove it. People still pending stay pending |
 
 **Nothing is released without a mapper.** An attribute that exists reaches no
 token, for any client, in any destination, until somebody says so. The common

@@ -104,7 +104,7 @@ var twoWordCommands = map[string]bool{
 	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"invite": true, "signup": true, "outpost": true, "provision": true,
-	"provider": true,
+	"provider": true, "migration-source": true,
 	"erase":    true,
 	"prompt":   true,
 	"attester": true,
@@ -555,6 +555,14 @@ func run(args []string) (err error) {
 		"comma-separated amr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
 	idpMFAACR := fs.String("upstream-acr", "",
 		"comma-separated acr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
+	migrationTokenEndpoint := fs.String("token-endpoint", "",
+		"the old provider's https token endpoint, whose password grant verifies a migrating user "+
+			"(migration-source add -kind oidc_password)")
+	migrationScope := fs.String("migration-scope", "openid",
+		"the scope asked for in the old provider's password grant (migration-source add)")
+	bindDNTemplate := fs.String("bind-dn-template", "",
+		"the DN a migrating user binds as, with {username} once, e.g. uid={username},ou=people,dc=example,dc=com "+
+			"(migration-source add -kind ldap)")
 	streamStatus := fs.String("status", "",
 		"a Shared Signals stream's status: enabled, paused or disabled (ssf set-status)")
 	racParams := fs.String("rac-params", "",
@@ -892,6 +900,17 @@ func run(args []string) (err error) {
 		return ssfAddStream(ctx, conn, *orgID, *clientID, *ssfEndpoint, *ssfToken, *ssfEvents, *ssfPoll)
 	case "ssf list":
 		return ssfListStreams(ctx, conn)
+	case "migration-source add":
+		return migrationSourceAdd(ctx, conn, *orgID, *kind, *name, *migrationTokenEndpoint, *ldapURL,
+			*extClientID, *extSecret, *migrationScope, *bindDNTemplate, *ldapStartTLS, *ldapCA)
+	case "migration-source enable":
+		return migrationSourceSetEnabled(ctx, conn, *orgID, true)
+	case "migration-source disable":
+		return migrationSourceSetEnabled(ctx, conn, *orgID, false)
+	case "migration-source show":
+		return migrationSourceShow(ctx, conn, *orgID)
+	case "migration-source remove":
+		return migrationSourceRemove(ctx, conn, *orgID)
 	case "ssf set-status":
 		return ssfSetStatus(ctx, conn, *orgID, *clientID, *streamStatus, *reason)
 	case "provider add":

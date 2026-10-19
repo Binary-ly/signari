@@ -82,16 +82,6 @@ var knownUnwritable = map[string]string{
 	"organizations.status": "a suspended organisation is still served; nothing on the request path reads it",
 	"instances.status":     "the same for an issuer",
 
-	// Tables with no create path at all.
-	"migration_sources.kind":              "delegated verification against an old provider cannot be configured",
-	"migration_sources.org_id":            "the same",
-	"migration_sources.display_name":      "the same",
-	"migration_sources.token_endpoint":    "the same",
-	"migration_sources.client_id":         "the same",
-	"migration_sources.client_secret_enc": "the same",
-	"migration_sources.scope":             "the same",
-	"migration_sources.enabled":           "the same",
-
 	// Consulted by nothing (2.46): self-signup verifies no address yet, so a
 	// command to relax the requirement would relax nothing. 5.01 builds the
 	// verification this governs, then the writer.
@@ -404,11 +394,6 @@ var knownUnread = map[string]string{
 	"preauthorized_codes.tx_code_input_mode":  "describes the code to the wallet in the offer, which is built when minted from the same values",
 	"preauthorized_codes.tx_code_length":      "the same",
 	"preauthorized_codes.tx_code_description": "the same",
-
-	// A source nothing can create (knownUnwritable lists migration_sources),
-	// so its counters have nothing to report until one can.
-	"migration_sources.delegated_successes": "delegated verification against an old provider cannot be configured yet",
-	"migration_sources.delegated_failures":  "the same",
 }
 
 // Guard 0.08b: every column the engine writes is read by something -- the

@@ -2,6 +2,8 @@ package delegated
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +43,27 @@ type Source struct {
 	// of both.
 	StartTLS       bool
 	BindDNTemplate string
+	// CAPEM is the CA the directory's certificate must chain to, alone. Empty
+	// trusts the system roots and SIGNARI_CA_BUNDLE.
+	CAPEM string
+}
+
+// ldapTLS is the TLS configuration a directory connection is made with: the
+// source's own CA when it names one, else the roots every other outbound
+// connection trusts, and the URL's host as the name to verify.
+func ldapTLS(s Source) (*tls.Config, error) {
+	u, err := url.Parse(s.TokenEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("the directory URL does not parse: %w", err)
+	}
+	roots := safedial.Roots()
+	if s.CAPEM != "" {
+		roots = x509.NewCertPool()
+		if !roots.AppendCertsFromPEM([]byte(s.CAPEM)) {
+			return nil, fmt.Errorf("the source's CA is not a PEM certificate")
+		}
+	}
+	return &tls.Config{RootCAs: roots, ServerName: u.Hostname(), MinVersion: tls.VersionTLS12}, nil
 }
 
 // Verifier asks a source whether a password is correct.
@@ -93,10 +116,15 @@ func (v *Verifier) Verify(ctx context.Context, s Source, username, password stri
 		// the password goes to a third party -- and the same rules enforced
 		// rather than configured: encrypted transport only, and the DN built
 		// from a template with the username escaped. See ldapbind.go.
+		conf, err := ldapTLS(s)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
 		return VerifyLDAP(ctx, LDAPSource{
 			URL:            s.TokenEndpoint,
 			StartTLS:       s.StartTLS,
 			BindDNTemplate: s.BindDNTemplate,
+			CACerts:        conf,
 		}, username, password)
 	default:
 		return fmt.Errorf("delegated: unsupported source kind %q", s.Kind)

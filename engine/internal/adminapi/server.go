@@ -259,6 +259,12 @@ func (s *Server) Routes() http.Handler {
 			ScopeOrganizationsWrite, s.createMapper)
 		route("DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}",
 			ScopeOrganizationsWrite, s.deleteMapper)
+
+		// The provider an organisation is migrating off (2.01). Under the root
+		// key because an oidc_password source's client secret is sealed with it.
+		route("GET /admin/organizations/{orgID}/migration-source", ScopeConfigRead, s.getMigrationSource)
+		route("PUT /admin/organizations/{orgID}/migration-source", ScopeOrganizationsWrite, s.putMigrationSource)
+		route("DELETE /admin/organizations/{orgID}/migration-source", ScopeOrganizationsWrite, s.deleteMigrationSource)
 	}
 
 	// The document itself, unauthenticated. See handleOpenAPI for why: it

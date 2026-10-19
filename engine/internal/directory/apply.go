@@ -76,13 +76,22 @@ func Apply(ctx context.Context, db *pgxpool.Pool, sourceID, orgID string, p *Pla
 				skipped[a.Kind]++
 				continue
 			}
+			// A person the directory brings in has no password here. When the
+			// organisation is migrating off a provider (2.01), they are created
+			// pending on that source, so their first sign-in is verified there
+			// and leaves a local hash; otherwise they could not sign in with a
+			// password at all. An adopted account keeps the state it had.
 			var userID string
 			if err := tx.QueryRow(ctx, `
-				INSERT INTO core.users (org_id, email, user_handle, status)
-				VALUES ($1::uuid, $2,
-				        decode(md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text)||
-				               md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text),'hex'),
-				        'active')
+				INSERT INTO core.users (org_id, email, user_handle, status,
+				                        migration_state, migration_source_id)
+				SELECT $1::uuid, $2,
+				       decode(md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text)||
+				              md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text),'hex'),
+				       'active',
+				       CASE WHEN ms.id IS NULL THEN 'none' ELSE 'pending' END, ms.id
+				  FROM (SELECT 1) one
+				  LEFT JOIN core.migration_sources ms ON ms.org_id = $1::uuid AND ms.enabled
 				ON CONFLICT (org_id, lower(email)) WHERE email IS NOT NULL
 				DO UPDATE SET status = 'active', updated_at = now()
 				RETURNING id::text`, orgID, a.Email).Scan(&userID); err != nil {

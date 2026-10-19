@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -52,6 +51,11 @@ func TestADelegatedSignInFailureIsChargedLikeAnyOther(t *testing.T) {
 		f.orgID, old.URL).Scan(&source); err != nil {
 		t.Fatalf("migration source: %v", err)
 	}
+	// Removed with the test: every run left one, about 120 by the time it was
+	// noticed, each an enabled source pointing at a port long gone.
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.migration_sources WHERE id = $1::uuid`, source)
+	})
 	pending := func(email string) {
 		t.Helper()
 		if _, err := f.pool.Exec(ctx, `
@@ -67,32 +71,7 @@ func TestADelegatedSignInFailureIsChargedLikeAnyOther(t *testing.T) {
 
 	attempt := func(addr, username, password string) *httptest.ResponseRecorder {
 		t.Helper()
-		get := httptest.NewRequest(http.MethodGet, "/login", nil)
-		get.RemoteAddr = addr + ":443"
-		grec := httptest.NewRecorder()
-		f.srv.Routes().ServeHTTP(grec, get)
-		var cookie string
-		for _, c := range grec.Result().Cookies() {
-			if c.Name == CSRFCookieName {
-				cookie = c.Value
-			}
-		}
-		const marker = `name="` + csrfFormField + `" value="`
-		body := grec.Body.String()
-		i := strings.Index(body, marker)
-		if i < 0 {
-			t.Fatalf("the sign-in form carries no CSRF field: %d", grec.Code)
-		}
-		rest := body[i+len(marker):]
-		form := url.Values{"username": {username}, "password": {password},
-			csrfFormField: {rest[:strings.Index(rest, `"`)]}}
-		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: cookie})
-		req.RemoteAddr = addr + ":443"
-		rec := httptest.NewRecorder()
-		f.srv.Routes().ServeHTTP(rec, req)
-		return rec
+		return passwordSignIn(t, f.srv, addr, username, password)
 	}
 	addr := func(i int) string { return fmt.Sprintf("198.18.%d.%d", (n/7)%250, i%250+1) }
 

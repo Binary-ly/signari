@@ -191,6 +191,26 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			// An organisation of its own each time: the source is one per
+			// organisation, and the shared one must not acquire a source
+			// that would send its pending people's passwords somewhere.
+			name: "PUT /admin/organizations/{orgID}/migration-source", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/migration-source"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"kind":"ldap","display_name":"drift","url":"ldaps://dir.example.test",` +
+					`"bind_dn_template":"uid={username},dc=example"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/migration-source", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, true) + "/migration-source"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/organizations" },
 			body: func(t *testing.T, s *Server, _ string) string {

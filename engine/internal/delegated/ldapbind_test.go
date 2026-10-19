@@ -93,10 +93,12 @@ func TestABindFailureDoesNotDistinguishTheCause(t *testing.T) {
 	src := readSourceFile(t, "ldapbind.go")
 
 	bind := src[strings.Index(src, "conn.Bind(dn, password)"):]
-	if i := strings.Index(bind, "}"); i > 0 {
+	if i := strings.Index(bind, "return nil"); i > 0 {
 		bind = bind[:i]
 	}
-	if strings.Contains(bind, "%w") || strings.Contains(bind, "err)") {
+	// The directory's own error is `err`; what is returned may wrap the
+	// sentinels ErrRejected and ErrUnavailable, which carry no word of it.
+	if strings.Contains(bind, ", err)") {
 		t.Error("the directory's bind error is wrapped into the returned error. " +
 			"Some directories distinguish `no such user` from `wrong password`, " +
 			"and passing that through makes this a user-enumeration oracle for " +

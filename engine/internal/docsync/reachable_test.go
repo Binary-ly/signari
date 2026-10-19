@@ -67,6 +67,8 @@ var mustBeReachable = []capability{
 	{"LoadGroupMappings", "the same, from the other end"},
 	{"VerifyLDAP", "a migration configured to verify against the old directory " +
 		"cannot authenticate anybody"},
+	{"SetMigrationSource", "nothing can configure the old provider, so delegated " +
+		"verification is built, tested and switched off everywhere"},
 	{"AddMembers", "group membership is provisioned to no target"},
 	{"RemoveMembers", "somebody removed from a group keeps their access at every " +
 		"provisioned target"},

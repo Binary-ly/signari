@@ -18,6 +18,7 @@ var EventTypes = []string{
 	"admin.factor_removed", "admin.group_created", "admin.group_deleted",
 	"admin.group_member_added", "admin.group_member_removed", "admin.group_updated",
 	"admin.identity_provider_updated", "admin.invitation_revoked",
+	"admin.migration_source_removed", "admin.migration_source_set",
 	"admin.organization_created", "admin.privileged_refused", "admin.proxy_host_removed",
 	"admin.proxy_host_set", "admin.scim_source_updated", "admin.scope_declared",
 	"admin.scope_deleted", "admin.session_revoked", "admin.sessions_revoked",

@@ -137,6 +137,9 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari idp verified-email` | Whether to believe a provider's `email_verified` claim. Accounts are linked by address on that basis, so a provider that reports unverified addresses as verified turns this into account takeover by registration |
 | `signari idp attribute-map` | Route a claim from an upstream provider into a local user attribute. `-overwrite` decides whether a sign-in may replace a value an administrator set by hand |
 | `signari import keycloak` / `import authentik` | Migrate a realm or an installation in |
+| `signari migration-source add` | `-org <uuid> -kind ldap\|oidc_password -name <n>`, then `-ldap-url`, `-bind-dn-template` and optionally `-ldap-ca` for a directory, or `-token-endpoint`, `-client-id-ext`, `-client-secret` and `-migration-scope` for a provider's password grant. The provider a pending person's password is verified against at their first sign-in. Created disabled; a replaced one keeps its state. See [password-migration.md](password-migration.md) |
+| `signari migration-source enable` / `migration-source disable` | `-org <uuid>`: start or stop sending pending people's passwords to the source |
+| `signari migration-source show` / `migration-source remove` | `-org <uuid>`: the source and how the cutover is going, or delete it |
 
 ## Federation out
 

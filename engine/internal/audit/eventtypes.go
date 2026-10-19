@@ -32,6 +32,7 @@ var EventTypes = []string{
 	"directory.groups_synced", "directory.privileged_skipped",
 	"federation.account_linked", "federation.refused", "federation.user_created",
 	"impersonation.ended", "impersonation.refused", "impersonation.started",
+	"keys.rotated",
 	"ldap.entry_created", "ldap.entry_deleted", "ldap.entry_modified", "ldap.entry_renamed",
 	"ldap.password_set",
 	"login.failed", "login.succeeded",
@@ -41,7 +42,7 @@ var EventTypes = []string{
 	"mfa.passkey_removed", "mfa.recovery_codes_regenerated", "mfa.skipped_duo_unavailable",
 	"mfa.sms_enrolled", "mfa.sms_removed", "mfa.totp_enrolled",
 	"oauth.code_reused", "oauth.consent_denied", "oauth.consent_granted",
-	"oauth.token_exchanged",
+	"oauth.refresh_reused", "oauth.token_exchanged", "oauth.token_revoked",
 	"oid4vci.credential_issued",
 	"org.password_only_binds_set",
 	"password.breached", "password.changed",
@@ -54,7 +55,7 @@ var EventTypes = []string{
 	"scim.group_replaced", "scim.privileged_kept", "scim.privileged_refused",
 	"scim.user_deprovisioned", "scim.user_patched", "scim.user_provisioned",
 	"scim.user_replaced",
-	"session.user_revoked",
+	"session.logout", "session.user_revoked",
 	"sms.refused",
 	"ssf.received",
 	"token.vetoed",
@@ -64,7 +65,13 @@ var EventTypes = []string{
 	"wsfed.token_issued",
 }
 
-// IsEventType reports whether a subscription to t can ever receive anything.
+// InstanceEventTypes are recorded for the instance, never an organisation, so
+// Write's fan-out, which is per organisation, sends them to no subscription.
+// They are read from the audit trail; subscribing to one is refused rather
+// than stored to receive nothing.
+var InstanceEventTypes = []string{"keys.rotated"}
+
+// IsEventType reports whether t is a type the engine records.
 func IsEventType(t string) bool {
 	i := sort.SearchStrings(EventTypes, t)
 	return i < len(EventTypes) && EventTypes[i] == t

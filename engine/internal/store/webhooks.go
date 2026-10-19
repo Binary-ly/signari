@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -114,6 +115,10 @@ var ErrUnknownEventType = errors.New("no event of that type is recorded")
 // the one it was most likely meant to be.
 func CheckEventTypes(types []string) error {
 	for _, t := range types {
+		if slices.Contains(audit.InstanceEventTypes, t) {
+			return fmt.Errorf("%w for an organisation: %q concerns the instance and is delivered "+
+				"to no subscription; read it from the audit trail", ErrUnknownEventType, t)
+		}
 		if audit.IsEventType(t) {
 			continue
 		}

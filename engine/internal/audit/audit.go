@@ -55,19 +55,21 @@ import (
 
 // Event types. Constants rather than free strings so a typo is a compile error
 // and the set is greppable -- an audit trail nobody can query is decoration.
+//
+// Not here, deliberately: an event per code issued or redeemed, per refresh,
+// per client-credentials token. Constants for those were declared and written
+// by nothing (2.52), and writing them would put the chain's advisory lock on
+// the issuance of every token. What a token's life records is the decisions:
+// sign-in, consent, a reused code or refresh token, a revocation.
 const (
-	EventLoginSucceeded   = "login.succeeded"
-	EventLoginFailed      = "login.failed"
-	EventLogout           = "session.logout"
-	EventCodeIssued       = "oauth.code_issued"
-	EventCodeRedeemed     = "oauth.code_redeemed"
-	EventCodeReused       = "oauth.code_reused"
-	EventTokenRefreshed   = "oauth.token_refreshed"
-	EventRefreshReused    = "oauth.refresh_reused"
-	EventTokenRevoked     = "oauth.token_revoked"
-	EventClientCredential = "oauth.client_credentials_issued"
-	EventClientUpdated    = "admin.client_updated"
-	EventKeyRotated       = "keys.rotated"
+	EventLoginSucceeded = "login.succeeded"
+	EventLoginFailed    = "login.failed"
+	EventLogout         = "session.logout"
+	EventCodeReused     = "oauth.code_reused"
+	EventRefreshReused  = "oauth.refresh_reused"
+	EventTokenRevoked   = "oauth.token_revoked"
+	EventClientUpdated  = "admin.client_updated"
+	EventKeyRotated     = "keys.rotated"
 )
 
 // Retention classes decide what survives an erasure request.

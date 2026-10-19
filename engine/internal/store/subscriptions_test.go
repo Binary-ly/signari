@@ -57,6 +57,11 @@ func TestASubscriptionNamesRealEventsAndCanBeManaged(t *testing.T) {
 	if _, err := CreateSubscription(ctx, tx, root, orgID, "nonsense", url, []string{"nothing"}); !errors.Is(err, ErrUnknownEventType) {
 		t.Errorf("subscribing to an unrelated name gave %v", err)
 	}
+	// Recorded, and for the instance: no organisation's subscription receives it.
+	if _, err := CreateSubscription(ctx, tx, root, orgID, "keys", url, []string{"keys.rotated"}); !errors.Is(err, ErrUnknownEventType) ||
+		!strings.Contains(err.Error(), "audit trail") {
+		t.Errorf("subscribing to keys.rotated gave %v, want the instance-event refusal", err)
+	}
 
 	sub, err := CreateSubscription(ctx, tx, root, orgID, "siem", url, []string{"login.failed", "impersonation.started"})
 	if err != nil {

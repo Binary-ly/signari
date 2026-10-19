@@ -95,7 +95,7 @@ func TestChainVerifies(t *testing.T) {
 		for _, ev := range []Event{
 			{Type: EventLoginFailed, Detail: map[string]any{"reason": "bad_password"}},
 			{Type: EventLoginSucceeded, Detail: map[string]any{"amr": []string{"pwd"}}},
-			{Type: EventCodeIssued, ClientID: "webapp"},
+			{Type: EventTokenRevoked, ClientID: "webapp"},
 		} {
 			if err := Write(ctx, tx, ev); err != nil {
 				t.Fatalf("write %s: %v", ev.Type, err)

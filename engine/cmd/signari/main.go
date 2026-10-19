@@ -1289,6 +1289,10 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 			if err := keys.Save(ctx, tx, instanceID, generated, root); err != nil {
 				return err
 			}
+			if err := audit.Write(ctx, tx, audit.Event{Type: audit.EventKeyRotated,
+				Detail: map[string]any{"algorithm": string(a), "published": generated.KID()}}); err != nil {
+				return err
+			}
 			fmt.Printf("%s: published %s as `next`. Run `signari keys rotate` again after %s to promote it.\n",
 				a, generated.KID(), keys.MinPublishBeforeActive)
 			continue
@@ -1310,10 +1314,19 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 				a, next.KID(), (keys.MinPublishBeforeActive - wait).Round(time.Minute))
 		}
 
+		// Recorded with the key it replaces and whether the publication wait
+		// was skipped: "which key signed, from when, and was it forced" is the
+		// question after a compromise, and only admin.cli_command said anything.
+		detail := map[string]any{"algorithm": string(a), "promoted": next.KID()}
+		if ok, _ := set.CanPromote(next); !ok {
+			detail["forced"] = true
+		}
+
 		// Demote the outgoing key rather than deleting it: tokens it signed are
 		// still live, and passive keys stay in the JWKS precisely so those keep
 		// verifying. Deleting here would invalidate every unexpired token.
 		if current, err := set.Active(a); err == nil {
+			detail["demoted"] = current.KID()
 			demoted, err := keys.WithState(current, keys.StatePassive)
 			if err != nil {
 				return err
@@ -1330,6 +1343,9 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 			return err
 		}
 		if err := keys.Save(ctx, tx, instanceID, promoted, root); err != nil {
+			return err
+		}
+		if err := audit.Write(ctx, tx, audit.Event{Type: audit.EventKeyRotated, Detail: detail}); err != nil {
 			return err
 		}
 		fmt.Printf("%s: promoted %s to active. It signs from the next restart or config reload.\n",

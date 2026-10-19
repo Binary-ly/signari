@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
@@ -134,6 +137,14 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
+	// What was revoked and whose, for the record written after the commit.
+	var revokedKind, revokedSubject string
+	if revoked {
+		revokedKind = "refresh_token"
+		if _, holder, herr := store.RefreshTokenHolder(ctx, tx, store.HashToken(raw)); herr == nil {
+			revokedSubject = holder
+		}
+	}
 
 	if !revoked {
 		// Not a refresh token of ours. Try it as an access token.
@@ -148,7 +159,12 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 					writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 					return
 				}
-				revoked = true
+				revoked, revokedKind = true, "access_token"
+				// A person's id; a client's own token names the client, which
+				// the record carries as its client already.
+				if _, perr := uuid.Parse(claims.Subject); perr == nil {
+					revokedSubject = claims.Subject
+				}
 			} else if claims.ClientID != "" && claims.ClientID != c.ClientID {
 				// §2.1: "verifies whether the token was issued to the client
 				// making the revocation request. If this validation fails, the
@@ -198,6 +214,12 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	// Logged either way, because "the client called revoke and nothing matched"
 	// is the shape of both a retry and a misconfigured integration.
 	s.log.Info("token revocation", "client_id", c.ClientID, "matched", revoked)
+	// Recorded when something was revoked, which nothing did before 2.52.
+	if revoked {
+		s.auditDetached(ctx, audit.Event{Type: audit.EventTokenRevoked, OrgID: c.OrgID,
+			SubjectID: revokedSubject, ClientID: c.ClientID, CorrelationID: correlationID(ctx),
+			Detail: map[string]any{"token_type": revokedKind}})
+	}
 	w.WriteHeader(http.StatusOK)
 }
 

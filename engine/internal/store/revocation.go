@@ -232,6 +232,21 @@ func TokenHolderLive(ctx context.Context, db interface {
 	return live, nil
 }
 
+// RefreshTokenHolder returns the organisation and person a refresh token's
+// family belongs to, or "" for both when this server issued no such token. What
+// the audit record of a reuse needs to say whose tokens were revoked.
+func RefreshTokenHolder(ctx context.Context, tx pgx.Tx, tokenHash []byte) (orgID, userID string, err error) {
+	err = tx.QueryRow(ctx, `
+		SELECT f.org_id::text, f.user_id::text
+		FROM core.refresh_tokens t
+		JOIN core.refresh_token_families f ON f.id = t.family_id
+		WHERE t.token_hash = $1`, tokenHash).Scan(&orgID, &userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	return orgID, userID, err
+}
+
 // RefreshTokenOwner returns the client a refresh token was issued to, or "" if
 // this server issued no such token.
 //

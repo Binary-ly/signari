@@ -233,6 +233,11 @@ func TestEveryEventTypeIsRegisteredAndCatalogued(t *testing.T) {
 	if !sort.StringsAreSorted(audit.EventTypes) {
 		t.Error("audit.EventTypes is not sorted, which is how a duplicate hides")
 	}
+	for _, it := range audit.InstanceEventTypes {
+		if !registered[it] {
+			t.Errorf("%s is listed as an instance event and is not a registered type", it)
+		}
+	}
 	for _, missing := range difference(used, registered) {
 		t.Errorf("%s is audited and is not in audit.EventTypes, so `events subscribe` refuses it", missing)
 	}

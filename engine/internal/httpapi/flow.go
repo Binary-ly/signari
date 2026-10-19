@@ -1393,14 +1393,29 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	grant, rerr := store.RotateRefreshToken(ctx, tx, oldHash)
 
 	if errors.Is(rerr, store.ErrRefreshReused) {
+		holderOrg, holder, herr := store.RefreshTokenHolder(ctx, tx, oldHash)
+		if herr != nil {
+			s.log.Error("reading the holder of a reused refresh token", "err", herr)
+		}
 		n, revErr := store.RevokeFamilyByToken(ctx, tx, oldHash, "reuse_detected")
+		committed := false
 		if revErr != nil {
 			s.log.Error("revoking family after refresh reuse", "err", revErr)
 		} else if err := tx.Commit(ctx); err != nil {
 			s.log.Error("committing revocation after refresh reuse", "err", err)
+		} else {
+			committed = true
 		}
 		s.log.Warn("refresh token reuse detected -- family revoked",
 			"client_id", c.ClientID, "families_revoked", n)
+		// The theft signal, recorded and published. Only the log said so before
+		// 2.52. After the revocation commits, so that the revocation never
+		// depends on the record of it.
+		if committed {
+			s.auditDetached(ctx, audit.Event{Type: audit.EventRefreshReused, OrgID: holderOrg,
+				SubjectID: holder, ClientID: c.ClientID, CorrelationID: correlationID(ctx),
+				Detail: map[string]any{"families_revoked": n}})
+		}
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "refresh token has already been used", Status: http.StatusBadRequest})
 		return
@@ -2389,7 +2404,13 @@ func (s *Server) terminateOwnSession(ctx context.Context, cookie string) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := store.TerminateSessions(ctx, tx, sid, "", store.ReasonLogout); err != nil {
+	var orgID, userID string
+	if err := tx.QueryRow(ctx, `SELECT org_id::text, user_id::text FROM core.sessions WHERE sid = $1`,
+		sid).Scan(&orgID, &userID); err != nil {
+		return fmt.Errorf("reading the session: %w", err)
+	}
+	term, err := store.TerminateSessions(ctx, tx, sid, "", store.ReasonLogout)
+	if err != nil {
 		return fmt.Errorf("terminating session: %w", err)
 	}
 	// The commit is what makes the revocation AND the queued back-channel logout
@@ -2398,6 +2419,15 @@ func (s *Server) terminateOwnSession(ctx context.Context, cookie string) error {
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing logout: %w", err)
 	}
+	// Recorded after the sign-out is durable, never as a condition of it: an
+	// audit write that failed must not leave somebody signed in. Nothing
+	// recorded a sign-out before 2.52.
+	detail := map[string]any{"sid": sid}
+	if term != nil {
+		detail["sessions_ended"], detail["notices_queued"] = term.Sessions, term.Notices
+	}
+	s.auditDetached(ctx, audit.Event{Type: audit.EventLogout, OrgID: orgID, SubjectID: userID,
+		CorrelationID: correlationID(ctx), Detail: detail})
 	return nil
 }
 

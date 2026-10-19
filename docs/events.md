@@ -188,10 +188,10 @@ against, and the types the code writes identical.
 
 | Area | Events |
 |---|---|
-| Sign-in | `login.succeeded`, `login.failed`, `desktop.login`, `consent.withdrawn`, `prompt.answered`, `session.user_revoked`, `password.changed`, `password.breached`, `sms.refused` |
+| Sign-in | `login.succeeded`, `login.failed`, `desktop.login`, `session.logout`, `consent.withdrawn`, `prompt.answered`, `session.user_revoked`, `password.changed`, `password.breached`, `sms.refused` |
 | Account | `account.migrated`, `account.password_reset`, `account.recovery_requested`, `account.recovery_cancelled`, `user.created` |
 | Second factors | `mfa.totp_enrolled`, `mfa.sms_enrolled`, `mfa.sms_removed`, `mfa.email_otp_enrolled`, `mfa.passkey_registered`, `mfa.passkey_removed`, `mfa.passkey_refused`, `mfa.passkey_counter_regression`, `mfa.passkey_backup_lost`, `mfa.passkey_notice_failed`, `mfa.recovery_codes_regenerated`, `mfa.factor_disabled`, `mfa.duo_succeeded`, `mfa.duo_failed`, `mfa.duo_unavailable`, `mfa.skipped_duo_unavailable` |
-| OAuth and OpenID Connect | `oauth.consent_granted`, `oauth.consent_denied`, `oauth.code_reused`, `oauth.token_exchanged`, `token.vetoed`, `txntoken.issued`, `ciba.requested`, `ciba.approved`, `ciba.denied`, `ciba.step_up_required`, `ciba.unknown_subject`, `uma.submitted`, `uma.claims_gathered`, `uma.granted`, `uma.denied`, `oid4vci.credential_issued` |
+| OAuth and OpenID Connect | `oauth.consent_granted`, `oauth.consent_denied`, `oauth.code_reused`, `oauth.refresh_reused`, `oauth.token_revoked`, `oauth.token_exchanged`, `token.vetoed`, `txntoken.issued`, `ciba.requested`, `ciba.approved`, `ciba.denied`, `ciba.step_up_required`, `ciba.unknown_subject`, `uma.submitted`, `uma.claims_gathered`, `uma.granted`, `uma.denied`, `oid4vci.credential_issued` |
 | SAML and WS-Federation | `saml.assertion_issued`, `saml.logout_completed`, `saml.logout_propagated`, `wsfed.token_issued` |
 | Federation and directories | `federation.user_created`, `federation.account_linked`, `federation.refused`, `directory.groups_synced`, `directory.privileged_skipped`, `ssf.received` |
 | SCIM | `scim.user_provisioned`, `scim.user_replaced`, `scim.user_patched`, `scim.user_deprovisioned`, `scim.group_provisioned`, `scim.group_replaced`, `scim.group_membership_changed`, `scim.group_deprovisioned`, `scim.privileged_kept`, `scim.privileged_refused` |
@@ -200,6 +200,13 @@ against, and the types the code writes identical.
 | Support access | `impersonation.started`, `impersonation.ended`, `impersonation.refused` |
 | Administration | `admin.cli_command`, `admin.organization_created`, `admin.user_created`, `admin.user_updated`, `admin.user_deleted`, `admin.subject_erased`, `admin.factor_removed`, `admin.session_revoked`, `admin.sessions_revoked`, `admin.client_created`, `admin.client_updated`, `admin.client_deleted`, `admin.client_secret_rotated`, `admin.group_created`, `admin.group_updated`, `admin.group_deleted`, `admin.group_member_added`, `admin.group_member_removed`, `admin.attribute_declared`, `admin.attributes_set`, `admin.claim_mapper_created`, `admin.claim_mapper_deleted`, `admin.scope_declared`, `admin.scope_deleted`, `admin.identity_provider_updated`, `admin.scim_source_updated`, `admin.invitation_revoked`, `admin.proxy_host_set`, `admin.proxy_host_removed`, `admin.webauthn_policy_set`, `admin.privileged_refused`, `org.password_only_binds_set`, `config.applied` |
 | The audit trail itself | `audit.checkpoint` |
+| The instance | `keys.rotated`: in the audit trail, and delivered to no subscription, since it belongs to no organisation; subscribing to it is refused |
+
+Not recorded, on purpose: each code issued or redeemed, each refresh, each
+client-credentials token. Every audit entry takes the chain's lock, and an entry
+per token would queue the issuance of every token behind it. A token's record is
+its decisions: the sign-in, the consent, a reused code or refresh token, a
+revocation.
 
 
 ## Re-review against the Shared Signals Framework, August 2026

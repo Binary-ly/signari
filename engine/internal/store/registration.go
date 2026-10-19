@@ -152,6 +152,12 @@ type NewClientRegistration struct {
 	// Logout is the sign-out registration, written in the same transaction by
 	// SetClientLogout.
 	Logout ClientLogout
+
+	// Settings are what a registrant may set on itself and only itself: the
+	// algorithm its tokens are signed with. Written by SetClientSettings in the
+	// same transaction. Never the lifetimes: a stranger choosing how long its
+	// tokens outlive their revocation is the operator's decision.
+	Settings ClientSettings
 }
 
 // RegisteredClient is what came back.
@@ -241,6 +247,13 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 		}
 	}
 	if err := SetClientLogout(ctx, tx, out.ClientID, in.Logout); err != nil {
+		return nil, err
+	}
+	if in.Settings.AccessTokenTTL != nil || in.Settings.RefreshTokenTTL != nil {
+		return nil, fmt.Errorf("%w: token lifetimes are not dynamic registration metadata",
+			ErrInvalidClientSetting)
+	}
+	if err := SetClientSettings(ctx, tx, out.ClientID, in.Settings); err != nil {
 		return nil, err
 	}
 

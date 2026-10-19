@@ -32,7 +32,7 @@ func tokenTimes(t *testing.T, tok string) (exp, iat int64) {
 	return c.Exp, c.Iat
 }
 
-func setLifetimes(t *testing.T, f *tokenFixture, s store.ClientSettings) error {
+func setClientSettings(t *testing.T, f *tokenFixture, s store.ClientSettings) error {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := f.pool.Begin(ctx)
@@ -75,7 +75,7 @@ func TestAClientsAccessTokensLiveAsLongAsItIsSet(t *testing.T) {
 		t.Fatalf("before any setting the token lived %ds (expires_in %v), want the default 300", exp-iat, in)
 	}
 	ten := 10 * time.Minute
-	if err := setLifetimes(t, f, store.ClientSettings{AccessTokenTTL: &ten}); err != nil {
+	if err := setClientSettings(t, f, store.ClientSettings{AccessTokenTTL: &ten}); err != nil {
 		t.Fatal(err)
 	}
 	if exp, iat, in := grant(); exp-iat != 600 || in != 600 {
@@ -83,12 +83,12 @@ func TestAClientsAccessTokensLiveAsLongAsItIsSet(t *testing.T) {
 	}
 
 	for _, bad := range []time.Duration{30 * time.Second, 2 * time.Hour, 90500 * time.Millisecond} {
-		if err := setLifetimes(t, f, store.ClientSettings{AccessTokenTTL: &bad}); err == nil {
+		if err := setClientSettings(t, f, store.ClientSettings{AccessTokenTTL: &bad}); err == nil {
 			t.Errorf("an access lifetime of %s was accepted", bad)
 		}
 	}
 	for _, bad := range []time.Duration{time.Minute, 400 * 24 * time.Hour} {
-		if err := setLifetimes(t, f, store.ClientSettings{RefreshTokenTTL: &bad}); err == nil {
+		if err := setClientSettings(t, f, store.ClientSettings{RefreshTokenTTL: &bad}); err == nil {
 			t.Errorf("a refresh lifetime of %s was accepted", bad)
 		}
 	}
@@ -124,7 +124,7 @@ func TestAnExchangedTokenDoesNotOutliveItsSubjectToken(t *testing.T) {
 	subjectExp, _ := tokenTimes(t, subject)
 
 	hour := time.Hour
-	if err := setLifetimes(t, f, store.ClientSettings{AccessTokenTTL: &hour}); err != nil {
+	if err := setClientSettings(t, f, store.ClientSettings{AccessTokenTTL: &hour}); err != nil {
 		t.Fatal(err)
 	}
 	status, body := f.post(t, url.Values{

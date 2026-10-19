@@ -270,7 +270,8 @@ func run(args []string) (err error) {
 	file := fs.String("file", "", "path to a realm export (import)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
 	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
-	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm (default: all in use)")
+	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm (default: all in use); "+
+		"`client set-alg`: what signs the client's tokens, ES256, RS256, PS256 or EdDSA")
 	promoteNow := fs.Bool("now", false, "promote without waiting for the publication dwell -- key compromise only")
 	allowAssertions := fs.Bool("allow-assertions", false, "`idp assertions`: let this provider's JWTs be exchanged for tokens (RFC 7523)")
 	jwksURL := fs.String("jwks-url", "", "`idp add-issuer`: URL publishing the issuer's signing keys")
@@ -771,6 +772,8 @@ func run(args []string) (err error) {
 		return clientSetLogout(ctx, conn, *clientID, *postLogoutRedirects, *frontchannelURI, *frontchannelSID)
 	case "client set-lifetimes":
 		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL)
+	case "client set-alg":
+		return clientSetAlg(ctx, conn, *clientID, *alg)
 	case "client set-dpop":
 		return clientSetDPoP(ctx, conn, *clientID, *dpopBound)
 	case "client set-pkce":
@@ -8591,6 +8594,30 @@ func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, ac
 		fmt.Printf("  access tokens issued before now keep the %s they were minted with\n",
 			before.AccessTokenTTL)
 	}
+	return nil
+}
+
+// clientSetAlg sets the algorithm the client's ID and access tokens are signed
+// with, refusing one the instance holds no active key for.
+func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string) error {
+	if clientID == "" || alg == "" {
+		return fmt.Errorf("give -client-id and -alg (%s)", strings.Join(store.ClientAlgorithms, ", "))
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetClientSettings(ctx, tx, clientID, store.ClientSettings{IDTokenAlg: &alg}); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: ID and access tokens are signed with %s\n", clientID, alg)
 	return nil
 }
 

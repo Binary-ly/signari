@@ -88,11 +88,14 @@ type Client struct {
 	// absent, as `client set-lifetimes` leaves the one it is not given.
 	AccessTokenTTL  *time.Duration `yaml:"access_token_ttl"`
 	RefreshTokenTTL *time.Duration `yaml:"refresh_token_ttl"`
+	// IDTokenAlg signs the client's ID and access tokens; absent leaves it.
+	IDTokenAlg *string `yaml:"id_token_signed_response_alg"`
 }
 
 // settings is the client's part for store.SetClientSettings.
 func (c Client) settings() store.ClientSettings {
-	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL}
+	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL,
+		IDTokenAlg: c.IDTokenAlg}
 }
 
 // TokenExchange is whether a client may exchange tokens, and for which

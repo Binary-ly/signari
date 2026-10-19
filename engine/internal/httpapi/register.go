@@ -80,6 +80,12 @@ type registrationRequest struct {
 	// and the only effect is that its own unproofed requests are refused. It
 	// fails closed for the party that asked for it and touches nobody else.
 	DPoPBoundAccessTokens bool `json:"dpop_bound_access_tokens"`
+
+	// OpenID Connect Dynamic Client Registration §2: the JWS algorithm for the
+	// ID token signed to this client, which here signs its access tokens too.
+	// Only ever about the registrant's own tokens. Dropped before, so a client
+	// asking for RS256 was answered in ES256 and could not verify it.
+	IDTokenSignedResponseAlg string `json:"id_token_signed_response_alg"`
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +222,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		confidential = false
 	}
 
+	var settings store.ClientSettings
+	if a := strings.TrimSpace(req.IDTokenSignedResponseAlg); a != "" {
+		settings.IDTokenAlg = &a
+	}
 	reg, err := store.RegisterClient(ctx, s.db, store.NewClientRegistration{
+		Settings:     settings,
 		OrgID:        orgID,
 		DisplayName:  displayNameFor(req.ClientName),
 		RedirectURIs: req.RedirectURIs,
@@ -231,7 +242,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			FrontchannelSessionRequired: req.FrontchannelSessionRequired,
 		},
 	})
-	if errors.Is(err, store.ErrInvalidLogoutRegistration) {
+	if errors.Is(err, store.ErrInvalidLogoutRegistration) || errors.Is(err, store.ErrInvalidClientSetting) {
 		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
 	}
@@ -267,6 +278,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.PostLogoutRedirectURIs) > 0 {
 		body["post_logout_redirect_uris"] = req.PostLogoutRedirectURIs
+	}
+	// Echoed whether or not it was asked for: the client needs to know what it
+	// will be verifying.
+	if st, serr := store.ClientSettingsOf(ctx, s.db, reg.ClientID); serr == nil {
+		body["id_token_signed_response_alg"] = st.IDTokenAlg
 	}
 	if req.FrontchannelLogoutURI != "" {
 		body["frontchannel_logout_uri"] = req.FrontchannelLogoutURI

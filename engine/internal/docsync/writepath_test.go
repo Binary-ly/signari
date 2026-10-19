@@ -98,7 +98,6 @@ var knownUnwritable = map[string]string{
 
 	// Per-client protocol settings with no command. Each is a real gap; they
 	// cluster into a small number of `client set-*` verbs.
-	"clients.id_token_signed_alg":          "per-client ID token algorithm fixed at ES256",
 	"clients.pkce_methods":                 "fixed at S256",
 	"clients.require_pushed_authorization": "PAR cannot be required per client",
 	"clients.first_party":                  "first-party consent skipping cannot be granted",

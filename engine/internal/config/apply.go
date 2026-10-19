@@ -98,7 +98,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		if err != nil {
 			return nil, err
 		}
-		cl.AccessTokenTTL, cl.RefreshTokenTTL = &st.AccessTokenTTL, &st.RefreshTokenTTL
+		cl.AccessTokenTTL, cl.RefreshTokenTTL, cl.IDTokenAlg = &st.AccessTokenTTL, &st.RefreshTokenTTL, &st.IDTokenAlg
 		c.clients[id] = cl
 	}
 
@@ -362,6 +362,9 @@ func clientDiff(have, want Client) string {
 	}
 	if w, h := want.RefreshTokenTTL, have.RefreshTokenTTL; w != nil && h != nil && *w != *h {
 		d = append(d, "refresh_token_ttl")
+	}
+	if w, h := want.IDTokenAlg, have.IDTokenAlg; w != nil && h != nil && *w != *h {
+		d = append(d, "id_token_signed_response_alg")
 	}
 	return strings.Join(d, ", ")
 }

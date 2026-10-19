@@ -524,6 +524,37 @@ func checkClients(ctx context.Context, conn interface {
 				"somebody else. Turn it on unless a client genuinely cannot do it")
 	}
 
+	// A client signing with an algorithm its instance holds no active key for.
+	// `client set-alg` refuses one, but a key can be retired afterwards, and
+	// then every token request from that client fails at the signature.
+	unsigned, err := conn.Query(ctx, `
+		SELECT c.client_id, c.id_token_signed_alg FROM core.clients c
+		  JOIN core.organizations o ON o.id = c.org_id
+		 WHERE c.enabled AND NOT EXISTS (
+		       SELECT 1 FROM core.signing_keys k
+		        WHERE k.instance_id = o.instance_id AND k.algorithm = c.id_token_signed_alg
+		          AND k.state = 'active' AND k.purpose = 'oidc')
+		 ORDER BY c.client_id LIMIT 20`)
+	if err != nil {
+		return err
+	}
+	for unsigned.Next() {
+		var id, alg string
+		if err := unsigned.Scan(&id, &alg); err != nil {
+			unsigned.Close()
+			return err
+		}
+		r.add(Critical, "clients",
+			fmt.Sprintf("%s signs with %s and its instance holds no active %s key, so every "+
+				"token it asks for fails to sign", id, alg, alg),
+			fmt.Sprintf("publish and promote one with `signari keys rotate -alg %s`, or move the "+
+				"client with `signari client set-alg`", alg))
+	}
+	unsigned.Close()
+	if err := unsigned.Err(); err != nil {
+		return err
+	}
+
 	// The hybrid-flow exemption's review date. `client set-hybrid` demands one
 	// and the column says "Reported, not enforced", and nothing reported it:
 	// the date was asked for, stored, and never mentioned again.

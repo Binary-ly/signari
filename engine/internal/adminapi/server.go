@@ -405,6 +405,9 @@ type patchClientRequest struct {
 	// store.SetClientSettings as the CLI and `apply` write them.
 	AccessTokenTTLSeconds  *int `json:"access_token_ttl_s"`
 	RefreshTokenTTLSeconds *int `json:"refresh_token_ttl_s"`
+	// IDTokenSignedResponseAlg, by its dynamic-registration name, signs the
+	// client's ID and access tokens.
+	IDTokenSignedResponseAlg *string `json:"id_token_signed_response_alg"`
 }
 
 func (r patchClientRequest) setsLogout() bool {
@@ -423,7 +426,8 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 		d := time.Duration(*r.RefreshTokenTTLSeconds) * time.Second
 		s.RefreshTokenTTL = &d
 	}
-	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil
+	s.IDTokenAlg = r.IDTokenSignedResponseAlg
+	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil || r.IDTokenSignedResponseAlg != nil
 }
 
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
@@ -549,8 +553,9 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			lifetimes = map[string]any{
-				"access_token_ttl_s":  int(got.AccessTokenTTL.Seconds()),
-				"refresh_token_ttl_s": int(got.RefreshTokenTTL.Seconds()),
+				"access_token_ttl_s":           int(got.AccessTokenTTL.Seconds()),
+				"refresh_token_ttl_s":          int(got.RefreshTokenTTL.Seconds()),
+				"id_token_signed_response_alg": got.IDTokenAlg,
 			}
 			for k, v := range lifetimes {
 				detail[k] = v

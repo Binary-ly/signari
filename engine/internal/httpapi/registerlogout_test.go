@@ -52,4 +52,19 @@ func TestDynamicRegistrationRecordsTheSignOutMetadata(t *testing.T) {
 		out["error"] != "invalid_client_metadata" {
 		t.Errorf("a plaintext post-logout URI registered: %d %v", code, out)
 	}
+
+	// The signing algorithm is echoed whether or not it was asked for, and one
+	// the instance cannot sign with is refused rather than answered in another
+	// (2.23). This fixture's instance holds no stored keys at all.
+	if out["id_token_signed_response_alg"] != "ES256" {
+		t.Errorf("the response gives the signing algorithm as %v, want the default ES256",
+			out["id_token_signed_response_alg"])
+	}
+	for _, alg := range []string{"HS256", "RS256"} {
+		if code, out := register(`{"redirect_uris":["https://rp.test/cb"],
+			"id_token_signed_response_alg":"` + alg + `"}`); code != http.StatusBadRequest ||
+			out["error"] != "invalid_client_metadata" {
+			t.Errorf("%s registered: %d %v", alg, code, out)
+		}
+	}
 }

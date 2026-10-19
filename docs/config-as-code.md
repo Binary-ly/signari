@@ -32,6 +32,7 @@ clients:
       audiences: [https://billing.example.com/api]
     access_token_ttl: 10m        # 1m to 1h; omit to leave as it is (default 5m)
     refresh_token_ttl: 168h      # 5m to 8760h (default 720h)
+    id_token_signed_response_alg: RS256   # ES256 (default), RS256, PS256, EdDSA
 
 saml_providers:
   - entity_id: urn:sharepoint:intranet

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
@@ -41,6 +42,40 @@ import (
 
 // ErrNoSuchAttribute is returned when an attribute is not declared for the org.
 var ErrNoSuchAttribute = errors.New("no such attribute is declared")
+
+// ErrInvalidAttributeValue is a value its attribute's declared type cannot hold.
+var ErrInvalidAttributeValue = errors.New("the value does not fit the attribute's type")
+
+// ErrAttributeTypeInUse is a change of type to an attribute holding values.
+var ErrAttributeTypeInUse = errors.New("the attribute holds values, so its type cannot change")
+
+// jsonNumber is the form a number claim carries, RFC 8259 §6
+// (rfc-editor.org/rfc/rfc8259.txt): `number = [ minus ] int [ frac ] [ exp ]`,
+// `int = zero / ( digit1-9 *DIGIT )`, `frac = decimal-point 1*DIGIT`,
+// `exp = e [ minus / plus ] 1*DIGIT`. No leading zeros, no Infinity or NaN.
+var jsonNumber = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$`)
+
+// checkAttributeValue refuses a value its declared type would misstate.
+//
+// Values are stored as text and typed on the way out (typedValue). A boolean
+// released from anything but "true" was `false`, so "yes" became a claim that
+// said no; a number that did not parse went out as a string under a claim a
+// relying party parses as a number. Both are refused here, where the person
+// writing can be told. A string holds anything, and a date is a formatted
+// string whose format the profiles that define one do not agree on.
+func checkAttributeValue(name, valueType, value string) error {
+	switch valueType {
+	case "boolean":
+		if value != "true" && value != "false" {
+			return fmt.Errorf("%w: %q is a boolean, true or false", ErrInvalidAttributeValue, name)
+		}
+	case "number":
+		if !jsonNumber.MatchString(value) {
+			return fmt.Errorf("%w: %q is a number", ErrInvalidAttributeValue, name)
+		}
+	}
+	return nil
+}
 
 // Attribute is one declared attribute.
 type Attribute struct {
@@ -83,9 +118,39 @@ type AttributeValue struct {
 // Changing an attribute's sensitivity therefore means declaring a new one and
 // migrating deliberately. That is the honest amount of work for a change that
 // moves personal data between storage classes.
+//
+// # `value_type` changes only while nothing is stored
+//
+// The values were checked against the type they were written under. Retyping a
+// string attribute holding "yes" as a boolean would release it as `false`, the
+// failure the check at write exists to stop, arriving by the other door.
 func DeclareAttribute(ctx context.Context, tx pgx.Tx, orgID string, a Attribute) (string, error) {
-	var id string
+	// Locked first and counted second, in separate statements: a value written
+	// while the lock was awaited is visible to the count, and SetUserAttribute's
+	// share lock keeps a new one out until this commits.
+	var attrID, current string
 	err := tx.QueryRow(ctx, `
+		SELECT id::text, value_type FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = $2
+		FOR UPDATE`, orgID, a.Name).Scan(&attrID, &current)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return "", fmt.Errorf("reading the declaration of %q: %w", a.Name, err)
+	case current != a.ValueType:
+		var held bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM core.user_attributes WHERE attribute_id = $1::uuid)`,
+			attrID).Scan(&held); err != nil {
+			return "", fmt.Errorf("counting the values of %q: %w", a.Name, err)
+		}
+		if held {
+			return "", fmt.Errorf("%w: %q is a %s", ErrAttributeTypeInUse, a.Name, current)
+		}
+	}
+
+	var id string
+	err = tx.QueryRow(ctx, `
 		INSERT INTO core.user_attribute_schema
 			(org_id, name, display_name, value_type, personal,
 			 user_readable, user_writable, required)
@@ -139,11 +204,12 @@ func Attributes(ctx context.Context, q interface {
 func SetUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name, value string,
 	root *keys.RootKey) error {
 
-	var attrID string
+	var attrID, valueType string
 	var personal bool
 	err := tx.QueryRow(ctx, `
-		SELECT id::text, personal FROM core.user_attribute_schema
-		WHERE org_id = $1::uuid AND name = $2`, orgID, name).Scan(&attrID, &personal)
+		SELECT id::text, personal, value_type FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = $2
+		FOR SHARE`, orgID, name).Scan(&attrID, &personal, &valueType)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Refused rather than stored. An undeclared attribute has no
 		// sensitivity, no type and no read rules, so storing it would be storing
@@ -153,6 +219,9 @@ func SetUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name, value
 	}
 	if err != nil {
 		return fmt.Errorf("reading the declaration for %q: %w", name, err)
+	}
+	if err := checkAttributeValue(name, valueType, value); err != nil {
+		return err
 	}
 
 	if !personal {

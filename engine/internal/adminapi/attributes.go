@@ -133,6 +133,13 @@ func (s *Server) declareAttribute(w http.ResponseWriter, r *http.Request) {
 			"detail": "value_type is one of string, number, boolean, date",
 		})
 		return
+	case errors.Is(err, store.ErrAttributeTypeInUse):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "attribute_type_in_use",
+			"detail": err.Error() + "; its values were checked against that type. " +
+				"Declare a new attribute and move the values deliberately",
+		})
+		return
 	case err != nil:
 		s.log.Error("declaring an attribute", "org_id", orgID, "name", req.Name, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -285,6 +292,13 @@ func (s *Server) setUserAttributes(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, errNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user_not_found"})
+		return
+	case errors.Is(err, store.ErrInvalidAttributeValue):
+		// Names the attribute and its type, never the value, which may be
+		// personal and would then sit in every log that keeps responses.
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid_attribute_value", "detail": err.Error(),
+		})
 		return
 	case errors.Is(err, store.ErrNoSuchAttribute):
 		writeJSON(w, http.StatusBadRequest, map[string]string{

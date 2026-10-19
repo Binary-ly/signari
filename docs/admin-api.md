@@ -222,6 +222,15 @@ holds values would leave rows in the wrong storage — and in one direction, a
 later erasure would believe it destroyed something it did not. Changing an
 attribute's sensitivity means declaring a new one and migrating deliberately.
 
+**A value must fit its attribute's type.** A `boolean` takes `true` or `false`
+and a `number` takes a JSON number; anything else is `400
+invalid_attribute_value`, which names the attribute and never the value. A
+`string` holds anything, and a `date` is stored as given. Values are typed when
+they are released as claims, so `yes` stored in a boolean went out as `false`.
+For the same reason `value_type` can change only while the attribute holds no
+values (`409 attribute_type_in_use`). A value an identity provider's mapping
+supplies that does not fit is skipped, as one over its length limit is.
+
 Reads report `readable: false` rather than an error when a personal value cannot
 be unsealed, which happens for exactly one reason: the subject was erased.
 "Destroyed on request" and "never set" are different facts, and an audit of

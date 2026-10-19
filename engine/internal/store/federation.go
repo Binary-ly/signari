@@ -9,12 +9,53 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
 )
 
 // ErrProviderUnknown is returned when no external provider matches a slug.
 var ErrProviderUnknown = errors.New("no identity provider with that name")
+
+// SetIdentityProviderEnabled turns an upstream provider off or on: its sign-in
+// and link routes, its SAML assertions and its jwt-bearer assertions, which
+// every one of those paths reads per request. Audited, and the configuration
+// version moves in the same transaction (ADR-008). Returns the organisation,
+// or ErrProviderUnknown for a slug nobody registered.
+//
+// The column and its readers existed from the start, and nothing could set it
+// to false: an operator whose upstream was compromised had no way to stop
+// sign-ins through it short of SQL.
+func SetIdentityProviderEnabled(ctx context.Context, db interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, slug string, enabled bool) (string, error) {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var orgID string
+	if err := tx.QueryRow(ctx, `
+		UPDATE core.identity_providers SET enabled = $2, updated_at = now()
+		 WHERE slug = $1 RETURNING org_id::text`, slug, enabled).Scan(&orgID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrProviderUnknown
+		}
+		return "", err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "admin.identity_provider_updated", OrgID: orgID,
+		Detail: map[string]any{"provider": slug, "enabled": enabled, "via": "cli"},
+	}); err != nil {
+		return "", fmt.Errorf("auditing the change: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE core.config_version SET version = version + 1, bumped_at = now()
+		 WHERE id = true`); err != nil {
+		return "", fmt.Errorf("bumping the configuration version: %w", err)
+	}
+	return orgID, tx.Commit(ctx)
+}
 
 // LoadIdentityProvider fetches an external provider by its URL slug.
 func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, slug string) (*federation.Config, error) {

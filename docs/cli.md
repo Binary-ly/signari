@@ -101,6 +101,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | | |
 |---|---|
 | `signari idp add` / `idp list` | An upstream OIDC or OAuth provider. The `-slug` is **unique across the deployment**, not per organisation: it is the sign-in URL (`/login/with/<slug>`), which names no organisation. Two organisations sharing one used to route it at random between them |
+| `signari idp disable` / `idp enable` | `-slug <slug>`: take an upstream provider out of service, or put it back. Disabled, its sign-in and link routes, its SAML assertions and its jwt-bearer assertions are refused from the next request, and its button leaves the sign-in page. Settings and every account's link to it are kept, so enabling restores them. Sessions already signed in through it are not ended. Audited, and moves the configuration version. Until October 2026 the switch existed in the schema and was read on every one of those paths, and nothing could turn it off |
 | `signari idp assertions` | Allow or refuse RFC 7523 assertions from a provider. See [jwt-bearer.md](jwt-bearer.md) |
 | `signari idp add-issuer` | Register a key-publishing issuer (GitHub Actions, Kubernetes) for the jwt-bearer grant |
 | `signari client set-assertion-issuers` | Which issuers' assertions a client may exchange. Empty permits none. See [jwt-bearer.md](jwt-bearer.md) |

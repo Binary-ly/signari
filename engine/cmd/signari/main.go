@@ -919,6 +919,10 @@ func run(args []string) error {
 		return samlGroupRelease(ctx, conn, *entityID, *samlAttrName, *onlyGroups, *removeMember)
 	case "idp verified-email":
 		return idpVerifiedEmail(ctx, conn, *slug, *trustEmail)
+	case "idp disable":
+		return idpSetEnabled(ctx, conn, *slug, false)
+	case "idp enable":
+		return idpSetEnabled(ctx, conn, *slug, true)
 	case "instance webauthn":
 		return instanceWebAuthn(ctx, conn, *issuer, *rpID, *name)
 	case "scim enable":

@@ -1379,6 +1379,36 @@ func idpVerifiedEmail(ctx context.Context, conn *pgx.Conn, slug string, trust bo
 	return nil
 }
 
+// idpSetEnabled takes an upstream provider out of service, or puts it back.
+//
+// Disabling is what an operator does when the upstream is compromised or being
+// retired: from the next request its sign-in and link buttons are gone, its
+// callback refuses, and its SAML and jwt-bearer assertions are refused. The
+// provider, its settings and every account's link to it are kept, so enabling
+// it again restores exactly what was there. Deleting it would take the links
+// with it.
+func idpSetEnabled(ctx context.Context, conn *pgx.Conn, slug string, enabled bool) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	if _, err := store.SetIdentityProviderEnabled(ctx, conn, slug, enabled); err != nil {
+		if errors.Is(err, store.ErrProviderUnknown) {
+			return fmt.Errorf("no identity provider with slug %q; `signari idp list` shows "+
+				"the registered ones", slug)
+		}
+		return err
+	}
+	if enabled {
+		fmt.Printf("%s is enabled: sign-in, linking and its assertions are accepted again\n", slug)
+		return nil
+	}
+	fmt.Printf("%s is disabled: its sign-in and link routes, and its SAML and jwt-bearer\n", slug)
+	fmt.Println("assertions, are refused from the next request. Links to it are kept.")
+	fmt.Println("\n  Sessions already signed in through it are NOT ended. To end one")
+	fmt.Println("  person's now: PATCH /admin/users/<id> {\"active\": false} (then re-activate).")
+	return nil
+}
+
 // instanceWebAuthn sets the Relying Party identity passkeys are bound to.
 //
 // # Nothing could set this, so passkeys were unavailable everywhere

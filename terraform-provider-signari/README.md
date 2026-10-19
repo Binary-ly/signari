@@ -65,7 +65,9 @@ what is actually there.
 This works because of a property the engine already had: every mutation bumps
 `core.config_version` inside the same transaction (ADR-008), so a monotonic
 number identifying the exact configuration state already existed and was already
-transactional. The precondition is that number, used. The check runs inside the
+transactional. That includes a change made with the `signari` command line,
+which until October 2026 moved nothing in all but three commands. A plan made
+before somebody ran `signari client disable` would have re-enabled the client. The precondition is that number, used. The check runs inside the
 transaction holding the row lock, so it is not itself racy.
 
 A survey of the comparable self-hosted identity providers, read against current

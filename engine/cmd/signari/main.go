@@ -668,6 +668,16 @@ func run(args []string) error {
 	}
 	defer func() { _ = conn.Close(ctx) }()
 
+	// Every write this session makes is an administrator's edit, so it moves
+	// core.config_version in its own transaction (migration 0139's trigger
+	// reads this). Session-level, on this connection only: `serve` opens its
+	// own pool, whose request-path writes are not edits and must not bump.
+	if cmd != "serve" {
+		if _, err := conn.Exec(ctx, `SELECT set_config('signari.cli_write', 'on', false)`); err != nil {
+			return fmt.Errorf("marking this session as the operator CLI: %w", err)
+		}
+	}
+
 	switch cmd {
 	case "migrate bootstrap":
 		return up(ctx, conn, migrate.TierBootstrap, *to)

@@ -60,9 +60,17 @@ Three properties are worth stating because each is a decision:
 ### Why the version is global rather than per-resource
 
 `core.config_version` is a single monotonic counter that every mutation bumps in
-the same transaction ([ADR-008]). That is what engine nodes poll to decide when
-to reload, so it already exists, is already transactional, and already identifies
-the exact configuration state.
+the same transaction ([ADR-008]). So it already exists, is already
+transactional, and already identifies the exact configuration state. Nothing
+polls it: configuration is read per request, and the few caches refresh on
+their own timers.
+
+"Every mutation" includes the command line. An operator's `signari` command
+moves the version in its own transaction, because a trigger on every `core`
+table bumps it for a session the CLI has marked as itself. Request-path and
+background writes do not carry the mark and move nothing. Until October 2026
+only three CLI commands moved it, so a conditional write read before
+`client disable` applied over it and put the client back.
 
 The cost is that an unrelated change elsewhere invalidates your tag, so a
 conditional write can be refused when nothing touched *your* object. The

@@ -70,16 +70,45 @@ func (s *Server) writesConfigured() bool {
 	return s.writer != nil && s.cfg.WriteGroup != ""
 }
 
-// mayWrite reports whether the bound identity is permitted to change anything.
-func (s *Server) mayWrite(sess *session) bool {
+// mayWrite reports whether the bound identity is permitted to change anything,
+// as the directory holds that identity now.
+func (s *Server) mayWrite(ctx context.Context, sess *session) bool {
 	if !s.writesConfigured() {
 		return false
 	}
+	id, _ := s.currentIdentity(ctx, sess)
+	return inGroup(id, s.cfg.WriteGroup)
+}
+
+// currentIdentity is the bound person as the directory holds them now, or nil
+// when the connection is not bound or they are no longer active.
+//
+// Read for every operation that depends on who they are, never from the
+// identity captured at bind (ADR-007). A connection is held open for as long as
+// the client likes, and deciding from the bind meant someone removed from the
+// search or write group, or deactivated, kept listing or rewriting the
+// directory until they chose to reconnect.
+//
+// Active is checked here as well as by the Authenticator, whose Lookup is
+// not required to leave inactive people out. A lookup error is returned for a
+// caller that reports it; one deciding permission treats it as none.
+func (s *Server) currentIdentity(ctx context.Context, sess *session) (*Identity, error) {
 	if !sess.bound || sess.identity == nil {
+		return nil, nil
+	}
+	id, err := s.auth.Lookup(ctx, sess.identity.Username)
+	if err != nil || id == nil || !id.Active {
+		return nil, err
+	}
+	return id, nil
+}
+
+func inGroup(id *Identity, group string) bool {
+	if id == nil || group == "" {
 		return false
 	}
-	for _, g := range sess.identity.Groups {
-		if g == s.cfg.WriteGroup {
+	for _, g := range id.Groups {
+		if g == group {
 			return true
 		}
 	}
@@ -158,7 +187,7 @@ func (s *Server) handleAdd(ctx context.Context, c net.Conn, sess *session,
 	messageID int64, op *ber.Packet) bool {
 
 	const respTag = appAddRequest + 1
-	if !s.mayWrite(sess) {
+	if !s.mayWrite(ctx, sess) {
 		return s.refuseWrite(c, messageID, respTag, sess)
 	}
 	req, err := decodeAdd(op)
@@ -288,7 +317,7 @@ func (s *Server) handleModify(ctx context.Context, c net.Conn, sess *session,
 	messageID int64, op *ber.Packet) bool {
 
 	const respTag = appModifyRequest + 1
-	if !s.mayWrite(sess) {
+	if !s.mayWrite(ctx, sess) {
 		return s.refuseWrite(c, messageID, respTag, sess)
 	}
 	dn, changes, err := decodeModify(op)
@@ -346,7 +375,7 @@ func (s *Server) handleDelete(ctx context.Context, c net.Conn, sess *session,
 	messageID int64, op *ber.Packet) bool {
 
 	const respTag = appDelRequest + 1
-	if !s.mayWrite(sess) {
+	if !s.mayWrite(ctx, sess) {
 		return s.refuseWrite(c, messageID, respTag, sess)
 	}
 	// DelRequest ::= [APPLICATION 10] LDAPDN -- the DN is the whole request, not
@@ -426,7 +455,7 @@ func (s *Server) handleModifyDN(ctx context.Context, c net.Conn, sess *session,
 	messageID int64, op *ber.Packet) bool {
 
 	const respTag = appModifyDNRequest + 1
-	if !s.mayWrite(sess) {
+	if !s.mayWrite(ctx, sess) {
 		return s.refuseWrite(c, messageID, respTag, sess)
 	}
 	req, err := decodeModifyDN(op)

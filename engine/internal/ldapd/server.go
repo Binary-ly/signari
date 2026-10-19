@@ -533,7 +533,7 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 	}
 
 	var entries []*entry
-	if s.maySearchDirectory(sess) {
+	if s.maySearchDirectory(ctx, sess) {
 		entries, err = s.entriesFor(ctx, req, limit)
 	} else {
 		entries, err = s.ownEntry(ctx, sess, req)
@@ -566,20 +566,17 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 }
 
 // maySearchDirectory reports whether this connection may see entries other
-// than its own. See Config.SearchGroup.
-func (s *Server) maySearchDirectory(sess *session) bool {
-	if s.cfg.AllowAnonymousSearch || s.mayWrite(sess) {
+// than its own, as the bound identity's groups stand now. See
+// Config.SearchGroup and currentIdentity.
+func (s *Server) maySearchDirectory(ctx context.Context, sess *session) bool {
+	if s.cfg.AllowAnonymousSearch {
 		return true
 	}
-	if s.cfg.SearchGroup == "" || !sess.bound || sess.identity == nil {
+	if s.cfg.SearchGroup == "" && !s.writesConfigured() {
 		return false
 	}
-	for _, g := range sess.identity.Groups {
-		if g == s.cfg.SearchGroup {
-			return true
-		}
-	}
-	return false
+	id, _ := s.currentIdentity(ctx, sess)
+	return inGroup(id, s.cfg.SearchGroup) || (s.writesConfigured() && inGroup(id, s.cfg.WriteGroup))
 }
 
 // ownEntry answers a search for a connection that may see only itself: the
@@ -588,10 +585,7 @@ func (s *Server) maySearchDirectory(sess *session) bool {
 // not that person exists, so the base-object form cannot be used to ask who
 // has an account.
 func (s *Server) ownEntry(ctx context.Context, sess *session, req *searchRequest) ([]*entry, error) {
-	if !sess.bound || sess.identity == nil {
-		return nil, nil
-	}
-	self, err := s.auth.Lookup(ctx, sess.identity.Username)
+	self, err := s.currentIdentity(ctx, sess)
 	if err != nil || self == nil {
 		return nil, err
 	}

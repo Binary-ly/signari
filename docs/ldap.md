@@ -83,6 +83,15 @@ application's service account searches for other users, add it to the search
 group, or its searches will come back with only its own entry. The same setting
 applies to an LDAP outpost, which reads it from its own environment.
 
+**Group membership is read on every operation, not at bind.** A client keeps a
+connection open for as long as it likes. Each search and each write therefore
+looks the bound person up again. Once someone is removed from the search group,
+their next search on the same connection returns only their own entry. Once
+someone is removed from the write group, their next write is refused with
+`insufficientAccessRights`. A deactivated person gets nothing back. Until
+October 2026 both groups were taken from the bind, so a connection opened
+before the change kept listing or rewriting the directory until it was closed.
+
 **No `userPassword` attribute is ever returned**, at any value. Some directories
 return a hash; some return a placeholder. Both teach applications to compare
 credentials themselves, which is how a password ends up compared with `==` in

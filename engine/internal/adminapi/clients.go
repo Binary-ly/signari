@@ -339,7 +339,7 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var sessions, tokens int
+	var sessions, families int
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		var orgID string
 		if err := tx.QueryRow(ctx,
@@ -355,9 +355,8 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 
 		// Counted before the cascade, for the audit record. "How much was revoked"
 		// is asked afterwards, and the rows are gone by then.
-		if err := tx.QueryRow(ctx,
-			`SELECT count(*) FROM core.access_tokens WHERE client_id = $1`,
-			clientID).Scan(&tokens); err != nil {
+		if err := tx.QueryRow(ctx, liveFamilies+` AND f.client_id = $1`,
+			clientID).Scan(&families); err != nil {
 			return err
 		}
 		if err := tx.QueryRow(ctx,
@@ -374,8 +373,8 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 			Type: "admin.client_deleted", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, ClientID: clientID,
 			Detail: map[string]any{
-				"tokens_revoked":   tokens,
-				"sessions_touched": sessions,
+				"refresh_families_revoked": families,
+				"sessions_touched":         sessions,
 			},
 		})
 	})
@@ -396,8 +395,20 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 	}
 	setETag(w, version)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"client_id":      clientID,
-		"tokens_revoked": tokens,
-		"config_version": version,
+		"client_id":                clientID,
+		"refresh_families_revoked": families,
+		"config_version":           version,
 	})
 }
+
+// liveFamilies counts the refresh token families a delete ends: not revoked,
+// and holding a token that could still be redeemed. A family whose last token
+// expired was over before the delete and is not counted as its doing.
+//
+// Families, because they are what is recorded. An access token is a signed JWT
+// stored nowhere, so there is no count of those to give. The count used to read
+// core.access_tokens, which nothing ever wrote, and reported 0 for every delete.
+const liveFamilies = `SELECT count(*) FROM core.refresh_token_families f
+	WHERE f.revoked_at IS NULL
+	  AND EXISTS (SELECT 1 FROM core.refresh_tokens t
+	              WHERE t.family_id = f.id AND t.consumed_at IS NULL AND t.expires_at > now())`

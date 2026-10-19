@@ -71,15 +71,6 @@ var knownUnwritable = map[string]string{
 	// The engine's own runtime state, not operator configuration. These are
 	// written by nothing because the feature that would write them is absent,
 	// which is a different repair from adding a command.
-	"access_tokens.token_hash":       "the table is never inserted into, so the admin API's active-token count is structurally always zero",
-	"access_tokens.client_id":        "same table",
-	"access_tokens.user_id":          "same table",
-	"access_tokens.org_id":           "same table",
-	"access_tokens.sid":              "same table",
-	"access_tokens.scopes":           "same table",
-	"access_tokens.resources":        "same table",
-	"access_tokens.expires_at":       "same table",
-	"access_tokens.revoked_at":       "same table",
 	"sessions.ip_hash":               "never recorded at sign-in, so the admin session list always reports no address",
 	"sessions.user_agent":            "the same; the list always shows an empty user agent",
 	"audit_events.detail_enc":        "known: zero readers and zero writers, already named in the plan's documentation-honesty item",

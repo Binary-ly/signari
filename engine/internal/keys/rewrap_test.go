@@ -63,7 +63,6 @@ var columnClass = map[string]string{
 	"user_attributes.value_sealed": "subjectSealed",
 
 	// One-way. A root key change cannot affect something nothing can open.
-	"access_tokens.token_hash":                      "oneWay",
 	"admin_tokens.token_hash":                       "oneWay",
 	"attestation_challenges.challenge_hash":         "oneWay",
 	"audit_events.entry_hash":                       "oneWay",

@@ -542,7 +542,7 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var ended, notified, tokens int
+	var ended, notified, families int
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		var orgID string
 		if err := tx.QueryRow(ctx,
@@ -556,11 +556,11 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		// Counted before the cascade. "How much did this revoke" is asked
-		// afterwards, by which time the rows are gone.
-		if err := tx.QueryRow(ctx,
-			`SELECT count(*) FROM core.access_tokens WHERE user_id = $1::uuid`,
-			userID).Scan(&tokens); err != nil {
+		// Counted before the sessions end, since ending them revokes the
+		// families minted under them, and before the cascade. "How much did
+		// this revoke" is asked afterwards, by which time the rows are gone.
+		if err := tx.QueryRow(ctx, liveFamilies+` AND f.user_id = $1::uuid`,
+			userID).Scan(&families); err != nil {
 			return err
 		}
 
@@ -580,9 +580,9 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 			Type: "admin.user_deleted", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, SubjectID: userID,
 			Detail: map[string]any{
-				"sessions_ended": ended,
-				"notices_queued": notified,
-				"tokens_revoked": tokens,
+				"sessions_ended":           ended,
+				"notices_queued":           notified,
+				"refresh_families_revoked": families,
 			},
 		})
 	})
@@ -603,9 +603,9 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	setETag(w, version)
 	s.log.Warn("user deleted", "user_id", userID, "sessions_ended", ended,
-		"tokens_revoked", tokens, "config_version", version)
+		"refresh_families_revoked", families, "config_version", version)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": userID, "sessions_ended": ended, "notices_queued": notified,
-		"tokens_revoked": tokens, "config_version": version,
+		"refresh_families_revoked": families, "config_version": version,
 	})
 }

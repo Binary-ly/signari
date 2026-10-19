@@ -159,6 +159,10 @@ func TestAConcurrentEditIsRefusedRatherThanSilentlyOverwriting(t *testing.T) {
 	var mu sync.Mutex
 	results := map[string]outcome{}
 
+	// One handler, as the server builds one. Routes() records the operation
+	// table as it registers, so two goroutines each building their own raced on
+	// that slice and once panicked mid-append.
+	h := s.Routes()
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 	for name, enabled := range map[string]bool{"A": false, "B": true} {
@@ -167,7 +171,7 @@ func TestAConcurrentEditIsRefusedRatherThanSilentlyOverwriting(t *testing.T) {
 			defer wg.Done()
 			<-start // release both at once
 			rec := httptest.NewRecorder()
-			s.Routes().ServeHTTP(rec, adminReq(t, http.MethodPatch,
+			h.ServeHTTP(rec, adminReq(t, http.MethodPatch,
 				"/admin/clients/"+clientID,
 				fmt.Sprintf(`{"enabled":%t}`, enabled), tag))
 			mu.Lock()

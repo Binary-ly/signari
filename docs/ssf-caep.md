@@ -133,11 +133,14 @@ or orders it last forever.
 
 **Subscriptions are an allow-list.** An empty subscription means *nothing*, not
 everything. A receiver that registered without naming event types has not asked
-to be told about credential changes, and sending them anyway discloses more
+to be told about session revocations, and sending them anyway discloses more
 about the user than that receiver was given.
 
 **Only events we actually emit are advertised.** A receiver subscribing to
-something we never send waits forever for a signal that will not come.
+something we never send waits forever for a signal that will not come. Today
+that is session-revoked alone. Credential-change was advertised, and accepted
+in `ssf add-stream -events`, while nothing emitted it. It is no longer offered.
+This server still acts on it when it receives one ([receiving](shared-signals-receiver.md)).
 
 **`initiating_entity` is reported honestly** — `user`, `admin`, `policy` or
 `system`, mapped from the real termination reason. A receiver may treat an

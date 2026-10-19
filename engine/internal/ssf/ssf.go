@@ -56,8 +56,14 @@ const (
 // Advertised, and deliberately short. A receiver subscribing to an event we
 // never send waits forever for a signal that will not come, and would have been
 // better off knowing that when it subscribed.
+//
+// Credential-change was listed here and nothing emitted it, so a receiver
+// that subscribed to it waited forever, which is the failure this comment
+// describes. It is received (ssfreceive.go acts on it) and not sent; it comes
+// back when something sends it. TestEverySupportedEventIsBuilt holds the list
+// to the events an Event literal is actually built with.
 func SupportedEvents() []string {
-	return []string{EventSessionRevoked, EventCredentialChange}
+	return []string{EventSessionRevoked}
 }
 
 // Subject identifies who an event is about.

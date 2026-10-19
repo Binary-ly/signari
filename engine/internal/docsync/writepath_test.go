@@ -105,9 +105,6 @@ var knownUnwritable = map[string]string{
 	"migration_sources.client_secret_enc": "the same",
 	"migration_sources.scope":             "the same",
 	"migration_sources.enabled":           "the same",
-	"projects.slug":                       "projects cannot be created",
-	"projects.org_id":                     "the same",
-	"projects.display_name":               "the same",
 
 	// Enable/disable switches with no command.
 	"outposts.enabled":           "an outpost cannot be taken out of service without deleting it",
@@ -131,6 +128,7 @@ var (
 	alterTable  = regexp.MustCompile(`(?is)ALTER TABLE\s+(?:core\.)?([a-z_]+)(.*?);`)
 	addColName  = regexp.MustCompile(`(?i)ADD COLUMN\s+(?:IF NOT EXISTS\s+)?([a-z_]+)\s+([a-z_]+(?:\[\])?)([^,]*)`)
 	dropColName = regexp.MustCompile(`(?i)DROP COLUMN\s+(?:IF EXISTS\s+)?([a-z_]+)`)
+	dropTable   = regexp.MustCompile(`(?i)DROP TABLE\s+(?:IF EXISTS\s+)?(?:core\.)?([a-z_]+)`)
 	colDecl     = regexp.MustCompile(`(?i)^([a-z_]+)\s+([a-z_]+(?:\[\])?)\b(.*)$`)
 	// Values the database supplies. A column with one of these is not
 	// configuration and no code should be setting it.
@@ -203,6 +201,18 @@ func readSchema(t *testing.T, root string) (tables []string, columns []schemaCol
 				}
 				columns = kept
 			}
+		}
+		// A dropped table is gone too, and for the same reason: its columns
+		// share names (`slug`, `org_id`) with half the schema.
+		for _, m := range dropTable.FindAllStringSubmatch(src, -1) {
+			delete(seen, m[1])
+			kept := columns[:0]
+			for _, c := range columns {
+				if c.table != m[1] {
+					kept = append(kept, c)
+				}
+			}
+			columns = kept
 		}
 	}
 	for name := range seen {

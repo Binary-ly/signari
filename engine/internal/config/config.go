@@ -35,6 +35,7 @@ import (
 	"signari.dev/engine/internal/store"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -83,6 +84,15 @@ type Client struct {
 	PostLogoutRedirectURIs      *[]string `yaml:"post_logout_redirect_uris"`
 	FrontchannelLogoutURI       *string   `yaml:"frontchannel_logout_uri"`
 	FrontchannelSessionRequired *bool     `yaml:"frontchannel_logout_session_required"`
+	// Token lifetimes, as Go durations ("10m", "720h"). Each left alone when
+	// absent, as `client set-lifetimes` leaves the one it is not given.
+	AccessTokenTTL  *time.Duration `yaml:"access_token_ttl"`
+	RefreshTokenTTL *time.Duration `yaml:"refresh_token_ttl"`
+}
+
+// settings is the client's part for store.SetClientSettings.
+func (c Client) settings() store.ClientSettings {
+	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL}
 }
 
 // TokenExchange is whether a client may exchange tokens, and for which
@@ -204,6 +214,9 @@ func (f *File) Validate() error {
 			if _, err := store.CleanExchangeAudiences(x.Audiences); err != nil {
 				add("clients[%s]: token_exchange: %s", c.ClientID, err.Error())
 			}
+		}
+		if err := store.CheckClientSettings(c.settings()); err != nil {
+			add("clients[%s]: %s", c.ClientID, err.Error())
 		}
 	}
 

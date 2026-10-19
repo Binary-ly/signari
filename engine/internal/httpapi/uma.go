@@ -264,7 +264,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		Issuer:   s.cfg.Issuer,
 		Subject:  rptSubject,
 		Audience: []string{t.ResourceServer},
-		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		Expiry:   now.Add(c.AccessTokenTTL()).Unix(),
 		IssuedAt: now.Unix(),
 		JTI:      jti,
 		ClientID: c.ClientID,
@@ -290,7 +290,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": rpt,
 		"token_type":   "Bearer",
-		"expires_in":   int(tokens.DefaultAccessTokenTTL.Seconds()),
+		"expires_in":   int(c.AccessTokenTTL().Seconds()),
 		"scope":        joinScopes(scopes),
 	})
 }

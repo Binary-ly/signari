@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
@@ -122,9 +123,16 @@ func (s *Server) handleConnectedRevoke(w http.ResponseWriter, r *http.Request) {
 
 	// Honest about the window. An access token already issued is self-contained
 	// and stays valid until it expires; saying "removed" full stop would be the
-	// more comfortable message and the false one.
+	// more comfortable message and the false one. The window is this client's
+	// lifetime, which is set per client. A lifetime lowered within the last hour
+	// leaves earlier tokens to the one they were minted with; that is said to
+	// the operator who lowers it, not to somebody revoking an application.
+	window := tokens.DefaultAccessTokenTTL
+	if c, cerr := clients.Lookup(ctx, s.db, clientID); cerr == nil {
+		window = c.AccessTokenTTL()
+	}
 	msg := "Access removed. The application can no longer obtain new tokens, and " +
 		"any it already holds stop working within " +
-		tokens.DefaultAccessTokenTTL.Round(time.Minute).String() + "."
+		window.Round(time.Minute).String() + "."
 	http.Redirect(w, r, "/account/connected?m="+url.QueryEscape(msg), http.StatusSeeOther)
 }

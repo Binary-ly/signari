@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/url"
 	"signari.dev/engine/internal/clientauth"
+	"signari.dev/engine/internal/tokens"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -128,6 +130,21 @@ type Client struct {
 	ClaimsRedirectURIs []string
 
 	RefreshTTL int
+	// AccessTTL is the access-token lifetime in seconds. It is the revocation
+	// window too: an issued access token is self-contained and holds until it
+	// expires (ADR-007). Bounded to a minute and tokens.MaxAccessTokenTTL by the
+	// schema (0144).
+	AccessTTL int
+}
+
+// AccessTokenTTL is the client's access-token lifetime, with the built-in
+// default for a value outside the bounds the schema enforces.
+func (c *Client) AccessTokenTTL() time.Duration {
+	d := time.Duration(c.AccessTTL) * time.Second
+	if d < time.Minute || d > tokens.MaxAccessTokenTTL {
+		return tokens.DefaultAccessTokenTTL
+	}
+	return d
 }
 
 // HasClaimsRedirectURI reports whether a claims redirection URI is registered.
@@ -193,7 +210,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       exchange_requires_audience_match,
 		       backchannel_token_delivery_mode,
 		       coalesce(backchannel_client_notification_endpoint, ''),
-		       coalesce(claims_redirect_uris, ARRAY[]::text[])
+		       coalesce(claims_redirect_uris, ARRAY[]::text[]),
+		       access_token_ttl_s
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -206,7 +224,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.ExchangeRequiresAudienceMatch,
 			&c.BackchannelTokenDeliveryMode,
 			&c.BackchannelClientNotificationEndpoint,
-			&c.ClaimsRedirectURIs)
+			&c.ClaimsRedirectURIs,
+			&c.AccessTTL)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

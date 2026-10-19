@@ -274,7 +274,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		Issuer:   s.cfg.Issuer,
 		Subject:  userID,
 		Audience: []string{c.ClientID},
-		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		Expiry:   now.Add(c.AccessTokenTTL()).Unix(),
 		IssuedAt: now.Unix(),
 		JTI:      jti,
 		Cnf:      bindingFor(jkt, certThumb),
@@ -309,7 +309,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	writeJSON(w, http.StatusOK, &tokenResponse{
 		AccessToken: at,
 		TokenType:   bearerOrDPoP(jkt),
-		ExpiresIn:   int(tokens.DefaultAccessTokenTTL.Seconds()),
+		ExpiresIn:   int(c.AccessTokenTTL().Seconds()),
 		Scope:       joinScopes(scopes),
 	})
 }

@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -400,10 +401,29 @@ type patchClientRequest struct {
 	PostLogoutRedirectURIs      *[]string `json:"post_logout_redirect_uris"`
 	FrontchannelLogoutURI       *string   `json:"frontchannel_logout_uri"`
 	FrontchannelSessionRequired *bool     `json:"frontchannel_logout_session_required"`
+	// Token lifetimes in seconds, the columns' own units, through
+	// store.SetClientSettings as the CLI and `apply` write them.
+	AccessTokenTTLSeconds  *int `json:"access_token_ttl_s"`
+	RefreshTokenTTLSeconds *int `json:"refresh_token_ttl_s"`
 }
 
 func (r patchClientRequest) setsLogout() bool {
 	return r.PostLogoutRedirectURIs != nil || r.FrontchannelLogoutURI != nil || r.FrontchannelSessionRequired != nil
+}
+
+// settings is the request's part for store.SetClientSettings, and whether it
+// has one.
+func (r patchClientRequest) settings() (store.ClientSettings, bool) {
+	var s store.ClientSettings
+	if r.AccessTokenTTLSeconds != nil {
+		d := time.Duration(*r.AccessTokenTTLSeconds) * time.Second
+		s.AccessTokenTTL = &d
+	}
+	if r.RefreshTokenTTLSeconds != nil {
+		d := time.Duration(*r.RefreshTokenTTLSeconds) * time.Second
+		s.RefreshTokenTTL = &d
+	}
+	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil
 }
 
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
@@ -419,8 +439,9 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
+	settings, setsSettings := req.settings()
 	if req.Enabled == nil && req.RequirePKCE == nil && req.MayExchange == nil && req.ExchangeAudiences == nil &&
-		!req.setsLogout() {
+		!req.setsLogout() && !setsSettings {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
@@ -433,7 +454,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 
 	var enabled, requirePKCE, mayExchange bool
 	var exchangeAudiences []string
-	var logout map[string]any
+	var logout, lifetimes map[string]any
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		// This handler previously changed a client without ever reading which
 		// organisation it belonged to, so there was nothing for the boundary to
@@ -519,6 +540,22 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				detail[k] = v
 			}
 		}
+		if setsSettings {
+			if err := store.SetClientSettings(ctx, tx, clientID, settings); err != nil {
+				return err
+			}
+			got, err := store.ClientSettingsOf(ctx, tx, clientID)
+			if err != nil {
+				return err
+			}
+			lifetimes = map[string]any{
+				"access_token_ttl_s":  int(got.AccessTokenTTL.Seconds()),
+				"refresh_token_ttl_s": int(got.RefreshTokenTTL.Seconds()),
+			}
+			for k, v := range lifetimes {
+				detail[k] = v
+			}
+		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.client_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, ClientID: clientID, Detail: detail,
@@ -549,6 +586,9 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrInvalidLogoutRegistration):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_logout_uri", "detail": err.Error()})
 		return
+	case errors.Is(err, store.ErrInvalidClientSetting):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_client_setting", "detail": err.Error()})
+		return
 	case err != nil:
 		s.log.Error("patching client", "client_id", clientID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -569,6 +609,9 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		out["may_exchange"], out["exchange_audiences"] = mayExchange, exchangeAudiences
 	}
 	for k, v := range logout {
+		out[k] = v
+	}
+	for k, v := range lifetimes {
 		out[k] = v
 	}
 	writeJSON(w, http.StatusOK, out)

@@ -350,6 +350,9 @@ func run(args []string) (err error) {
 	dpopBound := fs.Bool("dpop-bound", false, "RFC 9449 §5.2: refuse token requests from this client that carry no DPoP proof")
 	exchangeAudMatch := fs.Bool("exchange-audience-match", false, "RFC 8693: only exchange subject tokens this client holds or is named in the audience of")
 	mayExchange := fs.Bool("may-exchange", true, "`client set-exchange`: grant token exchange (false withdraws it)")
+	accessTTL := fs.Duration("access-ttl", 0,
+		"`client set-lifetimes`: access-token lifetime, 1m to 1h; it is also how long a revoked token keeps working")
+	refreshTTL := fs.Duration("refresh-ttl", 0, "`client set-lifetimes`: refresh-token lifetime, 5m to 8760h")
 	postLogoutRedirects := fs.String("post-logout-redirects", "",
 		"`client set-logout`: comma-separated URIs a relying party may name as post_logout_redirect_uri (empty clears)")
 	frontchannelURI := fs.String("frontchannel-uri", "",
@@ -766,6 +769,8 @@ func run(args []string) (err error) {
 		return clientSetExchange(ctx, conn, *clientID, *mayExchange, *exchangeAudiences)
 	case "client set-logout":
 		return clientSetLogout(ctx, conn, *clientID, *postLogoutRedirects, *frontchannelURI, *frontchannelSID)
+	case "client set-lifetimes":
+		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL)
 	case "client set-dpop":
 		return clientSetDPoP(ctx, conn, *clientID, *dpopBound)
 	case "client set-pkce":
@@ -8540,6 +8545,51 @@ func clientSetLogout(ctx context.Context, conn *pgx.Conn, clientID, postLogout, 
 		fmt.Println("  no front-channel logout")
 	} else {
 		fmt.Printf("  front-channel logout %s (iss and sid added: %v)\n", fc, fcSID)
+	}
+	return nil
+}
+
+// clientSetLifetimes sets how long a client's access and refresh tokens live.
+// Either may be given alone; the other keeps its value.
+func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, access, refresh time.Duration) error {
+	if clientID == "" || (access == 0 && refresh == 0) {
+		return fmt.Errorf("give -client-id and -access-ttl, -refresh-ttl or both")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	before, err := store.ClientSettingsOf(ctx, tx, clientID)
+	if errors.Is(err, store.ErrClientNotFound) {
+		return fmt.Errorf("no client %q", clientID)
+	}
+	if err != nil {
+		return err
+	}
+	var s store.ClientSettings
+	if access != 0 {
+		s.AccessTokenTTL = &access
+	}
+	if refresh != 0 {
+		s.RefreshTokenTTL = &refresh
+	}
+	if err := store.SetClientSettings(ctx, tx, clientID, s); err != nil {
+		return err
+	}
+	after, err := store.ClientSettingsOf(ctx, tx, clientID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: access tokens live %s, refresh tokens %s\n", clientID, after.AccessTokenTTL, after.RefreshTokenTTL)
+	if after.AccessTokenTTL < before.AccessTokenTTL {
+		// The window a revocation leaves open is what tokens already issued were
+		// minted with, and this does not reach them.
+		fmt.Printf("  access tokens issued before now keep the %s they were minted with\n",
+			before.AccessTokenTTL)
 	}
 	return nil
 }

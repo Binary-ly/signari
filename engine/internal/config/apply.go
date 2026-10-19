@@ -94,6 +94,11 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 			return nil, err
 		}
 		cl.PostLogoutRedirectURIs, cl.FrontchannelLogoutURI, cl.FrontchannelSessionRequired = &uris, &fc, &sid
+		st, err := store.ClientSettingsOf(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		cl.AccessTokenTTL, cl.RefreshTokenTTL = &st.AccessTokenTTL, &st.RefreshTokenTTL
 		c.clients[id] = cl
 	}
 
@@ -352,6 +357,12 @@ func clientDiff(have, want Client) string {
 	if w, h := want.FrontchannelSessionRequired, have.FrontchannelSessionRequired; w != nil && h != nil && *w != *h {
 		d = append(d, "frontchannel_logout_session_required")
 	}
+	if w, h := want.AccessTokenTTL, have.AccessTokenTTL; w != nil && h != nil && *w != *h {
+		d = append(d, "access_token_ttl")
+	}
+	if w, h := want.RefreshTokenTTL, have.RefreshTokenTTL; w != nil && h != nil && *w != *h {
+		d = append(d, "refresh_token_ttl")
+	}
 	return strings.Join(d, ", ")
 }
 
@@ -522,6 +533,9 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 			FrontchannelSessionRequired: cl.FrontchannelSessionRequired,
 		}); err != nil {
 			return fmt.Errorf("client %q logout: %w", cl.ClientID, err)
+		}
+		if err := store.SetClientSettings(ctx, tx, cl.ClientID, cl.settings()); err != nil {
+			return fmt.Errorf("client %q: %w", cl.ClientID, err)
 		}
 	}
 

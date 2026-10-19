@@ -30,6 +30,8 @@ clients:
     token_exchange:              # RFC 8693; omit to leave as it is
       enabled: true
       audiences: [https://billing.example.com/api]
+    access_token_ttl: 10m        # 1m to 1h; omit to leave as it is (default 5m)
+    refresh_token_ttl: 168h      # 5m to 8760h (default 720h)
 
 saml_providers:
   - entity_id: urn:sharepoint:intranet

@@ -990,7 +990,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		Issuer:    issuer,
 		Subject:   userID,
 		Audience:  audience,
-		Expiry:    now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		Expiry:    now.Add(c.AccessTokenTTL()).Unix(),
 		IssuedAt:  now.Unix(),
 		JTI:       jti,
 		ClientID:  c.ClientID,
@@ -1017,7 +1017,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		// §5). Not cosmetic: a client told "Bearer" sends no proof, and every
 		// request it makes is then refused.
 		TokenType: bearerOrDPoP(jkt),
-		ExpiresIn: int(tokens.DefaultAccessTokenTTL.Seconds()),
+		ExpiresIn: int(c.AccessTokenTTL().Seconds()),
 		Scope:     joinScopes(scopes),
 		jti:       jti,
 	}
@@ -1337,7 +1337,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 		Issuer:   s.cfg.Issuer,
 		Subject:  c.ClientID,
 		Audience: []string{c.ClientID},
-		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		Expiry:   now.Add(c.AccessTokenTTL()).Unix(),
 		IssuedAt: now.Unix(),
 		JTI:      jti,
 		Cnf:      bindingFor(ccJKT, certThumb),
@@ -1355,7 +1355,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, &tokenResponse{
 		AccessToken: at,
 		TokenType:   bearerOrDPoP(ccJKT),
-		ExpiresIn:   int(tokens.DefaultAccessTokenTTL.Seconds()),
+		ExpiresIn:   int(c.AccessTokenTTL().Seconds()),
 		Scope:       joinScopes(scopes),
 	})
 }
@@ -2848,12 +2848,21 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 
 	exchangeJKT := dpopThumbprintFrom(ctx)
 
+	// The calling client's lifetime, and never past the subject token's own
+	// expiry: exchange delegates what the subject token carries, it does not
+	// extend it. Five minutes for everybody hid the question; a per-client
+	// hour would otherwise turn a token about to expire into one good for an
+	// hour more.
 	now := time.Now()
+	expiry := now.Add(c.AccessTokenTTL()).Unix()
+	if subject.Expiry > 0 && subject.Expiry < expiry {
+		expiry = subject.Expiry
+	}
 	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
 		Subject:  subject.Subject, // still the USER; exchange delegates, it does not impersonate
 		Audience: audience,
-		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		Expiry:   expiry,
 		IssuedAt: now.Unix(),
 		JTI:      jti,
 		ClientID: c.ClientID,
@@ -2900,7 +2909,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		// makes with the token is refused.
 		"issued_token_type": oauth.TokenTypeAccess,
 		"token_type":        bearerOrDPoP(exchangeJKT),
-		"expires_in":        int(tokens.DefaultAccessTokenTTL.Seconds()),
+		"expires_in":        int(expiry - now.Unix()),
 		"scope":             joinScopes(granted),
 	})
 }

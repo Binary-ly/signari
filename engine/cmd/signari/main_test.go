@@ -125,7 +125,10 @@ func TestCreateCommandsActInTheOrganisationNamed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = db.Close(ctx) }()
+	// A cleanup, not a defer: cleanups run after the test function returns, so
+	// a deferred close left every one of them deleting through a closed
+	// connection, and each run leaked its user and client.
+	t.Cleanup(func() { _ = db.Close(context.Background()) })
 	var second string
 	if err := db.QueryRow(ctx, `
 		WITH i AS (INSERT INTO core.instances (issuer, display_name)
@@ -190,7 +193,7 @@ func TestACLIWriteMovesTheVersionAndIsRecordedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = db.Close(ctx) }()
+	t.Cleanup(func() { _ = db.Close(context.Background()) })
 
 	var org string
 	if err := db.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).Scan(&org); err != nil {

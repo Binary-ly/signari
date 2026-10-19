@@ -32,7 +32,7 @@ func TestCredentialTrustRootRegistersOnlyACertificateAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = db.Close(ctx) }()
+	t.Cleanup(func() { _ = db.Close(context.Background()) }) // after the deletes below
 	var org string
 	if err := db.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).Scan(&org); err != nil {
 		t.Skipf("no organisation: %v", err)

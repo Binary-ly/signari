@@ -15,6 +15,9 @@ use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use SensitiveParameter;
 
 /**
  * A console operator.
@@ -36,7 +39,40 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
      * store the TOTP secret and recovery codes encrypted and hidden from
      * serialisation.
      */
-    use InteractsWithAppAuthentication, InteractsWithAppAuthenticationRecovery;
+    use InteractsWithAppAuthentication {
+        saveAppAuthenticationSecret as private storeAppAuthenticationSecret;
+    }
+    use InteractsWithAppAuthenticationRecovery;
+
+    /**
+     * Setting up, replacing or removing the second factor ends every other
+     * session this operator holds and every remember-me cookie issued before.
+     *
+     * They survived it. A session opened, or a remember-me cookie minted, with
+     * a password alone kept working after the operator enrolled -- so whoever
+     * had the password before enrolment kept a console session that the second
+     * factor was meant to have made impossible. The session this request runs
+     * in is kept: it is the operator who just proved the factor.
+     *
+     * Sessions are rows in the sessions table with SESSION_DRIVER=database, the
+     * console's default; with another driver only the remember-me cookies are
+     * ended here, and that is said in docs/console-configuration.md.
+     */
+    public function saveAppAuthenticationSecret(#[SensitiveParameter] ?string $secret): void
+    {
+        $this->storeAppAuthenticationSecret($secret);
+
+        $this->setRememberToken(Str::random(60));
+        $this->saveQuietly();
+
+        if (config('session.driver') === 'database') {
+            DB::connection(config('session.connection'))
+                ->table(config('session.table', 'sessions'))
+                ->where('user_id', $this->getKey())
+                ->where('id', '!=', session()->getId())
+                ->delete();
+        }
+    }
 
     /**
      * Filament denies panel access outside `local` unless this contract is

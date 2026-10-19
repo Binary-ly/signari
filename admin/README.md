@@ -33,6 +33,13 @@ page. Their first sign-in after this change enrols them, so whoever knows that
 operator's password at that moment can enrol instead. Change any password that
 has been shared before the operator signs in again.
 
+Setting up, replacing or removing the factor ends every other session that
+operator holds, and every remember-me cookie issued before. Without that, a
+session opened with the password alone kept working after the second factor
+existed. The session doing the enrolment is kept. Sessions are ended this way
+only with the default `SESSION_DRIVER=database`. With another driver,
+remember-me cookies are still ended, but open sessions run to their expiry.
+
 The session cookie is `Secure` whenever `APP_URL` is `https://`. Set
 `SESSION_SECURE_COOKIE` to override it either way. `.env.example` ships with
 `APP_DEBUG=false`, because a debug page shows the environment and the database
@@ -41,7 +48,13 @@ credentials to whoever triggers an error.
 Every response is sent with `Content-Security-Policy: frame-ancestors 'none';
 base-uri 'self'; form-action 'self'; object-src 'none'`, `X-Frame-Options:
 DENY`, `nosniff` and `Referrer-Policy: same-origin`, and over HTTPS with HSTS
-(one year, without `includeSubDomains`). The policy does not restrict scripts
+(one year, without `includeSubDomains`).
+
+Behind a proxy that terminates TLS, name it in `TRUSTED_PROXIES` (addresses or
+CIDR ranges, comma separated). Requests then count as HTTPS when that proxy says
+they were, and HSTS is sent. Unset, every request reached PHP as plain HTTP,
+HSTS was never sent, and URLs were generated as `http`. A proxy that is not
+named is not believed. The policy does not restrict scripts
 yet. Livewire and Alpine evaluate expressions at runtime, so restricting
 `script-src` without `'unsafe-eval'` would break every screen, and allowing
 `'unsafe-eval'` would make the restriction meaningless.

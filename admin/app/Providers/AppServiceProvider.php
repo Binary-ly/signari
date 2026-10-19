@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use Filament\Support\Assets\Css;
 use Filament\Support\Facades\FilamentAsset;
+use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -30,5 +31,18 @@ class AppServiceProvider extends ServiceProvider
         FilamentAsset::register([
             Css::make('signari-console', __DIR__.'/../../resources/css/console.css'),
         ]);
+
+        /*
+         * The proxies config('app.trusted_proxies') names, and only those: their
+         * X-Forwarded-* headers decide whether a request was secure, so HSTS is
+         * sent behind a proxy that terminates TLS. Read from configuration rather
+         * than in bootstrap/app.php, where env() is unreliable once the
+         * configuration is cached.
+         */
+        $proxies = array_values(array_filter(array_map('trim',
+            explode(',', (string) config('app.trusted_proxies')))));
+        if ($proxies !== []) {
+            TrustProxies::at($proxies);
+        }
     }
 }

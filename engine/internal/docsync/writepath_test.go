@@ -93,9 +93,6 @@ var knownUnwritable = map[string]string{
 	"migration_sources.scope":             "the same",
 	"migration_sources.enabled":           "the same",
 
-	// Enable/disable switches with no command.
-	"ssf_streams.status": "a Shared Signals stream cannot be paused",
-
 	// Smaller policy settings.
 	"client_attesters.description":             "cosmetic",
 	"credential_configurations.format":         "fixed at dc+sd-jwt",

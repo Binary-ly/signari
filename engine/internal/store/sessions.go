@@ -129,9 +129,14 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 	// got nothing at all, silently. The two are different features for different
 	// audiences and neither should be a prerequisite for the other.
 	//
-	// Queued only for streams that are enabled, asked for THIS event type, and
-	// whose client actually participated in the session: a stream is not a
-	// licence to learn about every user in the directory.
+	// Queued only for streams that are enabled or paused, asked for THIS event
+	// type, and whose client actually participated in the session: a stream is
+	// not a licence to learn about every user in the directory. A paused
+	// stream's events are queued and held, not sent, because a paused
+	// transmitter "SHOULD hold any events it would have transmitted while
+	// paused, and SHOULD transmit them when the stream's status becomes
+	// enabled" (specs/ssf-1_0.txt:2592-2598); delivery holds them. A disabled
+	// one holds nothing.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO core.outbox (topic, payload)
 		SELECT DISTINCT 'ssf_event', jsonb_build_object(
@@ -148,7 +153,7 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 		WHERE s.revoked_at IS NULL
 		  AND ($1::text IS NULL OR s.sid = $1)
 		  AND ($2::uuid IS NULL OR s.user_id = $2)
-		  AND st.status = 'enabled'
+		  AND st.status IN ('enabled', 'paused')
 		  AND st.delivery_method = 'push'
 		  AND $3::text = ANY(st.events_requested)`,
 		nullIf(sid), nullIf(userID),
@@ -177,7 +182,7 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 			WHERE s.revoked_at IS NULL
 			  AND ($1::text IS NULL OR s.sid = $1)
 			  AND ($2::uuid IS NULL OR s.user_id = $2)
-			  AND st.status = 'enabled'
+			  AND st.status IN ('enabled', 'paused')
 			  AND st.delivery_method = 'poll'
 			  AND $3::text = ANY(st.events_requested)
 		) d`,

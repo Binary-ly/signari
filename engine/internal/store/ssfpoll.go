@@ -24,30 +24,33 @@ type QueuedPollEvent struct {
 	Subject   string
 	SID       string
 	Reason    string
-	QueuedAt  time.Time
+	// Status is a stream-updated event's new status; empty for any other.
+	Status   string
+	QueuedAt time.Time
 }
 
-// PollStreamForClient returns the id of the enabled poll stream a client owns.
+// PollStreamForClient returns the poll stream a client owns, and its status.
 //
-// ok is false when the client has no stream, has a push stream, or has one that
-// is paused or disabled -- all of which are "nothing to poll", answered
-// identically so a caller cannot distinguish them and learn about another
-// client's configuration.
-func PollStreamForClient(ctx context.Context, q Querier, clientID string) (streamID string, ok bool, err error) {
+// ok is false when the client has no stream or has a push stream -- "nothing to
+// poll", answered identically so a caller cannot distinguish them and learn
+// about another client's configuration. A paused or disabled stream is
+// returned, because its receiver must still collect the stream-updated notice
+// that says so (SSF 1.0 §8.1.5); the caller hands over nothing else.
+func PollStreamForClient(ctx context.Context, q Querier, clientID string) (streamID, status string, ok bool, err error) {
 	rows, err := q.Query(ctx, `
-		SELECT id::text FROM core.ssf_streams
-		WHERE client_id = $1 AND delivery_method = 'poll' AND status = 'enabled'`, clientID)
+		SELECT id::text, status FROM core.ssf_streams
+		WHERE client_id = $1 AND delivery_method = 'poll'`, clientID)
 	if err != nil {
-		return "", false, fmt.Errorf("finding a poll stream: %w", err)
+		return "", "", false, fmt.Errorf("finding a poll stream: %w", err)
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		return "", false, rows.Err()
+		return "", "", false, rows.Err()
 	}
-	if err := rows.Scan(&streamID); err != nil {
-		return "", false, err
+	if err := rows.Scan(&streamID, &status); err != nil {
+		return "", "", false, err
 	}
-	return streamID, true, nil
+	return streamID, status, true, nil
 }
 
 // PollAck removes the SETs a receiver has acknowledged.
@@ -75,25 +78,29 @@ func PollAck(ctx context.Context, tx pgx.Tx, streamID string, jtis []string) (in
 // It reads max+1 to answer moreAvailable without a second COUNT: if the extra row
 // exists, there is more, and it is dropped from the result. Rows are NOT deleted
 // here -- they leave the queue only when the receiver acknowledges them.
-func PollFetch(ctx context.Context, tx pgx.Tx, streamID string, max int) (events []QueuedPollEvent, more bool, err error) {
+//
+// onlyOfType, when not empty, returns events of that type alone: a paused
+// stream hands over its stream-updated notices and holds the rest.
+func PollFetch(ctx context.Context, tx pgx.Tx, streamID string, max int, onlyOfType string) (
+	events []QueuedPollEvent, more bool, err error) {
 	if max < 1 {
 		max = 1
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT jti, event_type,
-		       payload->>'subject', COALESCE(payload->>'sid',''), COALESCE(payload->>'reason',''),
-		       queued_at
+		       COALESCE(payload->>'subject',''), COALESCE(payload->>'sid',''), COALESCE(payload->>'reason',''),
+		       COALESCE(payload->>'status',''), queued_at
 		FROM core.ssf_poll_queue
-		WHERE stream_id = $1::uuid
+		WHERE stream_id = $1::uuid AND ($3 = '' OR event_type = $3)
 		ORDER BY id
-		LIMIT $2`, streamID, max+1)
+		LIMIT $2`, streamID, max+1, onlyOfType)
 	if err != nil {
 		return nil, false, fmt.Errorf("reading queued events: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var e QueuedPollEvent
-		if err := rows.Scan(&e.JTI, &e.EventType, &e.Subject, &e.SID, &e.Reason, &e.QueuedAt); err != nil {
+		if err := rows.Scan(&e.JTI, &e.EventType, &e.Subject, &e.SID, &e.Reason, &e.Status, &e.QueuedAt); err != nil {
 			return nil, false, err
 		}
 		events = append(events, e)

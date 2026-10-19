@@ -45,6 +45,13 @@ const (
 	EventAssuranceChange   = "https://schemas.openid.net/secevent/caep/event-type/assurance-level-change"
 	EventTokenClaimsChange = "https://schemas.openid.net/secevent/caep/event-type/token-claims-change"
 
+	// StreamUpdated is SSF 1.0 §8.1.5's notice that the transmitter changed a
+	// stream's status. Not in SupportedEvents: a receiver does not subscribe to
+	// it, it is sent on every stream ("MAY send a Stream Updated event even if
+	// the event is not present in the events_supported, events_requested and /
+	// or events_delivered fields", specs/ssf-1_0.txt:3387-3389).
+	StreamUpdated = "https://schemas.openid.net/secevent/ssf/event-type/stream-updated"
+
 	// TypSET is the media type a SET carries (RFC 8417 §2.3). Checked by
 	// receivers, and set here so a SET cannot be confused with an ID token by
 	// anything that inspects `typ`.
@@ -240,6 +247,39 @@ func Mint(s Signer, issuer, audience, jti string, e Event, now time.Time) (strin
 		Audience: []string{audience},
 		SubID:    subject,
 		Events:   map[string]map[string]any{e.Type: payload},
+	}, TypSET)
+}
+
+// MintStreamUpdated builds the §8.1.5 Stream Updated SET: the stream's new
+// status and why. Its subject is the stream itself -- "The value of the sub_id
+// field MUST be of format opaque, and its id value MUST be the unique ID of the
+// stream" (specs/ssf-1_0.txt:3406-3408) -- and, being an SSF event type rather
+// than a CAEP one, it carries no event-level subject (§3.1.2).
+func MintStreamUpdated(s Signer, issuer, audience, jti, streamID, status, reason string,
+	now time.Time) (string, error) {
+	if audience == "" {
+		return "", fmt.Errorf("refusing to mint a security event token with no audience: " +
+			"it could be forwarded to any other receiver")
+	}
+	if streamID == "" {
+		return "", fmt.Errorf("refusing to mint a stream update for no stream")
+	}
+	switch status {
+	case "enabled", "paused", "disabled":
+	default:
+		return "", fmt.Errorf("%q is not a stream status", status)
+	}
+	payload := map[string]any{"status": status}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	return s.SignJSON(setClaims{
+		Issuer:   issuer,
+		JTI:      jti,
+		IssuedAt: now.Unix(),
+		Audience: []string{audience},
+		SubID:    map[string]any{"format": "opaque", "id": streamID},
+		Events:   map[string]map[string]any{StreamUpdated: payload},
 	}, TypSET)
 }
 

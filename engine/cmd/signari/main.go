@@ -499,7 +499,8 @@ func run(args []string) (err error) {
 	racPassword := fs.String("login-password", "", "password on the remote machine")
 	racRecording := fs.String("recording-path", "", "where guacd writes session recordings")
 	declaredBy := fs.String("by", "", "who is declaring an audit checkpoint")
-	reason := fs.String("reason", "", "why an audit checkpoint is being declared")
+	reason := fs.String("reason", "",
+		"why an audit checkpoint is being declared, or why a stream's status changed (ssf set-status)")
 	policyFile := fs.String("policy-file", "", "path to a policy file")
 	flowFile := fs.String("flow-file", "", "path to a sign-in flow file")
 	flowName := fs.String("flow", "", "which flow in the file (default: every one)")
@@ -542,6 +543,8 @@ func run(args []string) (err error) {
 		"comma-separated amr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
 	idpMFAACR := fs.String("upstream-acr", "",
 		"comma-separated acr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
+	streamStatus := fs.String("status", "",
+		"a Shared Signals stream's status: enabled, paused or disabled (ssf set-status)")
 	racParams := fs.String("rac-params", "",
 		"comma-separated name=value guacd parameters for a remote-access connection, e.g. "+
 			"security=nla,ignore-cert=true; empty clears them (rac set-parameters)")
@@ -877,6 +880,8 @@ func run(args []string) (err error) {
 		return ssfAddStream(ctx, conn, *orgID, *clientID, *ssfEndpoint, *ssfToken, *ssfEvents, *ssfPoll)
 	case "ssf list":
 		return ssfListStreams(ctx, conn)
+	case "ssf set-status":
+		return ssfSetStatus(ctx, conn, *orgID, *clientID, *streamStatus, *reason)
 	case "provider add":
 		return providerAdd(ctx, conn, *orgID, *providerHook, *providerURL,
 			*providerMode, *providerTimeout)

@@ -35,7 +35,14 @@ type ssfPending struct {
 	Subject  string `json:"subject"`
 	SID      string `json:"sid"`
 	Reason   string `json:"reason"`
+	// Status is a stream-updated event's new status; empty for any other.
+	Status string `json:"status"`
 }
+
+// ssfHoldInterval is how often a paused stream's held events are looked at
+// again. Resuming the stream releases them at once (store.SetStreamStatus), so
+// this bounds only the case nothing told the queue about.
+const ssfHoldInterval = time.Minute
 
 // DrainSSF delivers pending security events (RFC 8935 push).
 //
@@ -70,6 +77,32 @@ func (w *Worker) DrainSSF(ctx context.Context) (int, error) {
 }
 
 func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
+	// The stream's status, read at delivery rather than trusted from when the
+	// event was queued (SSF 1.0 §8.1.2.1, specs/ssf-1_0.txt:2584-2611). It was
+	// read only when queuing, so an event queued a moment before a stream was
+	// paused was still sent: "The Transmitter MUST NOT transmit events over the
+	// stream" while paused or disabled. A stream-updated event is the exception,
+	// because it is the notice of the change and the specification requires it
+	// be sent (§8.1.5).
+	if p.StreamID != "" {
+		status, err := w.streamStatus(ctx, p.StreamID)
+		if err != nil {
+			return err
+		}
+		switch {
+		case status == "":
+			return &droppedError{reason: "stream deleted"}
+		case p.Event == ssf.StreamUpdated:
+		case status == "paused":
+			// "SHOULD hold any events it would have transmitted while paused, and
+			// SHOULD transmit them when the stream's status becomes enabled."
+			return &heldError{reason: "held: the stream is paused", wait: ssfHoldInterval}
+		case status == "disabled":
+			// "will not hold any events for later transmission."
+			return &droppedError{reason: "stream disabled"}
+		}
+	}
+
 	key, err := w.keys.Active(keys.ES256)
 	if err != nil {
 		// Any active key will do; the receiver resolves it from our JWKS.
@@ -92,9 +125,15 @@ func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
 	// within seconds of the event, so the two are the same moment for a receiver's
 	// purposes. Poll, which can hand over an event hours later, passes the queued
 	// time instead -- see the shared builder.
-	event := ssf.RevocationEvent(w.issuer, p.Subject, p.Reason, time.Now())
-	event.Type = p.Event
-	token, err := ssf.Mint(tokens.NewSigner(key), w.issuer, p.ClientID, jti, event, time.Now())
+	var token string
+	if p.Event == ssf.StreamUpdated {
+		token, err = ssf.MintStreamUpdated(tokens.NewSigner(key), w.issuer, p.ClientID, jti,
+			p.StreamID, p.Status, p.Reason, time.Now())
+	} else {
+		event := ssf.RevocationEvent(w.issuer, p.Subject, p.Reason, time.Now())
+		event.Type = p.Event
+		token, err = ssf.Mint(tokens.NewSigner(key), w.issuer, p.ClientID, jti, event, time.Now())
+	}
 	if err != nil {
 		return err
 	}
@@ -143,6 +182,20 @@ func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
 		return fmt.Errorf("the receiver answered %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// streamStatus reads a stream's status; empty when the stream no longer exists.
+func (w *Worker) streamStatus(ctx context.Context, streamID string) (string, error) {
+	var status string
+	err := w.db.QueryRow(ctx,
+		`SELECT status FROM core.ssf_streams WHERE id::text = $1`, streamID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading the stream status: %w", err)
+	}
+	return status, nil
 }
 
 // streamAuthToken unseals the bearer token a receiver issued for this stream.

@@ -1948,6 +1948,44 @@ func racSetParameters(ctx context.Context, conn *pgx.Conn, orgID, slug, raw stri
 	return nil
 }
 
+// ssfSetStatus pauses, disables or re-enables a client's Shared Signals stream
+// (2.29), telling the receiver as SSF 1.0 requires; store.SetStreamStatus says
+// what each change sends and keeps.
+func ssfSetStatus(ctx context.Context, conn *pgx.Conn, orgID, clientID, status, reason string) error {
+	if orgID == "" || clientID == "" || status == "" {
+		return fmt.Errorf("give -org, -client-id and -status (enabled, paused or disabled)")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	prev, err := store.SetStreamStatus(ctx, tx, orgID, clientID, status, reason)
+	if err != nil {
+		if errors.Is(err, store.ErrStreamUnknown) {
+			return fmt.Errorf("%w; `signari ssf list` shows the streams", err)
+		}
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	switch {
+	case prev == status:
+		fmt.Printf("%s's stream is already %s; nothing changed or was sent\n", clientID, status)
+	case status == "paused":
+		fmt.Printf("%s's stream is paused. The receiver is sent a stream-updated event saying so;\n", clientID)
+		fmt.Println("events from now on are held, and sent when the stream is enabled again.")
+	case status == "disabled":
+		fmt.Printf("%s's stream is disabled. Nothing is sent or held from now on, and the events it\n", clientID)
+		fmt.Println("held are discarded.")
+	default:
+		fmt.Printf("%s's stream is enabled. The receiver is sent a stream-updated event, then\n", clientID)
+		fmt.Println("anything held while it was paused.")
+	}
+	return nil
+}
+
 // registrationRevoke stops a dynamic-registration token before it is spent or
 // expires (2.29): a leaked one could only be waited out. Chosen by -token-id,
 // or by -name when one live token has it.

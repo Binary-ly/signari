@@ -116,26 +116,34 @@ func (s *Server) handleSSFPoll(w http.ResponseWriter, r *http.Request) {
 		maxEvents = hardPollMaxEvents
 	}
 
-	streamID, ok, err := store.PollStreamForClient(ctx, s.db, creds.ClientID)
+	streamID, status, ok, err := store.PollStreamForClient(ctx, s.db, creds.ClientID)
 	if err != nil {
 		s.log.Error("locating a poll stream", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	if !ok {
-		// Authenticated, but this client has no enabled poll stream. 404 rather
-		// than an empty 200, so a receiver misconfigured for poll learns it is
+		// Authenticated, but this client has no poll stream. 404 rather than an
+		// empty 200, so a receiver misconfigured for poll learns it is
 		// misconfigured instead of polling an empty queue forever.
 		writeError(w, http.StatusNotFound, "invalid_request",
-			"this client has no enabled poll stream")
+			"this client has no poll stream")
 		return
+	}
+	// A paused or disabled stream hands over the stream-updated notice that
+	// says so and nothing else: "The Transmitter MUST NOT transmit events over
+	// the stream" (specs/ssf-1_0.txt:2592-2611). A paused one's other events
+	// stay queued for when it resumes.
+	onlyOfType := ""
+	if status != "enabled" {
+		onlyOfType = ssf.StreamUpdated
 	}
 
 	// Default true, per §2.4: "If this field is omitted... it defaults to a value
 	// of true." So a receiver that says nothing gets an immediate answer.
 	returnImmediately := req.ReturnImmediately == nil || *req.ReturnImmediately
 
-	sets, more, err := s.pollDeliver(ctx, streamID, creds.ClientID, req.Ack, maxEvents, returnImmediately)
+	sets, more, err := s.pollDeliver(ctx, streamID, creds.ClientID, req.Ack, maxEvents, returnImmediately, onlyOfType)
 	if err != nil {
 		s.log.Error("delivering polled events", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
@@ -152,7 +160,7 @@ func (s *Server) handleSSFPoll(w http.ResponseWriter, r *http.Request) {
 // must happen whether or not any events are then available -- a receiver that
 // only acks, with nothing new to collect, still expects its acks to take effect.
 func (s *Server) pollDeliver(ctx context.Context, streamID, audience string, ack []string,
-	maxEvents int, returnImmediately bool) (map[string]string, bool, error) {
+	maxEvents int, returnImmediately bool, onlyOfType string) (map[string]string, bool, error) {
 
 	if len(ack) > 0 {
 		tx, err := s.db.Begin(ctx)
@@ -168,7 +176,7 @@ func (s *Server) pollDeliver(ctx context.Context, streamID, audience string, ack
 		}
 	}
 
-	sets, more, err := s.pollFetchAndMint(ctx, streamID, audience, maxEvents)
+	sets, more, err := s.pollFetchAndMint(ctx, streamID, audience, maxEvents, onlyOfType)
 	if err != nil || len(sets) > 0 || returnImmediately {
 		return sets, more, err
 	}
@@ -187,7 +195,7 @@ func (s *Server) pollDeliver(ctx context.Context, streamID, audience string, ack
 		case <-timer.C:
 			return map[string]string{}, false, nil
 		case <-ticker.C:
-			sets, more, err = s.pollFetchAndMint(ctx, streamID, audience, maxEvents)
+			sets, more, err = s.pollFetchAndMint(ctx, streamID, audience, maxEvents, onlyOfType)
 			if err != nil {
 				return nil, false, err
 			}
@@ -203,8 +211,8 @@ func (s *Server) pollDeliver(ctx context.Context, streamID, audience string, ack
 // Read-only against the queue: rows leave only when the receiver acknowledges
 // them, so a SET handed over but not stored by the receiver is redelivered on the
 // next poll rather than lost.
-func (s *Server) pollFetchAndMint(ctx context.Context, streamID, audience string, maxEvents int) (
-	map[string]string, bool, error) {
+func (s *Server) pollFetchAndMint(ctx context.Context, streamID, audience string, maxEvents int,
+	onlyOfType string) (map[string]string, bool, error) {
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -212,7 +220,7 @@ func (s *Server) pollFetchAndMint(ctx context.Context, streamID, audience string
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	events, more, err := store.PollFetch(ctx, tx, streamID, maxEvents)
+	events, more, err := store.PollFetch(ctx, tx, streamID, maxEvents, onlyOfType)
 	if err != nil {
 		return nil, false, err
 	}
@@ -227,13 +235,20 @@ func (s *Server) pollFetchAndMint(ctx context.Context, streamID, audience string
 	signer := tokens.NewSigner(key)
 	out := make(map[string]string, len(events))
 	for _, e := range events {
-		// The same builder the push worker uses, so a receiver gets the same event
-		// whichever way it arrives. EventTime is the queue time (when the session
-		// was revoked), not now (when the SET is minted) -- for poll the two can be
-		// far apart, and a receiver orders by when things happened.
-		event := ssf.RevocationEvent(s.cfg.Issuer, e.Subject, e.Reason, e.QueuedAt)
-		event.Type = e.EventType
-		jws, merr := ssf.Mint(signer, s.cfg.Issuer, audience, e.JTI, event, time.Now())
+		var jws string
+		var merr error
+		if e.EventType == ssf.StreamUpdated {
+			jws, merr = ssf.MintStreamUpdated(signer, s.cfg.Issuer, audience, e.JTI, streamID,
+				e.Status, e.Reason, time.Now())
+		} else {
+			// The same builder the push worker uses, so a receiver gets the same
+			// event whichever way it arrives. EventTime is the queue time (when the
+			// session was revoked), not now (when the SET is minted) -- for poll the
+			// two can be far apart, and a receiver orders by when things happened.
+			event := ssf.RevocationEvent(s.cfg.Issuer, e.Subject, e.Reason, e.QueuedAt)
+			event.Type = e.EventType
+			jws, merr = ssf.Mint(signer, s.cfg.Issuer, audience, e.JTI, event, time.Now())
+		}
 		if merr != nil {
 			return nil, false, merr
 		}

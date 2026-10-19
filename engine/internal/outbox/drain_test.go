@@ -443,8 +443,11 @@ func TestSSFDrainHoldsNoTransaction(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 
+	// A real, enabled stream: delivery reads its status, and an event for a
+	// stream that does not exist is closed without being sent.
+	streamID, clientID := ssfStream(t, pool, "enabled")
 	payload, err := json.Marshal(map[string]string{
-		"stream_id": "stream-test", "client_id": "rp-ssf",
+		"stream_id": streamID, "client_id": clientID,
 		"endpoint": srv.URL, "event": "session-revoked",
 		"subject": "user-1", "sid": "sid-1", "reason": "test",
 	})

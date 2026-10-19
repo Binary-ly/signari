@@ -37,6 +37,36 @@ There was no way to do this until recently: a stream could only be created by
 hand-written SQL, which is how it was first tested. A feature nobody can
 configure is one nobody uses.
 
+## Pausing and disabling a stream
+
+```sh
+signari ssf set-status -org <org-uuid> -client-id <client> -status paused -reason "receiver maintenance"
+signari ssf set-status -org <org-uuid> -client-id <client> -status enabled
+signari ssf set-status -org <org-uuid> -client-id <client> -status disabled
+```
+
+The three statuses are SSF 1.0 §8.1.2.1's, and each does what it says there:
+
+| Status | Events | |
+|---|---|---|
+| `enabled` | sent | |
+| `paused` | **held**, not sent | released when the stream is enabled again |
+| `disabled` | neither sent nor held | what it held is discarded |
+
+The status is read when an event is delivered, not only when it is queued, so an
+event queued a moment before a pause is held with the rest rather than sent.
+
+The receiver is told. Pausing or disabling an enabled stream first queues a
+`stream-updated` event carrying the new status and your `-reason`, and enabling
+one sends another, as §8.1.5 requires. Its subject is the stream itself, in the
+`opaque` format with the stream's id. That notice is the one thing a paused or
+disabled stream still delivers, by push, or by poll: a poll receiver on a paused
+stream collects its `stream-updated` events and nothing else. Moving between
+`paused` and `disabled` sends nothing, because neither may transmit.
+
+There was no way to change a stream's status before: the column was read and
+nothing wrote it.
+
 ## Poll delivery (RFC 8936)
 
 Push assumes the receiver can accept an inbound HTTPS POST. A receiver behind a

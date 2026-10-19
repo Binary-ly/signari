@@ -182,6 +182,85 @@ func TestPollRequiresClientAuthentication(t *testing.T) {
 	}
 }
 
+// A paused poll stream hands over the stream-updated notice that says so and
+// holds everything else until it is enabled (2.29). A paused stream used to
+// answer 404, so a receiver could never collect the notice SSF 1.0 §8.1.5
+// requires be sent before the stream stops.
+func TestAPausedPollStreamHandsOverOnlyItsStatusNotice(t *testing.T) {
+	f := newTokenFixture(t)
+	secret := f.makePollStream(t)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.ssf_poll_queue WHERE stream_id IN
+			(SELECT id FROM core.ssf_streams WHERE client_id = $1)`, f.clientID)
+	})
+	setStatus := func(status string) {
+		t.Helper()
+		tx, err := f.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := store.SetStreamStatus(ctx, tx, f.orgID, f.clientID, status, "maintenance"); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kinds := func(resp pollResponse) (out []string) {
+		for _, jws := range resp.Sets {
+			for k, v := range setPayload(t, jws)["events"].(map[string]any) {
+				if k == ssf.StreamUpdated {
+					k = "updated:" + v.(map[string]any)["status"].(string)
+				}
+				out = append(out, k)
+			}
+		}
+		return out
+	}
+
+	setStatus("paused")
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TerminateSessions(ctx, tx, f.sid, "", store.ReasonAdminRevoke); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	code, resp := f.poll(t, secret, "")
+	if code != http.StatusOK {
+		t.Fatalf("polling a paused stream got %d, want 200 with its notice", code)
+	}
+	if got := kinds(resp); len(got) != 1 || got[0] != "updated:paused" {
+		t.Fatalf("a paused stream handed over %v, want only its stream-updated notice", got)
+	}
+	var notice string
+	for jti := range resp.Sets {
+		notice = jti
+	}
+	ackBody, _ := json.Marshal(map[string]any{"ack": []string{notice}})
+
+	setStatus("enabled")
+	_, resp = f.poll(t, secret, string(ackBody))
+	got := kinds(resp)
+	if len(got) != 2 {
+		t.Fatalf("after enabling, the stream handed over %v, want the second notice and the held revocation", got)
+	}
+	seen := map[string]bool{}
+	for _, k := range got {
+		seen[k] = true
+	}
+	if !seen["updated:enabled"] || !seen[ssf.EventSessionRevoked] {
+		t.Errorf("after enabling, the stream handed over %v", got)
+	}
+}
+
 // A confidential client that authenticates but has no poll stream is told so,
 // rather than polling an empty queue forever.
 func TestPollWithoutAStreamIs404(t *testing.T) {

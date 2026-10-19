@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -54,6 +55,24 @@ type drainSpec struct {
 	onFailure func(raw []byte, attempts int, err error)
 }
 
+// heldError is a delivery deliberately not attempted yet: the row waits for
+// wait and is tried again, with no attempt charged, because nothing failed. A
+// paused Shared Signals stream is the case: its events are held, not sent, and
+// charging each look as a failure would park them before the stream resumed.
+type heldError struct {
+	reason string
+	wait   time.Duration
+}
+
+func (e *heldError) Error() string { return e.reason }
+
+// droppedError is a delivery that will never be attempted: the row is closed
+// with the reason recorded, as the webhook drain closes one for a deleted
+// subscription, rather than retried against nothing.
+type droppedError struct{ reason string }
+
+func (e *droppedError) Error() string { return e.reason }
+
 // claimed is one row taken for delivery.
 type claimed struct {
 	id       int64
@@ -96,6 +115,24 @@ func (w *Worker) drainTopic(ctx context.Context, spec drainSpec) (int, error) {
 				return delivered, e
 			}
 			delivered++
+			continue
+		}
+		var held *heldError
+		if errors.As(r.err, &held) {
+			if _, e := w.db.Exec(ctx, `
+				UPDATE core.outbox SET next_attempt_at = now() + $2::interval, last_error = $3
+				WHERE id = $1`, r.row.id, held.wait.String(), held.reason); e != nil {
+				return delivered, e
+			}
+			continue
+		}
+		var dropped *droppedError
+		if errors.As(r.err, &dropped) {
+			if _, e := w.db.Exec(ctx,
+				`UPDATE core.outbox SET delivered_at = now(), last_error = $2 WHERE id = $1`,
+				r.row.id, dropped.reason); e != nil {
+				return delivered, e
+			}
 			continue
 		}
 

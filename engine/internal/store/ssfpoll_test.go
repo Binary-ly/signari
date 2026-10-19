@@ -53,28 +53,29 @@ func stalePollRows(t *testing.T, conn *pgx.Conn) int {
 	return n
 }
 
-func TestPollStreamForClientFindsOnlyAnEnabledPollStream(t *testing.T) {
+func TestPollStreamForClientFindsAPollStreamAndItsStatus(t *testing.T) {
 	ctx := context.Background()
 	conn := connect(t)
 	orgID, _, clientID, _ := fixture(t, conn)
 
 	// No stream yet.
-	if _, ok, err := PollStreamForClient(ctx, conn, clientID); err != nil || ok {
+	if _, _, ok, err := PollStreamForClient(ctx, conn, clientID); err != nil || ok {
 		t.Fatalf("a client with no stream resolved one: ok=%v err=%v", ok, err)
 	}
 
 	streamID := insertPollStream(t, conn, orgID, clientID, []string{"session-revoked"})
-	got, ok, err := PollStreamForClient(ctx, conn, clientID)
+	got, status, ok, err := PollStreamForClient(ctx, conn, clientID)
 	must(t, err)
-	if !ok || got != streamID {
-		t.Fatalf("poll stream = %q ok=%v, want %q", got, ok, streamID)
+	if !ok || got != streamID || status != "enabled" {
+		t.Fatalf("poll stream = %q %q ok=%v, want %q enabled", got, status, ok, streamID)
 	}
 
-	// A paused stream is "nothing to poll".
+	// A paused stream is found, with its status: its receiver must still
+	// collect the stream-updated notice, and the handler hands over nothing else.
 	_, err = conn.Exec(ctx, `UPDATE core.ssf_streams SET status='paused' WHERE id=$1::uuid`, streamID)
 	must(t, err)
-	if _, ok, _ := PollStreamForClient(ctx, conn, clientID); ok {
-		t.Error("a paused stream was offered for polling")
+	if _, status, ok, _ := PollStreamForClient(ctx, conn, clientID); !ok || status != "paused" {
+		t.Errorf("a paused stream resolved as ok=%v status %q", ok, status)
 	}
 }
 
@@ -92,7 +93,7 @@ func TestPollStreamForClientIgnoresPushStreams(t *testing.T) {
 
 	// A push stream must not be pollable: its events go out via the outbox, and
 	// answering a poll for it would deliver them twice.
-	if _, ok, _ := PollStreamForClient(ctx, conn, clientID); ok {
+	if _, _, ok, _ := PollStreamForClient(ctx, conn, clientID); ok {
 		t.Error("a push stream was offered for polling")
 	}
 }
@@ -112,7 +113,7 @@ func TestPollFetchReturnsOldestFirstAndReportsMore(t *testing.T) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// max=2 of 3 -> two oldest, more=true.
-	got, more, err := PollFetch(ctx, tx, streamID, 2)
+	got, more, err := PollFetch(ctx, tx, streamID, 2, "")
 	must(t, err)
 	if !more {
 		t.Error("moreAvailable is false with a third event still queued")
@@ -125,7 +126,7 @@ func TestPollFetchReturnsOldestFirstAndReportsMore(t *testing.T) {
 	}
 
 	// Fetch does NOT delete: the same rows are still there.
-	all, more, err := PollFetch(ctx, tx, streamID, 10)
+	all, more, err := PollFetch(ctx, tx, streamID, 10, "")
 	must(t, err)
 	if more {
 		t.Error("moreAvailable is true when everything fits")
@@ -164,12 +165,12 @@ func TestPollAckDeletesOnlyTheAcknowledgedAndOnlyOnThisStream(t *testing.T) {
 	}
 
 	// streamA keeps its other event; streamB keeps its identically-named one.
-	aLeft, _, err := PollFetch(ctx, tx, streamA, 10)
+	aLeft, _, err := PollFetch(ctx, tx, streamA, 10, "")
 	must(t, err)
 	if len(aLeft) != 1 || aLeft[0].JTI != "keep" {
 		t.Errorf("stream A after ack = %v, want [keep]", jtis(aLeft))
 	}
-	bLeft, _, err := PollFetch(ctx, tx, streamB, 10)
+	bLeft, _, err := PollFetch(ctx, tx, streamB, 10, "")
 	must(t, err)
 	if len(bLeft) != 1 || bLeft[0].JTI != "shared-jti" {
 		t.Errorf("another stream's event was deleted by an ack naming its jti: %v", jtis(bLeft))
@@ -220,7 +221,7 @@ func TestPurgeStalePollEventsDropsOnlyTheOld(t *testing.T) {
 	if before < 1 {
 		t.Fatal("the fixture's 40-day-old event is not stale, so this proves nothing")
 	}
-	left, _, err := PollFetch(ctx, tx, streamID, 10)
+	left, _, err := PollFetch(ctx, tx, streamID, 10, "")
 	must(t, err)
 	if len(left) != 1 || left[0].JTI != "fresh" {
 		t.Errorf("purge kept the wrong rows: %v", jtis(left))

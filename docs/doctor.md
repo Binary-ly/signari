@@ -95,6 +95,7 @@ reasons to block a release tonight.
 | keys | no active RS256 | info — SAML needs one, most SPs cannot verify ECDSA |
 | clients | plaintext redirect URI on a non-loopback host | critical |
 | clients | enabled client not requiring PKCE | warning |
+| clients | hybrid-flow exemption past the review date `client set-hybrid` recorded | warning — the date was demanded and, until October 2026, never mentioned again |
 | saml | logout URL registered but no SP certificate | warning — every logout from it is refused |
 | federation | generic OIDC provider allows sign-up with untrusted email verification | info — sign-up will always refuse |
 | outbox | notices parked after exhausting retries | critical — sessions may still be live downstream |

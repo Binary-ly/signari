@@ -413,6 +413,117 @@ func writtenPart(kind, rest string) string {
 	return out
 }
 
+// knownUnread are columns written and deliberately read by nothing, each with
+// the reason. Guard 0.08b's list; it may only shrink.
+var knownUnread = map[string]string{
+	// Records, not settings: facts the engine notes about what happened, kept
+	// for an investigation and shown by nothing yet. Setting none of them
+	// changes behaviour, which is why they are allowed here; each is a place a
+	// future list or detail view can read from.
+	"webauthn_credentials.attestation_type":   "what the authenticator presented at registration; decisions read attestation_verified",
+	"refresh_tokens.successor_hash":           "the rotation chain, for tracing a reuse after the fact; reuse is detected by family",
+	"group_members.added_by":                  "who granted a membership",
+	"invitations.created_by":                  "who sent an invitation",
+	"clients.registered_at":                   "when a dynamic registration happened",
+	"rac_sessions.connection_id":              "which connection a remote-access session used",
+	"rac_sessions.guacd_id":                   "guacd's id for the session, for matching its own logs",
+	"rac_sessions.ended_reason":               "why a remote-access session ended",
+	"impersonations.ended_reason":             "why an impersonation ended",
+	"event_deliveries.outbox_id":              "the outbox row a delivery came from",
+	"event_deliveries.status_code":            "what the subscriber answered",
+	"ssf_sources.last_event_at":               "when a transmitter last sent anything",
+	"ssf_received.event_time":                 "when the transmitter says the event happened",
+	"uma_pending_requests.decided_at":         "when a resource owner decided",
+	"uma_pending_requests.decided_by":         "who decided",
+	"preauthorized_codes.tx_code_input_mode":  "describes the code to the wallet in the offer, which is built when minted from the same values",
+	"preauthorized_codes.tx_code_length":      "the same",
+	"preauthorized_codes.tx_code_description": "the same",
+
+	// A source nothing can create (knownUnwritable lists migration_sources),
+	// so its counters have nothing to report until one can.
+	"migration_sources.delegated_successes": "delegated verification against an old provider cannot be configured yet",
+	"migration_sources.delegated_failures":  "the same",
+}
+
+// Guard 0.08b: every column the engine writes is read by something -- the
+// engine, the console, or a core_v1 view the console reads through. A column
+// written and read by nothing is a setting an operator can set that changes
+// nothing, which is worse than no setting: they will believe it worked.
+// RequireVerify and max_risk were that (SS-3, M34).
+//
+// Read here means mentioned anywhere outside the written part of a write
+// statement: a SELECT list, a WHERE clause, a RETURNING list, a view
+// definition, Go or PHP that names it. Lenient by construction -- a common
+// word matches somewhere -- so it misses some and never invents one.
+func TestEveryColumnTheEngineWritesIsRead(t *testing.T) {
+	root := repoRoot(t)
+	files := sourceFiles(t, root)
+	_, columns := readSchema(t, root)
+
+	stmt := regexp.MustCompile(`(?is)\b(INSERT INTO|UPDATE|COPY)\s+core\.[a-z_]+\b(.*?)(?:;|` + "`" + `)`)
+	var reads strings.Builder
+	for _, body := range files {
+		lower := strings.ToLower(body)
+		stripped := stmt.ReplaceAllStringFunc(lower, func(s string) string {
+			m := stmt.FindStringSubmatch(s)
+			written := writtenPart(strings.ToUpper(m[1]), m[2])
+			if written == "" || written == m[2] {
+				return s
+			}
+			return strings.Replace(s, written, " ", 1)
+		})
+		reads.WriteString(stripped)
+		reads.WriteString("\n")
+	}
+	// The views the console reads through are in the migrations.
+	views := regexp.MustCompile(`(?is)create\s+(?:or\s+replace\s+)?view\b.*?;`)
+	entries, err := os.ReadDir(filepath.Join(root, "engine", "migrations", "core"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		src, err := os.ReadFile(filepath.Join(root, "engine", "migrations", "core", e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range views.FindAllString(strings.ToLower(string(src)), -1) {
+			reads.WriteString(v)
+			reads.WriteString("\n")
+		}
+	}
+	read := reads.String()
+
+	writes := map[string]string{}
+	stale := map[string]bool{}
+	for k := range knownUnread {
+		stale[k] = true
+	}
+	for _, c := range columns {
+		if dbOwned.MatchString(c.rest) || strings.Contains(c.typ, "serial") {
+			continue
+		}
+		if _, ok := writes[c.table]; !ok {
+			writes[c.table] = writtenText(files, c.table)
+		}
+		word := regexp.MustCompile(`\b` + regexp.QuoteMeta(c.column) + `\b`)
+		if !word.MatchString(writes[c.table]) || word.MatchString(read) {
+			continue
+		}
+		key := c.table + "." + c.column
+		if _, known := knownUnread[key]; known {
+			delete(stale, key)
+			continue
+		}
+		t.Errorf("core.%s is written and read by nothing: no SELECT, WHERE, view, console "+
+			"or code names it. An operator who sets it changes nothing and will believe "+
+			"they did. Enforce it where it matters, drop it, or record it in knownUnread "+
+			"with the reason", key)
+	}
+	for key := range stale {
+		t.Errorf("knownUnread lists %q, which something now reads; remove the entry", key)
+	}
+}
+
 // The guard counts what a statement writes, not every column it mentions. A
 // column in a WHERE, a conflict target or a RETURNING list is read there, and
 // counting it as written hid two switches nothing could set:

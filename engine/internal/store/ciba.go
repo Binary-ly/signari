@@ -139,12 +139,12 @@ func PendingBackchannelRequest(ctx context.Context, db *pgxpool.Pool, id, userID
 	d := &DeviceAuthorization{}
 	err := db.QueryRow(ctx, `
 		SELECT id::text, org_id::text, client_id, scope, resource, status, user_id::text,
-		       interval_s, expires_at
+		       interval_s, expires_at, requested_acr
 		FROM core.device_authorizations
 		WHERE id = $1::uuid AND user_id = $2::uuid AND flow = 'ciba'
 		  AND status = 'pending' AND expires_at > now()`, id, userID).
 		Scan(&d.ID, &d.OrgID, &d.ClientID, &d.Scope, &d.Resource, &d.Status, &d.UserID,
-			&d.Interval, &d.ExpiresAt)
+			&d.Interval, &d.ExpiresAt, &d.RequestedACR)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrDeviceCodeUnknown

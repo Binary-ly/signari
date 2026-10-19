@@ -777,6 +777,8 @@ func run(args []string) (err error) {
 		return dirGroupMap(ctx, conn, *orgID, *slug, *remoteGroup, *groupName, *removeMember)
 	case "dir set":
 		return dirSet(ctx, conn, *orgID, *slug, *onMissing, *maxDeactivate, fs, *setEnabled, *dryRun)
+	case "dir list":
+		return dirList(ctx, conn, *orgID)
 	case "rac add":
 		return racAdd(ctx, conn, *orgID, *slug, *name, *racProtocol, *racHost,
 			*racPort, *racUser, *racPassword, *groupName, *racRecording)

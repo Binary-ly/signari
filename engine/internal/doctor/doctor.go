@@ -481,7 +481,10 @@ func checkSigningKeys(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	return rows.Err()
 }
 
-func checkClients(ctx context.Context, conn *pgx.Conn, r *Report) error {
+func checkClients(ctx context.Context, conn interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
 	r.ran("OAuth clients")
 
 	var plaintextRedirects int
@@ -511,7 +514,29 @@ func checkClients(ctx context.Context, conn *pgx.Conn, r *Report) error {
 			"PKCE is what stops an intercepted authorization code being exchanged by "+
 				"somebody else. Turn it on unless a client genuinely cannot do it")
 	}
-	return nil
+
+	// The hybrid-flow exemption's review date. `client set-hybrid` demands one
+	// and the column says "Reported, not enforced", and nothing reported it:
+	// the date was asked for, stored, and never mentioned again.
+	rows, err := conn.Query(ctx, `
+		SELECT client_id, hybrid_review_by::text FROM core.clients
+		 WHERE allow_hybrid AND hybrid_review_by IS NOT NULL AND hybrid_review_by < current_date
+		 ORDER BY hybrid_review_by`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, due string
+		if err := rows.Scan(&id, &due); err != nil {
+			return err
+		}
+		r.add(Warning, "clients",
+			fmt.Sprintf("%s still allows the hybrid flow; its exemption was due for review on %s", id, due),
+			"the hybrid flow exists for migration only. Move the client to the code flow and "+
+				"turn it off, or record a new review date with `signari client set-hybrid`")
+	}
+	return rows.Err()
 }
 
 func checkSAML(ctx context.Context, conn *pgx.Conn, r *Report) error {

@@ -127,6 +127,14 @@ this", to a person about to approve access to their own account — a
 right-to-left override in it can make the screen read as something other than
 what it says.
 
+**`acr_values` holds the approval to them.** §8 has the provider authenticate
+the user "in line with the Client's requests regarding acr_values". A request
+asking for multi-factor is therefore not approved from a session that signed in
+with a password alone. The request stays pending, and the person is told to
+sign in again with their second factor and approve it. An acr this server does
+not implement is never treated as met. Until October 2026 the values were
+stored "so the approval can be held to them", and nothing read them.
+
 ## Limits, stated
 
 - **`login_hint` only.** `login_hint_token` and `id_token_hint` are parsed and

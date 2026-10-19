@@ -1425,6 +1425,58 @@ func cliOperator() string {
 	return name + "@" + host
 }
 
+// dirList shows an organisation's directory sources and what their last sync
+// did. The sync recorded its time, its counts and its error on every run, and
+// there was no command to read them: an operator could add, sync and tune a
+// source, and could not see whether its last run had worked.
+func dirList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT slug, kind, enabled, dry_run, on_missing, max_deactivate_percent,
+		       COALESCE(to_char(last_sync_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI UTC'), 'never'),
+		       COALESCE(last_created, 0), COALESCE(last_updated, 0), COALESCE(last_deactivated, 0),
+		       COALESCE(last_error, '')
+		  FROM core.directory_sources WHERE org_id = $1::uuid ORDER BY slug`, orgID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var slug, kind, onMissing, last, lastErr string
+		var enabled, dry bool
+		var ceiling, created, updated, deactivated int
+		if err := rows.Scan(&slug, &kind, &enabled, &dry, &onMissing, &ceiling, &last,
+			&created, &updated, &deactivated, &lastErr); err != nil {
+			return err
+		}
+		state := "enabled"
+		switch {
+		case !enabled:
+			state = "disabled"
+		case dry:
+			state = "dry run"
+		}
+		fmt.Printf("%s  (%s, %s, missing people: %s, at most %d%% deactivated per sync)\n",
+			slug, kind, state, onMissing, ceiling)
+		fmt.Printf("  last sync: %s", last)
+		if last != "never" {
+			fmt.Printf(" -- %d created, %d updated, %d deactivated", created, updated, deactivated)
+		}
+		fmt.Println()
+		if lastErr != "" {
+			fmt.Printf("  last error: %s\n", lastErr)
+		}
+		n++
+	}
+	if n == 0 {
+		fmt.Println("no directory sources")
+	}
+	return rows.Err()
+}
+
 // inviteRevoke closes an open invitation, so its link stops working at once.
 func inviteRevoke(ctx context.Context, conn *pgx.Conn, orgID, id string) error {
 	if orgID == "" || id == "" {

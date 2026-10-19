@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"signari.dev/engine/internal/audit"
@@ -463,6 +464,40 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 					Detail: map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "ciba"},
 				})
 				approve, refusal = false, pd.Message
+			}
+		}
+		// The request's acr_values, which the approving session must meet, as
+		// /authorize holds a session to a client's. CIBA §8 (specs/ciba.html:997):
+		// the OP authenticates the user "in line with the Client's requests
+		// regarding acr_values". They were stored "so the approval can be held
+		// to them" (migration 0088) and read by nothing, so a request asking for
+		// multi-factor was approved from a password-only session.
+		//
+		// Not a denial: the request stays pending, so the person can sign in
+		// again with a stronger factor and approve it.
+		if approve && d != nil && len(d.RequestedACR) > 0 {
+			var authTime time.Time
+			var amr []string
+			if err := s.db.QueryRow(ctx, `SELECT auth_time, amr FROM core.sessions WHERE sid = $1`,
+				sid).Scan(&authTime, &amr); err != nil {
+				s.log.Error("loading the session to check a backchannel request's acr", "err", err)
+				http.Error(w, "that request could not be checked; try again", http.StatusServiceUnavailable)
+				return
+			}
+			wanted := strings.Join(d.RequestedACR, " ")
+			if reason, _ := oauth.SessionSufficient(amr, authTime, time.Now(), wanted, nil, ""); reason != oauth.StepUpNone {
+				s.auditDetached(ctx, audit.Event{
+					Type: "ciba.step_up_required", OrgID: orgID, SubjectID: userID,
+					ClientID: d.ClientID, CorrelationID: correlationID(ctx),
+					Detail: map[string]any{"request_id": id, "requested_acr": d.RequestedACR},
+				})
+				msg := "This application asked for a stronger sign-in than this session has. " +
+					"Sign out, sign in again"
+				if oauth.RequiredFactor(wanted) == "mfa" {
+					msg += " with your second factor"
+				}
+				s.renderBackchannel(w, r, userID, msg+", then approve it.")
+				return
 			}
 		}
 		// Not theirs, decided or expired: DecideBackchannel below refuses it with

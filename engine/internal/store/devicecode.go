@@ -41,6 +41,8 @@ type DeviceAuthorization struct {
 	SID       string
 	Interval  int
 	ExpiresAt time.Time
+	// RequestedACR is a CIBA request's acr_values, which approval is held to.
+	RequestedACR []string
 }
 
 // CreateDeviceAuthorization records a new request and returns its id.

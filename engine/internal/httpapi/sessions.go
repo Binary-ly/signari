@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -193,6 +194,37 @@ func describeAuth(amr []string) string {
 	default:
 		return "sessions.how.password"
 	}
+}
+
+// maxSessionUserAgent bounds what a session row keeps of the User-Agent header,
+// which the client writes and may make as long as the server accepts.
+const maxSessionUserAgent = 256
+
+// sessionDevice is what a new session records about the browser that opened it:
+// the User-Agent, trimmed, and a keyed hash of the address (keys.AddressHash).
+// Both were columns from the start and nothing wrote either, so every session a
+// person was shown looked the same and the admin list said no address was known.
+//
+// No root key, no hash: an unkeyed one would be reversible, and the address
+// itself is not kept.
+func (s *Server) sessionDevice(r *http.Request) (userAgent *string, ipHash []byte) {
+	ua := strings.Map(func(c rune) rune {
+		if c < 0x20 || c == 0x7f || c == utf8.RuneError {
+			return -1
+		}
+		return c
+	}, strings.TrimSpace(r.UserAgent()))
+	for len(ua) > maxSessionUserAgent {
+		_, size := utf8.DecodeLastRuneInString(ua)
+		ua = ua[:len(ua)-size]
+	}
+	if ua != "" {
+		userAgent = &ua
+	}
+	if ip := clientIP(r); ip != "" && s.root != nil {
+		ipHash = s.root.AddressHash(ip)
+	}
+	return userAgent, ipHash
 }
 
 // describeUserAgent trims a raw User-Agent to something legible without pretending

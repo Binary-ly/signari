@@ -71,8 +71,6 @@ var knownUnwritable = map[string]string{
 	// The engine's own runtime state, not operator configuration. These are
 	// written by nothing because the feature that would write them is absent,
 	// which is a different repair from adding a command.
-	"sessions.ip_hash":               "never recorded at sign-in, so the admin session list always reports no address",
-	"sessions.user_agent":            "the same; the list always shows an empty user agent",
 	"audit_events.detail_enc":        "known: zero readers and zero writers, already named in the plan's documentation-honesty item",
 	"providers.wrap_key_ref":         "sealing context for provider credentials; no provider stores a secret yet",
 	"credential_nonces.org_id":       "written by the nonce path, which does not yet scope by organisation",

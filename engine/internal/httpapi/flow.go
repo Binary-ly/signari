@@ -2024,10 +2024,13 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 			"count", len(evicted), "correlation_id", correlationID(ctx))
 	}
 
+	userAgent, ipHash := s.sessionDevice(r)
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.sessions (sid, cookie_hash, org_id, user_id, acr, amr, auth_time, not_after)
-		VALUES ($1, $2, $3, $4, $5, $6, now(), now() + $7::interval)`,
-		sid, store.HashToken(cookieToken), orgID, userID, acr, amr, sessionTTL.String()); err != nil {
+		INSERT INTO core.sessions (sid, cookie_hash, org_id, user_id, acr, amr, auth_time, not_after,
+		                           user_agent, ip_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, now(), now() + $7::interval, $8, $9)`,
+		sid, store.HashToken(cookieToken), orgID, userID, acr, amr, sessionTTL.String(),
+		userAgent, ipHash); err != nil {
 		s.log.Error("creating session", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

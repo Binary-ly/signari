@@ -380,7 +380,12 @@ a caller can see the notices were raised.
 
 The listing reports the user agent and whether an address is on file, never the
 address. `ip_hash` is a hash by deliberate choice, and returning it would undo
-that decision from the other side.
+that decision from the other side. Both are recorded when the session opens: the
+`User-Agent` header with control characters removed, cut to 256 bytes, and an
+HMAC of the address under a key derived from `SIGNARI_ROOT_KEY`. Keyed, because
+there are only four billion IPv4 addresses, so a plain digest copied out of the
+database would be reversed by trying them all. A deployment run without a root
+key records no address hash.
 
 ### Audit trail
 

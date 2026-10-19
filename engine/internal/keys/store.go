@@ -5,7 +5,10 @@ import (
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -29,6 +32,9 @@ import (
 type RootKey struct {
 	aead cipher.AEAD
 	ref  string
+	// addressKey keys AddressHash. Derived, so it says nothing about the key
+	// that seals, and held beside it, so it is as absent from the database.
+	addressKey []byte
 }
 
 // NewRootKey takes 32 raw bytes. `ref` names which root key this is, so a future
@@ -45,7 +51,21 @@ func NewRootKey(ref string, secret []byte) (*RootKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RootKey{aead: aead, ref: ref}, nil
+	addressKey, err := hkdf.Key(sha256.New, secret, nil, "signari session address hash v1", 32)
+	if err != nil {
+		return nil, err
+	}
+	return &RootKey{aead: aead, ref: ref, addressKey: addressKey}, nil
+}
+
+// AddressHash is the keyed hash core.sessions.ip_hash stores: enough to tell
+// whether two sessions came from one address, nothing that gives the address
+// back. Keyed, because an IPv4 address is one of four billion, and an unkeyed
+// hash of one is reversed by trying them all from a copy of the database.
+func (r *RootKey) AddressHash(addr string) []byte {
+	m := hmac.New(sha256.New, r.addressKey)
+	m.Write([]byte(addr))
+	return m.Sum(nil)
 }
 
 // NewRootKeyFromBase64 parses the usual env-var form.

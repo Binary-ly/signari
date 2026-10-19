@@ -349,6 +349,9 @@ func run(args []string) (err error) {
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
 	dpopBound := fs.Bool("dpop-bound", false, "RFC 9449 §5.2: refuse token requests from this client that carry no DPoP proof")
 	exchangeAudMatch := fs.Bool("exchange-audience-match", false, "RFC 8693: only exchange subject tokens this client holds or is named in the audience of")
+	mayExchange := fs.Bool("may-exchange", true, "`client set-exchange`: grant token exchange (false withdraws it)")
+	exchangeAudiences := fs.String("exchange-audiences", "",
+		"`client set-exchange`: comma-separated audiences this client may exchange tokens for, besides itself")
 	promptFile := fs.String("prompt-file", "", "YAML defining a sign-in prompt")
 	configFile := fs.String("f", "", "declarative configuration file")
 	prune := fs.Bool("prune", false,
@@ -750,6 +753,8 @@ func run(args []string) (err error) {
 		return clientSetAssertionIssuers(ctx, conn, *clientID, *assertionIssuers)
 	case "client set-exchange-containment":
 		return clientSetExchangeContainment(ctx, conn, *clientID, *exchangeAudMatch)
+	case "client set-exchange":
+		return clientSetExchange(ctx, conn, *clientID, *mayExchange, *exchangeAudiences)
 	case "client set-dpop":
 		return clientSetDPoP(ctx, conn, *clientID, *dpopBound)
 	case "client set-pkce":
@@ -7995,8 +8000,8 @@ func clientSetGrants(ctx context.Context, conn *pgx.Conn, clientID, grants strin
 	// Token exchange is authorised by its own column, because the grant type
 	// alone cannot say which audiences a client may exchange for.
 	if slices.Contains(wanted, oauth.GrantTypeTokenExchange) {
-		fmt.Printf("note: token exchange is additionally gated by may_exchange and\n" +
-			"      the client's permitted audiences; this flag does not set those.\n")
+		fmt.Printf("note: token exchange is authorised by its own permission and audience\n" +
+			"      list, not by this one; grant it with `signari client set-exchange`.\n")
 	}
 	tag, err := conn.Exec(ctx,
 		`UPDATE core.clients SET grant_types = $2 WHERE client_id = $1`,
@@ -8404,6 +8409,45 @@ func clientSetDPoP(ctx context.Context, conn *pgx.Conn, clientID string, require
 		fmt.Printf("%s now requires a DPoP proof on every token request\n", clientID)
 	} else {
 		fmt.Printf("%s no longer requires DPoP; tokens are bound only when a proof is sent\n", clientID)
+	}
+	return nil
+}
+
+// clientSetExchange grants or withdraws RFC 8693 token exchange, with the
+// audiences the client may exchange for. Until it existed the permission had a
+// reader on every exchange and no writer anywhere, while discovery advertised
+// the grant, so no client could be given it.
+func clientSetExchange(ctx context.Context, conn *pgx.Conn, clientID string, may bool, audiences string) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client-id")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := store.SetClientExchange(ctx, tx, clientID, may, strings.Split(audiences, ",")); err != nil {
+		switch {
+		case errors.Is(err, store.ErrClientNotFound):
+			return fmt.Errorf("no client %q", clientID)
+		case errors.Is(err, store.ErrExchangeNeedsConfidentialClient):
+			return fmt.Errorf("%s is a public client; %w, since a public client cannot prove "+
+				"it is the one the permission was granted to", clientID, err)
+		}
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if !may {
+		fmt.Printf("%s may no longer exchange tokens\n", clientID)
+		return nil
+	}
+	clean, _ := store.CleanExchangeAudiences(strings.Split(audiences, ","))
+	if len(clean) == 0 {
+		fmt.Printf("%s may exchange tokens for itself only\n", clientID)
+	} else {
+		fmt.Printf("%s may exchange tokens for itself and %s\n", clientID, strings.Join(clean, ", "))
 	}
 	return nil
 }

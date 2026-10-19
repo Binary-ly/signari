@@ -25,6 +25,12 @@ clients:
     redirect_uris: [http://127.0.0.1:8765/callback]
     portal_hidden: true
 
+  - client_id: api-gateway
+    redirect_uris: [https://gateway.example.com/cb]
+    token_exchange:              # RFC 8693; omit to leave as it is
+      enabled: true
+      audiences: [https://billing.example.com/api]
+
 saml_providers:
   - entity_id: urn:sharepoint:intranet
     name: Intranet

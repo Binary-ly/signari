@@ -32,6 +32,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/ratelimit"
+	"signari.dev/engine/internal/store"
 )
 
 // Server is the admin write API. It listens separately from the public protocol
@@ -357,6 +358,12 @@ type patchClientRequest struct {
 	// RequirePKCE is the opt-out for an application that cannot send a PKCE
 	// challenge, and the way back. A public client cannot opt out.
 	RequirePKCE *bool `json:"require_pkce"`
+	// MayExchange grants or withdraws RFC 8693 token exchange, and
+	// ExchangeAudiences replaces the audiences it may exchange for besides
+	// itself. Either alone leaves the other as it is. Written by the same
+	// store.SetClientExchange as the CLI and `signari apply`.
+	MayExchange       *bool     `json:"may_exchange"`
+	ExchangeAudiences *[]string `json:"exchange_audiences"`
 }
 
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
@@ -372,7 +379,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	if req.Enabled == nil && req.RequirePKCE == nil {
+	if req.Enabled == nil && req.RequirePKCE == nil && req.MayExchange == nil && req.ExchangeAudiences == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
@@ -383,7 +390,8 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var enabled, requirePKCE bool
+	var enabled, requirePKCE, mayExchange bool
+	var exchangeAudiences []string
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		// This handler previously changed a client without ever reading which
 		// organisation it belonged to, so there was nothing for the boundary to
@@ -431,6 +439,27 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		if req.RequirePKCE != nil {
 			detail["require_pkce"] = *req.RequirePKCE
 		}
+		if req.MayExchange != nil || req.ExchangeAudiences != nil {
+			if err := tx.QueryRow(ctx, `SELECT may_exchange, exchange_audiences FROM core.clients
+				WHERE client_id = $1`, clientID).Scan(&mayExchange, &exchangeAudiences); err != nil {
+				return err
+			}
+			if req.MayExchange != nil {
+				mayExchange = *req.MayExchange
+			}
+			if req.ExchangeAudiences != nil {
+				exchangeAudiences = *req.ExchangeAudiences
+			}
+			if _, err := store.SetClientExchange(ctx, tx, clientID, mayExchange, exchangeAudiences); err != nil {
+				return err
+			}
+			if err := tx.QueryRow(ctx, `SELECT may_exchange, exchange_audiences FROM core.clients
+				WHERE client_id = $1`, clientID).Scan(&mayExchange, &exchangeAudiences); err != nil {
+				return err
+			}
+			detail["may_exchange"] = mayExchange
+			detail["exchange_audiences"] = exchangeAudiences
+		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.client_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, ClientID: clientID, Detail: detail,
@@ -449,6 +478,15 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errPublicClientNeedsPKCE):
 		writePublicClientNeedsPKCE(w)
 		return
+	case errors.Is(err, store.ErrExchangeNeedsConfidentialClient):
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "confidential_client_required", "detail": err.Error() +
+				": a public client cannot prove it is the client the permission was granted to",
+		})
+		return
+	case errors.Is(err, store.ErrInvalidExchangeAudience):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_audience", "detail": err.Error()})
+		return
 	case err != nil:
 		s.log.Error("patching client", "client_id", clientID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -461,10 +499,14 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("client updated", "client_id", clientID, "enabled", enabled,
 		"require_pkce", requirePKCE, "config_version", version)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"client_id": clientID, "enabled": enabled, "require_pkce": requirePKCE,
 		"config_version": version,
-	})
+	}
+	if req.MayExchange != nil || req.ExchangeAudiences != nil {
+		out["may_exchange"], out["exchange_audiences"] = mayExchange, exchangeAudiences
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 var errPublicClientNeedsPKCE = errors.New("a public client must require PKCE")

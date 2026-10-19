@@ -75,6 +75,16 @@ type Client struct {
 	LogoURL      string   `yaml:"logo_url"`
 	PortalHidden bool     `yaml:"portal_hidden"`
 	Enabled      *bool    `yaml:"enabled"`
+	// TokenExchange grants RFC 8693 token exchange. Absent leaves the client's
+	// current permission alone, as an omitted `enabled` does.
+	TokenExchange *TokenExchange `yaml:"token_exchange"`
+}
+
+// TokenExchange is whether a client may exchange tokens, and for which
+// audiences besides itself.
+type TokenExchange struct {
+	Enabled   bool     `yaml:"enabled"`
+	Audiences []string `yaml:"audiences"`
 }
 
 // SAMLProvider is a SAML service provider.
@@ -165,6 +175,19 @@ func (f *File) Validate() error {
 		if c.PortalHidden && c.LaunchURL != "" {
 			add("clients[%s]: portal_hidden and launch_url contradict each other",
 				c.ClientID)
+		}
+		if x := c.TokenExchange; x != nil {
+			if x.Enabled && c.Public {
+				add("clients[%s]: token_exchange needs a confidential client; a public "+
+					"client cannot prove it is the one the permission was granted to", c.ClientID)
+			}
+			if !x.Enabled && len(x.Audiences) > 0 {
+				add("clients[%s]: token_exchange lists audiences but is not enabled, "+
+					"so they would grant nothing", c.ClientID)
+			}
+			if _, err := store.CleanExchangeAudiences(x.Audiences); err != nil {
+				add("clients[%s]: token_exchange: %s", c.ClientID, err.Error())
+			}
 		}
 	}
 

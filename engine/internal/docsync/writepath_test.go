@@ -103,8 +103,6 @@ var knownUnwritable = map[string]string{
 	"clients.id_token_signed_alg":                  "per-client ID token algorithm fixed at ES256",
 	"clients.pkce_methods":                         "fixed at S256",
 	"clients.require_pushed_authorization":         "PAR cannot be required per client",
-	"clients.may_exchange":                         "RFC 8693 token exchange cannot be granted per client",
-	"clients.exchange_audiences":                   "nor its audience list bounded",
 	"clients.first_party":                          "first-party consent skipping cannot be granted",
 	"clients.frontchannel_logout_uri":              "front-channel logout cannot be registered",
 	"clients.frontchannel_logout_session_required": "nor its sid requirement changed",

@@ -73,6 +73,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari client set-tls` | mTLS client authentication and certificate-bound tokens |
 | `signari client set-dpop` | RFC 9449 §5.2: require a DPoP proof on every token request from this client |
 | `signari client set-pkce` | `-client-id <id> [-require-pkce=false]`: whether this client's authorization requests must carry a PKCE challenge. Every client requires one from creation; the opt-out is for an application that cannot send one, and a public client cannot take it, here, at `client create -public` or through the Admin API. The schema refuses one as well (`clients_public_requires_pkce`). Audited, and moves the configuration version |
+| `signari client set-exchange` | `-client-id <id> -exchange-audiences a,b`: grant RFC 8693 token exchange to a confidential client, for itself and the audiences named; `-may-exchange=false` withdraws it. The same permission the Admin API's client PATCH (`may_exchange`, `exchange_audiences`) and `signari apply` (`token_exchange`) set. Until October 2026 nothing could set it, while discovery advertised the grant |
 | `signari client set-exchange-containment` | RFC 8693: only exchange subject tokens this client holds or is named in the audience of |
 | `signari client set-hybrid` | Permit hybrid response types |
 | `signari client set-claims-redirects` | UMA 2.0 §3.3.2: where a requesting party may be returned after claims gathering. A separate list from `redirect_uris`, because the specification forbids reusing those. See [uma.md](uma.md) |

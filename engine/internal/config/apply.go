@@ -59,14 +59,15 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 	rows, err = tx.Query(ctx, `
 		SELECT c.client_id, c.display_name, c.client_type, c.scopes, c.enabled,
 		       COALESCE(c.initiate_login_uri,''), COALESCE(c.logo_uri,''),
-		       c.portal_hidden,
+		       c.portal_hidden, c.may_exchange, c.exchange_audiences,
 		       COALESCE(array_agg(r.redirect_uri) FILTER (WHERE r.redirect_uri IS NOT NULL),
 		                '{}') AS uris
 		  FROM core.clients c
 		  LEFT JOIN core.client_redirect_uris r ON r.client_id = c.client_id
 		 WHERE c.org_id = $1::uuid
 		 GROUP BY c.client_id, c.display_name, c.client_type, c.scopes, c.enabled,
-		          c.initiate_login_uri, c.logo_uri, c.portal_hidden`, orgID)
+		          c.initiate_login_uri, c.logo_uri, c.portal_hidden, c.may_exchange,
+		          c.exchange_audiences`, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -74,13 +75,16 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		var cl Client
 		var kind string
 		var enabled bool
+		x := &TokenExchange{}
 		if err := rows.Scan(&cl.ClientID, &cl.Name, &kind, &cl.Scopes, &enabled,
-			&cl.LaunchURL, &cl.LogoURL, &cl.PortalHidden, &cl.RedirectURIs); err != nil {
+			&cl.LaunchURL, &cl.LogoURL, &cl.PortalHidden, &x.Enabled, &x.Audiences,
+			&cl.RedirectURIs); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		cl.Public = kind == "public"
 		cl.Enabled = &enabled
+		cl.TokenExchange = x
 		c.clients[cl.ClientID] = cl
 	}
 	rows.Close()
@@ -322,6 +326,15 @@ func clientDiff(have, want Client) string {
 	if want.Enabled != nil && have.Enabled != nil && *have.Enabled != *want.Enabled {
 		d = append(d, "enabled")
 	}
+	if w, h := want.TokenExchange, have.TokenExchange; w != nil && h != nil {
+		wantAud, _ := store.CleanExchangeAudiences(w.Audiences)
+		if !w.Enabled {
+			wantAud = nil
+		}
+		if w.Enabled != h.Enabled || !sameSet(wantAud, h.Audiences) {
+			d = append(d, "token_exchange")
+		}
+	}
 	return strings.Join(d, ", ")
 }
 
@@ -478,6 +491,13 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 				`INSERT INTO core.client_redirect_uris (client_id, redirect_uri)
 				 VALUES ($1, $2)`, cl.ClientID, u); err != nil {
 				return fmt.Errorf("client %q redirect_uri %q: %w", cl.ClientID, u, err)
+			}
+		}
+		// Through the one writer the CLI and the Admin API use, so a grant means
+		// the same thing whichever surface made it.
+		if x := cl.TokenExchange; x != nil {
+			if _, err := store.SetClientExchange(ctx, tx, cl.ClientID, x.Enabled, x.Audiences); err != nil {
+				return fmt.Errorf("client %q token_exchange: %w", cl.ClientID, err)
 			}
 		}
 	}

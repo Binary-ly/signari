@@ -140,6 +140,13 @@ Metadata publishes **every** current certificate so providers can pick up an
 incoming one before it is used. Rotation is then: publish, wait for providers to
 refresh, switch.
 
+Each certificate names its key in the subject, `OU=key <kid>`, beside the host
+in the CN. A provider that trusts every published certificate and finds the
+signer's by name needs the names to differ: with three certificates all called
+`O=Signari, CN=<host>`, xmlsec1 verified a response with them loaded in one order
+and found no key in another. A certificate made before October 2026 keeps its
+old name, since its fingerprint is pinned, and leaves when its key rotates out.
+
 SAML requires an **RS256** key. ECDSA is specified and refused by a great deal
 of real service-provider software, so an EC-signed assertion would be correct
 and rejected anyway. Signari says so up front rather than letting you find out:

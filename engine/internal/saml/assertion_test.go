@@ -20,7 +20,7 @@ func testSigner(t *testing.T) (*rsa.PrivateKey, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	der, _, err := selfSign("https://auth.example.com", key)
+	der, _, err := selfSign("https://auth.example.com", "kid-1", key)
 	if err != nil {
 		t.Fatal(err)
 	}

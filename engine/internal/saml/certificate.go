@@ -48,7 +48,7 @@ func EnsureCertificate(ctx context.Context, tx pgx.Tx, kid, issuer string, signe
 		return der, nil
 	}
 
-	der, notAfter, err := selfSign(issuer, signer)
+	der, notAfter, err := selfSign(issuer, kid, signer)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +81,7 @@ func EnsureCertificate(ctx context.Context, tx pgx.Tx, kid, issuer string, signe
 // established by the service provider holding a copy of this exact certificate,
 // not by a chain to a public root. A CA-issued certificate here would cost money
 // and add an expiry cliff without changing what is actually verified.
-func selfSign(issuer string, signer crypto.Signer) ([]byte, time.Time, error) {
+func selfSign(issuer, kid string, signer crypto.Signer) ([]byte, time.Time, error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("generating a serial number: %w", err)
@@ -99,7 +99,13 @@ func selfSign(issuer string, signer crypto.Signer) ([]byte, time.Time, error) {
 	notAfter := now.Add(certLifetime)
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: cn, Organization: []string{"Signari"}},
+		// The key id as well, so each key's certificate has a name of its own.
+		// Metadata publishes the active, next and passive keys together, and a
+		// provider that trusts all three and looks the signer up by name took
+		// whichever it had loaded last when the names were the same: xmlsec1
+		// verified in one order and found no key in another.
+		Subject: pkix.Name{CommonName: cn, Organization: []string{"Signari"},
+			OrganizationalUnit: []string{"key " + kid}},
 		// Backdated by an hour so a service provider whose clock is behind ours
 		// does not reject a certificate that is technically not yet valid.
 		NotBefore: now.Add(-1 * time.Hour),

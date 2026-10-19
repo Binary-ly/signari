@@ -13,8 +13,19 @@ never shown again, so a database copy is not a licence to forge events — an
 operator who loses it rotates rather than reads.
 
 ```sh
-signari events list -org <uuid>
+signari events list   -org <uuid>
+signari events test   -org <uuid> -name siem   # one signed signari.test delivery
+signari events rotate -org <uuid> -name siem   # a new secret, shown once; the old one stops verifying
+signari events enable -org <uuid> -name siem   # back on after ten failures switched it off
+signari events remove -org <uuid> -name siem
 ```
+
+`-events` names types from the [catalogue](#event-catalogue). A name nothing
+records is refused, with the nearest one suggested: `login.failure` is answered
+with `login.failed`. Until October 2026 it was stored, and the subscription
+received nothing and looked configured. The test delivery's type, `signari.test`,
+is not recorded and is in no catalogue: it goes to the subscription named,
+whatever its filter.
 
 ## Deliveries go through the outbox
 
@@ -142,7 +153,8 @@ to http is refused outright.
 ## The response is not an instruction
 
 Any 2xx is success; everything else is a failure, **including 410 Gone**. A
-subscriber that means "stop sending" says so by having its subscription removed.
+subscriber that means "stop sending" says so by having its subscription removed
+(`signari events remove`).
 Treating a status code as an unsubscribe instruction lets anyone who can answer
 that URL turn the events off.
 
@@ -167,6 +179,27 @@ Filtering is per subscription. `-events` empty means every event in the
 organisation, which is a choice an operator makes rather than a default they
 inherit. Matching is exact: subscribing to `login` does not quietly subscribe you
 to `login.failed`.
+
+## Event catalogue
+
+Every type the engine records, and so every type a subscription can name. A
+test in `internal/docsync` keeps this list, the one `events subscribe` checks
+against, and the types the code writes identical.
+
+| Area | Events |
+|---|---|
+| Sign-in | `login.succeeded`, `login.failed`, `desktop.login`, `consent.withdrawn`, `prompt.answered`, `session.user_revoked`, `password.changed`, `password.breached`, `sms.refused` |
+| Account | `account.migrated`, `account.password_reset`, `account.recovery_requested`, `account.recovery_cancelled`, `user.created` |
+| Second factors | `mfa.totp_enrolled`, `mfa.sms_enrolled`, `mfa.sms_removed`, `mfa.email_otp_enrolled`, `mfa.passkey_registered`, `mfa.passkey_removed`, `mfa.passkey_refused`, `mfa.passkey_counter_regression`, `mfa.passkey_backup_lost`, `mfa.passkey_notice_failed`, `mfa.recovery_codes_regenerated`, `mfa.factor_disabled`, `mfa.duo_succeeded`, `mfa.duo_failed`, `mfa.duo_unavailable`, `mfa.skipped_duo_unavailable` |
+| OAuth and OpenID Connect | `oauth.consent_granted`, `oauth.consent_denied`, `oauth.code_reused`, `oauth.token_exchanged`, `token.vetoed`, `txntoken.issued`, `ciba.requested`, `ciba.approved`, `ciba.denied`, `ciba.step_up_required`, `ciba.unknown_subject`, `uma.submitted`, `uma.claims_gathered`, `uma.granted`, `uma.denied`, `oid4vci.credential_issued` |
+| SAML and WS-Federation | `saml.assertion_issued`, `saml.logout_completed`, `saml.logout_propagated`, `wsfed.token_issued` |
+| Federation and directories | `federation.user_created`, `federation.account_linked`, `federation.refused`, `directory.groups_synced`, `directory.privileged_skipped`, `ssf.received` |
+| SCIM | `scim.user_provisioned`, `scim.user_replaced`, `scim.user_patched`, `scim.user_deprovisioned`, `scim.group_provisioned`, `scim.group_replaced`, `scim.group_membership_changed`, `scim.group_deprovisioned`, `scim.privileged_kept`, `scim.privileged_refused` |
+| LDAP | `ldap.entry_created`, `ldap.entry_modified`, `ldap.entry_renamed`, `ldap.entry_deleted`, `ldap.password_set` |
+| Proxy and remote access | `proxy.host_added`, `proxy.host_enabled`, `proxy.host_disabled`, `proxy.host_removed`, `proxy.session_issued`, `rac.session_requested`, `rac.session_ended` |
+| Support access | `impersonation.started`, `impersonation.ended`, `impersonation.refused` |
+| Administration | `admin.cli_command`, `admin.organization_created`, `admin.user_created`, `admin.user_updated`, `admin.user_deleted`, `admin.subject_erased`, `admin.factor_removed`, `admin.session_revoked`, `admin.sessions_revoked`, `admin.client_created`, `admin.client_updated`, `admin.client_deleted`, `admin.client_secret_rotated`, `admin.group_created`, `admin.group_updated`, `admin.group_deleted`, `admin.group_member_added`, `admin.group_member_removed`, `admin.attribute_declared`, `admin.attributes_set`, `admin.claim_mapper_created`, `admin.claim_mapper_deleted`, `admin.scope_declared`, `admin.scope_deleted`, `admin.identity_provider_updated`, `admin.scim_source_updated`, `admin.invitation_revoked`, `admin.proxy_host_set`, `admin.proxy_host_removed`, `admin.webauthn_policy_set`, `admin.privileged_refused`, `org.password_only_binds_set`, `config.applied` |
+| The audit trail itself | `audit.checkpoint` |
 
 
 ## Re-review against the Shared Signals Framework, August 2026

@@ -4,11 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/safedial"
 )
@@ -76,16 +81,13 @@ func CreateSubscription(ctx context.Context, tx pgx.Tx, root *keys.RootKey,
 	if err := safedial.CheckURL(url); err != nil {
 		return sub, err
 	}
-
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
+	if err := CheckEventTypes(eventTypes); err != nil {
 		return sub, err
 	}
-	secret := "whsec_" + base64.RawURLEncoding.EncodeToString(raw)
 
-	sealed, err := root.Seal([]byte(secret), "event-subscription")
+	secret, sealed, err := newSubscriptionSecret(root)
 	if err != nil {
-		return sub, fmt.Errorf("sealing the signing secret: %w", err)
+		return sub, err
 	}
 	if eventTypes == nil {
 		eventTypes = []string{}
@@ -102,6 +104,150 @@ func CreateSubscription(ctx context.Context, tx pgx.Tx, root *keys.RootKey,
 	sub.OrgID, sub.DisplayName, sub.URL = orgID, name, url
 	sub.EventTypes, sub.Secret = eventTypes, secret
 	return sub, nil
+}
+
+// ErrUnknownEventType is a name no recorded event carries, so a subscription to
+// it would receive nothing, ever, and look configured.
+var ErrUnknownEventType = errors.New("no event of that type is recorded")
+
+// CheckEventTypes refuses a name that is not in audit.EventTypes, suggesting
+// the one it was most likely meant to be.
+func CheckEventTypes(types []string) error {
+	for _, t := range types {
+		if audit.IsEventType(t) {
+			continue
+		}
+		best, bestLen := "", 0
+		for _, known := range audit.EventTypes {
+			n := 0
+			for n < len(t) && n < len(known) && t[n] == known[n] {
+				n++
+			}
+			if n > bestLen {
+				best, bestLen = known, n
+			}
+		}
+		if strings.Contains(t[:bestLen], ".") {
+			return fmt.Errorf("%w: %q; did you mean %q? docs/events.md lists every type",
+				ErrUnknownEventType, t, best)
+		}
+		return fmt.Errorf("%w: %q; docs/events.md lists every type", ErrUnknownEventType, t)
+	}
+	return nil
+}
+
+func newSubscriptionSecret(root *keys.RootKey) (secret string, sealed []byte, err error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", nil, err
+	}
+	secret = "whsec_" + base64.RawURLEncoding.EncodeToString(raw)
+	sealed, err = root.Seal([]byte(secret), "event-subscription")
+	if err != nil {
+		return "", nil, fmt.Errorf("sealing the signing secret: %w", err)
+	}
+	return secret, sealed, nil
+}
+
+// RemoveSubscription deletes one by name, and with it its delivery history. A
+// delivery already queued is closed as delivered when the worker finds its
+// subscription gone (ClaimWebhooks).
+func RemoveSubscription(ctx context.Context, tx pgx.Tx, orgID, name string) (bool, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.event_subscriptions
+		WHERE org_id = $1::uuid AND display_name = $2`, orgID, name)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RotateSubscriptionSecret replaces a subscription's signing secret and returns
+// the new one, the one time it is shown. Deliveries signed from now on use it,
+// including retries of ones already queued: the secret is read at delivery.
+func RotateSubscriptionSecret(ctx context.Context, tx pgx.Tx, root *keys.RootKey,
+	orgID, name string) (string, error) {
+	secret, sealed, err := newSubscriptionSecret(root)
+	if err != nil {
+		return "", err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE core.event_subscriptions SET secret_sealed = $3
+		WHERE org_id = $1::uuid AND display_name = $2`, orgID, name, sealed)
+	if err != nil {
+		return "", err
+	}
+	if tag.RowsAffected() == 0 {
+		return "", fmt.Errorf("no subscription named %q in this organisation", name)
+	}
+	return secret, nil
+}
+
+// EnableSubscription switches one back on after DisableSubscription gave up on
+// it, clearing the reason. Events recorded while it was off are not replayed.
+func EnableSubscription(ctx context.Context, tx pgx.Tx, orgID, name string) error {
+	tag, err := tx.Exec(ctx, `UPDATE core.event_subscriptions
+		   SET enabled = true, disabled_at = NULL, disabled_reason = NULL
+		 WHERE org_id = $1::uuid AND display_name = $2`, orgID, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no subscription named %q in this organisation", name)
+	}
+	return nil
+}
+
+// TestEventType is what `signari events test` sends. Not an audited type, so no
+// subscription filter selects it: it goes to the one subscription named.
+const TestEventType = "signari.test"
+
+// SendTestEvent queues one signed delivery of TestEventType to a subscription,
+// through the outbox as every delivery goes, so it tests the path real events
+// take, including the worker.
+func SendTestEvent(ctx context.Context, tx pgx.Tx, orgID, name string) (string, error) {
+	var id, url string
+	if err := tx.QueryRow(ctx, `SELECT id::text, url FROM core.event_subscriptions
+		WHERE org_id = $1::uuid AND display_name = $2`, orgID, name).Scan(&id, &url); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("no subscription named %q in this organisation", name)
+		}
+		return "", err
+	}
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	env := EventEnvelope{Version: 1, ID: "ev_" + hex.EncodeToString(raw), Type: TestEventType,
+		OccurredAt: time.Now().UTC().Format(time.RFC3339), OrgID: orgID,
+		Detail: map[string]any{"subscription": name}}
+	return env.ID, queueDelivery(ctx, tx, id, url, env)
+}
+
+// queueDelivery writes one delivery and its outbox row, in the caller's
+// transaction.
+func queueDelivery(ctx context.Context, tx pgx.Tx, subscriptionID, url string, env EventEnvelope) error {
+	var deliveryID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.event_deliveries (subscription_id, org_id, event_type)
+		VALUES ($1::uuid, $2::uuid, $3) RETURNING id`,
+		subscriptionID, env.OrgID, env.Type).Scan(&deliveryID); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(webhookJob{
+		SubscriptionID: subscriptionID, DeliveryID: deliveryID,
+		URL: url, OrgID: env.OrgID, Envelope: env,
+	})
+	if err != nil {
+		return err
+	}
+	var outboxID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.outbox (topic, payload) VALUES ($1, $2) RETURNING id`,
+		WebhookTopic, payload).Scan(&outboxID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
+		`UPDATE core.event_deliveries SET outbox_id = $2 WHERE id = $1`, deliveryID, outboxID)
+	return err
 }
 
 // PublishEvent fans an event out to every subscriber that wants it.
@@ -138,29 +284,7 @@ func PublishEvent(ctx context.Context, tx pgx.Tx, env EventEnvelope) (int, error
 	}
 
 	for _, t := range targets {
-		var deliveryID int64
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO core.event_deliveries (subscription_id, org_id, event_type)
-			VALUES ($1::uuid, $2::uuid, $3) RETURNING id`,
-			t.id, env.OrgID, env.Type).Scan(&deliveryID); err != nil {
-			return 0, err
-		}
-		payload, err := json.Marshal(webhookJob{
-			SubscriptionID: t.id, DeliveryID: deliveryID,
-			URL: t.url, OrgID: env.OrgID, Envelope: env,
-		})
-		if err != nil {
-			return 0, err
-		}
-		var outboxID int64
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO core.outbox (topic, payload) VALUES ($1, $2) RETURNING id`,
-			WebhookTopic, payload).Scan(&outboxID); err != nil {
-			return 0, err
-		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE core.event_deliveries SET outbox_id = $2 WHERE id = $1`,
-			deliveryID, outboxID); err != nil {
+		if err := queueDelivery(ctx, tx, t.id, t.url, env); err != nil {
 			return 0, err
 		}
 	}

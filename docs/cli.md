@@ -147,7 +147,8 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari provision add` | Provisioning targets |
 | `signari ssf add-stream` / `ssf list` | Shared Signals (CAEP/RISC) streams |
 | `signari ssf add-source` / `ssf received` | Accept Shared Signals from a transmitter, and show what it sent. An issuer and `-source-audience` together belong to **one organisation in the deployment**: the receiver chooses the source by that pair, so a second organisation registering it is refused. See [shared-signals-receiver.md](shared-signals-receiver.md#two-organisations-one-transmitter) |
-| `signari events subscribe` / `events list` | Event subscriptions — see [events.md](events.md) |
+| `signari events subscribe` / `events list` | Event subscriptions — see [events.md](events.md). A name in `-events` that no recorded event carries is refused, with the nearest one suggested |
+| `signari events remove` / `events rotate` / `events enable` / `events test` | `-org <id> -name <n>`: delete a subscription; print a new signing secret, once, the old one stops verifying; switch one back on after ten failures switched it off; queue one signed `signari.test` delivery to it through the outbox |
 | — | Transaction Tokens are issued at the token endpoint, not by a command — see [transaction-tokens.md](transaction-tokens.md) |
 
 ## Authorization

@@ -984,6 +984,14 @@ func run(args []string) (err error) {
 		return eventsSubscribe(ctx, conn, *orgID, *name, *subURL, *subEvents)
 	case "events list":
 		return eventsList(ctx, conn, *orgID)
+	case "events remove":
+		return eventsChange(ctx, conn, *orgID, *name, "remove")
+	case "events rotate":
+		return eventsChange(ctx, conn, *orgID, *name, "rotate")
+	case "events enable":
+		return eventsChange(ctx, conn, *orgID, *name, "enable")
+	case "events test":
+		return eventsChange(ctx, conn, *orgID, *name, "test")
 	case "outpost create":
 		return outpostCreate(ctx, conn, *orgID, *name, *outpostKind, *outpostSearchGroup)
 	case "outpost search-group":
@@ -7428,6 +7436,65 @@ func eventsSubscribe(ctx context.Context, conn *pgx.Conn,
   Refuse anything whose t is more than a few minutes old -- the timestamp is
   inside the MAC precisely so that check cannot be bypassed.
 `)
+	return nil
+}
+
+// eventsChange removes, rotates the secret of, re-enables or sends a test
+// delivery to the subscription a name picks out. docs/events.md promised the
+// first two and neither existed: an operator who lost a secret could only drop
+// the row by hand, and a subscription switched off after ten failures stayed off.
+func eventsChange(ctx context.Context, conn *pgx.Conn, orgID, name, action string) error {
+	if orgID == "" || name == "" {
+		return fmt.Errorf("-org and -name are required")
+	}
+	var root *keys.RootKey
+	if action == "rotate" {
+		var err error
+		if root, err = rootKey(); err != nil {
+			return fmt.Errorf("the signing secret is sealed with the root key: %w", err)
+		}
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var said string
+	switch action {
+	case "remove":
+		removed, err := store.RemoveSubscription(ctx, tx, orgID, name)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			return fmt.Errorf("no subscription named %q in this organisation", name)
+		}
+		said = fmt.Sprintf("removed subscription %q; nothing more is delivered to it\n", name)
+	case "rotate":
+		secret, err := store.RotateSubscriptionSecret(ctx, tx, root, orgID, name)
+		if err != nil {
+			return err
+		}
+		said = fmt.Sprintf("rotated the signing secret of %q; the old one no longer verifies.\n\n"+
+			"  signing secret (shown once, store it now):\n    %s\n", name, secret)
+	case "enable":
+		if err := store.EnableSubscription(ctx, tx, orgID, name); err != nil {
+			return err
+		}
+		said = fmt.Sprintf("enabled %q. Events recorded while it was off are not sent.\n", name)
+	case "test":
+		id, err := store.SendTestEvent(ctx, tx, orgID, name)
+		if err != nil {
+			return err
+		}
+		said = fmt.Sprintf("queued a %s delivery to %q, id %s; `signari events list` shows "+
+			"whether it arrived\n", store.TestEventType, name, id)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Print(said)
 	return nil
 }
 

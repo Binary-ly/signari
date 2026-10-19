@@ -114,7 +114,6 @@ var columnClass = map[string]string{
 	// holding a real secret in the clear cannot hide among them: it arrives
 	// unclassified, and there is no class for "plaintext secret".
 	"audit_events.admin_token_id":             "public",
-	"clients.access_token_format":             "public",
 	"clients.access_token_ttl_s":              "public",
 	"clients.backchannel_token_delivery_mode": "public",
 	"clients.dpop_bound_access_tokens":        "public",

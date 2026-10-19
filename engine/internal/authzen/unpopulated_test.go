@@ -16,8 +16,6 @@ types:
     relations: {owner: []}
     permissions: {read: [owner]}
     require: {read: {max_risk: 30}}
-tests:
-  - {name: o, subject: "user:a", action: read, resource: "doc:1", relations: ["doc:1#owner@user:a"], allow: true}
 `, "doc.read: max_risk"},
 		{"device_managed on a rule", `
 types:

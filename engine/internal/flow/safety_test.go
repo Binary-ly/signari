@@ -430,11 +430,11 @@ flows:
       - identify
       - email_otp
       - password_change
-      - session
+      - done
     tests:
       - name: recovers by email
         given: {}
-        expect: [identify, email_otp, password_change, session]
+        expect: [identify, email_otp, password_change, done]
 `)); err != nil {
 		t.Fatalf("a sound recovery flow was refused: %v", err)
 	}

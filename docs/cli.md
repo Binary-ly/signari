@@ -185,7 +185,7 @@ An operator's own service, called to extend a decision this engine makes. See
 | | |
 |---|---|
 | `signari policy show` / `policy apply` / `policy test` / `policy graph` | Access policy. `policy test` answers "would this have been allowed" |
-| `signari flow test` / `flow paths` / `flow apply` / `flow show` | Sign-in flows. `flow test` refuses a file whose journeys could issue a session without proving the subject; `flow paths` lists every journey a flow admits; `flow apply` installs one for an organisation, printing every journey it admits; `flow show` prints the built-in flows as a file to start from. See [flows.md](flows.md) |
+| `signari flow test` / `flow paths` / `flow apply` / `flow show` | Sign-in flows. `flow test` refuses a file whose journeys could issue a session without proving the subject, or that names a stage or condition its journey does not run; `flow paths` lists every journey a flow admits; `flow apply` installs one for an organisation, printing every journey it admits; `flow show` prints the built-in flows as a file to start from. See [flows.md](flows.md) |
 | `signari prompt list` / `prompt set` | Interstitial prompts — terms, notices |
 | `signari brand set` / `brand show` / `brand check` | Branding. `brand check` verifies contrast |
 | `signari theme eject` / `theme check` / `theme list` | Replace the HTML of any sign-in page. `theme eject -theme-dir DIR` writes the built-in pages out to edit; `theme check` validates a directory and **exits non-zero** if a page would be refused — the server would not fail to start, it would serve the built-in and log, so a pipeline is where this is caught; `theme list` prints every page and whether it is built-in or yours. Needs no database. See [theming.md](theming.md) |

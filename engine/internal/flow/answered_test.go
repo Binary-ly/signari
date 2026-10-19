@@ -6,26 +6,29 @@ import (
 	"testing"
 )
 
-// guarded builds a flow of designation on whose prompt stage runs only when
-// cond holds, valid in every other respect.
+// guarded builds a flow of designation on with one stage its journey runs
+// (prompt, or captcha in recovery, which runs no prompt) guarded by cond,
+// valid in every other respect.
 func guarded(on Designation, cond string) string {
 	var stages, expect string
+	guardedStage := "prompt"
 	switch on {
 	case Authentication:
 		stages, expect = "[password, {stage: prompt, when: COND}, session]", "[password, PROMPTsession]"
 	case Enrolment:
 		stages, expect = "[{stage: prompt, when: COND}, create_user, done]", "[PROMPTcreate_user, done]"
 	case Recovery:
-		stages, expect = "[identify, email_otp, {stage: prompt, when: COND}, password_change, done]",
-			"[identify, email_otp, PROMPTpassword_change, done]"
+		guardedStage = "captcha"
+		stages, expect = "[{stage: captcha, when: COND}, identify, email_otp, password_change, done]",
+			"[PROMPTidentify, email_otp, password_change, done]"
 	case Unenrolment:
 		stages, expect = "[password, {stage: prompt, when: COND}, done]", "[password, PROMPTdone]"
 	}
 	// Nothing is given, so the condition is false and only its negation runs
-	// the prompt.
+	// the guarded stage.
 	prompt := ""
 	if strings.HasPrefix(cond, "not ") {
-		prompt = "prompt, "
+		prompt = guardedStage + ", "
 	}
 	return fmt.Sprintf(`
 version: 1

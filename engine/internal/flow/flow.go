@@ -348,7 +348,12 @@ func (fl *Flow) validate() error {
 			"should run -- they run every time this file is loaded, so a flow that stops " +
 			"doing what you meant cannot deploy")
 	}
-	return fl.checkSafety()
+	// Safety first, so a flow that is both unsafe and undriven is told the
+	// graver thing.
+	if err := fl.checkSafety(); err != nil {
+		return err
+	}
+	return fl.checkDriven()
 }
 
 func validateGroup(bs []Branch) error {

@@ -253,6 +253,66 @@ var answered = map[Designation][]Condition{
 	Recovery:  {CondCaptchaRequired},
 }
 
+// drivable is which stages each journey this engine drives can run.
+//
+// A stage outside its journey's set did nothing anyone could see coming: a
+// sign-in walked past it, so `password, kerberos, session` asked for a password
+// and nothing else, and an enrolment or recovery stopped at it with a 501 the
+// first time somebody tried. A driven flow naming one is refused at parse, by
+// name, like a condition no journey evaluates.
+//
+// The sign-in set has two kinds. The walker acts on mfa, prompt,
+// password_change and the terminals. identify, captcha, password, passkey and
+// consent are settled before the walk, by the sign-in page and the
+// authorization endpoint that reached it, so the walker passes them. The
+// stages refused there wait for a driver: forced enrolment (enrol_mfa),
+// an upstream or ticket pinned per flow (federated, kerberos, delegated,
+// certificate), a code as the first factor (email_otp, sms_otp).
+//
+// Widen a set only in step with a driver; internal/httpapi's
+// TestEveryStageAFlowCanUseIsDriven reads the drivers and compares.
+var drivable = map[Designation][]StageName{
+	Authentication: {
+		StageMFA, StagePrompt, StagePasswordChange, StageSession, StageDeny, StageDone,
+		StageIdentify, StageCaptcha, StagePassword, StagePasskey, StageConsent,
+	},
+	Enrolment: {StageCaptcha, StagePrompt, StageCreateUser, StageDeny, StageDone},
+	Recovery: {
+		StageCaptcha, StageIdentify, StageEmailOTP, StagePasswordChange, StageDeny, StageDone,
+	},
+}
+
+// Drivable lists the stages a journey of designation d runs.
+func Drivable(d Designation) []StageName {
+	return append([]StageName(nil), drivable[d]...)
+}
+
+// checkDriven refuses a stage the journey a flow is for cannot run. Undriven
+// designations are exempt, as for conditions.
+func (fl *Flow) checkDriven() error {
+	if !fl.On.Driven() {
+		return nil
+	}
+	ok := map[StageName]bool{}
+	names := make([]string, 0, len(drivable[fl.On]))
+	for _, s := range drivable[fl.On] {
+		ok[s] = true
+		names = append(names, string(s))
+	}
+	sort.Strings(names)
+	for i, st := range fl.Stages {
+		for _, name := range st.stageNames() {
+			if !ok[name] {
+				return fmt.Errorf("step %d is %s, which this engine does not run in a flow "+
+					"`on: %s` yet: a sign-in would walk past it and a sign-up or recovery "+
+					"would stop at it, so the flow does not say what happens. Remove it; "+
+					"what `on: %s` runs: %s", i+1, name, fl.On, fl.On, strings.Join(names, ", "))
+			}
+		}
+	}
+	return nil
+}
+
 // Answered lists the conditions a journey of designation d evaluates.
 func Answered(d Designation) []Condition {
 	return append([]Condition(nil), answered[d]...)

@@ -104,11 +104,12 @@ Recovery is two requests separated by an email, so the flow is consulted twice:
 the terminal at `/recover/reset`.
 
 A stage the engine cannot execute in a recovery journey — `mfa` before a reset,
-`sms_otp` as the proving channel, `passkey` recovery — **stops the journey** with
-a 501 rather than being skipped. Skipping it would reset the password having
-proved less than the file requires, which is the failure the flow engine exists
-to prevent. The refusal happens before anything is written, so a flow this engine
-cannot honour leaves the credential untouched.
+`sms_otp` as the proving channel, `passkey` recovery — **refuses the file** when
+it is parsed, like any stage a journey does not run (see [Stages](#stages)).
+Skipping it would reset the password having proved less than the file requires,
+which is the failure the flow engine exists to prevent. A flow that reaches the
+journey some other way still stops it with a 501 before anything is written, so
+the credential is left untouched.
 
 The `captcha` stage at `/recover` reads the **default** organisation's flow, not
 the account's. That is deliberate: `/recover` answers identically whether or not
@@ -126,7 +127,8 @@ gives nothing away.
 Recovery counts fewer factors on purpose. A flow that resets a password by asking
 for the password is not a recovery flow, and one that asks for the second factor
 from the phone that was lost is a support ticket. What counts: `email_otp`,
-`sms_otp`, `passkey`, `certificate`, `kerberos`, `federated`.
+`sms_otp`, `passkey`, `certificate`, `kerberos`, `federated`, of which a recovery
+journey runs `email_otp` today.
 
 Enrolment is exempt from the proof rule because there is nobody yet to prove. It
 pays for that by not being allowed to issue a session: sign-up decides who
@@ -152,6 +154,26 @@ Terminal — a flow ends in exactly one, and it must be last:
 `identify` sitting in the second list is the whole design. `password_change` is
 there too, and for a reason worth stating: it takes a password, but it *sets* a
 credential rather than checking one.
+
+**A flow may name only the stages its journey runs.** A sign-in used to walk
+past every stage it did not act on, so `password, kerberos, session` read as two
+proofs and was a password sign-in. A sign-up or recovery stopped at such a
+stage with a 501 the first time somebody tried it. Either way the operator was
+the last to find out, so the file is refused when it is parsed, naming the
+stage.
+
+| `on:` | stages it runs |
+|---|---|
+| `authentication` | `mfa`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey` and `consent`, which the sign-in page and the authorization endpoint settle before the flow is walked |
+| `enrolment` | `captcha`, `prompt`, `create_user`, `deny`, `done` |
+| `recovery` | `captcha`, `identify`, `email_otp`, `password_change`, `deny`, `done` |
+| `unenrolment` | not judged: nothing walks this designation |
+
+The rest wait for a driver: `enrol_mfa` (forced enrolment), `federated`,
+`kerberos`, `delegated` and `certificate` (an upstream or a ticket the flow
+would have to pin), and `email_otp` and `sms_otp` as a first factor at sign-in.
+The safety rules still know them, so a file naming one is refused for the
+right reason rather than read as a typo.
 
 ### Conditions
 

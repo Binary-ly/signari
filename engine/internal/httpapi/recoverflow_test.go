@@ -199,24 +199,13 @@ func passwordChangedAt(t *testing.T, f *tokenFixture) time.Time {
 // a second factor before a password reset. Skipping it would reset the password
 // having proved strictly less than the file requires -- the original bug, one
 // level down, and in the direction that costs a real security control.
+//
+// Parse refuses such a flow (flow.drivable), so it can only arrive around it;
+// this is the driver's own refusal, kept as the last line.
 func TestARecoveryFlowNamingAnUndrivableStageRefusesAndChangesNothing(t *testing.T) {
 	f := newTokenFixture(t)
-	applyRecoveryFlow(t, f, `
-version: 1
-flows:
-  - name: mfa-before-reset
-    on: recovery
-    stages:
-      - identify
-      - email_otp
-      - mfa
-      - password_change
-      - done
-    tests:
-      - name: demands a second factor
-        given: {}
-        expect: [identify, email_otp, mfa, password_change, done]
-`)
+	placeUnparsedFlow(t, f.srv, f.orgID, flow.Recovery,
+		flow.StageIdentify, flow.StageEmailOTP, flow.StageMFA, flow.StagePasswordChange, flow.StageDone)
 	givePassword(t, f)
 	token := newResetToken(t, f)
 	before := passwordChangedAt(t, f)
@@ -238,17 +227,8 @@ flows:
 // cannot honour is reported as such rather than as a bad password.
 func TestAnUndrivableRecoveryStageIsReportedBeforeThePasswordIsJudged(t *testing.T) {
 	f := newTokenFixture(t)
-	applyRecoveryFlow(t, f, `
-version: 1
-flows:
-  - name: mfa-before-reset
-    on: recovery
-    stages: [identify, email_otp, mfa, password_change, done]
-    tests:
-      - name: demands a second factor
-        given: {}
-        expect: [identify, email_otp, mfa, password_change, done]
-`)
+	placeUnparsedFlow(t, f.srv, f.orgID, flow.Recovery,
+		flow.StageIdentify, flow.StageEmailOTP, flow.StageMFA, flow.StagePasswordChange, flow.StageDone)
 	token := newResetToken(t, f)
 
 	// Deliberately too short. A driver that checked the password first would

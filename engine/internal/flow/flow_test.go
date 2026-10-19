@@ -449,7 +449,7 @@ flows:
     stages:
       - one_of:
           - {stage: passkey, when: user_has_passkey}
-          - {stage: certificate, when: user_has_second_factor}
+          - {stage: mfa, when: user_has_second_factor}
           - {stage: password}
       - session
     tests:
@@ -458,7 +458,7 @@ flows:
         expect: [passkey, session]
       - name: a second factor only
         given: {user_has_second_factor: true}
-        expect: [certificate, session]
+        expect: [mfa, session]
       - name: neither
         given: {}
         expect: [password, session]

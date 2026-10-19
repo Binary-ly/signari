@@ -551,14 +551,31 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			return decisionHandled
 
 		default:
-			// Every other stage either proved the subject before this point
-			// (password, passkey, certificate, kerberos, federated, delegated),
-			// or belongs to a different part of the request (captcha at the form,
-			// consent at the authorization endpoint, identify in the same form as
-			// the password). Nothing to do here.
-			continue
+			if _, settled := signInSettledStages[stage]; settled {
+				continue
+			}
+			// Parse refuses a sign-in flow naming any other stage, so reaching
+			// here needs a flow that bypassed it. Walking past was the old
+			// answer, and it made `password, kerberos, session` a password
+			// sign-in; refusing is the one that cannot be weaker than the file.
+			_ = tx.Rollback(ctx)
+			s.log.Error("the sign-in flow names a stage this engine does not run; refusing",
+				"flow", fl.Name, "stage", stage, "correlation_id", correlationID(ctx))
+			return decisionDeny
 		}
 	}
+}
+
+// signInSettledStages are the sign-in stages decided before the walk, by the
+// page or endpoint that reached it, so the walker passes them. With the cases
+// advanceSignIn acts on they are flow.Drivable(flow.Authentication), and
+// TestEveryStageAFlowCanUseIsDriven holds the two to the same set.
+var signInSettledStages = map[flow.StageName]string{
+	flow.StageIdentify: "the sign-in form, with the password",
+	flow.StageCaptcha:  "the sign-in form, by the address's counter",
+	flow.StagePassword: "the sign-in form",
+	flow.StagePasskey:  "the sign-in page's passkey ceremony",
+	flow.StageConsent:  "the authorization endpoint, whenever a client asks for more than was granted",
 }
 
 // FlowDemandsMFA reports whether the flow puts an mfa stage in this sign-in's

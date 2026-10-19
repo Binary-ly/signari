@@ -636,6 +636,26 @@ flows:
 	}
 }
 
+// TestAStageTheSignInCannotRunRefusesRatherThanBeingWalkedPast.
+//
+// `password, kerberos, session` reads as two proofs. The walker passed every
+// stage it did not act on, so it was a password sign-in. Parse refuses the
+// file now; a flow that arrives around it is refused at the stage, never
+// signed in on less than it names.
+func TestAStageTheSignInCannotRunRefusesRatherThanBeingWalkedPast(t *testing.T) {
+	f := newSignInFixture(t)
+	placeUnparsedFlow(t, f.srv, f.orgID, flow.Authentication,
+		flow.StagePassword, flow.StageKerberos, flow.StageSession)
+
+	got := f.attempt(t, f.email, signInTestPassword)
+	if got.signedIn() {
+		t.Fatal("a password alone signed in under a flow that also names kerberos")
+	}
+	if n := f.sessionRows(t); n != 0 {
+		t.Fatalf("the refused sign-in created %d session row(s)", n)
+	}
+}
+
 // TestAFlowEndingInDoneIssuesNoSessionAndDoesNotRefuse.
 //
 // `done` is a journey that succeeded without issuing a session. It must be

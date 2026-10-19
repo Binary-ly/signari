@@ -32,6 +32,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -1801,4 +1802,180 @@ func resolveGroupIDs(ctx context.Context, conn *pgx.Conn, orgID, names string) (
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// outpostSetEnabled takes an outpost out of service, or puts it back (2.29).
+// The only way to stop one was deleting it, and nothing deleted it either.
+// Disabled, its token is refused from the outpost's next request to the core.
+func outpostSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, name string, enabled bool) error {
+	if orgID == "" || name == "" {
+		return fmt.Errorf("give -org and -name")
+	}
+	tp, err := conn.Exec(ctx, `UPDATE core.outposts SET enabled = $3
+		WHERE org_id = $1::uuid AND name = $2`, orgID, name, enabled)
+	if err != nil {
+		return err
+	}
+	if tp.RowsAffected() == 0 {
+		return fmt.Errorf("no outpost called %q in that organisation; `signari outpost list` shows them", name)
+	}
+	if enabled {
+		fmt.Printf("outpost %s is enabled: the core answers its token again\n", name)
+		return nil
+	}
+	fmt.Printf("outpost %s is disabled: the core refuses its token from its next request, so\n", name)
+	fmt.Println("it can no longer authenticate anybody. Its settings are kept.")
+	return nil
+}
+
+// promptSetEnabled switches a sign-in prompt off, or back on (2.29). Off, it is
+// neither asked nor answerable; the answers already given are kept.
+func promptSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, enabled bool) error {
+	if orgID == "" || slug == "" {
+		return fmt.Errorf("give -org and -slug")
+	}
+	tp, err := conn.Exec(ctx, `UPDATE core.prompts SET enabled = $3
+		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, enabled)
+	if err != nil {
+		return err
+	}
+	if tp.RowsAffected() == 0 {
+		return fmt.Errorf("no prompt %q in that organisation; `signari prompt list` shows them", slug)
+	}
+	if enabled {
+		fmt.Printf("prompt %s is enabled: it is asked at the next sign-in it applies to\n", slug)
+		return nil
+	}
+	fmt.Printf("prompt %s is disabled: it is no longer asked, and the answers given are kept\n", slug)
+	return nil
+}
+
+// racSetEnabled takes a remote-access connection out of service, or puts it
+// back (2.29). Disabled, it is neither listed nor connectable from the next
+// request; a session already open runs until it closes.
+func racSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, enabled bool) error {
+	orgID, err := resolveOrg(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	tp, err := conn.Exec(ctx, `UPDATE core.rac_connections SET enabled = $3
+		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, enabled)
+	if err != nil {
+		return err
+	}
+	if tp.RowsAffected() == 0 {
+		return fmt.Errorf("no remote-access connection %q in that organisation; `signari rac list` shows them", slug)
+	}
+	if enabled {
+		fmt.Printf("%s is enabled: it is listed and connectable again\n", slug)
+		return nil
+	}
+	fmt.Printf("%s is disabled: it is neither listed nor connectable from the next request.\n", slug)
+	fmt.Println("A session already open runs until it closes.")
+	return nil
+}
+
+// racReservedParameters are the guacd parameters a connection's own settings
+// supply, and which therefore cannot be set as parameters. The handshake writes
+// the host, port, credentials and recording path over the parameters, so a
+// parameter of one of these names would be stored, shown, and ignored -- and
+// the credentials would be stored in the clear, in a column a database read
+// returns, when the reason they are sealed is that it must not.
+var racReservedParameters = map[string]string{
+	"hostname":              "-host",
+	"port":                  "-port",
+	"username":              "-login, which is sealed",
+	"password":              "-password, which is sealed",
+	"private-key":           "nothing yet: a credential is sealed, never a parameter",
+	"passphrase":            "nothing yet: a credential is sealed, never a parameter",
+	"recording-path":        "-recording-path",
+	"create-recording-path": "-recording-path",
+}
+
+// racSetParameters replaces a connection's guacd parameters (2.29): `security`,
+// `ignore-cert`, `color-depth` and the rest the protocol takes. Nothing could
+// set them, so every connection ran with guacd's defaults. Empty clears them.
+// guacd refuses a name it does not take for the protocol at the next connect,
+// by name, which is where the protocol's own list is known.
+func racSetParameters(ctx context.Context, conn *pgx.Conn, orgID, slug, raw string) error {
+	orgID, err := resolveOrg(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	params := map[string]string{}
+	for _, pair := range splitList(raw) {
+		k, v, ok := strings.Cut(pair, "=")
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			return fmt.Errorf("-rac-params takes name=value pairs separated by commas; %q is not one", pair)
+		}
+		if instead, reserved := racReservedParameters[k]; reserved {
+			return fmt.Errorf("%s is not a parameter: it is set with %s", k, instead)
+		}
+		if _, dup := params[k]; dup {
+			return fmt.Errorf("-rac-params names %s twice", k)
+		}
+		params[k] = strings.TrimSpace(v)
+	}
+	blob, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	tp, err := conn.Exec(ctx, `UPDATE core.rac_connections SET parameters = $3
+		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, blob)
+	if err != nil {
+		return err
+	}
+	if tp.RowsAffected() == 0 {
+		return fmt.Errorf("no remote-access connection %q in that organisation; `signari rac list` shows them", slug)
+	}
+	if len(params) == 0 {
+		fmt.Printf("%s: no parameters; guacd's defaults apply\n", slug)
+		return nil
+	}
+	names := make([]string, 0, len(params))
+	for k := range params {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	fmt.Printf("%s: %s, from the next connection\n", slug, strings.Join(names, ", "))
+	return nil
+}
+
+// registrationRevoke stops a dynamic-registration token before it is spent or
+// expires (2.29): a leaked one could only be waited out. Chosen by -token-id,
+// or by -name when one live token has it.
+func registrationRevoke(ctx context.Context, conn *pgx.Conn, orgID, name, tokenID string) error {
+	if orgID == "" || (name == "") == (tokenID == "") {
+		return fmt.Errorf("give -org, and -name or -token-id (one of them)")
+	}
+	rows, err := conn.Query(ctx, `SELECT id::text FROM core.registration_tokens
+		WHERE org_id = $1::uuid AND revoked_at IS NULL
+		  AND (($2 <> '' AND name = $2) OR ($3 <> '' AND id::text = $3))`, orgID, name, tokenID)
+	if err != nil {
+		return err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	switch {
+	case len(ids) == 0:
+		return fmt.Errorf("no unrevoked registration token matches in that organisation")
+	case len(ids) > 1:
+		return fmt.Errorf("%d unrevoked tokens are named %q (%s); choose one with -token-id",
+			len(ids), name, strings.Join(ids, ", "))
+	}
+	if _, err := conn.Exec(ctx, `UPDATE core.registration_tokens SET revoked_at = now()
+		WHERE id = $1::uuid AND revoked_at IS NULL`, ids[0]); err != nil {
+		return err
+	}
+	fmt.Printf("registration token %s is revoked: /oauth2/register refuses it from the next request\n", ids[0])
+	return nil
 }

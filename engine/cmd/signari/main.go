@@ -342,7 +342,7 @@ func run(args []string) (err error) {
 		"comma-separated admin token scopes, e.g. users:write,clients:write")
 	tokenExpires := fs.Duration("expires-in", 0,
 		"how long an admin token stays valid, e.g. 2160h for 90 days (0 = never)")
-	tokenID := fs.String("token-id", "", "admin token uuid to revoke")
+	tokenID := fs.String("token-id", "", "admin token uuid to revoke, or a registration token's (registration revoke)")
 	tlsSubjectDN := fs.String("tls-subject-dn", "", "certificate subject DN that must match (RFC 4514)")
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
@@ -542,6 +542,9 @@ func run(args []string) (err error) {
 		"comma-separated amr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
 	idpMFAACR := fs.String("upstream-acr", "",
 		"comma-separated acr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
+	racParams := fs.String("rac-params", "",
+		"comma-separated name=value guacd parameters for a remote-access connection, e.g. "+
+			"security=nla,ignore-cert=true; empty clears them (rac set-parameters)")
 	credRequireAttestation := fs.Bool("require-key-attestation", false,
 		"issue this credential only to a key a trusted attester vouches for (credential define)")
 	localeTag := fs.String("locale", "",
@@ -849,6 +852,12 @@ func run(args []string) (err error) {
 			*racPort, *racUser, *racPassword, *groupName, *racRecording)
 	case "rac list":
 		return racList(ctx, conn)
+	case "rac disable":
+		return racSetEnabled(ctx, conn, *orgID, *slug, false)
+	case "rac enable":
+		return racSetEnabled(ctx, conn, *orgID, *slug, true)
+	case "rac set-parameters":
+		return racSetParameters(ctx, conn, *orgID, *slug, *racParams)
 	case "audit checkpoint":
 		return auditCheckpoint(ctx, conn, *orgID, *declaredBy, *reason)
 	case "export audit":
@@ -857,6 +866,8 @@ func run(args []string) (err error) {
 		return registrationEnable(ctx, conn, *orgID, *regOpen, *regMax, *tokenScopes)
 	case "registration token":
 		return registrationToken(ctx, conn, *orgID, *name, *regUses, *tokenExpires)
+	case "registration revoke":
+		return registrationRevoke(ctx, conn, *orgID, *name, *tokenID)
 	case "ssf add-source":
 		return ssfAddSource(ctx, conn, *orgID, *name, *srcIssuer, *srcJWKS,
 			*srcAudience, *ssfEvents, *ssfCritical)
@@ -1014,6 +1025,10 @@ func run(args []string) (err error) {
 		return outpostSetSearchGroup(ctx, conn, *orgID, *name, *outpostSearchGroup)
 	case "outpost list":
 		return outpostList(ctx, conn, *orgID)
+	case "outpost disable":
+		return outpostSetEnabled(ctx, conn, *orgID, *name, false)
+	case "outpost enable":
+		return outpostSetEnabled(ctx, conn, *orgID, *name, true)
 	case "invite create":
 		return inviteCreate(ctx, conn, *orgID, *email, *inviteGroups, *inviteTTL, *issuer)
 	case "invite list":
@@ -1032,6 +1047,10 @@ func run(args []string) (err error) {
 		return promptSet(ctx, conn, *orgID, *slug, *promptFile)
 	case "prompt list":
 		return promptList(ctx, conn, *orgID)
+	case "prompt disable":
+		return promptSetEnabled(ctx, conn, *orgID, *slug, false)
+	case "prompt enable":
+		return promptSetEnabled(ctx, conn, *orgID, *slug, true)
 	case "plan":
 		return configPlan(ctx, conn, *orgID, *configFile, *prune, false)
 	case "apply":

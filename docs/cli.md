@@ -61,6 +61,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari invite revoke` | `-org <uuid> -invitation <id>`: close an open invitation, so its link stops working at once. Audited. Until October 2026 sign-up refused a revoked invitation and nothing could revoke one, so a link sent to the wrong address stayed good until it expired |
 | `signari signup enable` / `signup disable` / `signup show` | Self-service sign-up, and which email domains may use it |
 | `signari registration enable` / `registration token` | Dynamic client registration (RFC 7591) |
+| `signari registration revoke` | `-org <uuid> -name <n>` or `-token-id <uuid>`: stop a registration token before it is spent or expires. `-name` is refused when two live tokens share it, naming both |
 | `signari erase subject` | Crypto-shred a subject: destroy their data-encryption key so ciphertext, including in backups, is permanently unreadable. See [erasure.md](erasure.md) |
 
 There is **no** `signari delete`. This page listed one for months; it has never
@@ -185,6 +186,7 @@ An operator's own service, called to extend a decision this engine makes. See
 | | |
 |---|---|
 | `signari outpost create` / `outpost list` / `outpost run` | LDAP, RADIUS, proxy and desktop outposts. An LDAP outpost serves LDAPS with `-tls-cert` and `-tls-key` (default `:636`) and refuses to start without them unless `-ldap-insecure` is given. See [outposts](outposts.md#ldaps) |
+| `signari outpost disable` / `outpost enable` | `-org <uuid> -name <outpost>`: take an outpost out of service, or put it back. Disabled, the core refuses its token from its next request; its settings are kept |
 | `signari outpost search-group` | `-org <uuid> -name <outpost> -search-group <group>`: whose members may search the whole directory through an LDAP outpost; empty clears it, and then each person sees only their own entry. Also settable at `outpost create`. The core enforces it, so a token used without a bind reads nothing. See [outposts](outposts.md#what-an-outpost-token-is-worth) |
 | — | LDAP and RADIUS are **listeners inside `signari serve`**, not commands. Set `SIGNARI_LDAP_ADDR` or `SIGNARI_RADIUS_ADDR`; each is off unless its address is. See [ldap.md](ldap.md) and [radius.md](radius.md) |
 | `signari radius add-client` / `radius list` / `radius enable-client` / `radius disable-client` | RADIUS clients and their shared secrets |
@@ -193,6 +195,8 @@ An operator's own service, called to extend a decision this engine makes. See
 | `signari proxy add-host` / `proxy list` / `proxy disable-host` / `proxy enable-host` / `proxy remove-host` | The applications forward auth protects: `-org <uuid> -host app.example.com` (with `:port` when not 443). Sign-in sends a person back only to a registered host. See [forward auth](forward-auth.md) |
 | `signari rac add` / `rac list` | Remote access connections |
 | `signari rac add -protocol rdp` / `vnc` / `ssh` | The protocol is a value of `-protocol`, not a command. Sessions are started from `/rac` in a browser |
+| `signari rac disable` / `rac enable` | `-slug <s>`: a disabled connection is neither listed nor connectable from the next request; a session already open runs until it closes |
+| `signari rac set-parameters` | `-slug <s> -rac-params security=nla,ignore-cert=true`: replace the guacd parameters the protocol takes; empty clears them. The host, port, credentials and recording path are refused here, because the connection's own settings supply them and a credential is sealed, never a parameter. guacd refuses a name it does not take at the next connect |
 
 ## Policy, prompts, branding
 
@@ -201,6 +205,7 @@ An operator's own service, called to extend a decision this engine makes. See
 | `signari policy show` / `policy apply` / `policy test` / `policy graph` | Access policy. `policy test` answers "would this have been allowed" |
 | `signari flow test` / `flow paths` / `flow apply` / `flow show` | Sign-in flows. `flow test` refuses a file whose journeys could issue a session without proving the subject, or that names a stage or condition its journey does not run; `flow paths` lists every journey a flow admits; `flow apply` installs one for an organisation, printing every journey it admits; `flow show` prints the built-in flows as a file to start from. See [flows.md](flows.md) |
 | `signari prompt list` / `prompt set` | Interstitial prompts — terms, notices |
+| `signari prompt disable` / `prompt enable` | `-org <uuid> -slug <s>`: a disabled prompt is neither asked nor answerable; the answers already given are kept |
 | `signari brand set` / `brand show` / `brand check` | Branding. `brand check` verifies contrast |
 | `signari theme eject` / `theme check` / `theme list` | Replace the HTML of any sign-in page. `theme eject -theme-dir DIR` writes the built-in pages out to edit; `theme check` validates a directory and **exits non-zero** if a page would be refused — the server would not fail to start, it would serve the built-in and log, so a pipeline is where this is caught; `theme list` prints every page and whether it is built-in or yours. Needs no database. See [theming.md](theming.md) |
 | `signari i18n list` / `i18n status` / `i18n keys` | What languages the sign-in pages can be rendered in. `i18n status` names every message a loaded language is missing and **exits non-zero** if any is incomplete — a half-translated language still renders, half in each language, which nothing downstream catches; `i18n keys` prints every message key, to write a catalogue against. Same `-theme-dir` flag, and needs no database. See [i18n.md](i18n.md) |

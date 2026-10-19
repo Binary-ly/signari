@@ -71,9 +71,8 @@ var knownUnwritable = map[string]string{
 	// The engine's own runtime state, not operator configuration. These are
 	// written by nothing because the feature that would write them is absent,
 	// which is a different repair from adding a command.
-	"audit_events.detail_enc":        "known: zero readers and zero writers, already named in the plan's documentation-honesty item",
-	"credential_nonces.org_id":       "written by the nonce path, which does not yet scope by organisation",
-	"registration_tokens.revoked_at": "a registration token can be spent but not revoked before it is",
+	"audit_events.detail_enc":  "known: zero readers and zero writers, already named in the plan's documentation-honesty item",
+	"credential_nonces.org_id": "written by the nonce path, which does not yet scope by organisation",
 
 	// Reported by the console through core_v1 and enforced NOWHERE on the request
 	// path. A command to set these would be the same defect from the other side:
@@ -95,11 +94,7 @@ var knownUnwritable = map[string]string{
 	"migration_sources.enabled":           "the same",
 
 	// Enable/disable switches with no command.
-	"outposts.enabled":           "an outpost cannot be taken out of service without deleting it",
-	"prompts.enabled":            "a prompt cannot be switched off",
-	"rac_connections.enabled":    "a remote-access connection cannot be disabled",
-	"rac_connections.parameters": "protocol parameters cannot be set",
-	"ssf_streams.status":         "a Shared Signals stream cannot be paused",
+	"ssf_streams.status": "a Shared Signals stream cannot be paused",
 
 	// Smaller policy settings.
 	"client_attesters.description":             "cosmetic",

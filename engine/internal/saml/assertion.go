@@ -57,6 +57,14 @@ type ResponseInput struct {
 	// EncryptionCert, when set, is the service provider's PEM encryption
 	// certificate. The assertion is signed and then encrypted to it.
 	EncryptionCert string
+
+	// UnsignedAssertion leaves the assertion unsigned, for a provider that
+	// checks only the Response (`saml signing -sign-assertions=false`). The zero
+	// value signs it, which is the default and the safer choice; see below.
+	UnsignedAssertion bool
+	// SignResponse adds an enveloped signature over the whole Response, made
+	// last, over the assertion as it is delivered, encrypted or not.
+	SignResponse bool
 }
 
 // BuildResponse constructs a signed SAML Response.
@@ -91,6 +99,10 @@ func BuildResponse(in ResponseInput, kid string, signer crypto.Signer, certDER [
 	if in.Lifetime <= 0 {
 		return "", fmt.Errorf("refusing to build an assertion with no lifetime: it would " +
 			"never expire")
+	}
+	if in.UnsignedAssertion && !in.SignResponse {
+		return "", fmt.Errorf("refusing to build a response that signs neither the " +
+			"assertion nor itself: anyone could have written it")
 	}
 	if _, err := SignatureMethod(signer); err != nil {
 		return "", err
@@ -141,18 +153,23 @@ func BuildResponse(in ResponseInput, kid string, signer crypto.Signer, certDER [
 	// than "is the element I am reading the one that was signed" accepts it.
 	//
 	// Signing the assertion itself means the thing carrying the identity is the
-	// thing covered by the signature. Response signing is available as well, and
-	// is additional rather than instead.
-	signed, err := signElement(assertion, signer, certDER)
-	if err != nil {
-		return "", fmt.Errorf("signing the assertion: %w", err)
-	}
-	if err := moveSignatureAfterIssuer(signed); err != nil {
-		return "", err
+	// thing covered by the signature. So it is the default, and Response signing
+	// (SignResponse) is added on top of it. A provider that verifies only the
+	// Response may have the assertion left unsigned (UnsignedAssertion), which
+	// moves that check to them; never both off.
+	signed := assertion
+	if !in.UnsignedAssertion {
+		var err error
+		if signed, err = signElement(assertion, signer, certDER); err != nil {
+			return "", fmt.Errorf("signing the assertion: %w", err)
+		}
+		if err := moveSignatureAfterIssuer(signed); err != nil {
+			return "", err
+		}
 	}
 
-	// Encryption happens LAST, over the signed element. See EncryptAssertion for
-	// why that order is not interchangeable.
+	// Encryption happens after the assertion is signed, over the signed element.
+	// See EncryptAssertion for why that order is not interchangeable.
 	if in.EncryptionCert != "" {
 		encrypted, eerr := EncryptAssertion(signed, in.EncryptionCert, in.KeyTransport)
 		if eerr != nil {
@@ -161,6 +178,20 @@ func BuildResponse(in ResponseInput, kid string, signer crypto.Signer, certDER [
 		resp.AddChild(encrypted)
 	} else {
 		resp.AddChild(signed)
+	}
+
+	// The Response is signed last, over what it now carries: sign, encrypt, sign.
+	// Its Signature goes after its Issuer too, which the protocol schema requires
+	// of a Response as the assertion schema does of an assertion.
+	if in.SignResponse {
+		signedResp, err := signElement(resp, signer, certDER)
+		if err != nil {
+			return "", fmt.Errorf("signing the response: %w", err)
+		}
+		if err := moveSignatureAfterIssuer(signedResp); err != nil {
+			return "", err
+		}
+		doc.SetRoot(signedResp)
 	}
 
 	// NOT indented. etree's Indent inserts whitespace text nodes between

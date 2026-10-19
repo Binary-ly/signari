@@ -522,6 +522,10 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 		// is what makes this opt-in without a second code path.
 		EncryptionCert: p.SPEncryptionCert,
 		KeyTransport:   p.SPKeyTransport,
+		// What `signari saml signing` chose. Read and ignored until 2.05: every
+		// response signed the assertion only, whatever the provider was set to.
+		UnsignedAssertion: !p.SignAssertions,
+		SignResponse:      p.SignResponses,
 		Subject: saml.Subject{
 			NameID:       nameID,
 			NameIDFormat: saml.FullNameIDFormat(p.NameIDFormat),

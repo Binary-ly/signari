@@ -1002,7 +1002,16 @@ func run(args []string) (err error) {
 	case "saml attribute-release":
 		return samlAttributeRelease(ctx, conn, *entityID, *upstreamClaim, *localAttribute, *removeMember)
 	case "saml signing":
-		return samlSigning(ctx, conn, *entityID, *signAssertions, *signResponses, *assertionLifetime)
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var assertions, responses *bool
+		if given["sign-assertions"] {
+			assertions = signAssertions
+		}
+		if given["sign-responses"] {
+			responses = signResponses
+		}
+		return samlSigning(ctx, conn, *entityID, assertions, responses, *assertionLifetime)
 	case "saml group-release":
 		return samlGroupRelease(ctx, conn, *entityID, *samlAttrName, *onlyGroups, *removeMember)
 	case "idp verified-email":

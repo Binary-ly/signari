@@ -250,6 +250,20 @@ func TestEveryFlagTheCLINamesExists(t *testing.T) {
 			}
 			return true
 		})
+		// A flag may also reach the call as a pointer, either the flag's own
+		// variable or a local the branch set from it (`assertions = signAssertions`,
+		// so that nil can mean "not given").
+		alias := map[string]string{}
+		ast.Inspect(body, func(n ast.Node) bool {
+			if as, ok := n.(*ast.AssignStmt); ok && len(as.Lhs) == 1 && len(as.Rhs) == 1 {
+				lhs, ok := as.Lhs[0].(*ast.Ident)
+				rhs, ok2 := as.Rhs[0].(*ast.Ident)
+				if ok && ok2 && varFlag[rhs.Name] != "" {
+					alias[lhs.Name] = varFlag[rhs.Name]
+				}
+			}
+			return true
+		})
 		ast.Inspect(body, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -271,6 +285,15 @@ func TestEveryFlagTheCLINamesExists(t *testing.T) {
 					}
 					return true
 				})
+				if id, ok := a.(*ast.Ident); ok {
+					flag := varFlag[id.Name]
+					if flag == "" {
+						flag = alias[id.Name]
+					}
+					if flag != "" {
+						given[fn.Name][flag] = true
+					}
+				}
 			}
 			return true
 		})

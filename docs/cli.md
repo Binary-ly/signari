@@ -120,7 +120,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari dir add -kind google` / `-kind entra` | Directory sync from the two most common sources. `google`, `entra` and `ldap` are values of `-kind`, not commands of their own |
 | `signari saml add-sp` / `saml list` | SAML service providers |
 | `signari saml attribute-release` | Which local user attribute a SAML attribute carries. An explicit map, not a wildcard: a disclosure control that silently releases nothing and one that silently releases everything both look like success |
-| `signari saml signing` | What is signed, and how long an assertion lives. Signing neither the assertion nor the response is refused by the schema — the service provider would have nothing to check |
+| `signari saml signing` | `-entity-id <id> [-sign-assertions=false] [-sign-responses] [-assertion-lifetime 300]`: what is signed, and how long an assertion lives. A flag not given keeps its setting. A signed Response is signed after the assertion is signed and encrypted. Signing neither is refused, because the service provider would have nothing to check |
 | `signari saml group-release` | Which groups a service provider is told about, matching `group release` for OIDC clients. Group membership is authorization data, so it is an allow-list |
 | `signari scim-source add` / `scim-source list` | Inbound SCIM |
 | `signari scim-source disable` / `scim-source enable` | `-org <uuid> -slug <slug>`: take an inbound provisioning source out of service, or put it back. Disabled, its bearer token is refused from the next request. Links, settings and the accounts it provisioned are kept. Audited. The switch existed and was read on every request, and nothing could turn it off |

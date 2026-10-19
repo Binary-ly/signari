@@ -62,6 +62,16 @@ element aside and insert their own assertion; the document still contains a
 valid signature over *something*. Signing the assertion means the element
 carrying the identity is the element covered.
 
+For a provider that wants the Response signed as well,
+`signari saml signing -entity-id <id> -sign-responses` adds an enveloped
+signature over the whole Response. It is made last, after the assertion is
+signed and, when the provider registered an encryption certificate, encrypted:
+sign, encrypt, sign, so it covers the ciphertext as it is sent.
+`-sign-assertions=false` leaves the assertion unsigned for a provider that checks
+only the Response. The two cannot both be off, and a flag left out of the
+command leaves its setting alone. Until October 2026 both settings were stored
+and ignored, and every response signed the assertion only.
+
 **XML comments are refused outright.** Go parses
 `<Issuer>admin<!---->@evil.test</Issuer>` as `admin@evil.test`. Canonicalisation
 drops comments before the digest is computed, and other parsers keep only the

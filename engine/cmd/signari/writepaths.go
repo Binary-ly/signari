@@ -1223,13 +1223,32 @@ func samlAttributeRelease(ctx context.Context, conn *pgx.Conn, entityID, samlNam
 // The schema refuses signing neither: an unsigned assertion inside an unsigned
 // response is a document anyone can write. There is no configuration in which
 // that is what somebody meant.
+//
+// A nil flag is one not given and leaves its setting alone. Both used to be
+// written every time, so changing only the lifetime turned Response signing off
+// again, and a provider that requires it refused every sign-in after.
 func samlSigning(ctx context.Context, conn *pgx.Conn, entityID string,
-	assertions, responses bool, lifetime int) error {
+	assertions, responses *bool, lifetime int) error {
 
 	if entityID == "" {
 		return fmt.Errorf("give -entity-id")
 	}
-	if !assertions && !responses {
+	var signA, signR bool
+	if err := conn.QueryRow(ctx, `
+		SELECT sign_assertions, sign_responses FROM core.saml_providers
+		WHERE entity_id = $1`, entityID).Scan(&signA, &signR); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+		}
+		return err
+	}
+	if assertions != nil {
+		signA = *assertions
+	}
+	if responses != nil {
+		signR = *responses
+	}
+	if !signA && !signR {
 		return fmt.Errorf("-sign-assertions and -sign-responses cannot both be off: an " +
 			"unsigned assertion inside an unsigned response is a document anyone can " +
 			"write, and the service provider has nothing to check")
@@ -1251,7 +1270,7 @@ func samlSigning(ctx context.Context, conn *pgx.Conn, entityID string,
 		UPDATE core.saml_providers
 		   SET sign_assertions = $2, sign_responses = $3,
 		       lifetime_seconds = COALESCE($4::int, lifetime_seconds)
-		 WHERE entity_id = $1`, entityID, assertions, responses, lifeArg)
+		 WHERE entity_id = $1`, entityID, signA, signR, lifeArg)
 	if err != nil {
 		return err
 	}
@@ -1260,7 +1279,7 @@ func samlSigning(ctx context.Context, conn *pgx.Conn, entityID string,
 	}
 
 	fmt.Printf("%s:\n  sign assertions : %t\n  sign responses  : %t\n",
-		entityID, assertions, responses)
+		entityID, signA, signR)
 	if lifeArg != nil {
 		fmt.Printf("  lifetime        : %ds\n", lifetime)
 	}

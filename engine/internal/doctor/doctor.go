@@ -134,6 +134,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkAuthorizationModels(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkFederationAnchor(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	if err := checkAdminTokens(ctx, conn, r); err != nil {
 		return nil, err
 	}
@@ -785,6 +788,29 @@ func checkSignInFlows(ctx context.Context, conn interface {
 		}
 	}
 	return rows.Err()
+}
+
+// checkFederationAnchor reports a stored OpenID Federation configuration with no
+// authority_hints. That makes this entity a Trust Anchor, which MUST publish a
+// federation_fetch_endpoint this engine does not serve, so the Entity
+// Configuration is refused and /.well-known/openid-federation answers 500. A
+// configuration stored before `federation enable` refused it ends up there.
+func checkFederationAnchor(ctx context.Context, conn interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, r *Report) error {
+	r.ran("OpenID Federation")
+	var anchors int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM core.federation_config
+		WHERE authority_hints IS NULL OR cardinality(authority_hints) = 0`).Scan(&anchors); err != nil {
+		return fmt.Errorf("reading the federation configuration: %w", err)
+	}
+	if anchors > 0 {
+		r.add(Critical, "federation", "the OpenID Federation configuration names no "+
+			"authority_hints, which would make this entity a Trust Anchor; it cannot be one "+
+			"without a fetch endpoint, so its Entity Configuration is not published",
+			"name the entity above this one with `signari federation enable -authority-hints <url>`")
+	}
+	return nil
 }
 
 // checkAuthorizationModels reports a stored model requiring a fact the

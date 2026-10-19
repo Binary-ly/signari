@@ -2,6 +2,7 @@ package docsync
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -215,39 +216,77 @@ func TestEveryDocumentedCommandExists(t *testing.T) {
 //
 // Verified by adding `events subscribe` and watching this fail before the page
 // was written.
+// commandMention matches cmd written as a whole command: after `signari `, or
+// alone in backticks, and not followed by more of a longer command's name.
+func commandMention(cmd string) *regexp.Regexp {
+	q := regexp.QuoteMeta(cmd)
+	return regexp.MustCompile(`(?:signari ` + q + "|`" + q + "`)(?:[^a-z0-9-]|$)")
+}
+
+// trackedDocs lists the docs/*.md files git tracks: the pages a reader of a
+// clone gets, and none of the local-only ones beside them.
+func trackedDocs(t *testing.T, root string) []string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "docs").Output()
+	if err != nil {
+		t.Skipf("cannot ask git what is tracked: %v", err)
+	}
+	var docs []string
+	for _, f := range strings.Split(string(out), "\x00") {
+		if strings.HasSuffix(f, ".md") {
+			docs = append(docs, filepath.ToSlash(f))
+		}
+	}
+	if len(docs) == 0 {
+		t.Skip("git reported no tracked documentation")
+	}
+	return docs
+}
+
+// The two ways a command once passed undocumented.
+func TestACommandMentionIsTheWholeCommand(t *testing.T) {
+	m := commandMention("client set-exchange")
+	for text, want := range map[string]bool{
+		"| `signari client set-exchange-containment` | ...": false,
+		"run `signari client set-exchange -client-id x`":    true,
+		"`client set-exchange`, which":                      true,
+		"signari client set-exchange":                       true,
+		"signari client set-exchanges":                      false,
+	} {
+		if got := m.MatchString(text); got != want {
+			t.Errorf("%q matched %v, want %v", text, got, want)
+		}
+	}
+}
+
 func TestEveryCommandIsDocumented(t *testing.T) {
 	root := repoRoot(t)
 	src := readSource(t, filepath.Join(root, "engine", "cmd", "signari", "main.go"))
 	dispatched := dispatchedCommands(t, src)
 
-	// Everything the docs mention anywhere -- including inside a fenced block,
-	// which is where most invocations live. Looser than docCommand on purpose:
-	// the question here is "is it written down at all", not "is it an
-	// instruction", and being strict would demand a runbook for every command.
+	// Everything the PUBLISHED docs mention anywhere -- including inside a
+	// fenced block, which is where most invocations live. Looser than
+	// docCommand on purpose: the question here is "is it written down at all",
+	// not "is it an instruction", and being strict would demand a runbook for
+	// every command.
+	//
+	// Two ways this used to pass for an undocumented command. It walked every
+	// file on disk, so a command written up only in a local-only page counted
+	// as documented for a reader who never gets that page. And it matched by
+	// substring, so `client set-exchange` counted as documented because
+	// `client set-exchange-containment` was.
 	mentioned := map[string]bool{}
-	err := filepath.Walk(filepath.Join(root, "docs"),
-		func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
+	for _, f := range trackedDocs(t, root) {
+		body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(f)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		for cmd := range dispatched {
+			if commandMention(cmd).MatchString(text) {
+				mentioned[cmd] = true
 			}
-			if info.IsDir() || !strings.HasSuffix(path, ".md") {
-				return nil
-			}
-			body, rerr := os.ReadFile(path)
-			if rerr != nil {
-				return rerr
-			}
-			text := string(body)
-			for cmd := range dispatched {
-				if strings.Contains(text, "signari "+cmd) ||
-					strings.Contains(text, "`"+cmd+"`") {
-					mentioned[cmd] = true
-				}
-			}
-			return nil
-		})
-	if err != nil {
-		t.Fatalf("walking docs: %v", err)
+		}
 	}
 
 	var missing []string

@@ -97,10 +97,11 @@ office behind one gateway. Removed. What remains:
 
 ## Reproducing
 
-The harness is `scratchpad/soak` — full flows, latency percentiles, failures by
-kind, and load shed counted separately from failures. That distinction matters:
-a 429 is the server working, and counting it as a failure hides whether anything
-is actually broken.
+The harness is [`tools/bench`](../tools/bench/README.md): full flows, latency
+percentiles, and load shed counted separately from failures. That distinction
+matters: a 429 is the server working, and counting it as a failure hides whether
+anything is actually broken. Until October 2026 the harness was a file in a session
+scratchpad that nobody else could run.
 
 ## What this is not
 

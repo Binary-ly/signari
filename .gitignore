@@ -3,3 +3,4 @@ signari_dev
 /admin/vendor/
 /admin/node_modules/
 /engine/bin/
+/tools/bench/bench

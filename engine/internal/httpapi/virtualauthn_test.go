@@ -49,6 +49,13 @@ type ceremonyParts struct {
 	Key       *ecdsa.PrivateKey // signs the assertion
 	CredID    []byte
 	Handle    []byte
+	// AAGUID is the model the authenticator claims at registration; zero, as
+	// a software authenticator's is, unless a test claims one.
+	AAGUID [16]byte
+	// Format is the attestation: "none", or "packed" for packed
+	// SELF-attestation, signed by the new credential's own key, which proves
+	// nothing about the model it names.
+	Format string
 }
 
 const (
@@ -141,7 +148,7 @@ func (a *virtualAuthenticator) create(t *testing.T, options []byte, bend ...func
 
 	p := ceremonyParts{
 		Type: "webauthn.create", Challenge: o.Challenge, Origin: a.origin, RPID: o.RP.ID,
-		Flags: flagUP | flagUV | flagAT, Count: 0, CredID: id,
+		Flags: flagUP | flagUV | flagAT, Count: 0, CredID: id, Format: "none",
 	}
 	for _, b := range bend {
 		b(&p)
@@ -164,14 +171,29 @@ func (a *virtualAuthenticator) create(t *testing.T, options []byte, bend ...func
 	if err != nil {
 		t.Fatal(err)
 	}
-	attested := make([]byte, 16) // AAGUID: zero, as a software authenticator's is
+	attested := append([]byte(nil), p.AAGUID[:]...)
 	attested = binary.BigEndian.AppendUint16(attested, uint16(len(p.CredID)))
 	attested = append(attested, p.CredID...)
 	attested = append(attested, cose...)
 
+	data := authenticatorData(p.RPID, p.Flags, p.Count, attested)
+	cdj := clientData(t, p)
+	stmt := map[string]any{}
+	if p.Format == "packed" {
+		// WebAuthn §8.2 (specs/webauthn.txt:6484-6489): "If x5c is not
+		// present, self attestation is in use", and the relying party verifies
+		// "sig is a valid signature over the concatenation of
+		// authenticatorData and clientDataHash using the credential public key".
+		cdh := sha256.Sum256(cdj)
+		digest := sha256.Sum256(append(append([]byte(nil), data...), cdh[:]...))
+		sig, serr := ecdsa.SignASN1(rand.Reader, key, digest[:])
+		if serr != nil {
+			t.Fatal(serr)
+		}
+		stmt = map[string]any{"alg": int64(webauthncose.AlgES256), "sig": sig}
+	}
 	object, err := webauthncbor.Marshal(map[string]any{
-		"fmt": "none", "attStmt": map[string]any{},
-		"authData": authenticatorData(p.RPID, p.Flags, p.Count, attested),
+		"fmt": p.Format, "attStmt": stmt, "authData": data,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +203,7 @@ func (a *virtualAuthenticator) create(t *testing.T, options []byte, bend ...func
 		"authenticatorAttachment": "platform",
 		"clientExtensionResults":  map[string]any{},
 		"response": map[string]any{
-			"clientDataJSON":    b64(clientData(t, p)),
+			"clientDataJSON":    b64(cdj),
 			"attestationObject": b64(object),
 			"transports":        []string{"internal"},
 		},

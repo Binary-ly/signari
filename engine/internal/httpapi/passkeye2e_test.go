@@ -193,6 +193,51 @@ func TestAPasskeyRegisteredFromTheAccountSignsInWithNoUsername(t *testing.T) {
 	}
 }
 
+// Under an approved-model allow-list, an authenticator naming an approved
+// model proves nothing by naming it: not with no attestation, and not with
+// packed SELF-attestation, which is signed by the credential's own key. Only a
+// chain anchored in the FIDO catalogue's roots vouches for a model (1.03); the
+// anchored case itself is fidomds' TestOnlyAnAnchoredChainVouchesForAnAAGUID,
+// since only a vendor's key can make one.
+func TestAnAllowListIsNotPassedByClaimingAnApprovedModel(t *testing.T) {
+	j := newPasskeyJourney(t)
+	ctx := context.Background()
+	const yubiKey5 = "ee882879-721c-4913-9775-3dfcce97072a"
+	if _, err := j.pool.Exec(ctx, `
+		INSERT INTO core.webauthn_policy (org_id, attestation_conveyance, allowed_aaguids)
+		VALUES ($1::uuid, 'direct', ARRAY[$2::uuid])
+		ON CONFLICT (org_id) DO UPDATE SET attestation_conveyance = 'direct',
+		       allowed_aaguids = ARRAY[$2::uuid]`, j.orgID, yubiKey5); err != nil {
+		t.Fatalf("setting the allow-list: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = j.pool.Exec(context.Background(), `DELETE FROM core.webauthn_policy WHERE org_id = $1::uuid`, j.orgID)
+	})
+	session := &http.Cookie{Name: SessionCookieName, Value: j.signInAndReturnCookie(t)}
+
+	var claimed [16]byte
+	for i, h := range []byte{0xee, 0x88, 0x28, 0x79, 0x72, 0x1c, 0x49, 0x13, 0x97, 0x75, 0x3d, 0xfc, 0xce, 0x97, 0x07, 0x2a} {
+		claimed[i] = h
+	}
+	for _, format := range []string{"none", "packed"} {
+		begin := j.post(t, "/account/passkeys/begin", nil, session)
+		device := &virtualAuthenticator{origin: j.auth.origin}
+		body, _ := device.create(t, begin.Body.Bytes(), func(p *ceremonyParts) {
+			p.AAGUID, p.Format = claimed, format
+		})
+		rec := j.post(t, "/account/passkeys/finish", body, session, cookieFrom(begin, CeremonyCookieName))
+		if rec.Code != http.StatusForbidden ||
+			!bytes.Contains(rec.Body.Bytes(), []byte("authenticator_not_permitted")) {
+			t.Errorf("%s attestation claiming an approved model answered %d: %s", format, rec.Code, rec.Body)
+		}
+	}
+	var n int
+	if err := j.pool.QueryRow(ctx, `SELECT count(*) FROM core.webauthn_credentials WHERE user_id = $1::uuid`,
+		j.userID).Scan(&n); err != nil || n != 0 {
+		t.Errorf("%d credentials were stored (%v)", n, err)
+	}
+}
+
 // Each forgery a browser or an attacker could present is refused with no
 // session, and a credential the server still holds is never answered with the
 // instruction to delete it.

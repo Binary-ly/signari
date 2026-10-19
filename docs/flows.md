@@ -164,16 +164,57 @@ stage.
 
 | `on:` | stages it runs |
 |---|---|
-| `authentication` | `mfa`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey` and `consent`, which the sign-in page and the authorization endpoint settle before the flow is walked |
+| `authentication` | `mfa`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the authorization endpoint |
 | `enrolment` | `captcha`, `prompt`, `create_user`, `deny`, `done` |
 | `recovery` | `captcha`, `identify`, `email_otp`, `password_change`, `deny`, `done` |
 | `unenrolment` | not judged: nothing walks this designation |
 
-The rest wait for a driver: `enrol_mfa` (forced enrolment), `federated`,
-`kerberos`, `delegated` and `certificate` (an upstream or a ticket the flow
-would have to pin), and `email_otp` and `sms_otp` as a first factor at sign-in.
-The safety rules still know them, so a file naming one is refused for the
-right reason rather than read as a typo.
+The rest wait for a driver: `enrol_mfa` (forced enrolment), `delegated` and
+`certificate` (a source the flow would have to pin), and `email_otp` and
+`sms_otp` as a first factor at sign-in. The safety rules still know them, so a
+file naming one is refused for the right reason rather than read as a typo.
+
+### A sign-in's proving stage is the proof presented
+
+Somebody reaches a sign-in by exactly one of four routes, and the flow's
+proving stage must be that route's proof: `password` for the sign-in form
+(including a password checked against the provider being migrated off),
+`passkey` for the passkey ceremony, `kerberos` for a Negotiate ticket,
+`federated` for an upstream provider. A sign-in by any other proof is refused,
+and the refusal is audited as `login.failed` with the reason
+`flow_requires_another_proof`, the stage required and the one presented.
+
+```yaml
+# Passkeys only: a password, a ticket or a provider is refused.
+stages: [passkey, session]
+
+# Everybody who arrives today, each by name; the built-in flow is this.
+stages:
+  - one_of:
+      - {stage: passkey,   when: proved_by_passkey}
+      - {stage: kerberos,  when: proved_by_kerberos}
+      - {stage: federated, when: proved_by_federated}
+      - {stage: password}
+  - session
+
+# A second factor only for people who came in with a password.
+  - {stage: mfa, when: proved_by_password}
+```
+
+The `proved_by_password`, `proved_by_passkey`, `proved_by_kerberos` and
+`proved_by_federated` conditions say which route was taken. A journey asking for
+two of these proofs could only refuse whoever walks it, since nobody arrives by
+two routes, so it is refused when the file is parsed, naming both:
+`password, kerberos, session` is refused, and a second check belongs in `mfa`.
+In the example at the top of this page, a passkey holder must use their passkey,
+and Kerberos and provider sign-ins are refused, because neither is offered.
+
+**Until October 2026 the walker passed `password` and `passkey` whatever had
+been presented.** `passkey, session` admitted a password, and the `one_of` at
+the top of this page let a passkey holder in on a password. A flow written
+before then that names only `password` now refuses passkey, Kerberos and
+provider sign-ins; add them as `one_of` alternatives to keep admitting them.
+`signari flow paths` shows every journey a file admits.
 
 ### Conditions
 
@@ -184,7 +225,8 @@ A `when:` is one condition, optionally negated with `not`. There is no `and` or
 `password_change_required`, `prompts_pending`, `consent_required`,
 `captcha_required`, `risk_elevated`, `device_managed`, `device_compliant`,
 `network_trusted`, `client_requires_mfa`, `kerberos_available`,
-`migration_pending`, `federated_source`
+`migration_pending`, `federated_source`, `proved_by_password`,
+`proved_by_passkey`, `proved_by_kerberos`, `proved_by_federated`
 
 The list is closed, and a condition outside it is refused at parse. That is what
 makes a typo an error rather than a stage that silently never runs. It is also
@@ -200,7 +242,7 @@ apply` and by the engine's load alike.
 
 | `on:` | conditions it evaluates |
 |---|---|
-| `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
+| `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`, and the four `proved_by_*`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
 | `enrolment` | `captcha_required`, `prompts_pending` (always false: there is no account yet to have one) |
 | `recovery` | `captcha_required` |
 | `unenrolment` | not judged: nothing walks this designation |
@@ -264,11 +306,13 @@ $ signari flow paths
   the built-in flows (no -flow-file given)
 
   default-sign-in (authentication)
-    password -> session                                    nothing in particular
-    captcha -> password -> session                         captcha_required
-    password -> mfa -> session                             user_has_second_factor
-    password -> prompt -> session                          prompts_pending
-    password -> password_change -> session                 password_change_required
+    password -> session                                         nothing in particular
+    captcha -> password -> session                              captcha_required
+    passkey -> session                                          proved_by_passkey
+    captcha -> passkey -> session                               captcha_required, proved_by_passkey
+    kerberos -> session                                         proved_by_kerberos
+    federated -> session                                        proved_by_federated
+    password -> mfa -> session                                  user_has_second_factor
     ...
 ```
 
@@ -283,8 +327,8 @@ A deployment that has written no flow file runs the built-in ones, which
 reproduce exactly the journey the server ran when the sequence was fixed Go:
 
 ```
-captcha (if required) -> password -> mfa (if enrolled)
-  -> prompt (if pending) -> password_change (if flagged) -> session
+captcha (if required) -> password, passkey, kerberos or federated (whichever was presented)
+  -> mfa (if enrolled) -> prompt (if pending) -> password_change (if flagged) -> session
 ```
 
 `signari flow show` prints that file verbatim, to start from. It is parsed by the

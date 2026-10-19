@@ -20,16 +20,24 @@ flows:
       # for spending an Argon2 evaluation rather than a second opinion after it.
       - {stage: captcha, when: captcha_required}
 
-      # One stage, because it is one form: the identifier and the password are
-      # submitted together. There is no separate `identify` step to place it
-      # after.
+      # Every way in this engine signs somebody in, each by name. A sign-in's
+      # proving stage must be the proof that route presented (2.49): this read
+      # `- password`, and passkey, Kerberos and federated sign-ins walked past
+      # it, which is how `passkey, session` came to admit a password. The
+      # one_of is total -- its last branch has no condition -- and every branch
+      # proves, so the analysis still sees a guaranteed prover.
       #
-      # The fallback to the identity provider being migrated away from lives
-      # inside this stage rather than beside it. It is not a different question
-      # being asked of the person -- the same password is checked somewhere
-      # else -- so making it a step would put a decision in the file that has no
-      # corresponding moment in the journey.
-      - password
+      # password is one stage because it is one form: the identifier and the
+      # password are submitted together. The fallback to the identity provider
+      # being migrated away from lives inside it rather than beside it. It is
+      # not a different question being asked of the person -- the same password
+      # is checked somewhere else -- so a step for it would put a decision in
+      # the file that has no corresponding moment in the journey.
+      - one_of:
+          - {stage: passkey, when: proved_by_passkey}
+          - {stage: kerberos, when: proved_by_kerberos}
+          - {stage: federated, when: proved_by_federated}
+          - {stage: password}
 
       # A correct password does not create a session when a second factor is
       # enrolled.
@@ -50,6 +58,18 @@ flows:
       - name: a challenge is showing
         given: {captcha_required: true}
         expect: [captcha, password, session]
+
+      - name: a passkey
+        given: {proved_by_passkey: true}
+        expect: [passkey, session]
+
+      - name: a Kerberos ticket
+        given: {proved_by_kerberos: true}
+        expect: [kerberos, session]
+
+      - name: an upstream provider, with a factor here
+        given: {proved_by_federated: true, user_has_second_factor: true}
+        expect: [federated, mfa, session]
 
       - name: a second factor is enrolled
         given: {user_has_second_factor: true}

@@ -26,13 +26,20 @@ flows:
   - name: mfa-for-everyone
     on: authentication
     stages:
-      - password
+      # A provider is a way in of its own: a sign-in's proving stage must be
+      # the proof presented (2.49), so a flow naming only password refuses it.
+      - one_of:
+          - {stage: federated, when: proved_by_federated}
+          - {stage: password}
       - mfa
       - session
     tests:
       - name: always challenged
         given: {}
         expect: [password, mfa, session]
+      - name: through a provider
+        given: {proved_by_federated: true}
+        expect: [federated, mfa, session]
 `)
 
 	var providerID string

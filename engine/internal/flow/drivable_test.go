@@ -27,8 +27,6 @@ func TestAStageTheJourneyCannotRunIsRefused(t *testing.T) {
 		stages string
 		names  string
 	}{
-		{Authentication, "[password, kerberos, session]", "kerberos"},
-		{Authentication, "[federated, session]", "federated"},
 		{Authentication, "[delegated, session]", "delegated"},
 		{Authentication, "[certificate, session]", "certificate"},
 		{Authentication, "[email_otp, session]", "email_otp"},
@@ -52,6 +50,47 @@ func TestAStageTheJourneyCannotRunIsRefused(t *testing.T) {
 	}
 }
 
+// A sign-in presents one proof, so a journey asking for two of them could only
+// refuse whoever walks it, and is refused when the file is parsed, naming both
+// (2.49). `password, kerberos, session` was once a password sign-in that
+// walked past kerberos; then, with the proof matched, it would have refused
+// everybody. Alternatives are what one_of is for, and an impossible
+// combination -- two proved_by conditions at once -- is not a journey.
+func TestAJourneyAskingForTwoSignInProofsIsRefused(t *testing.T) {
+	// The test case's expect is the journey with nothing true.
+	flowOf := func(stages, expect string) string {
+		return fmt.Sprintf(`
+version: 1
+flows:
+  - name: f
+    on: authentication
+    stages: %s
+    tests: [{name: t, given: {}, expect: %s}]
+`, stages, expect)
+	}
+	for _, c := range [][2]string{
+		{"[password, kerberos, session]", "[password, kerberos, session]"},
+		{"[passkey, password, mfa, session]", "[passkey, password, mfa, session]"},
+		{"[{stage: federated, when: proved_by_federated}, password, session]", "[password, session]"},
+	} {
+		_, err := Parse([]byte(flowOf(c[0], c[1])))
+		if err == nil || !strings.Contains(err.Error(), "a sign-in presents one of them") {
+			t.Errorf("%s was not refused for asking for two proofs: %v", c[0], err)
+		}
+	}
+	for _, c := range [][2]string{
+		{"[{one_of: [{stage: kerberos, when: proved_by_kerberos}, {stage: password}]}, session]", "[password, session]"},
+		// Asks for two proofs only when proved_by_password and proved_by_kerberos
+		// both hold, which no sign-in can make true.
+		{"[{one_of: [{stage: kerberos, when: proved_by_kerberos}, {stage: password}]}, " +
+			"{stage: password, when: proved_by_password}, session]", "[password, session]"},
+	} {
+		if _, err := Parse([]byte(flowOf(c[0], c[1]))); err != nil {
+			t.Errorf("%s was refused: %v", c[0], err)
+		}
+	}
+}
+
 // Every stage a journey runs is accepted there, and nothing walks an
 // unenrolment flow, so its stages are not judged.
 func TestAStageTheJourneyRunsIsAccepted(t *testing.T) {
@@ -62,6 +101,8 @@ func TestAStageTheJourneyRunsIsAccepted(t *testing.T) {
 		{Authentication, "[identify, captcha, password, mfa, prompt, password_change, consent, session]"},
 		{Authentication, "[passkey, done]"},
 		{Authentication, "[password, deny]"},
+		{Authentication, "[kerberos, mfa, session]"},
+		{Authentication, "[federated, session]"},
 		{Enrolment, "[captcha, prompt, create_user, done]"},
 		{Enrolment, "[deny]"},
 		{Recovery, "[captcha, identify, email_otp, password_change, done]"},

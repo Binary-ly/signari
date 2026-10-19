@@ -353,7 +353,10 @@ func (fl *Flow) validate() error {
 	if err := fl.checkSafety(); err != nil {
 		return err
 	}
-	return fl.checkDriven()
+	if err := fl.checkDriven(); err != nil {
+		return err
+	}
+	return fl.checkOneProof()
 }
 
 func validateGroup(bs []Branch) error {

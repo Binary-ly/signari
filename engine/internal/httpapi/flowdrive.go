@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -226,6 +227,9 @@ type signInFacts struct {
 	// authzQuery is the parked authorization request, which answers
 	// client_requires_mfa. Empty where there is none, as for a bind.
 	authzQuery string
+	// amr is what the sign-in proved so far, which answers the proved_by
+	// conditions.
+	amr []string
 
 	promptsOnce bool
 	prompts     []prompts.Prompt
@@ -276,6 +280,11 @@ func (f *signInFacts) Holds(name string) bool {
 // one listed there and not answered here reads false while the flow that names
 // it believes it is guarded.
 var signInConditions = map[flow.Condition]func(f *signInFacts) bool{
+	// Which way the person came in, from amr; no query.
+	flow.CondProvedByPassword:  func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StagePassword },
+	flow.CondProvedByPasskey:   func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StagePasskey },
+	flow.CondProvedByKerberos:  func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StageKerberos },
+	flow.CondProvedByFederated: func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StageFederated },
 	flow.CondHasSecondFactor: func(f *signInFacts) bool {
 		enrolled, err := store.HasSecondFactor(f.ctx, f.db, f.userID)
 		if err != nil {
@@ -400,7 +409,7 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 		return decisionSession
 	}
 
-	facts := &signInFacts{s: s, ctx: ctx, db: tx, orgID: orgID, userID: userID, authzQuery: authzQuery}
+	facts := &signInFacts{s: s, ctx: ctx, db: tx, orgID: orgID, userID: userID, authzQuery: authzQuery, amr: amr}
 	// Settled at the sign-in form, before the flow is walked, which is why
 	// Parse lets it guard nothing but the captcha stage.
 	facts.setKnown(flow.CondCaptchaRequired, false)
@@ -552,6 +561,20 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 
 		default:
 			if _, settled := signInSettledStages[stage]; settled {
+				// A proving stage is passed only by the proof it names (2.49).
+				// The walker passed every settled stage whatever amr held, so
+				// `passkey, session` admitted a password and a one_of branch
+				// chosen for a passkey holder let them in on a password.
+				if _, proving := flow.ProofCondition(stage); proving && primaryProof(amr) != stage {
+					_ = tx.Rollback(ctx)
+					s.auditDetached(ctx, audit.Event{
+						Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+						CorrelationID: correlationID(ctx),
+						Detail: map[string]any{"reason": "flow_requires_another_proof", "flow": fl.Name,
+							"required": string(stage), "presented": string(primaryProof(amr))},
+					})
+					return decisionDeny
+				}
 				continue
 			}
 			// Parse refuses a sign-in flow naming any other stage, so reaching
@@ -571,11 +594,45 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 // advanceSignIn acts on they are flow.Drivable(flow.Authentication), and
 // TestEveryStageAFlowCanUseIsDriven holds the two to the same set.
 var signInSettledStages = map[flow.StageName]string{
-	flow.StageIdentify: "the sign-in form, with the password",
-	flow.StageCaptcha:  "the sign-in form, by the address's counter",
-	flow.StagePassword: "the sign-in form",
-	flow.StagePasskey:  "the sign-in page's passkey ceremony",
-	flow.StageConsent:  "the authorization endpoint, whenever a client asks for more than was granted",
+	flow.StageIdentify:  "the sign-in form, with the password",
+	flow.StageCaptcha:   "the sign-in form, by the address's counter",
+	flow.StagePassword:  "the sign-in form",
+	flow.StagePasskey:   "the sign-in page's passkey ceremony",
+	flow.StageKerberos:  "the Negotiate exchange",
+	flow.StageFederated: "an upstream provider's callback",
+	flow.StageConsent:   "the authorization endpoint, whenever a client asks for more than was granted",
+}
+
+// primaryProof is the proving stage the route that reached the walk settled,
+// read from what it recorded in amr. Every route records one: the sign-in form
+// and a migration's delegated check `pwd`, the passkey ceremony `user` with
+// `hwk` or `swk`, Kerberos `krb`, a provider `fed`. What follows in amr is a
+// second factor -- a security key there also reads `hwk` -- so the earlier
+// routes are looked for first, and a passkey is what remains.
+//
+// It names a route, not a strength: whether a sign-in is multi-factor is
+// oauth.IsMultiFactor's question alone.
+func primaryProof(amr []string) flow.StageName {
+	for _, r := range routeMarkers {
+		for _, v := range r.values {
+			if slices.Contains(amr, v) {
+				return r.stage
+			}
+		}
+	}
+	return ""
+}
+
+// routeMarkers are the amr values each route records, in the order they are
+// looked for.
+var routeMarkers = []struct {
+	stage  flow.StageName
+	values []string
+}{
+	{flow.StageFederated, []string{"fed"}},
+	{flow.StageKerberos, []string{"krb"}},
+	{flow.StagePassword, []string{oauth.AMRPassword}},
+	{flow.StagePasskey, []string{oauth.AMRUserPresence, oauth.AMRHardwareKey, "swk"}},
 }
 
 // FlowDemandsMFA reports whether the flow puts an mfa stage in this sign-in's
@@ -601,7 +658,7 @@ func (s *Server) FlowDemandsMFA(ctx context.Context, db signInReader,
 	if fl == nil {
 		return false, false
 	}
-	facts := &signInFacts{s: s, ctx: ctx, db: db, orgID: orgID, userID: userID, authzQuery: authzQuery}
+	facts := &signInFacts{s: s, ctx: ctx, db: db, orgID: orgID, userID: userID, authzQuery: authzQuery, amr: amr}
 	facts.setKnown(flow.CondCaptchaRequired, false)
 
 	if hasSecondFactorAMR(amr) {

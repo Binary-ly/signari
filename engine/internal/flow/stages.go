@@ -2,6 +2,7 @@ package flow
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -214,6 +215,16 @@ const (
 	CondMigrationPending Condition = "migration_pending"
 	// CondFederatedSource -- the request arrived by way of an upstream source.
 	CondFederatedSource Condition = "federated_source"
+
+	// The proved_by family says which proof the person presented to reach this
+	// walk (2.49). A sign-in's proving stage must be the one proved: a
+	// `passkey, session` flow refuses a password, and a flow that admits
+	// several ways in says which with these, in a one_of whose branches are
+	// all proving stages.
+	CondProvedByPassword  Condition = "proved_by_password"
+	CondProvedByPasskey   Condition = "proved_by_passkey"
+	CondProvedByKerberos  Condition = "proved_by_kerberos"
+	CondProvedByFederated Condition = "proved_by_federated"
 )
 
 var allConditions = []Condition{
@@ -223,6 +234,7 @@ var allConditions = []Condition{
 	CondDeviceManaged, CondDeviceCompliant, CondNetworkTrusted,
 	CondClientRequiresMFA, CondKerberosAvailable, CondMigrationPending,
 	CondFederatedSource,
+	CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
 }
 
 // answered is which conditions each journey this engine drives can evaluate.
@@ -246,6 +258,7 @@ var answered = map[Designation][]Condition{
 	Authentication: {
 		CondHasSecondFactor, CondHasPasskey, CondPasswordChangeRequired,
 		CondPromptsPending, CondClientRequiresMFA,
+		CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
 	},
 	// No account exists yet, so nothing is pending for it: false is the
 	// answer, not the absence of one.
@@ -262,24 +275,92 @@ var answered = map[Designation][]Condition{
 // name, like a condition no journey evaluates.
 //
 // The sign-in set has two kinds. The walker acts on mfa, prompt,
-// password_change and the terminals. identify, captcha, password, passkey and
-// consent are settled before the walk, by the sign-in page and the
-// authorization endpoint that reached it, so the walker passes them. The
-// stages refused there wait for a driver: forced enrolment (enrol_mfa),
-// an upstream or ticket pinned per flow (federated, kerberos, delegated,
-// certificate), a code as the first factor (email_otp, sms_otp).
+// password_change and the terminals. identify, captcha, password, passkey,
+// kerberos, federated and consent are settled before the walk, by the route
+// that reached it -- the sign-in form, the passkey ceremony, the Negotiate
+// exchange, a provider's callback -- and the walker requires a proving one
+// among them to be the proof that route presented (2.49). The stages refused
+// there wait for a driver: forced enrolment (enrol_mfa), a source pinned per
+// flow (delegated, certificate), a code as the first factor (email_otp,
+// sms_otp).
 //
 // Widen a set only in step with a driver; internal/httpapi's
 // TestEveryStageAFlowCanUseIsDriven reads the drivers and compares.
 var drivable = map[Designation][]StageName{
 	Authentication: {
 		StageMFA, StagePrompt, StagePasswordChange, StageSession, StageDeny, StageDone,
-		StageIdentify, StageCaptcha, StagePassword, StagePasskey, StageConsent,
+		StageIdentify, StageCaptcha, StagePassword, StagePasskey, StageKerberos, StageFederated,
+		StageConsent,
 	},
 	Enrolment: {StageCaptcha, StagePrompt, StageCreateUser, StageDeny, StageDone},
 	Recovery: {
 		StageCaptcha, StageIdentify, StageEmailOTP, StagePasswordChange, StageDeny, StageDone,
 	},
+}
+
+// signInProofs are the proving stages a sign-in settles from the route that
+// reached it, each with the condition saying that route was taken. A sign-in
+// presents exactly one of them (2.49).
+var signInProofs = map[StageName]Condition{
+	StagePassword:  CondProvedByPassword,
+	StagePasskey:   CondProvedByPasskey,
+	StageKerberos:  CondProvedByKerberos,
+	StageFederated: CondProvedByFederated,
+}
+
+// ProofCondition is the proved_by condition for a proving stage a sign-in
+// settles, and whether stage is one.
+func ProofCondition(stage StageName) (Condition, bool) {
+	c, ok := signInProofs[stage]
+	return c, ok
+}
+
+// checkOneProof refuses an authentication flow with a journey asking for two
+// of the proofs a sign-in settles. Somebody arrives by password, passkey,
+// Kerberos or a provider, never by two, so that journey could only refuse
+// them; before 2.49 the walker passed both and it was a sign-in by whichever
+// proof was presented, whatever the file said.
+//
+// Enumerated here rather than through Paths, which keeps one assignment per
+// distinct journey and could keep an impossible one -- two proved_by
+// conditions true at once -- in place of a possible one.
+func (fl *Flow) checkOneProof() error {
+	if fl.On != Authentication {
+		return nil
+	}
+	conds := fl.Conditions()
+	if len(conds) > maxEnumeratedConditions {
+		return nil // Paths says so wherever the journeys are asked for
+	}
+	isProvedBy := map[string]bool{}
+	for _, c := range signInProofs {
+		isProvedBy[string(c)] = true
+	}
+	for mask := 0; mask < 1<<len(conds); mask++ {
+		st, provedBy := State{}, 0
+		for i, c := range conds {
+			st[c] = mask&(1<<i) != 0
+			if st[c] && isProvedBy[c] {
+				provedBy++
+			}
+		}
+		if provedBy > 1 {
+			continue
+		}
+		var asked []StageName
+		for _, s := range fl.Plan(st) {
+			if _, ok := signInProofs[s]; ok && !slices.Contains(asked, s) {
+				asked = append(asked, s)
+			}
+		}
+		if len(asked) > 1 {
+			return fmt.Errorf("a journey through this flow asks for %s and %s, but a sign-in presents "+
+				"one of them: somebody arrives by password, passkey, Kerberos or a provider, never "+
+				"by two, so that journey could only refuse them. Offer them as alternatives with "+
+				"one_of, or ask for a second factor with mfa", asked[0], asked[1])
+		}
+	}
+	return nil
 }
 
 // Drivable lists the stages a journey of designation d runs.

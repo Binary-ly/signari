@@ -527,7 +527,7 @@ func run(args []string) (err error) {
 	upstreamClaim := fs.String("claim", "",
 		"claim name as the upstream provider spells it, e.g. department")
 	localAttribute := fs.String("attribute", "",
-		"name of the local user attribute the claim lands in (see `signari user attribute declare`)")
+		"name of the local user attribute the claim lands in (declared with the Admin API's PUT /admin/organizations/{orgID}/attributes)")
 	mapOverwrite := fs.Bool("overwrite", false,
 		"let a sign-in replace a value already stored. Off by default: it makes the "+
 			"upstream provider the system of record for that attribute")
@@ -729,7 +729,7 @@ func run(args []string) (err error) {
 	case "instance create":
 		return instanceCreate(ctx, conn, *issuer, *name)
 	case "user create":
-		return userCreate(ctx, conn, *email, *password)
+		return userCreate(ctx, conn, *orgID, *email, *password)
 	case "user locale":
 		return userLocale(ctx, conn, *orgID, *email, *localeTag)
 	case "client set-ciba":
@@ -766,7 +766,7 @@ func run(args []string) (err error) {
 	case "client set-grants":
 		return clientSetGrants(ctx, conn, *clientID, *grantTypes)
 	case "client create":
-		return clientCreate(ctx, conn, *clientID, *name, *redirect, *public,
+		return clientCreate(ctx, conn, *orgID, *clientID, *name, *redirect, *public,
 			*launchURL, *logoURL, *portalHidden, *requirePKCE)
 	case "serve":
 		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr, *adminInsecure)
@@ -2310,6 +2310,47 @@ func errSlugTaken(slug string) error {
 		slug, slug, slug+"-"+"yourorg")
 }
 
+// resolveOrg is the organisation a command acts in: the one -org names, or,
+// when it names none, the only one there is. With several it refuses rather
+// than choose. `user create` and `client create` used to take the oldest
+// organisation whatever -org said, so a person or an application meant for a
+// second tenant was created in the first, where the tenant it was meant for
+// could not see it and the one that could see it never asked for it.
+func resolveOrg(ctx context.Context, conn *pgx.Conn, given string) (string, error) {
+	if given != "" {
+		id, ok := store.CanonicalUUID(given)
+		if !ok {
+			return "", fmt.Errorf("-org %q is not an organisation id (a uuid)", given)
+		}
+		var exists bool
+		if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.organizations WHERE id = $1::uuid)`,
+			id).Scan(&exists); err != nil {
+			return "", err
+		}
+		if !exists {
+			return "", fmt.Errorf("no organisation %s", id)
+		}
+		return id, nil
+	}
+	var n int
+	var first []string
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*), COALESCE((SELECT array_agg(slug) FROM (SELECT slug FROM core.organizations
+		                           ORDER BY created_at LIMIT 5) s), '{}')
+		  FROM core.organizations`).Scan(&n, &first); err != nil {
+		return "", err
+	}
+	if n > 1 {
+		named := strings.Join(first, ", ")
+		if n > len(first) {
+			named += fmt.Sprintf(" and %d more", n-len(first))
+		}
+		return "", fmt.Errorf("this database holds %d organisations (%s); give -org, "+
+			"since creating in the wrong one is not visible from the right one", n, named)
+	}
+	return firstOrg(ctx, conn)
+}
+
 func firstOrg(ctx context.Context, conn *pgx.Conn) (string, error) {
 	var orgID string
 	err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).Scan(&orgID)
@@ -2329,11 +2370,11 @@ func firstOrg(ctx context.Context, conn *pgx.Conn) (string, error) {
 	return orgID, nil
 }
 
-func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) error {
+func userCreate(ctx context.Context, conn *pgx.Conn, givenOrg, email, password string) error {
 	if email == "" || password == "" {
 		return fmt.Errorf("-email and -password are both required")
 	}
-	orgID, err := firstOrg(ctx, conn)
+	orgID, err := resolveOrg(ctx, conn, givenOrg)
 	if err != nil {
 		return err
 	}
@@ -2373,7 +2414,7 @@ func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) err
 	return nil
 }
 
-func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect string,
+func clientCreate(ctx context.Context, conn *pgx.Conn, givenOrg, clientID, name, redirect string,
 	public bool, launchURL, logoURL string, portalHidden, requirePKCE bool) error {
 
 	if err := clients.ValidateClientID(clientID); err != nil && clientID != "" {
@@ -2420,7 +2461,7 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect 
 	if name == "" {
 		name = clientID
 	}
-	orgID, err := firstOrg(ctx, conn)
+	orgID, err := resolveOrg(ctx, conn, givenOrg)
 	if err != nil {
 		return err
 	}
@@ -6013,11 +6054,9 @@ func radiusSetClientEnabled(ctx context.Context, conn *pgx.Conn, orgID, name str
 // It repairs nothing. See internal/audit/checkpoint.go for why that is the
 // point rather than a limitation.
 func auditCheckpoint(ctx context.Context, conn *pgx.Conn, orgID, by, reason string) error {
-	if orgID == "" {
-		var err error
-		if orgID, err = firstOrg(ctx, conn); err != nil {
-			return err
-		}
+	orgID, err := resolveOrg(ctx, conn, orgID)
+	if err != nil {
+		return err
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -6046,12 +6085,9 @@ func auditCheckpoint(ctx context.Context, conn *pgx.Conn, orgID, by, reason stri
 func racAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, protocol,
 	host string, port int, login, password, requireGroup, recording string) error {
 
-	switch {
-	case orgID == "":
-		var err error
-		if orgID, err = firstOrg(ctx, conn); err != nil {
-			return err
-		}
+	orgID, err := resolveOrg(ctx, conn, orgID)
+	if err != nil {
+		return err
 	}
 	switch {
 	case slug == "":
@@ -7514,7 +7550,7 @@ func authzCheck(ctx context.Context, conn *pgx.Conn, orgID, subject, action, obj
 	}
 	if m == nil {
 		return fmt.Errorf("this organisation has no authorization model, so nothing " +
-			"is permitted -- set one with `signari authz model set`")
+			"is permitted -- set one with `signari authz set-model`")
 	}
 	relations, defined := m.RelationsFor(otyp, action)
 	if !defined {
@@ -7922,7 +7958,7 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 		if len(known) == 0 {
 			return fmt.Errorf("this organisation issues no credentials, so an offer "+
 				"naming %s could not be redeemed. Configure one first with "+
-				"`signari credential config set`", strings.Join(unknown, ", "))
+				"`signari credential define`", strings.Join(unknown, ", "))
 		}
 		return fmt.Errorf("no credential configuration named %s; this issuer "+
 			"advertises %s", strings.Join(unknown, ", "), strings.Join(known, ", "))

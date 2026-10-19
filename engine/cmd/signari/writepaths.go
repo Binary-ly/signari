@@ -859,7 +859,7 @@ func groupImpersonation(ctx context.Context, conn *pgx.Conn, orgID, group string
 	if !grant {
 		fmt.Printf("%q may no longer impersonate\n", group)
 		fmt.Println("\n  Sessions already started under impersonation are not ended by this.")
-		fmt.Println("  `signari user sessions -email <them>` shows them.")
+		fmt.Println("  The Admin API's GET /admin/users/{userID}/sessions shows them.")
 		return nil
 	}
 

@@ -49,7 +49,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari instance session-limit` | How many sessions one person may hold at once, and whether the limit denies the new sign-in or ends the oldest session. `0` is unlimited and is the default |
 | `signari instance password-binds` | `-org <id> -binds refuse_when_mfa` or `allow`. Whether LDAP binds, RADIUS PAP and outposts, which carry **only a password**, may sign in somebody the sign-in flow would ask for a second factor. Organisations created since migration 0128 refuse; older ones allow until changed, and `signari doctor` names each one with a listener or outpost. Audited, and bumps the configuration version. See [LDAP](ldap.md#a-password-alone-and-a-second-factor) |
 | `signari instance webauthn` | The WebAuthn Relying Party ID passkeys are bound to. **Passkeys are unavailable until this is set.** A credential made under `example.com` works on `login.example.com`; one made under `login.example.com` does not work on `example.com`, and changing the value invalidates every credential already enrolled |
-| `signari user create` | A user with a password. Subject to the [password policy](password-policy.md) |
+| `signari user create` | A user with a password, in the organisation `-org` names. Subject to the [password policy](password-policy.md). Without `-org` it uses the only organisation there is and refuses when there are several. Until October 2026 it, `client create`, `rac add` and `audit checkpoint` took the oldest organisation whatever `-org` said |
 | `signari user locale` | The language this person's security notices are written in, as a BCP 47 tag. Empty returns them to the deployment default |
 | `signari group create` / `group list` / `group member` / `group release` | Groups, membership, and which clients may see them |
 | `signari group impersonation` | Grant or revoke a group's ability to act as another user. **Deliberately not in the Admin API**: a `groups:write` token is issued for day-to-day administration, and letting one grant this would turn every such token into a way to become anybody. See [impersonation.md](impersonation.md) |
@@ -68,7 +68,7 @@ existed, and the test that exists to catch exactly that could not see this table
 
 | | |
 |---|---|
-| `signari client create` | Register an OAuth client |
+| `signari client create` | Register an OAuth client in the organisation `-org` names (or the only one there is) |
 | `signari client set-keys` | Switch to `private_key_jwt` with a public JWKS |
 | `signari client set-tls` | mTLS client authentication and certificate-bound tokens |
 | `signari client set-dpop` | RFC 9449 §5.2: require a DPoP proof on every token request from this client |

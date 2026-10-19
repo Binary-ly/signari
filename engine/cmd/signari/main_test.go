@@ -112,6 +112,69 @@ func TestAFederationKeySetCarryingPrivateMaterialIsRefused(t *testing.T) {
 	}
 }
 
+// `user create` and `client create` act in the organisation -org names, and
+// refuse to guess when it names none and there are several. Both took the
+// oldest organisation whatever -org said (2.16).
+func TestCreateCommandsActInTheOrganisationNamed(t *testing.T) {
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
+	if dsn == "" {
+		t.Skip("SIGNARI_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	db, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close(ctx) }()
+	var second string
+	if err := db.QueryRow(ctx, `
+		WITH i AS (INSERT INTO core.instances (issuer, display_name)
+		           VALUES ('https://cli-org-' || gen_random_uuid() || '.test', 'CLI org test') RETURNING id)
+		INSERT INTO core.organizations (instance_id, slug, display_name)
+		SELECT id, 'c' || substr(gen_random_uuid()::text, 1, 8), 'Second' FROM i RETURNING id::text`).
+		Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().UnixNano()
+	email := fmt.Sprintf("cli-org-%d@example.test", stamp)
+	client := fmt.Sprintf("cli-org-%d", stamp)
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = db.Exec(c, `DELETE FROM core.users WHERE email = $1`, email)
+		_, _ = db.Exec(c, `DELETE FROM core.clients WHERE client_id = $1`, client)
+	})
+
+	if err := run([]string{"user", "create", "-dsn", dsn, "-org", second, "-email", email,
+		"-password", "a-long-enough-password-for-the-cli-test-2026"}); err != nil {
+		t.Fatalf("user create -org: %v", err)
+	}
+	if err := run([]string{"client", "create", "-dsn", dsn, "-org", second, "-client-id", client,
+		"-redirect", "https://cli-org.test/cb"}); err != nil {
+		t.Fatalf("client create -org: %v", err)
+	}
+	var userOrg, clientOrg string
+	if err := db.QueryRow(ctx, `SELECT org_id::text FROM core.users WHERE email = $1`, email).Scan(&userOrg); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(ctx, `SELECT org_id::text FROM core.clients WHERE client_id = $1`, client).Scan(&clientOrg); err != nil {
+		t.Fatal(err)
+	}
+	if userOrg != second || clientOrg != second {
+		t.Errorf("created the user in %s and the client in %s, not the organisation named, %s",
+			userOrg, clientOrg, second)
+	}
+
+	// The test database holds many organisations, so no -org is ambiguous.
+	err = run([]string{"user", "create", "-dsn", dsn, "-email", "x" + email, "-password", "another-long-password-2026"})
+	if err == nil || !strings.Contains(err.Error(), "give -org") {
+		t.Errorf("user create with no -org among several organisations answered %v", err)
+	}
+	if err := run([]string{"client", "create", "-dsn", dsn, "-org", "not-a-uuid", "-client-id", client + "x",
+		"-redirect", "https://cli-org.test/cb"}); err == nil {
+		t.Error("an -org that is not an organisation id was accepted")
+	}
+}
+
 // The whole CLI write path as an operator meets it: `group create` through the
 // dispatch moves core.config_version and leaves one admin.cli_command record
 // naming the command and its flags, never their values; the same command

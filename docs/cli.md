@@ -22,7 +22,7 @@ tenant's row of that name, or on whichever one came back first.
 | | |
 |---|---|
 | `signari migrate bootstrap` | Apply 0001 — roles, schemas, grants. Needs a **superuser** DSN |
-| `signari migrate up` | Apply 0002+ as `signari_engine`. The ordinary upgrade step |
+| `signari migrate up` | Apply 0002+ as `signari_engine`. The ordinary upgrade step. Two runs at once take turns: the second waits for the first, then finds nothing to apply. `-lock-timeout` (10s by default; 0 for none) fails a statement that waits longer for a lock, so a migration queued behind a long transaction does not hold every query on the table, and it can be run again; `-statement-timeout` bounds each statement (none by default). A migration whose first line is `-- signari:no-transaction` runs outside a transaction, so it can build an index `CONCURRENTLY` without blocking writes; it may hold only `CREATE INDEX CONCURRENTLY IF NOT EXISTS` and `DROP INDEX CONCURRENTLY IF EXISTS`, and an index a failed build left invalid is dropped so the next run builds it |
 | `signari migrate all` | Bootstrap then up, in one invocation, for containers |
 | `signari migrate status` | Applied version, pending migrations, live fingerprint |
 | `signari migrate fingerprint` | Print **only** the schema fingerprint, for pinning a release build. See [schema-pinning.md](schema-pinning.md) |

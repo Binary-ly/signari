@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -52,6 +53,75 @@ type Migration struct {
 	Name    string
 	SQL     string
 }
+
+// noTransactionMarker, as a file's first line, runs it outside a transaction
+// (3.01). Every file used to run in one, and CREATE INDEX CONCURRENTLY
+// refuses to, so an index on a large table could only be built by locking it
+// against writes for as long as the build took. Such a file may hold only
+// concurrent index builds and drops, written to be run again: a failure part
+// way leaves what it built, and the next run must not trip over it.
+const noTransactionMarker = "-- signari:no-transaction"
+
+var concurrentIndex = regexp.MustCompile(`(?is)^(?:CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+([a-z0-9_]+)\s+ON\s+core\.[a-z0-9_]+\b.*|DROP\s+INDEX\s+CONCURRENTLY\s+IF\s+EXISTS\s+core\.[a-z0-9_]+)$`)
+
+// NoTransaction reports whether the migration runs outside a transaction.
+func (m Migration) NoTransaction() bool {
+	first, _, _ := strings.Cut(m.SQL, "\n")
+	return strings.TrimSpace(first) == noTransactionMarker
+}
+
+// statements splits a no-transaction migration into the statements it runs,
+// each with the index it builds ("" for a drop), refusing anything but a
+// concurrent, repeatable index build or drop. A plain split on ";" is safe
+// only because nothing else is allowed: no function body, no quoted string.
+func (m Migration) statements() (stmts, builds []string, err error) {
+	var body strings.Builder
+	for _, line := range strings.Split(m.SQL, "\n") {
+		if t := strings.TrimSpace(line); t == "" || strings.HasPrefix(t, "--") {
+			continue
+		}
+		body.WriteString(line)
+		body.WriteString("\n")
+	}
+	for _, s := range strings.Split(body.String(), ";") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		match := concurrentIndex.FindStringSubmatch(s)
+		if match == nil {
+			return nil, nil, fmt.Errorf("a %s migration may only build or drop indexes, "+
+				"concurrently and repeatably (CREATE INDEX CONCURRENTLY IF NOT EXISTS name ON "+
+				"core.table ..., DROP INDEX CONCURRENTLY IF EXISTS core.name); %.60q is neither",
+				noTransactionMarker, s)
+		}
+		stmts = append(stmts, s)
+		builds = append(builds, strings.ToLower(match[1]))
+	}
+	if len(stmts) == 0 {
+		return nil, nil, fmt.Errorf("a %s migration holds no statement", noTransactionMarker)
+	}
+	return stmts, builds, nil
+}
+
+// Options bound what a migration may wait for.
+type Options struct {
+	// LockTimeout bounds each statement's wait for a lock. An ALTER TABLE
+	// queued behind a long transaction makes every later query on that table
+	// queue behind it, an outage that looks like a slow migration; failing
+	// fast and running it again is the better trade. Zero means no bound.
+	LockTimeout time.Duration
+	// StatementTimeout bounds each statement. Zero means none: building an
+	// index on a large table takes as long as it takes.
+	StatementTimeout time.Duration
+	// Waiting, when set, is called once if another `migrate` holds the lock.
+	Waiting func()
+}
+
+// migrationLock is the session advisory lock Up holds, so that two
+// deployments migrating at once take turns rather than racing for the same
+// version (3.01). It was taken by nothing.
+const migrationLock int64 = 0x7369676e6d696772 // "signmigr"
 
 // Tier reports which role this migration must be applied as.
 func (m Migration) Tier() Tier {
@@ -94,7 +164,16 @@ func LoadFS(fsys fs.FS) ([]Migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading %q: %w", name, err)
 		}
-		out = append(out, Migration{Version: version, Name: m[2], SQL: string(body)})
+		mig := Migration{Version: version, Name: m[2], SQL: string(body)}
+		if mig.NoTransaction() {
+			if mig.Tier() == TierBootstrap {
+				return nil, fmt.Errorf("migration %q: the bootstrap runs in one transaction", name)
+			}
+			if _, _, err := mig.statements(); err != nil {
+				return nil, fmt.Errorf("migration %q: %w", name, err)
+			}
+		}
+		out = append(out, mig)
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
@@ -141,11 +220,27 @@ func Applied(ctx context.Context, conn *pgx.Conn) (int, error) {
 // `target` of 0 means "as far as this tier allows". Passing a target lower than
 // the currently applied version is an error: we do not support downgrades, and
 // pretending to would be worse than refusing.
-func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int) ([]Migration, error) {
+func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int, opts Options) ([]Migration, error) {
 	all, err := Load()
 	if err != nil {
 		return nil, err
 	}
+	// One `migrate` at a time, and the ledger read once the lock is held: a
+	// second run started alongside the first waits, then finds nothing left.
+	var free bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, migrationLock).Scan(&free); err != nil {
+		return nil, fmt.Errorf("taking the migration lock: %w", err)
+	}
+	if !free {
+		if opts.Waiting != nil {
+			opts.Waiting()
+		}
+		if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLock); err != nil {
+			return nil, fmt.Errorf("waiting for the migration lock: %w", err)
+		}
+	}
+	defer func() { _, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrationLock) }()
+
 	current, err := Applied(ctx, conn)
 	if err != nil {
 		return nil, err
@@ -168,7 +263,7 @@ func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int) ([]Migration
 		if target != 0 && m.Version > target {
 			break
 		}
-		if err := applyOne(ctx, conn, m, tier); err != nil {
+		if err := applyOne(ctx, conn, m, tier, opts); err != nil {
 			return applied, fmt.Errorf("migration %04d_%s: %w", m.Version, m.Name, err)
 		}
 		applied = append(applied, m)
@@ -176,7 +271,28 @@ func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int) ([]Migration
 	return applied, nil
 }
 
-func applyOne(ctx context.Context, conn *pgx.Conn, m Migration, tier Tier) error {
+// timeouts are the SET statements Options asks for, as Postgres reads them.
+func (o Options) timeouts(local bool) []string {
+	set := "SET "
+	if local {
+		set = "SET LOCAL "
+	}
+	var out []string
+	if o.LockTimeout > 0 {
+		out = append(out, fmt.Sprintf("%slock_timeout = '%dms'", set, o.LockTimeout.Milliseconds()))
+	}
+	if o.StatementTimeout > 0 {
+		out = append(out, fmt.Sprintf("%sstatement_timeout = '%dms'", set, o.StatementTimeout.Milliseconds()))
+	}
+	return out
+}
+
+func applyOne(ctx context.Context, conn *pgx.Conn, m Migration, tier Tier, opts Options) error {
+	if m.NoTransaction() {
+		if err := applyOutsideTransaction(ctx, conn, m, opts); err != nil {
+			return err
+		}
+	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
@@ -195,9 +311,16 @@ func applyOne(ctx context.Context, conn *pgx.Conn, m Migration, tier Tier) error
 			return fmt.Errorf("assuming signari_engine: %w", err)
 		}
 	}
+	for _, s := range opts.timeouts(true) {
+		if _, err := tx.Exec(ctx, s); err != nil {
+			return fmt.Errorf("%s: %w", s, err)
+		}
+	}
 
-	if _, err := tx.Exec(ctx, m.SQL); err != nil {
-		return err
+	if !m.NoTransaction() {
+		if _, err := tx.Exec(ctx, m.SQL); err != nil {
+			return err
+		}
 	}
 
 	// The bootstrap tier creates the ledger it is about to write to, so record
@@ -216,6 +339,53 @@ func applyOne(ctx context.Context, conn *pgx.Conn, m Migration, tier Tier) error
 	}
 
 	return tx.Commit(ctx)
+}
+
+// applyOutsideTransaction runs a no-transaction migration's statements one at
+// a time, as signari_engine, then checks that every index it built is valid:
+// a concurrent build that fails leaves an INVALID index behind, which IF NOT
+// EXISTS would then skip forever. One found invalid is dropped and reported,
+// so running the migration again builds it.
+func applyOutsideTransaction(ctx context.Context, conn *pgx.Conn, m Migration, opts Options) error {
+	stmts, builds, err := m.statements()
+	if err != nil {
+		return err
+	}
+	reset := context.WithoutCancel(ctx)
+	if _, err := conn.Exec(ctx, `SET ROLE signari_engine`); err != nil {
+		return fmt.Errorf("assuming signari_engine: %w", err)
+	}
+	defer func() { _, _ = conn.Exec(reset, `RESET ROLE`) }()
+	for _, s := range opts.timeouts(false) {
+		if _, err := conn.Exec(ctx, s); err != nil {
+			return fmt.Errorf("%s: %w", s, err)
+		}
+	}
+	defer func() {
+		_, _ = conn.Exec(reset, `RESET lock_timeout`)
+		_, _ = conn.Exec(reset, `RESET statement_timeout`)
+	}()
+	for i, s := range stmts {
+		if _, err := conn.Exec(ctx, s); err != nil {
+			return err
+		}
+		if builds[i] == "" {
+			continue
+		}
+		var valid bool
+		if err := conn.QueryRow(ctx, `SELECT indisvalid FROM pg_index
+			WHERE indexrelid = to_regclass('core.' || $1)`, builds[i]).Scan(&valid); err != nil {
+			return fmt.Errorf("checking index %s: %w", builds[i], err)
+		}
+		if !valid {
+			if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS core.`+builds[i]); err != nil {
+				return fmt.Errorf("index %s is invalid and could not be dropped: %w", builds[i], err)
+			}
+			return fmt.Errorf("index %s was left invalid by an earlier build that failed; it has "+
+				"been dropped, so running migrate up again builds it", builds[i])
+		}
+	}
+	return nil
 }
 
 // ExpectedFingerprint is the fingerprint this binary was built against. It is

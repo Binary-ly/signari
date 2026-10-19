@@ -238,6 +238,11 @@ func run(args []string) (err error) {
 	fs := flag.NewFlagSet("signari", flag.ContinueOnError)
 	dsn := fs.String("dsn", os.Getenv("SIGNARI_DSN"), "PostgreSQL connection string")
 	to := fs.Int("to", 0, "stop at this version (0 = latest)")
+	lockTimeout := fs.Duration("lock-timeout", 10*time.Second,
+		"how long a migration statement may wait for a lock before it fails, so a migration "+
+			"queued behind a long transaction does not hold every query on that table (0 = no bound)")
+	statementTimeout := fs.Duration("statement-timeout", 0,
+		"how long a migration statement may run (0 = no bound: an index on a large table takes what it takes)")
 	issuer := fs.String("issuer", "", "issuer URL, e.g. https://id.example.com")
 	name := fs.String("name", "", "instance display name")
 	addr := fs.String("addr", ":8080", "listen address for `serve`")
@@ -765,17 +770,18 @@ func run(args []string) (err error) {
 
 	switch cmd {
 	case "migrate bootstrap":
-		return up(ctx, conn, migrate.TierBootstrap, *to)
+		return up(ctx, conn, migrate.TierBootstrap, *to, migrationOptions(*lockTimeout, *statementTimeout))
 	case "migrate up":
-		return up(ctx, conn, migrate.TierCore, *to)
+		return up(ctx, conn, migrate.TierCore, *to, migrationOptions(*lockTimeout, *statementTimeout))
 	case "migrate all":
 		// One command so the container image needs no shell to chain two.
 		// The runtime image is distroless -- there is no /bin/sh to fall back on,
 		// and adding one to a security product to save a CLI verb is a bad trade.
-		if err := up(ctx, conn, migrate.TierBootstrap, *to); err != nil {
+		opts := migrationOptions(*lockTimeout, *statementTimeout)
+		if err := up(ctx, conn, migrate.TierBootstrap, *to, opts); err != nil {
 			return err
 		}
-		return up(ctx, conn, migrate.TierCore, *to)
+		return up(ctx, conn, migrate.TierCore, *to, opts)
 	case "migrate status":
 		return status(ctx, conn)
 	case "migrate fingerprint":
@@ -2385,8 +2391,16 @@ func durationEnv(name string, fallback time.Duration) time.Duration {
 	return d
 }
 
-func up(ctx context.Context, conn *pgx.Conn, tier migrate.Tier, to int) error {
-	applied, err := migrate.Up(ctx, conn, tier, to)
+// migrationOptions bounds what a migration may wait for, and says when it is
+// waiting for another `migrate` to finish.
+func migrationOptions(lock, statement time.Duration) migrate.Options {
+	return migrate.Options{LockTimeout: lock, StatementTimeout: statement, Waiting: func() {
+		fmt.Println("another migrate is running against this database; waiting for it to finish")
+	}}
+}
+
+func up(ctx context.Context, conn *pgx.Conn, tier migrate.Tier, to int, opts migrate.Options) error {
+	applied, err := migrate.Up(ctx, conn, tier, to, opts)
 	// Report what did land even when a later migration fails -- knowing where it
 	// stopped is the difference between a five-minute fix and a restore.
 	for _, m := range applied {

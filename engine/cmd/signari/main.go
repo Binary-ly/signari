@@ -7743,6 +7743,15 @@ func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homep
 			hintList = append(hintList, h)
 		}
 	}
+	// And absent is refused for now. A Trust Anchor MUST publish a
+	// federation_fetch_endpoint (specs/oidfed.html:3451-3462) and this engine
+	// serves none, so it published itself as an anchor nobody could resolve a
+	// Subordinate Statement through. oidfed.Build refuses the same statement.
+	if len(hintList) == 0 {
+		return fmt.Errorf("give -authority-hints, the Trust Anchor or Intermediate above this " +
+			"entity: with none it would be a Trust Anchor, which MUST publish a " +
+			"federation_fetch_endpoint, and this engine does not serve one")
+	}
 
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -7804,12 +7813,7 @@ func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homep
 
 	url, _ := oidfed.ConfigurationURL(issuer)
 	fmt.Printf("federation enabled\n  entity id : %s\n  published : %s\n", issuer, url)
-	if len(hintList) == 0 {
-		fmt.Println("  no authority_hints: this entity is published as a Trust Anchor " +
-			"with no superiors. If it has one, re-run with -authority-hints.")
-	} else {
-		fmt.Printf("  superiors : %s\n", strings.Join(hintList, ", "))
-	}
+	fmt.Printf("  superiors : %s\n", strings.Join(hintList, ", "))
 	fmt.Println("  restart `signari serve` to register the endpoint")
 	return nil
 }

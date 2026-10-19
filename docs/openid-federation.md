@@ -33,11 +33,17 @@ advertised only once this entity has actually issued a Trust Mark.
 Then restart `signari serve`; the endpoint is registered at startup only when a
 federation key exists.
 
-`-authority-hints` names this entity's **Immediate Superiors**. §3.1.2 makes it
-REQUIRED for any entity with a superior above it, forbids the empty array, and
-forbids the claim entirely for a Trust Anchor with no superiors. Omitting the
-flag publishes this entity as a Trust Anchor, and the command says so rather than
-leaving it to be inferred.
+`-authority-hints` names this entity's **Immediate Superiors**, and it is
+**required**. §3.1.2 makes the claim REQUIRED for any entity with a superior above
+it, forbids the empty array, and forbids the claim entirely for a Trust Anchor
+with no superiors, so omitting it would make this entity a Trust Anchor. Trust
+Anchors "MUST publish a federation_fetch_endpoint" (the `federation_entity`
+metadata), and this engine serves none, so it cannot be one: the command refuses,
+and an Entity Configuration with no `authority_hints` is not published even if
+one was stored earlier. The same goes for `trust-mark issuers` and `trust-mark
+owners`, which set claims only a Trust Anchor publishes; both still clear them.
+Until October 2026 omitting the flag published a Trust Anchor that no resolver
+could fetch a Subordinate Statement from.
 
 ## The federation key is separate, and that is the point
 

@@ -305,6 +305,16 @@ func trustMarkDelegate(ctx context.Context, conn *pgx.Conn, markType, delegate, 
 	return nil
 }
 
+// errNoTrustAnchor refuses a claim only a Trust Anchor may publish. A Trust
+// Anchor MUST publish a federation_fetch_endpoint (specs/oidfed.html:3451-3462)
+// and this engine serves none, so it cannot be one, and a claim set for it
+// would only stop the Entity Configuration being built. Clearing still works.
+func errNoTrustAnchor(claim string) error {
+	return fmt.Errorf("%s is a Trust Anchor claim, and this engine cannot be a Trust Anchor "+
+		"until it serves the federation_fetch_endpoint every Trust Anchor MUST publish. "+
+		"Pass a file containing `{}` to clear it", claim)
+}
+
 // trustMarkIssuers writes §3.1.2's trust_mark_issuers claim from a JSON file.
 func trustMarkIssuers(ctx context.Context, conn *pgx.Conn, file string) error {
 	instanceID, _, err := selectInstance(ctx, conn, "")
@@ -336,6 +346,9 @@ func trustMarkIssuers(ctx context.Context, conn *pgx.Conn, file string) error {
 	}
 	if len(issuers) == 0 {
 		issuers = nil
+	}
+	if issuers != nil {
+		return errNoTrustAnchor("trust_mark_issuers")
 	}
 	if err := store.SetTrustMarkIssuers(ctx, conn, instanceID, issuers); err != nil {
 		return err
@@ -396,6 +409,9 @@ func trustMarkOwners(ctx context.Context, conn *pgx.Conn, file string) error {
 	}
 	if len(owners) == 0 {
 		owners = nil
+	}
+	if owners != nil {
+		return errNoTrustAnchor("trust_mark_owners")
 	}
 	if err := store.SetTrustMarkOwners(ctx, conn, instanceID, owners); err != nil {
 		return err

@@ -172,6 +172,13 @@ refusal in `oidfed.Build`, two gates for one rule. §3.1.2 says every reader
 writes down a federation policy that appears to be in force and is applied
 nowhere.
 
+**And this engine cannot be a Trust Anchor yet**, so setting either is refused
+outright; `{}` still clears them. A Trust Anchor MUST publish a
+`federation_fetch_endpoint`, which is not built, so an anchor published here was
+one no resolver could fetch a Subordinate Statement from. See
+[OpenID Federation](openid-federation.md#enabling-it). The rest of this section
+describes the claims for when it can.
+
 ### `trust_mark_issuers` and the empty array
 
 ```json

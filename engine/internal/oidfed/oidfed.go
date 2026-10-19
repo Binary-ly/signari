@@ -153,6 +153,18 @@ func Build(p Params, now time.Time) (*EntityConfiguration, error) {
 		return nil, fmt.Errorf("authority_hints must not be the empty array " +
 			"(section 3.1.2); pass nil for a Trust Anchor with no superiors")
 	}
+	// No authority_hints makes this entity a Trust Anchor, and "Intermediate
+	// Entities and Trust Anchors MUST publish a federation_fetch_endpoint"
+	// (federation_entity metadata, specs/oidfed.html:3451-3462). This engine
+	// serves none, so it published Trust Anchor statements a conformant
+	// resolver cannot use to fetch a single Subordinate Statement. Refused
+	// until the fetch endpoint exists (12.11).
+	if len(p.AuthorityHints) == 0 {
+		return nil, fmt.Errorf("an entity with no authority_hints is a Trust Anchor, and " +
+			"a Trust Anchor MUST publish a federation_fetch_endpoint, which this engine " +
+			"does not serve; name the Trust Anchor or Intermediate above this entity in " +
+			"authority_hints")
+	}
 	if p.TrustAnchorHints != nil && len(p.TrustAnchorHints) == 0 {
 		return nil, fmt.Errorf("trust_anchor_hints must not be the empty array " +
 			"(section 3.1.2); pass nil if there are none")

@@ -14,6 +14,9 @@ func good() Params {
 		EntityID:       "https://idp.example",
 		FederationJWKS: jwks,
 		Lifetime:       24 * time.Hour,
+		// A Superior: this engine cannot be a Trust Anchor until it serves a
+		// fetch endpoint (2.37).
+		AuthorityHints: []string{"https://anchor.example"},
 	}
 }
 
@@ -38,16 +41,26 @@ func TestTheHintClaimsAreNeverTheEmptyArray(t *testing.T) {
 		}
 	})
 
-	t.Run("nil means a Trust Anchor and is omitted from the JSON", func(t *testing.T) {
+	// nil means a Trust Anchor, which MUST publish a federation_fetch_endpoint
+	// (specs/oidfed.html:3451-3462). This engine serves none, so it is refused
+	// rather than published as an anchor nobody can resolve through (2.37).
+	t.Run("nil, a Trust Anchor, is refused until a fetch endpoint exists", func(t *testing.T) {
+		p := good()
+		p.AuthorityHints = nil
+		_, err := Build(p, time.Now())
+		if err == nil || !strings.Contains(err.Error(), "federation_fetch_endpoint") {
+			t.Fatalf("an entity with no authority_hints answered %v", err)
+		}
+	})
+
+	t.Run("an absent trust_anchor_hints is omitted from the JSON", func(t *testing.T) {
 		c, err := Build(good(), time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
 		raw, _ := json.Marshal(c)
-		for _, claim := range []string{"authority_hints", "trust_anchor_hints"} {
-			if strings.Contains(string(raw), claim) {
-				t.Errorf("%s appears in a Trust Anchor's configuration: %s", claim, raw)
-			}
+		if strings.Contains(string(raw), "trust_anchor_hints") {
+			t.Errorf("trust_anchor_hints appears though none was given: %s", raw)
 		}
 	})
 

@@ -354,11 +354,15 @@ func TestBuildRefusesAnEntityConfigurationWithMismatchedTrustMarks(t *testing.T)
 		EntityID:       "https://rp.example",
 		FederationJWKS: issuer.jwks(t),
 		Lifetime:       time.Hour,
+		AuthorityHints: []string{"https://ta.example"},
 		TrustMarks:     []TrustMarkEntry{{Type: "https://fed.example/other", JWT: raw}},
 	}, time.Now())
 	if err == nil {
 		t.Fatal("an Entity Configuration was built carrying a self-contradictory " +
 			"trust mark, which every conformant reader rejects")
+	}
+	if !strings.Contains(err.Error(), "type") {
+		t.Errorf("refused for another reason: %v", err)
 	}
 }
 
@@ -390,12 +394,14 @@ func TestTheTrustAnchorClaimsAreRefusedFromASubordinate(t *testing.T) {
 			t.Fatal("trust_mark_owners was published by an entity with a Superior")
 		}
 	})
-	t.Run("and permitted from an anchor", func(t *testing.T) {
+	// An anchor is where they belong, and an anchor is refused outright until
+	// this engine serves the fetch endpoint every Trust Anchor MUST (2.37).
+	t.Run("and from an anchor, refused as an anchor for now", func(t *testing.T) {
 		p := base
 		p.AuthorityHints = nil
 		p.TrustMarkIssuers = TrustMarkIssuers{"https://fed.example/p": {}}
-		if _, err := Build(p, time.Now()); err != nil {
-			t.Fatalf("a Trust Anchor could not publish trust_mark_issuers: %v", err)
+		if _, err := Build(p, time.Now()); err == nil || !strings.Contains(err.Error(), "federation_fetch_endpoint") {
+			t.Fatalf("a Trust Anchor statement answered %v", err)
 		}
 	})
 }

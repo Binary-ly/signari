@@ -682,22 +682,42 @@ func (s *Server) samlCertificateFor(ctx context.Context, k keys.Key) ([]byte, er
 // samlCertificates returns every certificate a service provider should accept,
 // so that rotation does not break every integration at the moment of the switch.
 func (s *Server) samlCertificates(ctx context.Context) ([][]byte, error) {
-	k, err := s.samlSigningKey()
+	active, err := s.samlSigningKey()
 	if err != nil {
 		return nil, err
 	}
+	// Every RS256 key that is not retired: the active one that signs, the next
+	// one so a provider refetching metadata pins it before it signs, and the
+	// passive one a provider may still be holding a response from. Only the
+	// active key's certificate was published, against docs/saml.md, so a
+	// rotation was an outage for every provider that pins: the first assertion
+	// under the new key arrived with a certificate it had never seen.
+	ordered := []keys.Key{active}
+	for _, k := range s.cfg.Keys.Keys() {
+		if k.KID() == active.KID() || k.Algorithm() != keys.RS256 {
+			continue
+		}
+		if st := k.State(); st == keys.StateNext || st == keys.StatePassive {
+			ordered = append(ordered, k)
+		}
+	}
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	der, err := saml.EnsureCertificate(ctx, tx, k.KID(), s.cfg.Issuer, k.Signer())
-	if err != nil {
-		return nil, err
+	var out [][]byte
+	for _, k := range ordered {
+		der, err := saml.EnsureCertificate(ctx, tx, k.KID(), s.cfg.Issuer, k.Signer())
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, der)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return [][]byte{der}, nil
+	return out, nil
 }

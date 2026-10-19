@@ -1409,6 +1409,42 @@ func idpSetEnabled(ctx context.Context, conn *pgx.Conn, slug string, enabled boo
 	return nil
 }
 
+// inviteRevoke closes an open invitation, so its link stops working at once.
+func inviteRevoke(ctx context.Context, conn *pgx.Conn, orgID, id string) error {
+	if orgID == "" || id == "" {
+		return fmt.Errorf("give -org and -invitation (the id `signari invite list` shows)")
+	}
+	if err := store.RevokeInvitation(ctx, conn, orgID, id); err != nil {
+		if errors.Is(err, store.ErrInvitationNotRevocable) {
+			return fmt.Errorf("%w; `signari invite list -org %s` shows which are open", err, orgID)
+		}
+		return err
+	}
+	fmt.Printf("invitation %s is revoked: its link no longer creates an account\n", id)
+	return nil
+}
+
+// scimSourceSetEnabled takes an inbound SCIM source out of service, or puts it
+// back. Disabled, its bearer token is refused from the next request.
+func scimSourceSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, enabled bool) error {
+	if orgID == "" || slug == "" {
+		return fmt.Errorf("give -org and -slug")
+	}
+	if err := store.SetSCIMSourceEnabled(ctx, conn, orgID, slug, enabled); err != nil {
+		if errors.Is(err, store.ErrSCIMSourceUnknown) {
+			return fmt.Errorf("%w; `signari scim-source list` shows the registered ones", err)
+		}
+		return err
+	}
+	if enabled {
+		fmt.Printf("%s is enabled: its token provisions again\n", slug)
+		return nil
+	}
+	fmt.Printf("%s is disabled: its token is refused from the next request. Links and\n", slug)
+	fmt.Println("settings are kept, and the accounts it provisioned are left as they are.")
+	return nil
+}
+
 // instanceWebAuthn sets the Relying Party identity passkeys are bound to.
 //
 // # Nothing could set this, so passkeys were unavailable everywhere

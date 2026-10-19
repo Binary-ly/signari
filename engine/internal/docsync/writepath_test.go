@@ -62,6 +62,12 @@ import (
 // Each entry says what is fixed at its default as a result. **Delete entries as
 // they are closed; never add one to make a build pass.**
 var knownUnwritable = map[string]string{
+	// Single-row tables' keys: the migration inserts the one row with the
+	// column's only allowed value and every statement filters on it. Counted as
+	// written only while the guard read WHERE clauses as writes.
+	"config_version.id":           "the one row's key, true by CHECK, seeded by its migration; nothing has another value to write",
+	"audit_stream_state.only_row": "the one row's key, true by CHECK, seeded by its migration; nothing has another value to write",
+
 	// The engine's own runtime state, not operator configuration. These are
 	// written by nothing because the feature that would write them is absent,
 	// which is a different repair from adding a command.
@@ -351,6 +357,93 @@ func TestEveryTableTheEngineReadsCanBeWritten(t *testing.T) {
 // required all of them, so one column the code happens to UPDATE — a counter
 // like `migration_sources.delegated_successes` — was enough to make the whole
 // table report twice.
+// writtenText is the part of every write statement on table that names the
+// columns it writes, lower-cased: an UPDATE's SET list, an INSERT's column list
+// and its ON CONFLICT ... DO UPDATE SET list, and a COPY's column list. Each
+// statement runs to its first terminator -- a `;` in SQL or the backtick closing
+// a Go raw string -- so one INSERT does not swallow the file.
+//
+// Only that part. The whole statement used to count, so a column named in an
+// UPDATE's WHERE, an INSERT's conflict target or a RETURNING list passed as
+// written: `UPDATE core.t SET a = $1 WHERE b = $2` made b look writable, and a
+// column read on the request path with no writer anywhere was reported clean
+// as long as something filtered on it (SS-26).
+func writtenText(files map[string]string, table string) string {
+	stmt := regexp.MustCompile(`(?is)\b(INSERT INTO|UPDATE|COPY)\s+core\.` + table + `\b(.*?)(?:;|` + "`" + `)`)
+	var b strings.Builder
+	for _, body := range files {
+		for _, m := range stmt.FindAllStringSubmatch(body, -1) {
+			b.WriteString(writtenPart(strings.ToUpper(m[1]), strings.ToLower(m[2])))
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+var (
+	setList     = regexp.MustCompile(`(?s)\bset\b(.*?)(?:\bwhere\b|\breturning\b|\bfrom\b|$)`)
+	columnList  = regexp.MustCompile(`(?s)^\s*(?:as\s+\w+\s*)?\(([^)]*)\)`)
+	conflictSet = regexp.MustCompile(`(?s)\bdo\s+update\s+set\b(.*?)(?:\bwhere\b|\breturning\b|$)`)
+)
+
+// writtenPart is what one statement writes, from the text after its table name.
+func writtenPart(kind, rest string) string {
+	switch kind {
+	case "UPDATE":
+		if m := setList.FindStringSubmatch(rest); m != nil {
+			return m[1]
+		}
+		return ""
+	case "COPY":
+		if m := columnList.FindStringSubmatch(rest); m != nil {
+			return m[1]
+		}
+		return rest // no column list: every column, positionally
+	}
+	// INSERT. With no column list the row is every column positionally, which
+	// this cannot tell apart, so the whole statement counts.
+	m := columnList.FindStringSubmatch(rest)
+	if m == nil {
+		return rest
+	}
+	out := m[1]
+	if c := conflictSet.FindStringSubmatch(rest); c != nil {
+		out += "\n" + c[1]
+	}
+	return out
+}
+
+// The guard counts what a statement writes, not every column it mentions. A
+// column in a WHERE, a conflict target or a RETURNING list is read there, and
+// counting it as written hid two switches nothing could set:
+// scim_sources.enabled and invitations.revoked_at.
+func TestTheWritePathGuardCountsOnlyWrittenColumns(t *testing.T) {
+	for _, c := range []struct {
+		kind, rest string
+		written    []string
+		notWritten []string
+	}{
+		{"UPDATE", " set enabled = $3 where org_id = $1 and slug = $2 returning id",
+			[]string{"enabled"}, []string{"org_id", "slug", "id"}},
+		{"INSERT", " (org_id, host) values ($1, $2) on conflict (org_id, lower(host)) " +
+			"do update set enabled = excluded.enabled where core.proxy_hosts.flag returning created_at",
+			[]string{"org_id", "host", "enabled"}, []string{"flag", "created_at"}},
+		{"COPY", " (user_id, hash) from stdin", []string{"user_id", "hash"}, nil},
+	} {
+		got := writtenPart(c.kind, c.rest)
+		for _, w := range c.written {
+			if !regexp.MustCompile(`\b` + w + `\b`).MatchString(got) {
+				t.Errorf("%s%s: %s is written and was not counted (%q)", c.kind, c.rest, w, got)
+			}
+		}
+		for _, n := range c.notWritten {
+			if regexp.MustCompile(`\b` + n + `\b`).MatchString(got) {
+				t.Errorf("%s%s: %s is only read and was counted as written (%q)", c.kind, c.rest, n, got)
+			}
+		}
+	}
+}
+
 func tableFullyKnown(t *testing.T, root string, files map[string]string, table string) bool {
 	t.Helper()
 	_, cols := readSchema(t, root)
@@ -362,15 +455,7 @@ func tableFullyKnown(t *testing.T, root string, files map[string]string, table s
 	}
 	all := everything.String()
 
-	stmt := regexp.MustCompile(`(?is)(?:INSERT INTO|UPDATE|COPY)\s+core\.` + table + `\b(.*?)(?:;|` + "`" + `)`)
-	var w strings.Builder
-	for _, body := range files {
-		for _, m := range stmt.FindAllStringSubmatch(body, -1) {
-			w.WriteString(strings.ToLower(m[1]))
-			w.WriteString("\n")
-		}
-	}
-	written := w.String()
+	written := writtenText(files, table)
 
 	var anyFailing bool
 	for _, c := range cols {
@@ -419,15 +504,7 @@ func TestEveryColumnTheEngineReadsCanBeWritten(t *testing.T) {
 		if v, ok := writes[table]; ok {
 			return v
 		}
-		stmt := regexp.MustCompile(`(?is)(?:INSERT INTO|UPDATE|COPY)\s+core\.` + table + `\b(.*?)(?:;|` + "`" + `)`)
-		var b strings.Builder
-		for _, body := range files {
-			for _, m := range stmt.FindAllStringSubmatch(body, -1) {
-				b.WriteString(strings.ToLower(m[1]))
-				b.WriteString("\n")
-			}
-		}
-		writes[table] = b.String()
+		writes[table] = writtenText(files, table)
 		return writes[table]
 	}
 

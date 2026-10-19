@@ -428,6 +428,7 @@ func run(args []string) error {
 	subEvents := fs.String("event-types", "", "comma-separated event types, or empty for all")
 	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins")
 	inviteTTL := fs.Duration("expires", 7*24*time.Hour, "how long the invitation lasts")
+	inviteID := fs.String("invitation", "", "`invite revoke`: the invitation's id, from `invite list`")
 	signupDomains := fs.String("domains", "",
 		"comma-separated email domains permitted to self-sign-up")
 	brandName := fs.String("brand-name", "", "product name shown on sign-in pages")
@@ -900,6 +901,8 @@ func run(args []string) error {
 		return inviteCreate(ctx, conn, *orgID, *email, *inviteGroups, *inviteTTL, *issuer)
 	case "invite list":
 		return inviteList(ctx, conn, *orgID)
+	case "invite revoke":
+		return inviteRevoke(ctx, conn, *orgID, *inviteID)
 	case "signup enable":
 		return signupEnable(ctx, conn, *orgID, *signupDomains, *inviteGroups)
 	case "signup disable":
@@ -976,6 +979,10 @@ func run(args []string) error {
 		return scimSourceAdd(ctx, conn, *orgID, *slug, *name, *onDeactivate)
 	case "scim-source list":
 		return scimSourceList(ctx, conn)
+	case "scim-source disable":
+		return scimSourceSetEnabled(ctx, conn, *orgID, *slug, false)
+	case "scim-source enable":
+		return scimSourceSetEnabled(ctx, conn, *orgID, *slug, true)
 	case "scim list":
 		return scimList(ctx, conn)
 	case "scim sync":
@@ -6295,7 +6302,8 @@ func inviteList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		if who == "" {
 			who = "(anyone with the link)"
 		}
-		fmt.Printf("  %-8s %-34s %s\n", state, who, strings.Join(groups, ","))
+		// The id, so an open one can be revoked by name (`invite revoke`).
+		fmt.Printf("  %s  %-8s %-34s %s\n", id, state, who, strings.Join(groups, ","))
 		n++
 	}
 	if n == 0 {

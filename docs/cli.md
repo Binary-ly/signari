@@ -54,7 +54,8 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari group create` / `group list` / `group member` / `group release` | Groups, membership, and which clients may see them |
 | `signari group impersonation` | Grant or revoke a group's ability to act as another user. **Deliberately not in the Admin API**: a `groups:write` token is issued for day-to-day administration, and letting one grant this would turn every such token into a way to become anybody. See [impersonation.md](impersonation.md) |
 | `signari webauthn policy` / `webauthn show` | Which authenticator models an organisation accepts, and what attestation to ask for. An allow-list admits only a registration whose attestation is a certificate chain anchored in the FIDO catalogue (see `SIGNARI_FIDO_MDS_*` in [configuration](configuration.md)), because any other AAGUID is chosen by the authenticator being filtered. Without a catalogue, every registration under an allow-list is refused |
-| `signari invite create` / `invite list` | Invitations |
+| `signari invite create` / `invite list` | Invitations. The list shows each one's id |
+| `signari invite revoke` | `-org <uuid> -invitation <id>`: close an open invitation, so its link stops working at once. Audited. Until October 2026 sign-up refused a revoked invitation and nothing could revoke one, so a link sent to the wrong address stayed good until it expired |
 | `signari signup enable` / `signup disable` / `signup show` | Self-service sign-up, and which email domains may use it |
 | `signari registration enable` / `registration token` | Dynamic client registration (RFC 7591) |
 | `signari erase subject` | Crypto-shred a subject: destroy their data-encryption key so ciphertext, including in backups, is permanently unreadable. See [erasure.md](erasure.md) |
@@ -112,6 +113,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari saml signing` | What is signed, and how long an assertion lives. Signing neither the assertion nor the response is refused by the schema — the service provider would have nothing to check |
 | `signari saml group-release` | Which groups a service provider is told about, matching `group release` for OIDC clients. Group membership is authorization data, so it is an allow-list |
 | `signari scim-source add` / `scim-source list` | Inbound SCIM |
+| `signari scim-source disable` / `scim-source enable` | `-org <uuid> -slug <slug>`: take an inbound provisioning source out of service, or put it back. Disabled, its bearer token is refused from the next request. Links, settings and the accounts it provisioned are kept. Audited. The switch existed and was read on every request, and nothing could turn it off |
 | `signari kerberos check` / `kerberos principals` / `kerberos sync` | Kerberos/SPNEGO, keytab checking, principal import |
 | `signari dir add` / `dir sync` | Directory sync from LDAP, Entra or Google |
 | `signari dir group-map` | Which local group a directory group grants. A sync grants nothing that is not mapped here, so a directory reporting `domain admins` cannot make anybody an administrator of this system by name alone |

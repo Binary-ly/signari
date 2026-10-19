@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/scim"
 )
 
@@ -82,6 +83,43 @@ func refuseIfPrivileged(ctx context.Context, tx pgx.Tx, userID, what string) err
 			"deployment can"}
 	}
 	return nil
+}
+
+// ErrSCIMSourceUnknown means no source in that organisation has that slug.
+var ErrSCIMSourceUnknown = fmt.Errorf("no SCIM source with that slug in that organisation")
+
+// SetSCIMSourceEnabled takes an inbound provisioning source out of service, or
+// puts it back, audited, in one transaction. Disabled, its bearer token is
+// refused at once (FindSCIMSourceByToken reads the flag per request); its links
+// and settings are kept, so enabling restores exactly what was there.
+//
+// The flag was read from the start and nothing could set it: a source whose
+// upstream system was compromised kept creating and changing accounts until
+// somebody edited the database.
+func SetSCIMSourceEnabled(ctx context.Context, db interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, orgID, slug string, enabled bool) error {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
+		UPDATE core.scim_sources SET enabled = $3
+		 WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, enabled)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSCIMSourceUnknown
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "admin.scim_source_updated", OrgID: orgID,
+		Detail: map[string]any{"source": slug, "enabled": enabled, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // FindSCIMSourceByToken resolves a bearer token hash to its source.

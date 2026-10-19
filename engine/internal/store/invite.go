@@ -13,6 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/audit"
 )
 
 // Invitations, and open self-signup.
@@ -89,6 +91,47 @@ func CreateInvitation(ctx context.Context, db *pgxpool.Pool, orgID, email string
 		return "", err
 	}
 	return token, nil
+}
+
+// ErrInvitationNotRevocable means no open invitation in that organisation has
+// that id: it does not exist, belongs elsewhere, or was already used or
+// revoked. One answer for all, as ClaimInvitation gives one answer.
+var ErrInvitationNotRevocable = errors.New("no open invitation with that id in that organisation")
+
+// RevokeInvitation closes an open invitation, audited, in one transaction.
+//
+// ClaimInvitation and PeekInvitation refused a revoked invitation from the
+// start, and nothing could revoke one: a link sent to the wrong address, or
+// to somebody who has since left, stayed good until it expired.
+func RevokeInvitation(ctx context.Context, db interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, orgID, id string) error {
+	canonical, ok := CanonicalUUID(id)
+	if !ok {
+		return ErrInvitationNotRevocable
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var email *string
+	if err := tx.QueryRow(ctx, `
+		UPDATE core.invitations SET revoked_at = now()
+		 WHERE id = $1::uuid AND org_id = $2::uuid AND used_at IS NULL AND revoked_at IS NULL
+		RETURNING email`, canonical, orgID).Scan(&email); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInvitationNotRevocable
+		}
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "admin.invitation_revoked", OrgID: orgID,
+		Detail: map[string]any{"invitation": canonical, "bound": email != nil, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the revocation: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // ClaimInvitation consumes a token, or refuses.

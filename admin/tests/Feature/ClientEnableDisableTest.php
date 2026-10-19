@@ -117,7 +117,12 @@ class ClientEnableDisableTest extends TestCase
      */
     public function test_a_refused_write_is_reported_as_a_failure(): void
     {
-        Http::fake(['*/admin/clients/*' => Http::response(['error' => 'server_error'], 500)]);
+        // The version first, because every console write is conditional (078dd5d):
+        // unfaked, that read failed before the refusal this test is about.
+        Http::fake([
+            '*/admin/config-version' => Http::response(['config_version' => 1]),
+            '*/admin/clients/*' => Http::response(['error' => 'server_error'], 500),
+        ]);
 
         $this->actingAs($this->operator);
 

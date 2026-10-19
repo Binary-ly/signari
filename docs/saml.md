@@ -244,6 +244,15 @@ The signature is checked **before** validation, because everything validation go
 on to decide — which ACS URL, which NameID format, whether to force
 re-authentication — is read out of the document.
 
+**A signed AuthnRequest is answered once.** Its ID is recorded when the assertion
+is issued, and the same request presented again is answered with a `Requester`
+status and no assertion, so a captured request cannot keep drawing fresh
+assertions for whoever holds a signed-in browser. It is recorded at issuance
+rather than on arrival because a request parked across sign-in comes back
+carrying the same document. An unsigned request is not recorded: anyone can mint
+a new ID for one. Until October 2026 the table documented this and nothing wrote
+to it.
+
 ### The two bindings sign different things
 
 | Binding | What is signed | Verified by |

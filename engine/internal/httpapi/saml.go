@@ -245,6 +245,30 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A signed AuthnRequest is answered once. Recorded here, where an assertion
+	// is about to be issued for it, and not on arrival: a request parked across
+	// sign-in comes back carrying the same document, and refusing that would
+	// refuse every first sign-in. The table said it covered signed
+	// AuthnRequests and nothing wrote one, so a captured request kept drawing
+	// fresh assertions for whoever held the browser. Unsigned requests are not
+	// recorded: anyone can mint another ID for one, so remembering it protects
+	// nothing. Namespaced by provider, since two providers may pick one ID.
+	if provider.WantAuthnRequestsSigned {
+		fresh, merr := s.markAuthnRequestAnswered(ctx, validated.RequestID, provider)
+		if merr != nil {
+			s.log.Error("recording a signed AuthnRequest", "err", merr)
+			http.Error(w, "unavailable", http.StatusInternalServerError)
+			return
+		}
+		if !fresh {
+			s.log.Info("SAML AuthnRequest replayed", "entity_id", provider.EntityID,
+				"request_id", validated.RequestID, "correlation_id", correlationID(ctx))
+			s.postSAMLStatus(w, r, validated, provider, saml.StatusRequester,
+				"this AuthnRequest has already been answered", relayState)
+			return
+		}
+	}
+
 	doc, acs, err := s.issueSAMLAssertion(ctx, r, validated, provider, sid, userID, orgID)
 	var denied *policyDenied
 	if errors.As(err, &denied) {
@@ -621,6 +645,21 @@ func (s *Server) postSAMLStatus(w http.ResponseWriter, r *http.Request, v *saml.
 		return
 	}
 	s.postSAMLResponse(w, r, v.ACSURL, doc, relayState)
+}
+
+// markAuthnRequestAnswered records a signed AuthnRequest's ID, reporting false
+// if it was answered before.
+func (s *Server) markAuthnRequestAnswered(ctx context.Context, requestID string, p *saml.Provider) (bool, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	fresh, err := store.MarkSAMLRequestSeen(ctx, tx, "authn:"+p.ID+":"+requestID, p.OrgID, p.ID, samlRequestTTL)
+	if err != nil {
+		return false, err
+	}
+	return fresh, tx.Commit(ctx)
 }
 
 // samlRefuse answers the BROWSER, not the service provider.

@@ -60,6 +60,18 @@ func TestDynamicRegistrationRecordsTheSignOutMetadata(t *testing.T) {
 		t.Errorf("the response gives the signing algorithm as %v, want the default ES256",
 			out["id_token_signed_response_alg"])
 	}
+	// A client may require PAR of itself (RFC 9126 §6), and is told it did.
+	code, par := register(`{"redirect_uris":["https://rp.test/cb"],"require_pushed_authorization_requests":true}`)
+	parID, _ := par["client_id"].(string)
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.clients WHERE client_id = $1`, parID)
+	})
+	if st, err := store.ClientSettingsOf(context.Background(), f.pool, parID); code != http.StatusCreated ||
+		par["require_pushed_authorization_requests"] != true || err != nil || !st.RequirePAR {
+		t.Errorf("registering require_pushed_authorization_requests gave %d %v, stored %v (%v)",
+			code, par["require_pushed_authorization_requests"], st.RequirePAR, err)
+	}
+
 	for _, alg := range []string{"HS256", "RS256"} {
 		if code, out := register(`{"redirect_uris":["https://rp.test/cb"],
 			"id_token_signed_response_alg":"` + alg + `"}`); code != http.StatusBadRequest ||

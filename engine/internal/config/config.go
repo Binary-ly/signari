@@ -90,12 +90,15 @@ type Client struct {
 	RefreshTokenTTL *time.Duration `yaml:"refresh_token_ttl"`
 	// IDTokenAlg signs the client's ID and access tokens; absent leaves it.
 	IDTokenAlg *string `yaml:"id_token_signed_response_alg"`
+	// RequirePAR and FirstParty are the switches; each absent leaves it.
+	RequirePAR *bool `yaml:"require_pushed_authorization_requests"`
+	FirstParty *bool `yaml:"first_party"`
 }
 
 // settings is the client's part for store.SetClientSettings.
 func (c Client) settings() store.ClientSettings {
 	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL,
-		IDTokenAlg: c.IDTokenAlg}
+		IDTokenAlg: c.IDTokenAlg, RequirePAR: c.RequirePAR, FirstParty: c.FirstParty}
 }
 
 // TokenExchange is whether a client may exchange tokens, and for which

@@ -354,6 +354,10 @@ func run(args []string) (err error) {
 	accessTTL := fs.Duration("access-ttl", 0,
 		"`client set-lifetimes`: access-token lifetime, 1m to 1h; it is also how long a revoked token keeps working")
 	refreshTTL := fs.Duration("refresh-ttl", 0, "`client set-lifetimes`: refresh-token lifetime, 5m to 8760h")
+	requirePAR := fs.Bool("require-par", true,
+		"`client set-par`: refuse any authorization the client did not push first (false lifts it)")
+	firstParty := fs.Bool("first-party", true,
+		"`client set-first-party`: skip the consent screen for this client (false restores it)")
 	postLogoutRedirects := fs.String("post-logout-redirects", "",
 		"`client set-logout`: comma-separated URIs a relying party may name as post_logout_redirect_uri (empty clears)")
 	frontchannelURI := fs.String("frontchannel-uri", "",
@@ -774,6 +778,14 @@ func run(args []string) (err error) {
 		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL)
 	case "client set-alg":
 		return clientSetAlg(ctx, conn, *clientID, *alg)
+	case "client set-par":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RequirePAR: requirePAR},
+			map[bool]string{true: "authorization must be pushed first (RFC 9126)",
+				false: "authorization may start without pushing"}[*requirePAR])
+	case "client set-first-party":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{FirstParty: firstParty},
+			map[bool]string{true: "first-party: the consent screen is skipped",
+				false: "the consent screen is shown"}[*firstParty])
 	case "client set-dpop":
 		return clientSetDPoP(ctx, conn, *clientID, *dpopBound)
 	case "client set-pkce":
@@ -8618,6 +8630,30 @@ func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string) err
 		return err
 	}
 	fmt.Printf("%s: ID and access tokens are signed with %s\n", clientID, alg)
+	return nil
+}
+
+// clientSetSwitch writes one of a client's on/off settings and says what it
+// now means.
+func clientSetSwitch(ctx context.Context, conn *pgx.Conn, clientID string, s store.ClientSettings, now string) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client-id")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetClientSettings(ctx, tx, clientID, s); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s\n", clientID, now)
 	return nil
 }
 

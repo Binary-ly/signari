@@ -86,6 +86,11 @@ type registrationRequest struct {
 	// Only ever about the registrant's own tokens. Dropped before, so a client
 	// asking for RS256 was answered in ES256 and could not verify it.
 	IDTokenSignedResponseAlg string `json:"id_token_signed_response_alg"`
+
+	// RFC 9126 §6: "Indicates whether the client is required to use PAR to
+	// initiate authorization requests." A client constraining itself, so safe
+	// from open registration like dpop_bound_access_tokens.
+	RequirePushedAuthorizationRequests bool `json:"require_pushed_authorization_requests"`
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -226,6 +231,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if a := strings.TrimSpace(req.IDTokenSignedResponseAlg); a != "" {
 		settings.IDTokenAlg = &a
 	}
+	if req.RequirePushedAuthorizationRequests {
+		settings.RequirePAR = &req.RequirePushedAuthorizationRequests
+	}
 	reg, err := store.RegisterClient(ctx, s.db, store.NewClientRegistration{
 		Settings:     settings,
 		OrgID:        orgID,
@@ -283,6 +291,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// will be verifying.
 	if st, serr := store.ClientSettingsOf(ctx, s.db, reg.ClientID); serr == nil {
 		body["id_token_signed_response_alg"] = st.IDTokenAlg
+		body["require_pushed_authorization_requests"] = st.RequirePAR
 	}
 	if req.FrontchannelLogoutURI != "" {
 		body["frontchannel_logout_uri"] = req.FrontchannelLogoutURI

@@ -344,15 +344,6 @@ func writeJSONBody(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// clientRequiresPAR reports whether a client may only start through PAR.
-func (s *Server) clientRequiresPAR(ctx context.Context, clientID string) (bool, error) {
-	var required bool
-	err := s.db.QueryRow(ctx,
-		`SELECT require_pushed_authorization FROM core.clients WHERE client_id = $1`,
-		clientID).Scan(&required)
-	return required, err
-}
-
 // renderAuthzFailure reports a failure that cannot be sent to a redirect_uri.
 //
 // Everything reaching here failed BEFORE a redirect target was established, so

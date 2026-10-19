@@ -27,6 +27,12 @@ type ClientSettings struct {
 	// key for, since a token endpoint asked to sign with a key it does not have
 	// answers every request with an error.
 	IDTokenAlg *string
+	// RequirePAR refuses any authorization the client did not push first (RFC
+	// 9126 §6, require_pushed_authorization_requests).
+	RequirePAR *bool
+	// FirstParty skips the consent screen for the client (migration 0010). An
+	// operator's decision only; dynamic registration never sets it.
+	FirstParty *bool
 }
 
 // ClientAlgorithms are the JWS algorithms a client may be set to sign with,
@@ -87,6 +93,18 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
+	if v := s.RequirePAR; v != nil {
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET require_pushed_authorization = $2,
+			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
+			return err
+		}
+	}
+	if v := s.FirstParty; v != nil {
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET first_party = $2, updated_at = now()
+			WHERE client_id = $1`, clientID, *v)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -127,6 +145,8 @@ type ClientSettingsView struct {
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
 	IDTokenAlg      string
+	RequirePAR      bool
+	FirstParty      bool
 }
 
 // ClientSettingsOf reads a client's token settings.
@@ -135,8 +155,10 @@ func ClientSettingsOf(ctx context.Context, q interface {
 }, clientID string) (ClientSettingsView, error) {
 	var v ClientSettingsView
 	var access, refresh int
-	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, id_token_signed_alg
-		FROM core.clients WHERE client_id = $1`, clientID).Scan(&access, &refresh, &v.IDTokenAlg)
+	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, id_token_signed_alg,
+		       require_pushed_authorization, first_party
+		FROM core.clients WHERE client_id = $1`, clientID).
+		Scan(&access, &refresh, &v.IDTokenAlg, &v.RequirePAR, &v.FirstParty)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

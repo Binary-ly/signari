@@ -67,10 +67,13 @@ nobody remembers is there.
 handles make the parameters that will be authorized depend on a lookup chain,
 which is the indirection this endpoint removes.
 
-**`require_pushed_authorization`** can be set per client. Off by default, since
-turning it on breaks any integration that has not moved — but without it PAR is
-advisory: a client that can also send a plain request has gained an option, not
-the integrity property.
+**`require_pushed_authorization`** can be set per client, with `signari client
+set-par`, the client PATCH and `apply` (`require_pushed_authorization_requests`),
+or by the client itself at dynamic registration under that RFC 9126 §6 name. Off
+by default, since turning it on breaks any integration that has not moved — but
+without it PAR is advisory: a client that can also send a plain request has
+gained an option, not the integrity property. A plain request from such a
+client is refused, and no session or code comes of it.
 
 **Sixty pushes per address per minute for a public client.** Every push is a
 stored row, and a public client authenticates nothing here, so before this a

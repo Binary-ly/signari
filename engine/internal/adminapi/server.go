@@ -408,6 +408,10 @@ type patchClientRequest struct {
 	// IDTokenSignedResponseAlg, by its dynamic-registration name, signs the
 	// client's ID and access tokens.
 	IDTokenSignedResponseAlg *string `json:"id_token_signed_response_alg"`
+	// RequirePushedAuthorizationRequests is RFC 9126 §6's name; FirstParty
+	// skips the consent screen.
+	RequirePushedAuthorizationRequests *bool `json:"require_pushed_authorization_requests"`
+	FirstParty                         *bool `json:"first_party"`
 }
 
 func (r patchClientRequest) setsLogout() bool {
@@ -427,7 +431,9 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 		s.RefreshTokenTTL = &d
 	}
 	s.IDTokenAlg = r.IDTokenSignedResponseAlg
-	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil || r.IDTokenSignedResponseAlg != nil
+	s.RequirePAR, s.FirstParty = r.RequirePushedAuthorizationRequests, r.FirstParty
+	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil ||
+		r.IDTokenSignedResponseAlg != nil || r.RequirePushedAuthorizationRequests != nil || r.FirstParty != nil
 }
 
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
@@ -553,9 +559,11 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			lifetimes = map[string]any{
-				"access_token_ttl_s":           int(got.AccessTokenTTL.Seconds()),
-				"refresh_token_ttl_s":          int(got.RefreshTokenTTL.Seconds()),
-				"id_token_signed_response_alg": got.IDTokenAlg,
+				"access_token_ttl_s":                    int(got.AccessTokenTTL.Seconds()),
+				"refresh_token_ttl_s":                   int(got.RefreshTokenTTL.Seconds()),
+				"id_token_signed_response_alg":          got.IDTokenAlg,
+				"require_pushed_authorization_requests": got.RequirePAR,
+				"first_party":                           got.FirstParty,
 			}
 			for k, v := range lifetimes {
 				detail[k] = v

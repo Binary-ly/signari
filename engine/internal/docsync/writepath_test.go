@@ -98,10 +98,8 @@ var knownUnwritable = map[string]string{
 
 	// Per-client protocol settings with no command. Each is a real gap; they
 	// cluster into a small number of `client set-*` verbs.
-	"clients.pkce_methods":                 "fixed at S256",
-	"clients.require_pushed_authorization": "PAR cannot be required per client",
-	"clients.first_party":                  "first-party consent skipping cannot be granted",
-	"clients.issuer_alias":                 "a client cannot be pinned to an issuer alias",
+	"clients.pkce_methods": "fixed at S256",
+	"clients.issuer_alias": "a client cannot be pinned to an issuer alias",
 
 	// Tables with no create path at all.
 	"instance_issuer_aliases.instance_id":  "issuer aliases cannot be registered, so issuer migration is unavailable",

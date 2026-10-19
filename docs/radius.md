@@ -22,6 +22,13 @@ that contains its source address, so a `/24` for a controller inside a `/16`
 for the building uses the controller's secret. Two entries for exactly the same
 network are refused when they are added.
 
+A network that covers every address is refused, whether it is written as
+`0.0.0.0/0`, as `::/0`, or as the IPv4-mapped `::ffff:0.0.0.0/96`. An
+IPv4-mapped network is read as the IPv4 network it means, both when it is added
+and when it is loaded. The mapped `/96` passed the old check, because 96 bits
+are not zero. Yet it matched every IPv4 source, and at 96 bits it outranked
+every real range under most-specific matching.
+
 ## A correction
 
 An earlier version of this page documented `SIGNARI_RADIUS_CLIENTS` as the way to

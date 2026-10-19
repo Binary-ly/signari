@@ -31,6 +31,7 @@ import (
 
 	"fmt"
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/store"
 	"sort"
 	"strings"
@@ -209,6 +210,10 @@ func (f *File) Validate() error {
 		seenRadius[r.Name] = true
 		if r.Network == "" {
 			add("radius_clients[%s]: network is required", r.Name)
+		} else if _, err := radius.ClientNetwork(r.Network); err != nil {
+			// The rule `radius add-client` applies, an IPv4-mapped spelling of
+			// every address included.
+			add("radius_clients[%s]: network %v", r.Name, err)
 		}
 		if r.Secret != "" {
 			add("radius_clients[%s]: remove `secret`. A RADIUS shared secret in a "+

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,36 @@ import (
 // system has.
 type Authenticator interface {
 	Authenticate(ctx context.Context, username, password string) error
+}
+
+// ClientNetwork reads a RADIUS client's source range, as the operator gives it
+// and as the database returns it, and refuses one that covers every address.
+//
+// An IPv4-mapped IPv6 prefix is turned into the IPv4 prefix it means first.
+// `::ffff:0.0.0.0/96` passed the old every-address check -- 96 bits are not
+// zero -- yet net.IPNet matches an IPv4 source against the last 32 bits of its
+// mask, all zero here, so it accepted every IPv4 address; and as a 96-bit
+// prefix it outranked every real IPv4 range under longest-prefix matching.
+// Normalised, it is 0.0.0.0/0, and refused.
+func ClientNetwork(s string) (*net.IPNet, error) {
+	p, err := netip.ParsePrefix(strings.TrimSpace(s))
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a CIDR: %w", s, err)
+	}
+	if p.Addr().Is4In6() && p.Bits() >= 96 {
+		p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+	}
+	p = p.Masked()
+	if p.Bits() == 0 {
+		return nil, fmt.Errorf("%q accepts every source address. RADIUS has no handshake "+
+			"and no certificate, so the address range is part of the credential -- narrow "+
+			"it to the devices that actually ask", s)
+	}
+	_, ipnet, err := net.ParseCIDR(p.String())
+	if err != nil {
+		return nil, err
+	}
+	return ipnet, nil
 }
 
 // AuthTimeout is the longest one Access-Request's authentication may take,

@@ -147,6 +147,39 @@ func exchange(t *testing.T, s *Server, packet []byte) *Packet {
 	return p
 }
 
+// A client network is read as what it means. `::ffff:0.0.0.0/96` passed the
+// every-address check, since 96 bits are not zero, yet matched every IPv4
+// source and outranked every real IPv4 range at 96 bits.
+func TestAClientNetworkIsReadAsWhatItMeans(t *testing.T) {
+	// The mechanism, so this test fails if net stops behaving this way and the
+	// normalisation can go: a mapped /96 matches an unrelated IPv4 address.
+	_, mapped, _ := net.ParseCIDR("::ffff:0.0.0.0/96")
+	if !mapped.Contains(net.ParseIP("203.0.113.9")) {
+		t.Log("net no longer matches IPv4 sources against a mapped /96; the defect this guards is gone")
+	}
+
+	for _, everything := range []string{"::ffff:0.0.0.0/96", "0.0.0.0/0", "::/0", "::ffff:1.2.3.4/90"} {
+		if n, err := ClientNetwork(everything); err == nil && n.Contains(net.ParseIP("203.0.113.9")) {
+			if ones, _ := n.Mask.Size(); ones == 0 {
+				t.Errorf("%s was accepted and covers every address (%s)", everything, n)
+			}
+		}
+	}
+	if _, err := ClientNetwork("::ffff:0.0.0.0/96"); err == nil {
+		t.Error("the IPv4-mapped spelling of every address was accepted")
+	}
+	n, err := ClientNetwork("::ffff:10.0.0.0/120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.String() != "10.0.0.0/24" || !n.Contains(net.ParseIP("10.0.0.5")) || n.Contains(net.ParseIP("11.0.0.1")) {
+		t.Errorf("a mapped /120 was read as %s, want 10.0.0.0/24", n)
+	}
+	if n, err := ClientNetwork("10.0.0.0/24"); err != nil || n.String() != "10.0.0.0/24" {
+		t.Errorf("a plain /24 was read as %v (%v)", n, err)
+	}
+}
+
 func TestValidRequestIsAccepted(t *testing.T) {
 	s, _ := newServer(t)
 	reply := exchange(t, s, buildRequest(t, testSecret, "alice", "correct-horse-battery", true))

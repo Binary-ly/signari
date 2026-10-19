@@ -4376,15 +4376,13 @@ func radiusAddClient(ctx context.Context, conn *pgx.Conn, orgID, name, network, 
 		return err
 	}
 
-	_, ipnet, err := net.ParseCIDR(network)
+	// Normalised before it is checked and stored, so an IPv4-mapped spelling of
+	// every address is refused like the plain one (radius.ClientNetwork).
+	ipnet, err := radius.ClientNetwork(network)
 	if err != nil {
-		return fmt.Errorf("-network %q is not a CIDR: %w", network, err)
+		return fmt.Errorf("-network %w", err)
 	}
-	if ones, _ := ipnet.Mask.Size(); ones == 0 {
-		return fmt.Errorf("-network %q accepts every source address on the internet. "+
-			"RADIUS has no handshake and no certificate, so the address range is part "+
-			"of the credential -- narrow it to the devices that actually ask", network)
-	}
+	network = ipnet.String()
 
 	root, err := rootKey()
 	if err != nil {
@@ -4473,10 +4471,12 @@ func loadRADIUSClients(ctx context.Context, pool *pgxpool.Pool, orgID string,
 		if err != nil {
 			return nil, fmt.Errorf("unsealing the secret for RADIUS client %q: %w", name, err)
 		}
-		_, ipnet, err := net.ParseCIDR(network.String())
+		// Read through the same normalisation as the command that stores it, so
+		// a row stored before it -- `::ffff:0.0.0.0/96` -- is not a catch-all
+		// that outranks every real range.
+		ipnet, err := radius.ClientNetwork(network.String())
 		if err != nil {
-			return nil, fmt.Errorf("RADIUS client %q has an unusable network %q: %w",
-				name, network, err)
+			return nil, fmt.Errorf("RADIUS client %q has an unusable network: %w", name, err)
 		}
 		out = append(out, radius.Client{Net: ipnet, Secret: string(secret), Name: name})
 	}

@@ -11,6 +11,27 @@ signari provider add -org <uuid> \
   -mode fail_closed
 ```
 
+## Telling the engine's calls from anybody else's
+
+Registration prints a **signing secret, once**, and every call carries
+
+```
+Signari-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">
+```
+
+under it, the scheme event deliveries use (see [events.md](events.md)). Your
+service computes the same MAC over the raw body and refuses a call that does not
+match, or whose `t` is more than a few minutes old, so a stranger who learns the
+URL is refused, and so is a captured call replayed later. The secret is sealed
+under `SIGNARI_ROOT_KEY` and re-sealed by `keys rewrap-root`. It never travels
+in a request.
+
+`signari provider rotate -org <uuid> -hook authorize` prints a new one, and the
+old one stops verifying at once, so give your service the new secret in the same
+change. Registering the same hook again keeps the secret it had. A provider
+registered before October 2026 has none and is called unsigned until it is
+rotated; `provider list` shows which.
+
 ## Why out of process
 
 Three alternatives were considered and rejected:

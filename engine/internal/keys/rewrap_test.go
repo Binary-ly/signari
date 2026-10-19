@@ -135,10 +135,12 @@ var columnClass = map[string]string{
 	// -- it will fail then, which is the moment somebody must decide how a
 	// rotation treats it.
 	"audit_events.detail_enc": "unused",
-	"providers.token_wrapped": "unused",
 
 	// Root-sealed and read, though nothing writes the table yet.
 	"migration_sources.client_secret_enc": "rootSealed",
+
+	// A provider's signing secret, sealed at registration and rotation (2.04).
+	"providers.token_wrapped": "rootSealed",
 }
 
 // mayHoldASecret is which columns the classification covers: every bytea

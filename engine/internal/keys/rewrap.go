@@ -83,6 +83,7 @@ var rootSealedColumns = []sealedColumn{
 	{table: "duo_integrations", column: "secret_enc", key: "org_id", context: "duo_secret"},
 	{table: "event_subscriptions", column: "secret_sealed", key: "id", context: "event-subscription"},
 	{table: "identity_providers", column: "client_secret", key: "id", context: "idp_client_secret"},
+	{table: "providers", column: "token_wrapped", key: "id", context: "provider-secret", refColumn: "wrap_key_ref"},
 	{table: "rac_connections", column: "secrets_enc", key: "id", context: "rac-connection-secret"},
 	{table: "radius_clients", column: "secret_enc", key: "id", context: "radius-client-secret"},
 	{table: "scim_targets", column: "token", key: "id", context: "scim_token"},

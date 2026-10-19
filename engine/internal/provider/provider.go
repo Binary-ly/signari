@@ -40,6 +40,7 @@ import (
 	"net/http"
 	"time"
 
+	"signari.dev/engine/internal/hmacsig"
 	"signari.dev/engine/internal/safedial"
 )
 
@@ -166,9 +167,13 @@ type Provider struct {
 	// network -- checked at registration AND again at dial time, because DNS can
 	// change between the two.
 	URL string
-	// Token, when set, is sent as a bearer credential. Optional: an operator may
-	// prefer mutual TLS at the network layer.
-	Token string
+	// Secret, when set, signs every call: a Signari-Signature header over the
+	// timestamp and body (hmacsig), the scheme event deliveries carry, so the
+	// provider can tell this engine from anybody else who found its URL and
+	// refuse a replayed call. Minted at registration and shown once; a
+	// provider registered before there were secrets has none until
+	// `signari provider rotate` gives it one. Never sent itself.
+	Secret string
 	// Mode is what happens when the call does not succeed. Required.
 	Mode Mode
 	// Timeout bounds the call. Required, and bounded again by maxTimeout, because
@@ -307,8 +312,8 @@ func (p Provider) Call(ctx context.Context, client *http.Client, req, out any) e
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Accept", "application/json")
-	if p.Token != "" {
-		hreq.Header.Set("Authorization", "Bearer "+p.Token)
+	if p.Secret != "" {
+		hreq.Header.Set(hmacsig.Header, hmacsig.Sign(p.Secret, time.Now(), body))
 	}
 
 	resp, err := client.Do(hreq)

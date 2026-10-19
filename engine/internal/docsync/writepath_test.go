@@ -72,7 +72,6 @@ var knownUnwritable = map[string]string{
 	// written by nothing because the feature that would write them is absent,
 	// which is a different repair from adding a command.
 	"audit_events.detail_enc":        "known: zero readers and zero writers, already named in the plan's documentation-honesty item",
-	"providers.wrap_key_ref":         "sealing context for provider credentials; no provider stores a secret yet",
 	"credential_nonces.org_id":       "written by the nonce path, which does not yet scope by organisation",
 	"registration_tokens.revoked_at": "a registration token can be spent but not revoked before it is",
 

@@ -141,6 +141,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkClaimMapperScopes(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkProviderSecrets(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	if err := checkAdminTokens(ctx, conn, r); err != nil {
 		return nil, err
 	}
@@ -847,6 +850,35 @@ func checkClaimMapperScopes(ctx context.Context, conn interface {
 			"waits for scope %q, which is neither standard nor declared, so it is "+
 			"released to nobody", slug, claim, scope),
 			"declare the scope, or replace the mapper with one naming the scope you meant")
+	}
+	return rows.Err()
+}
+
+// checkProviderSecrets reports an enabled extension provider called unsigned.
+// Registration mints a signing secret since 2.04; one registered before that
+// has none, and its service cannot tell this engine's calls from anybody's.
+func checkProviderSecrets(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
+	r.ran("provider signing")
+	rows, err := conn.Query(ctx, `
+		SELECT o.slug, p.hook FROM core.providers p
+		JOIN core.organizations o ON o.id = p.org_id
+		WHERE p.enabled AND p.token_wrapped IS NULL
+		ORDER BY o.slug, p.hook`)
+	if err != nil {
+		return fmt.Errorf("reading providers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug, hook string
+		if err := rows.Scan(&slug, &hook); err != nil {
+			return err
+		}
+		r.add(Warning, "providers", fmt.Sprintf("organisation %s: the %s provider is "+
+			"called without a Signari-Signature, so it cannot tell this engine's calls "+
+			"from anybody else's", slug, hook),
+			fmt.Sprintf("signari provider rotate -org <id> -hook %s, and give the service the secret", hook))
 	}
 	return rows.Err()
 }

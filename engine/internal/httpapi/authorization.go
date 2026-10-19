@@ -351,7 +351,7 @@ func (s *Server) decide(ctx context.Context, orgID string, req authzen.Request) 
 func (s *Server) consultAuthorizeProvider(ctx context.Context, orgID string,
 	req authzen.Request, held string) (authzen.Response, bool, error) {
 
-	p, err := store.LoadProvider(ctx, s.db, orgID, provider.HookAuthorize)
+	p, err := store.LoadProvider(ctx, s.db, s.root, orgID, provider.HookAuthorize)
 	if err != nil {
 		// A provider row that will not load is a configuration fault, not a
 		// decision. Failing the request rather than silently allowing: the

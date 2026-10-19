@@ -98,6 +98,7 @@ reasons to block a release tonight.
 | clients | hybrid-flow exemption past the review date `client set-hybrid` recorded | warning — the date was demanded and, until October 2026, never mentioned again |
 | clients | signing algorithm (`client set-alg`) with no active key on its instance | critical — its tokens cannot be minted |
 | claim mappers | `required_scope` neither standard nor declared by the organisation | warning — the claim is released to nobody |
+| providers | an enabled extension provider with no signing secret | warning — it is called without `Signari-Signature` and cannot tell this engine's calls from anybody's; `provider rotate` gives it one |
 | saml | logout URL registered but no SP certificate | warning — every logout from it is refused |
 | federation | generic OIDC provider allows sign-up with untrusted email verification | info — sign-up will always refuse |
 | federation | OpenID Federation configuration with no `authority_hints` | critical — a Trust Anchor this engine cannot be, so nothing is published |

@@ -868,6 +868,8 @@ func run(args []string) (err error) {
 		return providerList(ctx, conn, *orgID)
 	case "provider remove":
 		return providerRemove(ctx, conn, *orgID, *providerHook)
+	case "provider rotate":
+		return providerRotate(ctx, conn, *orgID, *providerHook)
 	case "provider claims":
 		return providerClaimsSet(ctx, conn, *orgID, *providerHook, *providerClaims)
 	case "radius add-client":

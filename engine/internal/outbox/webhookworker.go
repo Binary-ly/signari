@@ -3,15 +3,13 @@ package outbox
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"time"
 
+	"signari.dev/engine/internal/hmacsig"
 	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/store"
 )
@@ -46,7 +44,7 @@ import (
 const MaxWebhookAttempts = 10
 
 // SignatureHeader carries the MAC.
-const SignatureHeader = "Signari-Signature"
+const SignatureHeader = hmacsig.Header
 
 // Sign returns the header value for a body at a time.
 //
@@ -60,16 +58,10 @@ const SignatureHeader = "Signari-Signature"
 // The subscriber side is documented rather than compiled, in docs/events.md,
 // which is the honest arrangement: a subscriber writes it in their own language
 // and cannot import this.
+//
+// It is hmacsig.Sign, which extension provider calls carry too.
 func Sign(secret string, at time.Time, body []byte) string {
-	ts := strconv.FormatInt(at.Unix(), 10)
-	mac := hmac.New(sha256.New, []byte(secret))
-	// t.body -- the separator matters. Without it, (t=1, body="23") and
-	// (t=12, body="3") produce the same MAC, and a signature that is ambiguous
-	// about what it signed is not a signature.
-	mac.Write([]byte(ts))
-	mac.Write([]byte{'.'})
-	mac.Write(body)
-	return "t=" + ts + ",v1=" + hex.EncodeToString(mac.Sum(nil))
+	return hmacsig.Sign(secret, at, body)
 }
 
 // webhookClient is the HTTP client deliveries use.

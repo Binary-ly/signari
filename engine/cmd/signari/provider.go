@@ -54,13 +54,17 @@ func providerAdd(ctx context.Context, conn *pgx.Conn, orgID, hook, url, mode str
 		return err
 	}
 
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	id, err := store.SaveProvider(ctx, tx, orgID, p)
+	id, secret, err := store.SaveProvider(ctx, tx, root, orgID, p)
 	if err != nil {
 		return err
 	}
@@ -71,6 +75,11 @@ func providerAdd(ctx context.Context, conn *pgx.Conn, orgID, hook, url, mode str
 	fmt.Printf("\n  registered %s provider %s\n", hook, id)
 	fmt.Printf("    endpoint : %s\n", url)
 	fmt.Printf("    on failure: %s\n\n", mode)
+	if secret != "" {
+		printProviderSecret(secret)
+	} else {
+		fmt.Printf("  It keeps the signing secret it had. `signari provider rotate` mints a new one.\n\n")
+	}
 	if !provider.Hook(hook).Called() {
 		// Cannot happen for a hook that passed Validate today, and it is here for
 		// the day a hook is DEFINED before it is wired. An operator registering a
@@ -87,6 +96,43 @@ func providerAdd(ctx context.Context, conn *pgx.Conn, orgID, hook, url, mode str
 	return nil
 }
 
+// printProviderSecret shows a signing secret the one time it exists in the clear.
+func printProviderSecret(secret string) {
+	fmt.Printf("  signing secret (shown once): %s\n\n", secret)
+	fmt.Printf("  Every call carries Signari-Signature: t=<unix>,v1=<hex HMAC-SHA256 of\n")
+	fmt.Printf("  \"<t>.<body>\" under this secret>, the scheme event deliveries use. Refuse a\n")
+	fmt.Printf("  call whose signature does not match or whose t is more than a few minutes\n")
+	fmt.Printf("  old, and anybody else who finds the URL is refused with it.\n\n")
+}
+
+// providerRotate replaces a provider's signing secret. The old one stops
+// verifying at once, so the provider must be given the new one in the same
+// change; a provider registered before secrets existed gets its first.
+func providerRotate(ctx context.Context, conn *pgx.Conn, orgID, hook string) error {
+	if orgID == "" || hook == "" {
+		return fmt.Errorf("-org and -hook are required")
+	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	secret, err := store.RotateProviderSecret(ctx, tx, root, orgID, provider.Hook(hook))
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("\n  rotated the %s provider's signing secret; the old one no longer verifies.\n\n", hook)
+	printProviderSecret(secret)
+	return nil
+}
+
 func providerList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	if orgID == "" {
 		return fmt.Errorf("-org is required")
@@ -99,7 +145,7 @@ func providerList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		fmt.Printf("\n  no extension providers registered for this organisation\n\n")
 		return nil
 	}
-	fmt.Printf("\n  %-12s %-44s %-12s %-8s %s\n", "HOOK", "ENDPOINT", "ON FAILURE", "TIMEOUT", "CALLED")
+	fmt.Printf("\n  %-12s %-44s %-12s %-8s %-8s %s\n", "HOOK", "ENDPOINT", "ON FAILURE", "TIMEOUT", "SIGNED", "CALLED")
 	for _, r := range rows {
 		called := "yes"
 		if !provider.Hook(r.Hook).Called() {
@@ -108,8 +154,12 @@ func providerList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		if !r.Enabled {
 			called = "no -- disabled"
 		}
-		fmt.Printf("  %-12s %-44s %-12s %-8s %s\n",
-			r.Hook, r.URL, r.Mode, r.Timeout, called)
+		signed := "yes"
+		if !r.Signed {
+			signed = "NO"
+		}
+		fmt.Printf("  %-12s %-44s %-12s %-8s %-8s %s\n",
+			r.Hook, r.URL, r.Mode, r.Timeout, signed, called)
 	}
 	fmt.Println()
 	return nil

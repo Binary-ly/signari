@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/provider"
 )
 
@@ -99,11 +100,11 @@ type TokenHookResult struct {
 // The provider carries its own bound (already capped by provider.maxTimeout), so
 // the client can only be built after the row is read. Taking a factory makes
 // that ordering the only one the signature permits.
-func ConsultTokenProvider(ctx context.Context, q providerReader,
+func ConsultTokenProvider(ctx context.Context, q providerReader, root *keys.RootKey,
 	client func(time.Duration) *http.Client,
 	log *slog.Logger, orgID string, req TokenHookRequest) (TokenHookResult, error) {
 
-	p, err := LoadProvider(ctx, q, orgID, provider.HookTokenIssue)
+	p, err := LoadProvider(ctx, q, root, orgID, provider.HookTokenIssue)
 	if err != nil {
 		// A provider row that will not load is a configuration fault, not a
 		// decision. Failing rather than silently issuing: the operator

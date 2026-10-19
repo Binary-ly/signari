@@ -50,6 +50,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -134,6 +135,20 @@ func Write(ctx context.Context, tx pgx.Tx, e Event) error {
 	}
 	if e.Detail == nil {
 		e.Detail = map[string]any{}
+	}
+	// The subject column holds a person's id. A token's subject can be a
+	// client, acting for itself, and an exchanged or transaction token passed
+	// that here: the insert failed on the uuid cast and the record was lost.
+	// Kept in the detail instead, on a copy, since the caller owns its map.
+	if e.SubjectID != "" {
+		if _, perr := uuid.Parse(e.SubjectID); perr != nil {
+			detail := make(map[string]any, len(e.Detail)+1)
+			for k, v := range e.Detail {
+				detail[k] = v
+			}
+			detail["subject"] = e.SubjectID
+			e.Detail, e.SubjectID = detail, ""
+		}
 	}
 
 	raw, err := json.Marshal(e.Detail)

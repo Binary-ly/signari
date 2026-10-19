@@ -94,6 +94,8 @@ type Stats struct {
 	AssertionsSwept int64
 	// DPoPProofsSwept are proof identifiers past their replay window.
 	DPoPProofsSwept int64
+	// CeremoniesSwept are spent WebAuthn challenges past their ceremony's expiry.
+	CeremoniesSwept int64
 	// PushedRequestsSwept are PAR handles nobody redeemed.
 	PushedRequestsSwept int64
 	// SAMLSourceStateSwept are inbound SAML requests and spent assertion records
@@ -230,6 +232,12 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 		return st, fmt.Errorf("sweeping DPoP proof records: %w", err)
 	}
 
+	// Spent WebAuthn challenges past their ceremony's expiry, after which the
+	// ceremony cookie is refused as expired before the record is consulted.
+	if st.CeremoniesSwept, err = store.SweepSpentCeremonies(ctx, tx); err != nil {
+		return st, fmt.Errorf("sweeping spent WebAuthn challenges: %w", err)
+	}
+
 	// Duo prompts nobody finished. Each row holds a live challenge state, so
 	// keeping them past expiry stores flow state for a flow nobody will finish.
 	if st.DuoChallengesSwept, err = store.PurgeExpiredDuoChallenges(ctx, tx); err != nil {
@@ -333,6 +341,7 @@ func (s Stats) Log(log *slog.Logger) {
 	add("logout_chains_swept", s.LogoutChainsSwept)
 	add("federated_logins_swept", s.FederatedLoginsSwept)
 	add("dpop_proofs_swept", s.DPoPProofsSwept)
+	add("ceremonies_swept", s.CeremoniesSwept)
 	add("pushed_requests_swept", s.PushedRequestsSwept)
 	add("saml_source_state_swept", s.SAMLSourceStateSwept)
 	add("rate_windows_purged", s.RateWindowsPurged)

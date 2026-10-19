@@ -34,9 +34,12 @@ import (
 //   - It must not be forgeable. A caller who can choose their own challenge can
 //     choose one they already have a signature for.
 //
-// A signed, typed cookie satisfies all three: the browser scopes it, the
-// signature makes it unforgeable, and a 5-minute expiry with a distinct `typ`
-// keeps it out of every other verification path.
+// A signed, typed cookie satisfies the first and third: the browser scopes it,
+// the signature makes it unforgeable, and a distinct `typ` keeps it out of every
+// other verification path. It does not make the challenge single-use. Clearing
+// the cookie asks the browser to forget it, and whoever captured the cookie and
+// the assertion together could present both again and get a second session, so
+// the first attempt to finish records the challenge as spent (migration 0141).
 
 const (
 	// ceremonyTTL is how long a user has to touch their authenticator. Long
@@ -118,6 +121,17 @@ func (s *Server) readCeremony(r *http.Request, wantPurpose string) (*ceremonyCla
 	var sd webauthn.SessionData
 	if err := json.Unmarshal(cl.Session, &sd); err != nil {
 		return nil, nil, fmt.Errorf("malformed ceremony session: %w", err)
+	}
+	// Spent by this attempt whatever its outcome. Kept past the cookie's own
+	// expiry by a margin, so a clock difference between this process and the
+	// database cannot sweep the record while the cookie is still accepted.
+	fresh, err := store.SpendCeremonyChallenge(r.Context(), s.db, sd.Challenge,
+		time.Unix(cl.Expiry, 0).Add(ceremonyTTL))
+	if err != nil {
+		return nil, nil, fmt.Errorf("recording the ceremony as spent: %w", err)
+	}
+	if !fresh {
+		return nil, nil, errors.New("ceremony already used")
 	}
 	return &cl, &sd, nil
 }

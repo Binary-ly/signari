@@ -96,6 +96,7 @@ var columnClass = map[string]string{
 	"uma_claims_interactions.handle_hash":           "oneWay",
 	"uma_claims_interactions.ticket_hash":           "oneWay",
 	"uma_permission_tickets.ticket_hash":            "oneWay",
+	"webauthn_spent_challenges.challenge_hash":      "oneWay",
 
 	// A hash in a text column (an encoded password hash).
 	"clients.client_secret_hash": "oneWay",

@@ -200,13 +200,27 @@ func (c *Client) CreateClient(ctx context.Context, in ClientResource) (*Result, 
 	return c.do(ctx, http.MethodPost, "/admin/clients", in, 0)
 }
 
+// ClientState is a client as the server reports it.
+type ClientState struct {
+	ClientID    string `json:"client_id"`
+	OrgID       string `json:"org_id"`
+	DisplayName string `json:"display_name"`
+	// ClientType is "public" or "confidential".
+	ClientType string `json:"client_type"`
+	Enabled    bool   `json:"enabled"`
+	// RedirectURIs is nil when the server did not report them, as an engine
+	// older than this field does not. A caller then has nothing to compare, and
+	// must not read the absence as "none".
+	RedirectURIs *[]string `json:"redirect_uris"`
+}
+
 // GetClient reads one, returning the version it was read at.
-func (c *Client) GetClient(ctx context.Context, clientID string) (*ClientResource, int64, error) {
+func (c *Client) GetClient(ctx context.Context, clientID string) (*ClientState, int64, error) {
 	res, err := c.do(ctx, http.MethodGet, "/admin/clients/"+clientID, nil, 0)
 	if err != nil {
 		return nil, 0, err
 	}
-	var out ClientResource
+	var out ClientState
 	if err := json.Unmarshal(res.Body, &out); err != nil {
 		return nil, 0, fmt.Errorf("decoding the client: %w", err)
 	}
@@ -221,6 +235,13 @@ func (c *Client) GetClient(ctx context.Context, clientID string) (*ClientResourc
 func (c *Client) SetClientEnabled(ctx context.Context, clientID string, enabled bool, ifMatch int64) (*Result, error) {
 	return c.do(ctx, http.MethodPatch, "/admin/clients/"+clientID,
 		map[string]any{"enabled": enabled}, ifMatch)
+}
+
+// DeleteClient removes a client and everything issued under it, conditional on
+// the version it was read at, as an update is: a destroy races exactly as an
+// update does.
+func (c *Client) DeleteClient(ctx context.Context, clientID string, ifMatch int64) (*Result, error) {
+	return c.do(ctx, http.MethodDelete, "/admin/clients/"+clientID, nil, ifMatch)
 }
 
 // jsonDecode is a small indirection so the test's fake server can decode a body

@@ -133,12 +133,20 @@ func (s *Server) getClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var c clientSummary
+	// The redirect URIs too, so a caller holding a desired list can compare it
+	// with the server's. The Terraform provider could not, and reported a change
+	// to them as applied while it sent nothing. Sorted: they are a set.
+	var c struct {
+		clientSummary
+		RedirectURIs []string `json:"redirect_uris"`
+	}
 	err := s.db.QueryRow(ctx, `
 		SELECT client_id, org_id::text, display_name, client_type, enabled,
-		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')
-		  FROM core.clients WHERE client_id = $1`, clientID).
-		Scan(&c.ClientID, &c.OrgID, &c.DisplayName, &c.ClientType, &c.Enabled, &c.CreatedAt)
+		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'),
+		       ARRAY(SELECT redirect_uri FROM core.client_redirect_uris r
+		              WHERE r.client_id = c.client_id ORDER BY redirect_uri)
+		  FROM core.clients c WHERE client_id = $1`, clientID).
+		Scan(&c.ClientID, &c.OrgID, &c.DisplayName, &c.ClientType, &c.Enabled, &c.CreatedAt, &c.RedirectURIs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client_not_found"})
 		return

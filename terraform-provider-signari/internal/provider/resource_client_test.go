@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 
@@ -49,7 +51,7 @@ func clientState(t *testing.T, r *clientResource, ty tftypes.Type,
 		"org_id":         tftypes.NewValue(tftypes.String, "org-1"),
 		"display_name":   tftypes.NewValue(tftypes.String, "An app"),
 		"public":         tftypes.NewValue(tftypes.Bool, false),
-		"redirect_uris":  tftypes.NewValue(tftypes.List{ElementType: tftypes.String}, nil),
+		"redirect_uris":  oneRedirectURI(),
 		"enabled":        tftypes.NewValue(tftypes.Bool, enabled),
 		"client_secret":  tftypes.NewValue(tftypes.String, "s3cret"),
 		"config_version": tftypes.NewValue(tftypes.Number, configVersion),
@@ -57,12 +59,21 @@ func clientState(t *testing.T, r *clientResource, ty tftypes.Type,
 	return tfsdk.State{Schema: resp.Schema, Raw: raw}
 }
 
-// recordingServer captures the If-Match of the last write.
+// oneRedirectURI is the fixture's redirect_uris.
+func oneRedirectURI() tftypes.Value {
+	return tftypes.NewValue(tftypes.Set{ElementType: tftypes.String},
+		[]tftypes.Value{tftypes.NewValue(tftypes.String, "https://app.example/cb")})
+}
+
+// recordingServer captures the If-Match of the last write. A read is not a
+// write, and every write is now followed by one, so reads are not recorded.
 func recordingServer(t *testing.T, status int, body string) (*httptest.Server, *string) {
 	t.Helper()
 	var seen string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = r.Header.Get("If-Match")
+		if r.Method != http.MethodGet {
+			seen = r.Header.Get("If-Match")
+		}
 		w.Header().Set("ETag", `"99"`)
 		w.WriteHeader(status)
 		fmt.Fprint(w, body)
@@ -188,13 +199,17 @@ func TestAConflictBecomesAnActionableDiagnostic(t *testing.T) {
 	}
 }
 
-// Delete disables, and says so.
-//
-// The Admin API has no client delete. Removing the resource from state while the
-// client kept working would be the worst outcome: Terraform reports it destroyed
-// and every application using it carries on signing people in.
-func TestDeleteDisablesAndWarnsThatTheRecordRemains(t *testing.T) {
-	srv, seen := recordingServer(t, http.StatusOK, `{"client_id":"app","config_version":99}`)
+// Destroy deletes (2.17). It disabled the client and warned, from before the
+// Admin API had a delete, so the row stayed and a replacement could not create
+// its successor under the same client id.
+func TestDeleteDeletesTheClient(t *testing.T) {
+	var method, path, ifMatch string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path, ifMatch = r.Method, r.URL.Path, r.Header.Get("If-Match")
+		w.Header().Set("ETag", `"99"`)
+		fmt.Fprint(w, `{"client_id":"app","refresh_families_revoked":0}`)
+	}))
+	t.Cleanup(srv.Close)
 	r := newResource(t, srv.URL, true)
 	_, ty := clientSchema(t)
 
@@ -206,17 +221,185 @@ func TestDeleteDisablesAndWarnsThatTheRecordRemains(t *testing.T) {
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("delete: %v", resp.Diagnostics)
 	}
-	if *seen != `"42"` {
+	if method != http.MethodDelete || path != "/admin/clients/app" {
+		t.Errorf("destroy sent %s %s, want DELETE /admin/clients/app", method, path)
+	}
+	if ifMatch != `"42"` {
 		t.Errorf("destroy sent If-Match %q, want %q: a destroy races exactly as an "+
-			"update does", *seen, `"42"`)
+			"update does", ifMatch, `"42"`)
 	}
-	if len(resp.Diagnostics.Warnings()) == 0 {
-		t.Fatal("destroy gave no warning that the client was only disabled")
+	if n := len(resp.Diagnostics.Warnings()); n != 0 {
+		t.Errorf("a destroy that deleted the client warned %d time(s)", n)
 	}
-	w := resp.Diagnostics.Warnings()[0].Detail()
-	if !strings.Contains(w, "disabled") {
-		t.Errorf("the warning does not say the client was disabled rather than "+
-			"deleted: %s", w)
+}
+
+// Update can carry only `enabled`, so every other attribute an operator can set
+// must replace the client (2.17). Changing the redirect URIs was an in-place
+// update that sent `enabled` alone and wrote the new URIs into state: the
+// apply reported success and the server kept the old ones. Derived from the
+// schema, so an attribute added later fails here until it is either sent by
+// Update or marked to replace.
+func TestEveryAttributeUpdateCannotSendRequiresReplacement(t *testing.T) {
+	ctx := context.Background()
+	r := &clientResource{}
+	resp := &resource.SchemaResponse{}
+	r.Schema(ctx, resource.SchemaRequest{}, resp)
+
+	inPlace := map[string]bool{"enabled": true}
+	replaces := func(descs []string) bool {
+		for _, d := range descs {
+			if strings.Contains(d, "destroy and recreate") {
+				return true
+			}
+		}
+		return false
+	}
+	for name, attr := range resp.Schema.Attributes {
+		if inPlace[name] || !(attr.IsRequired() || attr.IsOptional()) {
+			continue
+		}
+		var descs []string
+		switch a := attr.(type) {
+		case schema.StringAttribute:
+			for _, m := range a.PlanModifiers {
+				descs = append(descs, m.Description(ctx))
+			}
+		case schema.BoolAttribute:
+			for _, m := range a.PlanModifiers {
+				descs = append(descs, m.Description(ctx))
+			}
+		case schema.SetAttribute:
+			for _, m := range a.PlanModifiers {
+				descs = append(descs, m.Description(ctx))
+			}
+		default:
+			t.Errorf("%s is a %T, which this test does not read; teach it", name, attr)
+			continue
+		}
+		if !replaces(descs) {
+			t.Errorf("%s can be changed in config, is not sent by Update, and does not "+
+				"replace the client: an apply would report it changed and send nothing", name)
+		}
+	}
+
+	// And Update sends exactly what inPlace says it does.
+	var sent map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodPatch {
+			_ = json.NewDecoder(req.Body).Decode(&sent)
+		}
+		w.Header().Set("ETag", `"99"`)
+		fmt.Fprint(w, `{"client_id":"app","enabled":false}`)
+	}))
+	t.Cleanup(srv.Close)
+	res := newResource(t, srv.URL, true)
+	_, ty := clientSchema(t)
+	up := &resource.UpdateResponse{State: clientState(t, res, ty, true, 0)}
+	res.Update(ctx, resource.UpdateRequest{
+		Plan:  tfsdk.Plan(clientState(t, res, ty, false, 42)),
+		State: clientState(t, res, ty, true, 42),
+	}, up)
+	if up.Diagnostics.HasError() {
+		t.Fatalf("update: %v", up.Diagnostics)
+	}
+	for k := range sent {
+		if !inPlace[k] {
+			t.Errorf("Update sends %q, which inPlace does not list", k)
+		}
+	}
+	for k := range inPlace {
+		if _, ok := sent[k]; !ok {
+			t.Errorf("inPlace lists %q, which Update does not send", k)
+		}
+	}
+}
+
+// Every write is read back, so state holds what the server holds (2.17). The
+// server creates a client enabled whatever the request says, and names it
+// after its id when no name is given; state used to record the plan instead.
+func TestCreateRecordsWhatTheServerHolds(t *testing.T) {
+	var calls []string
+	enabled := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		calls = append(calls, req.Method)
+		w.Header().Set("ETag", `"7"`)
+		switch req.Method {
+		case http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"client_id":"app","client_secret":"shown-once","config_version":7}`)
+		case http.MethodPatch:
+			if got := req.Header.Get("If-Match"); got != `"7"` {
+				t.Errorf("the disable after create sent If-Match %q, want the create's version", got)
+			}
+			enabled = false
+			fmt.Fprint(w, `{"client_id":"app","enabled":false}`)
+		default:
+			fmt.Fprintf(w, `{"client_id":"app","org_id":"org-1","display_name":"app","client_type":"confidential",`+
+				`"enabled":%v,"redirect_uris":["https://app.example/cb"]}`, enabled)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	r := newResource(t, srv.URL, true)
+	_, ty := clientSchema(t)
+
+	plan := clientState(t, r, ty, false, 0)
+	plan.Raw = tftypes.NewValue(ty, map[string]tftypes.Value{
+		"client_id":      tftypes.NewValue(tftypes.String, "app"),
+		"org_id":         tftypes.NewValue(tftypes.String, "org-1"),
+		"display_name":   tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"public":         tftypes.NewValue(tftypes.Bool, false),
+		"redirect_uris":  oneRedirectURI(),
+		"enabled":        tftypes.NewValue(tftypes.Bool, false),
+		"client_secret":  tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"config_version": tftypes.NewValue(tftypes.Number, tftypes.UnknownValue),
+	})
+	resp := &resource.CreateResponse{State: clientState(t, r, ty, true, 0)}
+	r.Create(context.Background(), resource.CreateRequest{Plan: tfsdk.Plan(plan)}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("create: %v", resp.Diagnostics)
+	}
+	if fmt.Sprint(calls) != "[POST PATCH GET]" {
+		t.Errorf("create made %v, want the create, the disable and a read back", calls)
+	}
+	var got clientModel
+	resp.State.Get(context.Background(), &got)
+	if got.Enabled.ValueBool() || got.DisplayName.ValueString() != "app" || got.ClientSecret.ValueString() != "shown-once" {
+		t.Errorf("state after create: enabled %v, display_name %q, secret %q",
+			got.Enabled, got.DisplayName, got.ClientSecret)
+	}
+}
+
+// A read records the redirect URIs and whether the client is public, and keeps
+// the state's URIs when the server does not report them, since an absent list
+// is not an empty one (2.17).
+func TestReadRecordsTheRedirectURIsWhenTheServerReportsThem(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want string
+	}{
+		{`{"client_id":"app","org_id":"org-1","client_type":"public","enabled":true,` +
+			`"redirect_uris":["https://other.example/cb"]}`, "[https://other.example/cb]"},
+		{`{"client_id":"app","org_id":"org-1","client_type":"public","enabled":true}`, "[https://app.example/cb]"},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("ETag", `"77"`)
+			fmt.Fprint(w, tc.body)
+		}))
+		r := newResource(t, srv.URL, true)
+		_, ty := clientSchema(t)
+		resp := &resource.ReadResponse{State: clientState(t, r, ty, true, 1)}
+		r.Read(context.Background(), resource.ReadRequest{State: clientState(t, r, ty, true, 1)}, resp)
+		srv.Close()
+		if resp.Diagnostics.HasError() {
+			t.Fatalf("read: %v", resp.Diagnostics)
+		}
+		var got clientModel
+		resp.State.Get(context.Background(), &got)
+		uris := setToStrings(context.Background(), got.RedirectURIs, &resp.Diagnostics)
+		if fmt.Sprint(uris) != tc.want || !got.Public.ValueBool() {
+			t.Errorf("from %s: state has redirect_uris %v, public %v; want %s and public",
+				tc.body, uris, got.Public, tc.want)
+		}
 	}
 }
 
@@ -237,7 +420,7 @@ func TestAConflictOnDestroyIsRefused(t *testing.T) {
 	}
 	// As on the update path, the generic branch also raises an error carrying the
 	// same text, so only the summary distinguishes "somebody else changed this"
-	// from "the disable call failed".
+	// from "the delete failed".
 	var summaries string
 	for _, d := range resp.Diagnostics.Errors() {
 		summaries += d.Summary() + " "

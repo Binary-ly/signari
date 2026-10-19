@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
@@ -28,6 +30,15 @@ import (
 // configuration in the deployment changes, so treating a change in it as a
 // change to this resource would produce a permanent diff on every plan. It is
 // state that exists to be sent back, not a property of the client.
+//
+// # What an apply can change in place
+//
+// Only `enabled`. The Admin API cannot yet rename a client or change its
+// redirect URIs, so a change to either replaces the client, and the plan says
+// so. It used to be an in-place update that sent `enabled` alone and recorded
+// the new values in state: the apply reported success, a fresh plan was empty,
+// and the server still held the old URIs. Every write is read back, so state
+// holds what the server holds rather than what was asked for.
 
 func NewClientResource() resource.Resource { return &clientResource{} }
 
@@ -38,7 +49,7 @@ type clientModel struct {
 	OrgID        types.String `tfsdk:"org_id"`
 	DisplayName  types.String `tfsdk:"display_name"`
 	Public       types.Bool   `tfsdk:"public"`
-	RedirectURIs types.List   `tfsdk:"redirect_uris"`
+	RedirectURIs types.Set    `tfsdk:"redirect_uris"`
 	Enabled      types.Bool   `tfsdk:"enabled"`
 	// ClientSecret is returned once, at creation, and never again.
 	ClientSecret types.String `tfsdk:"client_secret"`
@@ -71,9 +82,14 @@ func (r *clientResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				},
 			},
 			"display_name": schema.StringAttribute{
-				Optional:            true,
-				Computed:            true,
-				MarkdownDescription: "Human-readable name.",
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "Human-readable name; omitted, the server uses the client " +
+					"id. Changing it replaces the client, because the Admin API cannot rename one.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"public": schema.BoolAttribute{
 				Optional: true,
@@ -85,10 +101,16 @@ func (r *clientResource) Schema(_ context.Context, _ resource.SchemaRequest,
 					boolRequiresReplace(),
 				},
 			},
-			"redirect_uris": schema.ListAttribute{
-				Optional:            true,
-				ElementType:         types.StringType,
-				MarkdownDescription: "Registered redirect URIs.",
+			// A set, because the server holds one: a reordered list is the same
+			// registration, and must not read as a change.
+			"redirect_uris": schema.SetAttribute{
+				Required:    true,
+				ElementType: types.StringType,
+				MarkdownDescription: "Registered redirect URIs, at least one. Changing them " +
+					"replaces the client, because the Admin API cannot change them in place.",
+				PlanModifiers: []planmodifier.Set{
+					setplanmodifier.RequiresReplace(),
+				},
 			},
 			"enabled": schema.BoolAttribute{
 				Optional:            true,
@@ -140,7 +162,7 @@ func (r *clientResource) Create(ctx context.Context, req resource.CreateRequest,
 		OrgID:        plan.OrgID.ValueString(),
 		DisplayName:  plan.DisplayName.ValueString(),
 		Public:       plan.Public.ValueBool(),
-		RedirectURIs: listToStrings(ctx, plan.RedirectURIs, &resp.Diagnostics),
+		RedirectURIs: setToStrings(ctx, plan.RedirectURIs, &resp.Diagnostics),
 		Enabled:      plan.Enabled.ValueBool(),
 	}
 	if resp.Diagnostics.HasError() {
@@ -160,13 +182,57 @@ func (r *clientResource) Create(ctx context.Context, req resource.CreateRequest,
 		ConfigVersion int64  `json:"config_version"`
 	}
 	decodeInto(res.Body, &created)
-
 	plan.ClientSecret = types.StringValue(created.ClientSecret)
-	plan.ConfigVersion = types.Int64Value(pick(res.Version, created.ConfigVersion))
-	if plan.DisplayName.IsUnknown() {
-		plan.DisplayName = types.StringValue(in.DisplayName)
+
+	// A client is created enabled; the create request has no say in it. So
+	// `enabled = false` is a second write, conditional on the version the
+	// create produced, and without it the client would be live while state
+	// said it was not.
+	if !plan.Enabled.ValueBool() {
+		ifMatch := int64(0)
+		if r.data.conditional {
+			ifMatch = pick(res.Version, created.ConfigVersion)
+		}
+		if _, err := r.data.client.SetClientEnabled(ctx, in.ClientID, false, ifMatch); err != nil {
+			// The client exists, so it is recorded as it is, which taints it,
+			// rather than lost from state with its secret.
+			resp.Diagnostics.AddError("disabling the new client", err.Error())
+		}
 	}
+	r.readBack(ctx, &plan, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}
+
+// readBack replaces m's server-held fields with what the server reports, so
+// state records what was applied rather than what was asked for. A write the
+// server did not take then shows up as a difference, at the apply that made
+// it, instead of as an empty plan over a server that disagrees.
+func (r *clientResource) readBack(ctx context.Context, m *clientModel, diags *diag.Diagnostics) {
+	got, version, err := r.data.client.GetClient(ctx, m.ClientID.ValueString())
+	if err != nil {
+		diags.AddError("reading the client back", err.Error())
+		return
+	}
+	applyServerState(ctx, m, got, version, diags)
+}
+
+// applyServerState copies a server read into the model.
+func applyServerState(ctx context.Context, m *clientModel, got *signari.ClientState, version int64,
+	diags *diag.Diagnostics) {
+	m.DisplayName = types.StringValue(got.DisplayName)
+	m.Enabled = types.BoolValue(got.Enabled)
+	m.OrgID = types.StringValue(got.OrgID)
+	m.Public = types.BoolValue(got.ClientType == "public")
+	// Left as it was when the server does not report them: an absent list is
+	// not an empty one, and reading it as empty would plan to replace every
+	// client against an engine that predates the field.
+	if got.RedirectURIs != nil {
+		uris, d := types.SetValueFrom(ctx, types.StringType, *got.RedirectURIs)
+		diags.Append(d...)
+		m.RedirectURIs = uris
+	}
+	// The version observed by THIS read is what the next write is conditional on.
+	m.ConfigVersion = types.Int64Value(version)
 }
 
 func (r *clientResource) Read(ctx context.Context, req resource.ReadRequest,
@@ -190,11 +256,7 @@ func (r *clientResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	state.DisplayName = types.StringValue(got.DisplayName)
-	state.Enabled = types.BoolValue(got.Enabled)
-	state.OrgID = types.StringValue(got.OrgID)
-	// The version observed by THIS read is what the next write is conditional on.
-	state.ConfigVersion = types.Int64Value(version)
+	applyServerState(ctx, &state, got, version, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
@@ -216,7 +278,9 @@ func (r *clientResource) Update(ctx context.Context, req resource.UpdateRequest,
 		ifMatch = state.ConfigVersion.ValueInt64()
 	}
 
-	res, err := r.data.client.SetClientEnabled(ctx,
+	// `enabled` is the one field that changes in place; every other one
+	// replaces the client, so there is nothing else for this request to carry.
+	_, err := r.data.client.SetClientEnabled(ctx,
 		plan.ClientID.ValueString(), plan.Enabled.ValueBool(), ifMatch)
 
 	var conflict *signari.ErrConflict
@@ -233,7 +297,7 @@ func (r *clientResource) Update(ctx context.Context, req resource.UpdateRequest,
 	}
 
 	plan.ClientSecret = state.ClientSecret
-	plan.ConfigVersion = types.Int64Value(res.Version)
+	r.readBack(ctx, &plan, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
@@ -246,18 +310,16 @@ func (r *clientResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 
-	// The Admin API has no client delete today, so the honest destroy is to
-	// DISABLE the client -- which is the operation that actually stops it being
-	// used -- and say plainly that the row remains.
-	//
-	// Silently removing it from state while it kept working would be the worst of
-	// the options: Terraform would report the client destroyed while every
-	// application using it carried on signing people in.
+	// A real delete: the client and every code, token, refresh family and
+	// consent issued under it go together, and the audit trail keeps the
+	// record that it existed. This used to disable the client and warn, from
+	// before the Admin API had a delete, so a destroy left the row behind and a
+	// replacement could not create its successor under the same client id.
 	ifMatch := int64(0)
 	if r.data.conditional {
 		ifMatch = state.ConfigVersion.ValueInt64()
 	}
-	_, err := r.data.client.SetClientEnabled(ctx, state.ClientID.ValueString(), false, ifMatch)
+	_, err := r.data.client.DeleteClient(ctx, state.ClientID.ValueString(), ifMatch)
 
 	var conflict *signari.ErrConflict
 	if errors.As(err, &conflict) {
@@ -266,14 +328,8 @@ func (r *clientResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 	if err != nil && !errors.Is(err, signari.ErrNotFound) {
-		resp.Diagnostics.AddError("disabling the client", err.Error())
-		return
+		resp.Diagnostics.AddError("deleting the client", err.Error())
 	}
-	resp.Diagnostics.AddWarning("the client was disabled, not deleted",
-		fmt.Sprintf("Signari's Admin API has no client-delete operation, so %q has "+
-			"been disabled and can no longer be used. Its record remains, which is "+
-			"what keeps its audit history intact. Remove it with the CLI if you need "+
-			"the row gone.", state.ClientID.ValueString()))
 }
 
 func (r *clientResource) ImportState(ctx context.Context, req resource.ImportStateRequest,

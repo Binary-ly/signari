@@ -58,6 +58,34 @@ func TestAClientCanBeReadAndThenConditionallyWrittenFromTheResponseAlone(t *test
 	}
 }
 
+// A client read gives its redirect URIs, sorted (2.17). It gave none, so a
+// caller holding a desired list had nothing to compare it with, and the
+// Terraform provider reported a change to them as applied while sending nothing.
+func TestAClientReadGivesItsRedirectURIs(t *testing.T) {
+	s, _ := newTestServer(t)
+	clientID := newPreconditionClient(t, s)
+	for _, u := range []string{"https://b.example/cb", "https://a.example/cb"} {
+		if _, err := s.db.Exec(context.Background(), `INSERT INTO core.client_redirect_uris (client_id, redirect_uri)
+			VALUES ($1, $2)`, clientID, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, adminReq(t, http.MethodGet, "/admin/clients/"+clientID, "", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET gave %d: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ClientID     string   `json:"client_id"`
+		RedirectURIs []string `json:"redirect_uris"`
+	}
+	decodeBody(t, rec, &got)
+	if got.ClientID != clientID || fmt.Sprint(got.RedirectURIs) != "[https://a.example/cb https://b.example/cb]" {
+		t.Errorf("GET gave %s, want the client with both redirect URIs in order", rec.Body.String())
+	}
+}
+
 // A read must never return credential material.
 //
 // The failure this prevents is specific: `core.clients.client_secret_hash` is a

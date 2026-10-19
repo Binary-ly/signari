@@ -95,16 +95,28 @@ changes, so treating a change in it as a change to *this* resource would produce
 a permanent diff on every plan. It is state that exists to be sent back on the
 next write, not a property of the client.
 
+## What an apply changes in place, and what replaces the client
+
+Only `enabled` changes in place. The Admin API cannot yet rename a client or
+change its redirect URIs, so a change to `display_name` or `redirect_uris`
+**replaces** the client, and the plan says so: the client is deleted and
+created again, with a new secret, and every token issued under the old one
+stops working. Read the plan before applying a change to either.
+
+This used to be an in-place update that sent `enabled` alone and wrote the new
+values into state. The apply reported success, the next plan was empty, and
+the server still held the old redirect URIs. Every create and update is now
+read back, so state records what the server holds rather than what was asked
+for. `redirect_uris` is a set, because the server holds one: reordering it is
+not a change.
+
 ## Destroying a client
 
-The Admin API has no client-delete operation, so `terraform destroy` **disables**
-the client — the operation that actually stops it being used — and emits a
-warning saying the record remains. Its audit history stays intact. Remove the row
-with the CLI if you need it gone.
-
-Silently dropping it from state instead would be the worst option: Terraform
-would report the client destroyed while every application using it carried on
-signing people in.
+`terraform destroy` deletes the client, conditional on the version the last
+read observed, like any other write. Every code, token, refresh family and
+consent issued under it goes with it. The audit trail keeps the record that
+it existed and what was done with it, because audit events carry the client id
+without a foreign key.
 
 ## Configuration
 

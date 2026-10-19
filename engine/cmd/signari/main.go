@@ -326,6 +326,9 @@ func run(args []string) (err error) {
 	toDay := fs.String("until", "", "export up to this date, YYYY-MM-DD (exclusive)")
 	regOpen := fs.Bool("open", false, "allow registration with no initial access token")
 	regMax := fs.Int("max-clients", 100, "ceiling on dynamically registered clients")
+	regConfidential := fs.Bool("allow-confidential", false,
+		"let a dynamic registrant asking for a token_endpoint_auth_method other than none be given "+
+			"a client secret (registration enable); off, every registered client is public")
 	regUses := fs.Int("uses", 0, "how many clients this token may create (0 = unlimited)")
 	ssfEndpoint := fs.String("endpoint", "", "https URL to push Security Event Tokens to")
 	ssfToken := fs.String("receiver-token", "", "bearer token the Shared Signals receiver issued us (optional)")
@@ -414,6 +417,14 @@ func run(args []string) (err error) {
 		"comma-separated Entity Identifiers of this entity's Immediate Superiors "+
 			"(federation enable). Leave empty only for a Trust Anchor with no superiors")
 	orgName := fs.String("organization-name", "", "organisation name published in the Entity Configuration")
+	trustAnchorHints := fs.String("trust-anchor-hints", "",
+		"comma-separated Entity Identifiers of the Trust Anchors this entity trusts, published as "+
+			"trust_anchor_hints (federation enable); kept when not given, empty clears")
+	federationContacts := fs.String("federation-contacts", "",
+		"comma-separated contacts published in the federation_entity metadata (federation enable); "+
+			"kept when not given, empty clears")
+	entityLifetime := fs.Duration("entity-lifetime", 24*time.Hour,
+		"how long the Entity Configuration is valid, 5m to 168h (federation enable); kept when not given")
 	// Every trust-mark flag carries the prefix. Names like -sub and -type would
 	// collide with flags this binary already registers, and Go's flag package
 	// panics on a duplicate registration -- which breaks EVERY command, not just
@@ -523,7 +534,8 @@ func run(args []string) (err error) {
 			"locations, actions, datatypes, identifier, privileges")
 	rarRequired := fs.String("required", "",
 		"comma-separated subset of -fields that must be present")
-	rarDesc := fs.String("describe", "", "what this type authorises, for operators")
+	rarDesc := fs.String("describe", "",
+		"a description for operators: what a type authorises (rar register), or who an attester is (attester add)")
 	credConfigs := fs.String("credential-configuration", "",
 		"comma-separated credential_configuration_id values, as they appear in the "+
 			"Credential Issuer's metadata (credential offer)")
@@ -866,7 +878,7 @@ func run(args []string) (err error) {
 	case "export audit":
 		return exportAudit(ctx, conn, *orgID, *fromDay, *toDay, *outFile)
 	case "registration enable":
-		return registrationEnable(ctx, conn, *orgID, *regOpen, *regMax, *tokenScopes)
+		return registrationEnable(ctx, conn, *orgID, *regOpen, *regMax, *tokenScopes, *regConfidential)
 	case "registration token":
 		return registrationToken(ctx, conn, *orgID, *name, *regUses, *tokenExpires)
 	case "registration revoke":
@@ -935,7 +947,20 @@ func run(args []string) (err error) {
 	case "logout-test":
 		return logoutTest(ctx, conn, *rpURL, *clientID, *issuer, *subject, *sidFlag)
 	case "federation enable":
-		return federationEnable(ctx, conn, *authorityHints, *orgName, *homepageURI)
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var anchors, contacts *string
+		var lifetime *time.Duration
+		if given["trust-anchor-hints"] {
+			anchors = trustAnchorHints
+		}
+		if given["federation-contacts"] {
+			contacts = federationContacts
+		}
+		if given["entity-lifetime"] {
+			lifetime = entityLifetime
+		}
+		return federationEnable(ctx, conn, *authorityHints, *orgName, *homepageURI, anchors, contacts, lifetime)
 	case "rar register":
 		return rarRegister(ctx, conn, *orgID, *rarType, *rarFields, *rarRequired, *rarDesc)
 	case "rar allow":
@@ -1124,7 +1149,7 @@ func run(args []string) (err error) {
 	case "duo show":
 		return duoShow(ctx, conn)
 	case "attester add":
-		return attesterAdd(ctx, conn, *orgID, *name, *attesterJWKS)
+		return attesterAdd(ctx, conn, *orgID, *name, *attesterJWKS, *rarDesc)
 	case "attester list":
 		return attesterList(ctx, conn)
 	case "scim-source add":
@@ -4976,7 +5001,7 @@ func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID string, dr
 
 // registrationEnable turns dynamic client registration on for an organisation.
 func registrationEnable(ctx context.Context, conn *pgx.Conn, orgID string, open bool,
-	maxClients int, scopes string) error {
+	maxClients int, scopes string, confidential bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org, the organisation to enable registration for")
@@ -4994,19 +5019,28 @@ func registrationEnable(ctx context.Context, conn *pgx.Conn, orgID string, open 
 		maxClients = 100
 	}
 
+	// The whole policy is written each time, as the other settings are, so
+	// confidential registration is off again unless the flag is repeated: the
+	// safe direction for a setting that hands out secrets (2.30).
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO core.registration_policies
-			(org_id, enabled, open, max_clients, allowed_scopes)
-		VALUES ($1::uuid, true, $2, $3, $4)
+			(org_id, enabled, open, max_clients, allowed_scopes, allow_confidential)
+		VALUES ($1::uuid, true, $2, $3, $4, $5)
 		ON CONFLICT (org_id) DO UPDATE SET
 			enabled = true, open = EXCLUDED.open, max_clients = EXCLUDED.max_clients,
-			allowed_scopes = EXCLUDED.allowed_scopes, updated_at = now()`,
-		orgID, open, maxClients, list); err != nil {
+			allowed_scopes = EXCLUDED.allowed_scopes,
+			allow_confidential = EXCLUDED.allow_confidential, updated_at = now()`,
+		orgID, open, maxClients, list, confidential); err != nil {
 		return err
 	}
 
 	fmt.Printf("dynamic registration enabled\n  scopes  : %s\n  ceiling : %d clients\n",
 		strings.Join(list, ", "), maxClients)
+	if confidential {
+		fmt.Println("  clients : a registrant asking for a secret gets one; the others are public")
+	} else {
+		fmt.Println("  clients : public only, whatever token_endpoint_auth_method is asked for")
+	}
 	if open {
 		fmt.Println("\n  OPEN: anybody who can reach /oauth2/register may create a client.\n" +
 			"  They choose the client_name, and that name appears on a consent screen.\n" +
@@ -7870,7 +7904,36 @@ func ssfReceived(ctx context.Context, conn *pgx.Conn, orgID string) error {
 // used in other protocols". Reusing them would tie two independent trust
 // decisions together: a relying party trusting our OIDC key to say who a user
 // is, and a federation trusting our federation key to say what this entity is.
-func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homepage string) error {
+// nilIfEmpty turns an empty list into nil, which is written as NULL.
+func nilIfEmpty(l []string) []string {
+	if len(l) == 0 {
+		return nil
+	}
+	return l
+}
+
+// federationEnable makes this instance a federation entity. anchors, contacts
+// and lifetime are nil when their flag was not given, which keeps what is set:
+// they were readable and published and nothing could write them (2.30), and a
+// re-run to change the homepage must not wipe them.
+func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homepage string,
+	anchors, contacts *string, lifetime *time.Duration) error {
+	var anchorList, contactList []string
+	if anchors != nil {
+		for _, h := range splitList(*anchors) {
+			if err := oidfed.ValidateEntityID(h); err != nil {
+				return fmt.Errorf("trust anchor hint %q: %w", h, err)
+			}
+			anchorList = append(anchorList, h)
+		}
+	}
+	if contacts != nil {
+		contactList = splitList(*contacts)
+	}
+	if lifetime != nil && (*lifetime < 5*time.Minute || *lifetime > 7*24*time.Hour) {
+		return fmt.Errorf("-entity-lifetime is between 5m and 168h; a statement a federation keeps " +
+			"trusting for longer outlives a change of mind, and a shorter one is refetched constantly")
+	}
 	root, err := rootKey()
 	if err != nil {
 		return err
@@ -7959,6 +8022,26 @@ func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homep
 		instanceID, hintList, orgName, homepage); err != nil {
 		return fmt.Errorf("saving the federation configuration: %w", err)
 	}
+	// An empty list is written as NULL: the schema refuses `[]` for the hints,
+	// which §3.1.2 forbids, and an absent claim is what "none" means.
+	if anchors != nil {
+		if _, err := tx.Exec(ctx, `UPDATE core.federation_config SET trust_anchor_hints = $2, updated_at = now()
+			WHERE instance_id = $1::uuid`, instanceID, nilIfEmpty(anchorList)); err != nil {
+			return err
+		}
+	}
+	if contacts != nil {
+		if _, err := tx.Exec(ctx, `UPDATE core.federation_config SET contacts = $2, updated_at = now()
+			WHERE instance_id = $1::uuid`, instanceID, nilIfEmpty(contactList)); err != nil {
+			return err
+		}
+	}
+	if lifetime != nil {
+		if _, err := tx.Exec(ctx, `UPDATE core.federation_config SET lifetime_seconds = $2, updated_at = now()
+			WHERE instance_id = $1::uuid`, instanceID, int(lifetime.Seconds())); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -7976,13 +8059,14 @@ func federationShow(ctx context.Context, conn *pgx.Conn) error {
 	if err != nil {
 		return err
 	}
-	var hints []string
+	var hints, anchors, contacts []string
 	var orgName, homepage *string
 	var lifetime int
 	if err := conn.QueryRow(ctx, `
-		SELECT authority_hints, organization_name, homepage_uri, lifetime_seconds
+		SELECT authority_hints, organization_name, homepage_uri, lifetime_seconds,
+		       trust_anchor_hints, contacts
 		FROM core.federation_config WHERE instance_id = $1::uuid`, instanceID).
-		Scan(&hints, &orgName, &homepage, &lifetime); err != nil {
+		Scan(&hints, &orgName, &homepage, &lifetime, &anchors, &contacts); err != nil {
 		return fmt.Errorf("this instance is not part of a federation -- " +
 			"run `signari federation enable`")
 	}
@@ -8001,6 +8085,12 @@ func federationShow(ctx context.Context, conn *pgx.Conn) error {
 		fmt.Println("authority_hints (none -- published as a Trust Anchor)")
 	} else {
 		fmt.Printf("authority_hints %s\n", strings.Join(hints, ", "))
+	}
+	if len(anchors) > 0 {
+		fmt.Printf("trust anchors   %s\n", strings.Join(anchors, ", "))
+	}
+	if len(contacts) > 0 {
+		fmt.Printf("contacts        %s\n", strings.Join(contacts, ", "))
 	}
 	return nil
 }
@@ -8435,20 +8525,25 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	if lifetime > 0 {
 		interval = fmt.Sprintf("%d seconds", int(lifetime.Seconds()))
 	}
+	// The format is written, from the constant issuance checks, rather than
+	// left to the column default: the one format implemented is then a fact
+	// this command states, and a second format is a flag here and a value that
+	// constant's check admits (2.30).
 	var required bool
 	if err := conn.QueryRow(ctx, `
 		INSERT INTO core.credential_configurations
 			(org_id, config_id, vct, always_claims, selective_claims, lifetime, display_name,
-			 require_key_attestation)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6::interval, NULLIF($7,''), COALESCE($8::boolean, false))
+			 require_key_attestation, format)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6::interval, NULLIF($7,''), COALESCE($8::boolean, false), $9)
 		ON CONFLICT (org_id, config_id) DO UPDATE
-		SET vct = EXCLUDED.vct, always_claims = EXCLUDED.always_claims,
+		SET format = EXCLUDED.format, vct = EXCLUDED.vct, always_claims = EXCLUDED.always_claims,
 		    selective_claims = EXCLUDED.selective_claims,
 		    lifetime = EXCLUDED.lifetime, display_name = EXCLUDED.display_name,
 		    require_key_attestation = COALESCE($8::boolean,
 		        credential_configurations.require_key_attestation)
 		RETURNING require_key_attestation`,
-		orgID, configID, vct, a, sel, interval, displayName, requireAttestation).Scan(&required); err != nil {
+		orgID, configID, vct, a, sel, interval, displayName, requireAttestation,
+		oid4vci.FormatSDJWTVC).Scan(&required); err != nil {
 		return fmt.Errorf("defining the credential: %w", err)
 	}
 
@@ -8603,7 +8698,7 @@ func credentialUntrustRoot(ctx context.Context, conn *pgx.Conn, orgID, name stri
 // Without at least one of these, no attestation can verify -- rule 4 requires
 // the signature to check out against "a known and trusted Client Attester", and
 // trust here means somebody deliberately registered the key.
-func attesterAdd(ctx context.Context, conn *pgx.Conn, orgID, name, jwksPath string) error {
+func attesterAdd(ctx context.Context, conn *pgx.Conn, orgID, name, jwksPath, description string) error {
 	if orgID == "" || name == "" || jwksPath == "" {
 		return fmt.Errorf("attester add needs --org, --name and --attester-jwks")
 	}
@@ -8638,11 +8733,15 @@ func attesterAdd(ctx context.Context, conn *pgx.Conn, orgID, name, jwksPath stri
 		}
 	}
 
+	// The description is for whoever reads `attester list` later, which is
+	// where an operator decides whether an attester still belongs (2.30).
+	// Re-registering without one keeps the old.
 	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.client_attesters (org_id, name, jwks)
-		VALUES ($1::uuid, $2, $3)
-		ON CONFLICT (org_id, name) DO UPDATE SET jwks = EXCLUDED.jwks`,
-		orgID, name, blob); err != nil {
+		INSERT INTO core.client_attesters (org_id, name, jwks, description)
+		VALUES ($1::uuid, $2, $3, NULLIF($4, ''))
+		ON CONFLICT (org_id, name) DO UPDATE SET jwks = EXCLUDED.jwks,
+			description = COALESCE(EXCLUDED.description, client_attesters.description)`,
+		orgID, name, blob, description); err != nil {
 		return fmt.Errorf("registering the client attester: %w", err)
 	}
 	fmt.Printf("registered client attester %q with %d key(s)\n", name, len(set.Keys))
@@ -8652,7 +8751,7 @@ func attesterAdd(ctx context.Context, conn *pgx.Conn, orgID, name, jwksPath stri
 // attesterList shows who is trusted to vouch for clients.
 func attesterList(ctx context.Context, conn *pgx.Conn) error {
 	rows, err := conn.Query(ctx, `
-		SELECT org_id::text, name, jsonb_array_length(jwks->'keys'), created_at
+		SELECT org_id::text, name, jsonb_array_length(jwks->'keys'), created_at, COALESCE(description, '')
 		FROM core.client_attesters ORDER BY org_id, name`)
 	if err != nil {
 		return err
@@ -8660,14 +8759,17 @@ func attesterList(ctx context.Context, conn *pgx.Conn) error {
 	defer rows.Close()
 	found := false
 	for rows.Next() {
-		var org, name string
+		var org, name, description string
 		var keys int
 		var created time.Time
-		if err := rows.Scan(&org, &name, &keys, &created); err != nil {
+		if err := rows.Scan(&org, &name, &keys, &created, &description); err != nil {
 			return err
 		}
 		found = true
 		fmt.Printf("%s  %-30s %d key(s)  %s\n", org, name, keys, created.Format(time.RFC3339))
+		if description != "" {
+			fmt.Printf("    %s\n", description)
+		}
 	}
 	if !found {
 		fmt.Println("no client attesters registered; attestation-based client " +

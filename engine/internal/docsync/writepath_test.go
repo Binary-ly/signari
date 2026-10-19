@@ -71,8 +71,7 @@ var knownUnwritable = map[string]string{
 	// The engine's own runtime state, not operator configuration. These are
 	// written by nothing because the feature that would write them is absent,
 	// which is a different repair from adding a command.
-	"audit_events.detail_enc":  "known: zero readers and zero writers, already named in the plan's documentation-honesty item",
-	"credential_nonces.org_id": "written by the nonce path, which does not yet scope by organisation",
+	"audit_events.detail_enc": "known: zero readers and zero writers, already named in the plan's documentation-honesty item",
 
 	// Reported by the console through core_v1 and enforced NOWHERE on the request
 	// path. A command to set these would be the same defect from the other side:
@@ -93,14 +92,10 @@ var knownUnwritable = map[string]string{
 	"migration_sources.scope":             "the same",
 	"migration_sources.enabled":           "the same",
 
-	// Smaller policy settings.
-	"client_attesters.description":             "cosmetic",
-	"credential_configurations.format":         "fixed at dc+sd-jwt",
-	"federation_config.contacts":               "federation entity contacts cannot be published",
-	"federation_config.trust_anchor_hints":     "nor trust anchor hints",
-	"federation_config.lifetime_seconds":       "nor the entity statement lifetime",
-	"registration_policies.allow_confidential": "dynamic registration cannot be allowed to mint confidential clients",
-	"signup_rules.require_verified_email":      "self-signup email verification cannot be relaxed",
+	// Consulted by nothing (2.46): self-signup verifies no address yet, so a
+	// command to relax the requirement would relax nothing. 5.01 builds the
+	// verification this governs, then the writer.
+	"signup_rules.require_verified_email": "consulted by nothing until self-signup verifies an address (5.01)",
 }
 
 var (

@@ -42,8 +42,8 @@ elsewhere — the client tries, fails, and blames its own configuration.
 |---|---|
 | ceiling per organisation | 100 by default, configurable |
 | scopes | intersected with an allow-list, default `openid profile email` |
-| client type | public unless `allow_confidential` |
-| initial access tokens | optional use count, optional expiry, revocable |
+| client type | public unless `-allow-confidential` |
+| initial access tokens | optional use count, optional expiry, revocable with `registration revoke` |
 | rate limit | 20 attempts per address per hour, counted before anything else, then a shared allowance of three a second that only a caller allowed to register can spend. The shared allowance used to be spent before that check, so anybody could exhaust it with garbage |
 
 **Refuse, never evict.** At the ceiling, registration is refused — deleting
@@ -56,7 +56,12 @@ response. Asking for `openid profile email admin` returns `openid profile email`
 
 Registered clients are **public by default**. A secret handed to a caller who
 appeared thirty seconds ago and cannot be identified is a formality, not a
-credential.
+credential. Where registrants are identified, by an initial access token you
+issued them, `registration enable -allow-confidential` gives a registrant that
+asks for a `token_endpoint_auth_method` other than `none` a client secret in the
+response. The whole policy is written each time `registration enable` runs, so
+leaving the flag off turns it off again. Nothing could set it before, so every
+registered client was public whatever the policy said.
 
 ## Redirect URIs are held to the same standard
 

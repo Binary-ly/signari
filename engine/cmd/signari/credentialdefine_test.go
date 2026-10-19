@@ -62,6 +62,16 @@ func TestCredentialDefineKeepsTheAttestationRequirementUnlessTold(t *testing.T) 
 	if required() {
 		t.Fatal("a new configuration requires an attestation without being told to")
 	}
+	// The format is written, from the constant issuance checks (2.30), not
+	// left to a column default nothing else could set.
+	var format string
+	if err := conn.QueryRow(ctx, `SELECT format FROM core.credential_configurations
+		WHERE org_id = $1::uuid AND config_id = $2`, org, config).Scan(&format); err != nil {
+		t.Fatal(err)
+	}
+	if format != "dc+sd-jwt" {
+		t.Errorf("credential define wrote format %q", format)
+	}
 	define(&yes)
 	if !required() {
 		t.Fatal("-require-key-attestation did not set the requirement")

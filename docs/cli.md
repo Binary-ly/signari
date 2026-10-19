@@ -60,7 +60,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari invite create` / `invite list` | Invitations. The list shows each one's id |
 | `signari invite revoke` | `-org <uuid> -invitation <id>`: close an open invitation, so its link stops working at once. Audited. Until October 2026 sign-up refused a revoked invitation and nothing could revoke one, so a link sent to the wrong address stayed good until it expired |
 | `signari signup enable` / `signup disable` / `signup show` | Self-service sign-up, and which email domains may use it |
-| `signari registration enable` / `registration token` | Dynamic client registration (RFC 7591) |
+| `signari registration enable` / `registration token` | Dynamic client registration (RFC 7591). `-allow-confidential` lets a registrant asking for a secret get one; the whole policy is written each run, so it is off unless repeated. See [dynamic-registration.md](dynamic-registration.md) |
 | `signari registration revoke` | `-org <uuid> -name <n>` or `-token-id <uuid>`: stop a registration token before it is spent or expires. `-name` is refused when two live tokens share it, naming both |
 | `signari erase subject` | Crypto-shred a subject: destroy their data-encryption key so ciphertext, including in backups, is permanently unreadable. See [erasure.md](erasure.md) |
 
@@ -163,7 +163,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari trust-mark accept` / `trust-mark drop` | Publish, or stop publishing, a Trust Mark somebody granted this entity |
 | `signari trust-mark delegate` | Authorise another entity to issue a Trust Mark type this one owns (§7.2) |
 | `signari trust-mark issuers` / `trust-mark owners` | The Trust Anchor's two governing claims. Setting either is refused for now: this engine cannot be a Trust Anchor until it serves the `federation_fetch_endpoint` every anchor MUST publish, and every reader ignores them from an entity with a Superior. A file containing `{}` still clears them. See [OpenID Federation](openid-federation.md#enabling-it) |
-| `signari federation enable` / `federation show` | Join an OpenID Federation. Generates a **separate** Entity Statement signing key and publishes `/.well-known/openid-federation` — see [openid-federation.md](openid-federation.md) |
+| `signari federation enable` / `federation show` | Join an OpenID Federation. Generates a **separate** Entity Statement signing key and publishes `/.well-known/openid-federation` — see [openid-federation.md](openid-federation.md). `-trust-anchor-hints`, `-federation-contacts` and `-entity-lifetime` (5m to 168h) are kept when not given |
 | `signari authz grant` / `authz revoke` | Relations: `-principal user:alice -relation owner -object document:42` |
 | `signari authz check` | Answer a question from the command line, with the reason |
 | `signari uma settings` | Offer, or stop offering, resource-owner intervention on refused UMA requests (§3.3.6 `request_submitted`). Off means a refusal is final. See [uma.md](uma.md) |
@@ -211,7 +211,7 @@ An operator's own service, called to extend a decision this engine makes. See
 | `signari theme eject` / `theme check` / `theme list` | Replace the HTML of any sign-in page. `theme eject -theme-dir DIR` writes the built-in pages out to edit; `theme check` validates a directory and **exits non-zero** if a page would be refused — the server would not fail to start, it would serve the built-in and log, so a pipeline is where this is caught; `theme list` prints every page and whether it is built-in or yours. Needs no database. See [theming.md](theming.md) |
 | `signari i18n list` / `i18n status` / `i18n keys` | What languages the sign-in pages can be rendered in. `i18n status` names every message a loaded language is missing and **exits non-zero** if any is incomplete — a half-translated language still renders, half in each language, which nothing downstream catches; `i18n keys` prints every message key, to write a catalogue against. Same `-theme-dir` flag, and needs no database. See [i18n.md](i18n.md) |
 | `signari duo set` / `duo enroll` / `duo show` | Duo as a second factor |
-| `signari attester add` / `attester list` | Trusted Client Attesters for attestation-based client authentication. `attester add --org <id> --name <n> --attester-jwks <file>` registers an attester's **public** keys; a file containing private keys is refused, because this server could then forge the attestations it verifies. Nothing authenticates with `attest_jwt_client_auth` until at least one attester is registered |
+| `signari attester add` / `attester list` | Trusted Client Attesters for attestation-based client authentication. `attester add --org <id> --name <n> --attester-jwks <file>` registers an attester's **public** keys; a file containing private keys is refused, because this server could then forge the attestations it verifies. `-describe` records who the attester is, shown by `attester list`; re-registering without it keeps the old one. Nothing authenticates with `attest_jwt_client_auth` until at least one attester is registered |
 
 ## Testing
 

@@ -45,6 +45,26 @@ owners`, which set claims only a Trust Anchor publishes; both still clear them.
 Until October 2026 omitting the flag published a Trust Anchor that no resolver
 could fetch a Subordinate Statement from.
 
+Three more settings go into the Entity Configuration, and each is kept when its
+flag is not given, so a re-run to change the name does not wipe them:
+
+    signari federation enable -authority-hints https://anchor.example \
+      -trust-anchor-hints https://anchor.example,https://edugain.example \
+      -federation-contacts security@example.edu \
+      -entity-lifetime 12h
+
+- `-trust-anchor-hints` is published as `trust_anchor_hints`, the Trust Anchors
+  this entity trusts. Each must be an Entity Identifier; empty clears it, and the
+  claim is then absent, because §3.1.2 forbids the empty array.
+- `-federation-contacts` goes into the `federation_entity` metadata as
+  `contacts`, which may hold names, addresses or phone numbers.
+- `-entity-lifetime` is how long the Entity Configuration is valid, from 5m to
+  168h, 24h by default. A long one is a statement a federation keeps trusting
+  after you have changed your mind.
+
+`federation show` prints all three. Until October 2026 they were read and
+published and nothing could set them.
+
 ## The federation key is separate, and that is the point
 
 §3.1.1, of the `jwks` claim:

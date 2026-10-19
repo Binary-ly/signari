@@ -88,6 +88,14 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		c.clients[cl.ClientID] = cl
 	}
 	rows.Close()
+	for id, cl := range c.clients {
+		uris, fc, sid, err := store.ClientLogoutOf(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		cl.PostLogoutRedirectURIs, cl.FrontchannelLogoutURI, cl.FrontchannelSessionRequired = &uris, &fc, &sid
+		c.clients[id] = cl
+	}
 
 	rows, err = tx.Query(ctx, `
 		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled,
@@ -335,6 +343,15 @@ func clientDiff(have, want Client) string {
 			d = append(d, "token_exchange")
 		}
 	}
+	if w, h := want.PostLogoutRedirectURIs, have.PostLogoutRedirectURIs; w != nil && h != nil && !sameSet(*w, *h) {
+		d = append(d, "post_logout_redirect_uris")
+	}
+	if w, h := want.FrontchannelLogoutURI, have.FrontchannelLogoutURI; w != nil && h != nil && *w != *h {
+		d = append(d, "frontchannel_logout_uri")
+	}
+	if w, h := want.FrontchannelSessionRequired, have.FrontchannelSessionRequired; w != nil && h != nil && *w != *h {
+		d = append(d, "frontchannel_logout_session_required")
+	}
 	return strings.Join(d, ", ")
 }
 
@@ -499,6 +516,12 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 			if _, err := store.SetClientExchange(ctx, tx, cl.ClientID, x.Enabled, x.Audiences); err != nil {
 				return fmt.Errorf("client %q token_exchange: %w", cl.ClientID, err)
 			}
+		}
+		if err := store.SetClientLogout(ctx, tx, cl.ClientID, store.ClientLogout{
+			PostLogoutRedirectURIs: cl.PostLogoutRedirectURIs, FrontchannelURI: cl.FrontchannelLogoutURI,
+			FrontchannelSessionRequired: cl.FrontchannelSessionRequired,
+		}); err != nil {
+			return fmt.Errorf("client %q logout: %w", cl.ClientID, err)
 		}
 	}
 

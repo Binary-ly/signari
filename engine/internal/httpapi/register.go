@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -44,6 +45,15 @@ type registrationRequest struct {
 	Scope                   string   `json:"scope"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	LogoutURI               string   `json:"backchannel_logout_uri"`
+
+	// Sign-out registration: where RP-initiated logout may return the browser,
+	// and the front-channel logout URI. Once dropped, as unmodelled metadata is,
+	// so a client registering them was refused at sign-out with no way to know
+	// why. They only ever concern the client registering them.
+	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris"`
+	FrontchannelLogoutURI  string   `json:"frontchannel_logout_uri"`
+	// A pointer, so a client that does not send it keeps the stored default.
+	FrontchannelSessionRequired *bool `json:"frontchannel_logout_session_required"`
 
 	// CIBA §4 makes this REQUIRED client metadata for a client registering to
 	// use CIBA. This server implements all three modes, but DYNAMIC registration
@@ -215,7 +225,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		LogoutURI:    strings.TrimSpace(req.LogoutURI),
 		TokenID:      tokenID,
 		DPoPBound:    req.DPoPBoundAccessTokens,
+		Logout: store.ClientLogout{
+			PostLogoutRedirectURIs:      &req.PostLogoutRedirectURIs,
+			FrontchannelURI:             &req.FrontchannelLogoutURI,
+			FrontchannelSessionRequired: req.FrontchannelSessionRequired,
+		},
 	})
+	if errors.Is(err, store.ErrInvalidLogoutRegistration) {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+		return
+	}
 	if err != nil {
 		s.log.Error("registering a client", "err", err, "org_id", orgID)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
@@ -245,6 +264,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// agreed to enforce it -- a client that asked to be pinned and was
 		// silently not would believe it was constrained when it was not.
 		"dpop_bound_access_tokens": req.DPoPBoundAccessTokens,
+	}
+	if len(req.PostLogoutRedirectURIs) > 0 {
+		body["post_logout_redirect_uris"] = req.PostLogoutRedirectURIs
+	}
+	if req.FrontchannelLogoutURI != "" {
+		body["frontchannel_logout_uri"] = req.FrontchannelLogoutURI
+		_, _, sid, _ := store.ClientLogoutOf(ctx, s.db, reg.ClientID)
+		body["frontchannel_logout_session_required"] = sid
 	}
 	if confidential {
 		body["client_secret"] = reg.ClientSecret

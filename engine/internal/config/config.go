@@ -78,6 +78,11 @@ type Client struct {
 	// TokenExchange grants RFC 8693 token exchange. Absent leaves the client's
 	// current permission alone, as an omitted `enabled` does.
 	TokenExchange *TokenExchange `yaml:"token_exchange"`
+	// The sign-out registration. Each left alone when absent; an empty list or
+	// string clears it.
+	PostLogoutRedirectURIs      *[]string `yaml:"post_logout_redirect_uris"`
+	FrontchannelLogoutURI       *string   `yaml:"frontchannel_logout_uri"`
+	FrontchannelSessionRequired *bool     `yaml:"frontchannel_logout_session_required"`
 }
 
 // TokenExchange is whether a client may exchange tokens, and for which
@@ -175,6 +180,17 @@ func (f *File) Validate() error {
 		if c.PortalHidden && c.LaunchURL != "" {
 			add("clients[%s]: portal_hidden and launch_url contradict each other",
 				c.ClientID)
+		}
+		if c.PostLogoutRedirectURIs != nil {
+			for _, u := range *c.PostLogoutRedirectURIs {
+				if err := clients.ValidateRedirectURI(u); err != nil {
+					add("clients[%s]: post_logout_redirect_uri: %s", c.ClientID, err.Error())
+				}
+			}
+		}
+		if u := c.FrontchannelLogoutURI; u != nil && *u != "" &&
+			(!strings.HasPrefix(*u, "https://") || strings.Contains(*u, "#")) {
+			add("clients[%s]: frontchannel_logout_uri must be https with no fragment", c.ClientID)
 		}
 		if x := c.TokenExchange; x != nil {
 			if x.Enabled && c.Public {

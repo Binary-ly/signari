@@ -12,6 +12,25 @@ everything:
 Each is reported separately rather than summed into a single "signed out",
 because they succeed and fail independently.
 
+## Registering a client's sign-out
+
+```sh
+signari client set-logout -client-id wiki \
+  -post-logout-redirects https://wiki.example.com/signed-out \
+  -frontchannel-uri https://wiki.example.com/oidc/frontchannel-logout
+```
+
+`-post-logout-redirects` lists where RP-initiated logout may send the browser
+afterwards. A `post_logout_redirect_uri` is honoured only when this client
+registered it, and the same rules as a redirect URI apply: https, or a loopback
+address for development, and no wildcard. `-frontchannel-uri` is the
+front-channel URI below, and `-frontchannel-sid` (on by default) adds `iss` and
+`sid` to it. The same three are the client PATCH's `post_logout_redirect_uris`,
+`frontchannel_logout_uri` and `frontchannel_logout_session_required`, the client
+fields of the same names in `signari apply`, and dynamic registration metadata.
+Until October 2026 nothing could register either one, so every
+`post_logout_redirect_uri` was refused and the front channel reached no client.
+
 ## Why both OIDC channels
 
 Back-channel logout is server-to-server: reliable, retryable, invisible to the

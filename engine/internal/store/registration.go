@@ -148,6 +148,10 @@ type NewClientRegistration struct {
 	// ever set this on itself, and setting it can only cause its own requests to
 	// be refused, so it is safe to honour from open registration.
 	DPoPBound bool
+
+	// Logout is the sign-out registration, written in the same transaction by
+	// SetClientLogout.
+	Logout ClientLogout
 }
 
 // RegisteredClient is what came back.
@@ -235,6 +239,9 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 			VALUES ($1, $2)`, out.ClientID, u); err != nil {
 			return nil, fmt.Errorf("registering redirect_uri %q: %w", u, err)
 		}
+	}
+	if err := SetClientLogout(ctx, tx, out.ClientID, in.Logout); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

@@ -350,6 +350,12 @@ func run(args []string) (err error) {
 	dpopBound := fs.Bool("dpop-bound", false, "RFC 9449 §5.2: refuse token requests from this client that carry no DPoP proof")
 	exchangeAudMatch := fs.Bool("exchange-audience-match", false, "RFC 8693: only exchange subject tokens this client holds or is named in the audience of")
 	mayExchange := fs.Bool("may-exchange", true, "`client set-exchange`: grant token exchange (false withdraws it)")
+	postLogoutRedirects := fs.String("post-logout-redirects", "",
+		"`client set-logout`: comma-separated URIs a relying party may name as post_logout_redirect_uri (empty clears)")
+	frontchannelURI := fs.String("frontchannel-uri", "",
+		"`client set-logout`: https URI loaded in a frame at sign-out, OpenID front-channel logout (empty clears)")
+	frontchannelSID := fs.Bool("frontchannel-sid", true,
+		"`client set-logout`: add iss and sid to the front-channel logout URI (the stored default)")
 	exchangeAudiences := fs.String("exchange-audiences", "",
 		"`client set-exchange`: comma-separated audiences this client may exchange tokens for, besides itself")
 	promptFile := fs.String("prompt-file", "", "YAML defining a sign-in prompt")
@@ -758,6 +764,8 @@ func run(args []string) (err error) {
 		return clientSetExchangeContainment(ctx, conn, *clientID, *exchangeAudMatch)
 	case "client set-exchange":
 		return clientSetExchange(ctx, conn, *clientID, *mayExchange, *exchangeAudiences)
+	case "client set-logout":
+		return clientSetLogout(ctx, conn, *clientID, *postLogoutRedirects, *frontchannelURI, *frontchannelSID)
 	case "client set-dpop":
 		return clientSetDPoP(ctx, conn, *clientID, *dpopBound)
 	case "client set-pkce":
@@ -8493,6 +8501,50 @@ func clientSetExchange(ctx context.Context, conn *pgx.Conn, clientID string, may
 		fmt.Printf("%s may exchange tokens for itself only\n", clientID)
 	} else {
 		fmt.Printf("%s may exchange tokens for itself and %s\n", clientID, strings.Join(clean, ", "))
+	}
+	return nil
+}
+
+// clientSetLogout registers a client's sign-out: where it may be sent after
+// RP-initiated logout, and its front-channel logout URI. All three are set
+// together, so the command's result is exactly what it was given.
+func clientSetLogout(ctx context.Context, conn *pgx.Conn, clientID, postLogout, frontchannel string, sid bool) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client-id")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, _, _, err := store.ClientLogoutOf(ctx, tx, clientID); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
+		return err
+	}
+	uris := strings.Split(postLogout, ",")
+	if err := store.SetClientLogout(ctx, tx, clientID, store.ClientLogout{
+		PostLogoutRedirectURIs: &uris, FrontchannelURI: &frontchannel, FrontchannelSessionRequired: &sid,
+	}); err != nil {
+		return err
+	}
+	got, fc, fcSID, err := store.ClientLogoutOf(ctx, tx, clientID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if len(got) == 0 {
+		fmt.Printf("%s: no post-logout redirect; RP-initiated logout ends on this server's page\n", clientID)
+	} else {
+		fmt.Printf("%s: post-logout redirects %s\n", clientID, strings.Join(got, ", "))
+	}
+	if fc == "" {
+		fmt.Println("  no front-channel logout")
+	} else {
+		fmt.Printf("  front-channel logout %s (iss and sid added: %v)\n", fc, fcSID)
 	}
 	return nil
 }

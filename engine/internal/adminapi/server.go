@@ -395,6 +395,15 @@ type patchClientRequest struct {
 	// store.SetClientExchange as the CLI and `signari apply`.
 	MayExchange       *bool     `json:"may_exchange"`
 	ExchangeAudiences *[]string `json:"exchange_audiences"`
+	// The sign-out registration, through store.SetClientLogout as the CLI,
+	// `apply` and dynamic registration write it. Each is left alone when absent.
+	PostLogoutRedirectURIs      *[]string `json:"post_logout_redirect_uris"`
+	FrontchannelLogoutURI       *string   `json:"frontchannel_logout_uri"`
+	FrontchannelSessionRequired *bool     `json:"frontchannel_logout_session_required"`
+}
+
+func (r patchClientRequest) setsLogout() bool {
+	return r.PostLogoutRedirectURIs != nil || r.FrontchannelLogoutURI != nil || r.FrontchannelSessionRequired != nil
 }
 
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
@@ -410,7 +419,8 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	if req.Enabled == nil && req.RequirePKCE == nil && req.MayExchange == nil && req.ExchangeAudiences == nil {
+	if req.Enabled == nil && req.RequirePKCE == nil && req.MayExchange == nil && req.ExchangeAudiences == nil &&
+		!req.setsLogout() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
@@ -423,6 +433,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 
 	var enabled, requirePKCE, mayExchange bool
 	var exchangeAudiences []string
+	var logout map[string]any
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		// This handler previously changed a client without ever reading which
 		// organisation it belonged to, so there was nothing for the boundary to
@@ -491,6 +502,23 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 			detail["may_exchange"] = mayExchange
 			detail["exchange_audiences"] = exchangeAudiences
 		}
+		if req.setsLogout() {
+			if err := store.SetClientLogout(ctx, tx, clientID, store.ClientLogout{
+				PostLogoutRedirectURIs: req.PostLogoutRedirectURIs, FrontchannelURI: req.FrontchannelLogoutURI,
+				FrontchannelSessionRequired: req.FrontchannelSessionRequired,
+			}); err != nil {
+				return err
+			}
+			uris, fc, fcSID, err := store.ClientLogoutOf(ctx, tx, clientID)
+			if err != nil {
+				return err
+			}
+			logout = map[string]any{"post_logout_redirect_uris": uris, "frontchannel_logout_uri": fc,
+				"frontchannel_logout_session_required": fcSID}
+			for k, v := range logout {
+				detail[k] = v
+			}
+		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.client_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, ClientID: clientID, Detail: detail,
@@ -518,6 +546,9 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrInvalidExchangeAudience):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_audience", "detail": err.Error()})
 		return
+	case errors.Is(err, store.ErrInvalidLogoutRegistration):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_logout_uri", "detail": err.Error()})
+		return
 	case err != nil:
 		s.log.Error("patching client", "client_id", clientID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -536,6 +567,9 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.MayExchange != nil || req.ExchangeAudiences != nil {
 		out["may_exchange"], out["exchange_audiences"] = mayExchange, exchangeAudiences
+	}
+	for k, v := range logout {
+		out[k] = v
 	}
 	writeJSON(w, http.StatusOK, out)
 }

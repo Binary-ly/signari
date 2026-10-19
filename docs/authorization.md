@@ -141,7 +141,6 @@ require:
     subject_active: true
     email_verified: true
     any_group: [finance]
-    max_risk: 30
     time:
       days: [mon, tue, wed, thu, fri]
       from: "09:00"
@@ -188,6 +187,14 @@ a `HH:MM` that is not one, an `asserted:` block requiring nothing, a resource
 requirement allowing no values. At evaluation time the only safe response to a
 broken condition is to refuse — and a typo that silently denies everything is
 worse than one that refuses to deploy.
+
+A requirement on device posture (`device_managed`, `device_compliant`) or a
+risk score (`max_risk`) is refused too, naming the rule. The language has the
+words, and no request carries either fact to this decision point yet, so the
+first would refuse everybody and the second nobody. Device posture is enforced
+today by the [access policy](device-posture.md), which does receive it. A
+model set before this refusal is still the one evaluated; `signari doctor`
+reports it as critical.
 
 ## Relations, not roles
 

@@ -143,6 +143,48 @@ func (c Condition) isEmpty() bool {
 		len(c.Policies) == 0
 }
 
+// unpopulated names what c requires of facts the decision point never has.
+//
+// SubjectFacts reads the subject's groups, account state and e-mail
+// verification, and the session's amr. No device posture and no risk score
+// reach this decision point yet (11.07), so a rule requiring device_managed or
+// device_compliant refused everybody and one with max_risk refused nobody --
+// the first found on the first request, the second never.
+func (c Condition) unpopulated() []string {
+	var out []string
+	if c.DeviceManaged {
+		out = append(out, "device_managed")
+	}
+	if c.DeviceCompliant {
+		out = append(out, "device_compliant")
+	}
+	if c.MaxRisk != 0 {
+		out = append(out, "max_risk")
+	}
+	return out
+}
+
+// Unpopulated lists each requirement in the model on a fact the decision point
+// never has, as "where: fact", sorted. ParseModel refuses a model with any, and
+// `signari doctor` reads it from a model stored before that.
+func (m *Model) Unpopulated() []string {
+	var out []string
+	for name, c := range m.Policies {
+		for _, f := range c.unpopulated() {
+			out = append(out, "policy "+name+": "+f)
+		}
+	}
+	for tn, t := range m.Types {
+		for act, c := range t.Require {
+			for _, f := range c.unpopulated() {
+				out = append(out, tn+"."+act+": "+f)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // resolved is a Condition with its named policies attached.
 //
 // The named policies travel WITH the condition rather than being looked up
@@ -308,6 +350,12 @@ func (m *Model) validate() error {
 		if cyc := t.cycle(); cyc != "" {
 			return fmt.Errorf("%s: the relations form a cycle (%s)", name, cyc)
 		}
+	}
+	if u := m.Unpopulated(); len(u) > 0 {
+		return fmt.Errorf("%s: no request to this engine carries device posture or a "+
+			"risk score yet, so a rule requiring device_managed or device_compliant would "+
+			"refuse everybody and max_risk would refuse nobody. Remove it",
+			strings.Join(u, "; "))
 	}
 	return nil
 }

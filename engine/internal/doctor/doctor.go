@@ -22,9 +22,11 @@ package doctor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"signari.dev/engine/internal/authzen"
 	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/i18n"
 	"signari.dev/engine/internal/keys"
@@ -127,6 +129,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 		return nil, err
 	}
 	if err := checkSignInFlows(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkAuthorizationModels(ctx, conn, r); err != nil {
 		return nil, err
 	}
 	if err := checkAdminTokens(ctx, conn, r); err != nil {
@@ -746,6 +751,44 @@ func checkSignInFlows(ctx context.Context, conn interface {
 				slug, perr),
 				"fix the file and apply it again with `signari flow apply`, which refuses "+
 					"exactly what the engine refuses")
+		}
+	}
+	return rows.Err()
+}
+
+// checkAuthorizationModels reports a stored model requiring a fact the
+// decision point never has. `authz set-model` refuses one since 2.22, but the
+// engine evaluates the compiled copy it stored, so a model set before that
+// still requires device posture, which denies every request to the action, or
+// caps a risk score that is always zero, which denies none.
+func checkAuthorizationModels(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
+	r.ran("authorization models")
+	rows, err := conn.Query(ctx, `
+		SELECT o.slug, m.compiled FROM core.authorization_models m
+		JOIN core.organizations o ON o.id = m.org_id ORDER BY o.slug`)
+	if err != nil {
+		return fmt.Errorf("reading authorization models: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug string
+		var compiled []byte
+		if err := rows.Scan(&slug, &compiled); err != nil {
+			return err
+		}
+		var m authzen.Model
+		if err := json.Unmarshal(compiled, &m); err != nil {
+			r.add(Critical, "authorization", fmt.Sprintf("the authorization model of %s "+
+				"does not load: %v", slug, err), "set it again with `signari authz set-model`")
+			continue
+		}
+		if u := m.Unpopulated(); len(u) > 0 {
+			r.add(Critical, "authorization", fmt.Sprintf("the authorization model of %s "+
+				"requires facts no request carries (%s): device posture denies every "+
+				"request to that action, and max_risk denies none", slug, strings.Join(u, "; ")),
+				"remove those requirements and set the model again with `signari authz set-model`")
 		}
 	}
 	return rows.Err()

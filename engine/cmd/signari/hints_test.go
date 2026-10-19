@@ -193,9 +193,9 @@ func TestEveryFlagTheCLINamesExists(t *testing.T) {
 		t.Errorf("%s is named to the operator and is not a flag", m)
 	}
 
-	// And the one the command was given. `-file` exists, for `import
-	// keycloak`; telling an operator running `authz set-model` to give it is
-	// as wrong as naming a flag nobody defined. Each case of the dispatch
+	// And the one the command was given. `-file` exists, for the importers;
+	// telling an operator running `authz set-model` to give it is as wrong as
+	// naming a flag nobody defined. Each case of the dispatch
 	// passes some flags' values (`*modelFile`) to the function it calls, and
 	// every flag that function's messages name must be among them. A message
 	// pointing at another command (`signari …`) is that command's business.

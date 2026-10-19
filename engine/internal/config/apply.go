@@ -404,9 +404,14 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		if cl.Public {
 			kind = "public"
 		}
-		scopes := cl.Scopes
-		if len(scopes) == 0 {
-			scopes = []string{"openid", "profile", "email", "offline_access"}
+		// What the file leaves out keeps its value on an update, as the plan
+		// reported, and takes the default only for a new client. This wrote the
+		// defaults every time: an apply that moved one redirect URI re-enabled a
+		// client an operator had switched off, renamed it to its identifier and
+		// reset its scopes, while the plan said none of that would happen.
+		var scopes any // NULL keeps the current scopes
+		if len(cl.Scopes) > 0 {
+			scopes = cl.Scopes
 		}
 
 		// Every non-standard scope must be one the organisation declared.
@@ -420,7 +425,7 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		//
 		// Refused rather than warned. A warning during apply is read by nobody
 		// at 2am, and the failure it predicts is silent for months.
-		if undeclared, uerr := store.UndeclaredScopes(ctx, tx, orgID, scopes); uerr != nil {
+		if undeclared, uerr := store.UndeclaredScopes(ctx, tx, orgID, cl.Scopes); uerr != nil {
 			return fmt.Errorf("checking the scopes for client %q: %w", cl.ClientID, uerr)
 		} else if len(undeclared) > 0 {
 			return fmt.Errorf("client %q is registered for scope(s) %s, which this "+
@@ -430,26 +435,36 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 				"intended spelling silently never fires",
 				cl.ClientID, strings.Join(undeclared, ", "))
 		}
-		enabled := true
-		if cl.Enabled != nil {
-			enabled = *cl.Enabled
-		}
-		if _, err := tx.Exec(ctx, `
+		// The update is confined to this organisation's row. client_id is unique
+		// across the deployment and the plan reads only this organisation's
+		// clients, so another tenant's identifier was planned as a create and
+		// then rewrote that tenant's client, redirect URIs included.
+		var written string
+		err := tx.QueryRow(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 			                          scopes, enabled, initiate_login_uri, logo_uri,
 			                          portal_hidden, client_secret_hash)
-			VALUES ($1, $2::uuid, $3, $4, $5, $6, NULLIF($7,''), NULLIF($8,''), $9,
+			VALUES ($1, $2::uuid, COALESCE(NULLIF($3, ''), $1), $4,
+			        COALESCE($5::text[], ARRAY['openid','profile','email','offline_access']),
+			        COALESCE($6::boolean, true), NULLIF($7,''), NULLIF($8,''), $9,
 			        CASE WHEN $4 = 'confidential' THEN 'unset' ELSE NULL END)
 			ON CONFLICT (client_id) DO UPDATE SET
-				display_name = EXCLUDED.display_name,
-				scopes = EXCLUDED.scopes,
-				enabled = EXCLUDED.enabled,
+				display_name = COALESCE(NULLIF($3, ''), core.clients.display_name),
+				scopes = COALESCE($5::text[], core.clients.scopes),
+				enabled = COALESCE($6::boolean, core.clients.enabled),
 				initiate_login_uri = EXCLUDED.initiate_login_uri,
 				logo_uri = EXCLUDED.logo_uri,
 				portal_hidden = EXCLUDED.portal_hidden,
-				updated_at = now()`,
-			cl.ClientID, orgID, firstNonEmpty(cl.Name, cl.ClientID), kind, scopes,
-			enabled, cl.LaunchURL, cl.LogoURL, cl.PortalHidden); err != nil {
+				updated_at = now()
+			 WHERE core.clients.org_id = EXCLUDED.org_id
+			RETURNING client_id`,
+			cl.ClientID, orgID, cl.Name, kind, scopes,
+			cl.Enabled, cl.LaunchURL, cl.LogoURL, cl.PortalHidden).Scan(&written)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("client %q is registered by another organisation; a client_id "+
+				"is unique across the deployment, so it cannot be declared here", cl.ClientID)
+		}
+		if err != nil {
 			return fmt.Errorf("client %q: %w", cl.ClientID, err)
 		}
 		// Redirect URIs are replaced wholesale: the file is the list, and merging
@@ -472,27 +487,21 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		if !ok || c.Action == "delete" {
 			continue
 		}
-		nameID := sp.NameID
-		if nameID == "" {
-			nameID = "persistent"
-		}
-		enabled := true
-		if sp.Enabled != nil {
-			enabled = *sp.Enabled
-		}
+		// As for clients: an omitted name, name-ID format or `enabled` keeps its
+		// value on an update and takes the default only on create.
 		var id string
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO core.saml_providers (org_id, entity_id, display_name,
 			                                 name_id_format, enabled)
-			VALUES ($1::uuid, $2, $3, $4, $5)
+			VALUES ($1::uuid, $2, COALESCE(NULLIF($3, ''), $2),
+			        COALESCE(NULLIF($4, ''), 'persistent'), COALESCE($5::boolean, true))
 			ON CONFLICT (org_id, entity_id) DO UPDATE SET
-				display_name = EXCLUDED.display_name,
-				name_id_format = EXCLUDED.name_id_format,
-				enabled = EXCLUDED.enabled,
+				display_name = COALESCE(NULLIF($3, ''), core.saml_providers.display_name),
+				name_id_format = COALESCE(NULLIF($4, ''), core.saml_providers.name_id_format),
+				enabled = COALESCE($5::boolean, core.saml_providers.enabled),
 				updated_at = now()
 			RETURNING id::text`,
-			orgID, sp.EntityID, firstNonEmpty(sp.Name, sp.EntityID), nameID,
-			enabled).Scan(&id); err != nil {
+			orgID, sp.EntityID, sp.Name, sp.NameID, sp.Enabled).Scan(&id); err != nil {
 			var pg *pgconn.PgError
 			if errors.As(err, &pg) && pg.ConstraintName == "saml_providers_entity_id_key" {
 				return fmt.Errorf("saml provider %q is registered by another organisation; "+
@@ -634,13 +643,4 @@ func recordApply(ctx context.Context, tx pgx.Tx, orgID string, plan *Plan) error
 		return fmt.Errorf("bumping the configuration version: %w", err)
 	}
 	return nil
-}
-
-func firstNonEmpty(vs ...string) string {
-	for _, v := range vs {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

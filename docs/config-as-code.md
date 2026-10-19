@@ -57,9 +57,22 @@ Nothing was changed. Run `signari apply` to make it so.
 Anything not in the file was left alone; -prune would delete it.
 ```
 
-The plan and the apply share one diff function, so a plan cannot describe
-something the apply does not do — which is the single failure a plan exists to
-prevent.
+The plan and the apply share one diff function, and the apply writes only what
+the diff covers, so a plan cannot describe something the apply does not do.
+That is the one failure a plan exists to prevent.
+
+**A field the file leaves out keeps its value.** A client's `name`, `scopes` and
+`enabled`, and a SAML provider's `name`, `name_id_format` and `enabled`, take
+their defaults when the object is created and are left alone afterwards unless
+the file names them. Until October 2026 the plan said this and the apply did
+not. Any change to an object rewrote these fields from their defaults, so an
+apply that moved one redirect URI switched back on a client an operator had
+disabled, renamed it to its identifier, and reset its scopes.
+
+**A `client_id` belongs to one organisation.** Client ids are unique across the
+deployment, so a file that declares a client another organisation owns is
+refused by name. Until October 2026 that client was planned as a create, and
+the apply rewrote the other organisation's client, redirect URIs included.
 
 ## Absence is not deletion
 

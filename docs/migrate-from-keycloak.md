@@ -90,10 +90,12 @@ CAUGHT   give client_credentials to public clients too
 CAUGHT   give every imported client client_credentials
 ```
 
-## What is deliberately not imported
+## Names
 
-Names. `core.users` has no name column, so `firstName` and `lastName` are read
-past. This is consistent with `claims_supported`, which deliberately omits
-`"name"` on the same grounds — advertising a claim nothing can emit is the
-failure the metadata builder exists to prevent — but it does mean a Keycloak
-realm's display names do not survive the move.
+`firstName` and `lastName` become the account's given name and surname, and
+together its display name. They are released under the `profile` scope as
+`given_name`, `family_name` and `name`, in the ID token and at userinfo, and
+advertised in `claims_supported`. A second import fills only names an account
+does not have, so a name changed after the move is never put back. Until
+October 2026 the importer read both fields and wrote neither, and no name was
+released at all.

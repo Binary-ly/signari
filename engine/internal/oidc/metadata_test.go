@@ -186,8 +186,10 @@ func TestWhatIsRefusedIsSaidRatherThanOmitted(t *testing.T) {
 	if slices.Contains(md.GrantTypesSupported, "password") || slices.Contains(md.GrantTypesSupported, "implicit") {
 		t.Errorf("grant_types_supported offers a removed grant: %q", md.GrantTypesSupported)
 	}
-	if slices.Contains(md.ClaimsSupported, "name") {
-		t.Errorf("claims_supported offers name, which nothing stores")
+	for _, c := range []string{"name", "given_name", "family_name", "preferred_username"} {
+		if !slices.Contains(md.ClaimsSupported, c) {
+			t.Errorf("claims_supported lacks %s, which profile releases", c)
+		}
 	}
 }
 

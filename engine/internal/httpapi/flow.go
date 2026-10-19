@@ -1190,12 +1190,13 @@ func (s *Server) addProfileClaims(ctx context.Context, tx pgx.Tx,
 		return nil
 	}
 
-	var email, username string
+	var email, username, name, given, family string
 	var verified bool
 	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(email,''), COALESCE(username,''), email_verified_at IS NOT NULL
+		SELECT COALESCE(email,''), COALESCE(username,''), email_verified_at IS NOT NULL,
+		       COALESCE(display_name,''), COALESCE(given_name,''), COALESCE(surname,'')
 		FROM core.users WHERE id = $1 AND status = 'active'`, userID).
-		Scan(&email, &username, &verified); err != nil {
+		Scan(&email, &username, &verified, &name, &given, &family); err != nil {
 		return fmt.Errorf("loading identity claims for %s: %w", userID, err)
 	}
 
@@ -1208,9 +1209,11 @@ func (s *Server) addProfileClaims(ctx context.Context, tx pgx.Tx,
 	}
 	if wantProfile {
 		claims.Username = username
-		// No `name`: there is no display name stored anywhere, so there is
-		// nothing honest to put in it. It has been removed from claims_supported
-		// rather than emitted empty.
+		// The names an account holds, each only when it holds one. They were
+		// never released: this said no display name was stored anywhere, which
+		// stopped being true when migration 0105 added them, so relying parties
+		// greeted everybody by their username.
+		claims.Name, claims.GivenName, claims.FamilyName = name, given, family
 	}
 	if wantGroups {
 		// TWO gates, not one: the scope must be granted AND the client must be

@@ -146,20 +146,28 @@ func Import(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm,
 		var userID string
 		var inserted bool
 		err := tx.QueryRow(ctx, `
-			INSERT INTO core.users (org_id, email, username, user_handle, email_verified_at, migration_state)
+			INSERT INTO core.users (org_id, email, username, user_handle, email_verified_at, migration_state,
+			                        given_name, surname, display_name)
 			VALUES ($1::uuid, NULLIF($2,''), NULLIF($3,''),
 			        decode(md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text)||
 			               md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text),'hex'),
-			        CASE WHEN $4 THEN now() ELSE NULL END, 'pending')
+			        CASE WHEN $4 THEN now() ELSE NULL END, 'pending',
+			        NULLIF($5,''), NULLIF($6,''), NULLIF(btrim($5 || ' ' || $6), ''))
 			-- Matches users_org_email_key exactly: a PARTIAL unique index on
 			-- (org_id, lower(email)). The conflict target must mirror the index
 			-- expression and its WHERE clause, or PostgreSQL cannot use it and the
 			-- import fails on the first existing user -- which is precisely the
 			-- re-run an idempotent importer exists to make safe.
 			ON CONFLICT (org_id, lower(email)) WHERE email IS NOT NULL
-			DO UPDATE SET username = COALESCE(core.users.username, EXCLUDED.username)
+			DO UPDATE SET username = COALESCE(core.users.username, EXCLUDED.username),
+			              -- The names fill gaps and never replace what an account
+			              -- already holds; they were dropped on import entirely.
+			              given_name = COALESCE(core.users.given_name, EXCLUDED.given_name),
+			              surname = COALESCE(core.users.surname, EXCLUDED.surname),
+			              display_name = COALESCE(core.users.display_name, EXCLUDED.display_name)
 			RETURNING id::text, (xmax = 0)`,
-			orgID, strings.ToLower(u.Email), u.Username, u.EmailVerified).Scan(&userID, &inserted)
+			orgID, strings.ToLower(u.Email), u.Username, u.EmailVerified,
+			strings.TrimSpace(u.FirstName), strings.TrimSpace(u.LastName)).Scan(&userID, &inserted)
 		if err != nil {
 			return nil, fmt.Errorf("importer: creating user %s: %w", identifier, err)
 		}

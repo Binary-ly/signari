@@ -223,16 +223,18 @@ func ImportAuthentik(ctx context.Context, tx pgx.Tx, orgID string, exp *Authenti
 		// cannot use the index, so the import dies on the first existing user,
 		// which is precisely the re-run an idempotent importer exists to allow.
 		err := tx.QueryRow(ctx, `
-			INSERT INTO core.users (org_id, email, username, user_handle, migration_state)
+			INSERT INTO core.users (org_id, email, username, user_handle, migration_state, display_name)
 			VALUES ($1::uuid, NULLIF($2,''), NULLIF($3,''),
 			        decode(md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text)||
 			               md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text),'hex'),
-			        'pending')
+			        'pending', NULLIF($4,''))
 			ON CONFLICT (org_id, lower(email)) WHERE email IS NOT NULL
 			DO UPDATE SET username = COALESCE(EXCLUDED.username, core.users.username),
+			              -- Fills a gap, never replaces a name the account holds.
+			              display_name = COALESCE(core.users.display_name, EXCLUDED.display_name),
 			              updated_at = now()
 			RETURNING id::text, (xmax = 0)`,
-			orgID, u.Email, u.Username).Scan(&userID, &created)
+			orgID, u.Email, u.Username, strings.TrimSpace(u.Name)).Scan(&userID, &created)
 		if err != nil {
 			return nil, fmt.Errorf("importing user %q: %w", identifier, err)
 		}

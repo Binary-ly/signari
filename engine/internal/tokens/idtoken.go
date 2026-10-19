@@ -107,6 +107,8 @@ type IDTokenClaims struct {
 	Email         string `json:"email,omitempty"`
 	EmailVerified *bool  `json:"email_verified,omitempty"`
 	Name          string `json:"name,omitempty"`
+	GivenName     string `json:"given_name,omitempty"`
+	FamilyName    string `json:"family_name,omitempty"`
 	Username      string `json:"preferred_username,omitempty"`
 	// Groups is authorization data, not identity: downstream software gates on
 	// it. omitempty matters -- an empty array and an absent claim mean different

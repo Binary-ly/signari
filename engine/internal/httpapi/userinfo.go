@@ -126,12 +126,13 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 
 	// Claims are released strictly by granted scope. `profile` and `email` are
 	// separate grants and must not leak into each other.
-	var email, username string
+	var email, username, name, given, family string
 	var verified *bool
 	if err := s.db.QueryRow(ctx,
-		`SELECT COALESCE(email,''), COALESCE(username,''), email_verified_at IS NOT NULL
+		`SELECT COALESCE(email,''), COALESCE(username,''), email_verified_at IS NOT NULL,
+		        COALESCE(display_name,''), COALESCE(given_name,''), COALESCE(surname,'')
 		 FROM core.users WHERE id = $1 AND status = 'active'`,
-		claims.Subject).Scan(&email, &username, &verified); err != nil {
+		claims.Subject).Scan(&email, &username, &verified, &name, &given, &family); err != nil {
 		// A token for a user who no longer exists or is deactivated.
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", error_description="The subject is not active"`)
@@ -143,8 +144,13 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		out["email"] = email
 		out["email_verified"] = verified != nil && *verified
 	}
-	if tokens.HasScope(claims.Scope, "profile") && username != "" {
-		out["preferred_username"] = username
+	if tokens.HasScope(claims.Scope, "profile") {
+		for claim, v := range map[string]string{"preferred_username": username,
+			"name": name, "given_name": given, "family_name": family} {
+			if v != "" {
+				out[claim] = v
+			}
+		}
 	}
 	// Same two gates as the ID token, and read fresh for the same reason: a
 	// long-lived access token must not keep asserting a group after the

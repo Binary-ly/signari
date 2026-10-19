@@ -363,9 +363,10 @@ func Build(cfg Config) (*Metadata, error) {
 			"groups",
 			"iss", "sub", "aud", "exp", "iat", "auth_time", "nonce",
 			"acr", "amr", "azp", "sid", "email", "email_verified",
-			// No "name": nothing stores a display name, and advertising a claim
-			// that is never emitted is the failure this file exists to prevent.
-			"preferred_username",
+			// Released under `profile` when the account holds them. "name" was
+			// left out while nothing stored a display name; migration 0105
+			// added one, and the claims followed only with 2.15.
+			"preferred_username", "name", "given_name", "family_name",
 		},
 
 		AuthorizationResponseIssParamSupported: true,

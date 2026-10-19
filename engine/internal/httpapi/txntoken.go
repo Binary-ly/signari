@@ -218,6 +218,12 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 				return
 			}
 		}
+		if live, lerr := store.TokenHolderLive(ctx, s.db, subject.ClientID, subject.Subject); lerr != nil || !live {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the client or subject of the subject token is no longer active",
+				Status:      http.StatusBadRequest})
+			return
+		}
 
 		// Scope is bounded by what the SUBJECT TOKEN actually carries, read
 		// from the verified token rather than the form. Reading it from the

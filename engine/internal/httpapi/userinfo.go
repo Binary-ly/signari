@@ -98,6 +98,18 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The client the token was issued to must still be enabled (ADR-007). The
+	// person is checked below, where their claims are read.
+	if live, err := store.TokenHolderLive(ctx, s.db, claims.ClientID, claims.Subject); err != nil || !live {
+		if err != nil {
+			s.log.Error("userinfo holder check failed", "err", err)
+		}
+		w.Header().Set("WWW-Authenticate",
+			`Bearer realm="signari", error="invalid_token", error_description="The client or subject of this token is no longer active"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
 	// # Enforcement
 	//
 	// A token carrying `cnf.jkt` is sender-constrained, and holding it is not

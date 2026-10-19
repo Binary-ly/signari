@@ -367,6 +367,15 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 		}
 	}
 
+	// The client it was issued to and the subject it names, read now (ADR-007):
+	// a token with no session or grant behind it has nothing else to end it.
+	if live, err := store.TokenHolderLive(ctx, s.db, claims.ClientID, claims.Subject); err != nil || !live {
+		if err != nil {
+			s.log.Error("introspection holder check failed", "err", err)
+		}
+		return inactive
+	}
+
 	return &introspectionResponse{
 		Active:    true,
 		Scope:     claims.Scope,

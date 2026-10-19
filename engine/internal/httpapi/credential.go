@@ -136,6 +136,12 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if live, lerr := store.TokenHolderLive(ctx, s.db, claims.ClientID, claims.Subject); lerr != nil || !live {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
+			`error_description="The client or subject of this token is no longer active"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 
 	// What this token may be exchanged for: the configurations of the offer that
 	// minted it (migration 0133). Any other token audienced here -- a sign-in

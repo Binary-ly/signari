@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -193,6 +194,42 @@ func GrantRevoked(ctx context.Context, db *pgxpool.Pool, grantID string) (bool, 
 		return true, fmt.Errorf("checking grant revocation: %w", err)
 	}
 	return revoked, nil
+}
+
+// TokenHolderLive reports whether the parties an access token names are still
+// in good standing: the client it was issued to exists and is enabled, and its
+// subject is an active person or, for a token a client holds for itself, an
+// enabled client.
+//
+// ADR-007 lists client disabled and user deactivated among the decisions read
+// on the request path. The other checks follow the token's grant, jti and
+// session, and a token with none of those behind it -- client credentials,
+// jwt-bearer, most exchanges -- was good until it expired after its client was
+// disabled or deleted, or its person deactivated or deleted.
+//
+// A subject shaped like a UUID that names a person is held to that person, so a
+// client registered under somebody's id cannot stand in for them. Fails CLOSED.
+func TokenHolderLive(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, clientID, subject string) (bool, error) {
+	var person *string
+	if id, err := uuid.Parse(subject); err == nil {
+		s := id.String()
+		person = &s
+	}
+	var live bool
+	err := db.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.clients WHERE client_id = $1 AND enabled)
+		   AND CASE
+		         WHEN EXISTS (SELECT 1 FROM core.users WHERE id = $2::uuid)
+		           THEN EXISTS (SELECT 1 FROM core.users WHERE id = $2::uuid AND status = 'active')
+		         ELSE EXISTS (SELECT 1 FROM core.clients WHERE client_id = $3 AND enabled)
+		       END`,
+		clientID, person, subject).Scan(&live)
+	if err != nil {
+		return false, fmt.Errorf("checking the token's client and subject: %w", err)
+	}
+	return live, nil
 }
 
 // RefreshTokenOwner returns the client a refresh token was issued to, or "" if

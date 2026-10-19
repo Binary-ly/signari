@@ -2708,6 +2708,12 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 			return
 		}
 	}
+	if live, lerr := store.TokenHolderLive(ctx, s.db, subject.ClientID, subject.Subject); lerr != nil || !live {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "the client or subject of the subject token is no longer active",
+			Status:      http.StatusBadRequest})
+		return
+	}
 
 	if c.ExchangeRequiresAudienceMatch &&
 		subject.ClientID != c.ClientID && !audienceIncludes(subject.Audience, c.ClientID) {
@@ -2759,6 +2765,12 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 					Status:      http.StatusBadRequest})
 				return
 			}
+		}
+		if live, lerr := store.TokenHolderLive(ctx, s.db, actor.ClientID, actor.Subject); lerr != nil || !live {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the client or subject of the actor token is no longer active",
+				Status:      http.StatusBadRequest})
+			return
 		}
 		actorSubject = actor.Subject
 	}

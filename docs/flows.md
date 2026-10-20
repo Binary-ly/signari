@@ -379,6 +379,9 @@ checked wherever a person's session here gives the client tokens:
 - **authorization.** A session with a single factor is not reused: the person
   is asked for a second, and someone with none enrolled is refused with
   `unmet_authentication_requirements` rather than shown the sign-in form again.
+  So is someone with a factor whose flow never asks a password sign-in for one
+  and who has no passkey, for `acr_values=2` as well: the form could only give
+  them one factor, and brought them back to it. Until October 2026 that looped.
   `client_requires_mfa` holds for the client's sign-ins, so a flow that demands
   a factor only on request demands it here
 - **a device or backchannel approval** from a single-factor session is refused,

@@ -213,10 +213,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			// Only StepUpNeedStronger. A max_age or prompt=login step-up IS
 			// satisfiable by signing in again, so those must still show the form.
 			if reason == oauth.StepUpNeedStronger {
-				var subject string
+				var subject, sessionOrg string
 				if err := s.db.QueryRow(ctx,
-					`SELECT user_id::text FROM core.sessions WHERE sid = $1`, sid).
-					Scan(&subject); err != nil {
+					`SELECT user_id::text, org_id::text FROM core.sessions WHERE sid = $1`, sid).
+					Scan(&subject, &sessionOrg); err != nil {
 					s.log.Error("loading the session subject for a step-up check", "err", err)
 				} else if enrolled, ferr := store.HasSecondFactor(ctx, s.db, subject); ferr != nil {
 					// Failing open here shows the form, which is the previous
@@ -229,6 +229,17 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 						Code: "unmet_authentication_requirements",
 						Description: "this account has no second factor enrolled, so the " +
 							"requested authentication context cannot be reached",
+						Disposition: oauth.DispositionRedirect})
+					return
+				} else if s.stepUpNeverAsked(ctx, sessionOrg, subject, r.URL.RawQuery) {
+					// The same loop by another road: a factor is enrolled, and
+					// the sign-in flow never asks a password sign-in for it.
+					s.log.Info("step-up is unsatisfiable: the sign-in flow asks for no second factor",
+						"sid", sid, "correlation_id", correlationID(ctx))
+					s.writeAuthzError(w, r, req, &oauth.AuthzError{
+						Code: "unmet_authentication_requirements",
+						Description: "this organisation's sign-in flow does not ask for a second " +
+							"factor, so the requested authentication context cannot be reached",
 						Disposition: oauth.DispositionRedirect})
 					return
 				}

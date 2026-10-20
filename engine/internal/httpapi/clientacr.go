@@ -10,6 +10,7 @@ import (
 
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/store"
 )
 
 // A client's floor: the weakest authentication it accepts (migration 0166),
@@ -41,6 +42,26 @@ func clientFloorIsMFA(ctx context.Context, q interface {
 		return false, nil
 	}
 	return floor == oauth.ACRMultiFactor, err
+}
+
+// stepUpNeverAsked reports whether signing in again cannot reach
+// multi-factor for somebody who has a factor enrolled: the flow would not ask a
+// password sign-in for it, and they have no passkey, whose own sign-in is
+// multi-factor. The authorization endpoint then refuses the requirement rather
+// than showing a form whose every answer brings the person back to it. An
+// error reads as askable, which shows the form, as before.
+func (s *Server) stepUpNeverAsked(ctx context.Context, orgID, userID, authzQuery string) bool {
+	demanded, _ := s.FlowDemandsMFA(ctx, s.db, orgID, userID, authzQuery,
+		[]string{oauth.AMRPassword})
+	if demanded {
+		return false
+	}
+	passkey, err := store.HasPasskey(ctx, s.db, userID)
+	if err != nil {
+		s.log.Error("checking for a passkey at a step-up", "err", err)
+		return false
+	}
+	return !passkey
 }
 
 // authzClientFloorIsMFA is clientFloorIsMFA for the client a parked

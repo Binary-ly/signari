@@ -68,7 +68,7 @@ rotation knows that context, so a new sealed value cannot be left out.
 
 | | |
 |---|---|
-| `SIGNARI_SCHEMA_FINGERPRINT` | The schema digest a release binary is pinned to, supplied as a **docker build argument** — never as an environment variable at run time. Setting it in the environment of a running engine does nothing. Unpinned, the engine checks the schema *version* at startup and not the schema *shape*, so a hand-patched database is accepted; `signari doctor` reports which of the two a binary does. See [schema-pinning.md](schema-pinning.md) |
+| `SIGNARI_SCHEMA_FINGERPRINT` | The schema digest a release binary is pinned to, supplied as a **docker build argument** — never as an environment variable at run time. Setting it in the environment of a running engine does nothing. Unpinned, the engine compares the schema's shape only with the ledger in the same database, so a hand-patched database whose ledger row was rewritten along with it is accepted. `scripts/build-release.sh` passes it, and `signari version` prints what a binary is pinned to. See [schema-pinning.md](schema-pinning.md) |
 
 Listed here because a control nobody knows exists is a control nobody uses, which
 is the same reason every runtime setting below is listed. It is separated because

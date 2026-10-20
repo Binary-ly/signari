@@ -134,6 +134,7 @@ commands:
   migrate status      show applied version, pending migrations, live fingerprint
   migrate fingerprint print ONLY the schema fingerprint, for pinning a build
   verify              run the startup schema gate and exit
+  version             print the release, commit, toolchain, schema and its pin
   instance create     create an instance and its first signing keys
   user create         create a user with a password
   client create       register an OAuth client
@@ -684,6 +685,10 @@ func run(args []string) (err error) {
 		return flowPaths(*flowFile, *flowName)
 	case "flow show":
 		return flowShow()
+	// What this binary is, answerable on a machine with no database: a
+	// release script checks the pin with it before tagging.
+	case "version":
+		return printVersion(os.Stdout)
 	// The theme commands read files and nothing else. Dispatched here, before a
 	// DSN is required, because validating a theme is something you do in CI --
 	// where there is no database to reach and no reason to need one.

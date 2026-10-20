@@ -1,9 +1,27 @@
 # Pinning a build to its schema
 
 ```sh
-scripts/build-release.sh                 # builds ./engine/signari, pinned
-docker build --build-arg \
-    SIGNARI_SCHEMA_FINGERPRINT="$(scripts/schema-fingerprint.sh)" engine/
+scripts/build-release.sh                                 # ./engine/signari, pinned
+scripts/build-release.sh -image signari:1.2.0 -tag v1.2.0  # and the image, then the tag
+signari version                                          # what a binary is pinned to
+```
+
+`build-release.sh` reads the pin back from `signari version` in the binary, and
+in the image when it builds one, and stops if either does not report it. With
+`-tag` it refuses a working tree with uncommitted changes, since the tag would
+name a commit the release was not built from, and records the fingerprint in
+the tag's message. It does not push. Until October 2026 it built only the
+binary, nothing built a pinned image, and nothing refused to tag an unpinned
+one.
+
+```
+$ signari version
+version  v1.2.0
+commit   59b4d89cd35531244004f398333b35fa9e699b0e
+go       go1.26.9
+fips140  disabled, module none
+schema   159
+pinned   5ed071dc8c1beaf5f9d11a3571ec652820be36d786ca3b48124156982f5987d5
 ```
 
 Signari gates its own startup twice: on the schema **version**, always, and on the

@@ -28,6 +28,25 @@ func (f *signInFixture) binder() *LDAPAuthenticator {
 		slog.New(slog.NewTextHandler(io.Discard, nil))).WithMFAGate(f.srv.BindDemandsMFA)
 }
 
+// A person whose password has not been rehashed to the current policy binds,
+// as they sign in on the web (2.55). The bind query alone required
+// `is_current`, which only drives the migration figures and which both
+// importers set false, so everybody imported was refused at the directory
+// until their first web sign-in -- with the password the form took.
+func TestAPasswordNotYetRehashedStillBinds(t *testing.T) {
+	f := newSignInFixture(t)
+	if _, err := f.pool.Exec(context.Background(),
+		`UPDATE core.password_credentials SET is_current = false WHERE user_id = $1::uuid`, f.userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.binder().Authenticate(context.Background(), f.email, signInTestPassword); err != nil {
+		t.Fatalf("a bind with the right password for a not-yet-rehashed credential was refused: %v", err)
+	}
+	if _, err := f.binder().Authenticate(context.Background(), f.email, "not-the-password"); err == nil {
+		t.Error("a wrong password bound")
+	}
+}
+
 func (f *signInFixture) setPasswordBinds(t *testing.T, policy string) {
 	t.Helper()
 	if _, err := f.pool.Exec(context.Background(),

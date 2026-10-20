@@ -249,7 +249,10 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 
 	// The same query the sign-in form uses, including its status check: a
 	// deactivated account must not be able to bind, and duplicating the rule
-	// here is how the two paths drift apart.
+	// here is how the two paths drift apart. They had: this one also required
+	// `pc.is_current`, which means only "rehashed to current policy" and which
+	// both importers set false, so an imported person could not bind until a
+	// web sign-in rehashed them, with the password the form accepted.
 	// In the listener's organisation, in the query. It used to match the name in
 	// every organisation and then refuse a row from the wrong one -- so when two
 	// tenants held the same user name, QueryRow picked one of them and the right
@@ -260,7 +263,7 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 		SELECT u.id::text, u.org_id::text, pc.hash
 		FROM core.users u
 		JOIN core.password_credentials pc ON pc.user_id = u.id
-		WHERE u.status = 'active' AND pc.is_current
+		WHERE u.status = 'active'
 		  AND ($2 = '' OR u.org_id::text = $2)
 		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))`,
 		username, a.orgID).Scan(&userID, &orgID, &hash)

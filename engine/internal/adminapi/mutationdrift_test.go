@@ -668,21 +668,34 @@ func TestEveryMutatingRouteHonoursPreconditions(t *testing.T) {
 			path := rt.path(t, s)
 			body := rt.body(t, s, path)
 
-			before := currentVersion(t, s)
-			stale := fmt.Sprintf(`"%d"`, before-1)
+			// The version is global, and other packages' tests move it while
+			// this runs, so one move proves nothing about this route. A
+			// refused write that commits moves it every time; up to three
+			// tries, and a move on every one is the failure (4.19).
+			const tries = 3
+			moved := 0
+			var before, got int64
+			for i := 0; i < tries; i++ {
+				before = currentVersion(t, s)
+				stale := fmt.Sprintf(`"%d"`, before-1)
 
-			rec := httptest.NewRecorder()
-			s.Routes().ServeHTTP(rec, adminReq(t, rt.method, path, body, stale))
+				rec := httptest.NewRecorder()
+				s.Routes().ServeHTTP(rec, adminReq(t, rt.method, path, body, stale))
 
-			if rec.Code != http.StatusPreconditionFailed {
-				t.Fatalf("stale If-Match gave %d, want 412. This route does not thread "+
-					"the precondition through to mutateIf, so a caller asking for a "+
-					"conditional write gets an unconditional one: %s",
-					rec.Code, rec.Body.String())
+				if rec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("stale If-Match gave %d, want 412. This route does not thread "+
+						"the precondition through to mutateIf, so a caller asking for a "+
+						"conditional write gets an unconditional one: %s",
+						rec.Code, rec.Body.String())
+				}
+				if got = currentVersion(t, s); got == before {
+					break
+				}
+				moved++
 			}
-			if got := currentVersion(t, s); got != before {
-				t.Errorf("a refused conditional write still moved the version: %d -> %d",
-					before, got)
+			if moved == tries {
+				t.Errorf("a refused conditional write still moved the version, %d times out of %d: "+
+					"%d -> %d", moved, tries, before, got)
 			}
 		})
 	}

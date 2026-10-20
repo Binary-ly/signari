@@ -2889,6 +2889,7 @@ func proxyCheck(app, issuer, origin, extraPaths string, insecure bool) error {
 		proxycheck.Exposed:   " OPEN ",
 		proxycheck.Absent:    "  --  ",
 		proxycheck.Unknown:   "  ??  ",
+		proxycheck.Stranded:  "STUCK ",
 	}
 	for _, r := range rep.Results {
 		fmt.Printf("  [%s] %-34s %s\n", label[r.Status], r.Probe, r.Detail)
@@ -2915,6 +2916,12 @@ func proxyCheck(app, issuer, origin, extraPaths string, insecure bool) error {
 		fmt.Printf("\n  %s\n\n", summarise(open))
 		return fmt.Errorf("%d of %d probes reached the application unauthenticated",
 			len(open), len(rep.Results))
+	}
+	// Nothing open, and nobody can sign in either: a separate sentence, since
+	// the fix is the proxy's verify address rather than a hole in it.
+	if stuck := rep.Stranded(); len(stuck) > 0 {
+		fmt.Printf("\n  Nothing is exposed, but a browser is refused and never sent to sign in.\n\n")
+		return fmt.Errorf("browsers are left on the proxy's refusal instead of being sent to sign in")
 	}
 	fmt.Printf("\n  No probe reached the application unauthenticated.\n" +
 		"  That is evidence, not a guarantee: it covers the paths and methods\n" +

@@ -190,7 +190,17 @@ func (s *Server) forbidProxy(w http.ResponseWriter, reason string) {
 	w.WriteHeader(http.StatusForbidden)
 }
 
-// denyProxy answers 401 with where to go next.
+// pathProxyVerifyRedirect is the verify endpoint for proxies that relay the
+// auth response to the browser unchanged (2.57). Traefik's forwardAuth and
+// Caddy's forward_auth both copy a non-2xx answer's status, Location and body
+// to the client, and a browser follows Location only on a 3xx, so the 401 that
+// nginx's recipe turns into a redirect left their users on a blank error page.
+// Here a browser navigation is answered 302 instead; anything else, a fetch or
+// an API call that would only be given an opaque redirect, keeps the 401.
+const pathProxyVerifyRedirect = "/proxy/verify/redirect"
+
+// denyProxy answers 401 with where to go next, or 302 to it for a browser
+// navigation on the redirect variant.
 func (s *Server) denyProxy(w http.ResponseWriter, r *http.Request, reason string) {
 	// The original URL, reconstructed from what the proxy told us. Used only to
 	// come back to after sign-in, and validated before any redirect is issued.
@@ -203,7 +213,26 @@ func (s *Server) denyProxy(w http.ResponseWriter, r *http.Request, reason string
 	// The reason is a HEADER, not a body: nginx auth_request discards the body,
 	// and an operator debugging this needs somewhere to look.
 	w.Header().Set("X-Signari-Reason", reason)
+	if r.URL.Path == pathProxyVerifyRedirect && isNavigation(r) {
+		w.WriteHeader(http.StatusFound)
+		return
+	}
 	w.WriteHeader(http.StatusUnauthorized)
+}
+
+// isNavigation reports whether the request the proxy is asking about is a
+// browser loading a page: a GET or HEAD that accepts HTML. The method is the
+// one the proxy forwards in X-Forwarded-Method, since the verify call itself
+// is always a GET.
+func isNavigation(r *http.Request) bool {
+	method := firstHeader(r, "X-Forwarded-Method")
+	if method == "" {
+		method = r.Method
+	}
+	if method != http.MethodGet && method != http.MethodHead {
+		return false
+	}
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
 }
 
 // originalURL rebuilds the request the proxy is asking about.

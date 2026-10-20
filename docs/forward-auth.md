@@ -149,17 +149,33 @@ server {
 }
 ```
 
-## Traefik
+## Traefik and Caddy: point them at `/proxy/verify/redirect`
 
-Not verified end to end here — the shape is standard, but check it with
-`signari proxy check` before trusting it.
+Both hand a refusal from the auth server to the browser as it is: the status,
+the `Location` and the body. A browser follows `Location` only on a redirect,
+so the `401` that nginx's recipe above turns into one leaves a Traefik or Caddy
+user on a blank error page, signed in to nothing. `/proxy/verify/redirect`
+answers a browser loading a page (`GET` or `HEAD`, accepting `text/html`) with
+`302` to sign in, and keeps the `401` for everything else, so an API client is
+not handed a redirect to a page it cannot use. Until October 2026 these recipes
+pointed at `/proxy/verify`, and `proxy check` passed them.
+
+Read against the proxies' own forward-auth code, not yet run end to end here:
+check yours with `signari proxy check`, whose browser probe fails a set-up that
+strands a browser on the `401`.
+
+### Traefik
 
 ```yaml
 http:
   middlewares:
     signari:
       forwardAuth:
-        address: https://auth.example.com/proxy/verify
+        address: https://auth.example.com/proxy/verify/redirect
+        # Traefik's own X-Forwarded-* headers, never the client's. Set to true,
+        # Traefik keeps a client-supplied X-Forwarded-Host, and Signari
+        # authorises whichever host that names.
+        trustForwardHeader: false
         # Only these are copied from the auth response onto the upstream
         # request. Anything not listed here is NOT forwarded, which is the
         # behaviour you want -- it is an allow-list.
@@ -174,12 +190,14 @@ http:
       service: n8n
 ```
 
-## Caddy
+### Caddy
 
 ```caddyfile
 n8n.example.com {
-    forward_auth auth.example.com {
-        uri /proxy/verify
+    # https:// explicitly: without a scheme Caddy dials the auth server over
+    # plain HTTP on port 80, carrying the proxy cookie in the clear.
+    forward_auth https://auth.example.com {
+        uri /proxy/verify/redirect
         copy_headers X-Forwarded-User X-Forwarded-Email X-Forwarded-Sub
     }
     reverse_proxy n8n:5678

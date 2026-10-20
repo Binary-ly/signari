@@ -46,6 +46,9 @@ const (
 	Exposed                 // served content to nobody in particular
 	Absent                  // nothing there; neither good nor bad news
 	Unknown                 // could not reach it, or could not tell
+	// Stranded is refused and never sent to sign in: a browser shown the
+	// proxy's 401 stays on it. Nothing is exposed, and nobody can get in.
+	Stranded
 )
 
 type Result struct {
@@ -70,10 +73,15 @@ type Report struct {
 func (r *Report) add(res Result) { r.Results = append(r.Results, res) }
 
 // Exposed returns the findings that are genuine failures.
-func (r *Report) Exposed() []Result {
+func (r *Report) Exposed() []Result { return r.with(Exposed) }
+
+// Stranded returns the probes a browser would be left on a refusal by.
+func (r *Report) Stranded() []Result { return r.with(Stranded) }
+
+func (r *Report) with(s Status) []Result {
 	var out []Result
 	for _, res := range r.Results {
-		if res.Status == Exposed {
+		if res.Status == s {
 			out = append(out, res)
 		}
 	}
@@ -187,6 +195,7 @@ func Run(ctx context.Context, opt Options) (*Report, error) {
 	}
 
 	rep.add(probeHeaderInjection(ctx, client, base))
+	rep.add(probeBrowser(ctx, client, base, opt.Issuer))
 
 	if opt.Origin != "" {
 		rep.add(probeOriginBypass(ctx, client, opt.Origin, opt.Issuer))
@@ -387,7 +396,40 @@ func probeOriginBypass(ctx context.Context, c *http.Client, origin, issuer strin
 	return res
 }
 
+// probeBrowser asks for the root as a browser loading a page does. The other
+// probes send no Accept and count any 401 as protected, which a proxy that
+// hands Signari's 401 to the browser unchanged -- Traefik and Caddy both do --
+// also earns: protected, and nobody can sign in through it.
+func probeBrowser(ctx context.Context, c *http.Client, base *url.URL, issuer string) Result {
+	target := base.String() + "/"
+	res := Result{Probe: "a browser opening the page", Target: target}
+	resp, body, err := doWith(ctx, c, http.MethodGet, target, nil, map[string]string{
+		"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
+	if err != nil {
+		res.Status, res.Detail = Unknown, err.Error()
+		return res
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		res.Status = Stranded
+		res.Detail = fmt.Sprintf("%d with no redirect: the browser stays on the error", resp.StatusCode)
+		res.Fix = "point the proxy at /proxy/verify/redirect (Traefik `address`, Caddy `uri`), " +
+			"which sends a browser to sign in and keeps the 401 for API calls; or turn " +
+			"the 401 into a redirect in the proxy, as the nginx recipe does."
+		return res
+	}
+	res.Status, res.Detail = classify(resp, body, issuer)
+	if res.Status == Protected {
+		res.Detail = "sent to sign in: " + res.Detail
+	}
+	return res
+}
+
 func do(ctx context.Context, c *http.Client, method, target string, body io.Reader) (*http.Response, []byte, error) {
+	return doWith(ctx, c, method, target, body, nil)
+}
+
+func doWith(ctx context.Context, c *http.Client, method, target string, body io.Reader,
+	headers map[string]string) (*http.Response, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, target, body)
 	if err != nil {
 		return nil, nil, err
@@ -395,6 +437,9 @@ func do(ctx context.Context, c *http.Client, method, target string, body io.Read
 	req.Header.Set("User-Agent", "signari-proxy-check")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.Do(req)
 	if err != nil {

@@ -1,0 +1,14 @@
+-- 0165_drop_audit_detail_enc.sql
+--
+-- core.audit_events.detail_enc is dropped (3.23). It was created for personal
+-- detail sealed under the subject's key, so a shred would leave the record and
+-- remove its content, and nothing ever wrote it, read it, or hashed it. The
+-- trail keeps personal data out instead: rows name people by subject id only,
+-- and a test reads the detail every audit write is given and refuses one that
+-- names a person. A column that suggests encryption the trail does not have
+-- made two documents say the chain covered ciphertext.
+--
+-- Not marked compatible: dropping is not an addition. The release before never
+-- named the column, so it would run against this schema, but 0163 already
+-- requires this release's binary.
+ALTER TABLE core.audit_events DROP COLUMN detail_enc;

@@ -34,10 +34,11 @@ The **metadata** of each event: id, time, event type, org, subject, actor,
 client, correlation id, retention class, the non-sensitive `detail`, and the
 chain `entry_hash` so a receiver can tie a line back to the verifiable trail.
 
-The **encrypted `detail_enc`** — the wrapped plaintext — is never sent. A SIEM is
-a copy an erasure request cannot reach, and shipping the plaintext there would
-defeat crypto-shredding. The `entry_hash` lets a receiver correlate without ever
-holding the shred-able content.
+Nothing personal is sent, because nothing personal is in a row: events name
+people by subject id only, which a test checks over a person's whole life through
+the admin API. A SIEM is a copy an erasure request cannot reach, so this matters.
+An earlier version of this page described an encrypted `detail_enc` held back
+from the stream. That column was never written and has been dropped.
 
 ## Delivery guarantees
 

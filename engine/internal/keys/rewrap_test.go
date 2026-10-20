@@ -130,12 +130,6 @@ var columnClass = map[string]string{
 	// and knowing it lets nobody present the token.
 	"preauthorized_codes.access_token_jti": "public",
 
-	// Columns nothing reads or writes. Recorded rather than left unclassified so
-	// that this test does not have to be edited if one of them is ever wired up
-	// -- it will fail then, which is the moment somebody must decide how a
-	// rotation treats it.
-	"audit_events.detail_enc": "unused",
-
 	// Root-sealed and read, though nothing writes the table yet.
 	"migration_sources.client_secret_enc": "rootSealed",
 

@@ -15,23 +15,17 @@
 //
 //  2. THE HASH CHAIN COVERS `detail`, WHICH IS PLAINTEXT.
 //
-//     This said the chain covered CIPHERTEXT, with personal detail in
-//     `detail_enc` encrypted under the subject's key, so shredding removed the
-//     content and left the record verifiable. That design is sound and it is NOT
-//     BUILT: `core.audit_events.detail_enc` exists in the schema with no writer
-//     and no reader anywhere in the tree, `chainHash(prev, e, detail)` hashes the
-//     plaintext column, and the INSERT never names detail_enc.
+//     This said the chain covered CIPHERTEXT, with personal detail in a
+//     `detail_enc` column encrypted under the subject's key. Nothing ever wrote
+//     or read that column, and migration 0165 dropped it (3.23). Nothing in this
+//     table is encrypted, so anything personal written into `detail` would
+//     survive a shred, and the safety of shredding rests on rule 1: enforced by
+//     TestNoAuditRowNamesAPerson over the code that writes, and by
+//     TestAnErasedPersonLeavesNoIdentifierInTheAuditTrail over the rows a
+//     person's whole life through the admin API leaves.
 //
-//     So the safety of shredding rests entirely on rule 1 rather than on
-//     encryption. That is a real guarantee while rule 1 holds, and a weaker one
-//     than was claimed here. Somebody deciding whether an erasure request has
-//     been satisfied needs the true version: nothing in this table is encrypted,
-//     so anything personal written into `detail` survives a shred.
-//
-//     Chaining over plaintext is still correct given rule 1 -- the rows a shred
-//     touches carry no personal content, so no link is invalidated. Building
-//     detail_enc would restore the stronger property; until then this comment
-//     describes the code.
+//     Chaining over plaintext is correct given rule 1 -- the rows a shred
+//     touches carry no personal content, so no link is invalidated.
 //
 //  3. WRITES JOIN THE CALLER'S TRANSACTION. An audit row that commits when the
 //     decision it describes rolled back is a false record, and one that rolls

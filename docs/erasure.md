@@ -61,9 +61,11 @@ The audit chain also survives. A shred destroys the subject's key and rewrites n
 audit row, and audit rows name people by subject id only, never by address, so
 there is nothing personal in them for a shred to remove and no link it breaks.
 The chain hashes the plaintext `detail`: an earlier version of this page said it
-hashed ciphertext, from a `detail_enc` column that exists in the schema and is
-written by nothing yet. Anything personal written into `detail`
-would therefore survive a shred, which is why nothing is.
+hashed ciphertext, from a `detail_enc` column that nothing ever wrote and that was
+dropped in October 2026. Anything personal written into `detail` would therefore
+survive a shred, which is why nothing is. A test follows a person through the
+admin API from creation, through a change of name and address and deactivation,
+to erasure, and fails if any of their identifiers is left in the trail.
 
 ## Erasing a subject with no account
 

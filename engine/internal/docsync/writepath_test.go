@@ -68,11 +68,6 @@ var knownUnwritable = map[string]string{
 	"config_version.id":           "the one row's key, true by CHECK, seeded by its migration; nothing has another value to write",
 	"audit_stream_state.only_row": "the one row's key, true by CHECK, seeded by its migration; nothing has another value to write",
 
-	// The engine's own runtime state, not operator configuration. These are
-	// written by nothing because the feature that would write them is absent,
-	// which is a different repair from adding a command.
-	"audit_events.detail_enc": "known: zero readers and zero writers, already named in the plan's documentation-honesty item",
-
 	// Reported by the console through core_v1 and enforced NOWHERE on the request
 	// path. A command to set these would be the same defect from the other side:
 	// a suspension switch that suspends nothing is worse than an absent one,

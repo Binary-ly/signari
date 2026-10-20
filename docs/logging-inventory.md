@@ -119,9 +119,10 @@ rewrite a row. It is not a database trigger refusing `UPDATE`.
 
 **Personal data.** Kept out by rule rather than by encryption: rows name people by
 subject id, never by address, and `detail` is clear JSON that must carry nothing
-personal. `detail_enc` exists in the schema for personal detail sealed under the
-subject's key, and nothing writes or reads it yet; this said it held
-anything personal.
+personal. A test follows a person through the admin API, from creation to
+erasure, and fails if any identifier they had reaches the trail. A `detail_enc`
+column, meant for personal detail sealed under the subject's key, was never
+written or read, and was dropped in October 2026.
 
 **Retention.** `retention_class` is `security`, `operational` or `profile`,
 constrained by a `CHECK` and defaulting to `security`. It exists so an erasure

@@ -114,6 +114,8 @@ type Stats struct {
 	// collecting them, dropped after a long retention.
 	PollEventsPurged int64
 	Parked           []string
+	// Retained is how many rows the retention deleted, by table.
+	Retained map[string]int
 	// Skipped means another node held the lock. Not an error, and deliberately
 	// distinguished from "nothing to do" so a misconfigured cluster where every
 	// pass is skipped is visible rather than looking idle.
@@ -281,8 +283,22 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 		st.PollEventsPurged = int64(n)
 	}
 
+	// Rows nothing reads any more, by the configured retention (3.17).
+	keep := store.DefaultRetention()
+	if p := retention.Load(); p != nil {
+		keep = *p
+	}
+	if st.Retained, err = store.PurgeRetained(ctx, tx, keep, retentionBatch); err != nil {
+		return st, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return st, fmt.Errorf("committing janitor pass: %w", err)
+	}
+	if fn := retentionObserver.Load(); fn != nil {
+		for table, n := range st.Retained {
+			(*fn)(table, n)
+		}
 	}
 
 	// Read AFTER the commit, on the pool rather than the transaction: this is
@@ -296,7 +312,30 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	return st, nil
 }
 
-// Run loops until ctx is cancelled.
+// retentionBatch bounds each table's deletions in one pass, as sessionBatch
+// bounds the sweep.
+const retentionBatch = 1000
+
+// retention is what each pass deletes as no longer needed; DefaultRetention
+// until SetRetention is called at startup.
+var retention atomic.Pointer[store.Retention]
+
+// SetRetention sets what each pass keeps.
+func SetRetention(r store.Retention) { retention.Store(&r) }
+
+// retentionObserver, when set, is told how many rows each pass deleted from
+// each table, for the metrics.
+var retentionObserver atomic.Pointer[func(table string, n int)]
+
+// SetRetentionObserver installs fn; nil removes it.
+func SetRetentionObserver(fn func(table string, n int)) {
+	if fn == nil {
+		retentionObserver.Store(nil)
+		return
+	}
+	retentionObserver.Store(&fn)
+}
+
 // lastPass is when this process last completed a pass, in Unix seconds; 0
 // before the first. A node whose passes another node's lock skipped never
 // sets it, so a deployment's freshness is the newest across its nodes.
@@ -311,6 +350,7 @@ func LastPass() time.Time {
 	return time.Time{}
 }
 
+// Run loops until ctx is cancelled.
 func Run(ctx context.Context, db *pgxpool.Pool, log *slog.Logger, interval time.Duration) {
 	if interval <= 0 {
 		interval = DefaultInterval
@@ -378,6 +418,9 @@ func (s Stats) Log(log *slog.Logger) {
 	add("rate_windows_purged", s.RateWindowsPurged)
 	add("duo_challenges_swept", s.DuoChallengesSwept)
 	add("impersonations_expired", int64(s.ImpersonationsExpired))
+	for _, table := range store.RetentionTables {
+		add(table+"_deleted", int64(s.Retained[table]))
+	}
 
 	if len(fields) > 0 {
 		log.Info("janitor pass", fields...)

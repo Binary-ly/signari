@@ -115,6 +115,28 @@ hold a connection for as long as it liked. The remote-access tunnel is a
 WebSocket, and upgrading to one clears these deadlines for that connection, so
 a remote desktop is bounded by its session checks instead.
 
+## Retention
+
+The janitor deletes, every pass and up to a thousand rows a table at a time,
+rows that nothing reads any more. Each is a Go duration of at least `1h`.
+
+| Variable | Default | Deletes |
+|---|---|---|
+| `SIGNARI_RETENTION_SESSIONS` | `720h` | sessions ended this long ago, with their list of applications and their refresh families, all ended with them |
+| `SIGNARI_RETENTION_REFRESH_FAMILIES` | `720h` | refresh-token families revoked this long ago, or whose newest token expired this long ago, with their tokens. A token of a live family is never deleted, rotated ones included: presenting a rotated token is how a stolen one is caught |
+| `SIGNARI_RETENTION_DELIVERED` | `168h` | logout notices and security events delivered this long ago, and event deliveries delivered or abandoned this long ago |
+| `SIGNARI_RETENTION_RECEIVED_EVENTS` | `2160h` | security events received from other transmitters |
+| `SIGNARI_RETENTION_SIGNIN_LOCATIONS` | `2160h` | sign-in locations, except each person's newest, which the next sign-in is compared with |
+| `SIGNARI_RETENTION_CREDENTIAL_NONCES` | `24h` | credential-issuance nonces this long past their expiry |
+
+Password history keeps the newest `SIGNARI_PASSWORD_HISTORY` hashes per person,
+the depth the reuse check reads, and keeps every one when that is unset. Each
+pass logs what it deleted, and `signari_janitor_rows_deleted_total{table}`
+counts it. Until October 2026 none of these tables was ever pruned.
+
+The audit trail is not among them: it is append-only and hash-chained, and
+pruning it means archiving a verified segment first, which is not built yet.
+
 ## Logging
 
 | Variable | Meaning |

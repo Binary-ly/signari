@@ -1282,6 +1282,11 @@ func janitorOnce(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer pool.Close()
 
+	keep, err := retentionFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	janitor.SetRetention(keep)
 	st, err := janitor.RunOnce(ctx, pool, log)
 	if err != nil {
 		return err
@@ -1293,6 +1298,11 @@ func janitorOnce(ctx context.Context, conn *pgx.Conn) error {
 
 	fmt.Printf("janitor: swept %d expired session(s), purged %d code(s)\n",
 		st.SessionsSwept, st.CodesPurged)
+	for _, table := range store.RetentionTables {
+		if n := st.Retained[table]; n > 0 {
+			fmt.Printf("janitor: deleted %d row(s) from %s that nothing reads any more\n", n, table)
+		}
+	}
 	if len(st.Parked) == 0 {
 		return nil
 	}
@@ -1917,6 +1927,11 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// node, and there is no separate unit an operator can forget to deploy. The
 	// jobs it runs are the ones whose absence is invisible until it matters:
 	// relying parties never told a session ended, and a table that only grows.
+	keep, err := retentionFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	janitor.SetRetention(keep)
 	go janitor.Run(workerCtx, workerPool, log, janitor.DefaultInterval)
 
 	// Audit streaming to a logically separate system (ASVS V16.4.3), off unless a
@@ -1954,6 +1969,10 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		provider.SetObserver(func(h provider.Hook, outcome string) {
 			met.Providers.Inc(string(h), outcome)
 		})
+		for _, table := range store.RetentionTables {
+			metrics.RegisterRetentionTable(table)
+		}
+		janitor.SetRetentionObserver(func(table string, n int) { met.Retained.Add(float64(n), table) })
 	}
 
 	// The admin API listens on its OWN address, and is off unless one is given.

@@ -69,7 +69,17 @@ type Engine struct {
 	// failing open is a control quietly not applied, and the only other sign of
 	// it was a log line per call.
 	Providers *Counter
+
+	// Retained counts rows the janitor's retention deleted, by table (3.17).
+	Retained *Counter
 }
+
+// retentionTables is the set of table labels, filled at startup from the
+// tables the retention covers.
+var retentionTables = NewGrowableSet()
+
+// RegisterRetentionTable declares a table name as safe to export.
+func RegisterRetentionTable(t string) { retentionTables.Add(t) }
 
 // ProviderOutcomes are the values of signari_provider_calls_total's outcome.
 var ProviderOutcomes = []string{
@@ -137,6 +147,9 @@ func NewEngine() *Engine {
 			"and for a failure whether the hook's mode let the decision proceed.",
 		[]string{"hook", "outcome"},
 		[]ValueSet{providerHooks, set(ProviderOutcomes...)})
+	e.Retained = r.NewCounter("signari_janitor_rows_deleted_total",
+		"Rows the janitor's retention deleted as no longer needed, by table.",
+		[]string{"table"}, []ValueSet{retentionTables})
 
 	e.SignIns = r.NewCounter("signari_signins_total",
 		"Sign-in attempts by outcome.",

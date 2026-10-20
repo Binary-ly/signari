@@ -3,6 +3,7 @@ package saml
 import (
 	"compress/flate"
 	"crypto"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -384,21 +385,25 @@ func EncodeRedirect(doc string) (string, error) {
 // This is the mirror of VerifyRedirectSignature, and the two are tested against
 // each other precisely because a shared misunderstanding of the encoding would
 // otherwise stay invisible.
+//
+// Through the key's crypto.Signer (ADR-009), and with the algorithm the key
+// is: an ECDSA signature goes out as r||s, the encoding XML Signature gives the
+// same algorithm identifier (see xmlSigner).
 func SignRedirectQuery(param, encodedDoc, relayState string, signer crypto.Signer) (string, error) {
-	key, ok := signer.(*rsa.PrivateKey)
-	if !ok {
-		return "", fmt.Errorf("SAML redirect signing needs an in-process RSA key, got %T", signer)
+	sigAlg, err := SignatureMethod(signer)
+	if err != nil {
+		return "", err
 	}
 
 	parts := []string{param + "=" + url.QueryEscape(encodedDoc)}
 	if relayState != "" {
 		parts = append(parts, "RelayState="+url.QueryEscape(relayState))
 	}
-	parts = append(parts, "SigAlg="+url.QueryEscape(sigAlgRSASHA256))
+	parts = append(parts, "SigAlg="+url.QueryEscape(sigAlg))
 	signed := strings.Join(parts, "&")
 
 	sum := sha256.Sum256([]byte(signed))
-	sig, err := rsa.SignPKCS1v15(nil, key, crypto.SHA256, sum[:])
+	sig, err := xmlSigner(signer).Sign(rand.Reader, sum[:], crypto.SHA256)
 	if err != nil {
 		return "", fmt.Errorf("signing the redirect query: %w", err)
 	}

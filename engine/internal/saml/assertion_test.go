@@ -1,17 +1,26 @@
 package saml
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/pem"
+	"io"
+	"math/big"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/beevik/etree"
+	dsig "github.com/russellhaering/goxmldsig"
 )
 
 func testSigner(t *testing.T) (*rsa.PrivateKey, []byte) {
@@ -244,18 +253,122 @@ func TestIDsAreValidXsdIDs(t *testing.T) {
 	}
 }
 
-// TestECDSAKeyIsRefusedWithAnExplanation. An EC-signed assertion is spec-valid
-// and rejected by a great deal of real SP software, which is a far worse failure
-// to diagnose than being told up front.
-func TestECDSAKeyIsRefusedWithAnExplanation(t *testing.T) {
-	in := testInput()
-	ec := ecdsaKey(t)
-	_, err := BuildResponse(in, "kid-1", ec, nil)
-	if err == nil {
-		t.Fatal("an ECDSA key was accepted for SAML signing")
+// signatureValue returns the decoded SignatureValue of a signed document.
+func signatureValue(t *testing.T, doc string) []byte {
+	t.Helper()
+	d := etree.NewDocument()
+	if err := d.ReadFromString(doc); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "RS256") {
-		t.Errorf("the error should say what to do about it; got %v", err)
+	el := d.FindElement("//SignatureValue")
+	if el == nil {
+		t.Fatal("the document carries no SignatureValue")
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(el.Text()), ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// An assertion signed with a P-256 key verifies in xmlsec1 (3.15), with its
+// signature as the 64-byte r||s xmlsec1 itself writes. Every ECDSA key used to
+// be refused, and goxmldsig on its own emits DER, which its own validator
+// accepts and xmlsec1 does not.
+func TestAnECDSAAssertionVerifiesInXmlsec1(t *testing.T) {
+	ec := ecdsaKey(t)
+	certDER, _, err := selfSign("https://idp.example.test", "kid-ec", ec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := BuildResponse(testInput(), "kid-ec", ec, certDER)
+	if err != nil {
+		t.Fatalf("BuildResponse with a P-256 key: %v", err)
+	}
+	if !strings.Contains(out, `Algorithm="http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256"`) {
+		t.Errorf("the signature does not name ecdsa-sha256:\n%s", out)
+	}
+	if n := len(signatureValue(t, out)); n != 64 {
+		t.Errorf("the SignatureValue is %d bytes; XML Signature carries r||s, 64 for P-256", n)
+	}
+	if res, ok := xmlsec1Verify(t, out, certDER, assertionSignature); !ok {
+		t.Fatalf("xmlsec1 rejected the ECDSA assertion:\n%s", res)
+	}
+}
+
+// opaqueSigner is a key that never hands over its private half, as a KMS or
+// HSM key does: a Public and a Sign, and nothing a type assertion can unwrap.
+type opaqueSigner struct{ s crypto.Signer }
+
+func (o opaqueSigner) Public() crypto.PublicKey { return o.s.Public() }
+func (o opaqueSigner) Sign(r io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	return o.s.Sign(r, digest, opts)
+}
+
+// A key reached only through crypto.Signer signs SAML (3.15, ADR-009), for the
+// assertion and for the redirect binding. Both refused one: the assertion
+// "requires an in-process RSA key", the redirect "needs an in-process RSA key".
+func TestAKeyThatKeepsItsPrivateHalfSignsSAML(t *testing.T) {
+	key, certDER := testSigner(t)
+	out, err := BuildResponse(testInput(), "kid-1", opaqueSigner{key}, certDER)
+	if err != nil {
+		t.Fatalf("BuildResponse through crypto.Signer alone: %v", err)
+	}
+	if res, ok := xmlsec1Verify(t, out, certDER, assertionSignature); !ok {
+		t.Fatalf("xmlsec1 rejected the assertion:\n%s", res)
+	}
+
+	query, err := SignRedirectQuery("SAMLResponse", "PHNhbWw+", "rs", opaqueSigner{key})
+	if err != nil {
+		t.Fatalf("SignRedirectQuery through crypto.Signer alone: %v", err)
+	}
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}))
+	if err := VerifyRedirectSignature(query, certPEM, "SAMLResponse"); err != nil {
+		t.Errorf("the redirect signature does not verify: %v", err)
+	}
+}
+
+// An ECDSA redirect signature is r||s over the exact query, under the
+// ecdsa-sha256 SigAlg.
+func TestAnECDSARedirectSignatureIsRawRS(t *testing.T) {
+	ec := ecdsaKey(t)
+	query, err := SignRedirectQuery("SAMLRequest", "PHNhbWw+", "", opaqueSigner{ec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, sigParam, ok := strings.Cut(query, "&Signature=")
+	if !ok {
+		t.Fatalf("no Signature parameter in %q", query)
+	}
+	if !strings.Contains(signed, "SigAlg="+url.QueryEscape(dsig.ECDSASHA256SignatureMethod)) {
+		t.Errorf("SigAlg is not ecdsa-sha256: %q", signed)
+	}
+	b64, err := url.QueryUnescape(sigParam)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sig) != 64 {
+		t.Fatalf("the signature is %d bytes, want 64 (r||s)", len(sig))
+	}
+	sum := sha256.Sum256([]byte(signed))
+	r, s := new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])
+	if !ecdsa.Verify(&ec.PublicKey, sum[:], r, s) {
+		t.Error("the r||s signature does not verify over the signed query")
+	}
+}
+
+// Only P-256 is signed for: ecdsa-sha256 on another curve is refused by name.
+func TestAnECDSAKeyOnAnotherCurveIsRefused(t *testing.T) {
+	k, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BuildResponse(testInput(), "kid-1", k, nil); err == nil || !strings.Contains(err.Error(), "P-384") {
+		t.Errorf("a P-384 key was not refused by name: %v", err)
 	}
 }
 

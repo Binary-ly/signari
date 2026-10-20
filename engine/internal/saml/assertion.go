@@ -3,7 +3,6 @@ package saml
 import (
 	"crypto"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
@@ -272,36 +271,36 @@ func buildAssertion(id string, in ResponseInput, now, notBefore, notOnOrAfter ti
 }
 
 // signElement applies an enveloped signature over el.
+//
+// Through the key's crypto.Signer and nothing else (ADR-009), so a key held in
+// a KMS or HSM signs SAML exactly as a software key does. This used to demand
+// a *rsa.PrivateKey, because the library's key-store interface did, and
+// refused every key that would not hand over its private material.
 func signElement(el *etree.Element, signer crypto.Signer, certDER []byte) (*etree.Element, error) {
-	key, ok := signer.(*rsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("this signing key does not expose its private material "+
-			"(it is %T, likely an external key store), and the XML signature library "+
-			"requires an in-process RSA key. Use a software RS256 key for SAML", signer)
+	method, err := SignatureMethod(signer)
+	if err != nil {
+		return nil, err
 	}
-	ctx := &dsig.SigningContext{
-		Hash: crypto.SHA256,
-		KeyStore: staticKeyStore{
-			key:  key,
-			cert: certDER,
-		},
-		IdAttribute: "ID",
-		// The `ds:` prefix, rather than making xmldsig the default namespace.
-		// Both are correct XML and mean exactly the same thing, but a good deal of
-		// service-provider software matches element names as strings rather than
-		// resolving namespaces, and `ds:Signature` is what every other identity
-		// provider emits. Being technically right here buys nothing and costs
-		// interoperability.
-		Prefix: "ds",
-		// Exclusive canonicalisation WITHOUT comments. This is the algorithm the
-		// SAML profile specifies, and the "without comments" half is what the
-		// comment-truncation attacks abuse -- the digest is computed over a
-		// document with comments removed, so a comment can change what a parser
-		// reads without changing what was signed. We refuse comments on the way
-		// in (see decode.go) rather than relying on this.
-		Canonicalizer: dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList(""),
+	ctx, err := dsig.NewSigningContext(xmlSigner(signer), [][]byte{certDER})
+	if err != nil {
+		return nil, err
 	}
-	if err := ctx.SetSignatureMethod(dsig.RSASHA256SignatureMethod); err != nil {
+	ctx.IdAttribute = "ID"
+	// The `ds:` prefix, rather than making xmldsig the default namespace.
+	// Both are correct XML and mean exactly the same thing, but a good deal of
+	// service-provider software matches element names as strings rather than
+	// resolving namespaces, and `ds:Signature` is what every other identity
+	// provider emits. Being technically right here buys nothing and costs
+	// interoperability.
+	ctx.Prefix = "ds"
+	// Exclusive canonicalisation WITHOUT comments. This is the algorithm the
+	// SAML profile specifies, and the "without comments" half is what the
+	// comment-truncation attacks abuse -- the digest is computed over a
+	// document with comments removed, so a comment can change what a parser
+	// reads without changing what was signed. We refuse comments on the way
+	// in (see decode.go) rather than relying on this.
+	ctx.Canonicalizer = dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList("")
+	if err := ctx.SetSignatureMethod(method); err != nil {
 		return nil, err
 	}
 	return ctx.SignEnveloped(el)
@@ -362,22 +361,6 @@ func moveSignatureAfterIssuer(assertion *etree.Element) error {
 	}
 	assertion.InsertChildAt(issuerIdx+1, sig)
 	return nil
-}
-
-// staticKeyStore hands goxmldsig the one key we are signing with.
-//
-// Its interface demands a *rsa.PrivateKey rather than a crypto.Signer, so a key
-// held somewhere that will not export its private material -- an HSM, a KMS,
-// anything reached through signing_keys.key_ref -- CANNOT be used for SAML
-// through this path. That is a real limitation of the library and it is
-// surfaced as a clear error at signing time rather than a type assertion panic.
-type staticKeyStore struct {
-	key  *rsa.PrivateKey
-	cert []byte
-}
-
-func (s staticKeyStore) GetKeyPair() (*rsa.PrivateKey, []byte, error) {
-	return s.key, s.cert, nil
 }
 
 // newID generates an assertion or response identifier.

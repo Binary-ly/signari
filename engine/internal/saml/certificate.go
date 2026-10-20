@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	dsig "github.com/russellhaering/goxmldsig"
 )
 
 // certLifetime is deliberately long.
@@ -130,21 +132,33 @@ func CertificateB64(der []byte) string {
 	return base64.StdEncoding.EncodeToString(der)
 }
 
-// SignatureMethod picks the XML signature algorithm for a key.
+// The signature algorithms a service provider can be signed for, as
+// core.saml_providers.signature_alg names them.
 //
-// RSA-SHA256 is what SAML deployments interoperate on. ECDSA is specified and
-// is refused by a great deal of real service-provider software, so a deployment
-// choosing an EC key for SAML would produce assertions that verify correctly and
-// are rejected anyway -- which is a much worse failure to debug than being told
-// up front.
+// RSA-SHA256 is the default because it is what SAML deployments interoperate
+// on. ECDSA is specified and refused by a great deal of real service-provider
+// software, so signing with it for a provider that cannot verify it produces
+// assertions that are correct and rejected anyway. It is therefore chosen per
+// provider, by whoever knows the far end, and never by which key happens to be
+// active.
+const (
+	SignatureAlgRSASHA256   = "rsa-sha256"
+	SignatureAlgECDSASHA256 = "ecdsa-sha256"
+)
+
+// SignatureMethod names the XML signature algorithm for a key: RSA-SHA256 for
+// an RSA key, ECDSA-SHA256 for a P-256 one. It goes by the public half alone,
+// so a key whose private half never leaves a KMS or HSM is named the same way.
 func SignatureMethod(signer crypto.Signer) (string, error) {
-	switch signer.Public().(type) {
+	switch pub := signer.Public().(type) {
 	case *rsa.PublicKey:
-		return "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256", nil
+		return dsig.RSASHA256SignatureMethod, nil
 	case *ecdsa.PublicKey:
-		return "", fmt.Errorf("this instance's active key is ECDSA, which most SAML " +
-			"service providers cannot verify. Rotate in an RS256 key before enabling " +
-			"SAML: `signari keys rotate -alg RS256`")
+		if pub.Curve != elliptic.P256() {
+			return "", fmt.Errorf("an ECDSA key on %s cannot sign SAML here; ecdsa-sha256 "+
+				"is used with P-256 keys", pub.Curve.Params().Name)
+		}
+		return dsig.ECDSASHA256SignatureMethod, nil
 	default:
 		return "", fmt.Errorf("key type %T cannot sign SAML assertions", signer.Public())
 	}

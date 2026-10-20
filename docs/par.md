@@ -75,6 +75,10 @@ without it PAR is advisory: a client that can also send a plain request has
 gained an option, not the integrity property. A plain request from such a
 client is refused, and no session or code comes of it.
 
+**A push is at most 64 KiB**, refused with `413` past it: a pushed request is a
+handful of parameters. Until October 2026 the limit was declared and applied to
+nothing, so a push was read up to net/http's 10 MB form ceiling.
+
 **Sixty pushes per address per minute for a public client.** Every push is a
 stored row, and a public client authenticates nothing here, so before this a
 stranger could have the server write rows without limit. A browser pushes one

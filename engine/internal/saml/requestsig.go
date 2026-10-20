@@ -85,6 +85,10 @@ func verifySignedElement(doc *etree.Document, target *etree.Element, certPEM,
 	if err != nil {
 		return nil, err
 	}
+	// Placement has established exactly one Signature, a direct child.
+	if err := ecdsaValueToDER(target.SelectElement("Signature"), cert); err != nil {
+		return nil, err
+	}
 	store := dsig.MemoryX509CertificateStore{Roots: []*x509.Certificate{cert}}
 	ctx := dsig.NewDefaultValidationContext(&store)
 	// Stated rather than left to the default, because the whole placement check

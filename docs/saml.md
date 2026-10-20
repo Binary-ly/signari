@@ -335,6 +335,19 @@ Rule 2 is the one that stops classic wrapping, and the test for it uses distinct
 IDs deliberately so the duplicate-ID rule cannot be what passes it. Without rule 2
 that document has one valid signature, no duplicate IDs, and sails through.
 
+### Service providers with an EC key
+
+A provider whose certificate holds a P-256 key may sign with `ecdsa-sha256`, on
+either binding. The signature value is r and s as two 32-byte integers, which
+is what xmlsec1 writes. goxmldsig checks ECDSA as DER, so the value is
+converted before it is checked; the value is not covered by the signature, so
+converting it changes nothing that was signed. A DER-encoded value is refused
+by name, as xmlsec1 refuses it. The other ECDSA algorithms are refused, as is
+any algorithm that does not match the key in the registered certificate. Until
+October 2026 an EC provider was refused on the redirect binding as an
+unsupported signature algorithm, and on the POST binding as a signature that
+did not verify.
+
 ### Surviving the sign-in redirect
 
 A request that arrives before the user is signed in gets parked. On the redirect

@@ -3,6 +3,7 @@ package saml
 import (
 	"compress/flate"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/beevik/etree"
+	dsig "github.com/russellhaering/goxmldsig"
 )
 
 // Single logout.
@@ -138,7 +140,7 @@ func VerifyRedirectSignature(rawQuery string, certPEM string, param string) erro
 	}
 
 	switch sigAlg {
-	case sigAlgRSASHA256:
+	case sigAlgRSASHA256, dsig.ECDSASHA256SignatureMethod:
 	case sigAlgRSASHA1:
 		// SHA-1 is refused rather than accepted-with-a-warning. Chosen-prefix
 		// collisions against SHA-1 are practical, and a warning nobody reads is
@@ -158,16 +160,35 @@ func VerifyRedirectSignature(rawQuery string, certPEM string, param string) erro
 	if err != nil {
 		return err
 	}
-	pub, ok := cert.PublicKey.(*rsa.PublicKey)
-	if !ok {
-		return fmt.Errorf("the registered certificate for this service provider is not RSA")
-	}
-
 	sig, err := base64.StdEncoding.DecodeString(sigB64)
 	if err != nil {
 		return fmt.Errorf("the signature is not valid base64: %w", err)
 	}
 	sum := sha256.Sum256([]byte(signed))
+
+	// The key must be the kind SigAlg names. An ECDSA signature is r||s, as
+	// SignRedirectQuery writes it (3.36); one from a P-256 sender was refused
+	// as "not RSA".
+	if sigAlg == dsig.ECDSASHA256SignatureMethod {
+		pub, err := p256Key(cert)
+		if err != nil {
+			return err
+		}
+		r, s, err := rawRS(sig)
+		if err != nil {
+			return err
+		}
+		if !ecdsa.Verify(pub, sum[:], r, s) {
+			return fmt.Errorf("the signature did not verify against the certificate " +
+				"registered for this service provider")
+		}
+		return nil
+	}
+	pub, ok := cert.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("the message is signed with rsa-sha256 and the certificate " +
+			"registered for this service provider is not RSA")
+	}
 	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, sum[:], sig); err != nil {
 		return fmt.Errorf("the signature did not verify against the certificate registered "+
 			"for this service provider: %w", err)

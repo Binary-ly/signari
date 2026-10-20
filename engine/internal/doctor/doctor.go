@@ -213,11 +213,21 @@ func checkRootKey(r *Report) {
 	// SIGNARI_ROOT_KEY alone. SIGNARI_ROOT_KEY_REF is the label stored beside
 	// what the key seals and fetches no key from anywhere, and this passed on
 	// it while `serve` refused to start without the key itself.
-	if os.Getenv("SIGNARI_ROOT_KEY") == "" {
+	// Through the loader serve uses, so a key file serve would refuse -- one
+	// its group or others may read, or set beside the variable -- is refused
+	// here too (3.12).
+	if os.Getenv("SIGNARI_ROOT_KEY") == "" && os.Getenv("SIGNARI_ROOT_KEY_FILE") == "" {
 		r.add(Critical, "root key", "no root key is configured",
-			"set SIGNARI_ROOT_KEY to base64 of 32 random bytes. It wraps every stored "+
+			"set SIGNARI_ROOT_KEY to base64 of 32 random bytes, or SIGNARI_ROOT_KEY_FILE to a "+
+				"file holding it, readable by this user alone. It wraps every stored "+
 				"private signing key; without it nothing can be unsealed, and "+
 				"SIGNARI_ROOT_KEY_REF, a label, is no substitute")
+		return
+	}
+	if _, err := keys.LoadRootKey(os.Getenv,
+		"SIGNARI_ROOT_KEY", "SIGNARI_ROOT_KEY_FILE", "SIGNARI_ROOT_KEY_REF"); err != nil {
+		r.add(Critical, "root key", "the root key cannot be loaded: "+err.Error(),
+			"`serve` refuses to start on it too. Fix the source the message names.")
 	}
 }
 

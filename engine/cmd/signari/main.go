@@ -214,6 +214,7 @@ commands:
 
 env:
   SIGNARI_ROOT_KEY        base64 of 32 random bytes; wraps stored private key material
+  SIGNARI_ROOT_KEY_FILE   or a file holding it, readable by this user alone
 
 flags:
   -dsn string   PostgreSQL connection string (or set SIGNARI_DSN)
@@ -1523,16 +1524,11 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	nextB64 := os.Getenv("SIGNARI_NEW_ROOT_KEY")
-	if nextB64 == "" {
-		return fmt.Errorf(
-			"SIGNARI_NEW_ROOT_KEY is unset (32 random bytes, base64) -- generate one with:\n" +
-				"  head -c 32 /dev/urandom | base64\n" +
-				"and set SIGNARI_NEW_ROOT_KEY_REF to a name distinct from the current one")
-	}
-	next, err := keys.NewRootKeyFromBase64(os.Getenv("SIGNARI_NEW_ROOT_KEY_REF"), nextB64)
+	next, err := keys.LoadRootKey(os.Getenv,
+		"SIGNARI_NEW_ROOT_KEY", "SIGNARI_NEW_ROOT_KEY_FILE", "SIGNARI_NEW_ROOT_KEY_REF")
 	if err != nil {
-		return fmt.Errorf("the new root key: %w", err)
+		return fmt.Errorf("the new root key: %w\nand set SIGNARI_NEW_ROOT_KEY_REF to a name "+
+			"distinct from the current one", err)
 	}
 
 	tx, err := conn.Begin(ctx)
@@ -1664,13 +1660,7 @@ func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 // required rather than defaulted: a generated-on-boot root key would silently
 // make every restart invalidate every stored signing key.
 func rootKey() (*keys.RootKey, error) {
-	b64 := os.Getenv("SIGNARI_ROOT_KEY")
-	if b64 == "" {
-		return nil, fmt.Errorf(
-			"SIGNARI_ROOT_KEY is unset (32 random bytes, base64) -- generate one with:\n" +
-				"  head -c 32 /dev/urandom | base64")
-	}
-	return keys.NewRootKeyFromBase64(os.Getenv("SIGNARI_ROOT_KEY_REF"), b64)
+	return keys.LoadRootKey(os.Getenv, "SIGNARI_ROOT_KEY", "SIGNARI_ROOT_KEY_FILE", "SIGNARI_ROOT_KEY_REF")
 }
 
 func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) error {

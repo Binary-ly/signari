@@ -15,19 +15,22 @@ way it already had.
 |---|---|
 | `SIGNARI_DSN` | PostgreSQL connection string |
 | `SIGNARI_ROOT_KEY` | 32 random bytes, base64. Seals every stored secret. Lose it and sealed data — RADIUS secrets, bind passwords, SCIM tokens, signing keys — cannot be read, and the engine refuses to start rather than run with keys it cannot unwrap |
+| `SIGNARI_ROOT_KEY_FILE` | A file holding the root key, instead of `SIGNARI_ROOT_KEY`: a mounted secret, so the key is not in the environment every child process inherits and a container runtime shows. Refused when its group or anybody else may read it, and when `SIGNARI_ROOT_KEY` is set as well. A Kubernetes secret volume is mode 0644 unless told otherwise, so mount it with `defaultMode: 0400` |
 | `SIGNARI_ISSUER` | The issuer URL. Must match an instance in the database |
 
 `SIGNARI_ROOT_KEY_REF` is the label stored beside every value the key seals, so a
 later rotation can tell which key sealed what. It fetches no key from anywhere:
-the key itself comes only from `SIGNARI_ROOT_KEY`, and `serve` and `doctor` both
-refuse a deployment that sets the label alone. A root key held in a KMS is not
-built yet. This said the label named an external key instead.
+the key itself comes only from `SIGNARI_ROOT_KEY` or `SIGNARI_ROOT_KEY_FILE`, and
+`serve` and `doctor` both refuse a deployment that sets the label alone, or a key
+file they would refuse. A root key held in a KMS is not built yet. This said the
+label named an external key instead.
 
 ### Rotating the root key
 
 | | |
 |---|---|
 | `SIGNARI_NEW_ROOT_KEY` | The replacement, read only by `signari keys rewrap-root`. Separate from `SIGNARI_ROOT_KEY` so the command can always tell "the key we are on" from "the key we are moving to"; one overloaded variable would leave it guessing, and guessing wrong produces a database nothing opens |
+| `SIGNARI_NEW_ROOT_KEY_FILE` | The replacement from a file, on the same terms as `SIGNARI_ROOT_KEY_FILE` |
 | `SIGNARI_NEW_ROOT_KEY_REF` | A name for the new key, and it **must differ from the current ref**. Stored rows record which key wrapped them, so two keys sharing a ref are indistinguishable — a later rotation could not tell which rows it had already done, and a failed one could not be diagnosed. The command refuses rather than proceeding |
 
 ```sh

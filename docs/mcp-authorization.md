@@ -17,7 +17,7 @@ Signari's role in that picture is the **authorization server**.
 | Redirect URIs `localhost` or HTTPS only | MUST | yes |
 | All endpoints over HTTPS | MUST | yes |
 | Issue short-lived access tokens | SHOULD | 5 minutes by default; per client from one minute to an hour (`signari client set-lifetimes`) |
-| Honour RFC 8707 `resource` at both endpoints | — | yes, and it becomes `aud` |
+| Honour RFC 8707 `resource` at both endpoints | — | yes, and it becomes `aud`, for an MCP server the organisation registered with `signari resource add` ([resource indicators](resource-indicators.md)) |
 
 Most of this was already true, and several rows became true earlier in this
 review rather than by aiming at MCP: the audience enforcement at our own resource
@@ -107,9 +107,10 @@ and on **MCP servers** acting as resource servers — token audience validation 
 the MCP server, no token passthrough, the `resource` parameter on every request.
 Those belong to whoever writes the MCP server, not to the authorization server.
 
-What Signari could add and has not: a first-class notion of an MCP server as a
-registered resource, so that one deployment can publish protected-resource
-metadata *on behalf of* several MCP servers and audience-restrict tokens to each.
+An MCP server is registered as a resource with `signari resource add`, which is
+what lets a client's `resource` for it become the token's audience; one that is
+not registered is refused. What Signari could add and has not: publishing
+protected-resource metadata *on behalf of* the MCP servers it has registered.
 Today an MCP server integrating with Signari publishes its own RFC 9728 document
 and names Signari as its authorization server, which works and is what the
 specification describes.

@@ -34,7 +34,9 @@ func TestAResourceServerInTheAudienceMayIntrospect(t *testing.T) {
 
 	mk := func(suffix string) (string, string) {
 		t.Helper()
-		id := f.clientID + suffix
+		// Named by a URI, as a resource server whose id is the resource
+		// tokens are audienced to has to be.
+		id := "https://" + f.clientID + suffix + ".example.test"
 		secret, hash := newTestSecret(t)
 		if _, err := f.pool.Exec(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
@@ -73,7 +75,7 @@ func TestAResourceServerInTheAudienceMayIntrospect(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/oauth2/introspect",
 			strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.SetBasicAuth(clientID, secret)
+		req.SetBasicAuth(url.QueryEscape(clientID), url.QueryEscape(secret)) // RFC 6749 §2.3.1
 		rec := httptest.NewRecorder()
 		f.srv.Routes().ServeHTTP(rec, req)
 		var b map[string]any
@@ -109,6 +111,7 @@ func TestAResourceServerInTheAudienceMayIntrospect(t *testing.T) {
 func (f *tokenFixture) issueCodeForResource(t *testing.T, verifier, resource string) string {
 	t.Helper()
 	ctx := context.Background()
+	f.registerResource(t, resource)
 
 	code, hash, err := store.NewCode()
 	if err != nil {
@@ -135,4 +138,18 @@ func (f *tokenFixture) issueCodeForResource(t *testing.T, verifier, resource str
 		t.Fatal(err)
 	}
 	return code
+}
+
+// registerResource registers a resource server for the fixture's
+// organisation, which a resource must be before a token is audienced to it.
+func (f *tokenFixture) registerResource(t *testing.T, resource string) {
+	t.Helper()
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO core.resource_servers (org_id, resource)
+		VALUES ($1::uuid, $2) ON CONFLICT DO NOTHING`, f.orgID, resource); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.resource_servers
+			WHERE org_id = $1::uuid AND resource = $2`, f.orgID, resource)
+	})
 }

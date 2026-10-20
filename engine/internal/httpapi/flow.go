@@ -95,6 +95,19 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthzError(w, r, req, authzErr)
 		return
 	}
+	// Redirected like the shape check: the redirect_uri is validated by now.
+	if c != nil {
+		if err := checkResources(ctx, s.db, c.OrgID, req.Resources); err != nil {
+			aerr := &oauth.AuthzError{Code: "invalid_target", Description: err.Error(),
+				Disposition: oauth.DispositionRedirect}
+			if !errors.Is(err, errUnregisteredResource) {
+				s.log.Error("checking resource indicators", "err", err, "correlation_id", correlationID(ctx))
+				aerr.Code, aerr.Description = "temporarily_unavailable", "please try again shortly"
+			}
+			s.writeAuthzError(w, r, req, aerr)
+			return
+		}
+	}
 
 	// RFC 9396: validated here, after the client is known, because §5's
 	// unknown-field rule is enforced against the types this CLIENT may request.
@@ -802,7 +815,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.mintTokens(ctx, tx, c, consumed)
 	if err != nil {
 		s.log.Error("minting tokens", "err", err)
-		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		writeMintError(w, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -879,6 +892,12 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	certThumb := ""
 	if c.TLSBoundTokens {
 		certThumb = certThumbprintFrom(ctx)
+	}
+
+	// The audience, checked as it is minted: whatever accepted the resource
+	// earlier, the organisation may have removed it since.
+	if err := checkResources(ctx, tx, orgID, resources); err != nil {
+		return nil, nil, err
 	}
 
 	alg := keys.Algorithm(c.IDTokenAlg)
@@ -1588,7 +1607,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	resp, newHash, err := s.mintFromGrant(ctx, tx, c, grant, scopes)
 	if err != nil {
 		s.log.Error("minting from refresh", "err", err)
-		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		writeMintError(w, err)
 		return
 	}
 	if err := store.LinkSuccessor(ctx, tx, oldHash, newHash); err != nil {

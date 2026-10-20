@@ -2174,3 +2174,52 @@ func registrationRevoke(ctx context.Context, conn *pgx.Conn, orgID, name, tokenI
 	fmt.Printf("registration token %s is revoked: /oauth2/register refuses it from the next request\n", ids[0])
 	return nil
 }
+
+// resourceAdd registers a resource server an organisation's tokens may be
+// audienced to (1.87). Until one is, every `resource` a client asks for is
+// refused with invalid_target.
+func resourceAdd(ctx context.Context, conn *pgx.Conn, orgID, resource, name string) error {
+	if orgID == "" || resource == "" {
+		return fmt.Errorf("resource add needs -org and -resource")
+	}
+	if err := store.SetResourceServer(ctx, conn, orgID, resource, name); err != nil {
+		return err
+	}
+	fmt.Printf("registered %s: clients of this organisation may now ask for tokens audienced to it\n", resource)
+	return nil
+}
+
+// resourceList shows the registered resource servers of one organisation.
+func resourceList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("resource list needs -org")
+	}
+	rs, err := store.ResourceServers(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if len(rs) == 0 {
+		fmt.Println("no resource servers: every resource indicator is refused")
+		return nil
+	}
+	for _, r := range rs {
+		fmt.Printf("%s  %s\n", r.Resource, r.Name)
+	}
+	return nil
+}
+
+// resourceRemove withdraws one. Tokens for it are refused from the next
+// request, refreshes of tokens already issued included.
+func resourceRemove(ctx context.Context, conn *pgx.Conn, orgID, resource string) error {
+	if orgID == "" || resource == "" {
+		return fmt.Errorf("resource remove needs -org and -resource")
+	}
+	if err := store.RemoveResourceServer(ctx, conn, orgID, resource); err != nil {
+		if errors.Is(err, store.ErrResourceServerUnknown) {
+			return fmt.Errorf("%s is not registered in that organisation; `signari resource list` shows them", resource)
+		}
+		return err
+	}
+	fmt.Printf("removed %s: no new token is audienced to it, and refreshes asking for it are refused\n", resource)
+	return nil
+}

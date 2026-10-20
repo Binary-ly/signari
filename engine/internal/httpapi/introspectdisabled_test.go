@@ -23,7 +23,7 @@ func TestIntrospectionAnswersInactiveForADisabledClientsToken(t *testing.T) {
 	f := newTokenFixture(t)
 	ctx := context.Background()
 
-	rsID := f.clientID + "-rs"
+	rsID := "https://" + f.clientID + "-rs.example.test"
 	rsSecret, hash := newTestSecret(t)
 	if _, err := f.pool.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
@@ -50,7 +50,7 @@ func TestIntrospectionAnswersInactiveForADisabledClientsToken(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/oauth2/introspect",
 			strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.SetBasicAuth(rsID, rsSecret)
+		req.SetBasicAuth(url.QueryEscape(rsID), url.QueryEscape(rsSecret)) // RFC 6749 §2.3.1
 		rec := httptest.NewRecorder()
 		f.srv.Routes().ServeHTTP(rec, req)
 		var b map[string]any

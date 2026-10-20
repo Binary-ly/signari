@@ -96,6 +96,7 @@ existed, and the test that exists to catch exactly that could not see this table
 |---|---|
 | `signari credential define` | Define a credential this issuer mints (SD-JWT VC). `-require-key-attestation` issues it only to a key a trusted attester vouches for, and advertises `key_attestations_required`; left out, a redefinition keeps the setting |
 | `signari credential list` | Show the credential configurations published |
+| `signari resource add` / `resource list` / `resource remove` | `-org <uuid> -resource <uri> [-name <n>]`: the RFC 8707 resources this organisation's tokens may be audienced to. A `resource` a client asks for that is not registered is refused with `invalid_target`, at authorize, PAR and device authorization and again at minting, so removing one stops refreshes for it too. With none registered, every `resource` is refused. See [resource-indicators.md](resource-indicators.md) |
 | `signari credential trust-root` | `-org <id> -name <n> -root-cert <ca.pem>`: trust a CA for OID4VCI key proofs that carry an `x5c` chain. One certificate, a CA, unexpired; a file holding a private key is refused. The same name replaces. With none registered, every `x5c` proof is refused. See [oid4vci.md](oid4vci.md) |
 | `signari credential roots` | List the CAs `x5c` key proofs may verify to |
 | `signari credential untrust-root` | `-org <id> -name <n>`: withdraw one; chains to it are refused from the next credential request |

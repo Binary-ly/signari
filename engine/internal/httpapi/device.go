@@ -133,6 +133,22 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 	if resource == nil {
 		resource = []string{}
 	}
+	// They become the audience, as at authorize: checked for shape and against
+	// the organisation's resource servers. Neither was, and whatever was sent
+	// was stored and minted.
+	if err := oauth.ValidateResources(resource); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_target", err.Error())
+		return
+	}
+	if err := checkResources(ctx, s.db, c.OrgID, resource); err != nil {
+		if errors.Is(err, errUnregisteredResource) {
+			writeError(w, http.StatusBadRequest, "invalid_target", err.Error())
+			return
+		}
+		s.log.Error("checking resource indicators", "err", err, "correlation_id", correlationID(ctx))
+		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
+		return
+	}
 
 	deviceCode, err := newSID()
 	if err != nil {
@@ -500,8 +516,7 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		s.log.Error("minting tokens for a device grant", "err", err,
 			"correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "server_error",
-			Status: http.StatusInternalServerError})
+		writeMintError(w, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -265,6 +265,9 @@ func (s *Server) Routes() http.Handler {
 		route("GET /admin/organizations/{orgID}/migration-source", ScopeConfigRead, s.getMigrationSource)
 		route("PUT /admin/organizations/{orgID}/migration-source", ScopeOrganizationsWrite, s.putMigrationSource)
 		route("DELETE /admin/organizations/{orgID}/migration-source", ScopeOrganizationsWrite, s.deleteMigrationSource)
+		route("GET /admin/organizations/{orgID}/resource-servers", ScopeConfigRead, s.listResourceServers)
+		route("PUT /admin/organizations/{orgID}/resource-servers", ScopeOrganizationsWrite, s.putResourceServer)
+		route("DELETE /admin/organizations/{orgID}/resource-servers", ScopeOrganizationsWrite, s.deleteResourceServer)
 	}
 
 	// The document itself, unauthenticated. See handleOpenAPI for why: it

@@ -211,6 +211,27 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/resource-servers", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/resource-servers"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"resource":"https://api.drift.example.test","name":"drift"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/resource-servers", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, err := s.db.Exec(context.Background(), `INSERT INTO core.resource_servers (org_id, resource)
+					VALUES ($1::uuid, 'https://api.drift.example.test')`, org); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/resource-servers?resource=https://api.drift.example.test"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/organizations" },
 			body: func(t *testing.T, s *Server, _ string) string {

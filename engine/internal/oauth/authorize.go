@@ -298,12 +298,14 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 
 	// 7b. RFC 8707 resource indicators.
 	//
-	// Validated because the requested resources BECOME the access token's
-	// audience. Unchecked, a client could name any audience it liked -- including
-	// another service's identifier -- and mint a token that service would accept.
-	// The parameter exists to NARROW a token, and it must not be usable to widen
-	// one.
-	if err := validateResources(req.Resources); err != nil {
+	// The requested resources BECOME the access token's audience, so a client
+	// that could name any audience could mint a token another service accepts.
+	// Only the shape is checked here; whether each is a resource server the
+	// client's organisation registered is the caller's question
+	// (httpapi.unregisteredResource), since it needs the database. This comment
+	// once said the shape check alone prevented the widening, and every client
+	// could name any https URI.
+	if err := ValidateResources(req.Resources); err != nil {
 		return redirectErr("invalid_target", err.Error())
 	}
 
@@ -418,13 +420,13 @@ func parseMaxAge(s string) *int {
 	return &n
 }
 
-// validateResources checks RFC 8707 §2 resource indicators.
+// ValidateResources checks RFC 8707 §2 resource indicators.
 //
 // Each must be an absolute URI with no fragment. The spec says so, and the
 // reason matters here: the value ends up as an `aud` claim that a resource
 // server compares against its own identifier, and a relative or fragment-bearing
 // value cannot be compared reliably by anyone.
-func validateResources(resources []string) error {
+func ValidateResources(resources []string) error {
 	if len(resources) == 0 {
 		return nil
 	}
@@ -434,18 +436,27 @@ func validateResources(resources []string) error {
 		return fmt.Errorf("at most 8 resource indicators may be requested")
 	}
 	for _, r := range resources {
-		u, err := url.Parse(r)
-		if err != nil || !u.IsAbs() {
-			return fmt.Errorf("resource %q must be an absolute URI", r)
+		if err := CheckResource(r); err != nil {
+			return err
 		}
-		if u.Fragment != "" || strings.Contains(r, "#") {
-			return fmt.Errorf("resource %q must not contain a fragment", r)
-		}
-		if u.Scheme != "https" && u.Scheme != "http" {
-			// Not a spec requirement, but an audience nobody can reach is one
-			// nobody can verify, and it is nearly always a typo.
-			return fmt.Errorf("resource %q must be an http or https URI", r)
-		}
+	}
+	return nil
+}
+
+// CheckResource is the shape one resource indicator must have, requested or
+// registered.
+func CheckResource(r string) error {
+	u, err := url.Parse(r)
+	if err != nil || !u.IsAbs() {
+		return fmt.Errorf("resource %q must be an absolute URI", r)
+	}
+	if u.Fragment != "" || strings.Contains(r, "#") {
+		return fmt.Errorf("resource %q must not contain a fragment", r)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		// Not a spec requirement, but an audience nobody can reach is one
+		// nobody can verify, and it is nearly always a typo.
+		return fmt.Errorf("resource %q must be an http or https URI", r)
 	}
 	return nil
 }

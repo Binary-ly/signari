@@ -213,6 +213,7 @@ func TestATokenForAnotherResourceIsRefused(t *testing.T) {
 
 	// A token audienced to a downstream API via RFC 8707 `resource`.
 	ctx := t.Context()
+	f.registerResource(t, "https://billing.example/api")
 	tx, err := f.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

@@ -252,6 +252,9 @@ Which attribute becomes which claim, where, and for whom.
 | `GET /admin/organizations/{orgID}/migration-source` | The provider this organisation is migrating off, without its secret, and how the cutover is going: people pending, people migrated through it, verifications accepted and refused. Needs `config:read`; `404 migration_source_not_found` when there is none |
 | `PUT /admin/organizations/{orgID}/migration-source` | Create or replace it: `kind` `oidc_password` (`url` an https token endpoint, `client_id`, `client_secret`, `scope`) or `ldap` (`url` `ldaps://`, or `ldap://` with `start_tls`, a `bind_dn_template` with `{username}` once, and optionally `ca_pem`). A new source is disabled; `enabled` switches it, and is left as it is when absent. An empty `client_secret` keeps the stored one. Anything the verifier would refuse is `400 invalid_migration_source`. Needs `organizations:write`. See [password migration](password-migration.md) |
 | `DELETE /admin/organizations/{orgID}/migration-source` | Remove it. People still pending stay pending |
+| `GET /admin/organizations/{orgID}/resource-servers` | The RFC 8707 resources this organisation's tokens may be audienced to, each `resource` and `name`. Needs `config:read`. See [resource indicators](resource-indicators.md) |
+| `PUT /admin/organizations/{orgID}/resource-servers` | `{"resource": "https://api.example.com", "name": "Billing API"}`: register a resource server, or rename one registered. An absolute http(s) URI with no fragment, else `400 invalid_resource`. Needs `organizations:write` |
+| `DELETE /admin/organizations/{orgID}/resource-servers` | `?resource=<uri>`: withdraw it: no new token is audienced to it, refreshes included. `404 resource_server_not_found` when it was not registered. Needs `organizations:write` |
 
 **Nothing is released without a mapper.** An attribute that exists reaches no
 token, for any client, in any destination, until somebody says so. The common

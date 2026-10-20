@@ -182,12 +182,22 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		Nonce:               r.PostForm.Get("nonce"),
 		CodeChallenge:       r.PostForm.Get("code_challenge"),
 		CodeChallengeMethod: r.PostForm.Get("code_challenge_method"),
+		Resources:           r.PostForm["resource"],
 	}
 	if aerr := oauth.ValidateAuthz(req, c, nil); aerr != nil {
 		// Returned as a normal error response, NOT as a redirect. There is no
 		// browser here, and redirecting a back-channel caller would be
 		// meaningless -- worse, it would echo an unvalidated redirect_uri.
 		writeError(w, http.StatusBadRequest, aerr.Code, aerr.Description)
+		return
+	}
+	if err := checkResources(ctx, s.db, c.OrgID, req.Resources); err != nil {
+		if errors.Is(err, errUnregisteredResource) {
+			writeError(w, http.StatusBadRequest, "invalid_target", err.Error())
+			return
+		}
+		s.log.Error("checking resource indicators", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
 		return
 	}
 

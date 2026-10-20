@@ -157,7 +157,7 @@ func TestResourceIndicatorValidation(t *testing.T) {
 		{"https://api.example.com"},
 		{"https://api.example.com/billing", "https://api.example.com/admin"},
 	} {
-		if err := validateResources(ok); err != nil {
+		if err := ValidateResources(ok); err != nil {
 			t.Errorf("rejected a valid resource set %v: %v", ok, err)
 		}
 	}
@@ -173,7 +173,7 @@ func TestResourceIndicatorValidation(t *testing.T) {
 		{"https://a", "https://b", "https://c", "https://d",
 			"https://e", "https://f", "https://g", "https://h", "https://i"},
 	} {
-		if err := validateResources(bad); err == nil {
+		if err := ValidateResources(bad); err == nil {
 			t.Errorf("accepted an invalid resource set %v", bad)
 		}
 	}

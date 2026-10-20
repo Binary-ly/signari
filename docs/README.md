@@ -58,6 +58,7 @@ command or an environment variable exists in code and not on its page.
 | [attestation-based-client-auth.md](attestation-based-client-auth.md) | Client attestation, current draft |
 | [par.md](par.md) | RFC 9126 — Pushed Authorization Requests |
 | [dpop.md](dpop.md) | RFC 9449 — sender-constrained tokens |
+| [resource-indicators.md](resource-indicators.md) | RFC 8707 — which APIs a token may be audienced to |
 | [device-flow.md](device-flow.md) | RFC 8628 — televisions, CLIs, headless boxes |
 | [ciba.md](ciba.md) | Backchannel authentication |
 | [dynamic-registration.md](dynamic-registration.md) | RFC 7591/7592 |

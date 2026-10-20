@@ -32,7 +32,7 @@ func FuzzValidateAuthz(f *testing.F) {
 		// Must always terminate with a decision. A panic here is reachable by
 		// anyone who can make a browser follow a link.
 		_ = ValidateAuthz(req, c, nil)
-		_ = validateResources(req.Resources)
+		_ = ValidateResources(req.Resources)
 	})
 }
 

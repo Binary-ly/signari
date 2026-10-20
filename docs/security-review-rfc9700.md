@@ -72,7 +72,7 @@ per client over time. Recorded as a gap rather than quietly omitted.
 
 | Requirement | Level | Signari |
 |---|---|---|
-| Audience-restrict access tokens | SHOULD | yes — `aud` is the client, or the RFC 8707 `resource` values |
+| Audience-restrict access tokens | SHOULD | yes — `aud` is the client, or the RFC 8707 `resource` values, each one a resource server the client's organisation registered ([resource indicators](resource-indicators.md)); until October 2026 any http(s) URI was accepted |
 | **Resource server MUST refuse a token not meant for it** | **MUST** | **was missing — now enforced** |
 
 ### The second defect: we did not enforce audience against ourselves

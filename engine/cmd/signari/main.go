@@ -121,6 +121,7 @@ var twoWordCommands = map[string]bool{
 	"credential": true,
 	"rar":        true,
 	"webauthn":   true,
+	"resource":   true,
 }
 
 func usage() error {
@@ -418,6 +419,7 @@ func run(args []string) (err error) {
 	outpostLDAPInsecure := fs.Bool("ldap-insecure", os.Getenv("SIGNARI_OUTPOST_LDAP_INSECURE") == "1",
 		"`outpost run`: serve LDAP without TLS (only behind a TLS terminator on loopback)")
 	subURL := fs.String("url", "", "https endpoint events are POSTed to")
+	resourceURI := fs.String("resource", "", "an RFC 8707 resource indicator: the absolute URI a resource server is known by")
 	srcIssuer := fs.String("source-issuer", "", "the transmitter's issuer")
 	srcJWKS := fs.String("source-jwks", "", "the transmitter's JWKS URI (https)")
 	srcAudience := fs.String("source-audience", "", "what the transmitter puts in aud for us")
@@ -1014,6 +1016,12 @@ func run(args []string) (err error) {
 		return credentialRoots(ctx, conn)
 	case "credential untrust-root":
 		return credentialUntrustRoot(ctx, conn, *orgID, *name)
+	case "resource add":
+		return resourceAdd(ctx, conn, *orgID, *resourceURI, *name)
+	case "resource list":
+		return resourceList(ctx, conn, *orgID)
+	case "resource remove":
+		return resourceRemove(ctx, conn, *orgID, *resourceURI)
 	case "credential offer":
 		return credentialOffer(ctx, conn, *orgID, *email, *clientID, *credConfigs,
 			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL)

@@ -143,6 +143,74 @@ func TestEveryDesktopRefusalCostsAHash(t *testing.T) {
 	}
 }
 
+// A replayed authenticator code is refused and charged to nothing (2.54). It was
+// charged as a failed guess -- to the factor's consecutive-failure count, which
+// disables it, and to the account's attempt budget -- so a person who submitted
+// twice, or anyone replaying a code they watched being typed, spent the factor
+// toward being switched off. Asserted at verifySecondFactor and at the desktop,
+// the two callers.
+func TestAReplayedAuthenticatorCodeIsRefusedAndChargedToNothing(t *testing.T) {
+	f := newSignInFixture(t)
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.cfg.Root = root
+	ctx := context.Background()
+	secret := giveTOTP(t, f)
+	code := mfa.Code(secret, mfa.Counter(time.Now(), mfa.DefaultPeriod), mfa.DefaultDigits)
+	failures := func() (factor, budget int) {
+		t.Helper()
+		if err := f.pool.QueryRow(ctx, `SELECT failed_attempts FROM core.totp_credentials WHERE user_id = $1::uuid`,
+			f.userID).Scan(&factor); err != nil {
+			t.Fatal(err)
+		}
+		if budget, err = store.CountRate(ctx, f.pool, secondFactorAccountKey(f.userID), secondFactorPerAccountWindow); err != nil {
+			t.Fatal(err)
+		}
+		return factor, budget
+	}
+	verify := func() secondFactorResult {
+		t.Helper()
+		tx, err := f.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		res, err := f.srv.verifySecondFactor(ctx, tx, f.userID, code)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := verify(); !res.OK {
+		t.Fatalf("the right code was refused: %+v", res)
+	}
+	if res := verify(); res.OK || !res.Replayed {
+		t.Fatalf("the same code again gave %+v, want refused as a replay", res)
+	}
+	if factor, _ := failures(); factor != 0 {
+		t.Errorf("the replay was charged to the authenticator: %d consecutive failures", factor)
+	}
+
+	token := desktopOutpost(t, f)
+	body, _ := json.Marshal(map[string]string{"username": f.email, "password": signInTestPassword, "code": code})
+	r := httptest.NewRequest(http.MethodPost, "/outpost/desktop", bytes.NewReader(body))
+	r.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the replayed code at the desktop answered %d, want 401", rec.Code)
+	}
+	if factor, budget := failures(); factor != 0 || budget != 0 {
+		t.Errorf("after a replay at the desktop: %d authenticator failures and %d against the account's "+
+			"budget, want neither", factor, budget)
+	}
+}
+
 // desktopOutpost registers a desktop outpost in the fixture's organisation and
 // returns its token.
 func desktopOutpost(t *testing.T, f *signInFixture) string {

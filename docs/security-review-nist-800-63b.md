@@ -174,7 +174,11 @@ Now the failure that reaches 100 consecutive wrong codes (or a lower
 account's set of recovery codes, then accepts nothing until it is re-enrolled,
 regenerated or removed by an operator. A success resets the count, so it really
 is *consecutive*. A wrong code is charged only to the authenticator it could have
-been: six digits to the app, twenty recovery-code characters to the codes. The
+been: six digits to the app, twenty recovery-code characters to the codes. A
+right code presented a second time is refused as a replay and charged to
+nothing, since it is no guess: until October 2026 it counted toward disabling
+the app, so replaying a code somebody watched being typed was a way to switch
+the factor off (`TestAReplayedAuthenticatorCodeIsRefusedAndChargedToNothing`). The
 holder is notified, and `mfa.factor_disabled` is audited. Tests:
 `TestTheCeilingFailureDisablesTheAuthenticator`,
 `TestRecoveryCodesAreDisabledAtTheCeiling`,

@@ -216,6 +216,11 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
+		if res.Replayed {
+			// No guess, so charged to nothing (secondFactorResult.Replayed).
+			refuse("second factor already used")
+			return
+		}
 		if !res.OK {
 			// Committed, as on the browser's code step: rolling back would undo
 			// the failure count with the sign-in, and the lockout and the ceiling

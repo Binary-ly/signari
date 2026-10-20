@@ -278,6 +278,16 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 		s.renderMFA(w, r, pending.Authz, "Something went wrong. Please try again.")
 		return
 	}
+	if res.Replayed {
+		_ = tx.Rollback(ctx)
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: pending.OrgID, SubjectID: pending.Subject,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": "second_factor_replayed"},
+		})
+		s.renderMFA(w, r, pending.Authz, "That code has already been used. Wait for the next one.")
+		return
+	}
 	if !res.OK {
 		// Committed: the failure counter and any lockout must persist even
 		// though the sign-in did not. Rolling back here would make the lockout
@@ -432,6 +442,11 @@ type secondFactorResult struct {
 	// Disabled names each factor this failure switched off, for the caller to
 	// record and announce once the failure is committed.
 	Disabled []string
+	// Replayed is an authenticator code that was right and has been used
+	// already: refused, and charged to no counter or budget, since it is no
+	// guess. Charged, a person who submitted twice, or anyone replaying a code
+	// they watched being typed, spent the factor toward being disabled.
+	Replayed bool
 }
 
 // verifySecondFactor accepts a TOTP, email, SMS or recovery code.
@@ -466,6 +481,7 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 			}
 			return secondFactorResult{AMR: []string{"otp"}, OK: true}, nil
 		}
+		res.Replayed = errors.Is(verr, mfa.ErrReplay)
 	}
 
 	// Email code next. Checked before recovery codes because it is the factor a
@@ -503,6 +519,11 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 		// possession factor the user wrote down. RFC 8176 has no better value,
 		// so `otp` is used and the audit record carries the distinction.
 		return secondFactorResult{AMR: []string{"otp"}, OK: true}, nil
+	}
+
+	// A replay is refused and charged to nothing (secondFactorResult.Replayed).
+	if res.Replayed {
+		return res, nil
 	}
 
 	// cred is nil when the authenticator was absent, paused or disabled: only

@@ -205,7 +205,7 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 		return nil, err
 	}
 	for _, check := range []func(context.Context, *pgx.Conn, *Report) error{
-		checkTenantIsolation, checkJanitorBacklog, checkGrowth, checkFIPS,
+		checkTenantIsolation, checkJanitorBacklog, checkGrowth, checkFIPS, checkPasswordHashes,
 	} {
 		if err := check(ctx, conn, r); err != nil {
 			return nil, err

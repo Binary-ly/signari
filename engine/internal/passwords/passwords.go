@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"golang.org/x/text/unicode/norm"
 	"io"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -108,6 +109,11 @@ const (
 	scryptMaxR            = 32
 	scryptMaxP            = 16
 	keycloakMaxIterations = 1_000_000
+
+	// The format's own ceilings allow 128 × N × r = 4 GiB. 256 MiB is sixteen
+	// times the common N=2^17, r=8, and half the shared budget, so one import
+	// cannot take all of it (4.08).
+	scryptMaxMemoryKiB = 256 * 1024
 )
 
 // CostRefusal says why verifying stored would cost more than this process
@@ -180,6 +186,10 @@ func costRefusal(stored string, budgetKiB int64) error {
 			return fmt.Errorf("scrypt ln=%d,r=%d,p=%d is above the ceiling ln=%d,r=%d,p=%d",
 				ln, r, p, scryptMaxLn, scryptMaxR, scryptMaxP)
 		}
+		if kib := (int64(1) << ln) * int64(r) * 128 / 1024; ln > 0 && kib > scryptMaxMemoryKiB {
+			return fmt.Errorf("scrypt ln=%d,r=%d needs %d MiB, above the %d MiB an imported "+
+				"hash may ask for", ln, r, kib/1024, scryptMaxMemoryKiB/1024)
+		}
 	case strings.HasPrefix(stored, "$keycloak$") && len(parts) == 4:
 		if raw, err := base64.RawStdEncoding.DecodeString(parts[2]); err == nil {
 			var cd keycloakCredential
@@ -205,6 +215,9 @@ type Hasher struct {
 	mem       *semaphore.Weighted
 	budgetKiB int64
 	inFlight  atomic.Int64
+	// cfg is the cost and pepper new hashes are made with (params.go); nil is
+	// the floor and no pepper.
+	cfg *Config
 }
 
 // MemoryBudgetMiB is the default ceiling on concurrent Argon2 memory.
@@ -219,10 +232,15 @@ const MemoryBudgetMiB = 512
 // its own, so the ceiling it was meant to be became one per request: N
 // requests, N times 512 MiB. TestNoPathBuildsItsOwnHasher keeps it that way.
 func NewHasher(memoryBudgetMiB int) *Hasher {
+	return NewHasherWith(memoryBudgetMiB, nil)
+}
+
+// NewHasherWith is NewHasher hashing with cfg's cost and pepper.
+func NewHasherWith(memoryBudgetMiB int, cfg *Config) *Hasher {
 	if memoryBudgetMiB <= 0 {
 		memoryBudgetMiB = MemoryBudgetMiB
 	}
-	byMemory := memoryBudgetMiB * 1024 / argonMemoryKiB
+	byMemory := memoryBudgetMiB * 1024 / int(cfg.params().MemoryKiB)
 	limit := runtime.GOMAXPROCS(0)
 	if byMemory < limit {
 		limit = byMemory
@@ -231,15 +249,34 @@ func NewHasher(memoryBudgetMiB int) *Hasher {
 		limit = 1
 	}
 	budget := int64(memoryBudgetMiB) * 1024
-	return &Hasher{sem: make(chan struct{}, limit), mem: semaphore.NewWeighted(budget), budgetKiB: budget}
+	return &Hasher{sem: make(chan struct{}, limit), mem: semaphore.NewWeighted(budget),
+		budgetKiB: budget, cfg: cfg}
 }
 
-var shared = sync.OnceValue(func() *Hasher { return NewHasher(MemoryBudgetMiB) })
+var sharedErr error
+
+var shared = sync.OnceValue(func() *Hasher {
+	cfg, err := ConfigFromEnv(os.Getenv)
+	if err != nil {
+		// Hashed at the floor until serve sees SharedConfigError and stops; a
+		// CLI command that hashes refuses on it too.
+		sharedErr = err
+		return NewHasher(MemoryBudgetMiB)
+	}
+	return NewHasherWith(MemoryBudgetMiB, &cfg)
+})
 
 // Shared is the process's one Hasher, so every caller (the sign-in form,
 // LDAP, RADIUS, the outposts, the Admin API, signup) draws on one memory
 // budget.
 func Shared() *Hasher { return shared() }
+
+// SharedConfigError is why the shared Hasher could not take its configured
+// cost or pepper, or nil.
+func SharedConfigError() error {
+	shared()
+	return sharedErr
+}
 
 // Concurrency reports the cap, so it can be exported as a metric. Saturation
 // here is the first sign of a login flood.
@@ -354,26 +391,33 @@ func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 	password = Normalize(password)
 	h.inFlight.Add(1)
 	defer h.inFlight.Add(-1)
+	pepper := h.cfg.current()
+	named := ""
+	if pepper != nil {
+		named = ",k=" + pepper.ID
+	}
 	if fips140.Enabled() {
 		if err := h.acquire(ctx, 1); err != nil {
 			return "", err
 		}
 		defer h.release(1)
-		return hashPBKDF2(password)
+		return hashPBKDF2(peppered(pepper, password), named)
 	}
-	if err := h.acquire(ctx, argonMemoryKiB); err != nil {
+	p := h.cfg.params()
+	kib := int64(p.MemoryKiB)
+	if err := h.acquire(ctx, kib); err != nil {
 		return "", err
 	}
-	defer h.release(argonMemoryKiB)
+	defer h.release(kib)
 
 	salt := make([]byte, argonSaltLen)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return "", fmt.Errorf("generating salt: %w", err)
 	}
-	key := argon2.IDKey([]byte(password), salt, argonTime, argonMemoryKiB, argonThreads, argonKeyLen)
+	key := argon2.IDKey([]byte(peppered(pepper, password)), salt, p.Time, p.MemoryKiB, p.Threads, argonKeyLen)
 
-	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
-		argon2.Version, argonMemoryKiB, argonTime, argonThreads,
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d%s$%s$%s",
+		argon2.Version, p.MemoryKiB, p.Time, p.Threads, named,
 		base64.RawStdEncoding.EncodeToString(salt),
 		base64.RawStdEncoding.EncodeToString(key)), nil
 }
@@ -401,7 +445,7 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 
 	switch {
 	case strings.HasPrefix(stored, pbkdf2Prefix):
-		current, err := verifyPBKDF2(stored, password)
+		current, err := verifyPBKDF2(stored, password, h.cfg)
 		if err != nil {
 			return false, err
 		}
@@ -410,7 +454,7 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 		return !current || !fips140.Enabled(), nil
 
 	case strings.HasPrefix(stored, "$argon2id$"):
-		current, err := verifyArgon2id(stored, password)
+		current, err := verifyArgon2id(stored, password, h.cfg)
 		if err != nil {
 			return false, err
 		}
@@ -493,9 +537,10 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 }
 
 // verifyArgon2id reports whether the hash matched AND whether its parameters are
-// current. Parameters are read from the stored string, never assumed, so hashes
-// written under older settings still verify.
-func verifyArgon2id(stored, password string) (current bool, err error) {
+// current: at least cfg's cost, and made with cfg's current pepper. Parameters
+// are read from the stored string, never assumed, so hashes written under
+// older settings still verify. A nil cfg is the floor and no pepper.
+func verifyArgon2id(stored, password string, cfg *Config) (current bool, err error) {
 	parts := strings.Split(stored, "$")
 	if len(parts) != 6 {
 		return false, ErrMismatch
@@ -532,19 +577,41 @@ func verifyArgon2id(stored, password string) (current bool, err error) {
 	if err != nil {
 		return false, ErrMismatch
 	}
+	pepper, current, err := hashPepper(hashParams(parts[3])["k"], cfg)
+	if err != nil {
+		return false, err
+	}
 
 	// #nosec G115 -- the length of a decoded Argon2 hash, bounded by the parser
 	// that produced it at well under 2^32.
-	got := argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(want)))
+	got := argon2.IDKey([]byte(peppered(pepper, password)), salt, t, m, p, uint32(len(want)))
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		return false, ErrMismatch
 	}
-	return m >= argonMemoryKiB && t >= argonTime, nil
+	want4 := cfg.params()
+	return current && m >= want4.MemoryKiB && t >= want4.Time && p >= want4.Threads, nil
+}
+
+// hashPepper is the pepper a hash names, and whether it is the current one. A
+// hash naming a pepper that is not configured cannot be verified by anything,
+// so it is refused as a mismatch with the reason, for the log.
+func hashPepper(id string, cfg *Config) (*Pepper, bool, error) {
+	cur := cfg.current()
+	if id == "" {
+		return nil, cur == nil, nil
+	}
+	p, ok := cfg.pepper(id)
+	if !ok {
+		return nil, false, fmt.Errorf("%w: the hash was made with pepper %q, which "+
+			"SIGNARI_PASSWORD_PEPPERS does not hold; reset the password", ErrMismatch, id)
+	}
+	return p, cur != nil && cur.ID == id, nil
 }
 
 // hashPBKDF2 hashes with PBKDF2-HMAC-SHA256 through the standard library, the
-// one inside the FIPS module.
-func hashPBKDF2(password string) (string, error) {
+// one inside the FIPS module. named is the pepper's `,k=<id>`, or empty; the
+// password has had the pepper applied already.
+func hashPBKDF2(password, named string) (string, error) {
 	salt := make([]byte, pbkdf2SaltLen)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return "", fmt.Errorf("generating salt: %w", err)
@@ -553,13 +620,13 @@ func hashPBKDF2(password string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%si=%d$%s$%s", pbkdf2Prefix, pbkdf2Iterations,
+	return fmt.Sprintf("%si=%d%s$%s$%s", pbkdf2Prefix, pbkdf2Iterations, named,
 		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key)), nil
 }
 
-// verifyPBKDF2 handles `$pbkdf2-sha256$i=<iterations>$<salt>$<key>` and says
-// whether its iterations are current.
-func verifyPBKDF2(stored, password string) (current bool, err error) {
+// verifyPBKDF2 handles `$pbkdf2-sha256$i=<iterations>[,k=<id>]$<salt>$<key>`
+// and says whether its iterations and pepper are current.
+func verifyPBKDF2(stored, password string, cfg *Config) (current bool, err error) {
 	parts := strings.Split(stored, "$")
 	if len(parts) != 5 {
 		return false, ErrMismatch
@@ -576,11 +643,15 @@ func verifyPBKDF2(stored, password string) (current bool, err error) {
 	if err != nil {
 		return false, ErrMismatch
 	}
-	got, err := stdpbkdf2.Key(sha256.New, password, salt, iter, len(want))
+	pepper, currentPepper, err := hashPepper(hashParams(parts[2])["k"], cfg)
+	if err != nil {
+		return false, err
+	}
+	got, err := stdpbkdf2.Key(sha256.New, peppered(pepper, password), salt, iter, len(want))
 	if err != nil || subtle.ConstantTimeCompare(got, want) != 1 {
 		return false, ErrMismatch
 	}
-	return iter >= pbkdf2Iterations, nil
+	return currentPepper && iter >= pbkdf2Iterations, nil
 }
 
 // verifyDjangoPBKDF2 handles `pbkdf2_sha256$<iterations>$<salt>$<b64 hash>`.

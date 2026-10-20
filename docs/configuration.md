@@ -653,7 +653,31 @@ An imported Argon2id or scrypt hash takes what it declares, so a few expensive
 imports queue behind each other rather than exhausting memory. An imported hash
 that needs more than the whole budget cannot be verified, and its owner has to
 reset the password. `signari_password_hashes_in_flight` against
-`signari_password_hash_slots` shows how close the hasher is to saturation.
+`signari_password_hash_slots` shows how close the hasher is to saturation. An
+imported scrypt hash may ask for at most 256 MiB.
+
+### The hash's cost, and a pepper
+
+| | |
+|---|---|
+| `SIGNARI_ARGON2_MEMORY_MIB` | Memory per new password hash, 19 (the default, the OWASP minimum) to 256 MiB |
+| `SIGNARI_ARGON2_ITERATIONS` | Passes, 2 (default) to 16 |
+| `SIGNARI_ARGON2_PARALLELISM` | Lanes, 1 (default) to 16 |
+| `SIGNARI_PASSWORD_PEPPERS` | Optional secrets mixed into every new password hash, `id:base64` separated by commas, the first the current one; each at least 32 random bytes, the id 1 to 16 lower-case letters or digits |
+
+`signari passwords calibrate [-target 250ms]` measures this host and says what
+to set. A value outside its range stops `serve` from starting, as does a
+malformed pepper, since hashing with anything other than what was set is a
+weaker store nobody chose. A password hashed under a lower cost, or not with
+the current pepper, is rehashed at its next sign-in, so raising the cost
+reaches everybody who signs in.
+
+A pepper is kept out of the database as the root key is, so a stolen database
+alone cannot be guessed against. Each hash names its pepper (`k=<id>` among its
+parameters). To rotate, put a new one first and keep the old one after it:
+every password moves to the new one at its next sign-in, and `signari doctor`
+counts the hashes still naming each. Removing a pepper a hash still names makes
+that password unverifiable, and its owner has to reset it.
 
 ## Chrome Enterprise device trust
 

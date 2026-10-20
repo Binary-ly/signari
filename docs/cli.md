@@ -230,6 +230,7 @@ An operator's own service, called to extend a decision this engine makes. See
 |---|---|
 | `signari policy show` / `policy apply` / `policy test` / `policy graph` | Access policy. `policy test` answers "would this have been allowed" |
 | `signari flow test` / `flow paths` / `flow apply` / `flow show` | Sign-in flows. `flow test` refuses a file whose journeys could issue a session without proving the subject, or that names a stage or condition its journey does not run; `flow paths` lists every journey a flow admits; `flow apply` installs one for an organisation, printing every journey it admits; `flow show` prints the built-in flows as a file to start from. See [flows.md](flows.md) |
+| `signari passwords calibrate` | `[-target 250ms]`: time Argon2id on this host at several memory sizes and say which `SIGNARI_ARGON2_MEMORY_MIB` and `SIGNARI_ARGON2_ITERATIONS` make one password hash take about that long, preferring memory, and leaving the 512 MiB budget room for four at once. Needs no database; run it where the engine runs. See [configuration](configuration.md#the-hashs-cost-and-a-pepper) |
 | `signari prompt list` / `prompt set` | Interstitial prompts — terms, notices |
 | `signari prompt disable` / `prompt enable` | `-org <uuid> -slug <s>`: a disabled prompt is neither asked nor answerable; the answers already given are kept |
 | `signari brand set` / `brand show` / `brand check` | Branding. `brand check` verifies contrast |

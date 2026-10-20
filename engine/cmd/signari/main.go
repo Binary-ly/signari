@@ -125,6 +125,7 @@ var twoWordCommands = map[string]bool{
 	"rar":        true,
 	"webauthn":   true,
 	"resource":   true,
+	"passwords":  true,
 }
 
 func usage() error {
@@ -643,6 +644,8 @@ func run(args []string) (err error) {
 	passwordBinds := fs.String("binds", "",
 		"allow, or refuse_when_mfa: whether LDAP binds, RADIUS PAP and outposts, which carry "+
 			"only a password, may sign in somebody the sign-in flow would ask for a second factor")
+	calibrateTarget := fs.Duration("target", 250*time.Millisecond,
+		"`passwords calibrate`: how long one password hash should take on this host")
 	freeAttempts := fs.Int("free-attempts", 0,
 		"`instance login-throttle`: wrong passwords for one account before the sign-in delay begins, 1 to 20")
 	maxLoginDelay := fs.Duration("max-delay", 0,
@@ -707,6 +710,10 @@ func run(args []string) (err error) {
 		return flowPaths(*flowFile, *flowName)
 	case "flow show":
 		return flowShow()
+	// Measures this host, so it runs where the engine will, and needs no
+	// database.
+	case "passwords calibrate":
+		return passwordsCalibrate(os.Stdout, *calibrateTarget)
 	// What this binary is, answerable on a machine with no database: a
 	// release script checks the pin with it before tagging.
 	case "version":
@@ -1829,6 +1836,11 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	if err := fipsPreflight(ctx, conn, os.Getenv, fips140.Enforced()); err != nil {
 		return err
 	}
+	// The password hash's cost and pepper, as set or not at all: hashing at
+	// the floor because a value was mistyped is a weaker store nobody chose.
+	if err := passwords.SharedConfigError(); err != nil {
+		return fmt.Errorf("not serving: %w", err)
+	}
 
 	root, err := rootKey()
 	if err != nil {
@@ -2798,6 +2810,9 @@ func userCreate(ctx context.Context, conn *pgx.Conn, givenOrg, email, password s
 		return err
 	}
 
+	if err := passwords.SharedConfigError(); err != nil {
+		return err
+	}
 	hasher := passwords.Shared()
 	// The same gate the web paths use. The CLI creates the FIRST user of a
 	// deployment -- the account with the most access and the longest life -- so

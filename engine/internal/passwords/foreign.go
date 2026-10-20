@@ -215,11 +215,11 @@ func verifyScrypt(stored, password string) error {
 	if r <= 0 || p <= 0 || len(want) == 0 {
 		return ErrMismatch
 	}
-	// The format's bounds. They alone would allow 128 x N x r = 4 GiB; what
-	// keeps a malicious or corrupt import from asking for gigabytes on the login
-	// path is CostRefusal, which refuses a hash over the process's memory budget
-	// before a slot is taken and before this runs.
-	if N > scryptMaxN || r > scryptMaxR || p > scryptMaxP {
+	// The format's bounds, which alone would allow 128 x N x r = 4 GiB, and
+	// scryptMaxMemoryKiB. CostRefusal refuses the same before a slot is taken;
+	// this is the same rule where the memory is spent.
+	if N > scryptMaxN || r > scryptMaxR || p > scryptMaxP ||
+		int64(N)*int64(r)*128/1024 > scryptMaxMemoryKiB {
 		return ErrMismatch
 	}
 	got, err := scrypt.Key([]byte(password), salt, N, r, p, len(want))

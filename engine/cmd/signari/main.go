@@ -1963,9 +1963,11 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	var met *metrics.Engine
 	if metricsAddr != "" {
 		met = metrics.NewEngine()
+		var hooks []string
 		for _, h := range provider.AllHooks() {
-			metrics.RegisterProviderHook(string(h))
+			hooks = append(hooks, string(h))
 		}
+		met.DeclareProviderHooks(hooks)
 		provider.SetObserver(func(h provider.Hook, outcome string) {
 			met.Providers.Inc(string(h), outcome)
 		})

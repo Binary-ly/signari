@@ -13,6 +13,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/metrics"
 	"signari.dev/engine/internal/migrate"
+	"signari.dev/engine/internal/outbox"
 )
 
 // registerOperationalGauges adds what the engine's background work looks like
@@ -42,24 +43,33 @@ func registerOperationalGauges(r *metrics.Registry, db *pgxpool.Pool, set *keys.
 	r.NewInfo("signari_build_info", "The release, toolchain and schema version this process runs.",
 		[]string{"version", "go_version", "schema"}, []string{release, goVersion, schema})
 
-	scalar := func(query string) func() float64 {
+	scalar := func(query string, args ...any) func() float64 {
 		return func() float64 {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			var v float64
-			if err := db.QueryRow(ctx, query).Scan(&v); err != nil {
+			if err := db.QueryRow(ctx, query, args...).Scan(&v); err != nil {
 				return math.NaN()
 			}
 			return v
 		}
 	}
+	// Pending is what the worker will still try; parked is what it gave up on
+	// after outbox.MaxAttempts and keeps for an operator to see. Both were one
+	// count, so a single parked notice made the oldest "pending" row older by
+	// the second, forever, and a backlog alert on it could never clear.
 	r.NewGauge("signari_outbox_pending",
-		"Logout notices and security events queued and not yet delivered.",
-		scalar(`SELECT count(*)::float8 FROM core.outbox WHERE delivered_at IS NULL`))
+		"Logout notices and security events queued and still being retried.",
+		scalar(`SELECT count(*)::float8 FROM core.outbox
+		        WHERE delivered_at IS NULL AND attempts < $1`, outbox.MaxAttempts))
 	r.NewGauge("signari_outbox_oldest_pending_seconds",
-		"How long the oldest undelivered outbox row has waited; 0 when none is waiting.",
+		"How long the oldest row still being retried has waited; 0 when none is waiting.",
 		scalar(`SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(created_at)), 0)::float8
-		        FROM core.outbox WHERE delivered_at IS NULL`))
+		        FROM core.outbox WHERE delivered_at IS NULL AND attempts < $1`, outbox.MaxAttempts))
+	r.NewGauge("signari_outbox_parked",
+		"Notices that exhausted their delivery attempts and will not be retried.",
+		scalar(`SELECT count(*)::float8 FROM core.outbox
+		        WHERE delivered_at IS NULL AND attempts >= $1`, outbox.MaxAttempts))
 	if auditStreaming {
 		r.NewGauge("signari_audit_stream_lag_events",
 			"Audit events written and not yet accepted by the configured stream.",

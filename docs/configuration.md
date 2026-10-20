@@ -658,7 +658,8 @@ password. See [desktop-login.md](desktop-login.md).
 | `signari_signins_total{outcome}`, `signari_auth_failures_total{mechanism}` | sign-ins, and failed authentications by mechanism |
 | `signari_tokens_issued_total{grant}`, `signari_sms_total{outcome}` | tokens by grant type; text messages by outcome |
 | `signari_provider_calls_total{hook,outcome}` | extension-provider calls: `answered`, `timeout`, `unreachable`, `bad_status`, `bad_answer`, and for a failure `failed_open` or `failed_closed` |
-| `signari_outbox_pending`, `signari_outbox_oldest_pending_seconds` | logout notices and security events not yet delivered, and how long the oldest has waited |
+| `signari_outbox_pending`, `signari_outbox_oldest_pending_seconds` | logout notices and security events still being retried, and how long the oldest has waited |
+| `signari_outbox_parked` | notices that failed every attempt and will not be retried; kept so an operator can see which relying party missed a logout |
 | `signari_audit_stream_lag_events` | audit events the configured stream has not yet accepted (only when streaming is on) |
 | `signari_janitor_last_pass_timestamp_seconds` | when this node last finished a janitor pass. Only the node holding the janitor's lock runs one, so alert on the newest across nodes |
 | `signari_signing_key_active_age_seconds` | age of the oldest active signing key |
@@ -670,7 +671,8 @@ password. See [desktop-login.md](desktop-login.md).
 The backlog series query the database at scrape time, with a two-second
 deadline, and read `NaN` when it cannot be reached. Until October 2026 there was
 one latency histogram across every route, and none of the backlog, provider,
-build or runtime series existed.
+build or runtime series existed. Parked notices were briefly counted as pending
+too, so one of them made the oldest pending notice older by the second, forever.
 
 The HTTP series covers the admin API as well as the protocol listener, under
 its own `/admin/…` route patterns. Until October 2026 the admin API was not

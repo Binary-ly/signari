@@ -49,3 +49,28 @@ func TestSignInEventsAreCounted(t *testing.T) {
 		t.Errorf("auth failures counted for something other than a wrong credential:\n%s", out)
 	}
 }
+
+// A provider's failure outcomes are exported at zero before the first failure
+// (3.27), so the first one is a rise that increase() can see rather than a new
+// series it cannot.
+func TestProviderFailuresStartAtZero(t *testing.T) {
+	e := NewEngine()
+	e.DeclareProviderHooks([]string{"token_issue"})
+	render := func() string {
+		var b bytes.Buffer
+		e.Registry.Render(&b)
+		return b.String()
+	}
+	for _, want := range []string{
+		`signari_provider_calls_total{hook="token_issue",outcome="failed_open"} 0`,
+		`signari_provider_calls_total{hook="token_issue",outcome="failed_closed"} 0`,
+	} {
+		if !strings.Contains(render(), want) {
+			t.Errorf("before any call /metrics lacks %s", want)
+		}
+	}
+	e.Providers.Inc("token_issue", "failed_open")
+	if want := `signari_provider_calls_total{hook="token_issue",outcome="failed_open"} 1`; !strings.Contains(render(), want) {
+		t.Errorf("after a failure /metrics lacks %s", want)
+	}
+}

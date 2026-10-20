@@ -94,6 +94,20 @@ var providerHooks = NewGrowableSet()
 // RegisterProviderHook declares a hook name as safe to export.
 func RegisterProviderHook(h string) { providerHooks.Add(h) }
 
+// DeclareProviderHooks registers each hook and exports its two failure
+// outcomes at zero from startup (3.27). A counter series otherwise appears
+// only once incremented, and Prometheus's increase() needs two samples, so the
+// first provider to fail open after a restart, a control skipped, arrived as
+// a series already at one and raised no alert.
+func (e *Engine) DeclareProviderHooks(hooks []string) {
+	for _, h := range hooks {
+		RegisterProviderHook(h)
+		for _, outcome := range []string{"failed_open", "failed_closed"} {
+			e.Providers.Add(0, h, outcome)
+		}
+	}
+}
+
 // routePatterns is the set of route labels, filled during startup.
 //
 // Growable rather than fixed because the 123 registrations that populate it all

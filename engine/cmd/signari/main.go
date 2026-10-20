@@ -404,7 +404,7 @@ func run(args []string) (err error) {
 	appleKeyID := fs.String("apple-key-id", "", "id of the .p8 key")
 	appleKeyFile := fs.String("apple-key", "", "path to the .p8 private key")
 	rpURL := fs.String("rp-url", "", "the relying party's backchannel_logout_uri")
-	subject := fs.String("subject", "", "sub to name in the logout token")
+	subject := fs.String("subject", "", "a sub: the one to name in the logout token, or the upstream subject `idp link` attaches to a person")
 	sidFlag := fs.String("sid", "", "sid to name in the logout token")
 	reviewBy := fs.String("review-by", "",
 		"YYYY-MM-DD when the hybrid exemption should be revisited")
@@ -1151,6 +1151,12 @@ func run(args []string) (err error) {
 		return idpSetEnabled(ctx, conn, *slug, false)
 	case "idp enable":
 		return idpSetEnabled(ctx, conn, *slug, true)
+	case "idp link":
+		return idpLink(ctx, conn, *slug, *subject, *email)
+	case "idp unlink":
+		return idpUnlink(ctx, conn, *slug, *subject)
+	case "idp links":
+		return idpLinks(ctx, conn, *slug)
 	case "instance webauthn":
 		return instanceWebAuthn(ctx, conn, *issuer, *rpID, *name)
 	case "scim enable":

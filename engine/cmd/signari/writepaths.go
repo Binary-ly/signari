@@ -45,6 +45,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
@@ -1462,6 +1463,96 @@ func idpSetEnabled(ctx context.Context, conn *pgx.Conn, slug string, enabled boo
 	fmt.Println("\n  Sessions already signed in through it are NOT ended. To end one")
 	fmt.Println("  person's now: PATCH /admin/users/<id> {\"active\": false} (then re-activate).")
 	return nil
+}
+
+// idpLink attaches an upstream subject to a person in the provider's
+// organisation (2.60), which is what the jwt-bearer grant resolves an
+// assertion's `sub` against. A key-publishing issuer (`idp add-issuer`) is never
+// a sign-in option, so no sign-in can create its links, and before this nothing
+// could: the documented workload set-up minted nothing without SQL.
+func idpLink(ctx context.Context, conn *pgx.Conn, slug, subject, email string) error {
+	if slug == "" || subject == "" || email == "" {
+		return fmt.Errorf("idp link needs -slug, -subject and -email (the person the subject acts as)")
+	}
+	var providerID, orgID string
+	if err := conn.QueryRow(ctx, `SELECT id::text, org_id::text FROM core.identity_providers WHERE slug = $1`,
+		slug).Scan(&providerID, &orgID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no identity provider with slug %q; `signari idp list` shows them", slug)
+		}
+		return err
+	}
+	userID, err := store.FindLocalUserByEmail(ctx, conn, orgID, email)
+	if err != nil {
+		return err
+	}
+	if userID == "" {
+		return fmt.Errorf("no person with the address %s in that provider's organisation", email)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.LinkFederatedIdentity(ctx, tx, providerID, userID, orgID,
+		federation.ExternalIdentity{Subject: subject}, false); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s at %s now acts as %s: its assertions mint tokens for that account\n", subject, slug, email)
+	fmt.Println("through any client paired with this issuer and registered for jwt-bearer.")
+	return nil
+}
+
+// idpUnlink detaches one. The next assertion naming it is refused; the grant
+// issues no refresh token, so nothing outlives it.
+func idpUnlink(ctx context.Context, conn *pgx.Conn, slug, subject string) error {
+	if slug == "" || subject == "" {
+		return fmt.Errorf("idp unlink needs -slug and -subject")
+	}
+	tag, err := conn.Exec(ctx, `
+		DELETE FROM core.federated_identities f USING core.identity_providers p
+		WHERE p.id = f.provider_id AND p.slug = $1 AND f.subject = $2`, slug, subject)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s has no link for subject %q", slug, subject)
+	}
+	fmt.Printf("%s at %s is unlinked: its next assertion is refused\n", subject, slug)
+	return nil
+}
+
+// idpLinks lists a provider's subjects and the people they act as.
+func idpLinks(ctx context.Context, conn *pgx.Conn, slug string) error {
+	if slug == "" {
+		return fmt.Errorf("idp links needs -slug")
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT f.subject, COALESCE(u.email, u.username, u.id::text), u.status
+		FROM core.federated_identities f
+		JOIN core.identity_providers p ON p.id = f.provider_id
+		JOIN core.users u ON u.id = f.user_id
+		WHERE p.slug = $1 ORDER BY f.subject`, slug)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var sub, who, status string
+		if err := rows.Scan(&sub, &who, &status); err != nil {
+			return err
+		}
+		n++
+		fmt.Printf("%s  %s  %s\n", sub, who, status)
+	}
+	if n == 0 {
+		fmt.Printf("%s has no links\n", slug)
+	}
+	return rows.Err()
 }
 
 // cliOperator names who ran this command, as its audit record does: the

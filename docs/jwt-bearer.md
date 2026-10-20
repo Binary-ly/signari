@@ -10,11 +10,20 @@ signari idp assertions -slug github-actions -allow-assertions
 signari client set-assertion-issuers -client-id ci-deploy -issuers github-actions
 signari client set-grants -client-id ci-deploy \
     -grant-types urn:ietf:params:oauth:grant-type:jwt-bearer
+
+# the account each workload acts as: the assertion's `sub`, linked to a person
+signari idp link -slug github-actions \
+    -subject repo:acme/deploy:ref:refs/heads/main -email deploy-bot@acme.example
 ```
 
 The client also needs the grant itself, like every grant the token endpoint
 serves. Until October 2026 `set-grants` did not accept this one, so no client
 could be given it.
+
+An assertion mints for the local account its `sub` is linked to, and a
+key-publishing issuer is never a sign-in option, so no sign-in creates that
+link: `idp link` does, `idp links` lists them and `idp unlink` removes one.
+Until October 2026 nothing could, and this set-up minted nothing without SQL.
 
 Two commands because they are two decisions: the first records that an issuer
 exists and where its keys are, the second grants it the power to mint tokens

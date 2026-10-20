@@ -35,9 +35,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"signari.dev/engine/internal/hmacsig"
@@ -298,9 +300,37 @@ func (e *ErrUnreachable) Unwrap() error { return e.Err }
 // checks the URL, but only the dialer can refuse an address that resolved into
 // the private network AFTER the check.
 func (p Provider) Call(ctx context.Context, client *http.Client, req, out any) error {
+	outcome, err := p.call(ctx, client, req, out)
+	p.observe(outcome)
+	return err
+}
+
+// observer, when set, is told each call's outcome and each failure's
+// decision (3.08). A provider failing open is a control quietly not applied,
+// and a log line per call was the only sign of it.
+var observer atomic.Pointer[func(hook Hook, outcome string)]
+
+// SetObserver installs fn to be told every outcome; nil removes it.
+func SetObserver(fn func(hook Hook, outcome string)) {
+	if fn == nil {
+		observer.Store(nil)
+		return
+	}
+	observer.Store(&fn)
+}
+
+func (p Provider) observe(outcome string) {
+	if fn := observer.Load(); fn != nil {
+		(*fn)(p.Hook, outcome)
+	}
+}
+
+// call is Call, saying how it ended: answered, timeout, unreachable,
+// bad_status or bad_answer.
+func (p Provider) call(ctx context.Context, client *http.Client, req, out any) (string, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return &ErrUnreachable{Provider: p.Name, Err: fmt.Errorf("encoding the request: %w", err)}
+		return "unreachable", &ErrUnreachable{Provider: p.Name, Err: fmt.Errorf("encoding the request: %w", err)}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, p.Timeout)
@@ -308,7 +338,7 @@ func (p Provider) Call(ctx context.Context, client *http.Client, req, out any) e
 
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL, bytes.NewReader(body))
 	if err != nil {
-		return &ErrUnreachable{Provider: p.Name, Err: err}
+		return "unreachable", &ErrUnreachable{Provider: p.Name, Err: err}
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Accept", "application/json")
@@ -318,7 +348,10 @@ func (p Provider) Call(ctx context.Context, client *http.Client, req, out any) e
 
 	resp, err := client.Do(hreq)
 	if err != nil {
-		return &ErrUnreachable{Provider: p.Name, Err: err}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "timeout", &ErrUnreachable{Provider: p.Name, Err: err}
+		}
+		return "unreachable", &ErrUnreachable{Provider: p.Name, Err: err}
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponse))
@@ -330,7 +363,7 @@ func (p Provider) Call(ctx context.Context, client *http.Client, req, out any) e
 		// request has not made a decision, and treating "you sent me something I
 		// did not understand" as a decision is how a contract mismatch becomes a
 		// silent authorization change.
-		return &ErrUnreachable{Provider: p.Name,
+		return "bad_status", &ErrUnreachable{Provider: p.Name,
 			Err: fmt.Errorf("status %d", resp.StatusCode)}
 	}
 
@@ -341,10 +374,10 @@ func (p Provider) Call(ctx context.Context, client *http.Client, req, out any) e
 	// every additive change to the contract a breaking one for the party we have
 	// least control over.
 	if err := dec.Decode(out); err != nil {
-		return &ErrUnreachable{Provider: p.Name,
+		return "bad_answer", &ErrUnreachable{Provider: p.Name,
 			Err: fmt.Errorf("decoding the answer: %w", err)}
 	}
-	return nil
+	return "answered", nil
 }
 
 // Decide applies the provider's failure mode to a call that did not answer.
@@ -359,5 +392,10 @@ func (p Provider) Decide(err error) (proceed bool) {
 	if err == nil {
 		return true
 	}
-	return p.Mode == FailOpen
+	if p.Mode == FailOpen {
+		p.observe("failed_open")
+		return true
+	}
+	p.observe("failed_closed")
+	return false
 }

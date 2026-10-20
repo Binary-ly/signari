@@ -609,9 +609,28 @@ password. See [desktop-login.md](desktop-login.md).
 ## Metrics, and the label rule
 
 `SIGNARI_METRICS_ADDR` exposes `GET /metrics` in the Prometheus text format
-(version 0.0.4). Six series: HTTP responses by route pattern, method and status
-class; request latency; sign-ins by outcome; tokens by grant type; authentication
-failures by mechanism.
+(version 0.0.4):
+
+| Series | What it says |
+|---|---|
+| `signari_http_requests_total{route,method,status}` | responses by route pattern, method and status class |
+| `signari_http_request_duration_seconds{route}` | latency by route pattern |
+| `signari_signins_total{outcome}`, `signari_auth_failures_total{mechanism}` | sign-ins, and failed authentications by mechanism |
+| `signari_tokens_issued_total{grant}`, `signari_sms_total{outcome}` | tokens by grant type; text messages by outcome |
+| `signari_provider_calls_total{hook,outcome}` | extension-provider calls: `answered`, `timeout`, `unreachable`, `bad_status`, `bad_answer`, and for a failure `failed_open` or `failed_closed` |
+| `signari_outbox_pending`, `signari_outbox_oldest_pending_seconds` | logout notices and security events not yet delivered, and how long the oldest has waited |
+| `signari_audit_stream_lag_events` | audit events the configured stream has not yet accepted (only when streaming is on) |
+| `signari_janitor_last_pass_timestamp_seconds` | when this node last finished a janitor pass. Only the node holding the janitor's lock runs one, so alert on the newest across nodes |
+| `signari_signing_key_active_age_seconds` | age of the oldest active signing key |
+| `signari_db_pool_connections_*`, `signari_db_worker_pool_connections_*` | the request pool and the workers' pool |
+| `signari_password_hashes_in_flight`, `signari_password_hash_slots`, `signari_key_refresh_failures` | hasher saturation; consecutive failed key refreshes |
+| `signari_build_info{version,go_version,schema}` | always 1; the release, toolchain and schema |
+| `go_goroutines`, `go_heap_objects_bytes`, `go_memory_total_bytes`, `go_gc_cycles_total`, `process_start_time_seconds` | the Go runtime |
+
+The backlog series query the database at scrape time, with a two-second
+deadline, and read `NaN` when it cannot be reached. Until October 2026 there was
+one latency histogram across every route, and none of the backlog, provider,
+build or runtime series existed.
 
 The HTTP series covers the admin API as well as the protocol listener, under
 its own `/admin/…` route patterns. Until October 2026 the admin API was not

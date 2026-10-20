@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -296,6 +297,20 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 }
 
 // Run loops until ctx is cancelled.
+// lastPass is when this process last completed a pass, in Unix seconds; 0
+// before the first. A node whose passes another node's lock skipped never
+// sets it, so a deployment's freshness is the newest across its nodes.
+var lastPass atomic.Int64
+
+// LastPass is when this process last completed a janitor pass, or the zero
+// time (3.08). A janitor that stopped was invisible until a table had grown.
+func LastPass() time.Time {
+	if s := lastPass.Load(); s > 0 {
+		return time.Unix(s, 0)
+	}
+	return time.Time{}
+}
+
 func Run(ctx context.Context, db *pgxpool.Pool, log *slog.Logger, interval time.Duration) {
 	if interval <= 0 {
 		interval = DefaultInterval
@@ -321,6 +336,9 @@ func Run(ctx context.Context, db *pgxpool.Pool, log *slog.Logger, interval time.
 				// operational problem, refusing to serve tokens is an outage.
 				log.Error("janitor pass failed", "err", err)
 			default:
+				if !st.Skipped {
+					lastPass.Store(time.Now().Unix())
+				}
 				st.Log(log)
 			}
 		}

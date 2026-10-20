@@ -75,6 +75,7 @@ import (
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/posture"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/proxycheck"
 	"signari.dev/engine/internal/proxyproto"
 	"signari.dev/engine/internal/radius"
@@ -1915,9 +1916,11 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// Audit streaming to a logically separate system (ASVS V16.4.3), off unless a
 	// destination is configured. Forwarding authentication events off the box is a
 	// data-residency decision, so it happens only when an operator names where.
+	auditStreaming := false
 	if sink, serr := auditsink.NewFromEnv(os.Getenv, log); serr != nil {
 		return fmt.Errorf("audit streaming: %w", serr)
 	} else if sink != nil {
+		auditStreaming = true
 		go auditsink.NewPump(workerPool, sink, log).Run(workerCtx, 10*time.Second)
 	}
 
@@ -1939,6 +1942,12 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	var met *metrics.Engine
 	if metricsAddr != "" {
 		met = metrics.NewEngine()
+		for _, h := range provider.AllHooks() {
+			metrics.RegisterProviderHook(string(h))
+		}
+		provider.SetObserver(func(h provider.Hook, outcome string) {
+			met.Providers.Inc(string(h), outcome)
+		})
 	}
 
 	// The admin API listens on its OWN address, and is off unless one is given.
@@ -2258,6 +2267,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		met.Registry.NewGauge("signari_key_refresh_failures",
 			"Signing-key refreshes that have failed in a row; readiness fails at five.",
 			func() float64 { return float64(keyRefresher.Missed()) })
+		registerOperationalGauges(met.Registry, workerPool, set, auditStreaming)
 
 		srv.SetMetrics(met)
 		go func() {

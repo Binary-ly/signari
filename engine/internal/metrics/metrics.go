@@ -176,17 +176,44 @@ func (s *GrowableSet) Has(v string) bool {
 // declaration mistake, it is a declaration that has not finished.
 func (s *GrowableSet) Empty() bool { return false }
 
-// Counter is a value that only goes up.
-type Counter struct {
-	metricName string
-	help       string
-	// labelNames is fixed at construction and ordered; a series is keyed by the
+// labelSet is a metric's label names and the closed set of values each may
+// take, shared by every metric kind that has labels.
+type labelSet struct {
+	// names is fixed at construction and ordered; a series is keyed by the
 	// joined values in this order.
-	labelNames []string
+	names []string
 	// allowed is the closed set of values per label position. This is the guard:
 	// anything else becomes OtherValue, so an identifier cannot reach a series
 	// name even by mistake.
 	allowed []ValueSet
+}
+
+// newLabelSet refuses a label with no declared values: an unbounded label is
+// precisely what this package exists to prevent, and the shape that would
+// introduce one is a caller who did not think about it.
+func newLabelSet(name string, names []string, allowed []ValueSet) labelSet {
+	if len(names) != len(allowed) {
+		panic("metrics: " + name + " declares " + strconv.Itoa(len(names)) +
+			" labels and " + strconv.Itoa(len(allowed)) + " value sets")
+	}
+	for i, set := range allowed {
+		if set == nil || set.Empty() {
+			panic("metrics: " + name + " label " + names[i] +
+				" has no declared values; an unbounded label is how an " +
+				"identifier reaches a metrics store")
+		}
+	}
+	return labelSet{names: names, allowed: allowed}
+}
+
+// Counter is a value that only goes up.
+type Counter struct {
+	metricName string
+	help       string
+	labels     labelSet
+	// info renders it as a gauge: a build-information series is a fact that
+	// is 1, not a count.
+	info bool
 
 	mu     sync.Mutex
 	values map[string]float64
@@ -196,24 +223,11 @@ type Counter struct {
 //
 // `allowed` must have one entry per label name, giving every value that label
 // may take. Passing an empty set for a label is refused rather than treated as
-// "anything goes": an unbounded label is precisely what this package exists to
-// prevent, and the shape that would introduce one is a caller who did not think
-// about it.
+// "anything goes".
 func (r *Registry) NewCounter(name, help string, labelNames []string, allowed []ValueSet) *Counter {
-	if len(labelNames) != len(allowed) {
-		panic("metrics: " + name + " declares " + strconv.Itoa(len(labelNames)) +
-			" labels and " + strconv.Itoa(len(allowed)) + " value sets")
-	}
-	for i, set := range allowed {
-		if set == nil || set.Empty() {
-			panic("metrics: " + name + " label " + labelNames[i] +
-				" has no declared values; an unbounded label is how an " +
-				"identifier reaches a metrics store")
-		}
-	}
 	c := &Counter{
-		metricName: name, help: help, labelNames: labelNames,
-		allowed: allowed, values: map[string]float64{},
+		metricName: name, help: help, labels: newLabelSet(name, labelNames, allowed),
+		values: map[string]float64{},
 	}
 	r.register(c)
 	return c
@@ -227,7 +241,7 @@ func (c *Counter) name() string { return c.metricName }
 // so an undeclared value is contained at the moment it appears rather than
 // accumulating its own series until somebody looks.
 func (c *Counter) Add(delta float64, labelValues ...string) {
-	key := c.key(labelValues)
+	key := c.labels.key(labelValues)
 	c.mu.Lock()
 	c.values[key] += delta
 	c.mu.Unlock()
@@ -237,11 +251,11 @@ func (c *Counter) Add(delta float64, labelValues ...string) {
 func (c *Counter) Inc(labelValues ...string) { c.Add(1, labelValues...) }
 
 // key normalises label values and joins them.
-func (c *Counter) key(values []string) string {
-	safe := make([]string, len(c.labelNames))
-	for i := range c.labelNames {
+func (l labelSet) key(values []string) string {
+	safe := make([]string, len(l.names))
+	for i := range l.names {
 		v := OtherValue
-		if i < len(values) && c.allowed[i].Has(values[i]) {
+		if i < len(values) && l.allowed[i].Has(values[i]) {
 			v = values[i]
 		}
 		safe[i] = v
@@ -252,7 +266,11 @@ func (c *Counter) key(values []string) string {
 }
 
 func (c *Counter) write(w io.Writer) {
-	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n", c.metricName, c.help, c.metricName)
+	kind := "counter"
+	if c.info {
+		kind = "gauge"
+	}
+	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n", c.metricName, c.help, c.metricName, kind)
 
 	c.mu.Lock()
 	keys := make([]string, 0, len(c.values))
@@ -267,18 +285,20 @@ func (c *Counter) write(w io.Writer) {
 	c.mu.Unlock()
 
 	for i, k := range keys {
-		fmt.Fprintf(w, "%s%s %g\n", c.metricName, c.labelsFor(k), snapshot[i])
+		fmt.Fprintf(w, "%s%s %g\n", c.metricName, c.labels.render(k, ""), snapshot[i])
 	}
 }
 
-func (c *Counter) labelsFor(key string) string {
-	if len(c.labelNames) == 0 {
+// render writes the labels a key stands for, followed by extra (a histogram's
+// `le="…"`), or nothing when there are neither.
+func (l labelSet) render(key, extra string) string {
+	if len(l.names) == 0 && extra == "" {
 		return ""
 	}
 	parts := strings.Split(key, "\x00")
 	var b strings.Builder
 	b.WriteByte('{')
-	for i, name := range c.labelNames {
+	for i, name := range l.names {
 		if i > 0 {
 			b.WriteByte(',')
 		}
@@ -290,6 +310,12 @@ func (c *Counter) labelsFor(key string) string {
 		b.WriteString(`="`)
 		b.WriteString(v)
 		b.WriteByte('"')
+	}
+	if extra != "" {
+		if len(l.names) > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(extra)
 	}
 	b.WriteByte('}')
 	return b.String()
@@ -330,8 +356,13 @@ type Histogram struct {
 	metricName string
 	help       string
 	bounds     []float64
+	labels     labelSet
 
 	mu     sync.Mutex
+	series map[string]*histogramSeries
+}
+
+type histogramSeries struct {
 	counts []uint64
 	sum    float64
 	total  uint64
@@ -339,6 +370,14 @@ type Histogram struct {
 
 // NewHistogram registers a histogram. Bounds must be ascending.
 func (r *Registry) NewHistogram(name, help string, bounds []float64) *Histogram {
+	return r.NewHistogramVec(name, help, bounds, nil, nil)
+}
+
+// NewHistogramVec registers a histogram with labels, each from a closed set as
+// a counter's are (3.08): the latency of one route is what a slow route looks
+// like, and one histogram over every route hides it.
+func (r *Registry) NewHistogramVec(name, help string, bounds []float64, labelNames []string,
+	allowed []ValueSet) *Histogram {
 	for i := 1; i < len(bounds); i++ {
 		if bounds[i] <= bounds[i-1] {
 			panic("metrics: " + name + " has non-ascending bucket bounds")
@@ -346,7 +385,8 @@ func (r *Registry) NewHistogram(name, help string, bounds []float64) *Histogram 
 	}
 	h := &Histogram{
 		metricName: name, help: help, bounds: bounds,
-		counts: make([]uint64, len(bounds)),
+		labels: newLabelSet(name, labelNames, allowed),
+		series: map[string]*histogramSeries{},
 	}
 	r.register(h)
 	return h
@@ -354,15 +394,21 @@ func (r *Registry) NewHistogram(name, help string, bounds []float64) *Histogram 
 
 func (h *Histogram) name() string { return h.metricName }
 
-// Observe records one value.
-func (h *Histogram) Observe(v float64) {
+// Observe records one value in the series these label values name.
+func (h *Histogram) Observe(v float64, labelValues ...string) {
+	key := h.labels.key(labelValues)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.sum += v
-	h.total++
+	s := h.series[key]
+	if s == nil {
+		s = &histogramSeries{counts: make([]uint64, len(h.bounds))}
+		h.series[key] = s
+	}
+	s.sum += v
+	s.total++
 	for i, b := range h.bounds {
 		if v <= b {
-			h.counts[i]++
+			s.counts[i]++
 		}
 	}
 }
@@ -371,15 +417,67 @@ func (h *Histogram) write(w io.Writer) {
 	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s histogram\n", h.metricName, h.help, h.metricName)
 
 	h.mu.Lock()
-	counts := make([]uint64, len(h.counts))
-	copy(counts, h.counts)
-	sum, total := h.sum, h.total
-	h.mu.Unlock()
-
-	for i, b := range h.bounds {
-		fmt.Fprintf(w, "%s_bucket{le=\"%g\"} %d\n", h.metricName, b, counts[i])
+	keys := make([]string, 0, len(h.series))
+	for k := range h.series {
+		keys = append(keys, k)
 	}
-	fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", h.metricName, total)
-	fmt.Fprintf(w, "%s_sum %g\n", h.metricName, sum)
-	fmt.Fprintf(w, "%s_count %d\n", h.metricName, total)
+	sort.Strings(keys)
+	snapshot := make([]histogramSeries, len(keys))
+	for i, k := range keys {
+		s := h.series[k]
+		snapshot[i] = histogramSeries{counts: append([]uint64(nil), s.counts...), sum: s.sum, total: s.total}
+	}
+	h.mu.Unlock()
+	if len(keys) == 0 && len(h.labels.names) == 0 {
+		// An unlabelled histogram with nothing observed still shows its
+		// buckets, at zero, as it always has.
+		keys, snapshot = []string{""}, []histogramSeries{{counts: make([]uint64, len(h.bounds))}}
+	}
+
+	for i, k := range keys {
+		s := snapshot[i]
+		for j, b := range h.bounds {
+			fmt.Fprintf(w, "%s_bucket%s %d\n", h.metricName,
+				h.labels.render(k, fmt.Sprintf(`le="%g"`, b)), s.counts[j])
+		}
+		fmt.Fprintf(w, "%s_bucket%s %d\n", h.metricName, h.labels.render(k, `le="+Inf"`), s.total)
+		fmt.Fprintf(w, "%s_sum%s %g\n", h.metricName, h.labels.render(k, ""), s.sum)
+		fmt.Fprintf(w, "%s_count%s %d\n", h.metricName, h.labels.render(k, ""), s.total)
+	}
+}
+
+// CounterFunc is a counter read at scrape time from something that already
+// counts, such as the runtime's garbage collections.
+type CounterFunc struct {
+	metricName string
+	help       string
+	read       func() float64
+}
+
+// NewCounterFunc registers a counter read from fn, which must never go down.
+func (r *Registry) NewCounterFunc(name, help string, fn func() float64) *CounterFunc {
+	c := &CounterFunc{metricName: name, help: help, read: fn}
+	r.register(c)
+	return c
+}
+
+func (c *CounterFunc) name() string { return c.metricName }
+
+func (c *CounterFunc) write(w io.Writer) {
+	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %g\n",
+		c.metricName, c.help, c.metricName, c.metricName, c.read())
+}
+
+// NewInfo registers a gauge that is always 1, carrying this process's own
+// facts as labels: the release and toolchain it was built from. Each label has
+// exactly the one value given, so it is a closed set of one.
+func (r *Registry) NewInfo(name, help string, labelNames, values []string) *Counter {
+	allowed := make([]ValueSet, len(values))
+	for i, v := range values {
+		allowed[i] = FixedSet{v: true}
+	}
+	c := r.NewCounter(name, help, labelNames, allowed)
+	c.info = true
+	c.Inc(values...)
+	return c
 }

@@ -40,7 +40,7 @@ type Engine struct {
 	// with a request id.
 	Requests *Counter
 
-	// Latency is the whole-server latency distribution, unlabelled.
+	// Latency is the latency distribution by route pattern.
 	//
 	// Bounds are set for an identity provider rather than a generic service: a
 	// token endpoint answering in 5 ms and one answering in 500 ms are different
@@ -64,7 +64,25 @@ type Engine struct {
 	// stopped, and a climbing send count with no matching sign-ins is the same
 	// attack not being stopped.
 	SMS *Counter
+
+	// Providers counts extension-provider calls by hook and outcome. A provider
+	// failing open is a control quietly not applied, and the only other sign of
+	// it was a log line per call.
+	Providers *Counter
 }
+
+// ProviderOutcomes are the values of signari_provider_calls_total's outcome.
+var ProviderOutcomes = []string{
+	"answered", "timeout", "unreachable", "bad_status", "bad_answer",
+	"failed_open", "failed_closed",
+}
+
+// providerHooks is the set of hook labels, filled at startup from the hooks
+// the engine knows.
+var providerHooks = NewGrowableSet()
+
+// RegisterProviderHook declares a hook name as safe to export.
+func RegisterProviderHook(h string) { providerHooks.Add(h) }
 
 // routePatterns is the set of route labels, filled during startup.
 //
@@ -107,9 +125,18 @@ func NewEngine() *Engine {
 			set("2xx", "3xx", "4xx", "5xx"),
 		})
 
-	e.Latency = r.NewHistogram("signari_http_request_duration_seconds",
-		"Request latency in seconds.",
-		[]float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10})
+	// By route, from the same closed set as the request counter (3.08): one
+	// histogram over every route averaged a slow token endpoint into the
+	// health checks around it.
+	e.Latency = r.NewHistogramVec("signari_http_request_duration_seconds",
+		"Request latency in seconds, by route pattern.",
+		[]float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		[]string{"route"}, []ValueSet{routePatterns})
+	e.Providers = r.NewCounter("signari_provider_calls_total",
+		"Calls to extension providers by hook and outcome: answered, or why not, "+
+			"and for a failure whether the hook's mode let the decision proceed.",
+		[]string{"hook", "outcome"},
+		[]ValueSet{providerHooks, set(ProviderOutcomes...)})
 
 	e.SignIns = r.NewCounter("signari_signins_total",
 		"Sign-in attempts by outcome.",
@@ -172,7 +199,7 @@ func (e *Engine) Middleware(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
 		next.ServeHTTP(rec, r)
 
-		e.Latency.Observe(time.Since(start).Seconds())
+		e.Latency.Observe(time.Since(start).Seconds(), patternOf(r))
 		e.Requests.Inc(patternOf(r), r.Method, StatusClass(rec.code))
 	})
 }

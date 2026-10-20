@@ -84,6 +84,8 @@ func TestNoMetricLabelCanCarryAnIdentifier(t *testing.T) {
 		e.Tokens.Inc(v)
 		e.AuthFailures.Inc(v)
 		e.Requests.Inc(v, v, v)
+		e.Latency.Observe(0.1, v)
+		e.Providers.Inc(v, v)
 	}
 
 	var b bytes.Buffer
@@ -170,11 +172,42 @@ func TestAnUnboundedLabelIsRefused(t *testing.T) {
 //
 // Not a full parser — a shape check. A malformed exposition is rejected by the
 // scraper as a whole, so one bad line takes out every metric rather than its own.
+// Latency is a series per route pattern, and a route outside the closed set
+// is counted as other (3.08). One histogram over every route averaged a slow
+// token endpoint into the health checks around it.
+func TestLatencyIsLabelledByRoute(t *testing.T) {
+	e := NewEngine()
+	RegisterRoutePattern("/token")
+	e.Latency.Observe(0.4, "/token")
+	e.Latency.Observe(0.002, "/never/registered")
+
+	var b bytes.Buffer
+	e.Registry.Render(&b)
+	out := b.String()
+	for _, want := range []string{
+		`signari_http_request_duration_seconds_bucket{route="/token",le="0.5"} 1`,
+		`signari_http_request_duration_seconds_bucket{route="/token",le="0.25"} 0`,
+		`signari_http_request_duration_seconds_count{route="/token"} 1`,
+		`signari_http_request_duration_seconds_count{route="other"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the exposition lacks %q", want)
+		}
+	}
+	if strings.Contains(out, "/never/registered") {
+		t.Error("a route outside the declared set reached the exposition")
+	}
+}
+
 func TestTheExpositionOutputIsWellFormed(t *testing.T) {
 	e := NewEngine()
 	RegisterRoutePattern("/authorize")
+	RegisterProviderHook("claims")
 	e.SignIns.Inc("succeeded")
-	e.Latency.Observe(0.02)
+	e.Latency.Observe(0.02, "/authorize")
+	e.Providers.Inc("claims", "failed_open")
+	e.Registry.RegisterRuntime()
+	e.Registry.NewInfo("signari_build_info", "build", []string{"version"}, []string{"v1.2.0"})
 
 	var b bytes.Buffer
 	e.Registry.Render(&b)

@@ -86,7 +86,9 @@ flows:
 		t.Fatal(err)
 	}
 
-	refused := strings.Replace(loads, "[password, session]", "[password, {stage: mfa, when: risk_elevated}, session]", 1)
+	// device_managed, which no sign-in answers; this used risk_elevated until
+	// 4.10 answered it.
+	refused := strings.Replace(loads, "[password, session]", "[password, {stage: mfa, when: device_managed}, session]", 1)
 	if _, err := tx.Exec(ctx, `UPDATE core.sign_in_flows SET document = $2 WHERE org_id = $1::uuid`,
 		orgID, refused); err != nil {
 		t.Fatal(err)
@@ -96,7 +98,7 @@ flows:
 		t.Fatal(err)
 	}
 	for _, f := range r.Findings {
-		if strings.Contains(f.Summary, "flows-probe") && strings.Contains(f.Summary, "risk_elevated") {
+		if strings.Contains(f.Summary, "flows-probe") && strings.Contains(f.Summary, "device_managed") {
 			if f.Severity != Critical {
 				t.Errorf("reported as %s, want critical", f.Severity)
 			}

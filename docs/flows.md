@@ -261,23 +261,31 @@ so "every path" is a set that can be walked.
 
 **A flow may branch only on what its journey evaluates.** A condition the
 engine cannot answer would read false every time, so a step-up written as
-`{stage: mfa, when: risk_elevated}` would pass its own tests (which set the
+`{stage: mfa, when: device_managed}` would pass its own tests (which set the
 condition true) and never ask anybody for anything. Such a flow is refused when
 it is parsed, naming the condition: by `signari flow test`, by `signari flow
 apply` and by the engine's load alike.
 
 | `on:` | conditions it evaluates |
 |---|---|
-| `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`, and the four `proved_by_*`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
+| `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`, `risk_elevated`, and the four `proved_by_*`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
 | `enrolment` | `captcha_required`, `prompts_pending` (always false: there is no account yet to have one) |
 | `recovery` | `captcha_required` |
 | `unenrolment` | not judged: nothing walks this designation |
 
-The rest of the list (`user_is_new`, `consent_required`, `risk_elevated`,
+The rest of the list (`user_is_new`, `consent_required`,
 `device_managed`, `device_compliant`, `network_trusted`, `kerberos_available`,
 `migration_pending`, `federated_source`) is part of the language, so a file
 naming one is understood rather than mistaken for a typo, and no journey
 evaluates it yet.
+
+`risk_elevated` holds when the sign-in could not have followed the person's
+last one (impossible travel), or comes from a country they have never signed in
+from. Both need a GeoIP source, `SIGNARI_GEOIP_DB` or `SIGNARI_GEOIP_STATIC`
+(see [configuration](configuration.md)), and history: with neither, nothing
+fires, so a first sign-in, or a deployment with no database, is never stopped
+for want of a signal. `{stage: mfa, when: risk_elevated}` asks for the second
+factor only then. Until October 2026 a sign-in read it false.
 
 A flow stored before this rule existed, or written to the table directly, no
 longer loads. That organisation is served the last flow that loaded, or the

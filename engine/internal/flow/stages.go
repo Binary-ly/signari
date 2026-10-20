@@ -257,7 +257,7 @@ var allConditions = []Condition{
 var answered = map[Designation][]Condition{
 	Authentication: {
 		CondHasSecondFactor, CondHasPasskey, CondPasswordChangeRequired,
-		CondPromptsPending, CondClientRequiresMFA,
+		CondPromptsPending, CondClientRequiresMFA, CondRiskElevated,
 		CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
 	},
 	// No account exists yet, so nothing is pending for it: false is the

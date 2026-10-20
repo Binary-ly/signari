@@ -230,6 +230,10 @@ type signInFacts struct {
 	// amr is what the sign-in proved so far, which answers the proved_by
 	// conditions.
 	amr []string
+	// ip is the person's address, which answers risk_elevated. Empty where
+	// there is no person's request -- a bind, or a question asked before the
+	// walk -- and the condition is then false.
+	ip string
 
 	promptsOnce bool
 	prompts     []prompts.Prompt
@@ -313,6 +317,9 @@ var signInConditions = map[flow.Condition]func(f *signInFacts) bool{
 	},
 	flow.CondClientRequiresMFA: func(f *signInFacts) bool {
 		return clientRequiresMFA(f.authzQuery) || f.authzClientFloorIsMFA()
+	},
+	flow.CondRiskElevated: func(f *signInFacts) bool {
+		return f.s.riskElevated(f.ctx, f.db, f.userID, f.ip)
 	},
 }
 
@@ -409,7 +416,8 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 		return decisionSession
 	}
 
-	facts := &signInFacts{s: s, ctx: ctx, db: tx, orgID: orgID, userID: userID, authzQuery: authzQuery, amr: amr}
+	facts := &signInFacts{s: s, ctx: ctx, db: tx, orgID: orgID, userID: userID, authzQuery: authzQuery,
+		amr: amr, ip: clientIP(r)}
 	// Settled at the sign-in form, before the flow is walked, which is why
 	// Parse lets it guard nothing but the captcha stage.
 	facts.setKnown(flow.CondCaptchaRequired, false)

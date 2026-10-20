@@ -323,7 +323,15 @@ func (s *Server) grantRefusedByPolicy(w http.ResponseWriter, r *http.Request, or
 // signal that fails closed when it cannot be evaluated locks out every
 // first-time user.
 func (s *Server) impossibleTravel(ctx context.Context, userID, ip string) bool {
-	previous, err := store.PreviousAuthLocation(ctx, s.db, userID)
+	return s.impossibleTravelIn(ctx, s.db, userID, ip)
+}
+
+// impossibleTravelIn is impossibleTravel reading through q, for the sign-in
+// walk, which holds a transaction.
+func (s *Server) impossibleTravelIn(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID, ip string) bool {
+	previous, err := store.PreviousAuthLocation(ctx, q, userID)
 	if err != nil {
 		s.log.Error("reading the previous sign-in location", "err", err)
 		return false
@@ -337,4 +345,37 @@ func (s *Server) impossibleTravel(ctx context.Context, userID, ip string) bool {
 			"correlation_id", correlationID(ctx))
 	}
 	return v.Impossible
+}
+
+// riskElevated is the flow's `risk_elevated` (4.10): this sign-in could not
+// have followed the last one, or it comes from a country the person has never
+// signed in from. Both need a GeoIP source (SIGNARI_GEOIP_DB or _STATIC) and
+// history; without either nothing fires, so a first sign-in, or a deployment
+// with no database, is never refused for want of a signal. The language named
+// the condition and the sign-in read it false, so `when: risk_elevated` never
+// asked anybody for anything.
+func (s *Server) riskElevated(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID, ip string) bool {
+	if ip == "" {
+		return false
+	}
+	if s.impossibleTravelIn(ctx, q, userID, ip) {
+		return true
+	}
+	here := s.geo.Resolve(ip)
+	if !here.Known || here.Country == "" {
+		return false
+	}
+	seen, history, err := store.CountrySeen(ctx, q, userID, here.Country)
+	if err != nil {
+		s.log.Error("reading where a person has signed in from", "err", err)
+		return false
+	}
+	if history && !seen {
+		s.log.Warn("a sign-in from a new country", "user_id", userID, "country", here.Country,
+			"correlation_id", correlationID(ctx))
+		return true
+	}
+	return false
 }

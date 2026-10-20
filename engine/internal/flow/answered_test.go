@@ -73,9 +73,11 @@ func TestEveryConditionIsAnsweredOrRefused(t *testing.T) {
 	}
 }
 
-// The deny this row was written about.
-func TestADenyOnRiskIsRefused(t *testing.T) {
-	parseErr(t, `
+// The step-up this row was written about parses now that a sign-in answers
+// risk_elevated (4.10); one on a condition it still does not answer is
+// refused the same way.
+func TestAStepUpOnRiskParsesAndOneOnAnUnansweredConditionIsRefused(t *testing.T) {
+	const doc = `
 version: 1
 flows:
   - name: sign-in
@@ -83,13 +85,15 @@ flows:
     stages:
       - password
       - one_of:
-          - {stage: mfa, when: risk_elevated}
+          - {stage: mfa, when: %s}
           - {stage: prompt}
       - session
     tests:
-      - {name: risky, given: {risk_elevated: true}, expect: [password, mfa, session]}
+      - {name: risky, given: {%s: true}, expect: [password, mfa, session]}
       - {name: calm, given: {}, expect: [password, prompt, session]}
-`, "cannot evaluate risk_elevated yet")
+`
+	mustParse(t, fmt.Sprintf(doc, "risk_elevated", "risk_elevated"))
+	parseErr(t, fmt.Sprintf(doc, "device_managed", "device_managed"), "cannot evaluate device_managed yet")
 }
 
 // A sign-in settles the captcha at the form, so the walk reads

@@ -1747,13 +1747,20 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		return fmt.Errorf("creating connection pool: %w", err)
 	}
 	defer pool.Close()
+	// The background workers draw on a pool of their own, so neither a burst
+	// of requests nor a long sweep can starve the other.
+	workerPool, err := openWorkerPool(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("creating the workers' connection pool: %w", err)
+	}
+	defer workerPool.Close()
 
 	// Re-read them while serving. Without this the set was fixed at startup,
 	// which meant a rotation reached no relying party until every instance was
 	// restarted -- and the publish-then-promote design that makes rotation safe
 	// never actually published anything. Through the pool, which replaces a
 	// connection a failover killed; the startup connection never came back.
-	keyRefresher := &keys.Refresher{DB: pool, InstanceID: instanceID, Root: root, Live: set,
+	keyRefresher := &keys.Refresher{DB: workerPool, InstanceID: instanceID, Root: root, Live: set,
 		Interval: keys.KeyRefreshInterval, Log: log}
 	go keyRefresher.Run(ctx)
 
@@ -1882,14 +1889,14 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// without it being publishable.
 	audit.SetPublisher(store.AuditPublisher)
 
-	go outbox.New(pool, set, issuer, root, log).Run(workerCtx, 2*time.Second)
+	go outbox.New(workerPool, set, issuer, root, log).Run(workerCtx, 2*time.Second)
 
 	// The janitor is likewise a singleton, but it enforces that itself with an
 	// advisory lock rather than by convention -- so it is safe to start on every
 	// node, and there is no separate unit an operator can forget to deploy. The
 	// jobs it runs are the ones whose absence is invisible until it matters:
 	// relying parties never told a session ended, and a table that only grows.
-	go janitor.Run(workerCtx, pool, log, janitor.DefaultInterval)
+	go janitor.Run(workerCtx, workerPool, log, janitor.DefaultInterval)
 
 	// Audit streaming to a logically separate system (ASVS V16.4.3), off unless a
 	// destination is configured. Forwarding authentication events off the box is a
@@ -1897,7 +1904,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	if sink, serr := auditsink.NewFromEnv(os.Getenv, log); serr != nil {
 		return fmt.Errorf("audit streaming: %w", serr)
 	} else if sink != nil {
-		go auditsink.NewPump(pool, sink, log).Run(workerCtx, 10*time.Second)
+		go auditsink.NewPump(workerPool, sink, log).Run(workerCtx, 10*time.Second)
 	}
 
 	// Authenticator model resolution (AAGUID -> "YubiKey 5 NFC"), off unless a

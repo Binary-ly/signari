@@ -174,6 +174,7 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkSchemaLedger(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	checkQueryExecMode(conn, r)
 	checkSchemaPin(r)
 	checkTheme(r)
 
@@ -1310,6 +1311,25 @@ func checkSchemaPin(r *Report) {
 			"--build-arg SIGNARI_SCHEMA_FINGERPRINT=\"$(scripts/schema-fingerprint.sh)\" "+
 			"to docker build. The version counter and the ledger comparison gate an "+
 			"unpinned binary either way.")
+}
+
+// checkQueryExecMode refuses the two query modes the engine does not work in
+// (3.06). They are the ones pgx's own documentation suggests for a proxy such
+// as PgBouncer, and they send parameters without the types the server
+// expects: run with either, the test suites fail on JSON written as bytes
+// ("invalid input syntax for type json") and on an empty identifier sent for
+// a uuid. The describe modes send typed parameters and pass.
+func checkQueryExecMode(conn *pgx.Conn, r *Report) {
+	r.ran("query mode")
+	switch mode := conn.Config().DefaultQueryExecMode; mode {
+	case pgx.QueryExecModeExec, pgx.QueryExecModeSimpleProtocol:
+		r.add(Critical, "database",
+			fmt.Sprintf("SIGNARI_DSN sets default_query_exec_mode=%s, in which the engine's queries "+
+				"fail: JSON it writes is refused as invalid and identifiers it sends empty are "+
+				"refused as uuids", mode),
+			"Behind a transaction-mode pooler use default_query_exec_mode=cache_describe, and "+
+				"connected directly leave it unset. See docs/connection-pooling.md.")
+	}
 }
 
 // checkSchemaLedger compares the live schema, tenant boundary included, with

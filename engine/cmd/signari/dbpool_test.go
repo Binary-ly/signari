@@ -57,6 +57,59 @@ func TestThePoolIsSizedByTheEnvironment(t *testing.T) {
 	}
 }
 
+// The background workers' pool is sized by its own variable, not by the
+// request pool's, and keeps no idle connections (3.06).
+func TestTheWorkersPoolIsSizedApart(t *testing.T) {
+	const dsn = "postgres://u@localhost/db?pool_max_conns=9&pool_min_conns=2"
+	cfg, err := workerPoolConfig(dsn, envOf(map[string]string{
+		"SIGNARI_DB_MAX_CONNS": "40", "SIGNARI_DB_MIN_CONNS": "4", "SIGNARI_DB_MAX_CONN_LIFETIME": "15m",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxConns != defaultWorkerConns || cfg.MinConns != 0 || cfg.MaxConnLifetime != 15*time.Minute {
+		t.Errorf("the workers' pool is max %d min %d lifetime %s, want %d, 0, 15m",
+			cfg.MaxConns, cfg.MinConns, cfg.MaxConnLifetime, defaultWorkerConns)
+	}
+	if got := cfg.ConnConfig.RuntimeParams["application_name"]; got != "signari workers" {
+		t.Errorf("the workers' pool is named %q in pg_stat_activity, want \"signari workers\"", got)
+	}
+	named, err := workerPoolConfig(dsn+"&application_name=idp-eu", envOf(nil))
+	if err != nil || named.ConnConfig.RuntimeParams["application_name"] != "idp-eu workers" {
+		t.Errorf("with the DSN naming the application idp-eu, the workers' pool is named %q (%v)",
+			named.ConnConfig.RuntimeParams["application_name"], err)
+	}
+	cfg, err = workerPoolConfig(dsn, envOf(map[string]string{"SIGNARI_DB_WORKER_MAX_CONNS": "5"}))
+	if err != nil || cfg.MaxConns != 5 {
+		t.Errorf("SIGNARI_DB_WORKER_MAX_CONNS=5 gave %v (%v)", cfg, err)
+	}
+	for _, bad := range []string{"0", "-2", "two"} {
+		if _, err := workerPoolConfig(dsn, envOf(map[string]string{"SIGNARI_DB_WORKER_MAX_CONNS": bad})); err == nil {
+			t.Errorf("SIGNARI_DB_WORKER_MAX_CONNS=%s was accepted", bad)
+		}
+	}
+}
+
+// The workers that run beside the request path draw on their pool, not the
+// request pool. Read from the entrypoint, because a worker handed `pool` by
+// the next edit would compile, pass every test and starve under load.
+func TestTheBackgroundWorkersUseTheirOwnPool(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`keys.Refresher{DB: workerPool,`,
+		`outbox.New(workerPool,`,
+		`janitor.Run(workerCtx, workerPool,`,
+		`auditsink.NewPump(workerPool,`,
+	} {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("main.go no longer has %q: a background worker draws on the request pool", want)
+		}
+	}
+}
+
 // A DSN carrying `pool_max_conns` connects, and the pool `serve` opens from it
 // has the size it names.
 func TestADSNWithPoolSettingsConnects(t *testing.T) {

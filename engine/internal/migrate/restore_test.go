@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -86,6 +87,14 @@ func dsnFor(t *testing.T, database string) string {
 		t.Fatal(err)
 	}
 	u.Path = "/" + database
+	// pg_dump refuses the parameters only pgx reads.
+	q := u.Query()
+	for k := range q {
+		if k == "default_query_exec_mode" || strings.HasSuffix(k, "_cache_capacity") || strings.HasPrefix(k, "pool_") {
+			q.Del(k)
+		}
+	}
+	u.RawQuery = q.Encode()
 	return u.String()
 }
 

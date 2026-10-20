@@ -36,6 +36,50 @@ func openPool(ctx context.Context, conn *pgx.Conn) (*pgxpool.Pool, error) {
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
 
+// defaultWorkerConns is the background workers' pool: the outbox, the
+// janitor, the audit-sink pump and the key refresher, which each hold one
+// connection at a time.
+const defaultWorkerConns = 3
+
+// openWorkerPool opens the background workers' own pool on the same database
+// (3.06). They shared the request pool, so a burst of sign-ins left the outbox
+// waiting for a connection to deliver the logout notices that end sessions
+// elsewhere, and a long janitor pass held connections requests were waiting
+// for. Sized by SIGNARI_DB_WORKER_MAX_CONNS, with the same connection ages as
+// the request pool.
+func openWorkerPool(ctx context.Context, conn *pgx.Conn) (*pgxpool.Pool, error) {
+	cfg, err := workerPoolConfig(conn.Config().ConnString(), os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	return pgxpool.NewWithConfig(ctx, cfg)
+}
+
+func workerPoolConfig(dsn string, getenv func(string) string) (*pgxpool.Config, error) {
+	cfg, err := poolConfig(dsn, func(k string) string {
+		switch k {
+		case "SIGNARI_DB_MAX_CONNS", "SIGNARI_DB_MIN_CONNS":
+			return ""
+		}
+		return getenv(k)
+	})
+	if err != nil {
+		return nil, err
+	}
+	cfg.MaxConns, cfg.MinConns = defaultWorkerConns, 0
+	// Named apart in pg_stat_activity, so which pool holds the connections
+	// is a query away.
+	cfg.ConnConfig.RuntimeParams["application_name"] += " workers"
+	if v := getenv("SIGNARI_DB_WORKER_MAX_CONNS"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("SIGNARI_DB_WORKER_MAX_CONNS=%q: want a whole number of at least 1", v)
+		}
+		cfg.MaxConns = int32(n)
+	}
+	return cfg, nil
+}
+
 // poolConfig reads the pool's size and connection ages.
 //
 // A variable set wins over the DSN, because it is the control this page
@@ -47,6 +91,9 @@ func poolConfig(dsn string, getenv func(string) string) (*pgxpool.Config, error)
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.ConnConfig.RuntimeParams["application_name"] == "" {
+		cfg.ConnConfig.RuntimeParams["application_name"] = "signari"
 	}
 	if v := getenv("SIGNARI_DB_MAX_CONNS"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 32)

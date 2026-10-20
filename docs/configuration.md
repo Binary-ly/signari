@@ -105,6 +105,7 @@ a remote desktop is bounded by its session checks instead.
 | `SIGNARI_DB_MIN_CONNS` | Connections the pool keeps open while idle. Default 0. Must not exceed the maximum |
 | `SIGNARI_DB_MAX_CONN_LIFETIME` | How long a connection lives before it is replaced, as a Go duration (`30m`). Default `1h` |
 | `SIGNARI_DB_MAX_CONN_IDLE` | How long an idle connection is kept, as a Go duration (`5m`). Default `30m` |
+| `SIGNARI_DB_WORKER_MAX_CONNS` | The most connections the background workers' own pool holds: the outbox, the janitor, the audit-sink pump and the key refresher. Default 3. It keeps none idle and takes its connection ages from the two settings above. A node opens up to this plus `SIGNARI_DB_MAX_CONNS`. See [connection-pooling.md](connection-pooling.md) |
 
 The DSN's own `pool_max_conns`, `pool_min_conns`, `pool_max_conn_lifetime` and
 `pool_max_conn_idle_time` work too, and a variable here wins over them. A value

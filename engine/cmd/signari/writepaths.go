@@ -41,6 +41,7 @@ import (
 	"os"
 	"os/user"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -149,7 +150,7 @@ func userLocale(ctx context.Context, conn *pgx.Conn, orgID, email, tag string) e
 // AAGUID is chosen by the authenticator being filtered. Filtering on a value the
 // filtered party supplies is not a filter, and the constraint says so rather
 // than leaving it to whoever reads the column next.
-func webauthnPolicySet(ctx context.Context, conn *pgx.Conn, orgID, conveyance, list string, refuseCloned bool) error {
+func webauthnPolicySet(ctx context.Context, conn *pgx.Conn, orgID string, want store.WebAuthnPolicy) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
@@ -158,9 +159,7 @@ func webauthnPolicySet(ctx context.Context, conn *pgx.Conn, orgID, conveyance, l
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	p, err := store.SetWebAuthnPolicy(ctx, tx, orgID, store.WebAuthnPolicy{
-		Conveyance: conveyance, AllowedAAGUIDs: strings.Split(list, ","), RefuseCloned: refuseCloned,
-	})
+	p, err := store.SetWebAuthnPolicy(ctx, tx, orgID, want)
 	if err != nil {
 		return err
 	}
@@ -168,12 +167,25 @@ func webauthnPolicySet(ctx context.Context, conn *pgx.Conn, orgID, conveyance, l
 		return err
 	}
 	ids := p.AllowedAAGUIDs
+	conveyance := p.Conveyance
 
 	fmt.Printf("attestation conveyance: %s\n", conveyance)
-	if refuseCloned {
+	if p.RefuseCloned {
 		fmt.Println("cloned authenticators : refused (a signature counter that did not advance)")
 	} else {
 		fmt.Println("cloned authenticators : RECORDED AND ADMITTED -- a copied key signs in")
+	}
+	if p.UserVerification == "required" {
+		fmt.Println("user verification     : required -- a passkey sign-in is multi-factor")
+	} else {
+		fmt.Println("user verification     : preferred -- a key without a PIN or biometric signs in, single-factor")
+	}
+	fmt.Printf("resident key          : %s\n", p.ResidentKey)
+	fmt.Printf("attachment            : %s\n", map[bool]string{true: "any", false: p.Attachment}[p.Attachment == ""])
+	fmt.Printf("algorithms            : %s\n", algorithmNames(p.Algorithms))
+	fmt.Printf("ceremony timeout      : %ds\n", p.TimeoutSeconds)
+	if len(p.Hints) > 0 {
+		fmt.Printf("hints                 : %s\n", strings.Join(p.Hints, ", "))
 	}
 	if len(ids) == 0 {
 		fmt.Println("allow-list            : empty -- every authenticator is accepted")
@@ -191,10 +203,52 @@ func webauthnPolicySet(ctx context.Context, conn *pgx.Conn, orgID, conveyance, l
 	return nil
 }
 
+// coseAlgorithms names the COSE algorithms a policy may offer.
+var coseAlgorithms = []struct {
+	name string
+	id   int
+}{{"ES256", -7}, {"ES384", -35}, {"ES512", -36}, {"RS256", -257}, {"RS384", -258},
+	{"RS512", -259}, {"PS256", -37}, {"PS384", -38}, {"PS512", -39}, {"EdDSA", -8}}
+
+// webauthnAlgorithms reads -algorithms: names or COSE numbers, in order.
+// Empty is the default, all of them.
+func webauthnAlgorithms(s string) ([]int, error) {
+	var out []int
+	for _, a := range splitList(s) {
+		found := false
+		for _, c := range coseAlgorithms {
+			if strings.EqualFold(a, c.name) || a == strconv.Itoa(c.id) {
+				out, found = append(out, c.id), true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("-algorithms: %q is not one of ES256, ES384, ES512, RS256, "+
+				"RS384, RS512, PS256, PS384, PS512, EdDSA", a)
+		}
+	}
+	return out, nil
+}
+
+func algorithmNames(ids []int) string {
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		name := strconv.Itoa(id)
+		for _, c := range coseAlgorithms {
+			if c.id == id {
+				name = c.name
+			}
+		}
+		names = append(names, name)
+	}
+	return strings.Join(names, ",")
+}
+
 // webauthnPolicyShow prints every organisation's authenticator policy.
 func webauthnPolicyShow(ctx context.Context, conn *pgx.Conn) error {
 	rows, err := conn.Query(ctx, `
-		SELECT o.slug, p.attestation_conveyance, p.allowed_aaguids::text[], p.refuse_cloned
+		SELECT o.slug, p.attestation_conveyance, p.allowed_aaguids::text[], p.refuse_cloned,
+		       p.user_verification, p.resident_key, p.attachment, p.algorithms, p.timeout_s
 		FROM core.webauthn_policy p
 		JOIN core.organizations o ON o.id = p.org_id
 		ORDER BY o.slug`)
@@ -203,13 +257,16 @@ func webauthnPolicyShow(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-24s %-14s %-9s %s\n", "ORGANISATION", "ATTESTATION", "CLONED", "ALLOWED MODELS")
+	fmt.Printf("%-24s %-14s %-9s %-10s %-12s %-15s %-18s %-8s %s\n", "ORGANISATION", "ATTESTATION",
+		"CLONED", "UV", "RESIDENT KEY", "ATTACHMENT", "ALGORITHMS", "TIMEOUT", "ALLOWED MODELS")
 	var n int
 	for rows.Next() {
-		var slug, conveyance string
+		var slug, conveyance, uv, rk, attach string
 		var ids []string
+		var algs []int
 		var refuse bool
-		if err := rows.Scan(&slug, &conveyance, &ids, &refuse); err != nil {
+		var timeout int
+		if err := rows.Scan(&slug, &conveyance, &ids, &refuse, &uv, &rk, &attach, &algs, &timeout); err != nil {
 			return err
 		}
 		allowed := "any"
@@ -220,7 +277,11 @@ func webauthnPolicyShow(ctx context.Context, conn *pgx.Conn) error {
 		if !refuse {
 			cloned = "ADMITTED"
 		}
-		fmt.Printf("%-24s %-14s %-9s %s\n", slug, conveyance, cloned, allowed)
+		if attach == "" {
+			attach = "any"
+		}
+		fmt.Printf("%-24s %-14s %-9s %-10s %-12s %-15s %-18s %-8s %s\n", slug, conveyance, cloned, uv, rk,
+			attach, algorithmNames(algs), fmt.Sprintf("%ds", timeout), allowed)
 		n++
 	}
 	if err := rows.Err(); err != nil {

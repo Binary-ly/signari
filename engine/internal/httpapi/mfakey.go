@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"net/http"
+	"slices"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/passkeys"
+	"signari.dev/engine/internal/store"
 )
 
 // A security key or passkey as the second factor, after a password.
@@ -56,7 +58,13 @@ func (s *Server) handleMFAKeyBegin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "passkeys_unavailable", "unavailable")
 		return
 	}
-	assertion, sd, err := rp.BeginSecondFactor(u)
+	// The policy's hints and timeout; its user verification is not consulted,
+	// because a key after a password only proves possession (BeginSecondFactor).
+	policy, perr := store.LoadWebAuthnPolicy(ctx, s.db, pending.OrgID)
+	if perr != nil {
+		s.log.Error("loading the WebAuthn policy", "org_id", pending.OrgID, "err", perr)
+	}
+	assertion, sd, err := rp.BeginSecondFactor(u, ceremonyFor(policy), keyAlreadyProved(pending.AMR))
 	if err != nil {
 		s.log.Error("beginning a second-factor assertion", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
@@ -118,9 +126,17 @@ func (s *Server) finishMFAKey(w http.ResponseWriter, r *http.Request, pending *p
 		s.renderMFA(w, r, pending.Subject, pending.Authz, "Something went wrong. Please try again.")
 		return
 	}
-	cred, err := rp.FinishSecondFactor(u, *sd, assertion)
+	cred, verified, err := rp.FinishSecondFactor(u, *sd, assertion)
 	if err != nil {
 		refuse("rejected", passkeys.Reason(err))
+		return
+	}
+	// A passkey sign-in that did not verify its user, under a policy that
+	// only prefers it, reaches this page with one factor. The same key, or any
+	// key, touched again is that factor again; with a PIN or biometric it is a
+	// second. The ceremony asked for one, and this is what holds it.
+	if keyAlreadyProved(pending.AMR) && !verified {
+		refuse("unverified_after_key", "")
 		return
 	}
 
@@ -147,15 +163,25 @@ func (s *Server) finishMFAKey(w http.ResponseWriter, r *http.Request, pending *p
 	}
 
 	// What the key proved: presence, on a device-bound or a synced credential.
-	// Not whether it verified the user: the library reports the credential's
-	// record there, not this assertion, and the step does not ask for it. The
-	// combination is two factors whatever the key did, so AMRMFA is appended,
-	// as for a code (handleMFAPost).
+	// After a password the combination is two factors whatever the key did, so
+	// AMRMFA is appended, as for a code (handleMFAPost); after a key, the check
+	// above made this one verify.
 	key := []string{oauth.AMRUserPresence, oauth.AMRHardwareKey}
 	if cred.Flags.BackupEligible {
 		key[1] = "swk"
 	}
-	full := append(append(append([]string{}, pending.AMR...), key...), oauth.AMRMFA)
+	full := append([]string{}, pending.AMR...)
+	for _, m := range append(key, oauth.AMRMFA) {
+		if !slices.Contains(full, m) {
+			full = append(full, m)
+		}
+	}
 	s.rememberThisDevice(ctx, w, r, tx, pending.Subject, pending.OrgID)
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, full, pending.Authz)
+}
+
+// keyAlreadyProved reports a sign-in whose first factor was a key: the
+// passkey ceremony records `user` with `hwk` or `swk`.
+func keyAlreadyProved(amr []string) bool {
+	return slices.Contains(amr, oauth.AMRHardwareKey) || slices.Contains(amr, "swk")
 }

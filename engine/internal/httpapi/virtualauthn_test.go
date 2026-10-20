@@ -56,6 +56,9 @@ type ceremonyParts struct {
 	// SELF-attestation, signed by the new credential's own key, which proves
 	// nothing about the model it names.
 	Format string
+	// Extensions are the browser's clientExtensionResults, empty unless a test
+	// reports one, e.g. credProps.
+	Extensions map[string]any
 }
 
 const (
@@ -198,10 +201,13 @@ func (a *virtualAuthenticator) create(t *testing.T, options []byte, bend ...func
 	if err != nil {
 		t.Fatal(err)
 	}
+	if p.Extensions == nil {
+		p.Extensions = map[string]any{}
+	}
 	body, err := json.Marshal(map[string]any{
 		"id": b64(p.CredID), "rawId": b64(p.CredID), "type": "public-key",
 		"authenticatorAttachment": "platform",
-		"clientExtensionResults":  map[string]any{},
+		"clientExtensionResults":  p.Extensions,
 		"response": map[string]any{
 			"clientDataJSON":    b64(cdj),
 			"attestationObject": b64(object),

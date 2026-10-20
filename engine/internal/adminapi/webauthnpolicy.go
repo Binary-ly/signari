@@ -24,6 +24,14 @@ type webauthnPolicyBody struct {
 	// RefuseCloned is a pointer so an absent field means the default, on,
 	// rather than false.
 	RefuseCloned *bool `json:"refuse_cloned"`
+	// The ceremony (migration 0170). A field left out takes its default, as
+	// the whole policy is written each time.
+	UserVerification string   `json:"user_verification"`
+	ResidentKey      string   `json:"resident_key"`
+	Attachment       string   `json:"attachment"`
+	Algorithms       []int    `json:"algorithms"`
+	TimeoutSeconds   int      `json:"timeout_seconds"`
+	Hints            []string `json:"hints"`
 }
 
 func (s *Server) getWebAuthnPolicy(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +59,9 @@ func (s *Server) putWebAuthnPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	want := store.WebAuthnPolicy{Conveyance: req.Attestation, AllowedAAGUIDs: req.AllowedModels,
-		RefuseCloned: req.RefuseCloned == nil || *req.RefuseCloned}
+		RefuseCloned:     req.RefuseCloned == nil || *req.RefuseCloned,
+		UserVerification: req.UserVerification, ResidentKey: req.ResidentKey, Attachment: req.Attachment,
+		Algorithms: req.Algorithms, TimeoutSeconds: req.TimeoutSeconds, Hints: req.Hints}
 	if want.Conveyance == "" {
 		want.Conveyance = "none"
 	}
@@ -70,8 +80,7 @@ func (s *Server) putWebAuthnPolicy(w http.ResponseWriter, r *http.Request) {
 		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.webauthn_policy_set", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
-			Detail: map[string]any{"attestation": saved.Conveyance,
-				"allowed_aaguids": saved.AllowedAAGUIDs, "refuse_cloned": saved.RefuseCloned},
+			Detail: policyJSON(saved),
 		})
 	})
 	switch {
@@ -99,5 +108,7 @@ func policyJSON(p store.WebAuthnPolicy) map[string]any {
 	if ids == nil {
 		ids = []string{}
 	}
-	return map[string]any{"attestation": p.Conveyance, "allowed_aaguids": ids, "refuse_cloned": p.RefuseCloned}
+	return map[string]any{"attestation": p.Conveyance, "allowed_aaguids": ids, "refuse_cloned": p.RefuseCloned,
+		"user_verification": p.UserVerification, "resident_key": p.ResidentKey, "attachment": p.Attachment,
+		"algorithms": p.Algorithms, "timeout_seconds": p.TimeoutSeconds, "hints": p.Hints}
 }

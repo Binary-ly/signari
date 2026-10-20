@@ -221,7 +221,7 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 		s.log.Error("loading the WebAuthn policy", "org_id", orgID, "err", perr)
 	}
 
-	creation, sd, err := rp.BeginRegistration(u, policy.Conveyance)
+	creation, sd, err := rp.BeginRegistration(u, ceremonyFor(policy))
 	if err != nil {
 		s.log.Error("beginning registration", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
@@ -285,7 +285,21 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	cred, err := rp.FinishRegistration(u, *sd, r)
+	policy, perr := store.LoadWebAuthnPolicy(ctx, s.db, orgID)
+	if perr != nil {
+		// Fail CLOSED here, unlike at BeginRegistration. There the fallback only
+		// decided what to ask for; here it decides whether to accept, and
+		// accepting because a policy could not be read is how an approved-device
+		// requirement quietly stops applying.
+		s.log.Error("loading the WebAuthn policy", "org_id", orgID, "err", perr)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+
+	// The algorithms, the timeout and user verification are held to what the
+	// ceremony was begun with, which the session records; the policy read here
+	// says only whether a resident key was required.
+	cred, discoverable, err := rp.FinishRegistration(u, *sd, r, ceremonyFor(policy))
 	if err != nil {
 		// Logged with the reason, returned without it: attestation failures are
 		// detailed and would tell an attacker exactly which check they tripped.
@@ -318,16 +332,6 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	policy, perr := store.LoadWebAuthnPolicy(ctx, s.db, orgID)
-	if perr != nil {
-		// Fail CLOSED here, unlike at BeginRegistration. There the fallback only
-		// decided what to ask for; here it decides whether to accept, and
-		// accepting because a policy could not be read is how an approved-device
-		// requirement quietly stops applying.
-		s.log.Error("loading the WebAuthn policy", "org_id", orgID, "err", perr)
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
-	}
 	// Asked for and not received. NOT a refusal: with conveyance `direct` the
 	// browser may still return none — the user is entitled to decline the
 	// attestation prompt — and refusing would lock somebody out of enrolment for
@@ -376,15 +380,15 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		name = "Passkey"
 	}
 
-	// Every credential this server creates is discoverable: BeginRegistration
-	// passes ResidentKey: ResidentKeyRequirementRequired. That is a fact about
-	// our configuration, so it is written as one rather than inferred from a
-	// flag that means something else -- which is exactly what happened here
-	// before, when cred.Flags.BackupEligible was passed into the `discoverable`
-	// parameter and stored in is_discoverable.
+	// Discoverable when the policy required a resident key, which the
+	// authenticator must then make or fail, and otherwise as the browser
+	// reported it through credProps. Never inferred from a flag that means
+	// something else -- which is exactly what happened here before, when
+	// cred.Flags.BackupEligible was passed into the `discoverable` parameter
+	// and stored in is_discoverable.
 	if err := store.SaveCredential(ctx, tx, userID, orgID, rp.RPID(),
 		cred.ID, cred.PublicKey, cred.Authenticator.AAGUID, cred.Authenticator.SignCount,
-		true, cred.Flags.BackupEligible, cred.Flags.BackupState,
+		discoverable, cred.Flags.BackupEligible, cred.Flags.BackupState,
 		transports, cred.AttestationType, name); err != nil {
 		s.log.Error("saving credential", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
@@ -512,7 +516,13 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	assertion, sd, err := rp.BeginDiscoverableLogin()
+	// As at registration, an unreadable policy asks for the default, which
+	// requires user verification: the stricter request.
+	policy, perr := store.LoadWebAuthnPolicy(ctx, s.db, orgID)
+	if perr != nil {
+		s.log.Error("loading the WebAuthn policy", "org_id", orgID, "err", perr)
+	}
+	assertion, sd, err := rp.BeginDiscoverableLogin(ceremonyFor(policy))
 	if err != nil {
 		s.log.Error("beginning discoverable login", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
@@ -593,7 +603,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 		return u, nil
 	}
 
-	cred, err := rp.FinishDiscoverableLogin(handler, *sd, r)
+	cred, verified, err := rp.FinishDiscoverableLogin(handler, *sd, r)
 	if err != nil {
 		s.log.Info("passkey assertion rejected", "err", passkeys.Reason(err))
 		s.auditDetached(ctx, audit.Event{
@@ -645,7 +655,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	s.completeSignIn(w, r, tx, resolvedUser, resolvedOrg, amrForPasskey(cred), r.URL.Query().Get("authz"))
+	s.completeSignIn(w, r, tx, resolvedUser, resolvedOrg, amrForPasskey(cred, verified), r.URL.Query().Get("authz"))
 }
 
 // recordAssertion stores what a verified assertion changed about its
@@ -734,21 +744,31 @@ func (s *Server) recordAssertion(ctx context.Context, tx pgx.Tx, cred *webauthn.
 //     passkey lives in a keychain across devices and is software-backed; a
 //     device-bound one is hardware. Claiming `hwk` for a synced credential
 //     overstates what the user physically holds.
-//   - `mfa` ONLY when the authenticator reports user verification. That flag is
+//   - `mfa` ONLY when this assertion reports user verification. That flag is
 //     what distinguishes "someone touched this device" from "the device checked
 //     a biometric or PIN first" -- one factor versus two. Without the check, a
-//     tapped security key would satisfy an MFA requirement.
-func amrForPasskey(cred *webauthn.Credential) []string {
+//     tapped security key would satisfy an MFA requirement. It is verified, the
+//     assertion's own flag, never cred.Flags.UserVerified: the library latches
+//     that one from the stored record, so under a policy that only prefers
+//     verification it would be true for a tap.
+func amrForPasskey(cred *webauthn.Credential, verified bool) []string {
 	amr := []string{"user"}
 	if cred.Flags.BackupEligible {
 		amr = append(amr, "swk")
 	} else {
 		amr = append(amr, "hwk")
 	}
-	if cred.Flags.UserVerified {
+	if verified {
 		amr = append(amr, "mfa")
 	}
 	return amr
+}
+
+// ceremonyFor is what an organisation's policy asks of an authenticator.
+func ceremonyFor(p store.WebAuthnPolicy) passkeys.Ceremony {
+	return passkeys.Ceremony{Conveyance: p.Conveyance, UserVerification: p.UserVerification,
+		ResidentKey: p.ResidentKey, Attachment: p.Attachment, Algorithms: p.Algorithms,
+		Timeout: time.Duration(p.TimeoutSeconds) * time.Second, Hints: p.Hints}
 }
 
 // userByHandle resolves the 64-byte user handle from a signed assertion.

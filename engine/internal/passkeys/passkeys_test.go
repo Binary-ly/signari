@@ -3,6 +3,7 @@ package passkeys
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
 )
@@ -98,7 +99,8 @@ func TestLocalhostGetsPlaintextAndNothingElseDoes(t *testing.T) {
 	}
 }
 
-// Registration policy: resident keys and user verification are both REQUIRED.
+// Registration policy by default: resident keys and user verification are both
+// REQUIRED.
 //
 // Without resident keys there is no conditional UI, so the user must type an
 // identifier before the browser offers their passkey -- removing most of the
@@ -111,7 +113,7 @@ func TestRegistrationRequiresResidentKeyAndUserVerification(t *testing.T) {
 	}
 	u := &User{ID: make([]byte, 64), Name: "alice@example.test", DisplayName: "Alice"}
 
-	creation, session, err := rp.BeginRegistration(u, "")
+	creation, session, err := rp.BeginRegistration(u, DefaultCeremony)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,13 +132,48 @@ func TestRegistrationRequiresResidentKeyAndUserVerification(t *testing.T) {
 	}
 }
 
+// The organisation's timeout is what the browser is told and how long the
+// challenge is held: the library refuses a finish after Expires.
+func TestTheCeremonyTimeoutBoundsTheChallenge(t *testing.T) {
+	rp, err := New("localhost", "Signari", "http://localhost:9411", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := &User{ID: make([]byte, 64), Name: "alice", DisplayName: "Alice"}
+	c := DefaultCeremony
+	c.Timeout = 30 * time.Second
+
+	creation, sd, err := rp.BeginRegistration(u, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertion, ad, err := rp.BeginDiscoverableLogin(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string]struct {
+		ms      int
+		expires time.Time
+	}{
+		"registration": {creation.Response.Timeout, sd.Expires},
+		"sign-in":      {assertion.Response.Timeout, ad.Expires},
+	} {
+		if got.ms != 30000 {
+			t.Errorf("%s told the browser %dms, want 30000", name, got.ms)
+		}
+		if left := time.Until(got.expires); left < 28*time.Second || left > 31*time.Second {
+			t.Errorf("%s holds its challenge for %s, want 30s", name, left)
+		}
+	}
+}
+
 // Re-registering the SAME authenticator must be excluded, or one device produces
 // two credential rows and silently satisfies the two-credential rule on its own.
 func TestExistingCredentialsAreExcluded(t *testing.T) {
 	rp, _ := New("localhost", "Signari", "http://localhost:9411", nil)
 	u := &User{ID: make([]byte, 64), Name: "alice", DisplayName: "Alice"}
 
-	creation, _, err := rp.BeginRegistration(u, "")
+	creation, _, err := rp.BeginRegistration(u, DefaultCeremony)
 	if err != nil {
 		t.Fatal(err)
 	}

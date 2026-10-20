@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -28,11 +29,80 @@ type WebAuthnPolicy struct {
 	// the sign of a copied authenticator. On unless the organisation turned it
 	// off (migration 0143).
 	RefuseCloned bool
+
+	// The ceremony (migration 0170). UserVerification is required or
+	// preferred at a passkey sign-in; ResidentKey is required, preferred or
+	// discouraged at registration; Attachment is empty (any), platform or
+	// cross-platform; Algorithms are COSE identifiers in preference order;
+	// Timeout is in seconds; Hints are WebAuthn's security-key, client-device
+	// and hybrid.
+	UserVerification string
+	ResidentKey      string
+	Attachment       string
+	Algorithms       []int
+	TimeoutSeconds   int
+	Hints            []string
 }
+
+// WebAuthnAlgorithms are the COSE algorithms a policy may offer, in the order
+// registration offered them before there was a policy (go-webauthn's
+// CredentialParametersDefault): ES256, ES384, ES512, RS256, RS384, RS512,
+// PS256, PS384, PS512, EdDSA. Asymmetric only, as everywhere, and not RS1.
+var WebAuthnAlgorithms = []int{-7, -35, -36, -257, -258, -259, -37, -38, -39, -8}
 
 // DefaultWebAuthnPolicy is what an organisation with no row gets.
 func DefaultWebAuthnPolicy() WebAuthnPolicy {
-	return WebAuthnPolicy{Conveyance: "none", RefuseCloned: true}
+	return WebAuthnPolicy{Conveyance: "none", RefuseCloned: true,
+		UserVerification: "required", ResidentKey: "required", Attachment: "",
+		Algorithms: slices.Clone(WebAuthnAlgorithms), TimeoutSeconds: 300, Hints: []string{}}
+}
+
+// checkCeremony refuses ceremony settings outside what the schema holds,
+// filling empty ones with the defaults.
+func (p *WebAuthnPolicy) checkCeremony() error {
+	d := DefaultWebAuthnPolicy()
+	if p.UserVerification == "" {
+		p.UserVerification = d.UserVerification
+	}
+	if p.ResidentKey == "" {
+		p.ResidentKey = d.ResidentKey
+	}
+	if len(p.Algorithms) == 0 {
+		p.Algorithms = d.Algorithms
+	}
+	if p.TimeoutSeconds == 0 {
+		p.TimeoutSeconds = d.TimeoutSeconds
+	}
+	if p.Hints == nil {
+		p.Hints = []string{}
+	}
+	switch {
+	case p.UserVerification != "required" && p.UserVerification != "preferred":
+		return fmt.Errorf("%w: user verification must be required or preferred, not %q",
+			ErrInvalidWebAuthnPolicy, p.UserVerification)
+	case p.ResidentKey != "required" && p.ResidentKey != "preferred" && p.ResidentKey != "discouraged":
+		return fmt.Errorf("%w: resident key must be required, preferred or discouraged, not %q",
+			ErrInvalidWebAuthnPolicy, p.ResidentKey)
+	case p.Attachment != "" && p.Attachment != "platform" && p.Attachment != "cross-platform":
+		return fmt.Errorf("%w: attachment must be platform, cross-platform or empty for any, not %q",
+			ErrInvalidWebAuthnPolicy, p.Attachment)
+	case p.TimeoutSeconds < 30 || p.TimeoutSeconds > 300:
+		return fmt.Errorf("%w: the timeout must be 30 to 300 seconds, not %d",
+			ErrInvalidWebAuthnPolicy, p.TimeoutSeconds)
+	}
+	for _, a := range p.Algorithms {
+		if !slices.Contains(WebAuthnAlgorithms, a) {
+			return fmt.Errorf("%w: COSE algorithm %d is not one a policy may offer (%v)",
+				ErrInvalidWebAuthnPolicy, a, WebAuthnAlgorithms)
+		}
+	}
+	for _, h := range p.Hints {
+		if h != "security-key" && h != "client-device" && h != "hybrid" {
+			return fmt.Errorf("%w: hint %q is not security-key, client-device or hybrid",
+				ErrInvalidWebAuthnPolicy, h)
+		}
+	}
+	return nil
 }
 
 // ErrInvalidWebAuthnPolicy wraps every reason a policy is refused.
@@ -67,14 +137,27 @@ func SetWebAuthnPolicy(ctx context.Context, tx pgx.Tx, orgID string, p WebAuthnP
 			ErrInvalidWebAuthnPolicy)
 	}
 	p.AllowedAAGUIDs = ids
+	if err := p.checkCeremony(); err != nil {
+		return p, err
+	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.webauthn_policy (org_id, attestation_conveyance, allowed_aaguids, refuse_cloned)
-		VALUES ($1::uuid, $2, $3::uuid[], $4)
+		INSERT INTO core.webauthn_policy (org_id, attestation_conveyance, allowed_aaguids, refuse_cloned,
+		                                  user_verification, resident_key, attachment, algorithms,
+		                                  timeout_s, hints)
+		VALUES ($1::uuid, $2, $3::uuid[], $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (org_id) DO UPDATE
 		   SET attestation_conveyance = EXCLUDED.attestation_conveyance,
 		       allowed_aaguids        = EXCLUDED.allowed_aaguids,
 		       refuse_cloned          = EXCLUDED.refuse_cloned,
-		       updated_at             = now()`, orgID, p.Conveyance, ids, p.RefuseCloned); err != nil {
+		       user_verification      = EXCLUDED.user_verification,
+		       resident_key           = EXCLUDED.resident_key,
+		       attachment             = EXCLUDED.attachment,
+		       algorithms             = EXCLUDED.algorithms,
+		       timeout_s              = EXCLUDED.timeout_s,
+		       hints                  = EXCLUDED.hints,
+		       updated_at             = now()`, orgID, p.Conveyance, ids, p.RefuseCloned,
+		p.UserVerification, p.ResidentKey, p.Attachment, p.Algorithms, p.TimeoutSeconds,
+		p.Hints); err != nil {
 		return p, err
 	}
 	return p, nil
@@ -95,11 +178,11 @@ func LoadWebAuthnPolicy(ctx context.Context, q interface {
 	var aaguids []string
 	err := q.QueryRow(ctx, `
 		SELECT attestation_conveyance, refuse_cloned,
-		       COALESCE(array_agg(a::text) FILTER (WHERE a IS NOT NULL), '{}')
+		       COALESCE((SELECT array_agg(a::text) FROM unnest(allowed_aaguids) AS a), '{}'),
+		       user_verification, resident_key, attachment, algorithms, timeout_s, hints
 		FROM core.webauthn_policy
-		LEFT JOIN LATERAL unnest(allowed_aaguids) AS a ON true
-		WHERE org_id = $1::uuid
-		GROUP BY attestation_conveyance, refuse_cloned`, orgID).Scan(&p.Conveyance, &p.RefuseCloned, &aaguids)
+		WHERE org_id = $1::uuid`, orgID).Scan(&p.Conveyance, &p.RefuseCloned, &aaguids,
+		&p.UserVerification, &p.ResidentKey, &p.Attachment, &p.Algorithms, &p.TimeoutSeconds, &p.Hints)
 	switch {
 	case err == pgx.ErrNoRows:
 		return DefaultWebAuthnPolicy(), nil

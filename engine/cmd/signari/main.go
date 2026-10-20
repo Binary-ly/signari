@@ -607,6 +607,23 @@ func run(args []string) (err error) {
 	refuseCloned := fs.Bool("refuse-cloned", true,
 		"`webauthn policy`: refuse a passkey whose signature counter did not advance, the sign "+
 			"of a copied authenticator (false records it and signs the person in)")
+	userVerification := fs.String("user-verification", "required",
+		"`webauthn policy`: at a passkey sign-in, required (a PIN or biometric; the sign-in is "+
+			"multi-factor) or preferred (a key without one signs in, single-factor)")
+	residentKey := fs.String("resident-key", "required",
+		"`webauthn policy`: at registration, required (usernameless sign-in), preferred or discouraged")
+	attachment := fs.String("attachment", "",
+		"`webauthn policy`: the kind of authenticator the browser offers at registration: "+
+			"platform, cross-platform, or empty for any")
+	webauthnAlgs := fs.String("algorithms", "",
+		"`webauthn policy`: the signature algorithms offered at registration, in preference "+
+			"order, from ES256, ES384, ES512, RS256, RS384, RS512, PS256, PS384, PS512, EdDSA "+
+			"(empty offers all of them, in that order)")
+	ceremonyTimeout := fs.Duration("ceremony-timeout", 5*time.Minute,
+		"`webauthn policy`: how long the browser waits for the authenticator and the challenge "+
+			"is held, 30s to 5m")
+	webauthnHints := fs.String("hints", "",
+		"`webauthn policy`: comma-separated hints for the browser: security-key, client-device, hybrid")
 	upstreamClaim := fs.String("claim", "",
 		"claim name as the upstream provider spells it, e.g. department")
 	localAttribute := fs.String("attribute", "",
@@ -882,7 +899,18 @@ func run(args []string) (err error) {
 	case "instance remember-device":
 		return instanceRememberDevice(ctx, conn, *orgID, *rememberDays)
 	case "webauthn policy":
-		return webauthnPolicySet(ctx, conn, *orgID, *attestation, *aaguids, *refuseCloned)
+		algs, err := webauthnAlgorithms(*webauthnAlgs)
+		if err != nil {
+			return err
+		}
+		if *ceremonyTimeout%time.Second != 0 {
+			return fmt.Errorf("-ceremony-timeout is held in whole seconds, not %s", *ceremonyTimeout)
+		}
+		return webauthnPolicySet(ctx, conn, *orgID, store.WebAuthnPolicy{
+			Conveyance: *attestation, AllowedAAGUIDs: strings.Split(*aaguids, ","), RefuseCloned: *refuseCloned,
+			UserVerification: *userVerification, ResidentKey: *residentKey, Attachment: *attachment,
+			Algorithms: algs, TimeoutSeconds: int(*ceremonyTimeout / time.Second),
+			Hints: splitList(*webauthnHints)})
 	case "webauthn show":
 		return webauthnPolicyShow(ctx, conn)
 	case "client set-tls":

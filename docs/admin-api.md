@@ -137,8 +137,8 @@ page said that setting `status` to `suspended` stopped the tenant working.
 
 | | |
 |---|---|
-| `GET /admin/organizations/{orgID}/webauthn-policy` | The organisation's authenticator policy: `attestation`, `allowed_aaguids`, `refuse_cloned`. Needs `config:read` |
-| `PUT /admin/organizations/{orgID}/webauthn-policy` | Set it, the same as `signari webauthn policy`. `refuse_cloned` left out means on. An allow-list without attestation, a model id that is not a uuid, or an unknown conveyance is `400 invalid_policy`. Needs `organizations:write` |
+| `GET /admin/organizations/{orgID}/webauthn-policy` | The organisation's authenticator policy: `attestation`, `allowed_aaguids`, `refuse_cloned`, and the ceremony: `user_verification`, `resident_key`, `attachment`, `algorithms` (COSE numbers), `timeout_seconds`, `hints`. Needs `config:read` |
+| `PUT /admin/organizations/{orgID}/webauthn-policy` | Set it, the same as `signari webauthn policy`. The whole policy is written each time: `refuse_cloned` left out means on, and a ceremony field left out takes its default. An allow-list without attestation, a model id that is not a uuid, an unknown conveyance, or a ceremony value the CLI would refuse is `400 invalid_policy`. Needs `organizations:write` |
 | `GET /admin/organizations/{orgID}/scopes` | The organisation's declared scopes, plus the standard set. Needs `config:read` |
 | `PUT /admin/organizations/{orgID}/scopes` | Declare or update one. Needs `organizations:write` |
 | `DELETE /admin/organizations/{orgID}/scopes/{scope}` | Remove a declaration. Refused while a claim mapper requires it, `409 scope_in_use` with the count, since the mapper would then release nothing |

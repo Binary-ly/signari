@@ -53,12 +53,43 @@ func TestTheWebAuthnPolicyIsReadAndSetThroughTheAPI(t *testing.T) {
 		t.Errorf("the approved models read %v", got["allowed_aaguids"])
 	}
 
+	// The ceremony, set and read back; then left out, which is its default.
+	rec = call(t, s, http.MethodPut, path, testToken, map[string]any{
+		"attestation": "none", "user_verification": "preferred", "resident_key": "discouraged",
+		"attachment": "platform", "algorithms": []int{-8}, "timeout_seconds": 45, "hints": []string{"client-device"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT gave %d %s", rec.Code, rec.Body.String())
+	}
+	got = read()
+	if got["user_verification"] != "preferred" || got["resident_key"] != "discouraged" ||
+		got["attachment"] != "platform" || got["timeout_seconds"] != float64(45) {
+		t.Errorf("after PUT the ceremony reads %v", got)
+	}
+	if a, _ := got["algorithms"].([]any); len(a) != 1 || a[0] != float64(-8) {
+		t.Errorf("the algorithms read %v", got["algorithms"])
+	}
+	if h, _ := got["hints"].([]any); len(h) != 1 || h[0] != "client-device" {
+		t.Errorf("the hints read %v", got["hints"])
+	}
+	for name, body := range map[string]map[string]any{
+		"verification discouraged": {"user_verification": "discouraged"},
+		"a symmetric algorithm":    {"algorithms": []int{5}},
+		"a ten-minute timeout":     {"timeout_seconds": 600},
+		"an unknown hint":          {"hints": []string{"nfc"}},
+	} {
+		if rec := call(t, s, http.MethodPut, path, testToken, body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s gave %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+
 	// An absent refuse_cloned is the default, on.
 	if rec := call(t, s, http.MethodPut, path, testToken, map[string]any{"attestation": "none"}); rec.Code != http.StatusOK {
 		t.Fatalf("PUT gave %d", rec.Code)
 	}
-	if got := read(); got["refuse_cloned"] != true {
-		t.Errorf("a PUT that left refuse_cloned out set it to %v", got["refuse_cloned"])
+	if got := read(); got["refuse_cloned"] != true || got["user_verification"] != "required" ||
+		got["timeout_seconds"] != float64(300) {
+		t.Errorf("a PUT that left refuse_cloned and the ceremony out set %v", got)
 	}
 
 	for name, body := range map[string]map[string]any{

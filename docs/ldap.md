@@ -344,6 +344,12 @@ committing the change while the record of it failed would be exactly that.
 Deletion is audited **before** the row goes, because afterwards there is no
 subject for the event to name.
 
+The entry is named by its subject id and the bound account by `actor_id`. A
+rename records that the username moved, not what to. Until October 2026 every
+row carried both usernames in its detail, in plaintext inside the hash chain,
+where erasure cannot reach; a test now fails on any audit event whose detail
+names a person.
+
 A password set through this path gets **its own event**, separate from "the entry
 was modified". Somebody with directory write access can set any password and then
 bind as that person — the most consequential thing this interface can do, and the

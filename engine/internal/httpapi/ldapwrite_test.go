@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"signari.dev/engine/internal/passwords"
@@ -58,5 +59,17 @@ func TestAnLDAPDeleteSignsThePersonOutEverywhere(t *testing.T) {
 	if notices != 1 {
 		t.Errorf("%d back-channel logout notices queued for the application the deleted person "+
 			"was signed in to, want 1", notices)
+	}
+
+	// Recorded by subject, without the entry's name or the actor's (3.35):
+	// the row carried both in plaintext detail, where erasure cannot reach.
+	var detail string
+	if err := f.pool.QueryRow(ctx, `
+		SELECT detail::text FROM core.audit_events
+		WHERE event_type = 'ldap.entry_deleted' AND subject_id = $1::uuid`, f.userID).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(detail, f.email) || strings.Contains(detail, "cn=admin") {
+		t.Errorf("the deletion's audit detail names a person: %s", detail)
 	}
 }

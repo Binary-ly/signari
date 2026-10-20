@@ -19,8 +19,35 @@ import (
 // the subject id, and the audit trail says the rest (3.07). LDAP binds and
 // RADIUS logins logged the username they were given, valid or not.
 var bannedKeys = map[string]bool{
-	"username": true, "user_name": true, "email": true, "mail": true, "upn": true,
-	"bound_dn": true, "user_dn": true, "display_name": true, "login_hint": true,
+	"username": true, "user_name": true, "uid": true, "email": true, "mail": true, "upn": true,
+	"dn": true, "bound_dn": true, "user_dn": true, "display_name": true, "login_hint": true,
+	"principal": true, "looked_for": true,
+}
+
+// bannedValues are variable and field names that hold a person's name, an
+// address or a DN naming them, logged under any key: `"by", sess.dn` named the
+// bound account as plainly as `"username", username`.
+var bannedValues = map[string]bool{
+	"username": true, "Username": true, "email": true, "Email": true, "upn": true, "dn": true,
+	"DN": true, "bindDN": true, "boundDN": true,
+}
+
+// lastName is the identifier an expression ends in: `username` for
+// `username`, `dn` for `sess.dn`, `Username` for `string(id.Username)`.
+func lastName(e ast.Expr) string {
+	switch v := e.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		return v.Sel.Name
+	case *ast.CallExpr:
+		if len(v.Args) == 1 {
+			if id, ok := v.Fun.(*ast.Ident); ok && id.Name == "string" {
+				return lastName(v.Args[0])
+			}
+		}
+	}
+	return ""
 }
 
 var logMethods = map[string]bool{
@@ -79,6 +106,10 @@ func TestNoLogLineNamesAPerson(t *testing.T) {
 				if text := source(fset, arg); strings.Contains(text, ".Subject.String()") ||
 					strings.Contains(text, ".EmailAddresses") {
 					found = append(found, rel+":"+strconv.Itoa(where.Line)+" logs a certificate's "+text)
+				}
+				// And a value whose name says what it is, under whatever key.
+				if name := lastName(arg); bannedValues[name] {
+					found = append(found, rel+":"+strconv.Itoa(where.Line)+" logs "+source(fset, arg))
 				}
 			}
 			return true

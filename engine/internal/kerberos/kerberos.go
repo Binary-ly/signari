@@ -158,21 +158,23 @@ func (c Config) UsernameFor(principal string) (string, error) {
 		return "", fmt.Errorf("empty principal")
 	}
 
+	// The errors name the realm and never the principal, which names a
+	// person: they are logged.
 	name, realm, found := strings.Cut(principal, "@")
 	if !found {
-		return "", fmt.Errorf("principal %q carries no realm; refusing rather than "+
-			"guessing which realm it came from", principal)
+		return "", fmt.Errorf("the principal carries no realm; refusing rather than " +
+			"guessing which realm it came from")
 	}
 	if c.Realm != "" && !strings.EqualFold(realm, c.Realm) {
-		return "", fmt.Errorf("principal %q is from realm %q, not %q. A ticket from "+
+		return "", fmt.Errorf("the principal is from realm %q, not %q. A ticket from "+
 			"another realm is not a user of this one, even where a trust exists",
-			principal, realm, c.Realm)
+			realm, c.Realm)
 	}
 	if strings.Contains(name, "/") {
-		return "", fmt.Errorf("principal %q has an instance component. Those are "+
-			"service and administrative principals rather than people, and matching "+
-			"%q to a user account would let an administrative principal sign in as "+
-			"the person who shares its first component", principal, name)
+		return "", fmt.Errorf("the principal has an instance component. Those are " +
+			"service and administrative principals rather than people, and matching " +
+			"its first component to a user account would let an administrative principal " +
+			"sign in as the person who shares it")
 	}
 
 	if c.StripRealm {

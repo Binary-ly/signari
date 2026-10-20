@@ -52,10 +52,11 @@ func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request) {
 
 	username, err := s.krbConfig.UsernameFor(principal)
 	if err != nil {
-		// Logged with the principal, answered without it. The reason a mapping
+		// Logged with the reason, answered without it. The reason a mapping
 		// was refused is an operator's business; telling the browser which
-		// realms are trusted is not.
-		s.log.Info("kerberos principal refused", "principal", principal, "err", err,
+		// realms are trusted is not. Not with the principal, which names the
+		// person (3.35); the correlation id finds the request.
+		s.log.Info("kerberos principal refused", "err", err,
 			"correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, CorrelationID: correlationID(ctx),
@@ -106,8 +107,7 @@ func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request,
 		 WHERE org_id = $1::uuid AND lower(email) = lower($2) AND status = 'active'`,
 		orgID, username).Scan(&userID)
 	if err != nil {
-		s.log.Info("kerberos principal has no account", "principal", principal,
-			"looked_for", username, "correlation_id", correlationID(ctx))
+		s.log.Info("kerberos principal has no account", "correlation_id", correlationID(ctx))
 		// Released before the refusal is recorded: the record is a second
 		// connection, and taking one while holding this deadlocks the pool.
 		_ = tx.Rollback(ctx)

@@ -279,8 +279,8 @@ func (s *Server) handleAdd(ctx context.Context, c net.Conn, sess *session,
 
 	switch err := s.writer.Create(ctx, sess.identity.Username, e); {
 	case err == nil:
-		s.log.Info("ldap add", "uid", username, "by", sess.dn,
-			"remote", c.RemoteAddr().String())
+		// Who and to whom are in the audit trail, by subject.
+		s.log.Info("ldap add", "remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(respTag, resultSuccess, "", "")))
 	case errors.Is(err, ErrEntryExists):
 		return s.write(c, newMessage(messageID, newResult(respTag,
@@ -289,7 +289,7 @@ func (s *Server) handleAdd(ctx context.Context, c net.Conn, sess *session,
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultConstraintViolation, "", err.Error())))
 	default:
-		s.log.Error("ldap add", "err", err, "uid", username)
+		s.log.Error("ldap add", "err", err)
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultOther, "", "the entry could not be added")))
 	}
@@ -372,8 +372,7 @@ func (s *Server) handleModify(ctx context.Context, c net.Conn, sess *session,
 
 	switch err := s.writer.Update(ctx, sess.identity.Username, username, update); {
 	case err == nil:
-		s.log.Info("ldap modify", "uid", username, "by", sess.dn,
-			"remote", c.RemoteAddr().String())
+		s.log.Info("ldap modify", "remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(respTag, resultSuccess, "", "")))
 	case errors.Is(err, ErrNoSuchEntry):
 		return s.write(c, newMessage(messageID, newResult(respTag,
@@ -382,7 +381,7 @@ func (s *Server) handleModify(ctx context.Context, c net.Conn, sess *session,
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultConstraintViolation, "", err.Error())))
 	default:
-		s.log.Error("ldap modify", "err", err, "uid", username)
+		s.log.Error("ldap modify", "err", err)
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultOther, "", "the entry could not be modified")))
 	}
@@ -417,8 +416,7 @@ func (s *Server) handleDelete(ctx context.Context, c net.Conn, sess *session,
 
 	switch err := s.writer.Remove(ctx, sess.identity.Username, username); {
 	case err == nil:
-		s.log.Warn("ldap delete", "uid", username, "by", sess.dn,
-			"remote", c.RemoteAddr().String())
+		s.log.Warn("ldap delete", "remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(respTag, resultSuccess, "", "")))
 	case errors.Is(err, ErrNoSuchEntry):
 		return s.write(c, newMessage(messageID, newResult(respTag,
@@ -427,7 +425,7 @@ func (s *Server) handleDelete(ctx context.Context, c net.Conn, sess *session,
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultConstraintViolation, "", err.Error())))
 	default:
-		s.log.Error("ldap delete", "err", err, "uid", username)
+		s.log.Error("ldap delete", "err", err)
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultOther, "", "the entry could not be deleted")))
 	}
@@ -540,8 +538,7 @@ func (s *Server) handleModifyDN(ctx context.Context, c net.Conn, sess *session,
 
 	switch err := s.writer.Rename(ctx, sess.identity.Username, from, to); {
 	case err == nil:
-		s.log.Info("ldap modify dn", "from", from, "to", to, "by", sess.dn,
-			"remote", c.RemoteAddr().String())
+		s.log.Info("ldap modify dn", "remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(respTag, resultSuccess, "", "")))
 	case errors.Is(err, ErrEntryExists):
 		// §4.9: "If there was already an entry with that name, the operation
@@ -583,7 +580,7 @@ func (s *Server) writeDNError(c net.Conn, messageID int64, respTag ber.Tag,
 	if code == resultNoSuchObject {
 		matched = s.cfg.BaseDN
 	}
-	s.log.Info("ldap write with an unusable DN", "dn", dn, "err", cause,
+	s.log.Info("ldap write with an unusable DN", "err", cause,
 		"remote", c.RemoteAddr().String())
 	return s.write(c, newMessage(messageID, newResult(respTag, code, matched,
 		cause.Error())))

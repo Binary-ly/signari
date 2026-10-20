@@ -513,7 +513,7 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 	// something worth advertising anyway.
 	if req.Password == "" {
 		s.log.Warn("ldap unauthenticated bind refused (empty password)",
-			"dn", req.DN, "remote", c.RemoteAddr().String())
+			"remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(appBindResponse,
 			resultUnwillingToPerform, "",
 			"a bind with an empty password authenticates nobody (RFC 4513 section 5.1.2)")))
@@ -524,7 +524,8 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 		// Reported as invalid credentials, not as a bad DN. A distinguishable
 		// error here tells an attacker which DNs exist in what shape, and the
 		// application cannot do anything different with the answer anyway.
-		s.log.Info("ldap bind with an unusable DN", "dn", req.DN, "err", err,
+		// The error says what is wrong with the DN without repeating it.
+		s.log.Info("ldap bind with an unusable DN", "err", err,
 			"remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(appBindResponse,
 			resultInvalidCredentials, "", "invalid credentials")))

@@ -33,7 +33,7 @@ func restoreFinalize(ctx context.Context, conn *pgx.Conn, confirm string) error 
 	if err := migrate.Verify(ctx, conn); err != nil {
 		return fmt.Errorf("not finalizing: %w", err)
 	}
-	pool, err := openPool(ctx, conn)
+	pool, err := openPool(ctx, conn, "")
 	if err != nil {
 		return err
 	}

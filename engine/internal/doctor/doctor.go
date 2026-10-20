@@ -263,8 +263,7 @@ func checkRootKey(r *Report) {
 				"SIGNARI_ROOT_KEY_REF, a label, is no substitute")
 		return
 	}
-	if _, err := keys.LoadRootKey(os.Getenv,
-		"SIGNARI_ROOT_KEY", "SIGNARI_ROOT_KEY_FILE", "SIGNARI_ROOT_KEY_REF"); err != nil {
+	if _, err := keys.LoadRootKeyring(os.Getenv); err != nil {
 		r.add(Critical, "root key", "the root key cannot be loaded: "+err.Error(),
 			"`serve` refuses to start on it too. Fix the source the message names.")
 	}

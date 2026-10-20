@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,12 @@ type RootKey struct {
 	// addressKey keys AddressHash. Derived, so it says nothing about the key
 	// that seals, and held beside it, so it is as absent from the database.
 	addressKey []byte
+	// tag names this key's material, one-way, so running nodes can say which
+	// key they seal with (see PoolTag).
+	tag string
+	// accepted are root keys this one opens with and never seals with, held
+	// through an online rotation (3.13; keyring.go).
+	accepted []*RootKey
 }
 
 // NewRootKey takes 32 raw bytes. `ref` names which root key this is, so a future
@@ -55,7 +62,11 @@ func NewRootKey(ref string, secret []byte) (*RootKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RootKey{aead: aead, ref: ref, addressKey: addressKey}, nil
+	tag, err := hkdf.Key(sha256.New, secret, nil, "signari root key tag v1", 4)
+	if err != nil {
+		return nil, err
+	}
+	return &RootKey{aead: aead, ref: ref, addressKey: addressKey, tag: hex.EncodeToString(tag)}, nil
 }
 
 // AddressHash is the keyed hash core.sessions.ip_hash stores: enough to tell
@@ -89,7 +100,23 @@ func (r *RootKey) seal(plaintext []byte) ([]byte, error) {
 	return r.aead.Seal(nonce, nonce, plaintext, nil), nil
 }
 
+// open unseals with this key, then with each accepted one. GCM authenticates,
+// so a key that did not seal a blob fails on it rather than returning noise,
+// and the order only decides which key is tried first.
 func (r *RootKey) open(sealed []byte) ([]byte, error) {
+	plain, err := r.openOwn(sealed)
+	if err == nil {
+		return plain, nil
+	}
+	for _, a := range r.accepted {
+		if p, aerr := a.openOwn(sealed); aerr == nil {
+			return p, nil
+		}
+	}
+	return nil, err
+}
+
+func (r *RootKey) openOwn(sealed []byte) ([]byte, error) {
 	n := r.aead.NonceSize()
 	if len(sealed) < n {
 		return nil, fmt.Errorf("wrapped key is truncated")
@@ -221,11 +248,12 @@ func LoadSetFor(ctx context.Context, conn Querier, instanceID, purpose string, r
 			return nil, fmt.Errorf(
 				"key %s is backed by %q, and no external signer backend is configured", kid, keyRef)
 		}
-		if keyRef != root.Ref() {
+		wrapper := root.forRef(keyRef)
+		if wrapper == nil {
 			return nil, fmt.Errorf(
-				"key %s was wrapped with root key %q but %q is configured", kid, keyRef, root.Ref())
+				"key %s was wrapped with root key %q but %s configured", kid, keyRef, root.refsHeld())
 		}
-		der, err := root.open(wrapped)
+		der, err := wrapper.openOwn(wrapped)
 		if err != nil {
 			return nil, fmt.Errorf("unwrapping key %s: %w", kid, err)
 		}

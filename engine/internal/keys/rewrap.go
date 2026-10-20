@@ -142,6 +142,9 @@ func RewrapRoot(ctx context.Context, tx pgx.Tx, old, next *RootKey) ([]RewrapRep
 	if old == nil || next == nil {
 		return nil, fmt.Errorf("both the current and the new root key are required")
 	}
+	// Each on its own: a key that also opened with the other would open every
+	// blob, and could not say which ones are already moved.
+	old, next = old.alone(), next.alone()
 	if old.Ref() == next.Ref() {
 		// Refusing rather than proceeding. Identical refs after a rotation make
 		// the two keys indistinguishable in the rows, so a later rotation cannot

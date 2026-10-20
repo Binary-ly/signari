@@ -120,7 +120,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | | |
 |---|---|
 | `signari keys list` / `keys rotate` / `keys retire` | Signing keys; rotation is next → active → passive → retired. See [key-rotation.md](key-rotation.md) |
-| `signari keys rewrap-root` | Rotate `SIGNARI_ROOT_KEY` itself. Re-seals every root-wrapped secret — signing keys, per-subject DEKs, and every integration credential — from the current key to `SIGNARI_NEW_ROOT_KEY`, in **one transaction**. `-dry-run` performs the whole rotation and rolls back, which is the only way to learn it would succeed without betting the deployment on it |
+| `signari keys rewrap-root` | Rotate `SIGNARI_ROOT_KEY` itself. Re-seals every root-wrapped secret — signing keys, per-subject DEKs, and every integration credential — in **one transaction**: from the current key to `SIGNARI_NEW_ROOT_KEY` with the deployment stopped, or, with it running, from `SIGNARI_ACCEPTED_ROOT_KEY` to `SIGNARI_ROOT_KEY` once every node seals with the latter, which it checks and refuses otherwise, naming the nodes. `-dry-run` performs the whole rotation and rolls back, which is the only way to learn it would succeed without betting the deployment on it |
 | `signari audit checkpoint` | Anchor the audit chain. See [audit-chain-fork.md](audit-chain-fork.md) |
 | `signari audit verify` | Say whether the audit chain verifies, the whole of it or since the latest checkpoint, as an export judges it; exits non-zero and names the entry when it does not. Needs no Go toolchain. `signari doctor` reports the same |
 | `signari export audit` | Export the trail |

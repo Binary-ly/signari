@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/keys"
 )
 
 // connectDB opens the one connection every command starts with.
@@ -27,13 +29,21 @@ func connectDB(ctx context.Context, dsn string) (*pgx.Conn, error) {
 }
 
 // openPool opens the connection pool on the same database as conn, sized by
-// the DSN's `pool_*` settings and then the SIGNARI_DB_* variables.
-func openPool(ctx context.Context, conn *pgx.Conn) (*pgxpool.Pool, error) {
+// the DSN's `pool_*` settings and then the SIGNARI_DB_* variables. rootTag,
+// the root key's PoolTag or "", is added to its application_name.
+func openPool(ctx context.Context, conn *pgx.Conn, rootTag string) (*pgxpool.Pool, error) {
 	cfg, err := poolConfig(conn.Config().ConnString(), os.Getenv)
 	if err != nil {
 		return nil, err
 	}
+	tagPool(cfg, rootTag)
 	return pgxpool.NewWithConfig(ctx, cfg)
+}
+
+// tagPool names the root keys in a pool's application_name.
+func tagPool(cfg *pgxpool.Config, rootTag string) {
+	cfg.ConnConfig.RuntimeParams["application_name"] =
+		keys.WithPoolTag(cfg.ConnConfig.RuntimeParams["application_name"], rootTag)
 }
 
 // defaultWorkerConns is the background workers' pool: the outbox, the
@@ -47,11 +57,12 @@ const defaultWorkerConns = 3
 // elsewhere, and a long janitor pass held connections requests were waiting
 // for. Sized by SIGNARI_DB_WORKER_MAX_CONNS, with the same connection ages as
 // the request pool.
-func openWorkerPool(ctx context.Context, conn *pgx.Conn) (*pgxpool.Pool, error) {
+func openWorkerPool(ctx context.Context, conn *pgx.Conn, rootTag string) (*pgxpool.Pool, error) {
 	cfg, err := workerPoolConfig(conn.Config().ConnString(), os.Getenv)
 	if err != nil {
 		return nil, err
 	}
+	tagPool(cfg, rootTag)
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
 

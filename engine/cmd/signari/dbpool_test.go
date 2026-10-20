@@ -135,7 +135,7 @@ func TestADSNWithPoolSettingsConnects(t *testing.T) {
 	}
 	defer func() { _ = conn.Close(ctx) }()
 
-	pool, err := openPool(ctx, conn)
+	pool, err := openPool(ctx, conn, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestADSNWithPoolSettingsConnects(t *testing.T) {
 	}
 
 	t.Setenv("SIGNARI_DB_MAX_CONNS", "7")
-	pool2, err := openPool(ctx, conn)
+	pool2, err := openPool(ctx, conn, "")
 	if err != nil {
 		t.Fatal(err)
 	}

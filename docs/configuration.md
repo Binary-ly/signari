@@ -25,7 +25,37 @@ the key itself comes only from `SIGNARI_ROOT_KEY` or `SIGNARI_ROOT_KEY_FILE`, an
 file they would refuse. A root key held in a KMS is not built yet. This said the
 label named an external key instead.
 
-### Rotating the root key
+### Rotating the root key with the deployment running
+
+| | |
+|---|---|
+| `SIGNARI_ACCEPTED_ROOT_KEY` | A second root key the process opens with and never seals with, held through an online rotation. Its ref must differ from the root key's |
+| `SIGNARI_ACCEPTED_ROOT_KEY_FILE` | The accepted key from a file, on the same terms as `SIGNARI_ROOT_KEY_FILE` |
+| `SIGNARI_ACCEPTED_ROOT_KEY_REF` | The accepted key's ref: the label the rows it sealed carry |
+
+Four rolling restarts, with nothing stopped:
+
+1. Every node: `SIGNARI_ROOT_KEY` the old key, `SIGNARI_ACCEPTED_ROOT_KEY` the
+   new one. Nothing is sealed with the new key yet, and every node can open it.
+2. Every node: `SIGNARI_ROOT_KEY` the new key (with its `_REF`),
+   `SIGNARI_ACCEPTED_ROOT_KEY` the old one (with its `_REF`). New rows are sealed
+   with the new key, and every node opens both.
+3. `signari keys rewrap-root`, with the same two variables, moves every row still
+   under the old key to the new one, in one transaction.
+4. Every node: remove `SIGNARI_ACCEPTED_ROOT_KEY`.
+
+Step 3 refuses while any running node still seals with the old key, because
+that node would go on sealing rows under a key about to be removed. Each node's
+database connections say which key it seals with, as a one-way tag of the key
+in their `application_name` (`signari seals=1a2b3c4d opens=5e6f7a8b`), so the
+command reads `pg_stat_activity` and names the nodes that are behind. A node of
+an earlier release carries no tag. Under the default names it is refused as one
+that cannot say; under a name of its own it cannot be seen at all. Upgrade every
+node before rotating. Run no other command that seals, such as `radius
+add-client`, with the old key during step 3. Until October 2026 the only way was
+the stopped rotation below.
+
+### Rotating the root key with the deployment stopped
 
 | | |
 |---|---|
@@ -49,7 +79,8 @@ of them restarts. A node that comes up holding the old key refuses to start,
 which is the designed behaviour rather than a fault: the engine compares the
 stored `key_ref` against the key it was given and says so, instead of failing
 later inside a signature. Keep the old key until every node is running on the new
-one and a restore test has passed.
+one and a restore test has passed. The command warns, naming them, when nodes are
+still running: they open nothing once it commits.
 
 Anything sealed under a *subject's* key — a TOTP secret, for instance — needs no
 attention: the subject's DEK is itself root-sealed and is re-wrapped, so

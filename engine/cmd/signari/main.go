@@ -1279,7 +1279,7 @@ func janitorOnce(ctx context.Context, conn *pgx.Conn) error {
 		return err
 	}
 
-	pool, err := openPool(ctx, conn)
+	pool, err := openPool(ctx, conn, "")
 	if err != nil {
 		return fmt.Errorf("creating connection pool: %w", err)
 	}
@@ -1535,16 +1535,56 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 // finds every row wrapped under a ref it does not have, and refuses to start --
 // which is the designed outcome, not a bug: `LoadSet` compares `key_ref` against
 // the configured key and says so, rather than failing later inside a signature.
+//
+// # Online, with the deployment running (3.13)
+//
+// When the nodes already seal with the new key and accept the old one
+// (SIGNARI_ROOT_KEY=new, SIGNARI_ACCEPTED_ROOT_KEY=old; keys/keyring.go), this
+// moves what is left under the accepted key to the root key, with nothing
+// stopped. It refuses while any running node says it seals with another key,
+// since that node would go on sealing rows under the key being retired.
 func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
-	old, err := rootKey()
+	current, err := rootKey()
 	if err != nil {
 		return err
 	}
-	next, err := keys.LoadRootKey(os.Getenv,
-		"SIGNARI_NEW_ROOT_KEY", "SIGNARI_NEW_ROOT_KEY_FILE", "SIGNARI_NEW_ROOT_KEY_REF")
-	if err != nil {
-		return fmt.Errorf("the new root key: %w\nand set SIGNARI_NEW_ROOT_KEY_REF to a name "+
-			"distinct from the current one", err)
+	stopped := os.Getenv("SIGNARI_NEW_ROOT_KEY") != "" || os.Getenv("SIGNARI_NEW_ROOT_KEY_FILE") != ""
+	var old, next *keys.RootKey
+	switch {
+	case stopped && current.Accepted() != nil:
+		return fmt.Errorf("SIGNARI_NEW_ROOT_KEY and SIGNARI_ACCEPTED_ROOT_KEY are both set. The " +
+			"first rotates a stopped deployment to a new key; the second finishes an online " +
+			"rotation the nodes are already part of (docs/key-rotation.md). Set one")
+	case stopped:
+		old = current
+		next, err = keys.LoadRootKey(os.Getenv,
+			"SIGNARI_NEW_ROOT_KEY", "SIGNARI_NEW_ROOT_KEY_FILE", "SIGNARI_NEW_ROOT_KEY_REF")
+		if err != nil {
+			return fmt.Errorf("the new root key: %w\nand set SIGNARI_NEW_ROOT_KEY_REF to a name "+
+				"distinct from the current one", err)
+		}
+		if running, err := keys.NodesNotSealingWith(ctx, conn, next); err == nil && len(running) > 0 {
+			fmt.Fprintf(os.Stderr, "warning: these nodes are running and will open nothing once this "+
+				"commits, until each is restarted on the new key:\n  %s\n", strings.Join(running, "\n  "))
+		}
+	case current.Accepted() != nil:
+		old, next = current.Accepted(), current
+		lagging, err := keys.NodesNotSealingWith(ctx, conn, next)
+		if err != nil {
+			return err
+		}
+		if len(lagging) > 0 {
+			return fmt.Errorf("not rotating: these connections are from nodes that do not seal with "+
+				"the root key %q, and would go on sealing rows under %q after it:\n  %s\n"+
+				"Restart each with SIGNARI_ROOT_KEY set to the new key and SIGNARI_ACCEPTED_ROOT_KEY "+
+				"to the old one first. A node of a release before this cannot say which key it "+
+				"seals with; upgrade it", next.Ref(), old.Ref(), strings.Join(lagging, "\n  "))
+		}
+	default:
+		return fmt.Errorf("nothing to rotate to. With the deployment running: restart every node " +
+			"with SIGNARI_ROOT_KEY set to the new key and SIGNARI_ACCEPTED_ROOT_KEY to the old one, " +
+			"then run this with the same. Stopped: set SIGNARI_NEW_ROOT_KEY to the new key. " +
+			"docs/key-rotation.md has both")
 	}
 
 	tx, err := conn.Begin(ctx)
@@ -1598,6 +1638,12 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 		return fmt.Errorf("committing the rotation: %w", err)
 	}
 	fmt.Printf("\n%d secrets re-wrapped from %q to %q.\n", total, old.Ref(), next.Ref())
+	if !stopped {
+		fmt.Println("\nNothing is sealed under the old key now. Remove SIGNARI_ACCEPTED_ROOT_KEY from")
+		fmt.Println("every node at its next restart. Keep a copy of the old key until a restore")
+		fmt.Println("test has passed: a backup taken before this run still needs it.")
+		return nil
+	}
 	fmt.Println("\nSet SIGNARI_ROOT_KEY to the new value on EVERY node before any of them")
 	fmt.Println("restarts. A node holding the old key will refuse to start rather than")
 	fmt.Println("serve with keys it cannot open. Keep the old key until every node has")
@@ -1675,8 +1721,11 @@ func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 // rootKey reads the wrapping key for private key material. It is deliberately
 // required rather than defaulted: a generated-on-boot root key would silently
 // make every restart invalidate every stored signing key.
+//
+// With the key it also accepts during an online rotation (3.13), when one is
+// configured.
 func rootKey() (*keys.RootKey, error) {
-	return keys.LoadRootKey(os.Getenv, "SIGNARI_ROOT_KEY", "SIGNARI_ROOT_KEY_FILE", "SIGNARI_ROOT_KEY_REF")
+	return keys.LoadRootKeyring(os.Getenv)
 }
 
 func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) error {
@@ -1759,14 +1808,16 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		return fmt.Errorf("loading signing keys: %w", err)
 	}
 
-	pool, err := openPool(ctx, conn)
+	// Both pools say which root key this node seals with, so a rotation can
+	// see every running node (3.13).
+	pool, err := openPool(ctx, conn, root.PoolTag())
 	if err != nil {
 		return fmt.Errorf("creating connection pool: %w", err)
 	}
 	defer pool.Close()
 	// The background workers draw on a pool of their own, so neither a burst
 	// of requests nor a long sweep can starve the other.
-	workerPool, err := openWorkerPool(ctx, conn)
+	workerPool, err := openWorkerPool(ctx, conn, root.PoolTag())
 	if err != nil {
 		return fmt.Errorf("creating the workers' connection pool: %w", err)
 	}
@@ -5636,7 +5687,8 @@ func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply b
 		return fmt.Errorf("unsealing the credentials: %w", err)
 	}
 
-	pool, err := openPool(ctx, conn)
+	// Tagged: a sync seals a new person's subject key, so a rotation must see it.
+	pool, err := openPool(ctx, conn, root.PoolTag())
 	if err != nil {
 		return err
 	}

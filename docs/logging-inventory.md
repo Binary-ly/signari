@@ -19,11 +19,11 @@ mistake this document exists to prevent.
 |---|---|---|
 | Written by | `slog` | `core.audit_events` |
 | Destination | stderr | PostgreSQL |
-| Format | logfmt (`slog.TextHandler`), level `Info` | table rows |
+| Format | logfmt or JSON (`SIGNARI_LOG_FORMAT`), level `Info` unless `SIGNARI_LOG_LEVEL` says otherwise | table rows |
 | Purpose | operating the server | evidencing what happened to an account |
 | Survives a crash | only if collected | yes |
 | Tamper-evident | no | yes — hash chained |
-| Personal data | mostly avoided, except that LDAP binds log the username and the client address | subject ids only, nothing encrypted; this row said avoided, and encrypted per subject |
+| Personal data | subject ids where a line must say whose request it was; no username, email address or certificate subject, which a test enforces. LDAP and RADIUS lines carry the client's address, an application or access point rather than a person | subject ids only, nothing encrypted; this row said avoided, and encrypted per subject |
 | Authoritative | no | **yes** |
 
 A question about *whether the server is healthy* is answered from the first. A
@@ -32,7 +32,20 @@ diagnostic log is not evidence and is not treated as any.
 
 ## Layer 1 — the diagnostic log
 
-**Format.** logfmt via `slog.TextHandler` to stderr at `Info`. Every call site
+**Personal data.** Until October 2026, LDAP binds and RADIUS logins logged the
+username they were given, valid or not, an LDAP write refusal the bound DN, and
+an EAP-TLS refusal the certificate's subject. They now log none of it: the
+audit trail records each bind and login by subject, and an EAP-TLS refusal
+names the certificate by its serial. `TestNoLogLineNamesAPerson` reads every log
+call in the engine and fails on a `username`, `email`, `upn`, `bound_dn` or
+similar key, or on a certificate's subject.
+
+**Access log.** `SIGNARI_ACCESS_LOG=1` adds one line per request: method, route
+pattern, status, bytes, duration and correlation id. The pattern, not the path,
+so no identifier in a URL reaches it; no query string; no client address.
+
+**Format.** logfmt via `slog.TextHandler` to stderr at `Info` by default, or JSON
+with `SIGNARI_LOG_FORMAT=json`, at the level `SIGNARI_LOG_LEVEL` names. Every call site
 uses structured key/value pairs; there are **zero** uses of `fmt.Sprintf` inside a
 log call across `internal/`, which is what keeps V16.4.1 (log injection) met —
 values are escaped by the handler rather than concatenated into a message.

@@ -65,6 +65,7 @@ import (
 	"signari.dev/engine/internal/janitor"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/ldapd"
+	"signari.dev/engine/internal/logging"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/metrics"
 	"signari.dev/engine/internal/migrate"
@@ -1262,7 +1263,10 @@ func run(args []string) (err error) {
 // runs the engine read-only, or simply seeing what a pass would do. It takes the
 // same advisory lock, so running it against a live cluster is safe.
 func janitorOnce(ctx context.Context, conn *pgx.Conn) error {
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log, err := logging.New(os.Stderr, os.Getenv)
+	if err != nil {
+		return err
+	}
 
 	pool, err := openPool(ctx, conn)
 	if err != nil {
@@ -1711,7 +1715,10 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	ctx, stopSignals := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log, err := logging.New(os.Stderr, os.Getenv)
+	if err != nil {
+		return err
+	}
 
 	// The startup gate. A drifted or half-migrated database must fail here, at
 	// boot, with a clear message -- not at 3am inside a query.
@@ -1877,6 +1884,13 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		return perr
 	}
 	srv.SetPosture(pst)
+	switch v := os.Getenv("SIGNARI_ACCESS_LOG"); v {
+	case "", "0":
+	case "1":
+		srv.SetAccessLog(true)
+	default:
+		return fmt.Errorf("SIGNARI_ACCESS_LOG=%q: want 1 or 0", v)
+	}
 
 	// The outbox worker is a SINGLETON: running it on every node would deliver
 	// each logout notice once per node. It claims rows FOR UPDATE SKIP LOCKED so
@@ -6962,7 +6976,10 @@ func outpostRun(core, token, kind, addr, baseDN, tlsCert, tlsKey string, ldapIns
 	if err := client.Check(ctx); err != nil {
 		return err
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	log, err := logging.New(os.Stderr, os.Getenv)
+	if err != nil {
+		return err
+	}
 	log.Info("outpost registered with the core", "name", client.Name(), "kind", kind,
 		"core", core)
 

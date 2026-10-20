@@ -97,6 +97,22 @@ hold a connection for as long as it liked. The remote-access tunnel is a
 WebSocket, and upgrading to one clears these deadlines for that connection, so
 a remote desktop is bounded by its session checks instead.
 
+## Logging
+
+| Variable | Meaning |
+|---|---|
+| `SIGNARI_LOG_FORMAT` | `text`, logfmt and the default, or `json`, one object per line. Anything else refuses to start |
+| `SIGNARI_LOG_LEVEL` | `debug`, `info` (the default), `warn` or `error`. Anything else refuses to start |
+| `SIGNARI_ACCESS_LOG` | `1` writes one line per request: the method, the route that matched, the status, the bytes written, the duration and the correlation id. `0` or unset writes none. The route is the pattern (`/login/with/{slug}`), never the path or the query string, and there is no client address in it |
+
+A line logged with a request's context carries that request's `correlation_id`,
+the one its response sends as `X-Correlation-Id` and its error page shows as a
+short code, whether the call names it or not. The access log line does. Most
+handlers still log without the context, and their lines carry the id only where
+the call names it. A line names a person by the subject id when it must, never
+by username, email address or a certificate's subject, and a test holds every
+log call in the engine to that. See [logging-inventory.md](logging-inventory.md).
+
 ## Database connections
 
 | | |

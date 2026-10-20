@@ -150,7 +150,7 @@ func (s *Server) acceptEAP(conn net.PacketConn, addr net.Addr, p *Packet,
 	if err != nil {
 		return
 	}
-	s.log.Info("EAP-TLS authentication succeeded", "username", sess.username)
+	s.log.Info("EAP-TLS authentication succeeded")
 	_, _ = conn.WriteTo(out, addr)
 }
 

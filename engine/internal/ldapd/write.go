@@ -125,13 +125,13 @@ func inGroup(id *Identity, group string) bool {
 func (s *Server) refuseWrite(c net.Conn, messageID int64, respTag ber.Tag, sess *session) bool {
 	if !s.writesConfigured() {
 		s.log.Info("ldap write refused: this directory is read-only",
-			"remote", c.RemoteAddr().String(), "bound_dn", sess.dn)
+			"remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultUnwillingToPerform, "", "this directory is read-only")))
 	}
+	// Without the bound DN, which is the person's username.
 	s.log.Warn("ldap write refused: the bound identity is not in the write group",
-		"remote", c.RemoteAddr().String(), "bound_dn", sess.dn,
-		"write_group", s.cfg.WriteGroup)
+		"remote", c.RemoteAddr().String(), "write_group", s.cfg.WriteGroup)
 	// insufficientAccessRights(50), not unwillingToPerform. §4.7's own vocabulary
 	// distinguishes "the server will not" from "you may not", and an
 	// administrator whose service account silently cannot write needs the second.

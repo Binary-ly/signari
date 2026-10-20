@@ -3,10 +3,12 @@ package httpapi
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -69,18 +71,21 @@ func (a *EAPCertAuthenticator) AuthenticateCertificate(cert *x509.Certificate) (
 		WHERE org_id = $1::uuid
 		  AND (lower(email) = lower($2) OR lower(username) = lower($2))`,
 		a.orgID, identity).Scan(&userID, &status)
+	// The supplicant is told nothing either way; the distinction belongs in
+	// the log, which says it without the certificate's address or name: the
+	// subject id when there is an account, nothing when there is none.
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("no account in this organisation matches the certificate's identity")
+	}
 	if err != nil {
-		// Deliberately the same shape of answer for "no such user" as for a
-		// database problem: the supplicant is told nothing either way, and the
-		// distinction belongs in the log.
-		return "", fmt.Errorf("no account matches %q in this organisation", identity)
+		return "", fmt.Errorf("looking up the certificate's account: %w", err)
 	}
 	if status != "active" {
 		// The certificate is still cryptographically valid. That is precisely
 		// why this check exists: revoking a certificate requires a CRL or OCSP
 		// the access point may never consult, while deactivating the account
 		// takes effect at the next association.
-		return "", fmt.Errorf("the account for %q is %s", identity, status)
+		return "", fmt.Errorf("the certificate's account, subject %s, is %s", userID, status)
 	}
 	return identity, nil
 }

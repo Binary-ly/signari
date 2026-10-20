@@ -158,6 +158,9 @@ type Server struct {
 	// have to know about instrumentation.
 	metrics *metrics.Engine
 
+	// accessLog writes one line per request; see SetAccessLog.
+	accessLog bool
+
 	// readiness are the checks /readyz runs after its database ping.
 	readiness []readinessCheck
 
@@ -392,6 +395,9 @@ func (s *Server) Routes() http.Handler {
 	// route handler -- is still caught, logged in this server's format, and
 	// answered.
 	inner := http.Handler(s.mux())
+	if s.accessLog {
+		inner = noteRoute(inner)
+	}
 	if s.metrics != nil {
 		// INNERMOST, wrapping the mux directly, and this position is load-bearing
 		// rather than a preference.
@@ -414,8 +420,14 @@ func (s *Server) Routes() http.Handler {
 		inner = s.metrics.Middleware(inner)
 	}
 	// withClientIP outermost, so the correlation log line, the recovery log
-	// line and everything inside them name the same client.
-	return s.withClientIP(s.withCorrelation(s.withRecovery(s.withSecurityHeaders(s.withCORS(inner)))))
+	// line and everything inside them name the same client. The access log
+	// inside correlation, so its line carries the id, and outside recovery, so
+	// a panic's 500 is logged as the response it was.
+	outer := s.withRecovery(s.withSecurityHeaders(s.withCORS(inner)))
+	if s.accessLog {
+		outer = s.withAccessLog(outer)
+	}
+	return s.withClientIP(s.withCorrelation(outer))
 }
 
 // recordingMux is an http.ServeMux that also declares each pattern to the

@@ -422,8 +422,10 @@ func (s *Server) finishEAPTLS(sess *eapSession) bool {
 
 	username, err := s.eapTLS.Auth.AuthenticateCertificate(state.PeerCertificates[0])
 	if err != nil {
+		// The serial, not the subject, which is a person's name or address:
+		// an operator can find the certificate by it.
 		s.log.Info("EAP-TLS certificate refused", "err", err,
-			"subject", state.PeerCertificates[0].Subject.String())
+			"serial", state.PeerCertificates[0].SerialNumber.String())
 		return false
 	}
 	sess.username = username

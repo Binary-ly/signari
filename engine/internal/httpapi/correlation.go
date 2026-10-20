@@ -8,9 +8,8 @@ import (
 	"net/http"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/logging"
 )
-
-type correlationKey struct{}
 
 // WithCorrelation assigns every request an id and puts it on the context.
 //
@@ -32,7 +31,9 @@ func (s *Server) withCorrelation(next http.Handler) http.Handler {
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
-		ctx := context.WithValue(r.Context(), correlationKey{}, id)
+		// Through the logging package, so every line logged with this
+		// request's context names it without the call site having to.
+		ctx := logging.WithCorrelation(r.Context(), id)
 
 		// Echoed so an operator reading a proxy log or a client's network trace
 		// can find the same request. Safe to expose: it identifies a request,
@@ -44,12 +45,7 @@ func (s *Server) withCorrelation(next http.Handler) http.Handler {
 }
 
 // correlationID returns the id for this request, or "" outside a request.
-func correlationID(ctx context.Context) string {
-	if v, ok := ctx.Value(correlationKey{}).(string); ok {
-		return v
-	}
-	return ""
-}
+func correlationID(ctx context.Context) string { return logging.Correlation(ctx) }
 
 // shortCode renders a correlation id as something a person can read aloud.
 //

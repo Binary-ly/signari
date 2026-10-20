@@ -553,14 +553,14 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 		// guessing run would read it as a wrong password and rotate a correct
 		// credential, and the attack would stay invisible behind a symptom that
 		// looks like their own misconfiguration.
-		s.log.Warn("ldap bind throttled", "username", username,
-			"remote", c.RemoteAddr().String())
+		// Without the username: the audit trail records each bind by
+		// subject, and this log is kept wherever its collector keeps it.
+		s.log.Warn("ldap bind throttled", "remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(appBindResponse,
 			resultBusy, "", "too many recent authentication failures")))
 	}
 	if err != nil || id == nil {
-		s.log.Info("ldap bind failed", "username", username,
-			"remote", c.RemoteAddr().String())
+		s.log.Info("ldap bind failed", "remote", c.RemoteAddr().String())
 		// One message for every failure: no such user, wrong password,
 		// deactivated account. Anything else is a user-enumeration oracle
 		// reachable by anyone who can open the port.
@@ -569,7 +569,7 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 	}
 
 	sess.bound, sess.identity, sess.dn = true, id, req.DN
-	s.log.Info("ldap bind succeeded", "username", username, "remote", c.RemoteAddr().String())
+	s.log.Info("ldap bind succeeded", "remote", c.RemoteAddr().String())
 	return s.write(c, newMessage(messageID, newResult(appBindResponse, resultSuccess, "", "")))
 }
 

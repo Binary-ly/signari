@@ -345,14 +345,14 @@ func (s *Server) handle(ctx context.Context, conn net.PacketConn, addr net.Addr,
 	err = s.auth.Authenticate(actx, strings.TrimSpace(string(username)), password)
 	cancel()
 	if err != nil {
-		s.log.Info("RADIUS authentication failed", "client", client.Name,
-			"username", string(username))
+		// Without the username: the authenticator audits each attempt by
+		// subject, and this log is kept wherever its collector keeps it.
+		s.log.Info("RADIUS authentication failed", "client", client.Name)
 		s.reject(conn, addr, p, secret, "authentication failed")
 		return
 	}
 
-	s.log.Info("RADIUS authentication succeeded", "client", client.Name,
-		"username", string(username))
+	s.log.Info("RADIUS authentication succeeded", "client", client.Name)
 
 	// Network authorisation, when the deployment has any.
 	//

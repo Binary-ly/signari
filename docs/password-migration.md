@@ -40,6 +40,11 @@ A source is created **disabled**. While it is enabled, the password a pending
 person types is sent to it, so switching it on is a decision rather than a
 default.
 
+Running `add` again replaces the source. Leaving `-client-secret` out keeps the
+stored one only while the token endpoint and client id stay the same; changing
+either without a secret is refused, because the stored secret was issued by the
+old provider and would otherwise be sent to the new endpoint.
+
 ## What is enforced, not configured
 
 - **Encrypted transport only.** A token endpoint must be `https://`; a

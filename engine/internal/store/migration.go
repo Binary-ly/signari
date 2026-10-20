@@ -205,6 +205,28 @@ func SetMigrationSource(ctx context.Context, tx pgx.Tx, root *keys.RootKey, orgI
 			return "", err
 		}
 	}
+	// A stored secret was issued by the provider it was configured for. A
+	// change of endpoint, client id or kind that brings no secret of its own
+	// would send it to whoever the new endpoint is, so it is refused: neither
+	// carried over nor dropped, which would fail every migrating sign-in with
+	// no word of why.
+	if c.ClientSecret == "" && c.Kind == "oidc_password" {
+		var kind, endpoint string
+		var oldClientID *string
+		var hasSecret bool
+		err := tx.QueryRow(ctx, `
+			SELECT kind, token_endpoint, client_id, client_secret_enc IS NOT NULL
+			FROM core.migration_sources WHERE org_id = $1::uuid FOR UPDATE`, orgID).
+			Scan(&kind, &endpoint, &oldClientID, &hasSecret)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return "", err
+		}
+		if err == nil && hasSecret &&
+			(kind != c.Kind || endpoint != c.URL || oldClientID == nil || *oldClientID != c.ClientID) {
+			return "", invalidSource("the token endpoint or client id changed, so give the client " +
+				"secret again: the stored one was issued for the old provider and is sent nowhere else")
+		}
+	}
 	var clientID, template, ca *string
 	if c.ClientID != "" {
 		clientID = &c.ClientID

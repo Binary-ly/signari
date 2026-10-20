@@ -77,6 +77,25 @@ func TestAMigrationSourceCanBeConfiguredOverTheAdminAPI(t *testing.T) {
 	if code != http.StatusOK || out["enabled"] != true || out["has_client_secret"] != true {
 		t.Errorf("a PUT with no secret and enabled gave %d %v; want it enabled and the secret kept", code, out)
 	}
+	// The stored secret was issued for this endpoint and client id (1.89):
+	// repointing either without a new secret is refused, and the source stays
+	// as it was, rather than sending the old secret to the new endpoint.
+	for _, moved := range []string{
+		`{"kind":"oidc_password","display_name":"Old IdP","url":"https://elsewhere.example.test/token","client_id":"migration"}`,
+		`{"kind":"oidc_password","display_name":"Old IdP","url":"https://old.example.test/token","client_id":"another"}`,
+	} {
+		if code, out := call(http.MethodPut, moved); code != http.StatusBadRequest || out["error"] != "invalid_migration_source" {
+			t.Errorf("PUT %s with no secret gave %d %v; want 400 invalid_migration_source", moved, code, out)
+		}
+	}
+	if code, out := call(http.MethodGet, ""); code != http.StatusOK || out["url"] != "https://old.example.test/token" {
+		t.Errorf("after the refused moves the source is %d %v; want it unchanged", code, out)
+	}
+	code, out = call(http.MethodPut, `{"kind":"oidc_password","display_name":"Old IdP",
+		"url":"https://elsewhere.example.test/token","client_id":"migration","client_secret":"n3w"}`)
+	if code != http.StatusOK || out["url"] != "https://elsewhere.example.test/token" || out["has_client_secret"] != true {
+		t.Errorf("moving it with a new secret gave %d %v; want it moved, holding the new secret", code, out)
+	}
 	code, out = call(http.MethodGet, "")
 	raw, _ := json.Marshal(out)
 	if code != http.StatusOK || strings.Contains(string(raw), "s3cret") || strings.Contains(string(raw), "secret_enc") {

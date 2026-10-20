@@ -922,6 +922,8 @@ func run(args []string) (err error) {
 		return racSetParameters(ctx, conn, *orgID, *slug, *racParams)
 	case "audit checkpoint":
 		return auditCheckpoint(ctx, conn, *orgID, *declaredBy, *reason)
+	case "audit verify":
+		return auditVerify(ctx, conn)
 	case "export audit":
 		return exportAudit(ctx, conn, *orgID, *fromDay, *toDay, *outFile)
 	case "registration enable":

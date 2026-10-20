@@ -119,8 +119,14 @@ signari keys list
 
 # 3. The audit chain survived the round trip. A restore that silently corrupted
 #    it would leave you unable to prove anything about the period it covers.
-SIGNARI_TEST_DSN="$SIGNARI_DSN" go test ./internal/audit/ -run TestLiveChainVerifies -v
+#    It exits non-zero and names the entry when it does not verify.
+signari audit verify
 ```
+
+Step 3 used to be `go test ./internal/audit/ -run TestLiveChainVerifies`, which
+needs the source tree and the Go toolchain on the host doing the restore.
+`signari audit verify` judges the chain as an export does: the whole of it, or
+everything since a declared checkpoint, said so. `signari doctor` reports the same.
 
 If step 2 fails with *"unwrapping subject key (is the root key correct?)"*, the
 dump and the key file are from different eras. **Do not proceed** — find the
@@ -132,7 +138,7 @@ An untested backup is a hypothesis. Run the three checks above against the most
 recent dump **monthly**, and record when it last succeeded:
 
 ```sh
-signari verify && signari keys list >/dev/null \
+signari verify && signari keys list >/dev/null && signari audit verify \
   && signari restore finalize -confirm signari_restore \
   && date -u +%Y-%m-%dT%H:%M:%SZ > /var/lib/signari/last-restore-test
 ```

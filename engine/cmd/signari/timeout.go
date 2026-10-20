@@ -22,6 +22,7 @@ var unboundedCommands = map[string]string{
 	"migrate all":       "both of the above",
 	"export audit":      "verifies and writes the whole audit trail",
 	"audit checkpoint":  "verifies the whole audit trail before declaring the restart point",
+	"audit verify":      "verifies the whole audit trail",
 	"import authentik":  "imports every user in the export file",
 	"import keycloak":   "imports every user in the export file",
 	"dir sync":          "reads every person in the directory",

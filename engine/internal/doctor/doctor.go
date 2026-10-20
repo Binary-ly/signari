@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/authzen"
 	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/i18n"
@@ -175,6 +176,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 		return nil, err
 	}
 	checkQueryExecMode(conn, r)
+	if err := checkAuditChain(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	checkSchemaPin(r)
 	checkTheme(r)
 
@@ -1321,6 +1325,37 @@ func checkSchemaPin(r *Report) {
 			"--build-arg SIGNARI_SCHEMA_FINGERPRINT=\"$(scripts/schema-fingerprint.sh)\" "+
 			"to docker build. The version counter and the ledger comparison gate an "+
 			"unpinned binary either way.")
+}
+
+// checkAuditChain says whether the audit trail verifies, judged as an export
+// judges it (3.21). Nothing reported a broken chain until somebody exported
+// the trail, which is when it is already needed as evidence.
+func checkAuditChain(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("audit chain")
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	s, err := audit.JudgeChain(ctx, tx)
+	if err != nil {
+		return err
+	}
+	switch {
+	case !s.Verified:
+		r.add(Critical, "audit",
+			fmt.Sprintf("the audit chain is broken at entry %d: a row was altered or removed, "+
+				"and no checkpoint covers it", s.BrokenAt),
+			"Do not declare a checkpoint to make this go away. Find what changed the row "+
+				"first: `signari audit verify` names the entry, and the entries around it "+
+				"say when.")
+	case s.Checkpoint != nil:
+		r.add(Info, "audit",
+			fmt.Sprintf("the audit chain verifies over %d entries since the checkpoint declared on %s; "+
+				"the %d before it are not asserted", s.Checked, s.Checkpoint.At.Format("2006-01-02"),
+				s.Checkpoint.SkippedEntries), "")
+	}
+	return nil
 }
 
 // checkQueryExecMode refuses the two query modes the engine does not work in

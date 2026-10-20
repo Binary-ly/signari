@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/brand"
 	"signari.dev/engine/internal/i18n"
@@ -215,8 +217,12 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	pending, err := store.LoadTOTPEnrolment(ctx, tx, userID, s.cfg.Root)
-	if errors.Is(err, store.ErrTOTPEnrolmentOld) {
+	outcome, codes, replaced, err := s.confirmTOTP(ctx, tx, userID, orgID, r.PostForm.Get("code"))
+	switch {
+	case err != nil:
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	case outcome == totpExpired:
 		// Released before rendering, which takes a connection of its own.
 		_ = tx.Rollback(ctx)
 		csrf, _ := s.csrfToken(w, r)
@@ -226,20 +232,10 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 			"Error": s.tr(r).T("error.totp.expired"),
 		})
 		return
-	}
-	if err != nil {
-		s.log.Info("confirming TOTP without an enrolment in progress", "err", err)
+	case outcome == totpNone:
 		http.Redirect(w, r, "/account/mfa/totp", http.StatusSeeOther)
 		return
-	}
-
-	counter, verr := mfa.Verify(pending.Secret, r.PostForm.Get("code"), time.Now(),
-		pending.Digits, pending.Period, mfa.DefaultSkew, 0)
-	if verr != nil {
-		// Not a lockout path: a failed CONFIRMATION means the app was scanned
-		// wrong, and locking someone out of enrolment for mistyping would be a
-		// self-inflicted denial of service. Nothing about the user's current
-		// factor has changed.
+	case outcome == totpMismatch:
 		_ = tx.Rollback(ctx)
 		csrf, _ := s.csrfToken(w, r)
 		s.renderPage(w, r, "enrol", map[string]any{
@@ -248,42 +244,86 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
-	replaced, err := store.CompleteTOTPEnrolment(ctx, tx, userID, counter)
-	if err != nil {
-		s.log.Error("confirming TOTP", "err", err)
+	if err := tx.Commit(ctx); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	s.announceTOTP(ctx, userID, replaced)
 
+	// Shown ONCE. Only hashes are stored, so this page cannot be reproduced --
+	// which is the point: a system that can show a user their recovery codes
+	// again can show them to whoever reads the database.
+	s.renderPage(w, r, "recovery", map[string]any{"Codes": codes})
+}
+
+// What a TOTP confirmation found.
+type totpOutcome int
+
+const (
+	totpConfirmed totpOutcome = iota
+	// totpNone is no enrolment in progress.
+	totpNone
+	// totpExpired is an enrolment begun too long ago.
+	totpExpired
+	// totpMismatch is a code the shown secret did not produce. Not a lockout
+	// path: a failed CONFIRMATION means the app was scanned wrong, and locking
+	// someone out of enrolment for mistyping would be a self-inflicted denial
+	// of service. Nothing about the user's current factor has changed.
+	totpMismatch
+)
+
+// confirmTOTP checks the first code from a scanned secret and, when it
+// matches, makes the enrolment the person's authenticator, issues recovery
+// codes and audits it, in tx. The caller commits and then announces it. Shared
+// by the account page and the enrolment a sign-in flow requires, so the two
+// cannot differ in what they make.
+func (s *Server) confirmTOTP(ctx context.Context, tx pgx.Tx, userID, orgID, code string) (
+	outcome totpOutcome, codes []string, replaced bool, err error) {
+
+	pending, err := store.LoadTOTPEnrolment(ctx, tx, userID, s.cfg.Root)
+	if errors.Is(err, store.ErrTOTPEnrolmentOld) {
+		return totpExpired, nil, false, nil
+	}
+	if err != nil {
+		s.log.Info("confirming TOTP without an enrolment in progress", "err", err)
+		return totpNone, nil, false, nil
+	}
+	counter, verr := mfa.Verify(pending.Secret, code, time.Now(),
+		pending.Digits, pending.Period, mfa.DefaultSkew, 0)
+	if verr != nil {
+		return totpMismatch, nil, false, nil
+	}
+
+	replaced, err = store.CompleteTOTPEnrolment(ctx, tx, userID, counter)
+	if err != nil {
+		s.log.Error("confirming TOTP", "err", err)
+		return totpNone, nil, false, err
+	}
 	// Recovery codes are generated WITH the factor, not offered afterwards.
 	// Enrolment that leaves them to a later optional step is how a lost phone
 	// becomes an unrecoverable account -- and the pressure that creates is what
 	// turns a help desk into the weakest authentication path in the system.
-	codes, err := store.GenerateRecoveryCodes(ctx, tx, userID, orgID, 10)
+	codes, err = store.GenerateRecoveryCodes(ctx, tx, userID, orgID, 10)
 	if err != nil {
 		s.log.Error("generating recovery codes", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return totpNone, nil, false, err
 	}
-
 	if err := audit.Write(ctx, tx, audit.Event{
 		Type: "mfa.totp_enrolled", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"recovery_codes_issued": len(codes), "replaced": replaced},
 	}); err != nil {
 		s.log.Error("auditing TOTP enrolment", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return totpNone, nil, false, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
+	return totpConfirmed, codes, replaced, nil
+}
 
-	// A second factor changing is exactly what the account holder must hear
-	// about on an independent channel. Best-effort, after the commit: the
-	// credential is already in place, so a notice that fails must not undo it.
+// announceTOTP tells the account holder an authenticator was added or
+// replaced. A second factor changing is exactly what they must hear about on
+// an independent channel. Best-effort, after the commit: the credential is
+// already in place, so a notice that fails must not undo it.
+func (s *Server) announceTOTP(ctx context.Context, userID string, replaced bool) {
 	tr := s.notifierFor(ctx, userID)
 	if replaced {
 		_ = s.notifyAccount(ctx, userID, tr.Text("mail.totp.replaced.subject"),
@@ -292,11 +332,6 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		_ = s.notifyAccount(ctx, userID, tr.Text("mail.totp.enrolled.subject"),
 			tr.Text("mail.totp.enrolled.body"), tr.Text("sms.totp.enrolled"))
 	}
-
-	// Shown ONCE. Only hashes are stored, so this page cannot be reproduced --
-	// which is the point: a system that can show a user their recovery codes
-	// again can show them to whoever reads the database.
-	s.renderPage(w, r, "recovery", map[string]any{"Codes": codes})
 }
 
 func (s *Server) orgLabel(ctx context.Context, orgID string) string {

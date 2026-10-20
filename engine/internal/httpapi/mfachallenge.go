@@ -57,6 +57,10 @@ type pendingClaims struct {
 	Authz    string   `json:"authz,omitempty"`
 	IssuedAt int64    `json:"iat"`
 	Expiry   int64    `json:"exp"`
+	// Stage names the stage that held the sign-in when only that stage's
+	// pages may continue it (enrolmfa.go). Empty for the code step and the
+	// prompts, which are reached by any pending sign-in.
+	Stage string `json:"stg,omitempty"`
 }
 
 // beginMFAChallenge issues the pending token and renders the code prompt.

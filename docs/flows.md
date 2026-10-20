@@ -164,15 +164,41 @@ stage.
 
 | `on:` | stages it runs |
 |---|---|
-| `authentication` | `mfa`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the authorization endpoint |
+| `authentication` | `mfa`, `enrol_mfa`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the authorization endpoint |
 | `enrolment` | `captcha`, `prompt`, `create_user`, `deny`, `done` |
 | `recovery` | `captcha`, `identify`, `email_otp`, `password_change`, `deny`, `done` |
 | `unenrolment` | not judged: nothing walks this designation |
 
-The rest wait for a driver: `enrol_mfa` (forced enrolment), `delegated` and
-`certificate` (a source the flow would have to pin), and `email_otp` and
-`sms_otp` as a first factor at sign-in. The safety rules still know them, so a
-file naming one is refused for the right reason rather than read as a typo.
+The rest wait for a driver: `delegated` and `certificate` (a source the flow
+would have to pin), and `email_otp` and `sms_otp` as a first factor at sign-in.
+The safety rules still know them, so a file naming one is refused for the right
+reason rather than read as a typo.
+
+### Requiring somebody to enrol a second factor
+
+`enrol_mfa` holds the sign-in of somebody with no second factor until they
+enrol an authenticator app: the enrolment page, then their recovery codes, then
+the sign-in goes on through the rest of the flow. Somebody with a factor passes
+it. Written with the challenge, it is "ask for the factor, or make them enrol
+one":
+
+```yaml
+- password
+- {stage: mfa, when: user_has_second_factor}
+- {stage: enrol_mfa, when: not user_has_second_factor}
+- session
+```
+
+Enrolling proves nothing about who is signing in, since anyone with the
+password could have done it, so it adds nothing to the session: under this
+flow the new authenticator is asked for its next code at once, and the session
+is multi-factor; under `password, enrol_mfa, session` it is password-only. The
+enrolment pages answer only a sign-in this stage held, and never for somebody
+who has a factor, so a password cannot be used through them to replace an
+existing authenticator. Only an authenticator app can be enrolled here; a
+passkey is added from the account page. Until October 2026 a flow naming
+`enrol_mfa` was refused when parsed, and an unconditional `mfa` turned away
+everybody with nothing enrolled.
 
 ### A sign-in's proving stage is the proof presented
 

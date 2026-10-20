@@ -482,6 +482,17 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			s.beginPasswordChange(w, r, userID, orgID, amr, authzQuery, reason)
 			return decisionHandled
 
+		case flow.StageEnrolMFA:
+			// Somebody with a factor has nothing to enrol, whatever the stage's
+			// condition said; somebody without one is held until they have one
+			// (enrolmfa.go). It never replaces a factor.
+			if facts.Holds(string(flow.CondHasSecondFactor)) {
+				continue
+			}
+			_ = tx.Rollback(ctx)
+			s.beginEnrolMFA(w, r, userID, orgID, amr, authzQuery)
+			return decisionHandled
+
 		case flow.StageMFA:
 			// Acted on HERE, so the stage binds every way in.
 			//

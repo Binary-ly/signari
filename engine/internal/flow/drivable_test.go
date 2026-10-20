@@ -32,7 +32,6 @@ func TestAStageTheJourneyCannotRunIsRefused(t *testing.T) {
 		{Authentication, "[certificate, session]", "certificate"},
 		{Authentication, "[email_otp, session]", "email_otp"},
 		{Authentication, "[sms_otp, session]", "sms_otp"},
-		{Authentication, "[password, enrol_mfa, session]", "enrol_mfa"},
 		{Enrolment, "[enrol_mfa, create_user, done]", "enrol_mfa"},
 		{Enrolment, "[identify, create_user, done]", "identify"},
 		{Recovery, "[identify, email_otp, mfa, password_change, done]", "mfa"},

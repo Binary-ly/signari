@@ -274,15 +274,14 @@ var answered = map[Designation][]Condition{
 // first time somebody tried. A driven flow naming one is refused at parse, by
 // name, like a condition no journey evaluates.
 //
-// The sign-in set has two kinds. The walker acts on mfa, prompt,
+// The sign-in set has two kinds. The walker acts on mfa, enrol_mfa, prompt,
 // password_change and the terminals. identify, captcha, password, passkey,
 // kerberos, federated and consent are settled before the walk, by the route
 // that reached it -- the sign-in form, the passkey ceremony, the Negotiate
 // exchange, a provider's callback -- and the walker requires a proving one
 // among them to be the proof that route presented (2.49). The stages refused
-// there wait for a driver: forced enrolment (enrol_mfa), a source pinned per
-// flow (delegated, certificate), a code as the first factor (email_otp,
-// sms_otp).
+// there wait for a driver: a source pinned per flow (delegated, certificate),
+// a code as the first factor (email_otp, sms_otp).
 //
 // Widen a set only in step with a driver; internal/httpapi's
 // TestEveryStageAFlowCanUseIsDriven reads the drivers and compares.
@@ -290,7 +289,7 @@ var drivable = map[Designation][]StageName{
 	Authentication: {
 		StageMFA, StagePrompt, StagePasswordChange, StageSession, StageDeny, StageDone,
 		StageIdentify, StageCaptcha, StagePassword, StagePasskey, StageKerberos, StageFederated,
-		StageConsent,
+		StageConsent, StageEnrolMFA,
 	},
 	Enrolment: {StageCaptcha, StagePrompt, StageCreateUser, StageDeny, StageDone},
 	Recovery: {

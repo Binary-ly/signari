@@ -55,6 +55,7 @@
   "enrol.entercode": "Enter the 6-digit code it shows",
   "enrol.submit": "Turn on two-factor authentication",
   "enrol.intro": "Use an authenticator app as a second step when you sign in. You will scan a code with the app, then enter the six digits it shows.",
+  "enrol.required": "Your organisation requires a second factor on this account before you can continue.",
   "enrol.keepscurrent": "Your current authenticator keeps working until you confirm the new one.",
   "enrol.begin": "Show my setup code",
 

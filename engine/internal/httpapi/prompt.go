@@ -47,6 +47,13 @@ func (s *Server) beginPrompt(w http.ResponseWriter, r *http.Request,
 // setPendingCookie mints the short-lived token that carries a login in flight.
 func (s *Server) setPendingCookie(w http.ResponseWriter, userID, orgID string,
 	amr []string, authzQuery string) error {
+	return s.setPendingCookieFor(w, userID, orgID, amr, authzQuery, "")
+}
+
+// setPendingCookieFor is setPendingCookie for a sign-in only one stage's pages
+// may continue (pendingClaims.Stage).
+func (s *Server) setPendingCookieFor(w http.ResponseWriter, userID, orgID string,
+	amr []string, authzQuery, stage string) error {
 
 	key, err := s.cfg.Keys.Active(keys.ES256)
 	if err != nil {
@@ -64,6 +71,7 @@ func (s *Server) setPendingCookie(w http.ResponseWriter, userID, orgID string,
 	tok, err := tokens.NewSigner(key).SignJSON(pendingClaims{
 		Issuer: s.cfg.Issuer, Subject: userID, OrgID: orgID, AMR: amr,
 		Authz: authzQuery, IssuedAt: now.Unix(), Expiry: now.Add(pendingTTL).Unix(),
+		Stage: stage,
 	}, typPending)
 	if err != nil {
 		return err

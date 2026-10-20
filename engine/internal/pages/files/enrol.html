@@ -3,9 +3,10 @@
 <h1>{{T "enrol.title"}}</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 {{if .Begin}}
+{{if .SignIn}}<p>{{T "enrol.required"}}</p>{{end}}
 <p>{{T "enrol.intro"}}</p>
 {{if .HasCurrent}}<p class="hint">{{T "enrol.keepscurrent"}}</p>{{end}}
-<form method="POST" action="/account/mfa/totp/start">
+<form method="POST" action="{{if .SignIn}}/login/enrol-mfa/start{{else}}/account/mfa/totp/start{{end}}">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 <button type="submit">{{T "enrol.begin"}}</button>
 </form>
@@ -20,7 +21,7 @@
 <p class="hint">{{T "enrol.openlink" .}}</p>
 </details>
 {{end}}
-<form method="POST" action="/account/mfa/totp">
+<form method="POST" action="{{if .SignIn}}/login/enrol-mfa{{else}}/account/mfa/totp{{end}}">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 <label for="c">{{T "enrol.entercode"}}</label>
 <input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>

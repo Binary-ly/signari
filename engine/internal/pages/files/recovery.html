@@ -4,4 +4,8 @@
 <p>{{T "recovery.save"}}</p>
 <ol>{{range .Codes}}<li>{{.}}</li>{{end}}</ol>
 <p class="hint">{{T "recovery.hint"}}</p>
+{{if .SignIn}}<form method="POST" action="/login/enrol-mfa/continue">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<button type="submit">{{T "common.continue"}}</button>
+</form>{{end}}
 {{end}}

@@ -15,6 +15,36 @@ import (
 	"time"
 )
 
+// samlResponse signs the fixture's user in to the own-organisation provider
+// and returns the SAML Response it is sent.
+func (rf *realmFixture) samlResponse(t *testing.T) string {
+	t.Helper()
+	doc := fmt.Sprintf(`<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+ xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_sign-%d" Version="2.0"
+ IssueInstant="%s" Destination="https://signin-test.example/saml/sso"
+ AssertionConsumerServiceURL="https://sp.test/acs"
+ ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"><saml:Issuer>%s</saml:Issuer></samlp:AuthnRequest>`,
+		time.Now().UnixNano(), time.Now().UTC().Format(time.RFC3339), rf.own)
+	var buf bytes.Buffer
+	w, _ := flate.NewWriter(&buf, flate.BestCompression)
+	_, _ = w.Write([]byte(doc))
+	_ = w.Close()
+	r := httptest.NewRequest(http.MethodGet, "/saml/sso?SAMLRequest="+
+		url.QueryEscape(base64.StdEncoding.EncodeToString(buf.Bytes())), nil)
+	r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: rf.cookie})
+	rec := httptest.NewRecorder()
+	rf.f.srv.Routes().ServeHTTP(rec, r)
+	m := samlResponseField.FindStringSubmatch(rec.Body.String())
+	if m == nil {
+		t.Fatalf("no SAMLResponse in a %d answer: %.300s", rec.Code, rec.Body.String())
+	}
+	xml, err := base64.StdEncoding.DecodeString(html.UnescapeString(m[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(xml)
+}
+
 // What `signari saml signing` set is what the provider receives (2.05). The
 // two flags were loaded and read by nothing, so every response signed the
 // assertion only, and a provider requiring a signed Response refused them all.
@@ -29,30 +59,7 @@ func TestAProviderIsSentTheSignaturesItWasSetTo(t *testing.T) {
 			rf.own, assertions, responses); err != nil {
 			t.Fatal(err)
 		}
-		doc := fmt.Sprintf(`<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
- xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_sign-%d" Version="2.0"
- IssueInstant="%s" Destination="https://signin-test.example/saml/sso"
- AssertionConsumerServiceURL="https://sp.test/acs"
- ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"><saml:Issuer>%s</saml:Issuer></samlp:AuthnRequest>`,
-			time.Now().UnixNano(), time.Now().UTC().Format(time.RFC3339), rf.own)
-		var buf bytes.Buffer
-		w, _ := flate.NewWriter(&buf, flate.BestCompression)
-		_, _ = w.Write([]byte(doc))
-		_ = w.Close()
-		r := httptest.NewRequest(http.MethodGet, "/saml/sso?SAMLRequest="+
-			url.QueryEscape(base64.StdEncoding.EncodeToString(buf.Bytes())), nil)
-		r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: rf.cookie})
-		rec := httptest.NewRecorder()
-		rf.f.srv.Routes().ServeHTTP(rec, r)
-		m := samlResponseField.FindStringSubmatch(rec.Body.String())
-		if m == nil {
-			t.Fatalf("no SAMLResponse in a %d answer: %.300s", rec.Code, rec.Body.String())
-		}
-		xml, err := base64.StdEncoding.DecodeString(html.UnescapeString(m[1]))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(xml)
+		return rf.samlResponse(t)
 	}
 	// Where each signature is: the Response's comes before its Status, the
 	// assertion's after it.

@@ -56,6 +56,9 @@ type Provider struct {
 	SPSigningCert           string
 	// SPKeyTransport names the RSA key transport algorithm for encryption.
 	SPKeyTransport string
+	// SignatureAlg is what this provider is signed with: SignatureAlgRSASHA256
+	// or SignatureAlgECDSASHA256.
+	SignatureAlg string
 
 	// SPEncryptionCert is the SEPARATE certificate the assertion is encrypted
 	// to. Empty means no encryption; TLS is the transport either way.

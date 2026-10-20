@@ -650,6 +650,9 @@ func run(args []string) (err error) {
 	signResponses := fs.Bool("sign-responses", false, "sign the SAML response envelope")
 	assertionLifetime := fs.Int("assertion-lifetime", 0,
 		"seconds a SAML assertion stays valid, 30 to 3600; 0 leaves it unchanged")
+	signatureAlg := fs.String("signature-alg", "",
+		"what a SAML provider is signed with: rsa-sha256 (the active RS256 key) or "+
+			"ecdsa-sha256 (the active ES256 key); empty leaves it unchanged")
 	samlAttrName := fs.String("attribute-name", "",
 		"the SAML attribute name group membership is released under (saml group-release)")
 	rpID := fs.String("rp-id", "",
@@ -1169,7 +1172,7 @@ func run(args []string) (err error) {
 		if given["sign-responses"] {
 			responses = signResponses
 		}
-		return samlSigning(ctx, conn, *entityID, assertions, responses, *assertionLifetime)
+		return samlSigning(ctx, conn, *entityID, assertions, responses, *assertionLifetime, *signatureAlg)
 	case "saml group-release":
 		return samlGroupRelease(ctx, conn, *entityID, *samlAttrName, *onlyGroups, *removeMember)
 	case "idp verified-email":

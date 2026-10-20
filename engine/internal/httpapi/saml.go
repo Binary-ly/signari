@@ -45,30 +45,33 @@ const (
 func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	certs, err := s.samlCertificates(ctx)
-	if err != nil {
-		s.log.Error("building SAML metadata", "err", err)
-		http.Error(w, "unavailable", http.StatusInternalServerError)
-		return
-	}
-
 	// `?sp=<entityID>` tailors the document to one registered provider. The
 	// signing requirement is per-provider, so without this the operator has to
 	// know a fact the metadata does not state -- and getting it wrong means every
-	// login through that provider is refused with a signature error.
+	// login through that provider is refused with a signature error. So is the
+	// signature algorithm, and with it which certificates the provider is given.
 	//
 	// An unknown entity id is NOT an error: it is answered with the default
 	// document, because failing here would turn this endpoint into a way to
 	// enumerate which service providers are registered.
 	var wantSigned bool
+	signatureAlg := saml.SignatureAlgRSASHA256
 	if sp := r.URL.Query().Get("sp"); sp != "" {
 		if p, perr := store.LoadSAMLProvider(ctx, s.db, sp); perr == nil {
 			wantSigned = p.WantAuthnRequestsSigned
+			signatureAlg = p.SignatureAlg
 		} else if !errors.Is(perr, store.ErrSAMLProviderUnknown) {
 			s.log.Error("loading SAML provider for metadata", "err", perr)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
+	}
+
+	certs, err := s.samlCertificates(ctx, signatureAlg)
+	if err != nil {
+		s.log.Error("building SAML metadata", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
 	}
 
 	doc, err := saml.Metadata(saml.MetadataInput{
@@ -440,7 +443,7 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 		return "", "", err
 	}
 
-	key, err := s.samlSigningKey()
+	key, err := s.samlSigningKey(p.SignatureAlg)
 	if err != nil {
 		return "", "", err
 	}
@@ -694,18 +697,31 @@ func samlBindingFromQuery(r *http.Request) bool {
 	return strings.EqualFold(r.URL.Query().Get("Binding"), "POST")
 }
 
-// samlSigningKey picks the key SAML can actually use.
+// samlKeyAlgorithm is the signing key a provider's signature algorithm uses.
+// Anything but ecdsa-sha256 is RSA, which is also what an unknown provider's
+// metadata is built for.
+func samlKeyAlgorithm(signatureAlg string) keys.Algorithm {
+	if signatureAlg == saml.SignatureAlgECDSASHA256 {
+		return keys.ES256
+	}
+	return keys.RS256
+}
+
+// samlSigningKey picks the key a provider is signed with: the active RS256 key
+// unless the provider was set to ecdsa-sha256.
 //
 // Distinct from anySigningKey, which prefers ES256: that is the right default
-// for OIDC and unusable here, because a great deal of service-provider software
-// cannot verify ECDSA. Choosing it would produce assertions that are correct and
-// rejected anyway.
-func (s *Server) samlSigningKey() (keys.Key, error) {
-	if k, err := s.cfg.Keys.Active(keys.RS256); err == nil {
+// for OIDC and wrong as one here, because a great deal of service-provider
+// software cannot verify ECDSA. Signing every provider with it would produce
+// assertions that are correct and rejected anyway, so ECDSA is chosen per
+// provider by whoever knows the far end.
+func (s *Server) samlSigningKey(signatureAlg string) (keys.Key, error) {
+	alg := samlKeyAlgorithm(signatureAlg)
+	if k, err := s.cfg.Keys.Active(alg); err == nil {
 		return k, nil
 	}
-	return nil, fmt.Errorf("SAML needs an active RS256 key and this instance has none; " +
-		"add one with `signari keys rotate -alg RS256`")
+	return nil, fmt.Errorf("SAML %s needs an active %s key and this instance has none; "+
+		"add one with `signari keys rotate -alg %s`", signatureAlg, alg, alg)
 }
 
 // samlCertificateFor returns the stored certificate for one key.
@@ -724,20 +740,24 @@ func (s *Server) samlCertificateFor(ctx context.Context, k keys.Key) ([]byte, er
 
 // samlCertificates returns every certificate a service provider should accept,
 // so that rotation does not break every integration at the moment of the switch.
-func (s *Server) samlCertificates(ctx context.Context) ([][]byte, error) {
-	active, err := s.samlSigningKey()
+//
+// For the algorithm one provider is signed with, so a provider on ecdsa-sha256
+// is given the ES256 certificates and every other reader the RS256 ones.
+func (s *Server) samlCertificates(ctx context.Context, signatureAlg string) ([][]byte, error) {
+	active, err := s.samlSigningKey(signatureAlg)
 	if err != nil {
 		return nil, err
 	}
-	// Every RS256 key that is not retired: the active one that signs, the next
-	// one so a provider refetching metadata pins it before it signs, and the
-	// passive one a provider may still be holding a response from. Only the
-	// active key's certificate was published, against docs/saml.md, so a
-	// rotation was an outage for every provider that pins: the first assertion
-	// under the new key arrived with a certificate it had never seen.
+	// Every key of that algorithm that is not retired: the active one that
+	// signs, the next one so a provider refetching metadata pins it before it
+	// signs, and the passive one a provider may still be holding a response
+	// from. Only the active key's certificate was published, against
+	// docs/saml.md, so a rotation was an outage for every provider that pins:
+	// the first assertion under the new key arrived with a certificate it had
+	// never seen.
 	ordered := []keys.Key{active}
 	for _, k := range s.cfg.Keys.Keys() {
-		if k.KID() == active.KID() || k.Algorithm() != keys.RS256 {
+		if k.KID() == active.KID() || k.Algorithm() != active.Algorithm() {
 			continue
 		}
 		if st := k.State(); st == keys.StateNext || st == keys.StatePassive {

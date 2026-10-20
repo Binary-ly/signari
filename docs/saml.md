@@ -147,14 +147,41 @@ signer's by name needs the names to differ: with three certificates all called
 and found no key in another. A certificate made before October 2026 keeps its
 old name, since its fingerprint is pinned, and leaves when its key rotates out.
 
-SAML requires an **RS256** key. ECDSA is specified and refused by a great deal
-of real service-provider software, so an EC-signed assertion would be correct
-and rejected anyway. Signari says so up front rather than letting you find out:
+### Which key signs a provider
 
+Each provider is signed with **RSA-SHA256** by the active RS256 key, unless it
+has been set to **ECDSA-SHA256**, which the active ES256 key signs:
+
+```sh
+signari saml signing -entity-id https://sp.example.com -signature-alg ecdsa-sha256
 ```
-this instance's active key is ECDSA, which most SAML service providers cannot
-verify. Rotate in an RS256 key before enabling SAML: `signari keys rotate -alg RS256`
-```
+
+RSA is the default because ECDSA is specified and refused by a great deal of
+real service-provider software, so an EC-signed assertion to a provider that
+cannot verify it is correct and rejected anyway. Only whoever knows the far end
+can say it can, which is why the setting is per provider and never follows
+whichever key happens to be active. The command refuses an algorithm the
+provider's instance has no active key for, since every sign-in to it would then
+fail.
+
+A provider's metadata, `/saml/metadata?sp=<entity-id>`, carries the
+certificates of the algorithm it is set to. Give it the new document before its
+next sign-in: it checks signatures against the certificates it already holds.
+The default document, with no `sp`, carries the RS256 certificates. Set a
+provider to ECDSA only once every node runs a release that reads the setting;
+an older node ignores it and signs with RSA.
+
+An ECDSA signature value is r and s as two 32-byte integers, concatenated,
+which is what xmlsec1 writes and accepts. A key's `crypto.Signer` returns the
+DER encoding instead, and xmlsec1 refuses that with `SIGNATURE`; the engine
+converts it. The redirect binding's `Signature` parameter carries the same
+encoding under the same `SigAlg`. No independent receiver has checked that
+encoding for the redirect binding here.
+
+Signing goes through the key's `crypto.Signer` alone, so a key whose private
+half never leaves a key store signs SAML exactly as a software key does. Until
+October 2026 SAML required an in-process RSA private key and refused every
+other.
 
 ## Single logout
 

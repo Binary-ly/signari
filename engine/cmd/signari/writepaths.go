@@ -37,6 +37,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/user"
 	"sort"
@@ -47,6 +48,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
 )
@@ -1230,11 +1232,19 @@ func samlAttributeRelease(ctx context.Context, conn *pgx.Conn, entityID, samlNam
 // A nil flag is one not given and leaves its setting alone. Both used to be
 // written every time, so changing only the lifetime turned Response signing off
 // again, and a provider that requires it refused every sign-in after.
+//
+// The signature algorithm is refused when no active key of its kind exists,
+// because every sign-in to that provider would then fail at signing.
 func samlSigning(ctx context.Context, conn *pgx.Conn, entityID string,
-	assertions, responses *bool, lifetime int) error {
+	assertions, responses *bool, lifetime int, signatureAlg string) error {
 
 	if entityID == "" {
 		return fmt.Errorf("give -entity-id")
+	}
+	keyAlg := map[string]string{
+		saml.SignatureAlgRSASHA256: "RS256", saml.SignatureAlgECDSASHA256: "ES256"}[signatureAlg]
+	if signatureAlg != "" && keyAlg == "" {
+		return fmt.Errorf("-signature-alg is rsa-sha256 or ecdsa-sha256, not %q", signatureAlg)
 	}
 	var signA, signR bool
 	if err := conn.QueryRow(ctx, `
@@ -1244,6 +1254,26 @@ func samlSigning(ctx context.Context, conn *pgx.Conn, entityID string,
 			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
 		}
 		return err
+	}
+	var algArg any
+	if keyAlg != "" {
+		// In the provider's own instance: that is the key set its sign-ins use.
+		var active bool
+		if err := conn.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM core.signing_keys k
+			                 JOIN core.organizations o ON o.instance_id = k.instance_id
+			                 JOIN core.saml_providers p ON p.org_id = o.id
+			               WHERE p.entity_id = $2 AND k.algorithm = $1
+			                 AND k.state = 'active' AND k.purpose = 'oidc')`,
+			keyAlg, entityID).Scan(&active); err != nil {
+			return err
+		}
+		if !active {
+			return fmt.Errorf("-signature-alg %s signs with the active %s key and there is "+
+				"none; every sign-in to %s would fail. Add one first: `signari keys rotate -alg %s`",
+				signatureAlg, keyAlg, entityID, keyAlg)
+		}
+		algArg = signatureAlg
 	}
 	if assertions != nil {
 		signA = *assertions
@@ -1269,22 +1299,30 @@ func samlSigning(ctx context.Context, conn *pgx.Conn, entityID string,
 		lifeArg = lifetime
 	}
 
-	tp, err := conn.Exec(ctx, `
+	var alg string
+	if err := conn.QueryRow(ctx, `
 		UPDATE core.saml_providers
 		   SET sign_assertions = $2, sign_responses = $3,
-		       lifetime_seconds = COALESCE($4::int, lifetime_seconds)
-		 WHERE entity_id = $1`, entityID, signA, signR, lifeArg)
-	if err != nil {
+		       lifetime_seconds = COALESCE($4::int, lifetime_seconds),
+		       signature_alg = COALESCE($5::text, signature_alg)
+		 WHERE entity_id = $1
+		 RETURNING signature_alg`, entityID, signA, signR, lifeArg, algArg).Scan(&alg); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+		}
 		return err
 	}
-	if tp.RowsAffected() == 0 {
-		return fmt.Errorf("no SAML service provider with entity id %q", entityID)
-	}
 
-	fmt.Printf("%s:\n  sign assertions : %t\n  sign responses  : %t\n",
-		entityID, signA, signR)
+	fmt.Printf("%s:\n  sign assertions : %t\n  sign responses  : %t\n  signature       : %s\n",
+		entityID, signA, signR, alg)
 	if lifeArg != nil {
 		fmt.Printf("  lifetime        : %ds\n", lifetime)
+	}
+	if algArg != nil {
+		fmt.Printf("\n  The provider checks signatures against the certificates in its copy of\n"+
+			"  the metadata, which are now the %s ones. Give it /saml/metadata?sp=%s\n"+
+			"  before its next sign-in, or every one of them is refused.\n",
+			keyAlg, url.QueryEscape(entityID))
 	}
 	return nil
 }

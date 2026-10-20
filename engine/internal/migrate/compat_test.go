@@ -142,8 +142,14 @@ ALTER TABLE core.users ADD COLUMN compat_probe text;`}
 		t.Errorf("pinned to a schema the database never had, verify said %v", err)
 	}
 	ExpectedFingerprint = ""
-	if got, err := EarliestCompatible(ctx, conn); err != nil || got != v {
-		t.Errorf("EarliestCompatible = %d (%v), want %d", got, err, v)
+	// The probe is compatible, and so may be the newest real migrations under
+	// it: the oldest binary is the one before the newest that is not.
+	want := v
+	for i := len(all) - 1; i > 0 && all[i].CompatibleWithPrevious(); i-- {
+		want = all[i-1].Version
+	}
+	if got, err := EarliestCompatible(ctx, conn); err != nil || got != want {
+		t.Errorf("EarliestCompatible = %d (%v), want %d", got, err, want)
 	}
 
 	if _, err := conn.Exec(ctx, `ALTER TABLE core.users NO FORCE ROW LEVEL SECURITY`); err != nil {

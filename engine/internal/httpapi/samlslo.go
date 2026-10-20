@@ -150,7 +150,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := s.samlSigningKey()
+	key, err := s.samlSigningKey(provider.SignatureAlg)
 	if err != nil {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return

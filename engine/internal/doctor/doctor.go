@@ -171,6 +171,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkNotificationChannels(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkSchemaLedger(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	checkSchemaPin(r)
 	checkTheme(r)
 
@@ -1290,22 +1293,52 @@ func reportCredentialLifetimes(r *Report, over []string) {
 // release", and until now nothing checked.
 //
 // Warning rather than Critical: the version counter still gates every ordinary
-// upgrade, so a database that is simply behind is still refused. What is missing
-// is detection of drift WITHIN a version, which needs somebody to have edited the
-// schema by hand.
+// upgrade, and since 3.04 an unpinned binary compares the schema with its
+// ledger (checkSchemaLedger). What is missing is refusing a hand change made
+// together with a rewrite of the ledger row, which the database being checked
+// cannot be trusted to say.
 func checkSchemaPin(r *Report) {
 	r.ran("schema fingerprint pinning")
 	if migrate.ExpectedFingerprint != "" {
 		return
 	}
 	r.add(Warning, "schema",
-		"this binary has no pinned schema fingerprint, so it accepts any database "+
-			"at the right version, including one that has been hand-patched",
+		"this binary has no pinned schema fingerprint, so it compares the schema only "+
+			"with the ledger in the same database, and accepts a hand-patched database "+
+			"whose ledger row was rewritten along with it",
 		"Build with the fingerprint pinned: `scripts/build-release.sh`, or pass "+
 			"--build-arg SIGNARI_SCHEMA_FINGERPRINT=\"$(scripts/schema-fingerprint.sh)\" "+
-			"to docker build. The version counter still gates upgrades either way; "+
-			"what is missing is noticing drift within a version, which is what the "+
-			"fingerprint is for.")
+			"to docker build. The version counter and the ledger comparison gate an "+
+			"unpinned binary either way.")
+}
+
+// checkSchemaLedger compares the live schema, tenant boundary included, with
+// the fingerprint the ledger recorded when the latest migration was applied.
+// A difference means something changed the schema by hand since, and `serve`
+// refuses to start on it; doctor says so before a restart finds out.
+func checkSchemaLedger(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("schema against its ledger")
+	c, err := migrate.CompareLedger(ctx, conn)
+	if err != nil {
+		return err
+	}
+	switch {
+	case c.Drifted():
+		r.add(Critical, "schema",
+			fmt.Sprintf("the live schema (%.12s) is not what migration %d recorded (%.12s): "+
+				"a table, policy, view, grant, function or trigger has been changed by hand "+
+				"since, and `serve` refuses to start on it", c.Live, c.Version, c.Recorded),
+			"Find the change by comparing `pg_dump --schema-only` of this database with one "+
+				"of a database freshly migrated to the same version, and undo it. Changing the "+
+				"ledger row to match instead would make the drift the new normal.")
+	case !c.Comparable:
+		r.add(Warning, "schema",
+			"the schema cannot be compared with its ledger: "+c.Reason,
+			"Run `signari migrate up` if a migration is pending. After a PostgreSQL "+
+				"upgrade there is nothing to do: the next migration records a fingerprint "+
+				"that can be compared.")
+	}
+	return nil
 }
 
 // checkTheme reports whether an operator's page overrides are actually in force.

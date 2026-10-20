@@ -236,16 +236,17 @@ func TestALongListSaysHowMuchItLeftOut(t *testing.T) {
 
 // An unpinned binary must say so, because nothing else does.
 //
-// migrate.Verify checks the schema VERSION always and the schema FINGERPRINT only
-// when a pin was supplied at build time. Unpinned, it returns before reading the
-// live schema — so the check exists, is tested, and does nothing. The engine
-// starts normally either way, and the only symptom is that a hand-patched
-// database is accepted: exactly the case the fingerprint exists to catch and the
-// one where nobody is looking.
+// migrate.Verify checks the schema VERSION always, and the schema FINGERPRINT
+// against a pin supplied at build time. Unpinned, it returned before reading the
+// live schema until 3.04, and now compares it with the ledger in the same
+// database -- which whoever patched the schema by hand can rewrite as well. The
+// engine starts normally either way, so the only symptom is that such a
+// database is accepted, and nothing else says so.
 //
 // Demonstrated rather than assumed: against one database at one version with a
 // column added by hand, a pinned binary refuses with "schema fingerprint
-// mismatch" and an unpinned one serves.
+// mismatch" and an unpinned one served (it now refuses with "schema drift"
+// unless the ledger row was rewritten too).
 func TestAnUnpinnedBinaryReportsThatItsDriftGateIsOff(t *testing.T) {
 	// The test binary is built without -X, so this is the unpinned case.
 	if migrate.ExpectedFingerprint != "" {

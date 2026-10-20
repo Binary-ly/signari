@@ -15,8 +15,6 @@ package migrate
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"regexp"
@@ -352,12 +350,24 @@ func applyOne(ctx context.Context, conn *pgx.Conn, m Migration, tier Tier, opts 
 	if err != nil {
 		return fmt.Errorf("fingerprinting: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
+	// With the PostgreSQL version that computed it, from 0159 on, so the
+	// fingerprint is compared only under the same major version.
+	withServer, err := ledgerRecordsServerVersion(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("reading the ledger: %w", err)
+	}
+	record := `
 		INSERT INTO core.schema_migrations (version, name, fingerprint)
 		VALUES ($1, $2, $3)
-		ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint`,
-		m.Version, m.Name, fp,
-	); err != nil {
+		ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint`
+	if withServer {
+		record = `
+		INSERT INTO core.schema_migrations (version, name, fingerprint, server_version_num)
+		VALUES ($1, $2, $3, current_setting('server_version_num')::int)
+		ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint,
+		                                    server_version_num = EXCLUDED.server_version_num`
+	}
+	if _, err := tx.Exec(ctx, record, m.Version, m.Name, fp); err != nil {
 		return fmt.Errorf("recording in ledger: %w", err)
 	}
 
@@ -438,7 +448,22 @@ func Verify(ctx context.Context, conn *pgx.Conn) error {
 	}
 
 	if ExpectedFingerprint == "" {
-		return nil // unpinned development build
+		// Unpinned: compare against what the ledger recorded when the latest
+		// migration was applied. That catches a hand change made since, and
+		// not one made together with a rewrite of the ledger row, which only a
+		// pinned build can refuse. Before 3.04 an unpinned build compared
+		// nothing.
+		c, err := CompareLedger(ctx, conn)
+		if err != nil {
+			return fmt.Errorf("comparing the schema with its ledger: %w", err)
+		}
+		if c.Drifted() {
+			return fmt.Errorf(
+				"schema drift: the live schema (%s) is not what migration %d recorded (%s) -- "+
+					"it has been changed by hand since",
+				short(c.Live), c.Version, short(c.Recorded))
+		}
+		return nil
 	}
 	live, err := Fingerprint(ctx, conn)
 	if err != nil {
@@ -447,109 +472,7 @@ func Verify(ctx context.Context, conn *pgx.Conn) error {
 	if live != ExpectedFingerprint {
 		return fmt.Errorf(
 			"schema fingerprint mismatch: live %s, expected %s -- the database has drifted from what this binary was built against",
-			live[:12], ExpectedFingerprint[:12])
+			short(live), short(ExpectedFingerprint))
 	}
 	return nil
-}
-
-// Fingerprint hashes the observable shape of schema `core`: every column, its
-// type, nullability and default, plus every table constraint. Deterministically
-// ordered so the same schema always produces the same digest.
-//
-// This is deliberately stronger than a version counter. Two databases can both
-// claim version 7 and disagree, if someone hand-patched one of them.
-func Fingerprint(ctx context.Context, conn *pgx.Conn) (string, error) {
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	return fingerprintTx(ctx, tx)
-}
-
-func fingerprintTx(ctx context.Context, tx pgx.Tx) (string, error) {
-	rows, err := tx.Query(ctx, `
-		SELECT c.table_name, c.column_name, c.data_type,
-		       c.is_nullable, COALESCE(c.column_default, '')
-		FROM information_schema.columns c
-		JOIN information_schema.tables t
-		  ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-		WHERE c.table_schema = 'core' AND t.table_type = 'BASE TABLE'
-		ORDER BY c.table_name, c.column_name`)
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
-
-	h := sha256.New()
-	var b strings.Builder
-	for rows.Next() {
-		var table, col, typ, nullable, def string
-		if err := rows.Scan(&table, &col, &typ, &nullable, &def); err != nil {
-			return "", err
-		}
-		b.Reset()
-		b.WriteString(table)
-		b.WriteByte('.')
-		b.WriteString(col)
-		b.WriteByte('|')
-		b.WriteString(typ)
-		b.WriteByte('|')
-		b.WriteString(nullable)
-		b.WriteByte('|')
-		b.WriteString(def)
-		b.WriteByte('\n')
-		h.Write([]byte(b.String()))
-	}
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-
-	// Constraints, which this function claimed to cover and did not.
-	//
-	// The doc comment on Fingerprint has always promised "every column, its type,
-	// nullability and default, plus every table constraint", and only the columns
-	// were ever hashed. The gap is invisible in the ordinary upgrade path, because
-	// Verify checks the version counter first -- but the fingerprint exists for
-	// the case the counter cannot see, which the comment names exactly: "two
-	// databases can both claim version 7 and disagree, if someone hand-patched one
-	// of them". A hand-patch that drops a CHECK, a foreign key or a unique
-	// constraint leaves every column identical, so the digest was unchanged and
-	// the drift the fingerprint exists to catch went through it.
-	//
-	// Migration 0097 is a live example: it only widens a CHECK constraint, so
-	// before this it altered the schema without altering the fingerprint at all.
-	//
-	// pg_get_constraintdef rather than the constituent columns, because it is the
-	// canonical rendering and it moves when the meaning moves. Ordered by name so
-	// the digest does not depend on catalogue order.
-	crows, err := tx.Query(ctx, `
-		SELECT c.relname, con.conname, pg_get_constraintdef(con.oid)
-		FROM pg_constraint con
-		JOIN pg_class c ON c.oid = con.conrelid
-		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = 'core' AND c.relkind = 'r'
-		ORDER BY c.relname, con.conname, pg_get_constraintdef(con.oid)`)
-	if err != nil {
-		return "", err
-	}
-	defer crows.Close()
-	for crows.Next() {
-		var table, name, def string
-		if err := crows.Scan(&table, &name, &def); err != nil {
-			return "", err
-		}
-		b.Reset()
-		b.WriteString(table)
-		b.WriteByte('.')
-		b.WriteString(name)
-		b.WriteByte('|')
-		b.WriteString(def)
-		b.WriteByte('\n')
-		h.Write([]byte(b.String()))
-	}
-	if err := crows.Err(); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }

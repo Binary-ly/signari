@@ -2485,6 +2485,19 @@ func status(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		fmt.Printf("live fingerprint : %s\n", fp)
+		c, err := migrate.CompareLedger(ctx, conn)
+		if err != nil {
+			return err
+		}
+		switch {
+		case c.Drifted():
+			fmt.Printf("ledger           : DIFFERS -- migration %d recorded %s; the schema has been changed by hand since\n",
+				c.Version, c.Recorded)
+		case c.Comparable:
+			fmt.Printf("ledger           : matches what migration %d recorded\n", c.Version)
+		default:
+			fmt.Printf("ledger           : not compared -- %s\n", c.Reason)
+		}
 	}
 
 	var pending []migrate.Migration

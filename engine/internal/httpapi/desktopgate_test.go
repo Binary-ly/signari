@@ -87,3 +87,65 @@ flows:
 		t.Fatalf("enrolled, with the right code: %d %q", code, result)
 	}
 }
+
+// Every desktop refusal costs a hash (1.90). An unknown person, an empty
+// password and a person with no password credential were answered before any
+// hashing, a wrong password after Argon2, so the time of the one answer the
+// outpost gives said which it was. Timed, so the bound is loose: each must take
+// at least half as long as a wrong password, best of three; unhashed they took
+// a small fraction of it.
+func TestEveryDesktopRefusalCostsAHash(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+	token := "desktop-timing-" + fmt.Sprint(time.Now().UnixNano())
+	sum := sha256.Sum256([]byte(token))
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO core.outposts (org_id, name, kind, token_hash)
+		VALUES ($1::uuid, 'desk-timing', 'desktop', $2)`, f.orgID, sum[:]); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.outposts WHERE token_hash = $1`, sum[:])
+	})
+	var noPassword string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO core.users (org_id, email, user_handle)
+		VALUES ($1::uuid, $2, decode(md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text)||
+		        md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text),'hex'))
+		RETURNING email`, f.orgID, "nopassword-"+fmt.Sprint(time.Now().UnixNano())+"@example.test").Scan(&noPassword); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.users WHERE email = $1`, noPassword)
+	})
+
+	timed := func(username, password string) time.Duration {
+		t.Helper()
+		best := time.Duration(1 << 62)
+		for range 3 {
+			body, _ := json.Marshal(map[string]string{"username": username, "password": password})
+			r := httptest.NewRequest(http.MethodPost, "/outpost/desktop", bytes.NewReader(body))
+			r.Header.Set("Authorization", "Bearer "+token)
+			rec := httptest.NewRecorder()
+			start := time.Now()
+			f.srv.Routes().ServeHTTP(rec, r)
+			if took := time.Since(start); took < best {
+				best = took
+			}
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("%s answered %d, want 401", username, rec.Code)
+			}
+		}
+		return best
+	}
+	wrong := timed(f.email, "not-the-password-at-all")
+	for name, try := range map[string][2]string{
+		"an unknown person":         {"nobody-" + fmt.Sprint(time.Now().UnixNano()) + "@example.test", "anything-at-all"},
+		"an empty password":         {f.email, ""},
+		"a person with no password": {noPassword, "anything-at-all"},
+	} {
+		if took := timed(try[0], try[1]); took < wrong/2 {
+			t.Errorf("%s was refused in %v and a wrong password in %v: the time tells them apart", name, took, wrong)
+		}
+	}
+}

@@ -85,13 +85,21 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication refused")
 	}
 
+	// And one cost for every reason: the refusals that need no hash spend the
+	// same one a wrong password does, as the sign-in form's do. They returned
+	// at once, so the time of the answer said which it was.
+	refuseAfterHash := func(reason string) {
+		_, _ = s.hasher.Verify(ctx, dummyHash, body.Password)
+		refuse(reason)
+	}
+
 	userID, err := store.FindLocalUserByEmail(ctx, s.db, orgID, body.Username)
 	if err != nil || userID == "" {
-		refuse("no such user")
+		refuseAfterHash("no such user")
 		return
 	}
 	if body.Password == "" {
-		refuse("no password")
+		refuseAfterHash("no password")
 		return
 	}
 
@@ -99,7 +107,7 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.QueryRow(ctx, `
 		SELECT hash FROM core.password_credentials WHERE user_id = $1::uuid`,
 		userID).Scan(&stored); err != nil {
-		refuse("no password credential")
+		refuseAfterHash("no password credential")
 		return
 	}
 	if _, verr := s.hasher.Verify(ctx, stored, body.Password); verr != nil {

@@ -388,6 +388,13 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 				{"Name": "Google Workspace", "Slug": "google", "Linked": false},
 			},
 		}),
+		"devices": csrf(map[string]any{
+			"Devices": []map[string]any{
+				{"ID": "d-1", "UserAgent": "Safari on macOS", "When": "17 September 2026",
+					"Until": "17 October 2026"},
+				{"ID": "d-2", "UserAgent": "", "When": "2 September 2026", "Until": "2 October 2026"},
+			},
+		}),
 		"connected": map[string]any{
 			"CSRF": "8f2c1d94a7be4e0f", "Message": "",
 			"Apps": []map[string]any{

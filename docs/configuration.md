@@ -153,7 +153,7 @@ rows that nothing reads any more. Each is a Go duration of at least `1h`.
 
 | Variable | Default | Deletes |
 |---|---|---|
-| `SIGNARI_RETENTION_SESSIONS` | `720h` | sessions ended this long ago, with their list of applications and their refresh families, all ended with them |
+| `SIGNARI_RETENTION_SESSIONS` | `720h` | sessions ended this long ago, with their list of applications and their refresh families, all ended with them; and remembered devices forgotten or run out this long ago |
 | `SIGNARI_RETENTION_REFRESH_FAMILIES` | `720h` | refresh-token families revoked this long ago, or whose newest token expired this long ago, with their tokens. A token of a live family is never deleted, rotated ones included: presenting a rotated token is how a stolen one is caught |
 | `SIGNARI_RETENTION_DELIVERED` | `168h` | logout notices and security events delivered this long ago, and event deliveries delivered or abandoned this long ago |
 | `SIGNARI_RETENTION_RECEIVED_EVENTS` | `2160h` | security events received from other transmitters |

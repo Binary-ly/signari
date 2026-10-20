@@ -156,5 +156,6 @@ func (s *Server) finishMFAKey(w http.ResponseWriter, r *http.Request, pending *p
 		key[1] = "swk"
 	}
 	full := append(append(append([]string{}, pending.AMR...), key...), oauth.AMRMFA)
+	s.rememberThisDevice(ctx, w, r, tx, pending.Subject, pending.OrgID)
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, full, pending.Authz)
 }

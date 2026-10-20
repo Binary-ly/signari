@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"html/template"
 	"net/http"
 
 	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/mfa"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/qr"
 	"signari.dev/engine/internal/store"
 )
@@ -27,6 +29,20 @@ import (
 // enrolling here proves nothing about who is signing in -- the secret was made
 // for whoever holds the password -- so it adds nothing to the sign-in's amr. A
 // later `mfa` stage asks for the new authenticator's code like any other.
+
+// flowEnrols reports whether the organisation's flow would run enrol_mfa for
+// somebody with nothing enrolled.
+func (s *Server) flowEnrols(ctx context.Context, orgID, userID, authzQuery string) bool {
+	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
+	if fl == nil {
+		return false
+	}
+	facts := &signInFacts{s: s, ctx: ctx, db: s.db, orgID: orgID, userID: userID,
+		authzQuery: authzQuery, amr: []string{oauth.AMRPassword}}
+	facts.setKnown(flow.CondHasSecondFactor, false)
+	facts.setKnown(flow.CondCaptchaRequired, false)
+	return fl.WillRun(flow.StageEnrolMFA, facts)
+}
 
 // beginEnrolMFA holds the sign-in and shows the enrolment's first page.
 func (s *Server) beginEnrolMFA(w http.ResponseWriter, r *http.Request,

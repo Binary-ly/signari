@@ -992,6 +992,48 @@ func instancePasswordBinds(ctx context.Context, conn *pgx.Conn, orgID, policy st
 	return nil
 }
 
+// instanceRememberDevice sets how long a remembered device skips the second
+// factor (migration 0168); 0 turns the choice off and stops every remembered
+// device counting.
+func instanceRememberDevice(ctx context.Context, conn *pgx.Conn, orgID string, days int) error {
+	if orgID == "" || days < 0 {
+		return fmt.Errorf("give -org and -days, 0 to %d", store.MaxRememberDeviceDays)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	previous, err := store.SetRememberDeviceDays(ctx, tx, orgID, days)
+	if errors.Is(err, store.ErrOrganizationNotFound) {
+		return fmt.Errorf("no organisation %s", orgID)
+	}
+	if err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "org.remember_device_set", OrgID: orgID,
+		Detail: map[string]any{"from_days": previous, "to_days": days, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if days == 0 {
+		fmt.Println("remembered devices: off")
+		fmt.Println("\n  The code page offers no box, and every device already remembered is asked")
+		fmt.Println("  for the second factor again at its next sign-in.")
+		return nil
+	}
+	fmt.Printf("remembered devices: %d days (was %d)\n", days, previous)
+	fmt.Println("\n  After a second factor, a person may tick a box so that sign-ins with the")
+	fmt.Println("  password on that browser skip the flow's mfa stage, unless the application")
+	fmt.Println("  requires multi-factor. Such a session is single-factor. They are listed, and")
+	fmt.Println("  forgotten, at /account/devices; signing out everywhere forgets them all.")
+	return nil
+}
+
 // instanceReauthWindow sets how recently a session must have been signed in to
 // change the account from /account (migration 0167).
 func instanceReauthWindow(ctx context.Context, conn *pgx.Conn, orgID string, window time.Duration) error {

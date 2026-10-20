@@ -164,6 +164,32 @@ func TestAFlowThatRequiresAFactorEnrolsOne(t *testing.T) {
 	}
 }
 
+// With an unconditional mfa stage after enrolment, the password step leaves the
+// enrolling to the walk. It refused before the walk ran, so a flow written to
+// enrol everybody who had nothing turned every one of them away.
+func TestAnUnconditionalMFAStageAfterEnrolmentEnrolsFirst(t *testing.T) {
+	f := enrolFlowFixture(t, `
+version: 1
+flows:
+  - name: enrol-then-ask
+    on: authentication
+    stages:
+      - password
+      - {stage: enrol_mfa, when: not user_has_second_factor}
+      - mfa
+      - session
+    tests:
+      - name: nothing enrolled
+        given: {}
+        expect: [password, enrol_mfa, mfa, session]
+`)
+	got := f.attempt(t, f.email, signInTestPassword)
+	if !strings.Contains(got.body, `action="/login/enrol-mfa/start"`) {
+		t.Fatalf("somebody with nothing enrolled was not offered the enrolment: %d %.120s",
+			got.status, got.body)
+	}
+}
+
 // Under a flow that only enrols, the sign-in goes on with what it proved: the
 // password. Enrolling proves nothing about who holds it.
 func TestEnrollingAFactorAddsNothingToTheSignIn(t *testing.T) {

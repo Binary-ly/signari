@@ -15,7 +15,8 @@ import (
 type Retention struct {
 	// Sessions is how long an ended session is kept. Deleting it deletes its
 	// applications list and its refresh families with it, all of them ended
-	// with the session.
+	// with the session. A forgotten or expired remembered device is kept as
+	// long.
 	Sessions time.Duration
 	// Families is how long a refresh-token family is kept once it was revoked
 	// or its newest token expired, its tokens with it. A token of a live
@@ -53,7 +54,7 @@ func DefaultRetention() Retention {
 // RetentionTables are the tables PurgeRetained deletes from, in its order;
 // the metrics label set.
 var RetentionTables = []string{
-	"sessions", "refresh_token_families", "outbox", "event_deliveries",
+	"sessions", "trusted_devices", "refresh_token_families", "outbox", "event_deliveries",
 	"ssf_received", "auth_locations", "credential_nonces", "password_history",
 }
 
@@ -71,6 +72,13 @@ func PurgeRetained(ctx context.Context, tx pgx.Tx, r Retention, batch int) (map[
 			DELETE FROM core.sessions WHERE sid IN (
 				SELECT sid FROM core.sessions
 				WHERE revoked_at < now() - $1::interval LIMIT $2)`,
+			[]any{interval(r.Sessions), batch}},
+		// A remembered device that was forgotten or ran out, kept as long as
+		// an ended session: either is history once nothing can present it.
+		{"trusted_devices", `
+			DELETE FROM core.trusted_devices WHERE id IN (
+				SELECT id FROM core.trusted_devices
+				WHERE COALESCE(revoked_at, expires_at) < now() - $1::interval LIMIT $2)`,
 			[]any{interval(r.Sessions), batch}},
 		{"refresh_token_families", `
 			DELETE FROM core.refresh_token_families WHERE id IN (

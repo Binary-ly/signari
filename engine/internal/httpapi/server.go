@@ -608,6 +608,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /rac/connect/{slug}", s.handleRACConnect)
 	mux.HandleFunc("POST /account/connected/revoke", s.handleConnectedRevoke)
 	mux.HandleFunc("GET /account/sessions", s.handleSessions)
+	mux.HandleFunc("GET /account/devices", s.handleDevices)
+	mux.HandleFunc("POST /account/devices/forget", s.handleDevicesForget)
 	mux.HandleFunc("POST /account/sessions/revoke", s.handleSessionsRevoke)
 	mux.HandleFunc("GET /account/password", s.handleAccountPassword)
 	mux.HandleFunc("POST /account/password", s.handleAccountPasswordPost)

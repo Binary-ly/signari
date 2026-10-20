@@ -330,6 +330,7 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 	// genuinely been presented. The sequencer would then demand the same code
 	// again, and again. `duo.go:210` already appends it for this reason.
 	full := append(append(append([]string{}, pending.AMR...), amr...), oauth.AMRMFA)
+	s.rememberThisDevice(ctx, w, r, tx, pending.Subject, pending.OrgID)
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, full, pending.Authz)
 }
 
@@ -600,6 +601,12 @@ func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, userID, authz
 		// The codes still work; only the button is lost.
 		s.log.Error("checking for a security key", "err", err)
 	}
+	// The box offering to remember this device, only where the organisation
+	// offers it (rememberdevice.go).
+	rememberDays, err := store.RememberDeviceDaysForUser(r.Context(), s.db, userID)
+	if err != nil {
+		s.log.Error("reading the remembered-device setting", "err", err)
+	}
 
 	ref := ""
 	status := http.StatusOK
@@ -614,7 +621,7 @@ func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, userID, authz
 	s.renderPageStatus(w, r, status, "mfa", map[string]any{
 		"Authz": authzQuery, "Error": msg, "CSRF": csrf,
 		"CSRFField": csrfFormField, "Reference": ref,
-		"SecurityKey": hasKey, "PasskeyScript": hasKey,
+		"SecurityKey": hasKey, "PasskeyScript": hasKey, "RememberDays": rememberDays,
 	})
 }
 

@@ -1878,6 +1878,17 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// that has not written a flow file gets exactly this behaviour.
 	demanded, enrolled := s.FlowDemandsMFA(ctx, s.db, orgID, userID, authzQuery,
 		[]string{oauth.AMRPassword})
+	// A remembered device, where no client requires more: the walk passes the
+	// mfa stage for the same reason (rememberdevice.go), so it is not begun.
+	if demanded && s.deviceSkipsMFA(ctx, r, orgID, userID, authzQuery) {
+		demanded = false
+	}
+	// Nothing enrolled, and the flow enrols a factor: the walk does that, and
+	// refuses there if its mfa stage comes first. Refusing here would turn
+	// away exactly the people an enrol_mfa stage was written for.
+	if demanded && !enrolled && s.flowEnrols(ctx, orgID, userID, authzQuery) {
+		demanded = false
+	}
 	if demanded && !enrolled {
 		// The flow requires a second factor of everybody and this account has
 		// none. Refused rather than waved through: silently skipping would mean

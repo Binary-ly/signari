@@ -394,6 +394,19 @@ party sending `acr_values=2` was told the account had no second factor. Anybody
 who has registered a passkey and signs in with a password is now asked for the
 key as well; signing in with the passkey itself is unchanged.
 
+### Remembering a device
+
+`signari instance remember-device -org <id> -days 30` puts a "remember this
+device" box on the code page. A browser that ticked it, after a second factor,
+passes the `mfa` stage on later sign-ins for that many days, unless the
+application requires multi-factor, by asking with `acr_values=2` or through a
+floor (below). Such a session records what was proved, the password, so it is
+single-factor, and a requirement for more is met by asking for the factor
+again. The browser holds a random token and the database its hash, checked at
+every sign-in, so a device stops counting at the next one when the person
+forgets it at `/account/devices`, when they sign out everywhere, or when the
+organisation sets `-days 0`. Off unless set.
+
 ### Requiring multi-factor for one application
 
 `signari client set-acr -client-id payroll -minimum-acr 2` requires

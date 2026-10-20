@@ -221,6 +221,16 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 		return nil, fmt.Errorf("revoking refresh families: %w", err)
 	}
 
+	// Ending all of somebody's sessions forgets their remembered devices as
+	// well: it is what is done when an account may be in the wrong hands, and
+	// a device that skips the second factor is the one thing that would let a
+	// stolen password straight back in.
+	if userID != "" {
+		if _, err := ForgetDevices(ctx, tx, userID, ""); err != nil {
+			return nil, err
+		}
+	}
+
 	return &Terminated{Sessions: int(tag.RowsAffected()), Notices: queued}, nil
 }
 

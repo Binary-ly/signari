@@ -10,12 +10,14 @@
 <input id="c" name="code" inputmode="numeric" autocomplete="one-time-code"
        autofocus required pattern="[0-9A-Za-z\- ]+">
 <p class="hint">{{T "mfa.lostdevice"}}</p>
+{{if .RememberDays}}<p><label><input type="checkbox" name="remember" value="1" id="mfa-remember"> {{T "mfa.remember" .}}</label></p>{{end}}
 <button type="submit">{{T "common.continue"}}</button>
 </form>
 {{if .SecurityKey}}<form method="POST" action="/login/mfa" id="mfa-key" hidden>
 <input type="hidden" name="authz" value="{{.Authz}}">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 <input type="hidden" name="assertion" id="mfa-assertion">
+<input type="hidden" name="remember" id="mfa-key-remember">
 <p class="alt"><button type="button" id="mfa-key-use">{{T "mfa.securitykey"}}</button></p>
 <p id="mfa-key-status" class="muted" role="status"></p>
 </form>

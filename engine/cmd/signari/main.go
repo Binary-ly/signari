@@ -643,6 +643,9 @@ func run(args []string) (err error) {
 	passwordBinds := fs.String("binds", "",
 		"allow, or refuse_when_mfa: whether LDAP binds, RADIUS PAP and outposts, which carry "+
 			"only a password, may sign in somebody the sign-in flow would ask for a second factor")
+	rememberDays := fs.Int("days", -1,
+		"`instance remember-device`: days a device a person chooses to remember after a second "+
+			"factor is not asked for one again, 1 to 90; 0 turns it off")
 	reauthWindow := fs.Duration("window", 0,
 		"`instance reauth-window`: how recently a session must have been signed in to change "+
 			"the account from /account, 1m to 24h (default 10m)")
@@ -861,6 +864,8 @@ func run(args []string) (err error) {
 		return instancePasswordBinds(ctx, conn, *orgID, *passwordBinds)
 	case "instance reauth-window":
 		return instanceReauthWindow(ctx, conn, *orgID, *reauthWindow)
+	case "instance remember-device":
+		return instanceRememberDevice(ctx, conn, *orgID, *rememberDays)
 	case "webauthn policy":
 		return webauthnPolicySet(ctx, conn, *orgID, *attestation, *aaguids, *refuseCloned)
 	case "webauthn show":

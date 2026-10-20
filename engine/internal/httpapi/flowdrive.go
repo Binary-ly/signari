@@ -522,6 +522,12 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 				// about whether this sign-in was multi-factor.
 				continue
 			}
+			if !facts.Holds(string(flow.CondClientRequiresMFA)) &&
+				s.deviceRemembered(ctx, r, tx, orgID, userID) {
+				// A device the person remembered (rememberdevice.go), where no
+				// client requires more. The session stays single-factor.
+				continue
+			}
 			if !facts.Holds(string(flow.CondHasSecondFactor)) {
 				// Demanded of everybody, and this account has nothing enrolled.
 				// Refused rather than waved through: skipping would mean the control

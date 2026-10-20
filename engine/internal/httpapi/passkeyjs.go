@@ -168,6 +168,10 @@ document.addEventListener("DOMContentLoaded", function () {
       const cred = await navigator.credentials.get({ publicKey: options });
       if (!cred) return;
       document.getElementById("mfa-assertion").value = JSON.stringify(encodeAssertion(cred));
+      // The code form's "remember this device" box, carried to this one.
+      const box = document.getElementById("mfa-remember");
+      const carried = document.getElementById("mfa-key-remember");
+      if (box && carried) carried.value = box.checked ? "1" : "";
       form.submit();
     } catch (e) {
       // Cancelling is not an error; see signariSignInWithPasskey.

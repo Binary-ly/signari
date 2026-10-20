@@ -135,7 +135,9 @@ func newSubjectKey(raw []byte) (*SubjectKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	aead, err := cipher.NewGCM(block)
+	// The module owns the nonce, as the root key's does (store.go), in the same
+	// layout as before, so every sealed value opens (3.11).
+	aead, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, err
 	}
@@ -149,20 +151,16 @@ func newSubjectKey(raw []byte) (*SubjectKey, error) {
 // a blob lifted from one column and pasted into another fails to decrypt rather
 // than silently becoming a different secret.
 func (s *SubjectKey) Seal(plaintext []byte, context string) ([]byte, error) {
-	nonce := make([]byte, s.aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return s.aead.Seal(nonce, nonce, plaintext, []byte(context)), nil
+	// #nosec G407 -- the nil nonce is what NewGCMWithRandomNonce requires.
+	return s.aead.Seal(nil, nil, plaintext, []byte(context)), nil
 }
 
 // Open decrypts. The context must match the one used to seal.
 func (s *SubjectKey) Open(sealed []byte, context string) ([]byte, error) {
-	n := s.aead.NonceSize()
-	if len(sealed) < n {
+	if len(sealed) < s.aead.Overhead() {
 		return nil, fmt.Errorf("ciphertext is truncated")
 	}
-	return s.aead.Open(nil, sealed[:n], sealed[n:], []byte(context))
+	return s.aead.Open(nil, nil, sealed, []byte(context))
 }
 
 // EraseSubject destroys a subject's key, rendering all their ciphertext

@@ -29,6 +29,17 @@ under `fips140=only`. Their tests of what is refused in that mode run there, and
 the tests whose fixtures need SHA-1 skip. `signari doctor` reports the mode and
 what it would refuse.
 
+**Until October 2026 `serve` could not start under `fips140=only` at all.** The
+root key and each subject key gave AES-GCM a nonce of their own, which the module
+refuses ("use of GCM with arbitrary IVs is not allowed"), so the engine died
+unwrapping its first signing key. The package tests passed because none of them
+unwrapped a real key in that mode. Both keys now let the module make the nonce
+(`NewGCMWithRandomNonce`), in the same stored layout, so every sealed value opens,
+and a test re-runs itself under `fips140=only` to seal and open with both. On a
+copy of a working deployment, under `fips140=only` with the certified module,
+`serve` starts and a password sign-in works, the stored hash moving from Argon2id
+to PBKDF2 on the first sign-in.
+
 **31 of 36 packages pass their tests under `fips140=only`.** (That count is blunter than
 the truth: of the five failures, one is only test fixtures and one is only the
 non-FIPS default being covered. See below.) Core OIDC — the

@@ -54,7 +54,11 @@ func NewRootKey(ref string, secret []byte) (*RootKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	aead, err := cipher.NewGCM(block)
+	// The module owns the nonce: GCM given one by its caller is refused under
+	// GODEBUG=fips140=only, and was, so serve could not start in that mode at
+	// all (3.11). It writes what was written before, a 96-bit nonce ahead of
+	// the ciphertext and tag (crypto/cipher gcm.go), so every stored blob opens.
+	aead, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, err
 	}
@@ -92,12 +96,10 @@ func NewRootKeyFromBase64(ref, b64 string) (*RootKey, error) {
 func (r *RootKey) Ref() string { return r.ref }
 
 func (r *RootKey) seal(plaintext []byte) ([]byte, error) {
-	nonce := make([]byte, r.aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	// Nonce is prefixed to the ciphertext; GCM nonces are not secret.
-	return r.aead.Seal(nonce, nonce, plaintext, nil), nil
+	// The AEAD makes the nonce and prefixes it to the ciphertext; GCM nonces
+	// are not secret.
+	// #nosec G407 -- the nil nonce is what NewGCMWithRandomNonce requires.
+	return r.aead.Seal(nil, nil, plaintext, nil), nil
 }
 
 // open unseals with this key, then with each accepted one. GCM authenticates,
@@ -117,11 +119,10 @@ func (r *RootKey) open(sealed []byte) ([]byte, error) {
 }
 
 func (r *RootKey) openOwn(sealed []byte) ([]byte, error) {
-	n := r.aead.NonceSize()
-	if len(sealed) < n {
+	if len(sealed) < r.aead.Overhead() {
 		return nil, fmt.Errorf("wrapped key is truncated")
 	}
-	return r.aead.Open(nil, sealed[:n], sealed[n:], nil)
+	return r.aead.Open(nil, nil, sealed, nil)
 }
 
 // Save persists a key. Private material is marshalled as PKCS#8 and sealed with

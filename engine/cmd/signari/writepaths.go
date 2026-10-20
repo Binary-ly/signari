@@ -42,6 +42,7 @@ import (
 	"os/user"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -988,6 +989,40 @@ func instancePasswordBinds(ctx context.Context, conn *pgx.Conn, orgID, policy st
 	fmt.Println("\n  Somebody with a second factor enrolled (or everybody, under an unconditional")
 	fmt.Println("  mfa stage) can no longer bind with a password alone. Service accounts that")
 	fmt.Println("  bind to the directory need no second factor, or they will be refused too.")
+	return nil
+}
+
+// instanceReauthWindow sets how recently a session must have been signed in to
+// change the account from /account (migration 0167).
+func instanceReauthWindow(ctx context.Context, conn *pgx.Conn, orgID string, window time.Duration) error {
+	if orgID == "" || window == 0 {
+		return fmt.Errorf("give -org and -window, e.g. -window 10m")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	previous, err := store.SetReauthWindow(ctx, tx, orgID, window)
+	if errors.Is(err, store.ErrOrganizationNotFound) {
+		return fmt.Errorf("no organisation %s", orgID)
+	}
+	if err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "org.reauth_window_set", OrgID: orgID,
+		Detail: map[string]any{"from_s": int(previous.Seconds()), "to_s": int(window.Seconds()), "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("re-authentication window: %s (was %s)\n", window, previous)
+	fmt.Println("\n  Changing the password, the sign-in methods, the sessions or the connected")
+	fmt.Println("  applications from /account needs a sign-in this recent; an older session")
+	fmt.Println("  is sent to sign in again and brought back to the page.")
 	return nil
 }
 

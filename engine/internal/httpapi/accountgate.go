@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"net/http"
-	"time"
 )
 
 // Changing how an account signs in.
@@ -26,22 +25,30 @@ import (
 // signs in again and comes back to the page. The window is short because what
 // it guards is persistent, and it is read against the database clock, the same
 // clock auth_time was written with.
+//
+// The same rule holds every change made from /account, not only to the
+// sign-in methods: the password, ending sessions, revoking an application's
+// access, and answering a backchannel request. Those were open to any live
+// session, so a cookie stolen hours after sign-in could set a password it
+// would then know. TestEveryAccountWriteRequiresRecentAuth reads the routes
+// and fails on one that does not ask.
+//
+// The window is the organisation's (migration 0167, `signari instance
+// reauth-window`), ten minutes unless set.
 
-// reauthWindow is how recently a session must have been authenticated to change
-// the account's credentials.
-const reauthWindow = 10 * time.Minute
-
-// credentialChangeRefused answers a request that would change how the account
-// signs in, and reports whether it did. dest is the page to come back to after
-// signing in again. asJSON answers in the shape the passkey endpoints use, with
-// the sign-in location in the body for the page's script to follow.
+// credentialChangeRefused answers a request that would change the account, and
+// reports whether it did. dest is the page to come back to after signing in
+// again. asJSON answers in the shape the passkey endpoints use, with the
+// sign-in location in the body for the page's script to follow.
 func (s *Server) credentialChangeRefused(w http.ResponseWriter, r *http.Request,
 	sid, dest string, asJSON bool) bool {
 	ctx := r.Context()
 	var impersonated, recent bool
 	if err := s.db.QueryRow(ctx, `
-		SELECT impersonator_id IS NOT NULL, auth_time > now() - $2::interval
-		  FROM core.sessions WHERE sid = $1`, sid, reauthWindow.String()).
+		SELECT s.impersonator_id IS NOT NULL,
+		       s.auth_time > now() - make_interval(secs => o.reauth_window_s)
+		  FROM core.sessions s JOIN core.organizations o ON o.id = s.org_id
+		 WHERE s.sid = $1`, sid).
 		Scan(&impersonated, &recent); err != nil {
 		s.log.Error("reading the session before a credential change", "err", err)
 		if asJSON {

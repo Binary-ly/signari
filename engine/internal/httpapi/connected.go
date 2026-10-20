@@ -78,9 +78,12 @@ func (s *Server) handleConnectedRevoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "that request could not be verified", http.StatusBadRequest)
 		return
 	}
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/connected"), http.StatusSeeOther)
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account/connected", false) {
 		return
 	}
 	clientID := strings.TrimSpace(r.PostForm.Get("client_id"))

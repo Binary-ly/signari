@@ -46,7 +46,7 @@ var EventTypes = []string{
 	"oauth.code_reused", "oauth.consent_denied", "oauth.consent_granted",
 	"oauth.refresh_reused", "oauth.token_exchanged", "oauth.token_revoked",
 	"oid4vci.credential_issued",
-	"org.password_only_binds_set",
+	"org.password_only_binds_set", "org.reauth_window_set",
 	"password.breached", "password.changed",
 	"prompt.answered",
 	"proxy.host_added", "proxy.host_disabled", "proxy.host_enabled", "proxy.host_removed",

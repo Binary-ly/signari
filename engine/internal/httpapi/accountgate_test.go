@@ -142,6 +142,12 @@ func TestCredentialChangesNeedARecentSignInAndAreRefusedWhileImpersonating(t *te
 		{http.MethodPost, "/account/passkeys/begin", "/account", nil, true},
 		{http.MethodPost, "/account/passkeys/finish", "/account", nil, true},
 		{http.MethodPost, "/account/passkeys/delete", "/account", url.Values{"id": {"x"}}, true},
+		// The rest of /account (4.04): open to any live session before.
+		{http.MethodPost, "/account/password", "/account/password",
+			url.Values{"current": {"x"}, "password": {"y"}, "confirm": {"y"}}, false},
+		{http.MethodPost, "/account/sessions/revoke", "/account/sessions", url.Values{"sid": {"x"}}, false},
+		{http.MethodPost, "/account/connected/revoke", "/account/connected",
+			url.Values{"client_id": {"x"}}, false},
 	}
 	send := func(rt route) *httptest.ResponseRecorder {
 		var r *http.Request

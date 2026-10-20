@@ -643,6 +643,9 @@ func run(args []string) (err error) {
 	passwordBinds := fs.String("binds", "",
 		"allow, or refuse_when_mfa: whether LDAP binds, RADIUS PAP and outposts, which carry "+
 			"only a password, may sign in somebody the sign-in flow would ask for a second factor")
+	reauthWindow := fs.Duration("window", 0,
+		"`instance reauth-window`: how recently a session must have been signed in to change "+
+			"the account from /account, 1m to 24h (default 10m)")
 	setEnabled := fs.Bool("enabled", true, "whether the object is in service")
 	onMissing := fs.String("on-missing", "",
 		"what a directory sync does with somebody the directory no longer returns: "+
@@ -856,6 +859,8 @@ func run(args []string) (err error) {
 		return instanceSessionLimit(ctx, conn, *orgID, *sessionMax, *sessionBehaviour)
 	case "instance password-binds":
 		return instancePasswordBinds(ctx, conn, *orgID, *passwordBinds)
+	case "instance reauth-window":
+		return instanceReauthWindow(ctx, conn, *orgID, *reauthWindow)
 	case "webauthn policy":
 		return webauthnPolicySet(ctx, conn, *orgID, *attestation, *aaguids, *refuseCloned)
 	case "webauthn show":

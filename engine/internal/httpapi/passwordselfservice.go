@@ -53,9 +53,15 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "that request could not be verified", http.StatusBadRequest)
 		return
 	}
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/password"), http.StatusSeeOther)
+		return
+	}
+	// Here too, though the form asks for the current password: an
+	// impersonation session changes nothing, and a stale one signs in again
+	// first, as for every change from /account (accountgate.go).
+	if s.credentialChangeRefused(w, r, sid, "/account/password", false) {
 		return
 	}
 

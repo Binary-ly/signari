@@ -21,12 +21,12 @@ import (
 // with at least one factor) terminate any or all currently active sessions". The
 // termination mechanism (store.TerminateSessions) already existed and the admin
 // path used it; what was missing was the page where the person whose sessions
-// they are can see them and press the button. The "authenticated again" clause is
-// satisfied here by the session cookie plus a CSRF token -- the person is signed
-// in on this browser -- which is the practical floor. Nothing asks for a fresh
-// sign-in before ending a session, and no setting can yet; putting every
-// changing /account route behind one is 4.04. This said an operator could layer
-// a step-up on these routes, which nothing let them do.
+// they are can see them and press the button. The "authenticated again" clause
+// is met by credentialChangeRefused: ending a session needs one authenticated
+// within the organisation's re-authentication window, as every change from
+// /account does. This said a session cookie and a CSRF token were the practical
+// floor and that an operator could layer a step-up on these routes, which
+// nothing let them do.
 
 type sessionRow struct {
 	SID       string
@@ -88,6 +88,11 @@ func (s *Server) handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 	curSID, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/sessions"), http.StatusSeeOther)
+		return
+	}
+	// V7.5.2's "having authenticated again": a session authenticated within
+	// the organisation's window, not merely a live cookie (accountgate.go).
+	if s.credentialChangeRefused(w, r, curSID, "/account/sessions", false) {
 		return
 	}
 	target := strings.TrimSpace(r.PostForm.Get("sid"))

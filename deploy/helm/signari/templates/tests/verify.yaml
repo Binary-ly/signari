@@ -1,0 +1,30 @@
+# `helm test`: the schema gate the engine runs at startup, run on its own. It
+# passes when the migration Job applied every migration this image expects and
+# the schema matches what the ledger recorded.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "signari.fullname" . }}-test-verify
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    - name: verify
+      image: {{ include "signari.image" . | quote }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      args: ["verify"]
+      envFrom:
+        - secretRef:
+            name: {{ include "signari.secretName" . }}

@@ -63,7 +63,37 @@ and `tls.key`.
 
 Off by default. When `adminApi.enabled`, it listens on its own port and gets its
 own ClusterIP Service — never routed through the public ingress, because it is
-the write surface for the entire identity provider.
+the write surface for the entire identity provider. It serves TLS from
+`tls.certSecretName`, and the chart refuses to render it without one unless
+`adminApi.insecure=true` asks for plaintext by name, as the engine does.
+
+## Metrics, network policy and scheduled commands
+
+- `metrics.enabled` serves Prometheus metrics on their own port and ClusterIP
+  Service; `metrics.serviceMonitor.enabled` adds a prometheus-operator
+  ServiceMonitor for it.
+- `networkPolicy.enabled` admits each port only from the peers you name:
+  `httpFrom` (anyone when empty), `metricsFrom` and `adminFrom` (nobody when
+  empty).
+- `cronJobs` runs engine commands on a schedule with the same Secret, for
+  example `signari audit verify` every night.
+
+## Installing, and what was wrong before
+
+The migration Job runs `args: ["migrate", "all"]` against the image's
+`/signari` entrypoint, and the chart's Secret is itself a hook created before
+it. Until October 2026 the Job set `command:`, which replaced the entrypoint,
+and the Secret was an ordinary resource created after every pre-install hook,
+so the chart could not install. Because the Secret is a hook, `helm uninstall`
+leaves it behind; delete it by hand, or manage it yourself with
+`secret.existingSecret`. Readiness asks `/readyz`, which checks the database and
+the signing keys; it used to ask `/healthz`, which only says the process is up.
+`helm test` runs `signari verify`. The image is pinned to the chart's
+`appVersion`, not `latest`.
+
+The chart is checked by rendering it (`TestTheHelmChartCanInstall`,
+`TestTheHelmChartRendersItsOptions`); an install on a real cluster has not been
+run here.
 
 See `docs/configuration.md` for every environment variable; put optional ones
 (SMTP, SMS, GeoIP, audit streaming) under `extraEnv`.

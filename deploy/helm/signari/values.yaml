@@ -49,9 +49,44 @@ service:
 
 # The admin API listens on its own address and is off unless enabled. It is the
 # write surface for the whole IdP; never expose it on the public service.
+#
+# It serves TLS, from tls.certSecretName below, and the engine refuses to start
+# it in plaintext unless told to by name. So does this chart: enabling it with no
+# certificate fails to render, instead of deploying pods that crash-loop.
 adminApi:
   enabled: false
   port: 8090
+  # Plaintext, inside a network you trust: sets SIGNARI_ADMIN_INSECURE=1.
+  insecure: false
+
+# Prometheus metrics, on their own port and never on the public service (the
+# request and failure rates of an identity provider are a map of its weak
+# moments). docs/configuration.md lists every series.
+metrics:
+  enabled: false
+  port: 9090
+  # A prometheus-operator ServiceMonitor for the metrics service.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}       # e.g. release: kube-prometheus-stack, to be selected
+
+# A NetworkPolicy admitting traffic to each port from named peers only. Off by
+# default because the right peers are the cluster's to name. Each list is
+# NetworkPolicyPeer objects (podSelector, namespaceSelector, ipBlock).
+networkPolicy:
+  enabled: false
+  httpFrom: []       # empty admits the public port from anywhere
+  metricsFrom: []    # who may scrape; empty admits nobody
+  adminFrom: []      # who may call the admin API; empty admits nobody
+
+# Scheduled commands, each a CronJob running the engine image with the same
+# Secret. For example, verifying the audit chain every night:
+#   cronJobs:
+#     - name: audit-verify
+#       schedule: "0 3 * * *"
+#       args: ["audit", "verify"]
+cronJobs: []
 
 ingress:
   enabled: false

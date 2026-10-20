@@ -1,0 +1,35 @@
+{{- range .Values.cronJobs }}
+---
+# A scheduled `signari {{ join " " .args }}`, with the engine's Secret.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ printf "%s-%s" (include "signari.fullname" $) .name | trunc 52 | trimSuffix "-" }}
+  labels:
+    {{- include "signari.labels" $ | nindent 4 }}
+spec:
+  schedule: {{ .schedule | quote }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          {{- with $.Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml $.Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: {{ .name }}
+              image: {{ include "signari.image" $ | quote }}
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml $.Values.securityContext | nindent 16 }}
+              args: {{ toJson .args }}
+              envFrom:
+                - secretRef:
+                    name: {{ include "signari.secretName" $ }}
+{{- end }}

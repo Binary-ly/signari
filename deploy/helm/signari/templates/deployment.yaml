@@ -41,12 +41,24 @@ spec:
             - name: admin
               containerPort: {{ .Values.adminApi.port }}
             {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
           env:
             - name: SIGNARI_ISSUER
               value: {{ .Values.issuer | quote }}
             {{- if .Values.adminApi.enabled }}
             - name: SIGNARI_ADMIN_ADDR
               value: {{ printf ":%d" (int .Values.adminApi.port) | quote }}
+            {{- if .Values.adminApi.insecure }}
+            - name: SIGNARI_ADMIN_INSECURE
+              value: "1"
+            {{- end }}
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: SIGNARI_METRICS_ADDR
+              value: {{ printf ":%d" (int .Values.metrics.port) | quote }}
             {{- end }}
             {{- if .Values.tls.certSecretName }}
             - name: SIGNARI_TLS_CERT
@@ -68,7 +80,10 @@ spec:
               readOnly: true
           {{- end }}
           # /healthz is liveness only -- it describes the process, never the
-          # deployment. Readiness gates traffic until the engine can serve.
+          # deployment. Readiness gates traffic until the engine can serve, on
+          # /readyz, which checks the database and the signing keys. Both probes
+          # asked /healthz, so a pod whose database was unreachable kept taking
+          # traffic.
           livenessProbe:
             httpGet:
               path: /healthz
@@ -80,7 +95,7 @@ spec:
             periodSeconds: 10
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
               {{- if .Values.tls.certSecretName }}
               scheme: HTTPS

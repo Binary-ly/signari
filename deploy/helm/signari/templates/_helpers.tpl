@@ -60,4 +60,10 @@ Fail at template time, where the operator sees it, rather than at pod crash.
 {{- fail "signari: set secret.rootKey or secret.existingSecret -- a generated-on-boot key would invalidate every signing key on restart" -}}
 {{- end -}}
 {{- end -}}
+{{- if and .Values.adminApi.enabled (not .Values.tls.certSecretName) (not .Values.adminApi.insecure) -}}
+{{- fail "signari: adminApi.enabled needs tls.certSecretName, since the engine refuses to serve the admin API in plaintext; set adminApi.insecure=true to ask for plaintext by name" -}}
+{{- end -}}
+{{- if and .Values.metrics.serviceMonitor.enabled (not .Values.metrics.enabled) -}}
+{{- fail "signari: metrics.serviceMonitor.enabled needs metrics.enabled, or it monitors a service that does not exist" -}}
+{{- end -}}
 {{- end -}}

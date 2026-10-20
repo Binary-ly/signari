@@ -86,6 +86,31 @@ func (r *Report) add(sev Severity, area, summary, fix string) {
 	r.Findings = append(r.Findings, Finding{sev, area, summary, fix})
 }
 
+// JSON is the report for a script (3.26): a monitoring job that wants to
+// alert on a critical finding parsed the text, which changes whenever a
+// finding's wording does. Severities are lower case; every check that ran is
+// listed, as in the text, so an empty findings list is evidence.
+func (r *Report) JSON() ([]byte, error) {
+	type finding struct {
+		Severity string `json:"severity"`
+		Area     string `json:"area"`
+		Summary  string `json:"summary"`
+		Fix      string `json:"fix,omitempty"`
+	}
+	out := struct {
+		Findings []finding `json:"findings"`
+		Checked  []string  `json:"checked"`
+		Critical int       `json:"critical"`
+		Warning  int       `json:"warning"`
+		Info     int       `json:"info"`
+	}{Findings: []finding{}, Checked: r.Checked,
+		Critical: r.Count(Critical), Warning: r.Count(Warning), Info: r.Count(Info)}
+	for _, f := range r.Findings {
+		out.Findings = append(out.Findings, finding{strings.ToLower(f.Severity.String()), f.Area, f.Summary, f.Fix})
+	}
+	return json.MarshalIndent(out, "", "  ")
+}
+
 func (r *Report) ran(what string) { r.Checked = append(r.Checked, what) }
 
 // Count returns how many findings of a severity there are.
@@ -178,6 +203,13 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	checkQueryExecMode(conn, r)
 	if err := checkServerVersion(ctx, conn, r); err != nil {
 		return nil, err
+	}
+	for _, check := range []func(context.Context, *pgx.Conn, *Report) error{
+		checkTenantIsolation, checkJanitorBacklog, checkGrowth,
+	} {
+		if err := check(ctx, conn, r); err != nil {
+			return nil, err
+		}
 	}
 	if err := checkAuditChain(ctx, conn, r); err != nil {
 		return nil, err
@@ -1328,6 +1360,87 @@ func checkSchemaPin(r *Report) {
 			"--build-arg SIGNARI_SCHEMA_FINGERPRINT=\"$(scripts/schema-fingerprint.sh)\" "+
 			"to docker build. The version counter and the ledger comparison gate an "+
 			"unpinned binary either way.")
+}
+
+// checkTenantIsolation names every organisation-scoped table without row-level
+// security, or with it and not forced on its owner (3.26). The views the
+// console reads run as that owner, so a table that is not forced returns every
+// organisation's rows to every console request.
+func checkTenantIsolation(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("tenant isolation")
+	rows, err := conn.Query(ctx, `
+		SELECT c.relname FROM pg_catalog.pg_class c
+		JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'core' AND c.relkind IN ('r', 'p')
+		  AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a
+		              WHERE a.attrelid = c.oid AND a.attname = 'org_id' AND NOT a.attisdropped)
+		  AND NOT (c.relrowsecurity AND c.relforcerowsecurity)
+		ORDER BY 1`)
+	if err != nil {
+		return err
+	}
+	open, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	if len(open) > 0 {
+		r.add(Critical, "tenancy",
+			fmt.Sprintf("%d organisation-scoped table(s) without forced row-level security: %s",
+				len(open), strings.Join(open, ", ")),
+			"ALTER TABLE core.<table> ENABLE ROW LEVEL SECURITY, then FORCE ROW LEVEL SECURITY. "+
+				"Until then the console's views return every organisation's rows from them.")
+	}
+	return nil
+}
+
+// checkJanitorBacklog reports work the janitor should have done and has not
+// (3.26). It sweeps every minute; sessions past their end by more than an
+// hour, or codes kept a day past their retention, mean no node has run it.
+// Read from the database, because the janitor runs in `serve` and doctor is
+// another process.
+func checkJanitorBacklog(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("janitor backlog")
+	var sessions, codes int
+	if err := conn.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM core.sessions
+		         WHERE revoked_at IS NULL AND not_after <= now() - interval '1 hour'),
+		       (SELECT count(*) FROM core.authorization_codes
+		         WHERE expires_at < now() - interval '2 days')`).Scan(&sessions, &codes); err != nil {
+		return err
+	}
+	if sessions > 0 || codes > 0 {
+		r.add(Warning, "janitor",
+			fmt.Sprintf("%d session(s) ended more than an hour ago are still marked live, and %d "+
+				"authorization code(s) are a day past their retention: the janitor has not run",
+				sessions, codes),
+			"It runs inside `serve`, every minute, on whichever node holds its lock. Check that a "+
+				"node is serving; `signari janitor once` runs a pass by hand.")
+	}
+	return nil
+}
+
+// checkGrowth names the largest tables (3.26), so a table growing without
+// bound is seen before the disk is full. The audit trail grows by design
+// until it can be archived; the others should not.
+func checkGrowth(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("table growth")
+	rows, err := conn.Query(ctx, `
+		SELECT c.relname || ' ' || pg_catalog.pg_size_pretty(pg_catalog.pg_total_relation_size(c.oid))
+		FROM pg_catalog.pg_class c
+		JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'core' AND c.relkind = 'r'
+		ORDER BY pg_catalog.pg_total_relation_size(c.oid) DESC LIMIT 3`)
+	if err != nil {
+		return err
+	}
+	largest, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	if len(largest) > 0 {
+		r.add(Info, "database", "largest tables: "+strings.Join(largest, ", "), "")
+	}
+	return nil
 }
 
 // checkServerVersion says when PostgreSQL is a major this release was not

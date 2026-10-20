@@ -48,7 +48,7 @@ a class of failure that shows up as data corruption rather than an error.
 | | |
 |---|---|
 | `signari serve` | The engine. `-addr`, `-tls-cert`, `-tls-key` |
-| `signari doctor` | Check a deployment's configuration and report what is wrong |
+| `signari doctor` | Check a deployment's configuration and report what is wrong, including the audit chain, organisation tables without forced row-level security, janitor backlog, the largest tables, the PostgreSQL version and the schema against its ledger. Exits non-zero on a critical finding. `-json` prints the report as JSON for a script: `signari doctor -json \| jq '.findings[] \| select(.severity == "critical")'` |
 | `signari version` | The release, commit, Go toolchain, FIPS module, the schema version this binary expects and the fingerprint it is pinned to (`none` when unpinned). Needs no database. `scripts/build-release.sh` reads the `pinned` line before it tags. See [schema-pinning.md](schema-pinning.md) |
 | `signari janitor once` | Run one janitor pass by hand — expiry, sweeping, parking |
 | `signari plan` / `signari apply` | Declarative configuration from a file. `apply -prune` to delete what the file omits |

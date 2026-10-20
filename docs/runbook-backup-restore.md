@@ -126,7 +126,13 @@ signari audit verify
 Step 3 used to be `go test ./internal/audit/ -run TestLiveChainVerifies`, which
 needs the source tree and the Go toolchain on the host doing the restore.
 `signari audit verify` judges the chain as an export does: the whole of it, or
-everything since a declared checkpoint, said so. `signari doctor` reports the same.
+everything since a declared checkpoint, said so. `signari doctor` reports the same,
+with every other check, and a script can read it:
+
+```sh
+signari doctor -json | jq -e '.critical == 0'   # exits 1 if anything is critical
+signari doctor -json | jq -r '.findings[] | "\(.severity) \(.area): \(.summary)"'
+```
 
 If step 2 fails with *"unwrapping subject key (is the root key correct?)"*, the
 dump and the key file are from different eras. **Do not proceed** — find the

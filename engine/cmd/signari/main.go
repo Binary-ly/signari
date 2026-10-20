@@ -340,6 +340,7 @@ func run(args []string) (err error) {
 	dirTenant := fs.String("tenant", "", "Entra tenant id (read from the credential file)")
 	dirFilter := fs.String("filter", "", "user filter: Google query or Entra OData")
 	outFile := fs.String("out", "", "write to this file instead of stdout")
+	doctorJSON := fs.Bool("json", false, "`doctor`: print the report as JSON, for a script")
 	fromDay := fs.String("from", "", "export from this date, YYYY-MM-DD (inclusive)")
 	toDay := fs.String("until", "", "export up to this date, YYYY-MM-DD (exclusive)")
 	regOpen := fs.Bool("open", false, "allow registration with no initial access token")
@@ -813,7 +814,7 @@ func run(args []string) (err error) {
 	case "migrate fingerprint":
 		return printFingerprint(ctx, conn)
 	case "doctor":
-		return doctorCmd(ctx, conn, *issuer)
+		return doctorCmd(ctx, conn, *issuer, *doctorJSON)
 	case "verify":
 		if err := migrate.Verify(ctx, conn); err != nil {
 			return err
@@ -4620,13 +4621,25 @@ func policyShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 //
 // Exit status is the point: non-zero when anything critical is found, so it can
 // gate a deploy or run from cron. A report nobody reads changes nothing.
-func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string) error {
+func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string, asJSON bool) error {
 	if issuer == "" {
 		issuer = os.Getenv("SIGNARI_ISSUER")
 	}
 	rep, err := doctor.Inspect(ctx, conn, issuer)
 	if err != nil {
 		return err
+	}
+	crit := rep.Count(doctor.Critical)
+	if asJSON {
+		out, err := rep.JSON()
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+		if crit > 0 {
+			return fmt.Errorf("%d critical finding(s)", crit)
+		}
+		return nil
 	}
 
 	fmt.Printf("\n  signari doctor\n\n")
@@ -4645,7 +4658,7 @@ func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string) error {
 	// time the difference mattered.
 	fmt.Printf("\n  checked: %s\n", strings.Join(rep.Checked, ", "))
 
-	crit, warn := rep.Count(doctor.Critical), rep.Count(doctor.Warning)
+	warn := rep.Count(doctor.Warning)
 	fmt.Printf("  %d critical, %d warning, %d info\n\n", crit, warn, rep.Count(doctor.Info))
 	if crit > 0 {
 		return fmt.Errorf("%d critical finding(s)", crit)

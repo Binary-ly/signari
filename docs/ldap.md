@@ -349,6 +349,12 @@ was modified". Somebody with directory write access can set any password and the
 bind as that person — the most consequential thing this interface can do, and the
 thing an investigation looks for.
 
+A write **refused** because the bound account is not in the write group is
+audited too, as `ldap.write_refused` with the operation (`add`, `modify`,
+`delete`, `modify_dn`), by the account's subject id. Until October 2026 it was a
+log line naming the account, which is where an attempt to change the directory
+without permission would have been looked for and not found.
+
 Passwords go through the **same policy** as the sign-in form. A directory write is
 the one path where a password arrives with no person in front of a form to be
 told what is wrong with it, which makes it the most likely way to seed an estate

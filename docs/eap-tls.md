@@ -81,6 +81,12 @@ deactivate the account, certificate unchanged   → Access-Reject + EAP-Failure
 reactivate                                      → Access-Accept
 ```
 
+Every outcome is audited: `login.succeeded`, or `login.failed` with reason
+`no_identity`, `unknown_user` or `inactive`, with `via: eap-tls` and the
+certificate's serial, by the account's subject id when there is one. Until
+October 2026 nothing recorded a certificate sign-in; the listener logged the
+username, and nothing else said who had joined the network.
+
 ## The keys nobody remembers
 
 An Access-Accept without MPPE keys authenticates the supplicant and then leaves

@@ -1,6 +1,7 @@
 package ldapd
 
 import (
+	"fmt"
 	"testing"
 
 	ldapclient "github.com/go-ldap/ldap/v3"
@@ -45,6 +46,35 @@ func TestRemovalFromTheSearchGroupTakesEffectOnAnOpenConnection(t *testing.T) {
 	d.change("admin", []string{"directory-readers"}, false)
 	if got := count(); got != 0 {
 		t.Errorf("after deactivation the same connection saw %d entries, want none", got)
+	}
+}
+
+// A write refused to a bound account outside the write group is handed to
+// the writer to record, naming the account and the operation (3.33). It was a
+// log line naming the account, and since 3.07 not even that.
+func TestARefusedWriteIsHandedOnToBeRecorded(t *testing.T) {
+	d := newWritableDir("directory-writers")
+	addr := startWritable(t, "directory-writers", d, true)
+	c := bound(t, addr, "alice")
+	mod := ldapclient.NewModifyRequest("uid=admin,"+baseDN, nil)
+	mod.Replace("mail", []string{"taken@example.test"})
+	for _, try := range []func() error{
+		func() error { return c.Add(goodAdd("mallory")) },
+		func() error { return c.Modify(mod) },
+		func() error { return c.Del(ldapclient.NewDelRequest("uid=admin,"+baseDN, nil)) },
+		func() error {
+			return c.ModifyDN(ldapclient.NewModifyDNRequest("uid=admin,"+baseDN, "uid=ada", true, ""))
+		},
+	} {
+		if err := try(); !ldapclient.IsErrorWithCode(err, ldapclient.LDAPResultInsufficientAccessRights) {
+			t.Fatalf("a write by an account outside the write group gave %v", err)
+		}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	want := [][2]string{{"alice", "add"}, {"alice", "modify"}, {"alice", "delete"}, {"alice", "modify_dn"}}
+	if fmt.Sprint(d.refused) != fmt.Sprint(want) {
+		t.Errorf("the writer was handed %v, want %v", d.refused, want)
 	}
 }
 

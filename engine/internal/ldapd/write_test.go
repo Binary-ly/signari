@@ -33,8 +33,15 @@ type writableDir struct {
 	updates map[string]*Update
 	removed []string
 	renames [][2]string
+	refused [][2]string
 	// fail, when set, is returned by every method -- for the error-mapping tests.
 	fail error
+}
+
+func (d *writableDir) Refused(_ context.Context, actor, operation string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.refused = append(d.refused, [2]string{actor, operation})
 }
 
 func newWritableDir(members ...string) *writableDir {

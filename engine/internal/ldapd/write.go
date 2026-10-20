@@ -43,6 +43,14 @@ type Writer interface {
 	Rename(ctx context.Context, actor, from, to string) error
 }
 
+// RefusalRecorder is implemented by a Writer that records a write refused
+// because the bound account is not in the write group (3.33). Optional, so a
+// Writer that cannot record does not have to pretend to. actor is the bound
+// account's username, operation one of add, modify, delete, modify_dn.
+type RefusalRecorder interface {
+	Refused(ctx context.Context, actor, operation string)
+}
+
 // Errors a Writer returns, mapped to result codes by the handlers.
 var (
 	ErrEntryExists = errors.New("entry already exists")
@@ -122,16 +130,27 @@ func inGroup(id *Identity, group string) bool {
 // administrator to completely different places, and neither tells an attacker
 // anything they could not learn by trying with any account: whether the server
 // has writes on at all is a property of the deployment, not of a credential.
-func (s *Server) refuseWrite(c net.Conn, messageID int64, respTag ber.Tag, sess *session) bool {
+func (s *Server) refuseWrite(ctx context.Context, c net.Conn, messageID int64, respTag ber.Tag, sess *session) bool {
 	if !s.writesConfigured() {
 		s.log.Info("ldap write refused: this directory is read-only",
 			"remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultUnwillingToPerform, "", "this directory is read-only")))
 	}
-	// Without the bound DN, which is the person's username.
+	// Without the bound DN, which is the person's username; the audit trail
+	// records who, by subject, when the writer can.
 	s.log.Warn("ldap write refused: the bound identity is not in the write group",
 		"remote", c.RemoteAddr().String(), "write_group", s.cfg.WriteGroup)
+	if rec, ok := s.writer.(RefusalRecorder); ok {
+		actor := ""
+		if sess.identity != nil {
+			actor = sess.identity.Username
+		}
+		rec.Refused(ctx, actor, map[ber.Tag]string{
+			appAddRequest + 1: "add", appModifyRequest + 1: "modify",
+			appDelRequest + 1: "delete", appModifyDNRequest + 1: "modify_dn",
+		}[respTag])
+	}
 	// insufficientAccessRights(50), not unwillingToPerform. §4.7's own vocabulary
 	// distinguishes "the server will not" from "you may not", and an
 	// administrator whose service account silently cannot write needs the second.
@@ -188,7 +207,7 @@ func (s *Server) handleAdd(ctx context.Context, c net.Conn, sess *session,
 
 	const respTag = appAddRequest + 1
 	if !s.mayWrite(ctx, sess) {
-		return s.refuseWrite(c, messageID, respTag, sess)
+		return s.refuseWrite(ctx, c, messageID, respTag, sess)
 	}
 	req, err := decodeAdd(op)
 	if err != nil {
@@ -318,7 +337,7 @@ func (s *Server) handleModify(ctx context.Context, c net.Conn, sess *session,
 
 	const respTag = appModifyRequest + 1
 	if !s.mayWrite(ctx, sess) {
-		return s.refuseWrite(c, messageID, respTag, sess)
+		return s.refuseWrite(ctx, c, messageID, respTag, sess)
 	}
 	dn, changes, err := decodeModify(op)
 	if err != nil {
@@ -376,7 +395,7 @@ func (s *Server) handleDelete(ctx context.Context, c net.Conn, sess *session,
 
 	const respTag = appDelRequest + 1
 	if !s.mayWrite(ctx, sess) {
-		return s.refuseWrite(c, messageID, respTag, sess)
+		return s.refuseWrite(ctx, c, messageID, respTag, sess)
 	}
 	// DelRequest ::= [APPLICATION 10] LDAPDN -- the DN is the whole request, not
 	// a sequence, so it is read from the packet's own data.
@@ -456,7 +475,7 @@ func (s *Server) handleModifyDN(ctx context.Context, c net.Conn, sess *session,
 
 	const respTag = appModifyDNRequest + 1
 	if !s.mayWrite(ctx, sess) {
-		return s.refuseWrite(c, messageID, respTag, sess)
+		return s.refuseWrite(ctx, c, messageID, respTag, sess)
 	}
 	req, err := decodeModifyDN(op)
 	if err != nil {

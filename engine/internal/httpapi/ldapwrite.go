@@ -59,6 +59,39 @@ type logger interface {
 	Error(msg string, args ...any)
 }
 
+// Refused records a write refused because the bound account is not in the
+// write group (3.33). An attempt to change the directory by an account not
+// allowed to is what an investigation looks for, and it was only a log line
+// naming the account. Recorded by subject, without the username.
+func (w *LDAPWriter) Refused(ctx context.Context, actor, operation string) {
+	var userID string
+	if actor != "" {
+		err := w.db.QueryRow(ctx, `
+			SELECT id::text FROM core.users
+			WHERE org_id = $1::uuid AND (lower(username) = lower($2) OR lower(email) = lower($2))`,
+			w.orgID, actor).Scan(&userID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			w.log.Error("resolving the account an LDAP write was refused to", "err", err)
+		}
+	}
+	tx, err := w.db.Begin(ctx)
+	if err != nil {
+		w.log.Error("auditing a refused LDAP write", "err", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "ldap.write_refused", OrgID: w.orgID, SubjectID: userID, ActorID: userID,
+		Detail: map[string]any{"via": "ldap", "operation": operation},
+	}); err != nil {
+		w.log.Error("auditing a refused LDAP write", "err", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		w.log.Error("committing a refused LDAP write's audit", "err", err)
+	}
+}
+
 // NewLDAPWriter builds the write half of the directory.
 func NewLDAPWriter(db ldapWriteDB, hasher *passwords.Hasher, policy passwords.Policy,
 	orgID string, log logger) *LDAPWriter {

@@ -5,11 +5,14 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/audit"
 )
 
 // Turning a verified client certificate into a user.
@@ -54,16 +57,27 @@ func NewEAPCertAuthenticator(db *pgxpool.Pool, orgID, identityFrom string) *EAPC
 var oidUPN = []int{1, 3, 6, 1, 4, 1, 311, 20, 2, 3}
 
 // AuthenticateCertificate returns the username a certificate represents.
+//
+// Every outcome is audited, by subject when there is an account (3.33). The
+// listener logged the username until 3.07 and nothing else recorded a
+// certificate sign-in, so who had joined the network was in a log erasure
+// never reaches and nowhere else. The certificate is named by its serial.
 func (a *EAPCertAuthenticator) AuthenticateCertificate(cert *x509.Certificate) (string, error) {
-	identity, err := a.identity(cert)
-	if err != nil {
-		return "", err
-	}
-
 	// A short deadline: an access point retransmits, and a slow answer here
 	// becomes a supplicant retry rather than a login.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	serial := cert.SerialNumber.String()
+	failed := func(userID, reason string) {
+		a.audit(ctx, audit.Event{Type: audit.EventLoginFailed, OrgID: a.orgID, SubjectID: userID,
+			Detail: map[string]any{"via": "eap-tls", "reason": reason, "certificate_serial": serial}})
+	}
+
+	identity, err := a.identity(cert)
+	if err != nil {
+		failed("", "no_identity")
+		return "", err
+	}
 
 	var userID, status string
 	err = a.db.QueryRow(ctx, `
@@ -75,6 +89,7 @@ func (a *EAPCertAuthenticator) AuthenticateCertificate(cert *x509.Certificate) (
 	// the log, which says it without the certificate's address or name: the
 	// subject id when there is an account, nothing when there is none.
 	if errors.Is(err, pgx.ErrNoRows) {
+		failed("", "unknown_user")
 		return "", fmt.Errorf("no account in this organisation matches the certificate's identity")
 	}
 	if err != nil {
@@ -85,9 +100,31 @@ func (a *EAPCertAuthenticator) AuthenticateCertificate(cert *x509.Certificate) (
 		// why this check exists: revoking a certificate requires a CRL or OCSP
 		// the access point may never consult, while deactivating the account
 		// takes effect at the next association.
+		failed(userID, "inactive")
 		return "", fmt.Errorf("the certificate's account, subject %s, is %s", userID, status)
 	}
+	a.audit(ctx, audit.Event{Type: audit.EventLoginSucceeded, OrgID: a.orgID, SubjectID: userID,
+		Detail: map[string]any{"via": "eap-tls", "certificate_serial": serial}})
 	return identity, nil
+}
+
+// audit writes one outcome in its own transaction: a certificate sign-in has
+// none to join, and a failure to record must not turn the decision into an
+// error, since it is already made.
+func (a *EAPCertAuthenticator) audit(ctx context.Context, e audit.Event) {
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		slog.Error("auditing an EAP-TLS sign-in", "event", e.Type, "err", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := audit.Write(ctx, tx, e); err != nil {
+		slog.Error("auditing an EAP-TLS sign-in", "event", e.Type, "err", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("committing an EAP-TLS sign-in audit", "event", e.Type, "err", err)
+	}
 }
 
 // identity reads the configured field out of the certificate.

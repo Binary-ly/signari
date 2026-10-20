@@ -36,7 +36,7 @@ var EventTypes = []string{
 	"impersonation.ended", "impersonation.refused", "impersonation.started",
 	"keys.rotated",
 	"ldap.entry_created", "ldap.entry_deleted", "ldap.entry_modified", "ldap.entry_renamed",
-	"ldap.password_set",
+	"ldap.password_set", "ldap.write_refused",
 	"login.failed", "login.succeeded",
 	"mfa.duo_failed", "mfa.duo_succeeded", "mfa.duo_unavailable", "mfa.email_otp_enrolled",
 	"mfa.factor_disabled", "mfa.passkey_backup_lost", "mfa.passkey_counter_regression",

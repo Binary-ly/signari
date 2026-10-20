@@ -24,6 +24,7 @@
 package mfa
 
 import (
+	"crypto/fips140"
 	"crypto/hmac"
 	"crypto/rand"
 	// #nosec G505 -- RFC 6238 specifies HMAC-SHA1 for TOTP and every
@@ -34,6 +35,7 @@ import (
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -60,6 +62,13 @@ const (
 
 // b32 is the unpadded, upper-case encoding authenticator apps expect.
 var b32 = base32.StdEncoding.WithPadding(base32.NoPadding)
+
+// ErrFIPS is TOTP under GODEBUG=fips140=only, whose module refuses HMAC with
+// anything but SHA-2 or SHA-3 (3.11). A code check used to panic its request.
+var ErrFIPS = errors.New("TOTP needs HMAC-SHA1, which FIPS 140-only mode refuses; use a passkey")
+
+// Available reports whether TOTP can run in this process.
+func Available() bool { return !fips140.Enforced() }
 
 // GenerateSecret returns a new shared secret and its base32 form.
 func GenerateSecret() (raw []byte, encoded string, err error) {
@@ -159,6 +168,9 @@ func Plausible(code string, digits int) bool {
 // for a credential that has never been used. The caller MUST persist the
 // returned counter, or replay protection does not exist.
 func Verify(secret []byte, code string, now time.Time, digits int, period time.Duration, skew int, lastUsed int64) (int64, error) {
+	if !Available() {
+		return 0, ErrFIPS
+	}
 	if !Plausible(code, digits) {
 		return 0, ErrInvalidCode
 	}

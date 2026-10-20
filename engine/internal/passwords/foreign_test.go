@@ -2,8 +2,10 @@ package passwords
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"testing"
 
 	"golang.org/x/crypto/pbkdf2"
@@ -26,6 +28,13 @@ func TestForeignHashVectors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewHasher(MemoryBudgetMiB)
+			// MD5, which fips140=only refuses: a reasoned refusal, not a panic.
+			if fips140.Enforced() {
+				if _, err := h.Verify(context.Background(), tc.hash, pw); !errors.Is(err, ErrMismatch) {
+					t.Errorf("an MD5-based hash under fips140=only: %v", err)
+				}
+				return
+			}
 			needsRehash, err := h.Verify(context.Background(), tc.hash, pw)
 			if err != nil {
 				t.Fatalf("a real %s hash was rejected: %v", tc.name, err)

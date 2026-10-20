@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1" //nolint:gosec // the HIBP corpus is indexed by SHA-1
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"golang.org/x/text/unicode/norm"
 	"net/http"
@@ -30,6 +31,7 @@ func hibpServing(t *testing.T, breached string, count string) string {
 // TestTheRangeAPINeverSeesThePassword is the privacy property that makes this
 // check acceptable to run at all.
 func TestTheRangeAPINeverSeesThePassword(t *testing.T) {
+	skipWithoutSHA1(t)
 	var gotPath string
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +56,7 @@ func TestTheRangeAPINeverSeesThePassword(t *testing.T) {
 }
 
 func TestABreachedPasswordIsRefused(t *testing.T) {
+	skipWithoutSHA1(t)
 	// 15+ characters, so the LENGTH check is not what refuses it -- otherwise
 	// this test passes without the breach check ever running, which is what it
 	// exists to exercise. (It did, the moment the floor moved to 15.)
@@ -78,6 +81,7 @@ func TestABreachedPasswordIsRefused(t *testing.T) {
 // that are not in the corpus at all, and the padding exists precisely so
 // responses are indistinguishable.
 func TestPaddingEntriesAreNotMatches(t *testing.T) {
+	skipWithoutSHA1(t)
 	endpoint := hibpServing(t, "a-fine-passphrase-nobody-has", "0")
 	b := &BreachChecker{Endpoint: endpoint, Online: true}
 	breached, err := b.Breached(context.Background(), "a-fine-passphrase-nobody-has")
@@ -93,7 +97,7 @@ func TestPaddingEntriesAreNotMatches(t *testing.T) {
 func TestUnavailableIsNotClean(t *testing.T) {
 	b := &BreachChecker{Endpoint: "http://127.0.0.1:1/range/", Online: true}
 	_, err := b.Breached(context.Background(), "anything")
-	if err != ErrUnavailable {
+	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("an unreachable corpus returned %v, want ErrUnavailable", err)
 	}
 
@@ -117,6 +121,7 @@ func TestUnavailableIsNotClean(t *testing.T) {
 
 // The offline list exists because plenty of deployments cannot call out at all.
 func TestTheOfflineListWorksWithNoNetwork(t *testing.T) {
+	skipWithoutSHA1(t)
 	dir := t.TempDir()
 	path := dir + "/corpus.txt"
 	sum := sha1.Sum([]byte("hunter2")) //nolint:gosec

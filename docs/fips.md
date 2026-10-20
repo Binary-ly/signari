@@ -9,7 +9,13 @@ not "all of them" and nobody can tell you which without running it.
 ```sh
 GOFIPS140=certified go build ./cmd/signari   # the validated snapshot
 GODEBUG=fips140=only ./signari serve
+scripts/build-release.sh -fips -image REPO:TAG   # a pinned release and a REPO:TAG-fips image
 ```
+
+`signari version` says which module a binary was built against
+(`fips140  enabled, module v1.0.0-c2097c7c`); `module none` means it was not
+built against a snapshot at all, whatever `GODEBUG` says. The release script's
+`-fips` refuses a binary or image that does not report the snapshot.
 
 `certified` selects the snapshot Go lists as certified (`v1.0.0-c2097c7c`, in
 `$GOROOT/lib/fips140/certified.txt` of the go1.26 toolchains), and the engine
@@ -17,6 +23,11 @@ builds against it. This page used to give `GOFIPS140=latest`, which is the
 module's code as it stands rather than a validated snapshot, while calling the
 result a validated module. The package counts below were measured with `latest`
 and have not been repeated against `certified`.
+
+`internal/passwords` and `internal/mfa` were re-run in October 2026 and now pass
+under `fips140=only`. Their tests of what is refused in that mode run there, and
+the tests whose fixtures need SHA-1 skip. `signari doctor` reports the mode and
+what it would refuse.
 
 **31 of 36 packages pass their tests under `fips140=only`.** (That count is blunter than
 the truth: of the five failures, one is only test fixtures and one is only the
@@ -60,6 +71,13 @@ into codes their phone cannot produce.
 are ECDSA P-256 or RSA with SHA-256 and pass cleanly. This is not a bad trade;
 it is the direction to move anyway.
 
+`serve` refuses to start under `fips140=only` while anyone has TOTP as a second
+factor, saying how many, because none of them could finish signing in. Move them
+to a passkey and remove the factor (`DELETE /admin/users/{id}/factors/totp`)
+first. A code checked anyway is refused with an error rather than a panic. Until
+October 2026 the check panicked the request, at the moment the person typed a
+code.
+
 ### RADIUS — `internal/radius`
 
 RFC 2865 builds the Response Authenticator from MD5, and RFC 2548 derives MPPE
@@ -68,7 +86,15 @@ would not be RADIUS, and no network access server would talk to it.
 
 **Consequence: no RADIUS, and therefore no EAP-TLS through it.** 802.1X in a
 FIPS environment needs a RADIUS server built against a module that carries an MD5
-exception for exactly this purpose, which Go's does not.
+exception for exactly this purpose, which Go's does not. `serve` refuses to start
+under `fips140=only` with `SIGNARI_RADIUS_ADDR` set.
+
+### The breached-password check — `internal/passwords`
+
+The corpus is indexed by SHA-1, and the range API takes a SHA-1 prefix, so the
+check cannot run under `fips140=only`. `serve` refuses to start with
+`SIGNARI_PASSWORD_BREACH_CHECK` or `SIGNARI_PASSWORD_BREACH_LIST` set, and a check
+reached anyway reports itself unavailable instead of panicking.
 
 ### Verifying passwords from another IdP — `internal/passwords`
 
@@ -79,12 +105,28 @@ authentication path is unaffected — it proxies the credential to the old IdP a
 stores a local Argon2id hash — so a migration that uses shadow authentication
 rather than hash import works.
 
-Note also that Argon2id, bcrypt and scrypt live outside the validated module
-entirely. They are not *refused*; they simply are not covered, so a strict
-reading gives you no validated password hash at all. PBKDF2 with a long salt and
-SHA-256 is the approved option, and it is a considerably worse password hash. If
-a FIPS boundary is genuinely required around password storage, that trade needs
-stating explicitly to whoever is asking for it.
+Imported hashes the module refuses fail with an error that says to reset the
+password: phpass and WordPress (MD5), and PBKDF2 imports with SHA-1 or a salt
+shorter than 128 bits, as many Django salts are. Each used to panic the sign-in
+under `fips140=only`.
+
+### Passwords hashed here
+
+Argon2id, bcrypt and scrypt live outside the validated module. They are not
+*refused*; they simply are not covered. So with FIPS enabled (`on` or `only`) a
+new password is hashed with PBKDF2-HMAC-SHA256 through `crypto/pbkdf2`, which is
+inside the module: 600,000 iterations, which took 66 ms where this was measured
+(Argon2id here took 25 ms), a 128-bit salt and a 256-bit key, written
+`$pbkdf2-sha256$i=600000$<salt>$<key>`. An Argon2id password is checked once
+more at its next sign-in, outside the module, and rehashed to PBKDF2 in the same
+transaction. A password nobody signs in with stays Argon2id, and `signari doctor`
+reports how many are left. With FIPS off again, a PBKDF2 password moves back to
+Argon2id at its next sign-in.
+
+PBKDF2 has no memory hardness, so it is a considerably worse password hash: its
+cost is all CPU, which is what guessing hardware is best at. If a FIPS boundary
+around password storage is the requirement, that trade needs stating explicitly
+to whoever is asking for it.
 
 ## What was fixed rather than documented
 

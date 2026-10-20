@@ -18,6 +18,8 @@ package passwords
 
 import (
 	"context"
+	"crypto/fips140"
+	stdpbkdf2 "crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -35,7 +37,6 @@ import (
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -53,6 +54,22 @@ const (
 	argonThreads   = 1
 	argonSaltLen   = 16
 	argonKeyLen    = 32
+)
+
+// PBKDF2-HMAC-SHA256, the password hash under FIPS 140-3 (3.11). Argon2id is
+// outside Go's validated module, so a deployment running with fips140 enabled
+// hashes new passwords with this, through crypto/pbkdf2, which is inside it,
+// and moves an Argon2id hash to it at the next sign-in.
+//
+// It has no memory hardness, so its cost is all CPU: 600,000 iterations took
+// 66 ms where this was written, against 25 ms for the Argon2id above. The salt
+// and key lengths are the ones crypto/pbkdf2 requires under fips140=only:
+// 128 bits of salt, at least 112 bits of key.
+const (
+	pbkdf2Iterations = 600_000
+	pbkdf2SaltLen    = 16
+	pbkdf2KeyLen     = 32
+	pbkdf2Prefix     = "$pbkdf2-sha256$"
 )
 
 // Ceilings for cost parameters read out of an IMPORTED hash.
@@ -117,6 +134,11 @@ func costRefusal(stored string, budgetKiB int64) error {
 	}
 	parts := strings.Split(stored, "$")
 	switch {
+	case strings.HasPrefix(stored, pbkdf2Prefix) && len(parts) > 2:
+		var iter int
+		if _, err := fmt.Sscanf(parts[2], "i=%d", &iter); err == nil && iter > pbkdf2MaxIterations {
+			return fmt.Errorf("pbkdf2-sha256 with %d iterations is above the ceiling %d", iter, pbkdf2MaxIterations)
+		}
 	case strings.HasPrefix(stored, "$argon2id$") && len(parts) > 3:
 		var m, t, p int64
 		if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err == nil &&
@@ -233,6 +255,8 @@ func (h *Hasher) InFlight() int64 { return h.inFlight.Load() }
 func memoryKiB(stored string) int64 {
 	parts := strings.Split(stored, "$")
 	switch {
+	case strings.HasPrefix(stored, pbkdf2Prefix):
+		return 1 // CPU, not memory: it takes a slot and next to no budget
 	case strings.HasPrefix(stored, "$argon2id$") && len(parts) > 3:
 		var m, t, p int64
 		if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err == nil && m > 0 {
@@ -330,6 +354,13 @@ func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 	password = Normalize(password)
 	h.inFlight.Add(1)
 	defer h.inFlight.Add(-1)
+	if fips140.Enabled() {
+		if err := h.acquire(ctx, 1); err != nil {
+			return "", err
+		}
+		defer h.release(1)
+		return hashPBKDF2(password)
+	}
 	if err := h.acquire(ctx, argonMemoryKiB); err != nil {
 		return "", err
 	}
@@ -369,12 +400,23 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 	defer h.release(kib)
 
 	switch {
+	case strings.HasPrefix(stored, pbkdf2Prefix):
+		current, err := verifyPBKDF2(stored, password)
+		if err != nil {
+			return false, err
+		}
+		// Back to Argon2id once FIPS is off: PBKDF2 is the weaker hash, kept
+		// only for the module.
+		return !current || !fips140.Enabled(), nil
+
 	case strings.HasPrefix(stored, "$argon2id$"):
 		current, err := verifyArgon2id(stored, password)
 		if err != nil {
 			return false, err
 		}
-		return !current, nil
+		// Under FIPS, verified here once more, outside the module, and moved
+		// to PBKDF2 in the sign-in's own transaction (3.11).
+		return !current || fips140.Enabled(), nil
 
 	case strings.HasPrefix(stored, "$2a$"), strings.HasPrefix(stored, "$2b$"),
 		strings.HasPrefix(stored, "$2y$"):
@@ -400,6 +442,13 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 
 	case strings.HasPrefix(stored, "$P$"), strings.HasPrefix(stored, "$H$"):
 		// WordPress, phpBB, Drupal 7 -- the systems most in need of migrating off.
+		//
+		// MD5, which fips140=only refuses with a panic, so the sign-in failed by
+		// crashing its request (3.11). Refused instead, saying why.
+		if fips140.Enforced() {
+			return false, fmt.Errorf("%w: this password was imported as an MD5-based hash, which "+
+				"FIPS 140-only mode refuses; reset the password", ErrMismatch)
+		}
 		if err := verifyPHPass(stored, password); err != nil {
 			return false, err
 		}
@@ -493,6 +542,47 @@ func verifyArgon2id(stored, password string) (current bool, err error) {
 	return m >= argonMemoryKiB && t >= argonTime, nil
 }
 
+// hashPBKDF2 hashes with PBKDF2-HMAC-SHA256 through the standard library, the
+// one inside the FIPS module.
+func hashPBKDF2(password string) (string, error) {
+	salt := make([]byte, pbkdf2SaltLen)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return "", fmt.Errorf("generating salt: %w", err)
+	}
+	key, err := stdpbkdf2.Key(sha256.New, password, salt, pbkdf2Iterations, pbkdf2KeyLen)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%si=%d$%s$%s", pbkdf2Prefix, pbkdf2Iterations,
+		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key)), nil
+}
+
+// verifyPBKDF2 handles `$pbkdf2-sha256$i=<iterations>$<salt>$<key>` and says
+// whether its iterations are current.
+func verifyPBKDF2(stored, password string) (current bool, err error) {
+	parts := strings.Split(stored, "$")
+	if len(parts) != 5 {
+		return false, ErrMismatch
+	}
+	var iter int
+	if _, err := fmt.Sscanf(parts[2], "i=%d", &iter); err != nil || iter <= 0 || iter > pbkdf2MaxIterations {
+		return false, ErrMismatch
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[3])
+	if err != nil {
+		return false, ErrMismatch
+	}
+	want, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil {
+		return false, ErrMismatch
+	}
+	got, err := stdpbkdf2.Key(sha256.New, password, salt, iter, len(want))
+	if err != nil || subtle.ConstantTimeCompare(got, want) != 1 {
+		return false, ErrMismatch
+	}
+	return iter >= pbkdf2Iterations, nil
+}
+
 // verifyDjangoPBKDF2 handles `pbkdf2_sha256$<iterations>$<salt>$<b64 hash>`.
 func verifyDjangoPBKDF2(stored, password string) error {
 	parts := strings.Split(stored, "$")
@@ -507,7 +597,13 @@ func verifyDjangoPBKDF2(stored, password string) error {
 	if err != nil {
 		return ErrMismatch
 	}
-	got := pbkdf2.Key([]byte(password), []byte(parts[2]), iter, len(want), sha256.New)
+	// The standard library's, which returns an error where x/crypto's panics:
+	// under fips140=only a salt under 128 bits is refused, and Django's are
+	// often shorter (3.11).
+	got, err := stdpbkdf2.Key(sha256.New, password, []byte(parts[2]), iter, len(want))
+	if err != nil {
+		return fmt.Errorf("%w: %v; reset the password", ErrMismatch, err)
+	}
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		return ErrMismatch
 	}
@@ -527,6 +623,7 @@ func verifyDjangoPBKDF2(stored, password string) error {
 func SupportedPrefixes() []string {
 	return []string{
 		"$argon2id$",
+		pbkdf2Prefix,           // our own, under FIPS
 		"$2a$", "$2b$", "$2y$", // bcrypt
 		"pbkdf2_sha256$", // Django, and therefore authentik
 		"$P$", "$H$",     // phpass: WordPress, phpBB, Drupal 7

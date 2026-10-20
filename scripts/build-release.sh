@@ -9,8 +9,12 @@
 # way, because nothing built one any other way and nothing refused to tag it.
 #
 # Usage:
-#   scripts/build-release.sh [-image NAME:TAG] [-tag vX.Y.Z] [output-path]
+#   scripts/build-release.sh [-fips] [-image NAME:TAG] [-tag vX.Y.Z] [output-path]
 #
+#   -fips    build against Go's CMVP-validated FIPS 140-3 module snapshot
+#            (GOFIPS140=certified), and refuse the result unless it reports
+#            that module; the image tag gets a -fips suffix. Without it a
+#            binary is not built against the validated module at all
 #   -image   also build the container image, pinned the same way
 #   -tag     create an annotated git tag recording the fingerprint, once the
 #            binary (and the image, if built) reports the pin. Refused on a
@@ -22,9 +26,10 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-image="" tag="" out=""
+image="" tag="" out="" fips=off
 while [ $# -gt 0 ]; do
     case "$1" in
+        -fips)  fips=certified; shift ;;
         -image) image="${2:?-image needs NAME:TAG}"; shift 2 ;;
         -tag)   tag="${2:?-tag needs a version, e.g. v1.2.0}"; shift 2 ;;
         -*)     echo "error: unknown flag $1" >&2; exit 2 ;;
@@ -32,6 +37,9 @@ while [ $# -gt 0 ]; do
     esac
 done
 out="${out:-$here/engine/signari}"
+if [ "$fips" != off ] && [ -n "$image" ]; then
+    image="${image}-fips"
+fi
 
 if [ -n "$tag" ]; then
     if [ -n "$(git -C "$here" status --porcelain)" ]; then
@@ -55,10 +63,20 @@ fi
 # The pin a built artefact reports, read back from `signari version` rather
 # than assumed from the flags it was given.
 pin_of() { awk '$1 == "pinned" { print $2 }'; }
+# The FIPS module a built artefact reports: "none" unless it was built against
+# a snapshot, and only a snapshot is the validated module.
+module_of() { awk '$1 == "fips140" { print $NF }'; }
+check_fips() {
+    if [ "$fips" = off ]; then return; fi
+    case "$1" in
+        none|"") echo "error: $2 was asked for FIPS and reports no validated module" >&2; exit 1 ;;
+    esac
+    echo "$2 is built against FIPS module $1" >&2
+}
 
 echo "pinning $release to $fp" >&2
 cd "$here/engine"
-CGO_ENABLED=0 go build -trimpath \
+CGO_ENABLED=0 GOFIPS140="$fips" go build -trimpath \
     -ldflags "-s -w -X signari.dev/engine/internal/migrate.ExpectedFingerprint=$fp -X main.version=$release" \
     -o "$out" ./cmd/signari
 got="$("$out" version | pin_of)"
@@ -67,11 +85,13 @@ if [ "$got" != "$fp" ]; then
     exit 1
 fi
 echo "built $out, pinned" >&2
+check_fips "$("$out" version | module_of)" "$out"
 
 if [ -n "$image" ]; then
     docker build \
         --build-arg SIGNARI_SCHEMA_FINGERPRINT="$fp" \
         --build-arg SIGNARI_VERSION="$release" \
+        --build-arg GOFIPS140="$fips" \
         -t "$image" "$here/engine"
     got="$(docker run --rm "$image" version | pin_of)"
     if [ "$got" != "$fp" ]; then
@@ -79,6 +99,7 @@ if [ -n "$image" ]; then
         exit 1
     fi
     echo "built image $image, pinned" >&2
+    check_fips "$(docker run --rm "$image" version | module_of)" "image $image"
 fi
 
 if [ -n "$tag" ]; then

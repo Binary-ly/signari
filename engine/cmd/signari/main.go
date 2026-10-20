@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -1793,6 +1794,11 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// The startup gate. A drifted or half-migrated database must fail here, at
 	// boot, with a clear message -- not at 3am inside a query.
 	if err := migrate.Verify(ctx, conn); err != nil {
+		return err
+	}
+	// And under GODEBUG=fips140=only, nothing configured that the module would
+	// refuse by panicking a request (3.11).
+	if err := fipsPreflight(ctx, conn, os.Getenv, fips140.Enforced()); err != nil {
 		return err
 	}
 

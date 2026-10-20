@@ -7,17 +7,18 @@ import (
 	// creates a hash: every verified credential is immediately re-hashed with
 	// Argon2id, which is the point of the migration.
 	"crypto/md5"
+	stdpbkdf2 "crypto/pbkdf2"
 	"crypto/sha1" // #nosec G505 -- see the note on the md5 import above
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"hash"
 	"strconv"
 	"strings"
 
-	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/crypto/scrypt"
 )
 
@@ -278,7 +279,12 @@ func VerifyKeycloak(credentialDataJSON, secretDataJSON, password string) error {
 		return ErrMismatch
 	}
 
-	got := pbkdf2.Key([]byte(password), salt, cd.Iterations, len(want), newHash)
+	// The standard library's, which returns an error where x/crypto's panics:
+	// fips140=only refuses SHA-1 and a short salt (3.11).
+	got, err := stdpbkdf2.Key(newHash, password, salt, cd.Iterations, len(want))
+	if err != nil {
+		return fmt.Errorf("%w: %v; reset the password", ErrMismatch, err)
+	}
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		return ErrMismatch
 	}

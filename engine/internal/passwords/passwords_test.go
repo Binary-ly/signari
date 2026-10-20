@@ -2,6 +2,8 @@ package passwords
 
 import (
 	"context"
+	"crypto/fips140"
+	stdpbkdf2 "crypto/pbkdf2"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -12,7 +14,6 @@ import (
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/crypto/pbkdf2"
 )
 
 func TestHashAndVerifyRoundTrip(t *testing.T) {
@@ -23,8 +24,12 @@ func TestHashAndVerifyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(stored, "$argon2id$") {
-		t.Fatalf("unexpected format: %s", stored)
+	want := "$argon2id$"
+	if fips140.Enabled() {
+		want = pbkdf2Prefix
+	}
+	if !strings.HasPrefix(stored, want) {
+		t.Fatalf("unexpected format: %s, want %s", stored, want)
 	}
 
 	needsRehash, err := h.Verify(ctx, stored, "correct horse battery staple")
@@ -77,9 +82,21 @@ func TestForeignHashesVerifyAndRequestRehash(t *testing.T) {
 
 	t.Run("django pbkdf2_sha256", func(t *testing.T) {
 		const salt, iter = "abcdefghijkl", 260000
-		sum := pbkdf2.Key([]byte(pw), []byte(salt), iter, 32, sha256.New)
+		var sum []byte
+		fips140.WithoutEnforcement(func() {
+			sum, _ = stdpbkdf2.Key(sha256.New, pw, []byte(salt), iter, 32)
+		})
 		stored := "pbkdf2_sha256$260000$" + salt + "$" + base64.StdEncoding.EncodeToString(sum)
 
+		// A 12-byte salt is under what fips140=only allows: refused, saying so,
+		// where it used to panic the sign-in (3.11).
+		if fips140.Enforced() {
+			if _, err := h.Verify(ctx, stored, pw); !errors.Is(err, ErrMismatch) ||
+				!strings.Contains(err.Error(), "128 bits") {
+				t.Errorf("a short-salted Django hash under fips140=only: %v", err)
+			}
+			return
+		}
 		needsRehash, err := h.Verify(ctx, stored, pw)
 		if err != nil {
 			t.Fatalf("a valid Django hash failed to verify: %v", err)

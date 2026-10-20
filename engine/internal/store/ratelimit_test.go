@@ -168,10 +168,28 @@ func TestAllowRateUnderConcurrency(t *testing.T) {
 	}
 	wg.Wait()
 
-	if allowed != limit {
-		t.Fatalf("%d of %d concurrent requests were allowed against a limit of %d. "+
-			"A limiter that leaks under concurrency leaks under exactly the load it "+
-			"exists for.", allowed, attempts, limit)
+	// The window is the clock's minute, so a run that straddles one counts
+	// into two windows, each allowing the limit. What must hold is per window:
+	// exactly min(count, limit) allowed in each. The test compared the total
+	// with one limit and failed whenever the requests crossed a minute (4.20).
+	rows, err := pool.Query(ctx, `SELECT count FROM core.rate_limits WHERE bucket_key = $1`, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, windows := 0, 0
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		windows++
+		want += min(n, limit)
+	}
+	rows.Close()
+	if windows == 0 || allowed != want {
+		t.Fatalf("%d of %d concurrent requests were allowed against a limit of %d over %d "+
+			"window(s), which allow %d. A limiter that leaks under concurrency leaks under "+
+			"exactly the load it exists for.", allowed, attempts, limit, windows, want)
 	}
 }
 

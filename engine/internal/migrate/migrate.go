@@ -235,6 +235,11 @@ func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int, opts Options
 // upFrom is Up over a given set of migrations, so a test can apply a set
 // newer than the binary's own.
 func upFrom(ctx context.Context, conn *pgx.Conn, all []Migration, tier Tier, target int, opts Options) ([]Migration, error) {
+	// Before anything is applied: an older server failed part way, on the
+	// first function it did not have.
+	if err := checkServer(ctx, conn); err != nil {
+		return nil, err
+	}
 	// One `migrate` at a time, and the ledger read once the lock is held: a
 	// second run started alongside the first waits, then finds nothing left.
 	//
@@ -470,6 +475,9 @@ func Verify(ctx context.Context, conn *pgx.Conn) error {
 
 // verifyFor is Verify for a binary whose latest migration is want.
 func verifyFor(ctx context.Context, conn *pgx.Conn, want int) error {
+	if err := checkServer(ctx, conn); err != nil {
+		return err
+	}
 	current, err := Applied(ctx, conn)
 	if err != nil {
 		return err

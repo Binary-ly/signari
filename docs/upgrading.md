@@ -104,6 +104,16 @@ The check reads the SQL and does not run it, so it is a floor. A new column the
 previous release would read wrongly, or a new row it would misread, is the
 author's to rule out.
 
+## Which PostgreSQL
+
+| | |
+|---|---|
+| Runs on | 17 and later. 17 is the version this release's suites ran against, and an older major is refused rather than assumed to work: `signari verify`, `serve` and `migrate` refuse it before applying anything |
+| Tested on | 17. A later major runs, and `signari doctor` warns that it was not tested here |
+| Bootstrap | needs a role that may create roles, one of them with `BYPASSRLS` (`signari_maintenance`), and grant schemas to them: a superuser on your own server. Whether a managed service's administrator role may do this is the service's to say, and has not been tried here |
+
+Until October 2026 nothing declared a range, and nothing checked one.
+
 ## Upgrading PostgreSQL
 
 The fingerprint a migration recorded is compared only under the PostgreSQL

@@ -176,6 +176,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 		return nil, err
 	}
 	checkQueryExecMode(conn, r)
+	if err := checkServerVersion(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	if err := checkAuditChain(ctx, conn, r); err != nil {
 		return nil, err
 	}
@@ -1325,6 +1328,27 @@ func checkSchemaPin(r *Report) {
 			"--build-arg SIGNARI_SCHEMA_FINGERPRINT=\"$(scripts/schema-fingerprint.sh)\" "+
 			"to docker build. The version counter and the ledger comparison gate an "+
 			"unpinned binary either way.")
+}
+
+// checkServerVersion says when PostgreSQL is a major this release was not
+// tested on (3.28). One older than it runs on is refused by `verify` and
+// `migrate` before this is reached.
+func checkServerVersion(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("PostgreSQL version")
+	major, err := migrate.ServerMajor(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if major < migrate.MinServerMajor {
+		r.add(Critical, "database", fmt.Sprintf("PostgreSQL %d is older than %d, the oldest this "+
+			"release runs on", major, migrate.MinServerMajor), "Upgrade the database first.")
+	} else if !migrate.Tested(major) {
+		r.add(Warning, "database", fmt.Sprintf("PostgreSQL %d is not one this release was tested "+
+			"on (%v)", major, migrate.TestedServerMajors),
+			"It is new enough to run; run the release's own checks against a copy before "+
+				"relying on it.")
+	}
+	return nil
 }
 
 // checkAuditChain says whether the audit trail verifies, judged as an export

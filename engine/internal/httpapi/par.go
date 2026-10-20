@@ -70,7 +70,15 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
 
+	// A pushed request is a handful of parameters. Declared from the start and
+	// applied to nothing, so a push parsed up to net/http's 10 MB form ceiling.
+	r.Body = http.MaxBytesReader(w, r.Body, maxPARBody)
 	if err := r.ParseForm(); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "invalid_request", "the pushed request is too large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_request", "malformed form body")
 		return
 	}

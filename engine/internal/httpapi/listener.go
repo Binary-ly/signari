@@ -10,9 +10,13 @@ import (
 // It had a header timeout and an idle timeout and nothing else. A client that
 // sent its headers promptly and then its body a byte a minute held a goroutine
 // and a connection for as long as it liked, and a few thousand of them held
-// the server. Every request here is small: forms, JSON and redirects, each
-// bounded by a MaxBytesReader. Thirty seconds to read one and a minute to
-// answer one is generous for every route.
+// the server. Every request here is small: forms, JSON and redirects. JSON is
+// bounded where it is decoded, and a pushed authorization request by
+// maxPARBody; other form bodies by net/http's own ceiling on a urlencoded form
+// (10 MB, src/net/http/request.go:1280 in go1.26.6), which per-route caps are
+// 9.10's to tighten. This said every request was bounded by a MaxBytesReader,
+// and the PAR cap was declared and read by nothing. Thirty seconds to read one
+// and a minute to answer one is generous for every route.
 //
 // The one connection that is meant to stay open, the remote-access tunnel, is
 // a hijacked WebSocket, and net/http clears both deadlines when a connection is

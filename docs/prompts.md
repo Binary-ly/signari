@@ -78,10 +78,12 @@ from the rendered form.
 {"accept": "true", "department": "engineering"}
 ```
 
-Not reduced to a boolean. *"When did they accept the terms, and to what?"* is
-asked months later by somebody who needs the date and the content, and a boolean
-cannot answer it. The answer is also written to the audit trail, for whoever has
-the export and not the database.
+Not reduced to a boolean: the stored answer keeps every field. It records when the
+person last answered and what they answered, and not yet which wording they were
+shown. Answering again replaces the earlier answer, and editing a prompt keeps the
+answers given to the old text and does not ask again, so *"to what did they
+agree?"* has no answer once the terms change. This page said it had. The answer is
+also written to the audit trail, for whoever has the export and not the database.
 
 ## `once`
 

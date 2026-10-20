@@ -57,9 +57,13 @@ That row is the evidence the erasure happened and when. A deleted row proves
 nothing, and *"we did erase them, we just cannot show you"* is not a position to be
 in during an audit.
 
-The audit chain also survives, because it hashes **ciphertext** rather than
-plaintext — so the chain stays verifiable across a shred instead of being broken
-by it.
+The audit chain also survives. A shred destroys the subject's key and rewrites no
+audit row, and audit rows name people by subject id only, never by address, so
+there is nothing personal in them for a shred to remove and no link it breaks.
+The chain hashes the plaintext `detail`: an earlier version of this page said it
+hashed ciphertext, from a `detail_enc` column that exists in the schema and is
+written by nothing yet. Anything personal written into `detail`
+would therefore survive a shred, which is why nothing is.
 
 ## Erasing a subject with no account
 

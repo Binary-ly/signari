@@ -1,15 +1,22 @@
 # FIPS 140-3
 
-Signari builds and runs against Go's FIPS 140-3 validated cryptographic module.
-This page says exactly which features survive that and which cannot, because the
-answer is not "all of them" and nobody can tell you which without running it.
+Signari builds and runs against Go's FIPS 140-3 cryptographic module. This page
+says exactly which features survive that and which cannot, because the answer is
+not "all of them" and nobody can tell you which without running it.
 
 ## The short version
 
 ```sh
-GOFIPS140=latest go build ./cmd/signari
+GOFIPS140=certified go build ./cmd/signari   # the validated snapshot
 GODEBUG=fips140=only ./signari serve
 ```
+
+`certified` selects the snapshot Go lists as certified (`v1.0.0-c2097c7c`, in
+`$GOROOT/lib/fips140/certified.txt` of the go1.26 toolchains), and the engine
+builds against it. This page used to give `GOFIPS140=latest`, which is the
+module's code as it stands rather than a validated snapshot, while calling the
+result a validated module. The package counts below were measured with `latest`
+and have not been repeated against `certified`.
 
 **31 of 36 packages pass their tests under `fips140=only`.** (That count is blunter than
 the truth: of the five failures, one is only test fixtures and one is only the

@@ -5,10 +5,12 @@
 **The root key is not in the database, and a backup without it is worthless.**
 
 Every signing key in `core.signing_keys`, every TOTP secret, and every migration
-source's client secret is encrypted with `SIGNARI_ROOT_KEY`. That key lives in the
-environment, a file, or a KMS — deliberately never in the database it protects,
-because a backup containing the key that decrypts it is not encryption, it is
-filing.
+source's client secret is encrypted with `SIGNARI_ROOT_KEY`. The engine reads that
+key from its environment and nowhere else — deliberately never from the database
+it protects, because a backup containing the key that decrypts it is not
+encryption, it is filing. Keep the value in a secret store you can reach when the
+database is gone. (This said the key could live in a file or a KMS; the engine
+reads neither.)
 
 The corollary is the part people discover too late:
 
@@ -25,7 +27,7 @@ retention, is the most common way this goes wrong.
 
 | Artefact | Where it lives | Lose it and… |
 |---|---|---|
-| `SIGNARI_ROOT_KEY` | env / file / KMS | every signing key, TOTP secret and migration secret is permanently unreadable |
+| `SIGNARI_ROOT_KEY` | the engine's environment | every signing key, TOTP secret and migration secret is permanently unreadable |
 | PostgreSQL database | your database host | everything else |
 | `SIGNARI_ADMIN_TOKEN` | env | the console cannot write; regenerate and update both sides |
 | TLS certificate + key | disk / cert manager | reissue; no data loss |
@@ -35,10 +37,15 @@ Only the first two are irreplaceable.
 ## Backup
 
 ```sh
-# Database. --clean --if-exists makes the dump restorable over an existing
-# database; without it a restore into a non-empty target fails halfway.
+# Database, as a superuser or a role with BYPASSRLS -- NOT as signari_engine.
+# Every core table forces row-level security on its own owner, so pg_dump run
+# as the engine role stops at the first one ("query would be affected by
+# row-level security policy") and leaves a partial file. This runbook used
+# $SIGNARI_DSN here; checked on a copy, that dump was missing most of the data.
+# --clean --if-exists makes the dump restorable over an existing database.
 pg_dump --format=custom --clean --if-exists \
-        --dbname="$SIGNARI_DSN" --file="signari-$(date -u +%Y%m%dT%H%M%SZ).dump"
+        --dbname="postgres://superuser@host/signari" \
+        --file="signari-$(date -u +%Y%m%dT%H%M%SZ).dump"
 
 # Root key. Stored ALONGSIDE the dump, with the same retention, or the pair
 # drifts apart and the older half becomes useless without anyone noticing.
@@ -53,13 +60,23 @@ backup host is what failed.
 ## Restore
 
 ```sh
-createdb signari_restore
-pg_restore --dbname=signari_restore --clean --if-exists signari-TIMESTAMP.dump
+# Roles FIRST. They are cluster-wide and not in the dump, and the restore
+# assigns every object to them. Migration 0001 creates them; run it against a
+# scratch database, since the restore brings its own record of 0001 and a
+# bootstrap after it would find nothing to apply.
+createdb signari_roles
+SIGNARI_DSN="postgres://superuser@host/signari_roles" signari migrate bootstrap
+dropdb signari_roles            # the roles stay: they belong to the cluster
 
-# Roles are CLUSTER-wide and are NOT in the dump. On a fresh cluster, recreate
-# them first -- migration 0001 does exactly this and is idempotent.
-SIGNARI_DSN="postgres://superuser@host/signari_restore" signari migrate bootstrap
+createdb signari_restore
+pg_restore --dbname="postgres://superuser@host/signari_restore" \
+           --clean --if-exists signari-TIMESTAMP.dump
 ```
+
+This page used to restore first and bootstrap after. Followed on a fresh cluster
+that gave 296 errors and no `signari_engine` role, which the bootstrap did not
+create because the restored ledger already recorded 0001. The order above restored
+with none, and the checks below passed.
 
 ## Verifying a restore actually worked
 
@@ -101,8 +118,12 @@ and the only way anyone finds out is by being told the date.
 
 ## What a restore does NOT bring back
 
-- **Sessions.** Everyone signs in again. Correct: a restored session is a session
-  whose termination may have been rolled back with it.
+- **Nothing is lost from sessions, which is the danger.** They are rows, so they
+  come back as they were at the dump, and a browser holding one is signed in
+  again; a session ended after the dump is live again. This said everyone signs
+  in again, which is not what happens (a restore of a copy brought back its nine
+  live sessions). There is no single command to end every session yet; end each
+  person's with `DELETE /admin/users/{userID}/sessions` where it matters.
 - **Undelivered logout notices** past their retry budget. Check the console's
   logout-delivery screen after a restore.
 - **Anything erased.** A crypto-shredded subject stays unreadable in every

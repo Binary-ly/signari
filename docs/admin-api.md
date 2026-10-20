@@ -101,10 +101,12 @@ row the same way.
 **The OpenAPI document is derived, not written.** It cannot describe a route that
 is not registered or omit one that is, and each operation carries the scope the
 server actually enforces — taken from the same `auth(scope, …)` wrapper that
-enforces it, so a generated client is a client of the server that exists rather
-than of the server somebody last remembered to document. Request and response
-*schemas* are not derived: reflecting over the Go structs would describe the JSON
-tags rather than the meaning, so those stay in this page.
+enforces it, so a client generated from it calls the routes that exist, with the
+scopes they need, rather than those somebody last remembered to document. It
+knows nothing of the bodies: request and response *schemas* are not in the
+document, because reflecting over the Go structs would describe the JSON tags
+rather than the meaning, so a generated client has untyped bodies and those stay
+in this page.
 
 It needs no token. It describes the shape of the API and no data — the same facts
 you are reading here — and requiring a token to read the description of how to
@@ -125,9 +127,11 @@ rather than adding a second boundary that has to be kept in step.
 **There is no `DELETE`,** and that is a decision. Every user, client, session,
 token and audit event in a deployment hangs off an organisation, so a one-call
 tenant deletion is irreversible destruction of everything a customer has,
-reachable by one mistyped identifier. Setting `status` to `suspended` stops the
-tenant working; removing the data is a deliberate operation done with the
-database in front of you.
+reachable by one mistyped identifier. Removing the data is a deliberate operation
+done with the database in front of you. Suspending a tenant is not built yet:
+`organizations.status` exists, nothing sets it and nothing reads it, so stopping
+a tenant today means disabling its clients and deactivating its people. This
+page said that setting `status` to `suspended` stopped the tenant working.
 
 ### Scopes
 

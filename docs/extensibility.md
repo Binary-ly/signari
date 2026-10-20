@@ -1,8 +1,10 @@
 # Extending the engine
 
 You extend Signari by running **your own service** and registering it for a named
-hook. The engine calls it over HTTP with a versioned JSON contract, and **no
-third-party code runs inside the engine process**.
+hook. The engine calls it over HTTP with a JSON contract that only grows: no
+version is sent, unknown fields in either direction are ignored, and **no
+third-party code runs inside the engine process**. (This said "versioned"; nothing
+names a version.)
 
 ```sh
 signari provider add -org <uuid> \
@@ -49,8 +51,10 @@ Three alternatives were considered and rejected:
   host exposes. **Deferred, not refused.**
 
 Out-of-process reuses what is already here: the SSRF-safe dialer that refuses
-private destinations, the outbox's retry and parking, and the HTTP-and-JSON shape
-every other integration already speaks.
+private destinations, and the HTTP-and-JSON shape every other integration already
+speaks. A hook is called on the request path and answered there, once: it is not
+queued, retried or parked by the outbox, which is why every provider declares what
+an unanswered call means. (This said the outbox retried them.)
 
 ## The rule that makes it safe
 

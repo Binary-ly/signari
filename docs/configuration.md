@@ -17,8 +17,11 @@ way it already had.
 | `SIGNARI_ROOT_KEY` | 32 random bytes, base64. Seals every stored secret. Lose it and sealed data — RADIUS secrets, bind passwords, SCIM tokens, signing keys — cannot be read, and the engine refuses to start rather than run with keys it cannot unwrap |
 | `SIGNARI_ISSUER` | The issuer URL. Must match an instance in the database |
 
-`SIGNARI_ROOT_KEY_REF` names an external key reference instead, for a
-deployment keeping the root key outside the process environment.
+`SIGNARI_ROOT_KEY_REF` is the label stored beside every value the key seals, so a
+later rotation can tell which key sealed what. It fetches no key from anywhere:
+the key itself comes only from `SIGNARI_ROOT_KEY`, and `serve` and `doctor` both
+refuse a deployment that sets the label alone. A root key held in a KMS is not
+built yet. This said the label named an external key instead.
 
 ### Rotating the root key
 

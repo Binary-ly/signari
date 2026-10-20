@@ -206,10 +206,14 @@ func checkIssuer(r *Report, issuer string) {
 
 func checkRootKey(r *Report) {
 	r.ran("root key")
-	if os.Getenv("SIGNARI_ROOT_KEY") == "" && os.Getenv("SIGNARI_ROOT_KEY_REF") == "" {
+	// SIGNARI_ROOT_KEY alone. SIGNARI_ROOT_KEY_REF is the label stored beside
+	// what the key seals and fetches no key from anywhere, and this passed on
+	// it while `serve` refused to start without the key itself.
+	if os.Getenv("SIGNARI_ROOT_KEY") == "" {
 		r.add(Critical, "root key", "no root key is configured",
 			"set SIGNARI_ROOT_KEY to base64 of 32 random bytes. It wraps every stored "+
-				"private signing key; without it nothing can be unsealed")
+				"private signing key; without it nothing can be unsealed, and "+
+				"SIGNARI_ROOT_KEY_REF, a label, is no substitute")
 	}
 }
 

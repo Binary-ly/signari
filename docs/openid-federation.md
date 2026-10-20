@@ -285,11 +285,15 @@ test suite full of passing tests said nothing about it.
 
 ## Automatic Registration (§12.1)
 
-`oidfed.Register` turns a resolved chain into a usable client. An RP in the same
-federation uses this OP with **no prior registration step**: its Entity
-Identifier is its `client_id`, and everything the OP needs — redirect URIs, keys,
-scopes — comes from metadata resolved through a Trust Chain rather than from a
-registration request.
+`oidfed.Register` turns a resolved chain into a usable client: an RP's Entity
+Identifier becomes its `client_id`, and everything the OP needs — redirect URIs,
+keys, scopes — comes from metadata resolved through a Trust Chain rather than from
+a registration request.
+
+**Not wired yet.** Client lookup does not call it, so an RP in the federation must
+still be registered here before it can sign anyone in. What follows describes the
+built and tested function, not a path a request can take today. This page used to
+say a federation RP needed no prior registration.
 
 This is the feature that makes the rest of the federation work pay off for an
 OpenID Provider.

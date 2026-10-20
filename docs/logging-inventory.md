@@ -23,7 +23,7 @@ mistake this document exists to prevent.
 | Purpose | operating the server | evidencing what happened to an account |
 | Survives a crash | only if collected | yes |
 | Tamper-evident | no | yes — hash chained |
-| Personal data | avoided | encrypted per subject |
+| Personal data | mostly avoided, except that LDAP binds log the username and the client address | subject ids only, nothing encrypted; this row said avoided, and encrypted per subject |
 | Authoritative | no | **yes** |
 
 A question about *whether the server is healthy* is answered from the first. A
@@ -86,7 +86,9 @@ wrote and recorded nothing, including granting impersonation, rotating keys
 and creating admin tokens.
 
 **Tamper evidence.** Each row carries `prev_hash` and `entry_hash`, chained over
-**ciphertext** so the chain stays verifiable after a crypto-shred. Migration 0043
+the row's plaintext `detail`. It stays verifiable after a crypto-shred because a
+shred rewrites no audit row (this said the chain was over ciphertext, which it
+never was). Migration 0043
 removed the two `ON DELETE SET NULL` foreign keys (`org_id`, `admin_token_id`)
 because both columns are inside the chain hash — deleting an organisation silently
 rewrote history and broke verification. An audit row is not current state, so
@@ -96,8 +98,11 @@ Note the precise claim, because V16.4.2 says logs "cannot be modified": the chai
 makes modification **detectable**, and no ordinary administrative action can
 rewrite a row. It is not a database trigger refusing `UPDATE`.
 
-**Personal data.** `detail_enc` holds anything personal, encrypted with the
-subject's DEK. `detail` holds the rest in clear JSON.
+**Personal data.** Kept out by rule rather than by encryption: rows name people by
+subject id, never by address, and `detail` is clear JSON that must carry nothing
+personal. `detail_enc` exists in the schema for personal detail sealed under the
+subject's key, and nothing writes or reads it yet; this said it held
+anything personal.
 
 **Retention.** `retention_class` is `security`, `operational` or `profile`,
 constrained by a `CHECK` and defaulting to `security`. It exists so an erasure

@@ -73,6 +73,17 @@ func TestMissingRootKeyIsCritical(t *testing.T) {
 	}
 }
 
+// A key reference is a label stored beside what the key seals, not a key:
+// `serve` refuses to start without SIGNARI_ROOT_KEY, and doctor passed a
+// deployment that set only the reference.
+func TestAKeyReferenceAloneIsNoRootKey(t *testing.T) {
+	t.Setenv("SIGNARI_ROOT_KEY", "")
+	t.Setenv("SIGNARI_ROOT_KEY_REF", "kms://projects/x/keys/root")
+	if r := findingsFor(t, checkRootKey); r.Count(Critical) != 1 {
+		t.Fatalf("findings = %+v with only a key reference, want one critical", r.Findings)
+	}
+}
+
 func TestShortAdminTokenIsCritical(t *testing.T) {
 	t.Setenv("SIGNARI_ADMIN_TOKEN", "short")
 	r := findingsFor(t, checkAdminToken)

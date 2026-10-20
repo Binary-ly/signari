@@ -95,10 +95,15 @@ unmatched principal is refused and told to ask for one.
 | | |
 |---|---|
 | **SPNEGO** | A domain-joined browser signs in with no interaction |
-| **Password backend** | A password is verified against the KDC |
+| **Password backend** | A password is verified against the KDC — built and tested, and not yet called by any sign-in |
 | **Directory sync** | Accounts are created from the realm's principals |
 
 ### Password backend
+
+**Not wired yet.** The verifier below exists and is tested, and the sign-in form
+does not call it: a password typed at sign-in is checked locally and never sent to
+the KDC, so none of what follows runs today. This page used to list it as one of
+three working uses.
 
 There is no hash to compare — a realm does not publish password material, and
 the only way to check a password is to ask the KDC for a ticket with it. That
@@ -133,9 +138,9 @@ Service and administrative principals are filtered out — `host/web01`,
 `HTTP/auth`, `alice/admin`, `krbtgt`, `kadmin` — because an account created from
 one is an account nobody can explain.
 
-Accounts are created **without a local password**: they authenticate against the
-realm, and inventing a local password would be a second way in that nobody
-chose. Nothing is ever deleted: what happens to a leaver is a policy decision,
+Accounts are created **without a local password**: they sign in with a ticket
+(SPNEGO), and inventing a local password would be a second way in that nobody
+chose. Signing in with the realm password waits on the password backend above. Nothing is ever deleted: what happens to a leaver is a policy decision,
 not something a listing should make. It is a dry run unless `-apply`.
 
 **This runs `kadmin`.** The Kerberos administration protocol is RPC over GSSAPI

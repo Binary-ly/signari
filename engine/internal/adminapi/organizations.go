@@ -45,9 +45,11 @@ import (
 // session, token and audit event in the deployment hangs off an organisation. A
 // one-call tenant deletion is an irreversible destruction of everything a
 // customer has, reachable by a single mistyped identifier, and no confirmation
-// parameter makes that a good shape for an HTTP API. `status = 'suspended'`
-// stops the tenant working; removing the data is a deliberate operation with the
-// database in front of you.
+// parameter makes that a good shape for an HTTP API. Removing the data is a
+// deliberate operation with the database in front of you. Suspension would be
+// `status = 'suspended'`, and nothing sets or reads it yet (6.09): enforcement at
+// every entry point comes first, then the writer. This said it stopped the
+// tenant working.
 
 // slugPattern is what may appear in a URL and a configuration file without
 // quoting.

@@ -78,6 +78,15 @@ A token worth more should not be issued to something that needs less.
 A wrong password, an unknown user and a missing credential all return the same
 `authentication refused`. An outpost sits somewhere less trusted by definition,
 and distinguishing them there is a user-enumeration endpoint on a workstation.
+They take the same time too: each refusal spends one password hash, as a wrong
+password does. Until October 2026 the others were answered before any hashing,
+so the time of the reply told them apart.
+
+Each failure is charged to the account's sign-in budget — the one the sign-in
+page and LDAP draw on, 30 failures in 15 minutes — and the attempt past it is
+refused with `429` before any hashing; a right password costs nothing. Until
+October 2026 the desktop charged nothing, so an outpost token could spend its
+whole allowance of calls guessing one person's password.
 
 Every attempt, successful or not, is written to the audit trail with the outpost
 that made it.

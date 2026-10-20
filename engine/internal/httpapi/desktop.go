@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -88,8 +90,46 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 	// And one cost for every reason: the refusals that need no hash spend the
 	// same one a wrong password does, as the sign-in form's do. They returned
 	// at once, so the time of the answer said which it was.
+	// The account's sign-in failure budget, the one the form and LDAP draw on
+	// (1.91): reserved before the lookup and the hash, kept for a refused
+	// credential, handed back for anything else. Nothing charged it, so an
+	// outpost token had its whole allowance of calls to spend guessing one
+	// person's password. No address: the client here is the outpost, and
+	// charging it would let one person's typing lock every desktop behind it.
+	var held []store.Reservation
+	if id := strings.ToLower(body.Username); id != "" {
+		res, ok, err := store.ReserveRate(ctx, s.db, "signin:fail:user:"+id,
+			signInPerAccountLimit, signInPerAccountWindow)
+		if err != nil {
+			s.log.Error("reserving against the desktop sign-in budget", "err", err)
+			writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
+			return
+		}
+		if !ok {
+			s.auditDetached(ctx, audit.Event{Type: audit.EventLoginFailed, OrgID: orgID,
+				CorrelationID: correlationID(ctx),
+				Detail:        map[string]any{"via": "desktop", "outpost": name, "reason": "rate_limited"}})
+			w.Header().Set("Retry-After", fmt.Sprint(int(signInPerAccountWindow.Seconds())))
+			writeError(w, http.StatusTooManyRequests, "temporarily_unavailable", "too many attempts")
+			return
+		}
+		held = append(held, res)
+	}
+	charged := false
+	defer func() {
+		if charged {
+			return
+		}
+		for _, r := range held {
+			if err := r.Release(context.WithoutCancel(ctx), s.db); err != nil {
+				s.log.Error("releasing a desktop sign-in reservation", "err", err)
+			}
+		}
+	}()
+
 	refuseAfterHash := func(reason string) {
 		_, _ = s.hasher.Verify(ctx, dummyHash, body.Password)
+		charged = true
 		refuse(reason)
 	}
 
@@ -111,6 +151,7 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, verr := s.hasher.Verify(ctx, stored, body.Password); verr != nil {
+		charged = true
 		refuse("wrong password")
 		return
 	}

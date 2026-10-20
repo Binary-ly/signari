@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mfa"
+	"signari.dev/engine/internal/store"
 )
 
 // The desktop outpost asks the sign-in flow whether a second factor is due, as
@@ -97,16 +99,7 @@ flows:
 func TestEveryDesktopRefusalCostsAHash(t *testing.T) {
 	f := newSignInFixture(t)
 	ctx := context.Background()
-	token := "desktop-timing-" + fmt.Sprint(time.Now().UnixNano())
-	sum := sha256.Sum256([]byte(token))
-	if _, err := f.pool.Exec(ctx, `
-		INSERT INTO core.outposts (org_id, name, kind, token_hash)
-		VALUES ($1::uuid, 'desk-timing', 'desktop', $2)`, f.orgID, sum[:]); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.outposts WHERE token_hash = $1`, sum[:])
-	})
+	token := desktopOutpost(t, f)
 	var noPassword string
 	if err := f.pool.QueryRow(ctx, `
 		INSERT INTO core.users (org_id, email, user_handle)
@@ -147,5 +140,67 @@ func TestEveryDesktopRefusalCostsAHash(t *testing.T) {
 		if took := timed(try[0], try[1]); took < wrong/2 {
 			t.Errorf("%s was refused in %v and a wrong password in %v: the time tells them apart", name, took, wrong)
 		}
+	}
+}
+
+// desktopOutpost registers a desktop outpost in the fixture's organisation and
+// returns its token.
+func desktopOutpost(t *testing.T, f *signInFixture) string {
+	t.Helper()
+	token := "desktop-" + fmt.Sprint(time.Now().UnixNano())
+	sum := sha256.Sum256([]byte(token))
+	if _, err := f.pool.Exec(context.Background(), `
+		INSERT INTO core.outposts (org_id, name, kind, token_hash)
+		VALUES ($1::uuid, $2, 'desktop', $3)`, f.orgID, token, sum[:]); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.outposts WHERE token_hash = $1`, sum[:])
+	})
+	return token
+}
+
+// The desktop draws on the account's sign-in failure budget, the form's and
+// LDAP's (1.91). It charged nothing, so an outpost token could spend its whole
+// allowance of calls guessing one person's password. A right password costs
+// nothing; the guess past the budget is refused without a hash; and the form
+// then refuses too, since the two doors share one budget.
+func TestTheDesktopDrawsOnTheAccountsSignInBudget(t *testing.T) {
+	f := newSignInFixture(t)
+	token := desktopOutpost(t, f)
+	post := func(password string) int {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"username": f.email, "password": password})
+		r := httptest.NewRequest(http.MethodPost, "/outpost/desktop", bytes.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(rec, r)
+		return rec.Code
+	}
+	for i := range signInPerAccountLimit {
+		if code := post(signInTestPassword); code != http.StatusOK {
+			t.Fatalf("right password %d answered %d; a right password must cost nothing", i+1, code)
+		}
+	}
+	for i := range signInPerAccountLimit {
+		if code := post("a-wrong-guess"); code != http.StatusUnauthorized {
+			t.Fatalf("wrong password %d answered %d, want 401", i+1, code)
+		}
+	}
+	if code := post("a-wrong-guess"); code != http.StatusTooManyRequests {
+		t.Fatalf("the guess past the account's budget answered %d, want 429", code)
+	}
+	if code := post(signInTestPassword); code != http.StatusTooManyRequests {
+		t.Errorf("the right password while the budget is spent answered %d, want 429", code)
+	}
+	// The bucket the form reads (allowSignInAttempt), so the form refuses too.
+	spent, err := store.CountRate(context.Background(), f.pool,
+		"signin:fail:user:"+strings.ToLower(f.email), signInPerAccountWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spent < signInPerAccountLimit {
+		t.Errorf("the form's budget for the account holds %d failures after %d at the desktop: "+
+			"two budgets on one credential", spent, signInPerAccountLimit)
 	}
 }

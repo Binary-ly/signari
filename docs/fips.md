@@ -40,18 +40,24 @@ copy of a working deployment, under `fips140=only` with the certified module,
 `serve` starts and a password sign-in works, the stored hash moving from Argon2id
 to PBKDF2 on the first sign-in.
 
-**31 of 36 packages pass their tests under `fips140=only`.** (That count is blunter than
-the truth: of the five failures, one is only test fixtures and one is only the
-non-FIPS default being covered. See below.) Core OIDC — the
-authorization code flow, token issue and verification, JWKS, sessions, refresh,
-introspection, revocation, DPoP, mTLS, PAR, device flow — is unaffected.
+**60 of 67 packages pass their tests under `fips140=only`**, measured in October
+2026 against a database, with the certified module. (This page said 31 of 36,
+counted when there were fewer packages.) None of the seven failures is a request
+path panicking: each was traced to its frame. Five fail only in test fixtures
+that build with an algorithm the module refuses: `clientauth` makes RSA keys
+under 2048 bits to prove they are refused, `httpapi` and `store` compute TOTP
+codes, `importer` builds a short-salted PBKDF2 hash, and `outbox` signs with an
+HMAC key shorter than the 112 bits the module allows. The engine's own webhook
+and provider secrets are 32 random bytes. Two fail by design, below: `radius`,
+and `saml`, whose tests cover the interoperable default as well as the FIPS
+configuration. Core OIDC — the authorization code flow, token issue and
+verification, JWKS, sessions, refresh, introspection, revocation, DPoP, mTLS,
+PAR, device flow — is unaffected.
 
-Five packages do not. Four of them cannot be fixed. The fifth, SAML, can be
-configured to work and fails its tests only because they also exercise the
-interoperable default. The reason is the same
-in every case: a protocol or a stored format mandates an algorithm the module
-refuses, and no amount of care on our side changes what the specification says
-or what another vendor's database already contains.
+Where a feature cannot work, the reason is the same every time: a protocol or a
+stored format mandates an algorithm the module refuses, and no amount of care on
+our side changes what the specification says or what another vendor's database
+already contains.
 
 ## The two modes are not the same thing
 

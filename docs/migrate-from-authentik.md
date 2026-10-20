@@ -68,8 +68,10 @@ sign-in will spend is skipped and named, with the parameter that is too high:
 - more than 10 million PBKDF2 iterations;
 - 2^20 phpass or Drupal 7 rounds;
 - bcrypt cost 15;
+- a million SHA-crypt rounds;
 - an Argon2id or scrypt hash needing more memory than the 512 MiB the process
-  allows for all verifications together.
+  allows for all verifications together, or an imported scrypt hash needing
+  more than 256 MiB.
 
 Sign-in refuses the same hash, before doing any work, through the same check.
 The importer used to ask only whether the format was known, so such an account

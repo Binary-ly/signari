@@ -311,6 +311,9 @@ func hashFormatName(stored string) string {
 		// Django's own scrypt hasher, which is NOT the "$scrypt$" form this
 		// engine verifies. Different encodings with confusingly similar names.
 		return "scrypt, Django variant" + verdict
+	case strings.HasPrefix(stored, "$1$"), strings.HasPrefix(stored, "$5$"),
+		strings.HasPrefix(stored, "$6$"), strings.HasPrefix(stored, "$y$"):
+		return cryptFormat(stored) + verdict
 	default:
 		if i := strings.Index(stored, "$"); i > 0 {
 			return stored[:i] + verdict

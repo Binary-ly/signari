@@ -108,12 +108,11 @@ func verifyDrupal7(stored, password string) error {
 
 // verifySHACrypt handles $5$/$6$ -- glibc crypt(3).
 //
-// NOT WIRED IN. It disagrees with PHP's crypt(3) on real vectors, and the fault
-// is somewhere in the final permutation/encoding rather than the digest loop.
-// Kept because the structure is right and finishing it is a bounded job, but it
-// is deliberately unreachable from Verify until it agrees with published
-// vectors: a verifier that only agrees with itself would tell every imported
-// LDAP user their password was wrong.
+// It was kept out of Verify for months because it disagreed with PHP's
+// crypt(3) on real vectors. Two faults, found against OpenSSL's and PHP's
+// vectors (shacrypt_test.go): the alternate sum was left out for a password
+// whose length is a multiple of the digest size, and every group of three
+// bytes was encoded in reverse order. Now wired in (4.09).
 //
 // Implemented rather than shelled out to crypt(3) because the C library's
 // behaviour varies by platform, and an authentication decision must not depend
@@ -335,10 +334,14 @@ func shaCrypt(newHash func() hash.Hash, size int, password, salt []byte, rounds 
 	a := newHash()
 	a.Write(password)
 	a.Write(salt)
-	for i := len(password); i > size; i -= size {
+	// A whole altSum per full block, then what is left -- which is a whole
+	// block again when the length is a multiple of it. This wrote
+	// len%size, nothing at all for a 32- or 64-byte password.
+	left := len(password)
+	for ; left > size; left -= size {
 		a.Write(altSum)
 	}
-	a.Write(altSum[:len(password)%size])
+	a.Write(altSum[:left])
 	for i := len(password); i > 0; i >>= 1 {
 		if i&1 != 0 {
 			a.Write(altSum)
@@ -411,9 +414,12 @@ func shaCryptEncode(sum []byte, size int) string {
 		return ""
 	}
 
+	// Each group of three is read with its LAST listed byte highest: order
+	// lists them low byte first. Packed the other way round, every hash this
+	// produced disagreed with every other implementation.
 	var out strings.Builder
 	for i := 0; i+2 < len(order); i += 3 {
-		v := int(sum[order[i]])<<16 | int(sum[order[i+1]])<<8 | int(sum[order[i+2]])
+		v := int(sum[order[i+2]])<<16 | int(sum[order[i+1]])<<8 | int(sum[order[i]])
 		for j := 0; j < 4; j++ {
 			out.WriteByte(itoa64[v&0x3f])
 			v >>= 6

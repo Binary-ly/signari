@@ -338,7 +338,7 @@ func run(args []string) (err error) {
 		"fetch each person's group memberships, so mapped groups are reconciled (dir add, dir set)")
 	groupAttribute := fs.String("group-attribute", "",
 		"the LDAP attribute listing a person's groups; empty reads memberOf (dir add, dir set)")
-	dirDomain := fs.String("domain", "", "Google Workspace domain")
+	dirDomain := fs.String("domain", "", "Google Workspace domain; `import shadow`: the domain each account's address is made with")
 	dirImpersonate := fs.String("impersonate", "", "administrator the service account acts as")
 	dirTenant := fs.String("tenant", "", "Entra tenant id (read from the credential file)")
 	dirFilter := fs.String("filter", "", "user filter: Google query or Entra OData")
@@ -945,6 +945,8 @@ func run(args []string) (err error) {
 		return importAuthentik(ctx, conn, *file, *orgID, !*apply)
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
+	case "import shadow":
+		return importShadow(ctx, conn, *file, *orgID, *dirDomain, !*apply)
 	case "dir add":
 		return dirAdd(ctx, conn, *orgID, *kind, *slug, *name, *file, *dirDomain,
 			*dirImpersonate, *dirTenant, *dirFilter, *ldapURL, *ldapBindDN,
@@ -5297,6 +5299,57 @@ func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID string, dr
 	fmt.Println("\n  Imported. Everyone signs in with the password they already had:\n" +
 		"  the Django hash is verified as-is and replaced with Argon2id on first\n" +
 		"  successful sign-in. Nobody needs to reset anything.")
+	return nil
+}
+
+// importShadow imports the accounts of an /etc/shadow file (4.09). A preview
+// unless -apply.
+func importShadow(ctx context.Context, conn *pgx.Conn, path, orgID, domain string, dryRun bool) error {
+	if path == "" || orgID == "" {
+		return fmt.Errorf("-file and -org are both required; -domain makes each account's address")
+	}
+	f, err := os.Open(path) // #nosec G304 -- the operator names the file to import
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	entries, err := importer.ParseShadow(f)
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	res, err := importer.ImportShadow(ctx, tx, orgID, entries, domain, dryRun)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\n  password formats found\n")
+	for format, n := range res.HashFormats {
+		fmt.Printf("    %-46s %d\n", format, n)
+	}
+	fmt.Printf("\n  users created : %d\n  users updated : %d\n", res.UsersCreated, res.UsersUpdated)
+	if len(res.UsersSkipped) > 0 {
+		fmt.Printf("\n  skipped (%d):\n", len(res.UsersSkipped))
+		for i, s := range res.UsersSkipped {
+			if i == 20 {
+				fmt.Printf("    ... and %d more\n", len(res.UsersSkipped)-20)
+				break
+			}
+			fmt.Printf("    %s\n", s)
+		}
+	}
+	if dryRun {
+		fmt.Println("\n  DRY RUN -- nothing was written. Re-run with -apply.")
+		return nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Println("\n  Imported. Each person signs in with the password they already had: the\n" +
+		"  crypt hash is verified as it is and replaced with Argon2id at the first sign-in.")
 	return nil
 }
 

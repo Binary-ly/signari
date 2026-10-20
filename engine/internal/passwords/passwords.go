@@ -110,6 +110,10 @@ const (
 	scryptMaxP            = 16
 	keycloakMaxIterations = 1_000_000
 
+	// glibc SHA-crypt's format allows 999,999,999 rounds, linear in CPU; the
+	// default is 5,000, and a million is well over any real directory's.
+	shaCryptMaxRounds = 1_000_000
+
 	// The format's own ceilings allow 128 × N × r = 4 GiB. 256 MiB is sixteen
 	// times the common N=2^17, r=8, and half the shared budget, so one import
 	// cannot take all of it (4.08).
@@ -130,6 +134,7 @@ const (
 // A hash this does not recognise, or cannot parse, is not its business: Verify
 // refuses those as a mismatch and CanVerify by prefix.
 func CostRefusal(stored string) error {
+	stored, _ = cryptOf(stored)
 	return costRefusal(stored, Shared().budgetKiB)
 }
 
@@ -167,6 +172,11 @@ func costRefusal(stored string, budgetKiB int64) error {
 	case strings.HasPrefix(stored, "pbkdf2_sha256$") && len(parts) > 1:
 		if iter, err := strconv.Atoi(parts[1]); err == nil && iter > pbkdf2MaxIterations {
 			return fmt.Errorf("%d PBKDF2 iterations is above the ceiling %d", iter, pbkdf2MaxIterations)
+		}
+	case (strings.HasPrefix(stored, "$5$") || strings.HasPrefix(stored, "$6$")) && len(parts) > 2 &&
+		strings.HasPrefix(parts[2], "rounds="):
+		if n, err := strconv.Atoi(strings.TrimPrefix(parts[2], "rounds=")); err == nil && n > shaCryptMaxRounds {
+			return fmt.Errorf("SHA-crypt with %d rounds is above the ceiling %d", n, shaCryptMaxRounds)
 		}
 	case strings.HasPrefix(stored, "$scrypt$") && len(parts) > 2:
 		var ln, r, p int
@@ -430,6 +440,8 @@ func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 // the credential.
 func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsRehash bool, err error) {
 	password = Normalize(password)
+	// LDAP's {CRYPT} holds a crypt(3) hash as it is; it is verified as that.
+	stored, _ = cryptOf(stored)
 	// Before a slot is taken: a hash that costs more than this process allows
 	// never verifies, and the ceiling is the same one CanVerify asked at import.
 	if err := costRefusal(stored, h.budgetKiB); err != nil {
@@ -504,18 +516,42 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 		}
 		return true, nil
 
-	// NOT HANDLED: $5$ and $6$ (glibc SHA-crypt, used by /etc/shadow, FreeIPA and
-	// most LDAP directories).
-	//
-	// An implementation was written and then removed, because it disagreed with
-	// PHP's crypt(3) on real vectors. Shipping it would have been worse than
-	// having nothing: every user imported from an LDAP directory would have been
-	// told their password was wrong, with no indication that the fault was ours.
-	//
-	// It falls through to the default below and is refused, so such an import
-	// fails loudly at sign-in rather than silently accepting anything. Finishing
-	// it needs the glibc permutation table checked against published vectors --
-	// see internal/passwords/foreign.go.
+	// glibc SHA-crypt: /etc/shadow, FreeIPA and most LDAP directories. It
+	// was refused here for months, because the first implementation disagreed
+	// with every other one; it now agrees with OpenSSL's and PHP's on their
+	// vectors (shacrypt_test.go), and the two faults are named in foreign.go.
+	case strings.HasPrefix(stored, "$5$"), strings.HasPrefix(stored, "$6$"):
+		if err := verifySHACrypt(stored, password); err != nil {
+			return false, err
+		}
+		return true, nil
+
+	// md5-crypt and Apache's apr1: older /etc/shadow entries and htpasswd.
+	case strings.HasPrefix(stored, "$1$"), strings.HasPrefix(stored, "$apr1$"):
+		if fips140.Enforced() {
+			return false, fmt.Errorf("%w: this password was imported as an MD5-based hash, which "+
+				"FIPS 140-only mode refuses; reset the password", ErrMismatch)
+		}
+		if err := verifyMD5Crypt(stored, password); err != nil {
+			return false, err
+		}
+		return true, nil
+
+	// An LDAP userPassword scheme: {SSHA}, {SHA}, {SMD5}, {MD5} and the SHA-2
+	// forms. ({CRYPT} was unwrapped above.)
+	case strings.HasPrefix(stored, "{"):
+		name, scheme, encoded, ok := ldapSchemeOf(stored)
+		if !ok {
+			return false, ErrMismatch
+		}
+		if scheme.weak && fips140.Enforced() {
+			return false, fmt.Errorf("%w: this password was imported as %s, built on MD5 or "+
+				"SHA-1, which FIPS 140-only mode refuses; reset the password", ErrMismatch, name)
+		}
+		if err := verifyLDAP(scheme, encoded, password); err != nil {
+			return false, err
+		}
+		return true, nil
 
 	case strings.HasPrefix(stored, "$keycloak$"):
 		if err := verifyKeycloakPacked(stored, password); err != nil {
@@ -701,6 +737,10 @@ func SupportedPrefixes() []string {
 		"$S$", // Drupal 7 native
 		"$keycloak$",
 		"$scrypt$",
+		"$5$", "$6$", // glibc SHA-crypt: /etc/shadow, LDAP directories
+		"$1$", "$apr1$", // md5-crypt, and Apache's
+		"{SSHA}", "{SHA}", "{SMD5}", "{MD5}", "{SSHA256}", "{SHA256}", "{SSHA512}", "{SHA512}",
+		// and {CRYPT} around any of the crypt(3) ones, which CanVerify unwraps
 	}
 }
 
@@ -714,6 +754,11 @@ func SupportedPrefixes() []string {
 // verifiable either (CostRefusal says why). It used to be reported verifiable
 // and imported, and then refused at every sign-in.
 func CanVerify(stored string) bool {
+	stored, _ = cryptOf(stored)
+	if name, _, _, ok := ldapSchemeOf(stored); ok {
+		// LDAP scheme names are case-insensitive.
+		stored = name + stored[len(name):]
+	}
 	for _, p := range SupportedPrefixes() {
 		if strings.HasPrefix(stored, p) {
 			return CostRefusal(stored) == nil

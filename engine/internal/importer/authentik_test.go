@@ -141,7 +141,11 @@ func TestHashFormatNamesAreHonest(t *testing.T) {
 		"!":                                  false,
 		"":                                   false,
 		"scrypt$16384$8$1$salt$hash":         false,
-		"$6$rounds=5000$salt$hash":           false,
+		"$6$rounds=5000$salt$hash":           true, // verifiable since 4.09
+		"$y$j9T$salt$hash":                   false,
+	}
+	if got := hashFormatName("$6$rounds=5000$salt$hash"); !strings.HasPrefix(got, "SHA-512 crypt") {
+		t.Errorf("SHA-crypt is reported as %q", got)
 	}
 	for stored, wantVerifiable := range cases {
 		name := hashFormatName(stored)

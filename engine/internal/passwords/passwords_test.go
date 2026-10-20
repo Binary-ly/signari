@@ -259,8 +259,16 @@ func TestSupportedPrefixesMatchesVerify(t *testing.T) {
 			t.Errorf("CanVerify says no to %q, which Verify handles", p)
 		}
 	}
-	if CanVerify("$6$rounds=5000$saltsalt$hash") {
-		t.Error("CanVerify claims glibc SHA-crypt works; passwords.go says NOT HANDLED")
+	for _, ok := range []string{"$6$rounds=5000$saltsalt$hash", "$5$salt$hash", "$1$salt$hash",
+		"$apr1$salt$hash", "{SSHA}abcd", "{ssha}abcd", "{CRYPT}$6$salt$hash", "{crypt}$1$salt$hash"} {
+		if !CanVerify(ok) {
+			t.Errorf("CanVerify says no to %q, which Verify handles", ok)
+		}
+	}
+	for _, no := range []string{"$6$rounds=2000000$saltsalt$hash", "{CRYPT}des-hash", "{XYZ}abcd"} {
+		if CanVerify(no) {
+			t.Errorf("CanVerify says yes to %q", no)
+		}
 	}
 	if CanVerify("") {
 		t.Error("an empty hash was reported as verifiable")

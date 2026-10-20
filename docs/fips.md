@@ -123,9 +123,11 @@ stores a local Argon2id hash — so a migration that uses shadow authentication
 rather than hash import works.
 
 Imported hashes the module refuses fail with an error that says to reset the
-password: phpass and WordPress (MD5), and PBKDF2 imports with SHA-1 or a salt
-shorter than 128 bits, as many Django salts are. Each used to panic the sign-in
-under `fips140=only`.
+password: phpass and WordPress (MD5), MD5-crypt and Apache's apr1, the LDAP
+`{SSHA}`, `{SHA}`, `{SMD5}` and `{MD5}` schemes, and PBKDF2 imports with SHA-1
+or a salt shorter than 128 bits, as many Django salts are. Each used to panic
+the sign-in under `fips140=only`. SHA-crypt (`$5$`, `$6$`) and the SHA-2 LDAP
+schemes are SHA-2 throughout and verify.
 
 ### Passwords hashed here
 

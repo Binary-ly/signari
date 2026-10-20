@@ -195,6 +195,7 @@ func (s *Server) Routes() http.Handler {
 	// not accept an id that would be silently ignored.
 	privileged("DELETE /admin/users/{userID}/factors/{kind}", ScopeUsersWrite, targetUser, s.deleteUserFactor)
 	privileged("DELETE /admin/users/{userID}/factors/{kind}/{factorID}", ScopeUsersWrite, targetUser, s.deleteUserFactor)
+	privileged("DELETE /admin/users/{userID}/throttle", ScopeUsersWrite, targetUser, s.unlockUser)
 	route("POST /admin/organizations", ScopeOrganizationsWrite, s.createOrganization)
 
 	// The scope catalogue. Registered unconditionally — unlike attributes, a

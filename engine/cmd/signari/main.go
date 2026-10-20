@@ -643,6 +643,10 @@ func run(args []string) (err error) {
 	passwordBinds := fs.String("binds", "",
 		"allow, or refuse_when_mfa: whether LDAP binds, RADIUS PAP and outposts, which carry "+
 			"only a password, may sign in somebody the sign-in flow would ask for a second factor")
+	freeAttempts := fs.Int("free-attempts", 0,
+		"`instance login-throttle`: wrong passwords for one account before the sign-in delay begins, 1 to 20")
+	maxLoginDelay := fs.Duration("max-delay", 0,
+		"`instance login-throttle`: the longest the sign-in delay grows to, 1m to 24h")
 	rememberDays := fs.Int("days", -1,
 		"`instance remember-device`: days a device a person chooses to remember after a second "+
 			"factor is not asked for one again, 1 to 90; 0 turns it off")
@@ -848,6 +852,10 @@ func run(args []string) (err error) {
 		return userCreate(ctx, conn, *orgID, *email, *password)
 	case "user locale":
 		return userLocale(ctx, conn, *orgID, *email, *localeTag)
+	case "user unlock":
+		return userUnlock(ctx, conn, *orgID, *email)
+	case "instance login-throttle":
+		return instanceLoginThrottle(ctx, conn, *orgID, *freeAttempts, *maxLoginDelay)
 	case "client set-ciba":
 		return clientSetCIBA(ctx, conn, *clientID, *cibaDelivery, *cibaNotifyURL)
 	case "group impersonation":

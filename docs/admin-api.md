@@ -300,6 +300,7 @@ omitted rather than reported, because a token is not a diagnostic surface.
 | `GET /admin/users/{userID}/factors` | What the person can authenticate with: kind, label, whether the enrolment was completed, when it was created and last used, and `disabled` when an authenticator app was switched off for too many consecutive wrong codes. Recovery codes are reported as a **count of unused ones**, never listed, with `recovery_codes_disabled` for a set switched off the same way |
 | `DELETE /admin/users/{userID}/factors/{kind}` | Remove a factor the user holds one of: `totp`, `email_otp`, `sms_otp`, `duo` — or every recovery code at once with `recovery`, which also clears a set's disabled state |
 | `DELETE /admin/users/{userID}/factors/{kind}/{factorID}` | Remove one of several: `webauthn`, `recovery` |
+| `DELETE /admin/users/{userID}/throttle` | Clear what wrong guesses charged to this person: the password step's growing delay, the sign-in form's per-account budget under their address and username, and the second-factor step's budget. For somebody sent to wait who cannot. The next wrong password is charged as before, and the per-address budgets, which belong to whoever is guessing, are left. Audited `admin.user_unlocked`; `users:write`, honours `If-Match` |
 
 **Removing a factor ends the person's sessions**, with the reason `mfa_reset`,
 and every relying party gets a back-channel logout. The deciding case is the

@@ -992,6 +992,80 @@ func instancePasswordBinds(ctx context.Context, conn *pgx.Conn, orgID, policy st
 	return nil
 }
 
+// userUnlock clears what wrong guesses charged to one person (4.06), as the
+// Admin API's DELETE /admin/users/{id}/throttle does.
+func userUnlock(ctx context.Context, conn *pgx.Conn, orgID, email string) error {
+	if email == "" {
+		return fmt.Errorf("give -email (and -org where the address is in more than one)")
+	}
+	userID, userOrg, err := oneInOrg(ctx, conn, "users",
+		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	n, err := store.UnlockAccount(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "admin.user_unlocked", OrgID: userOrg, SubjectID: userID,
+		Detail: map[string]any{"counts_cleared": n, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the unlock: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if n == 0 {
+		fmt.Printf("%s: nothing to clear; no wrong guess is being counted against them\n", email)
+		return nil
+	}
+	fmt.Printf("%s: unlocked (%d count(s) cleared); the next wrong password is charged as before\n", email, n)
+	return nil
+}
+
+// instanceLoginThrottle sets an organisation's sign-in backoff (0169).
+func instanceLoginThrottle(ctx context.Context, conn *pgx.Conn, orgID string, free int, max time.Duration) error {
+	if orgID == "" || (free == 0 && max == 0) {
+		return fmt.Errorf("give -org and -free-attempts and/or -max-delay")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetLoginThrottle(ctx, tx, orgID, free, max); err != nil {
+		if errors.Is(err, store.ErrOrganizationNotFound) {
+			return fmt.Errorf("no organisation %s", orgID)
+		}
+		return err
+	}
+	var gotFree, gotMax int
+	if err := tx.QueryRow(ctx, `SELECT login_free_attempts, login_max_delay_s FROM core.organizations
+		WHERE id = $1::uuid`, orgID).Scan(&gotFree, &gotMax); err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "org.login_throttle_set", OrgID: orgID,
+		Detail: map[string]any{"free_attempts": gotFree, "max_delay_s": gotMax, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("sign-in delay: %d wrong password(s) free, then 1s doubling to at most %s\n",
+		gotFree, time.Duration(gotMax)*time.Second)
+	fmt.Println("\n  A delay, not a lockout: a lockout is a button that disables any account")
+	fmt.Println("  somebody can name. Each failure counts for an hour.")
+	return nil
+}
+
 // instanceRememberDevice sets how long a remembered device skips the second
 // factor (migration 0168); 0 turns the choice off and stops every remembered
 // device counting.

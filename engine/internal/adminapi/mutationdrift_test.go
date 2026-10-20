@@ -93,6 +93,14 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			// Answered 200 with nothing to clear, so a fresh user exercises it.
+			name: "DELETE /admin/users/{userID}/throttle", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/users/" + newDriftUser(t, s) + "/throttle"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/attributes", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + anyOrgID(t, s) + "/attributes"

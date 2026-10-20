@@ -13,7 +13,8 @@ A command that edits configuration is cancelled after 60 seconds, so one stuck
 behind a lock fails instead of hanging a deploy script. A command whose work
 grows with the data has no limit: `serve`, the three `migrate` commands that
 apply, `export audit`, `audit checkpoint`, both `import` commands, `dir sync`,
-`scim sync`, `kerberos sync`, `keys rewrap-root` and `janitor once`. `proxy
+`scim sync`, `kerberos sync`, `keys rewrap-root`, `janitor once` and `restore
+finalize`. `proxy
 check` has five minutes. `-timeout` replaces any of these, and `-timeout 0`
 removes the limit. Until October 2026 every command was cancelled at 60 seconds,
 which cut off an audit export of a large trail, and a migration building an
@@ -74,6 +75,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari registration enable` / `registration token` | Dynamic client registration (RFC 7591). `-allow-confidential` lets a registrant asking for a secret get one; the whole policy is written each run, so it is off unless repeated. See [dynamic-registration.md](dynamic-registration.md) |
 | `signari registration revoke` | `-org <uuid> -name <n>` or `-token-id <uuid>`: stop a registration token before it is spent or expires. `-name` is refused when two live tokens share it, naming both |
 | `signari erase subject` | Crypto-shred a subject: destroy their data-encryption key so ciphertext, including in backups, is permanently unreadable. See [erasure.md](erasure.md) |
+| `signari restore finalize` | After restoring a backup and before serving it: end every session and refresh family the restore brought back, queue a back-channel logout and a CAEP session-revoked event for each application, and record `restore.finalized`. `-confirm` repeats the database's name, because it signs everybody out. Running it again ends only what is still live. See [runbook-backup-restore.md](runbook-backup-restore.md) |
 
 There is **no** `signari delete`. This page listed one for months; it has never
 existed, and the test that exists to catch exactly that could not see this table

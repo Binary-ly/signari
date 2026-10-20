@@ -106,7 +106,7 @@ var twoWordCommands = map[string]bool{
 	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"invite": true, "signup": true, "outpost": true, "provision": true,
-	"provider": true, "migration-source": true,
+	"provider": true, "migration-source": true, "restore": true,
 	"erase":    true,
 	"prompt":   true,
 	"attester": true,
@@ -291,7 +291,8 @@ func run(args []string) (err error) {
 		"`client set-assertion-issuers`: comma-separated provider slugs, or empty to permit none")
 	eraseSubject := fs.String("subject-id", "", "`erase subject`: the subject uuid to erase")
 	eraseConfirm := fs.String("confirm", "",
-		"`erase subject`: repeat the subject uuid to confirm; erasure cannot be undone")
+		"`erase subject`: repeat the subject uuid to confirm; erasure cannot be undone. "+
+			"`restore finalize`: repeat the database's name; it signs everybody out")
 	eraseDeactivate := fs.Bool("deactivate", false,
 		"`erase subject`: also deactivate the account, required when it is still active")
 	appURL := fs.String("app", "", "protected application URL, as the browser reaches it (proxy check)")
@@ -847,6 +848,8 @@ func run(args []string) (err error) {
 			*tlsSANIP, *tlsSANEmail, *spCert, *tlsBound)
 	case "erase subject":
 		return eraseSubjectCmd(ctx, conn, *eraseSubject, *eraseConfirm, *eraseDeactivate)
+	case "restore finalize":
+		return restoreFinalize(ctx, conn, *eraseConfirm)
 	case "client set-assertion-issuers":
 		return clientSetAssertionIssuers(ctx, conn, *clientID, *assertionIssuers)
 	case "client set-exchange-containment":

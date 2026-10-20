@@ -78,6 +78,27 @@ that gave 296 errors and no `signari_engine` role, which the bootstrap did not
 create because the restored ledger already recorded 0001. The order above restored
 with none, and the checks below passed.
 
+## Finalize, before the engine serves it
+
+```sh
+SIGNARI_DSN="postgres://signari_engine@host/signari_restore" \
+  signari restore finalize -confirm signari_restore
+```
+
+The dump holds every session as it was when it was taken. A session ended after
+that, by logout, by an administrator or by deactivating somebody, is live again
+in the restored database, and nothing in it can tell that session from one
+that was never ended. Finalize ends every one of them and every refresh family,
+queues a back-channel logout and a CAEP session-revoked event for each
+application that wants one, and records `restore.finalized`. Everybody signs in
+again; that is the price of not bringing back a session somebody ended. Run it
+before the engine serves the restored database, so no session created afterwards
+is ended with them. `-confirm` must repeat the database's name: run against the
+wrong database, it signs everybody out of production.
+
+Until October 2026 this runbook stopped at the checks below, and the restored
+sessions stayed live.
+
 ## Verifying a restore actually worked
 
 A restore that "completed" proves nothing. These three commands prove it:
@@ -112,8 +133,20 @@ recent dump **monthly**, and record when it last succeeded:
 
 ```sh
 signari verify && signari keys list >/dev/null \
+  && signari restore finalize -confirm signari_restore \
   && date -u +%Y-%m-%dT%H:%M:%SZ > /var/lib/signari/last-restore-test
 ```
+
+The drill that proves finalize, run on a copy: sign in and keep the browser's
+cookie, take the dump, sign out everywhere, restore the dump. The old cookie is
+signed in again. Finalize, and it is not:
+
+| Step | `/account` with the cookie |
+|---|---|
+| signed in | 200 |
+| signed out everywhere, after the dump | 303 to `/login` |
+| the dump restored | **200**: the ended session is back |
+| `restore finalize` (10 sessions of 2 people ended) | 303 to `/login` |
 
 Surfacing that timestamp where operators see it is the point. A backup system
 whose last successful restore was fourteen months ago is not a backup system,
@@ -125,8 +158,7 @@ and the only way anyone finds out is by being told the date.
   come back as they were at the dump, and a browser holding one is signed in
   again; a session ended after the dump is live again. This said everyone signs
   in again, which is not what happens (a restore of a copy brought back its nine
-  live sessions). There is no single command to end every session yet; end each
-  person's with `DELETE /admin/users/{userID}/sessions` where it matters.
+  live sessions). `signari restore finalize`, above, ends them all.
 - **Undelivered logout notices** past their retry budget. Check the console's
   logout-delivery screen after a restore.
 - **Anything erased.** A crypto-shredded subject stays unreadable in every

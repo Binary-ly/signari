@@ -40,6 +40,9 @@ const (
 	// self-service account console (ASVS V7.5.2). Distinct from ReasonLogout
 	// because the session being ended is usually not the one making the request.
 	ReasonUserRevoke TerminationReason = "user_revoke"
+	// ReasonRestored: the database was restored from a backup, which brought
+	// back sessions ended after it was taken (3.10).
+	ReasonRestored TerminationReason = "restored"
 )
 
 // LogoutNotice is one queued back-channel logout delivery.

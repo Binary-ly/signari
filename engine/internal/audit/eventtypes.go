@@ -52,6 +52,7 @@ var EventTypes = []string{
 	"proxy.host_added", "proxy.host_disabled", "proxy.host_enabled", "proxy.host_removed",
 	"proxy.session_issued",
 	"rac.session_ended", "rac.session_requested",
+	"restore.finalized",
 	"saml.assertion_issued", "saml.logout_completed", "saml.logout_propagated",
 	"scim.group_deprovisioned", "scim.group_membership_changed", "scim.group_provisioned",
 	"scim.group_replaced", "scim.privileged_kept", "scim.privileged_refused",

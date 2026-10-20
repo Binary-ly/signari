@@ -29,6 +29,7 @@ var unboundedCommands = map[string]string{
 	"kerberos sync":     "reads every principal in the realm",
 	"keys rewrap-root":  "reseals every sealed value in the database",
 	"janitor once":      "sweeps every expired row",
+	"restore finalize":  "ends every session in the database, one person at a time",
 }
 
 // commandTimeout is how long cmd may run: what -timeout said when it was given

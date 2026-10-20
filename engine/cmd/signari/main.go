@@ -3581,9 +3581,8 @@ func eraseSubjectCmd(ctx context.Context, conn *pgx.Conn, subjectID, confirm str
 	rep, err := store.EraseSubject(ctx, tx, subjectID, deactivate)
 	switch {
 	case errors.Is(err, store.ErrSubjectUnknown):
-		return fmt.Errorf("no subject key exists for %s. Nothing was erased -- and "+
-			"nothing of theirs was ever encrypted with a subject key, so there is "+
-			"nothing here to destroy", subjectID)
+		return fmt.Errorf("%s has neither a subject key nor an account. Nothing was erased; "+
+			"check the identifier", subjectID)
 	case errors.Is(err, store.ErrAlreadyErased):
 		// Not an error worth failing on in principle, but worth saying: an
 		// operator repeating an erasure wants to know it already happened rather
@@ -3592,9 +3591,8 @@ func eraseSubjectCmd(ctx context.Context, conn *pgx.Conn, subjectID, confirm str
 			"nothing changed", subjectID)
 	case errors.Is(err, store.ErrSubjectStillActive):
 		return fmt.Errorf("%s (%s) is still active.\n\n"+
-			"An erased subject can never hold a key again, so an active account "+
-			"whose key is destroyed does not work with less data -- it fails, "+
-			"permanently, in ways that look like bugs.\n\n"+
+			"Erasing a person removes their account, signing them out everywhere. "+
+			"An active one is not ended by omission.\n\n"+
 			"Either deactivate it first, or say so here:\n"+
 			"  signari erase subject -subject-id %s -confirm %s -deactivate",
 			subjectID, describeAccount(rep), subjectID, subjectID)
@@ -3612,15 +3610,19 @@ func eraseSubjectCmd(ctx context.Context, conn *pgx.Conn, subjectID, confirm str
 		}
 		return ""
 	}())
-	fmt.Printf("  their data-encryption key is destroyed; everything sealed with it\n" +
-		"  is permanently unreadable, including from backups\n")
+	if rep.KeyHeld {
+		fmt.Printf("  their data-encryption key is destroyed; everything sealed with it\n" +
+			"  is permanently unreadable, including from backups\n")
+	} else {
+		fmt.Printf("  they never held a data-encryption key; none can be made for them now\n")
+	}
 	if rep.TOTPCredentials > 0 {
 		fmt.Printf("  %d TOTP credential(s) are now unreadable\n", rep.TOTPCredentials)
 	}
-	if rep.Deactivated {
-		fmt.Printf("  the account was deactivated in the same transaction\n")
-	}
-	if !rep.AccountFound {
+	if rep.AccountDeleted {
+		fmt.Printf("  the account and everything keyed by it are removed, in the same transaction;\n"+
+			"  %d session(s) ended, %d application(s) told\n", rep.SessionsEnded, rep.NoticesQueued)
+	} else {
 		fmt.Printf("  no account exists for this subject; the key outlived it, which is\n" +
 			"  why erasure is keyed on the subject rather than on the account\n")
 	}

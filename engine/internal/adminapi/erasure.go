@@ -90,6 +90,9 @@ func (s *Server) eraseSubject(w http.ResponseWriter, r *http.Request) {
 				"deactivated":      rep.Deactivated,
 				"totp_credentials": rep.TOTPCredentials,
 				"account_found":    rep.AccountFound,
+				"key_shredded":     rep.KeyHeld,
+				"account_deleted":  rep.AccountDeleted,
+				"sessions_ended":   rep.SessionsEnded,
 				"actor":            actor,
 			},
 		})
@@ -101,7 +104,7 @@ func (s *Server) eraseSubject(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrSubjectUnknown):
 		writeJSON(w, http.StatusNotFound, map[string]string{
 			"error":  "unknown_subject",
-			"detail": "no subject key exists for that identifier, so there is nothing to destroy",
+			"detail": "that identifier has neither a subject key nor an account",
 		})
 		return
 	case errors.Is(err, store.ErrAlreadyErased):
@@ -116,8 +119,8 @@ func (s *Server) eraseSubject(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrSubjectStillActive):
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": "account_still_active",
-			"detail": "an erased subject can never hold a key again, so an active " +
-				"account whose key is destroyed fails permanently. Deactivate it " +
+			"detail": "erasing a person removes their account and signs them out " +
+				"everywhere; an active one is not ended by omission. Deactivate it " +
 				"first, or send deactivate: true",
 		})
 		return
@@ -135,6 +138,10 @@ func (s *Server) eraseSubject(w http.ResponseWriter, r *http.Request) {
 		"subject_id":       subjectID,
 		"erased":           true,
 		"deactivated":      rep.Deactivated,
+		"key_shredded":     rep.KeyHeld,
+		"account_deleted":  rep.AccountDeleted,
+		"sessions_ended":   rep.SessionsEnded,
+		"notices_queued":   rep.NoticesQueued,
 		"totp_credentials": rep.TOTPCredentials,
 		"config_version":   version,
 	})

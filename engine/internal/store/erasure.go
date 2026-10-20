@@ -10,11 +10,28 @@ import (
 	"signari.dev/engine/internal/keys"
 )
 
-// Erasure — crypto-shredding a subject, which is irreversible by design.
+// Erasure — crypto-shredding a subject and removing their account, which is
+// irreversible by design.
+//
+// # What it was, and why that was not erasure (3.37)
+//
+// Erasure destroyed the subject's key and, for an active account, deactivated
+// it. The key protects only what was sealed under it: the account itself, the
+// address, the username and the names, sits in core.users in the clear, and
+// stayed there. A person who never enrolled a second factor had no key at all,
+// so their erasure was refused as unknown, "nothing here to destroy", over an
+// account holding everything that identifies them.
+//
+// So erasure now removes the account, as deleting a user does, ending its
+// sessions and telling the applications first, in the transaction that shreds
+// the key. A subject with no key is given an erased one, so the record that
+// the erasure happened, and the refusal ever to mint them a key, are the same
+// for everyone. What survives is that subject_keys row and the audit trail,
+// which names people by subject id only.
 
 var (
-	// ErrSubjectUnknown means no key was ever minted for that subject.
-	ErrSubjectUnknown = errors.New("no subject key exists for that identifier")
+	// ErrSubjectUnknown means the subject has neither a key nor an account.
+	ErrSubjectUnknown = errors.New("no subject key or account exists for that identifier")
 	// ErrAlreadyErased means the subject was erased before.
 	ErrAlreadyErased = errors.New("that subject was already erased")
 	// ErrSubjectStillActive means the account is live and the caller did not say
@@ -38,7 +55,17 @@ type ErasureReport struct {
 	// because listing a person's credentials into an operator's terminal during
 	// an erasure is the opposite of the point.
 	TOTPCredentials int
-	Deactivated     bool
+	// KeyHeld is whether the subject had a key to shred; one who never enrolled
+	// a second factor has none, and is given an erased one.
+	KeyHeld bool
+	// Deactivated is whether the account was still active, which the caller
+	// had to agree to end.
+	Deactivated bool
+	// AccountDeleted, SessionsEnded and NoticesQueued are what removing the
+	// account did.
+	AccountDeleted bool
+	SessionsEnded  int
+	NoticesQueued  int
 }
 
 // InspectSubject reports what erasing a subject would destroy, without doing it.
@@ -53,14 +80,16 @@ func InspectSubject(ctx context.Context, tx pgx.Tx, subjectID string) (*ErasureR
 	err := tx.QueryRow(ctx, `
 		SELECT erased_at IS NOT NULL FROM core.subject_keys
 		WHERE subject_id = $1::uuid`, subjectID).Scan(&erased)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrSubjectUnknown
-	}
-	if err != nil {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// No key: somebody who never enrolled a second factor. Still a person
+		// with an account to erase, if there is one.
+	case err != nil:
 		return nil, fmt.Errorf("reading the subject key: %w", err)
-	}
-	if erased {
+	case erased:
 		return nil, ErrAlreadyErased
+	default:
+		rep.KeyHeld = true
 	}
 
 	// The account, if there still is one.
@@ -81,6 +110,9 @@ func InspectSubject(ctx context.Context, tx pgx.Tx, subjectID string) (*ErasureR
 		rep.AccountFound = true
 		rep.StillActive = status == "active"
 	}
+	if !rep.KeyHeld && !rep.AccountFound {
+		return nil, ErrSubjectUnknown
+	}
 
 	if err := tx.QueryRow(ctx,
 		`SELECT count(*) FROM core.totp_credentials WHERE user_id = $1::uuid`,
@@ -90,7 +122,8 @@ func InspectSubject(ctx context.Context, tx pgx.Tx, subjectID string) (*ErasureR
 	return rep, nil
 }
 
-// EraseSubject destroys a subject's data-encryption key.
+// EraseSubject destroys a subject's data-encryption key and removes their
+// account.
 //
 // # Why an active account is refused unless the caller says otherwise
 //
@@ -119,24 +152,35 @@ func EraseSubject(ctx context.Context, tx pgx.Tx, subjectID string, deactivate b
 		return rep, ErrSubjectStillActive
 	}
 
-	if err := keys.EraseSubject(ctx, tx, subjectID); err != nil {
-		return nil, err
+	if rep.KeyHeld {
+		if err := keys.EraseSubject(ctx, tx, subjectID); err != nil {
+			return nil, err
+		}
+	} else if _, err := tx.Exec(ctx, `
+		INSERT INTO core.subject_keys (subject_id, wrapped_dek, wrap_key_ref, erased_at)
+		VALUES ($1::uuid, NULL, 'none', now())`, subjectID); err != nil {
+		// The same evidence a shred leaves, and the same refusal ever to mint
+		// this subject a key.
+		return nil, fmt.Errorf("recording the erasure: %w", err)
 	}
 
-	if rep.StillActive && deactivate {
-		// Same transaction as the shred. The two must not be able to diverge:
-		// an account deactivated without the erasure is recoverable, and an
-		// erasure without the deactivation is the broken state above.
-		if _, err := tx.Exec(ctx, `
-			UPDATE core.users SET status = 'deactivated', updated_at = now()
-			WHERE id = $1::uuid`, subjectID); err != nil {
-			return nil, fmt.Errorf("deactivating the erased account: %w", err)
-		}
-		// And signed out everywhere, as every other deactivation is.
-		if _, err := TerminateSessions(ctx, tx, "", subjectID, ReasonUserDeactivated); err != nil {
+	if rep.AccountFound {
+		// Same transaction as the shred, as deleting a user does it: signed out
+		// everywhere, each application told, then the account and every row
+		// keyed by it gone (ADR-005: deletion is real). An erasure that left the
+		// account behind left the person's address and names behind with it.
+		term, err := TerminateSessions(ctx, tx, "", subjectID, ReasonUserDeleted)
+		if err != nil {
 			return nil, fmt.Errorf("ending the erased account's sessions: %w", err)
 		}
-		rep.Deactivated = true
+		if term != nil {
+			rep.SessionsEnded, rep.NoticesQueued = term.Sessions, term.Notices
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM core.users WHERE id = $1::uuid`, subjectID); err != nil {
+			return nil, fmt.Errorf("removing the erased account: %w", err)
+		}
+		rep.AccountDeleted = true
+		rep.Deactivated = rep.StillActive
 	}
 	return rep, nil
 }

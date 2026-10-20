@@ -426,7 +426,7 @@ non-unique column skips rows at every page boundary.
 
 | | |
 |---|---|
-| `POST /admin/subjects/{subjectID}/erase` | Crypto-shred. Permanent, and requires the identifier repeated in `confirm_subject_id` |
+| `POST /admin/subjects/{subjectID}/erase` | Erase a person: crypto-shred their key and remove their account, ending its sessions and telling the applications. Permanent, and requires the identifier repeated in `confirm_subject_id`; an active account also needs `deactivate: true`. The answer says `key_shredded`, `account_deleted`, `sessions_ended` and `notices_queued` |
 
 **Erasure is not deletion, and the two are deliberately separate verbs.**
 `DELETE /admin/users/{userID}` removes the account; this makes the person

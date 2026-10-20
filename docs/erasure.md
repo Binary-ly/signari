@@ -4,10 +4,17 @@
 signari erase subject -subject-id <uuid> -confirm <uuid> -deactivate
 ```
 
-Signari erases a person by destroying the key their data is encrypted with, not by
-deleting rows. Everything sealed with that key becomes permanently unreadable —
+Signari erases a person in two parts, in one transaction. It destroys the key their
+data is encrypted with, so everything sealed with it becomes permanently unreadable,
 including in every backup taken before the erasure, which is the part row deletion
-cannot give you.
+cannot give you. And it removes their account: signed out everywhere, each
+application they used told, then the account and every row keyed by it deleted.
+The address, the username and the names are in the account in the clear, and a
+key shred does not reach them.
+
+Until October 2026 an erasure only destroyed the key and deactivated the account,
+so it left all of those behind. A person who had never enrolled a second factor had
+no key at all, and was refused as unknown, with nothing erased.
 
 **It cannot be undone by anyone**, including us. An erased subject can never hold a
 key again: `LoadOrCreateSubjectKey` refuses to mint a replacement, deliberately,
@@ -25,23 +32,27 @@ confirmation can be checked against a person rather than against a uuid.
 
 ## Why an active account is refused
 
-An erased subject can never hold a key again. So an account left active after
-erasure does not work with less data — it fails, permanently, on every path that
-needs the key, in ways that look like bugs rather than like the erasure somebody
-requested.
-
-The command therefore refuses an active account unless you say what should happen
-to it:
+Erasure removes the account, so it signs the person out of everything they are
+using. That is not done to an active account by omission. The command refuses one
+unless you say so:
 
 ```sh
-# either: erase and deactivate in one transaction
+# either: end the account and erase in one transaction
 signari erase subject -subject-id <uuid> -confirm <uuid> -deactivate
 
 # or: deactivate first, then erase — the same thing in two deliberate steps
 ```
 
-Deactivating here ends the account's sessions in the same transaction, and
-each application it signed in to is sent a back-channel logout notice.
+Every session the account holds ends in the same transaction, and each application
+it signed in to is sent a back-channel logout notice, before the account is deleted.
+
+## A person who never enrolled a second factor
+
+They have no key: nothing of theirs was sealed. They are erased all the same, their
+account removed, and are given a `core.subject_keys` row already marked erased. That
+row is the same evidence a shred leaves, and it makes the engine refuse ever to mint
+them a key. Only an identifier with neither a key nor an account is refused, as
+unknown.
 
 This is a guard, not a policy. What erasure should *mean* is the operator's
 decision, and there are three defensible answers — immediate, delay-and-notify
@@ -51,7 +62,10 @@ you state the account's fate; it does not choose the rest for you.
 ## What survives, and why
 
 The `core.subject_keys` row stays, with `erased_at` set and `wrapped_dek` NULL. A
-database constraint enforces that pairing, so a half-erasure cannot commit.
+database constraint enforces that pairing, so a half-erasure cannot commit. The
+account does not survive. A test erases a person and then searches every text column
+of every table in `core` for their address, username and names, and fails on any it
+finds.
 
 That row is the evidence the erasure happened and when. A deleted row proves
 nothing, and *"we did erase them, we just cannot show you"* is not a position to be

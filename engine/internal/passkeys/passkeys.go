@@ -228,6 +228,32 @@ func (r *Relying) BeginLogin(u *User) (*protocol.CredentialAssertion, *webauthn.
 	return r.w.BeginLogin(u, webauthn.WithUserVerification(protocol.VerificationRequired))
 }
 
+// BeginSecondFactor starts an assertion for a known user, asked for after a
+// password.
+//
+// User verification is preferred, not required. The password is the knowledge
+// factor and the key is asked to prove possession; requiring a PIN or a
+// fingerprint as well would refuse a security key that has no PIN set. A key
+// that does not verify the user is a single-factor cryptographic authenticator
+// under SP 800-63B's syncable-authenticator appendix, which with the password
+// is still two factors. "Preferred" is what that appendix says a verifier SHALL
+// indicate (docs/security-review-nist-800-63b.md, the UV row).
+func (r *Relying) BeginSecondFactor(u *User) (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
+	return r.w.BeginLogin(u, webauthn.WithUserVerification(protocol.VerificationPreferred))
+}
+
+// FinishSecondFactor verifies a second-factor assertion. It takes the
+// assertion's JSON rather than a request, because the page posts it as one
+// field of a form: completing a sign-in may redirect to the application or show
+// a prompt, and only a form submission can follow either.
+func (r *Relying) FinishSecondFactor(u *User, sd webauthn.SessionData, assertion []byte) (*webauthn.Credential, error) {
+	parsed, err := protocol.ParseCredentialRequestResponseBytes(assertion)
+	if err != nil {
+		return nil, err
+	}
+	return r.w.ValidateLogin(u, sd, parsed)
+}
+
 // BeginDiscoverableLogin starts an assertion with no identifier at all.
 //
 // This is the flow passkeys exist for: the user clicks "sign in", the browser

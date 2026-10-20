@@ -350,6 +350,18 @@ func grouped(s string) string {
 // or care which.
 func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 	name string, data map[string]any) {
+	s.renderPageStatus(w, r, 0, name, data)
+}
+
+// renderPageStatus is renderPage answering with status rather than 200.
+//
+// The status has to be written HERE, after the headers below. A caller that
+// wrote it first and then called renderPage sent the headers it had set before,
+// and every one renderPage set was dropped: the second-factor page went out
+// with a policy of its own that had no img-src, so a configured logo was
+// blocked on it.
+func (s *Server) renderPageStatus(w http.ResponseWriter, r *http.Request, status int,
+	name string, data map[string]any) {
 
 	b := s.brandNow(r.Context())
 
@@ -395,6 +407,9 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 		data["BrandSupport"] = b.SupportURL
 	}
 
+	if status != 0 {
+		w.WriteHeader(status)
+	}
 	s.writeBranded(w, s.langFor(r), name, data, b)
 }
 

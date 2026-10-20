@@ -136,7 +136,7 @@ func (s *Server) challengeMFA(w http.ResponseWriter, r *http.Request, p duoProbe
 	s.sendEmailOTPIfEnrolled(r.Context(), userID)
 	s.sendSMSOTPIfEnrolled(r.Context(), userID)
 
-	s.renderMFA(w, r, authzQuery, "")
+	s.renderMFA(w, r, userID, authzQuery, "")
 	return false
 }
 
@@ -229,7 +229,8 @@ func (s *Server) clearPending(w http.ResponseWriter) {
 	})
 }
 
-// handleMFAPost verifies a TOTP code or a recovery code and completes sign-in.
+// handleMFAPost verifies a code, or a security key's assertion (finishMFAKey),
+// and completes sign-in.
 func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := r.ParseForm(); err != nil {
@@ -263,6 +264,12 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A security key's answer, posted by the page's script in place of a code.
+	if assertion := r.PostForm.Get("assertion"); assertion != "" {
+		s.finishMFAKey(w, r, pending, ip, []byte(assertion))
+		return
+	}
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -275,7 +282,7 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 		// Released before rendering, which takes a connection of its own.
 		_ = tx.Rollback(ctx)
 		s.log.Error("verifying second factor", "err", err)
-		s.renderMFA(w, r, pending.Authz, "Something went wrong. Please try again.")
+		s.renderMFA(w, r, pending.Subject, pending.Authz, "Something went wrong. Please try again.")
 		return
 	}
 	if res.Replayed {
@@ -285,7 +292,7 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"reason": "second_factor_replayed"},
 		})
-		s.renderMFA(w, r, pending.Authz, "That code has already been used. Wait for the next one.")
+		s.renderMFA(w, r, pending.Subject, pending.Authz, "That code has already been used. Wait for the next one.")
 		return
 	}
 	if !res.OK {
@@ -302,7 +309,7 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 			Detail:        map[string]any{"reason": "bad_second_factor"},
 		})
 		s.factorsDisabled(ctx, pending.OrgID, pending.Subject, res.Disabled)
-		s.renderMFA(w, r, pending.Authz, generic)
+		s.renderMFA(w, r, pending.Subject, pending.Authz, generic)
 		return
 	}
 	amr := res.AMR
@@ -570,17 +577,25 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 	return res, nil
 }
 
-func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, authzQuery, msg string) {
+// renderMFA renders the second-factor page for userID, the person the password
+// step proved.
+//
+// The security-key button is offered only to somebody who has a key. That
+// tells the holder of the pending cookie whether the account has one, which
+// starting the ceremony would tell them anyway; they have the password, and
+// offering everybody a button that fails for most is the worse page.
+func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, userID, authzQuery, msg string) {
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
 		s.log.Error("minting csrf token", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "sign-in unavailable")
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	setCSP(w, `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
-	w.Header().Set("X-Frame-Options", "DENY")
+	hasKey, err := store.HasPasskey(r.Context(), s.db, userID)
+	if err != nil {
+		// The codes still work; only the button is lost.
+		s.log.Error("checking for a security key", "err", err)
+	}
 
 	ref := ""
 	status := http.StatusOK
@@ -588,10 +603,14 @@ func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, authzQuery, m
 		status = http.StatusUnauthorized
 		ref = shortCode(correlationID(r.Context()))
 	}
-	w.WriteHeader(status)
-	s.renderPage(w, r, "mfa", map[string]any{
+	// The policy is renderPage's: it widens script-src and connect-src to
+	// 'self' for /passkey.js and the ceremony when the key is offered, and
+	// keeps script out otherwise. This set its own before, which renderPage
+	// replaced.
+	s.renderPageStatus(w, r, status, "mfa", map[string]any{
 		"Authz": authzQuery, "Error": msg, "CSRF": csrf,
 		"CSRFField": csrfFormField, "Reference": ref,
+		"SecurityKey": hasKey, "PasskeyScript": hasKey,
 	})
 }
 

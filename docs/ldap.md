@@ -193,7 +193,10 @@ A bind carries a password and nothing else. RADIUS PAP and the outposts (see
 [outposts](outposts.md)) are the same. Each organisation decides what happens
 when the person binding is someone its sign-in page would ask for a second
 factor: under the built-in flow, anybody who has one enrolled; under an
-unconditional `mfa` stage, everybody.
+unconditional `mfa` stage, everybody. A registered security key or passkey
+counts as enrolled since October 2026, when the sign-in page began asking for
+one after a password, so a person who has registered a passkey is refused a
+password-only bind under `refuse_when_mfa`.
 
 | `password_only_binds` | A correct password from such a person |
 |---|---|

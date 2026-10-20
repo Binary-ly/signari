@@ -60,6 +60,10 @@ asked only whether a factor was enrolled.
 `password_only_binds` does not apply here. It exists for protocols that cannot
 carry a code, and this one can.
 
+It carries a code and nothing else. A person whose only second factor is a
+security key or passkey is asked for a code here, and the only code that can be
+right is one of their recovery codes.
+
 ## Its own outpost kind
 
 A `desktop` token verifies a **second factor** as well as a password, which is

@@ -361,7 +361,7 @@ defect fixed earlier this session — so the two pieces of work meet here.
 | Requirement | Ours |
 |---|---|
 | UP — "Verifiers SHOULD confirm that the User Present flag has been set" | the library verifies it on every assertion |
-| UV — "Verifiers SHALL indicate that UV is preferred **and SHALL inspect responses to confirm the value of the UV flag**" | we go further than "preferred": `BeginLogin` and `BeginDiscoverableLogin` both pass `VerificationRequired`, and `amrForPasskey` reads the returned flag |
+| UV — "Verifiers SHALL indicate that UV is preferred **and SHALL inspect responses to confirm the value of the UV flag**" | a passkey sign-in goes further than "preferred": `BeginLogin` and `BeginDiscoverableLogin` pass `VerificationRequired`, so the library refuses an assertion without the flag. A key asked for after a password (`BeginSecondFactor`, October 2026) passes `VerificationPreferred`: without verification it is a single-factor cryptographic authenticator, and with the password that is still two factors |
 | **"If the user is not verified, agencies SHALL treat the authenticator as a single-factor cryptographic authenticator"** | `amrForPasskey` adds `mfa` **only** when `UserVerified`, and `ACRFromAMR` then yields `ACRSingleFactor` — tested in `amr_test.go` across all four flag combinations |
 | BE — "necessary to distinguish authenticators that are device-bound from those that may be cloned" | stored as of this session, and emitted as `hwk` vs `swk` in `amr` |
 | BS — "Agencies SHOULD NOT condition acceptance based on this flag for public-facing applications" | we do not condition acceptance on it; it is recorded, and a 1→0 transition is audited |

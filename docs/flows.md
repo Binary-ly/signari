@@ -356,7 +356,15 @@ The `mfa` stage binds every way in: password, passkey, Kerberos, Duo and the
 federated sources all reach a session through the same walk. A sign-in whose
 factors already add up to multi-factor passes the stage without being asked
 again. Otherwise the person is asked for a factor enrolled here, and under an
-unconditional stage somebody with none is refused. A federated sign-in counts
+unconditional stage somebody with none is refused.
+
+A registered security key or passkey is one of those factors: after a password,
+the code page offers a button that asks for it, and password plus key gives a
+multi-factor session. Until October 2026 it was not. A person whose one factor
+beyond the password was a key signed in on the password alone, and a relying
+party sending `acr_values=2` was told the account had no second factor. Anybody
+who has registered a passkey and signs in with a password is now asked for the
+key as well; signing in with the passkey itself is unchanged. A federated sign-in counts
 as multi-factor only when the provider's ID token asserts it with a value you
 chose to trust; see [social-login.md](social-login.md#a-providers-multi-factor-authentication).
 

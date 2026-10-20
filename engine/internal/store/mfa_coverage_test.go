@@ -25,12 +25,13 @@ var factorTables = map[string]bool{
 	"sms_otp_credentials":   true,
 	"duo_enrollments":       true,
 
-	// A passkey is a FIRST factor here, not a second one. Somebody who
-	// registered one signs in with it directly; requiring a password and then
-	// the same passkey would be one credential counted twice. If that ever
-	// changes, flip this to true -- and the assertion below will then demand the
-	// query be updated to match.
-	"webauthn_credentials": false,
+	// A passkey or security key is both: a first factor on its own, and the
+	// second after a password, presented on the code page. This said a key was
+	// a first factor only, so a person whose one factor beyond the password was
+	// a key signed in on the password alone. Signing in with the key does not
+	// then ask for it again: a verified passkey sign-in is already
+	// multi-factor, and the step is skipped.
+	"webauthn_credentials": true,
 
 	// Recovery codes are the way BACK IN when a factor is lost. Counting them
 	// as a factor would mean a user whose only "factor" is a printed list is

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/fidomds"
@@ -631,11 +632,36 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	refused, err := s.recordAssertion(ctx, tx, cred, resolvedUser, resolvedOrg)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	if refused {
+		writeError(w, http.StatusUnauthorized, "invalid_grant",
+			"this authenticator's signature counter did not advance, which "+
+				"can mean the credential has been copied; sign in another "+
+				"way and remove the passkey")
+		return
+	}
+
+	s.completeSignIn(w, r, tx, resolvedUser, resolvedOrg, amrForPasskey(cred), r.URL.Query().Get("authz"))
+}
+
+// recordAssertion stores what a verified assertion changed about its
+// credential: the signature counter and the backup state. refused is a counter
+// that went backwards in an organisation that refuses a possibly copied key;
+// the regression's audit record is then committed, and tx with it.
+//
+// Shared by the passkey sign-in and the second-factor step, so a key cannot be
+// refused as a copy on one and accepted on the other.
+func (s *Server) recordAssertion(ctx context.Context, tx pgx.Tx, cred *webauthn.Credential,
+	resolvedUser, resolvedOrg string) (refused bool, err error) {
+
 	stored, _, err := store.CredentialByID(ctx, tx, cred.ID)
 	if err != nil {
 		s.log.Error("loading the asserted credential", "err", err)
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
+		return false, err
 	}
 
 	// Cloning check. A backwards counter does NOT abort the sign-in on its own --
@@ -688,20 +714,14 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 				if cerr := tx.Commit(ctx); cerr != nil {
 					s.log.Error("committing the counter regression audit", "err", cerr)
 				}
-				writeError(w, http.StatusUnauthorized, "invalid_grant",
-					"this authenticator's signature counter did not advance, which "+
-						"can mean the credential has been copied; sign in another "+
-						"way and remove the passkey")
-				return
+				return true, nil
 			}
 		} else {
 			s.log.Error("updating the signature counter", "err", err)
-			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-			return
+			return false, err
 		}
 	}
-
-	s.completeSignIn(w, r, tx, resolvedUser, resolvedOrg, amrForPasskey(cred), r.URL.Query().Get("authz"))
+	return false, nil
 }
 
 // amrForPasskey reports what the assertion actually proved (RFC 8176).

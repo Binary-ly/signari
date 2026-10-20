@@ -108,6 +108,7 @@ var (
 	probeBools = []string{
 		"Captcha", "Ready", "Done", "Denied", "Confirm", "Empty", "Configured",
 		"EmailFixed", "Unlaunchable", "Granted", "Required", "Verified",
+		"SecurityKey",
 	}
 	probeLists = []string{
 		"Scopes", "Providers", "Fields", "Codes", "Apps", "Rows", "Connections",

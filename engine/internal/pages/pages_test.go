@@ -722,7 +722,7 @@ func TestEveryPageIsServedBySomething(t *testing.T) {
 	// Bounded to one line and to a short distance, rather than "anything but a
 	// closing paren": an argument may itself be a call -- s.langFor(r) -- and a
 	// pattern that stopped at the first ')' reported those pages as dead.
-	render := regexp.MustCompile(`(?:renderPage|renderBare|writeBranded|Execute|ExecuteIn)\(` +
+	render := regexp.MustCompile(`(?:renderPage|renderPageStatus|renderBare|writeBranded|Execute|ExecuteIn)\(` +
 		`[^\n]{0,80}?"([a-z]+)"`)
 
 	// Only the server counts, and internal/httpapi is the whole of it.

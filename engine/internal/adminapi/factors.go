@@ -213,9 +213,9 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The same gate a password sign-in passes through, not a count of the rows
-	// above: those include enrolments nobody proved and passkeys, which are a
-	// first factor. Two different answers to "is MFA on?" is how a support desk
-	// tells someone they are protected when sign-in does not agree.
+	// above: those include enrolments nobody proved. Two different answers to
+	// "is MFA on?" is how a support desk tells someone they are protected when
+	// sign-in does not agree.
 	hasSecond, err := store.HasSecondFactor(ctx, s.db, userID)
 	if err != nil {
 		s.log.Error("checking for a second factor", "err", err)

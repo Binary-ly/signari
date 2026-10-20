@@ -664,6 +664,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.rateLimitedLogin)
 	mux.HandleFunc("POST /login/mfa", s.handleMFAPost)
+	mux.HandleFunc("POST /login/mfa/webauthn/begin", s.handleMFAKeyBegin)
 	mux.HandleFunc("POST /consent", s.handleConsentPost)
 	mux.HandleFunc("GET /recover", s.handleRecoverGet)
 	mux.HandleFunc("POST /recover", s.handleRecoverPost)

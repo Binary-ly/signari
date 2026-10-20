@@ -149,6 +149,34 @@ document.addEventListener("DOMContentLoaded", function () {
   });
 });
 
+// A key as the second factor, on the code page after a password.
+//
+// The answer is submitted as a FORM to /login/mfa rather than fetched.
+// Finishing a sign-in may redirect to the application or show a prompt, and a
+// fetch can follow neither: the redirect to the application's origin fails as
+// a CORS error, and a prompt arrives as a page the script would have to throw
+// away. Revealed only where WebAuthn exists, for the reason the sign-in button
+// below is; the code form above it needs no script.
+document.addEventListener("DOMContentLoaded", function () {
+  const form = document.getElementById("mfa-key");
+  if (!form || !window.PublicKeyCredential) return;
+  form.hidden = false;
+  const status = document.getElementById("mfa-key-status");
+  document.getElementById("mfa-key-use").addEventListener("click", async function () {
+    try {
+      const options = decodeRequest((await postJSON("/login/mfa/webauthn/begin")).publicKey);
+      const cred = await navigator.credentials.get({ publicKey: options });
+      if (!cred) return;
+      document.getElementById("mfa-assertion").value = JSON.stringify(encodeAssertion(cred));
+      form.submit();
+    } catch (e) {
+      // Cancelling is not an error; see signariSignInWithPasskey.
+      if (e && e.name === "NotAllowedError") return;
+      if (status) status.textContent = e.message;
+    }
+  });
+});
+
 // ONE ceremony at a time, shared between conditional UI and the button.
 //
 // Conditional UI starts a ceremony unprompted on page load. If the button then

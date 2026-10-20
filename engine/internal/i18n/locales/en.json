@@ -26,6 +26,7 @@
   "mfa.heading": "Two-factor authentication",
   "mfa.code": "Code from your authenticator app",
   "mfa.lostdevice": "Lost your device? Enter one of your recovery codes instead.",
+  "mfa.securitykey": "Use your security key or passkey",
 
   "emailotp.title": "Email sign-in codes",
   "emailotp.done.heading": "Email codes are on",

@@ -580,6 +580,12 @@ func HasSecondFactor(ctx context.Context, db interface {
 			SELECT 1 FROM core.duo_enrollments e
 			JOIN core.duo_integrations i ON i.org_id = e.org_id AND i.enabled
 			WHERE e.user_id = $1::uuid
+		) OR EXISTS (
+			-- A security key or passkey, presented on the code page after a
+			-- password. It has no half state: a row is written only once a
+			-- registration's attestation has verified.
+			SELECT 1 FROM core.webauthn_credentials
+			WHERE user_id = $1::uuid
 		)`, userID).Scan(&any)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

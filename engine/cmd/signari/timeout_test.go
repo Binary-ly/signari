@@ -98,6 +98,11 @@ func TestAnAuditExportOutlivesTheConfigurationDeadline(t *testing.T) {
 	if errors.Is(err, context.DeadlineExceeded) || (err != nil && strings.Contains(err.Error(), "deadline")) {
 		t.Fatalf("the export was cancelled by a deadline after writing %d bytes: %v", n, err)
 	}
+	if err != nil && !strings.Contains(err.Error(), "did not verify") {
+		// A chain that does not verify is this database's business; anything
+		// else stopped the export.
+		t.Fatalf("the export failed after writing %d bytes: %v", n, err)
+	}
 	if n < 1<<20 {
 		t.Fatalf("only %d bytes were exported; the test needs a trail larger than the pipe to mean anything", n)
 	}

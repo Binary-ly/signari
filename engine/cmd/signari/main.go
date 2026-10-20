@@ -5200,7 +5200,7 @@ func exportAudit(ctx context.Context, conn *pgx.Conn, orgID, from, to, out strin
 		w = f
 	}
 
-	tx, err := conn.Begin(ctx)
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return err
 	}

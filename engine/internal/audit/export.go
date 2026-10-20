@@ -73,6 +73,19 @@ type ExportResult struct {
 func ExportCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions) (*ExportResult, error) {
 	res := &ExportResult{}
 
+	// The verification and the rows have to come from one snapshot. Under READ
+	// COMMITTED each statement takes its own, so a row appended between the two
+	// was exported under a verification that never read it, and a row changed
+	// between them was exported changed under a verification of the original.
+	var isolation string
+	if err := tx.QueryRow(ctx, `SELECT current_setting('transaction_isolation')`).Scan(&isolation); err != nil {
+		return nil, err
+	}
+	if isolation != "repeatable read" && isolation != "serializable" {
+		return nil, fmt.Errorf("an audit export must verify and read one snapshot: "+
+			"begin its transaction REPEATABLE READ (this one is %s)", isolation)
+	}
+
 	// The whole trail first. If it verifies, nothing else is needed and no
 	// disclaimer is made.
 	brokenAt, checked, err := Verify(ctx, tx)

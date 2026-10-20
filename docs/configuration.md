@@ -67,6 +67,21 @@ those in place, and the command's output lists them after the columns. A second
 test finds every place the code seals with the root key and fails unless the
 rotation knows that context, so a new sealed value cannot be left out.
 
+### Rotating the signing keys
+
+| | |
+|---|---|
+| `SIGNARI_KEY_ROTATION_PERIOD` | The age at which an active signing key is replaced, unattended, as a Go duration: `2160h` for ninety days. Unset, nothing rotates on its own and `signari keys rotate` and `keys retire` are the only way. At least 48h, twice the day a new key is published before it signs |
+
+With a period set, at startup and then once an hour, one node, whichever holds
+the lock, takes the step that is due for each algorithm. It publishes a `next` key when the active
+one is older than the period, promotes it once it has been published for a day,
+and retires a passive key once no token it signed can still be valid. These are
+the steps `keys rotate` and `keys retire` take, decided by the same rules, and
+each is audited as `keys.rotated` with `automatic: true`. Signing moves to the
+new key on every node within the key refresh interval. Until October 2026 keys
+rotated only when somebody remembered to run the command.
+
 ## Build-time, not runtime
 
 | | |

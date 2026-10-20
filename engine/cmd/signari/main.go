@@ -1765,6 +1765,16 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		Interval: keys.KeyRefreshInterval, Log: log}
 	go keyRefresher.Run(ctx)
 
+	// Unattended rotation, when a period is given (3.16). Off by default: a
+	// deployment that has never rotated should choose to start, not find new
+	// keys in its JWKS after an upgrade.
+	rotateEvery, err := keyRotationPeriod(os.Getenv("SIGNARI_KEY_ROTATION_PERIOD"))
+	if err != nil {
+		return err
+	}
+	go (&keys.Rotator{DB: workerPool, InstanceID: instanceID, Root: root, Every: rotateEvery,
+		Interval: time.Hour, Log: log}).Run(ctx)
+
 	// Mail is optional to START but never optional to HAVE: without SMTP the log
 	// driver keeps account recovery working locally and warns on every send, which
 	// is better than a deployment that looks configured and silently sends nothing.

@@ -499,15 +499,26 @@ func TestEveryReloadLoopInTheEntrypointIsAccountedFor(t *testing.T) {
 	if !strings.Contains(string(src), "keyRefresher.Run(") {
 		t.Error("cmd/signari no longer starts the signing-key refresher, so keys are fixed at startup")
 	}
+	// The unattended rotator (3.16) is a scheduled job, not a cache: it reads
+	// the keys' state each pass and changes it. Counted here all the same, so
+	// a ticker moved into it from main is still seen.
+	rotator, err := os.ReadFile(filepath.Join(root, "engine", "internal", "keys", "rotator.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "keys.Rotator{") {
+		t.Error("cmd/signari no longer starts the signing-key rotator")
+	}
 
-	const expected = 2 // signing keys, RADIUS clients
-	got := strings.Count(string(src), "time.NewTicker") + strings.Count(string(refresher), "time.NewTicker")
+	const expected = 3 // signing keys, RADIUS clients, the rotator
+	got := strings.Count(string(src), "time.NewTicker") + strings.Count(string(refresher), "time.NewTicker") +
+		strings.Count(string(rotator), "time.NewTicker")
 	if got != expected {
 		t.Errorf("cmd/signari/main.go starts %d ticker loops; %d are accounted "+
-			"for (signing keys, RADIUS clients). A new one is a third consumer "+
-			"polling on its own interval. Record what it reloads and how stale "+
-			"it may be in the ADR-008 table, or make the case that the config "+
-			"bus ADR-008 describes should finally be built.", got, expected)
+			"for (signing keys, RADIUS clients, the key rotator). A new one is "+
+			"another consumer polling on its own interval. Record what it reloads "+
+			"and how stale it may be in the ADR-008 table, or make the case that "+
+			"the config bus ADR-008 describes should finally be built.", got, expected)
 	}
 }
 

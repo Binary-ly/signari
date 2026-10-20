@@ -378,7 +378,9 @@ func Refresh(ctx context.Context, conn Querier, instanceID string, root *RootKey
 // The lifetime is read across the whole instance, not per organisation, because
 // one key signs for every organisation on it. Scoping this per tenant would
 // retire a key on the shortest tenant's schedule and break the longest one's.
-func RequiredPassiveDwell(ctx context.Context, conn *pgx.Conn, instanceID string) (time.Duration, string, error) {
+func RequiredPassiveDwell(ctx context.Context, conn interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, instanceID string) (time.Duration, string, error) {
 	var present *string
 	if err := conn.QueryRow(ctx,
 		`SELECT to_regclass('core.credential_configurations')::text`).Scan(&present); err != nil {

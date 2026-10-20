@@ -88,7 +88,10 @@ so the chart could not install. Because the Secret is a hook, `helm uninstall`
 leaves it behind; delete it by hand, or manage it yourself with
 `secret.existingSecret`. Readiness asks `/readyz`, which checks the database and
 the signing keys; it used to ask `/healthz`, which only says the process is up.
-`helm test` runs `signari verify`. The image is pinned to the chart's
+The pod's `terminationGracePeriodSeconds` is derived from `shutdown.drainSeconds`
+and `shutdown.timeoutSeconds`, so the kubelet never kills a request the engine is
+still finishing; the chart refuses those two settings in `extraEnv`, where the
+grace period could not follow them. `helm test` runs `signari verify`. The image is pinned to the chart's
 `appVersion`, not `latest`.
 
 The chart is checked by rendering it (`TestTheHelmChartCanInstall`,

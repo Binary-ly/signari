@@ -61,6 +61,38 @@ func TestTheHelmChartCanInstall(t *testing.T) {
 	}
 }
 
+// The pod outlives its own shutdown (2.10): the kubelet waits longer than the
+// engine drains plus lets requests finish, whatever the operator sets. The
+// chart set no grace period, so the engine's two settings and the kubelet's
+// SIGKILL agreed only while both kept their defaults.
+func TestTheHelmChartOutlivesItsShutdown(t *testing.T) {
+	seconds := func(out, pattern string) int {
+		t.Helper()
+		m := regexp.MustCompile(pattern).FindStringSubmatch(out)
+		if m == nil {
+			t.Fatalf("the chart does not render %s", pattern)
+		}
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	for _, sets := range [][]string{nil, {"shutdown.timeoutSeconds=60", "shutdown.drainSeconds=15"}} {
+		out, err := helmTemplate(t, sets...)
+		if err != nil {
+			t.Fatalf("%v does not render: %v\n%s", sets, err, out)
+		}
+		grace := seconds(out, `terminationGracePeriodSeconds: (\d+)`)
+		drain := seconds(out, `name: SIGNARI_SHUTDOWN_DRAIN\n\s+value: "(\d+)s"`)
+		timeout := seconds(out, `name: SIGNARI_SHUTDOWN_TIMEOUT\n\s+value: "(\d+)s"`)
+		if grace <= drain+timeout {
+			t.Errorf("%v: the grace period %ds does not outlast a %ds drain and %ds of requests, so the kubelet kills requests mid-flight",
+				sets, grace, drain, timeout)
+		}
+	}
+	if out, err := helmTemplate(t, "extraEnv.SIGNARI_SHUTDOWN_TIMEOUT=90s"); err == nil || !strings.Contains(out, "not extraEnv") {
+		t.Errorf("a shutdown timeout set past the grace period through extraEnv rendered (%v)", err)
+	}
+}
+
 // Metrics, the ServiceMonitor, the NetworkPolicy and scheduled commands
 // render when asked for (3.24), and the two configurations the engine or
 // Prometheus would refuse are refused at render time.

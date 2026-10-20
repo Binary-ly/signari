@@ -66,4 +66,18 @@ Fail at template time, where the operator sees it, rather than at pod crash.
 {{- if and .Values.metrics.serviceMonitor.enabled (not .Values.metrics.enabled) -}}
 {{- fail "signari: metrics.serviceMonitor.enabled needs metrics.enabled, or it monitors a service that does not exist" -}}
 {{- end -}}
+{{- range $k, $v := .Values.extraEnv -}}
+{{- if has $k (list "SIGNARI_SHUTDOWN_DRAIN" "SIGNARI_SHUTDOWN_TIMEOUT") -}}
+{{- fail (printf "signari: set %s through shutdown.drainSeconds and shutdown.timeoutSeconds, not extraEnv, so the pod's grace period follows it" $k) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The pod's grace period: the drain, then the request timeout, then five seconds
+for the process to exit. Shorter, and the kubelet's SIGKILL lands on requests
+the engine is still finishing.
+*/}}
+{{- define "signari.gracePeriod" -}}
+{{- add (int .Values.shutdown.drainSeconds) (int .Values.shutdown.timeoutSeconds) 5 -}}
 {{- end -}}

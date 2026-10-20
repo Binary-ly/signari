@@ -27,6 +27,7 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ include "signari.gracePeriod" . }}
       containers:
         - name: engine
           image: {{ include "signari.image" . | quote }}
@@ -48,6 +49,10 @@ spec:
           env:
             - name: SIGNARI_ISSUER
               value: {{ .Values.issuer | quote }}
+            - name: SIGNARI_SHUTDOWN_DRAIN
+              value: {{ printf "%ds" (int .Values.shutdown.drainSeconds) | quote }}
+            - name: SIGNARI_SHUTDOWN_TIMEOUT
+              value: {{ printf "%ds" (int .Values.shutdown.timeoutSeconds) | quote }}
             {{- if .Values.adminApi.enabled }}
             - name: SIGNARI_ADMIN_ADDR
               value: {{ printf ":%d" (int .Values.adminApi.port) | quote }}

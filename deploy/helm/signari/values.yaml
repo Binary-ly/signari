@@ -126,6 +126,15 @@ extraEnv: {}
   # SIGNARI_TRUSTED_PROXIES: 10.42.0.17,10.42.1.23   # the ingress controller's pods
   # SIGNARI_CLIENT_IP_SOURCE: x-forwarded-for
 
+# On SIGTERM the engine reports unready for drainSeconds while it keeps
+# serving, so the endpoint is withdrawn before the socket closes, then gives
+# in-flight requests timeoutSeconds to finish. The pod's grace period is
+# derived from both, plus five seconds, so the kubelet cannot SIGKILL a request
+# the engine is still finishing. Set them here, not in extraEnv.
+shutdown:
+  drainSeconds: 5
+  timeoutSeconds: 20
+
 resources:
   requests:
     cpu: 100m

@@ -9,6 +9,16 @@ to look for it.
 Most commands need `SIGNARI_DSN`. Anything touching sealed material also needs
 `SIGNARI_ROOT_KEY`. See [configuration.md](configuration.md).
 
+A command that edits configuration is cancelled after 60 seconds, so one stuck
+behind a lock fails instead of hanging a deploy script. A command whose work
+grows with the data has no limit: `serve`, the three `migrate` commands that
+apply, `export audit`, `audit checkpoint`, both `import` commands, `dir sync`,
+`scim sync`, `kerberos sync`, `keys rewrap-root` and `janitor once`. `proxy
+check` has five minutes. `-timeout` replaces any of these, and `-timeout 0`
+removes the limit. Until October 2026 every command was cancelled at 60 seconds,
+which cut off an audit export of a large trail, and a migration building an
+index or waiting for another migrate, partway through.
+
 A command that names something by a slug, a name or an address also takes
 `-org`. Those are unique within one organisation at most. Without `-org`, the
 name must belong to exactly one organisation in the deployment, or the command

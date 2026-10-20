@@ -244,6 +244,9 @@ func run(args []string) (err error) {
 			"queued behind a long transaction does not hold every query on that table (0 = no bound)")
 	statementTimeout := fs.Duration("statement-timeout", 0,
 		"how long a migration statement may run (0 = no bound: an index on a large table takes what it takes)")
+	timeout := fs.Duration("timeout", 0,
+		"how long the command may run before it is cancelled (0 = no limit); unset, 60s for a "+
+			"command that edits configuration and no limit for one whose work grows with the data")
 	issuer := fs.String("issuer", "", "issuer URL, e.g. https://id.example.com")
 	name := fs.String("name", "", "instance display name")
 	addr := fs.String("addr", ":8080", "listen address for `serve`")
@@ -658,6 +661,12 @@ func run(args []string) (err error) {
 	if err := fs.Parse(rest); err != nil {
 		return err
 	}
+	timeoutGiven := false
+	fs.Visit(func(f *flag.Flag) { timeoutGiven = timeoutGiven || f.Name == "timeout" })
+	if *timeout < 0 {
+		return fmt.Errorf("-timeout must not be negative; 0 means no limit")
+	}
+	runFor := commandTimeout(cmd, *timeout, timeoutGiven)
 	// `policy test` needs no database either: checking a file before it is
 	// deployed is something you do in CI, where there is no database to reach.
 	// Both run without a database: checking a file before it is deployed, and
@@ -711,7 +720,7 @@ func run(args []string) (err error) {
 	// `kerberos principals` needs no database either: it asks the realm what it
 	// holds, which is a question worth answering before deciding to sync it.
 	if cmd == "kerberos principals" {
-		pctx, pcancel := context.WithTimeout(context.Background(), 60*time.Second)
+		pctx, pcancel := commandContext(runFor)
 		defer pcancel()
 		return kerberosPrincipals(pctx, *krbRealm, *krbAdmin, *keytabPath)
 	}
@@ -729,14 +738,16 @@ func run(args []string) (err error) {
 	// therefore the only place the answer is meaningful. Needing the database
 	// would confine it to the one host where the result matters least.
 	if cmd == "proxy check" {
-		return proxyCheck(*appURL, *issuer, *origin, *probePath, *insecure)
+		pctx, pcancel := commandContext(runFor)
+		defer pcancel()
+		return proxyCheck(pctx, *appURL, *issuer, *origin, *probePath, *insecure)
 	}
 
 	if *dsn == "" {
 		return fmt.Errorf("no -dsn given and SIGNARI_DSN is unset")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := commandContext(runFor)
 	defer cancel()
 
 	conn, err := connectDB(ctx, *dsn)
@@ -764,7 +775,11 @@ func run(args []string) (err error) {
 			}
 			var given []string
 			fs.Visit(func(f *flag.Flag) { given = append(given, f.Name) })
-			if _, rerr := store.RecordCLICommand(ctx, conn, cmd, given, *orgID, cliOperator()); rerr != nil {
+			// Not under the command's deadline: a command that committed a
+			// moment before it expired is still recorded.
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer rcancel()
+			if _, rerr := store.RecordCLICommand(rctx, conn, cmd, given, *orgID, cliOperator()); rerr != nil {
 				err = fmt.Errorf("the command succeeded and its audit record could not be written: %w", rerr)
 			}
 		}()
@@ -2858,7 +2873,7 @@ func selectInstance(ctx context.Context, conn *pgx.Conn, want string) (id, issue
 // content to an anonymous request, so it can sit in CI or a deployment script
 // and FAIL the deploy. A report nobody reads changes nothing; a failing exit
 // code stops the release.
-func proxyCheck(app, issuer, origin, extraPaths string, insecure bool) error {
+func proxyCheck(ctx context.Context, app, issuer, origin, extraPaths string, insecure bool) error {
 	if app == "" {
 		return fmt.Errorf("give -app, the protected application URL as the browser " +
 			"reaches it, e.g. -app https://n8n.example.com")
@@ -2872,9 +2887,6 @@ func proxyCheck(app, issuer, origin, extraPaths string, insecure bool) error {
 			paths = append(paths, p)
 		}
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
 
 	rep, err := proxycheck.Run(ctx, proxycheck.Options{
 		BaseURL: app, Issuer: issuer, Origin: origin, Paths: paths, Insecure: insecure,

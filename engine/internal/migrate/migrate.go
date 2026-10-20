@@ -15,6 +15,7 @@ package migrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"regexp"
@@ -171,6 +172,11 @@ func LoadFS(fsys fs.FS) ([]Migration, error) {
 				return nil, fmt.Errorf("migration %q: %w", name, err)
 			}
 		}
+		if mig.CompatibleWithPrevious() {
+			if err := checkCompatible(mig); err != nil {
+				return nil, fmt.Errorf("migration %q: %w", name, err)
+			}
+		}
 		out = append(out, mig)
 	}
 
@@ -223,6 +229,12 @@ func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int, opts Options
 	if err != nil {
 		return nil, err
 	}
+	return upFrom(ctx, conn, all, tier, target, opts)
+}
+
+// upFrom is Up over a given set of migrations, so a test can apply a set
+// newer than the binary's own.
+func upFrom(ctx context.Context, conn *pgx.Conn, all []Migration, tier Tier, target int, opts Options) ([]Migration, error) {
 	// One `migrate` at a time, and the ledger read once the lock is held: a
 	// second run started alongside the first waits, then finds nothing left.
 	//
@@ -350,24 +362,41 @@ func applyOne(ctx context.Context, conn *pgx.Conn, m Migration, tier Tier, opts 
 	if err != nil {
 		return fmt.Errorf("fingerprinting: %w", err)
 	}
-	// With the PostgreSQL version that computed it, from 0159 on, so the
-	// fingerprint is compared only under the same major version.
-	withServer, err := ledgerRecordsServerVersion(ctx, tx)
+	// With, once the migrations that add the columns have run, the PostgreSQL
+	// version and the fingerprint scheme that computed it (0159, 0160), so it
+	// is compared only like with like, and whether a binary built for the
+	// version before may run against it (0160), which that binary cannot read
+	// from a file it has never seen.
+	has, err := ledgerColumns(ctx, tx)
 	if err != nil {
 		return fmt.Errorf("reading the ledger: %w", err)
 	}
-	record := `
-		INSERT INTO core.schema_migrations (version, name, fingerprint)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint`
-	if withServer {
-		record = `
-		INSERT INTO core.schema_migrations (version, name, fingerprint, server_version_num)
-		VALUES ($1, $2, $3, current_setting('server_version_num')::int)
-		ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint,
-		                                    server_version_num = EXCLUDED.server_version_num`
+	switch {
+	case has["fingerprint_scheme"] && has["compatible_with_previous"]:
+		_, err = tx.Exec(ctx, `
+			INSERT INTO core.schema_migrations (version, name, fingerprint, server_version_num,
+			                                    fingerprint_scheme, compatible_with_previous)
+			VALUES ($1, $2, $3, current_setting('server_version_num')::int, $4, $5)
+			ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint,
+			    server_version_num = EXCLUDED.server_version_num,
+			    fingerprint_scheme = EXCLUDED.fingerprint_scheme,
+			    compatible_with_previous = EXCLUDED.compatible_with_previous`,
+			m.Version, m.Name, fp, fingerprintScheme, m.CompatibleWithPrevious())
+	case has["server_version_num"]:
+		_, err = tx.Exec(ctx, `
+			INSERT INTO core.schema_migrations (version, name, fingerprint, server_version_num)
+			VALUES ($1, $2, $3, current_setting('server_version_num')::int)
+			ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint,
+			    server_version_num = EXCLUDED.server_version_num`,
+			m.Version, m.Name, fp)
+	default:
+		_, err = tx.Exec(ctx, `
+			INSERT INTO core.schema_migrations (version, name, fingerprint)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint`,
+			m.Version, m.Name, fp)
 	}
-	if _, err := tx.Exec(ctx, record, m.Version, m.Name, fp); err != nil {
+	if err != nil {
 		return fmt.Errorf("recording in ledger: %w", err)
 	}
 
@@ -423,8 +452,9 @@ func applyOutsideTransaction(ctx context.Context, conn *pgx.Conn, m Migration, o
 
 // ExpectedFingerprint is the fingerprint this binary was built against. It is
 // computed by walking the embedded migrations against a scratch database during
-// the build, and pinned here. Zero value means "not pinned yet" and disables the
-// startup gate -- acceptable during early development, never in a release.
+// the build (scripts/build-release.sh), and pinned here. The zero value leaves
+// the ledger comparison alone in force, which a hand change made together with
+// a rewrite of the ledger row passes: fine in development, never in a release.
 var ExpectedFingerprint string
 
 // Verify gates engine startup. It refuses to start when the live schema does not
@@ -435,24 +465,36 @@ func Verify(ctx context.Context, conn *pgx.Conn) error {
 	if err != nil {
 		return err
 	}
-	want := all[len(all)-1].Version
+	return verifyFor(ctx, conn, all[len(all)-1].Version)
+}
 
+// verifyFor is Verify for a binary whose latest migration is want.
+func verifyFor(ctx context.Context, conn *pgx.Conn, want int) error {
 	current, err := Applied(ctx, conn)
 	if err != nil {
 		return err
 	}
-	if current != want {
+	if current < want {
 		return fmt.Errorf(
 			"schema version mismatch: database is at %d, this binary expects %d -- run `signari migrate up`",
 			current, want)
 	}
+	// A database ahead of the binary is served when every migration since was
+	// declared compatible with the version before it (3.03): the previous
+	// release during a rolling upgrade, and the rollback afterwards.
+	if current > want {
+		if err := aheadIsCompatible(ctx, conn, want, current); err != nil {
+			return err
+		}
+	}
 
-	if ExpectedFingerprint == "" {
-		// Unpinned: compare against what the ledger recorded when the latest
-		// migration was applied. That catches a hand change made since, and
-		// not one made together with a rewrite of the ledger row, which only a
-		// pinned build can refuse. Before 3.04 an unpinned build compared
-		// nothing.
+	// The live schema against what the ledger recorded for the latest
+	// migration. Unpinned, that is the whole fingerprint check: it catches a
+	// hand change made since, and not one made together with a rewrite of the
+	// ledger row, which only a pinned build can refuse. Before 3.04 an
+	// unpinned build compared nothing. Pinned, it is how a database ahead of
+	// the binary is compared, since the pin describes an earlier schema.
+	if ExpectedFingerprint == "" || current > want {
 		c, err := CompareLedger(ctx, conn)
 		if err != nil {
 			return fmt.Errorf("comparing the schema with its ledger: %w", err)
@@ -462,6 +504,24 @@ func Verify(ctx context.Context, conn *pgx.Conn) error {
 				"schema drift: the live schema (%s) is not what migration %d recorded (%s) -- "+
 					"it has been changed by hand since",
 				short(c.Live), c.Version, short(c.Recorded))
+		}
+	}
+	if ExpectedFingerprint == "" {
+		return nil
+	}
+	if current > want {
+		// The pin against what the ledger recorded at this binary's own
+		// version: the database passed through the schema the binary was
+		// built for before the compatible migrations added to it.
+		rec, why, err := recordedFingerprint(ctx, conn, want)
+		if err != nil {
+			return err
+		}
+		if why == "" && rec != ExpectedFingerprint {
+			return fmt.Errorf(
+				"schema fingerprint mismatch: migration %d recorded %s and this binary is pinned to %s -- "+
+					"the database did not pass through the schema this binary was built for",
+				want, short(rec), short(ExpectedFingerprint))
 		}
 		return nil
 	}
@@ -475,4 +535,53 @@ func Verify(ctx context.Context, conn *pgx.Conn) error {
 			short(live), short(ExpectedFingerprint))
 	}
 	return nil
+}
+
+// aheadIsCompatible refuses a database ahead of this binary unless the ledger
+// records every migration after want as compatible with the version before.
+func aheadIsCompatible(ctx context.Context, conn *pgx.Conn, want, current int) error {
+	ahead := fmt.Sprintf("the database is at %d, ahead of this binary (%d)", current, want)
+	deploy := fmt.Sprintf("deploy a binary built for %d, or restore the backup taken before the "+
+		"upgrade (docs/upgrading.md)", current)
+	has, err := ledgerColumns(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if !has["compatible_with_previous"] {
+		return fmt.Errorf("%s, and its ledger does not record which migrations an earlier binary "+
+			"may run against -- %s", ahead, deploy)
+	}
+	var first int
+	var name string
+	err = conn.QueryRow(ctx, `
+		SELECT version, name FROM core.schema_migrations
+		WHERE version > $1 AND NOT compatible_with_previous ORDER BY version LIMIT 1`, want).
+		Scan(&first, &name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%s, and migration %04d_%s is not compatible with an earlier binary -- %s",
+		ahead, first, name, deploy)
+}
+
+// EarliestCompatible is the oldest binary version that may run against the
+// database: the latest migration not declared compatible with the version
+// before it. Equal to the database's version when the latest is not.
+func EarliestCompatible(ctx context.Context, conn *pgx.Conn) (int, error) {
+	current, err := Applied(ctx, conn)
+	if err != nil || current == 0 {
+		return current, err
+	}
+	has, err := ledgerColumns(ctx, conn)
+	if err != nil || !has["compatible_with_previous"] {
+		return current, err
+	}
+	var v int
+	err = conn.QueryRow(ctx, `
+		SELECT COALESCE(max(version), 1) FROM core.schema_migrations
+		WHERE NOT compatible_with_previous`).Scan(&v)
+	return v, err
 }

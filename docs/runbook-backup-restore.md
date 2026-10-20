@@ -86,7 +86,10 @@ A restore that "completed" proves nothing. These three commands prove it:
 export SIGNARI_DSN="postgres://…/signari_restore"
 export SIGNARI_ROOT_KEY="$(cat signari-rootkey-TIMESTAMP.b64)"
 
-# 1. Schema is intact and at the version this binary expects.
+# 1. Schema is intact and at a version this binary may serve, and matches what
+#    its ledger recorded. A restore renders the schema the way the original
+#    did, which a test holds to (see upgrading.md); "schema drift" here means
+#    the restore changed it.
 signari verify
 
 # 2. THE REAL TEST: the root key still decrypts the signing keys. This is the

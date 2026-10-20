@@ -178,24 +178,43 @@ func fingerprintTx(ctx context.Context, tx pgx.Tx) (string, error) {
 		_, _ = tx.Exec(context.WithoutCancel(ctx), `SELECT set_config('search_path', $1, true)`, saved)
 	}()
 
+	lines, err := fingerprintLines(ctx, tx)
+	if err != nil {
+		return "", err
+	}
 	h := sha256.New()
-	for _, s := range fingerprintSections {
-		rows, err := tx.Query(ctx, s.query)
-		if err != nil {
-			return "", fmt.Errorf("fingerprinting %s: %w", s.name, err)
-		}
-		lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return "", fmt.Errorf("fingerprinting %s: %w", s.name, err)
-		}
-		sort.Strings(lines)
-		for _, l := range lines {
-			h.Write([]byte(l))
-			h.Write([]byte{'\n'})
-		}
+	for _, l := range lines {
+		h.Write([]byte(l))
+		h.Write([]byte{'\n'})
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// fingerprintLines is what the fingerprint hashes, section by section, each
+// section sorted.
+func fingerprintLines(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	var all []string
+	for _, s := range fingerprintSections {
+		rows, err := tx.Query(ctx, s.query)
+		if err != nil {
+			return nil, fmt.Errorf("fingerprinting %s: %w", s.name, err)
+		}
+		lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return nil, fmt.Errorf("fingerprinting %s: %w", s.name, err)
+		}
+		sort.Strings(lines)
+		all = append(all, lines...)
+	}
+	return all, nil
+}
+
+// fingerprintScheme names the fingerprint above. A ledger row records the
+// scheme that computed it (0160) and is compared only by a binary computing
+// the same one: a binary that fingerprints differently, older or newer, would
+// otherwise read every row as drift. Scheme 1 covered columns and constraints;
+// scheme 2 is the one above. Change the number whenever a line changes.
+const fingerprintScheme = 2
 
 // LedgerCheck compares the live schema with what the ledger recorded when the
 // latest migration was applied.
@@ -204,9 +223,9 @@ type LedgerCheck struct {
 	Recorded string
 	Live     string
 	// Comparable is false when the ledger row cannot say anything: it was
-	// written before the ledger recorded the PostgreSQL version (0159), by an
-	// earlier fingerprint, or under another major version of PostgreSQL,
-	// whose catalogue may render the same schema differently.
+	// written before the ledger recorded the PostgreSQL version (0159), by
+	// another fingerprint scheme, or under another major version of
+	// PostgreSQL, whose catalogue may render the same schema differently.
 	Comparable bool
 	Reason     string
 }
@@ -218,37 +237,17 @@ func (c LedgerCheck) Drifted() bool { return c.Comparable && c.Recorded != c.Liv
 // CompareLedger reads the latest ledger row and the live fingerprint.
 func CompareLedger(ctx context.Context, conn *pgx.Conn) (LedgerCheck, error) {
 	var c LedgerCheck
-	hasColumn, err := ledgerRecordsServerVersion(ctx, conn)
+	latest, err := Applied(ctx, conn)
 	if err != nil {
 		return c, err
 	}
-	if !hasColumn {
-		c.Reason = "the ledger predates migration 0159, which records the PostgreSQL version"
-		return c, nil
-	}
-	var recordedNum *int
-	var liveNum int
-	err = conn.QueryRow(ctx, `
-		SELECT version, fingerprint, server_version_num, current_setting('server_version_num')::int
-		FROM core.schema_migrations ORDER BY version DESC LIMIT 1`).
-		Scan(&c.Version, &c.Recorded, &recordedNum, &liveNum)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if latest == 0 {
 		c.Reason = "nothing has been applied"
 		return c, nil
 	}
-	if err != nil {
+	c.Version = latest
+	if c.Recorded, c.Reason, err = recordedFingerprint(ctx, conn, latest); err != nil || c.Reason != "" {
 		return c, err
-	}
-	switch {
-	case recordedNum == nil:
-		c.Reason = fmt.Sprintf("migration %d was recorded before the ledger recorded the PostgreSQL "+
-			"version, by an earlier fingerprint", c.Version)
-		return c, nil
-	case *recordedNum/10000 != liveNum/10000:
-		c.Reason = fmt.Sprintf("migration %d was recorded under PostgreSQL %d and this is %d, whose "+
-			"catalogue may render the same schema differently; the comparison resumes with the "+
-			"next migration", c.Version, *recordedNum/10000, liveNum/10000)
-		return c, nil
 	}
 	if c.Live, err = Fingerprint(ctx, conn); err != nil {
 		return c, err
@@ -257,17 +256,52 @@ func CompareLedger(ctx context.Context, conn *pgx.Conn) (LedgerCheck, error) {
 	return c, nil
 }
 
-// ledgerRecordsServerVersion reports whether migration 0159 has added the
-// column, so a migration applied before it can still be recorded.
-func ledgerRecordsServerVersion(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}) (bool, error) {
-	var ok bool
-	err := q.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute
-		               WHERE attrelid = to_regclass('core.schema_migrations')
-		                 AND attname = 'server_version_num' AND NOT attisdropped)`).Scan(&ok)
-	return ok, err
+// recordedFingerprint is the fingerprint the ledger recorded for version, or
+// why this binary cannot compare one with it.
+func recordedFingerprint(ctx context.Context, conn *pgx.Conn, version int) (fp, why string, err error) {
+	has, err := ledgerColumns(ctx, conn)
+	if err != nil {
+		return "", "", err
+	}
+	if !has["server_version_num"] {
+		return "", "the ledger predates migration 0159, which records the PostgreSQL version", nil
+	}
+	// Before 0160 added the column, every row carrying a server version was
+	// computed by scheme 2: 0159 shipped with it.
+	scheme := `2`
+	if has["fingerprint_scheme"] {
+		scheme = `fingerprint_scheme`
+	}
+	var recordedNum, recordedScheme *int
+	var liveNum int
+	err = conn.QueryRow(ctx, `
+		SELECT fingerprint, server_version_num, CASE WHEN server_version_num IS NULL THEN NULL ELSE `+scheme+` END,
+		       current_setting('server_version_num')::int
+		FROM core.schema_migrations WHERE version = $1`, version).
+		Scan(&fp, &recordedNum, &recordedScheme, &liveNum)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Sprintf("migration %d is not in the ledger", version), nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	switch {
+	case recordedNum == nil:
+		return "", fmt.Sprintf("migration %d was recorded before the ledger recorded the PostgreSQL "+
+			"version, by an earlier fingerprint", version), nil
+	case recordedScheme == nil || *recordedScheme != fingerprintScheme:
+		other := "an unrecorded"
+		if recordedScheme != nil {
+			other = fmt.Sprint(*recordedScheme)
+		}
+		return "", fmt.Sprintf("migration %d was fingerprinted by scheme %s and this binary computes "+
+			"scheme %d", version, other, fingerprintScheme), nil
+	case *recordedNum/10000 != liveNum/10000:
+		return "", fmt.Sprintf("migration %d was recorded under PostgreSQL %d and this is %d, whose "+
+			"catalogue may render the same schema differently; the comparison resumes with the "+
+			"next migration", version, *recordedNum/10000, liveNum/10000), nil
+	}
+	return fp, "", nil
 }
 
 // short abbreviates a digest for a message.

@@ -2445,6 +2445,15 @@ func up(ctx context.Context, conn *pgx.Conn, tier migrate.Tier, to int, opts mig
 	}
 	if len(applied) == 0 {
 		fmt.Println("nothing to apply")
+		// A rollback runs the previous release's migrate job against the
+		// database the newer one left; say what that means rather than
+		// leaving `serve` to be the first to.
+		all, lerr := migrate.Load()
+		current, aerr := migrate.Applied(ctx, conn)
+		if lerr == nil && aerr == nil && current > all[len(all)-1].Version {
+			fmt.Printf("the database is at %d, ahead of this binary (%d); `signari verify` says "+
+				"whether this binary may serve it\n", current, all[len(all)-1].Version)
+		}
 	}
 	return nil
 }
@@ -2502,6 +2511,16 @@ func status(ctx context.Context, conn *pgx.Conn) error {
 			fmt.Printf("ledger           : matches what migration %d recorded\n", c.Version)
 		default:
 			fmt.Printf("ledger           : not compared -- %s\n", c.Reason)
+		}
+		earliest, err := migrate.EarliestCompatible(ctx, conn)
+		if err != nil {
+			return err
+		}
+		if earliest < current {
+			fmt.Printf("oldest binary    : %d -- the migrations since are compatible with it, "+
+				"so it may serve this database\n", earliest)
+		} else {
+			fmt.Printf("oldest binary    : %d -- no earlier binary may serve this database\n", earliest)
 		}
 	}
 

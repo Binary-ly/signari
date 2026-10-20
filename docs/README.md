@@ -17,6 +17,7 @@ command or an environment variable exists in code and not on its page.
 | [doctor.md](doctor.md) | The pre-flight check: what is wrong with this deployment |
 | [config-as-code.md](config-as-code.md) | `signari plan` / `apply` — clients, groups and providers from a file |
 | [schema-pinning.md](schema-pinning.md) | Pinning a release binary to the schema it was built for |
+| [upgrading.md](upgrading.md) | Upgrading, rolling back, and which migrations the previous release may run against |
 | [high-availability.md](high-availability.md) | Running more than one instance |
 | [deployment-artefacts.md](deployment-artefacts.md) | The Helm chart, and what is deliberately not built |
 | [runbook-backup-restore.md](runbook-backup-restore.md) | Backup and restore, and why the root key changes everything |

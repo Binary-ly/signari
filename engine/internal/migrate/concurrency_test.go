@@ -52,6 +52,14 @@ func TestANoTransactionMigrationHoldsOnlyRepeatableIndexWork(t *testing.T) {
 // way to connect to it.
 func scratchDB(t *testing.T) func() *pgx.Conn {
 	t.Helper()
+	connect, _ := scratchDBAt(t)
+	return connect
+}
+
+// scratchDBAt is scratchDB, with the database's name for a tool that takes
+// one.
+func scratchDBAt(t *testing.T) (func() *pgx.Conn, string) {
+	t.Helper()
 	dsn := os.Getenv("SIGNARI_TEST_DSN")
 	if dsn == "" {
 		t.Skip("SIGNARI_TEST_DSN not set")
@@ -90,7 +98,7 @@ func scratchDB(t *testing.T) func() *pgx.Conn {
 		conns = append(conns, c)
 		mu.Unlock()
 		return c
-	}
+	}, name
 }
 
 // Two `migrate up` runs at once take turns (3.01): one applies every

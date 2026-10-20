@@ -36,6 +36,7 @@ clients:
     require_pushed_authorization_requests: true   # RFC 9126; omit to leave as it is
     first_party: false           # true skips the consent screen
     issuer_alias: https://old.example.com   # a live alias of the instance; "" clears
+    minimum_acr: "2"             # require multi-factor; "1" accepts one factor
 
 saml_providers:
   - entity_id: urn:sharepoint:intranet

@@ -343,7 +343,7 @@ Applied with `flow apply`, the file drives the live sign-in:
 - **whether a second factor is demanded** — `when: user_has_second_factor`
   reproduces the old behaviour; unconditional demands one of everybody; `when:
   client_requires_mfa` demands one only when a relying party sends
-  `acr_values=2`
+  `acr_values=2`, or the client requires it (below)
 - **which of the post-authentication stages run, and in what order** — the
   prompt and the forced password change
 - **refusing outright**, with `deny`
@@ -356,7 +356,9 @@ The `mfa` stage binds every way in: password, passkey, Kerberos, Duo and the
 federated sources all reach a session through the same walk. A sign-in whose
 factors already add up to multi-factor passes the stage without being asked
 again. Otherwise the person is asked for a factor enrolled here, and under an
-unconditional stage somebody with none is refused.
+unconditional stage somebody with none is refused. A federated sign-in counts
+as multi-factor only when the provider's ID token asserts it with a value you
+chose to trust; see [social-login.md](social-login.md#a-providers-multi-factor-authentication).
 
 A registered security key or passkey is one of those factors: after a password,
 the code page offers a button that asks for it, and password plus key gives a
@@ -364,9 +366,30 @@ multi-factor session. Until October 2026 it was not. A person whose one factor
 beyond the password was a key signed in on the password alone, and a relying
 party sending `acr_values=2` was told the account had no second factor. Anybody
 who has registered a passkey and signs in with a password is now asked for the
-key as well; signing in with the passkey itself is unchanged. A federated sign-in counts
-as multi-factor only when the provider's ID token asserts it with a value you
-chose to trust; see [social-login.md](social-login.md#a-providers-multi-factor-authentication).
+key as well; signing in with the passkey itself is unchanged.
+
+### Requiring multi-factor for one application
+
+`signari client set-acr -client-id payroll -minimum-acr 2` requires
+multi-factor of that client whatever its request says. A relying party can ask
+with `acr_values=2`; this is for the one that does not, and for a request a
+user can edit, since the parameter can be removed from the URL. The floor is
+checked wherever a person's session here gives the client tokens:
+
+- **authorization.** A session with a single factor is not reused: the person
+  is asked for a second, and someone with none enrolled is refused with
+  `unmet_authentication_requirements` rather than shown the sign-in form again.
+  `client_requires_mfa` holds for the client's sign-ins, so a flow that demands
+  a factor only on request demands it here
+- **a device or backchannel approval** from a single-factor session is refused,
+  saying to sign in again with a second factor
+- **every refresh.** A refresh token from a single-factor session is refused
+  with `invalid_grant`, so raising the floor reaches the tokens already issued
+
+Token exchange and the JWT bearer grant are not held to it, because neither
+starts from a session here: one carries a token already issued, the other an
+assertion from an issuer you trust. Until October 2026 nothing set a floor for
+a client.
 
 An organisation with no flow applied runs the built-in file, so nothing changes
 until somebody applies one.

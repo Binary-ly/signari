@@ -389,6 +389,8 @@ func run(args []string) (err error) {
 		"`client set-par`: refuse any authorization the client did not push first (false lifts it)")
 	firstParty := fs.Bool("first-party", true,
 		"`client set-first-party`: skip the consent screen for this client (false restores it)")
+	minimumACR := fs.String("minimum-acr", "",
+		"`client set-acr`: the weakest authentication the client accepts, 1 (a single factor) or 2 (multi-factor)")
 	postLogoutRedirects := fs.String("post-logout-redirects", "",
 		"`client set-logout`: comma-separated URIs a relying party may name as post_logout_redirect_uri (empty clears)")
 	frontchannelURI := fs.String("frontchannel-uri", "",
@@ -889,6 +891,14 @@ func run(args []string) (err error) {
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{FirstParty: firstParty},
 			map[bool]string{true: "first-party: the consent screen is skipped",
 				false: "the consent screen is shown"}[*firstParty])
+	case "client set-acr":
+		if *minimumACR == "" {
+			return fmt.Errorf("give -minimum-acr 1 or 2")
+		}
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{MinimumACR: minimumACR},
+			map[bool]string{true: "multi-factor is required, at sign-in, at every approval and at " +
+				"every refresh; a session with a single factor is asked for another",
+				false: "a single factor is accepted unless the client asks for more"}[*minimumACR == "2"])
 	case "client set-dpop":
 		return clientSetDPoP(ctx, conn, *clientID, *dpopBound)
 	case "client set-pkce":

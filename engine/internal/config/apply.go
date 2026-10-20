@@ -100,6 +100,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		}
 		cl.AccessTokenTTL, cl.RefreshTokenTTL, cl.IDTokenAlg = &st.AccessTokenTTL, &st.RefreshTokenTTL, &st.IDTokenAlg
 		cl.RequirePAR, cl.FirstParty, cl.IssuerAlias = &st.RequirePAR, &st.FirstParty, &st.IssuerAlias
+		cl.MinimumACR = &st.MinimumACR
 		c.clients[id] = cl
 	}
 
@@ -375,6 +376,9 @@ func clientDiff(have, want Client) string {
 	}
 	if w, h := want.IssuerAlias, have.IssuerAlias; w != nil && h != nil && strings.TrimSpace(*w) != *h {
 		d = append(d, "issuer_alias")
+	}
+	if w, h := want.MinimumACR, have.MinimumACR; w != nil && h != nil && *w != *h {
+		d = append(d, "minimum_acr")
 	}
 	return strings.Join(d, ", ")
 }

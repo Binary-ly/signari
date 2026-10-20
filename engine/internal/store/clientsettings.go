@@ -37,7 +37,13 @@ type ClientSettings struct {
 	// its tokens are minted under that `iss` during a migration. Only a live
 	// alias of the client's own instance; empty clears it.
 	IssuerAlias *string
+	// MinimumACR is the weakest authentication the client accepts: "1" a
+	// single factor, "2" multi-factor (migration 0166).
+	MinimumACR *string
 }
+
+// ClientACRs are the floors a client may be given, the schema's own CHECK.
+var ClientACRs = []string{"1", "2"}
 
 // ClientAlgorithms are the JWS algorithms a client may be set to sign with,
 // the schema's own CHECK. No symmetric algorithm, ever.
@@ -135,6 +141,12 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
+	if v := s.MinimumACR; v != nil {
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET minimum_acr = $2,
+			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -155,6 +167,10 @@ func CheckClientSettings(s ClientSettings) error {
 	if a := s.IDTokenAlg; a != nil && !slices.Contains(ClientAlgorithms, *a) {
 		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
 			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
+	}
+	if a := s.MinimumACR; a != nil && !slices.Contains(ClientACRs, *a) {
+		return fmt.Errorf("%w: %q is not an acr a client may require: 1, a single factor, "+
+			"or 2, multi-factor", ErrInvalidClientSetting, *a)
 	}
 	return nil
 }
@@ -178,6 +194,7 @@ type ClientSettingsView struct {
 	RequirePAR      bool
 	FirstParty      bool
 	IssuerAlias     string
+	MinimumACR      string
 }
 
 // ClientSettingsOf reads a client's token settings.
@@ -187,9 +204,10 @@ func ClientSettingsOf(ctx context.Context, q interface {
 	var v ClientSettingsView
 	var access, refresh int
 	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, id_token_signed_alg,
-		       require_pushed_authorization, first_party, COALESCE(issuer_alias, '')
+		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr
 		FROM core.clients WHERE client_id = $1`, clientID).
-		Scan(&access, &refresh, &v.IDTokenAlg, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias)
+		Scan(&access, &refresh, &v.IDTokenAlg, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias,
+			&v.MinimumACR)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

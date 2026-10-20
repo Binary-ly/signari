@@ -96,13 +96,16 @@ type Client struct {
 	// IssuerAlias pins the client to a legacy issuer the instance claims;
 	// empty clears it, absent leaves it.
 	IssuerAlias *string `yaml:"issuer_alias"`
+	// MinimumACR is the weakest authentication the client accepts, "1" or
+	// "2"; absent leaves it.
+	MinimumACR *string `yaml:"minimum_acr"`
 }
 
 // settings is the client's part for store.SetClientSettings.
 func (c Client) settings() store.ClientSettings {
 	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL,
 		IDTokenAlg: c.IDTokenAlg, RequirePAR: c.RequirePAR, FirstParty: c.FirstParty,
-		IssuerAlias: c.IssuerAlias}
+		IssuerAlias: c.IssuerAlias, MinimumACR: c.MinimumACR}
 }
 
 // TokenExchange is whether a client may exchange tokens, and for which

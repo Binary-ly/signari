@@ -312,7 +312,7 @@ var signInConditions = map[flow.Condition]func(f *signInFacts) bool{
 		return must
 	},
 	flow.CondClientRequiresMFA: func(f *signInFacts) bool {
-		return clientRequiresMFA(f.authzQuery)
+		return clientRequiresMFA(f.authzQuery) || f.authzClientFloorIsMFA()
 	},
 }
 

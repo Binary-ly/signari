@@ -137,6 +137,9 @@ type Client struct {
 	// RequirePAR is RFC 9126 §6's require_pushed_authorization_requests: the
 	// client may start an authorization only by pushing it first.
 	RequirePAR bool
+	// MinimumACR is the weakest authentication the client accepts, "1" or
+	// "2" (migration 0166), whatever its request asks for.
+	MinimumACR string
 }
 
 // AccessTokenTTL is the client's access-token lifetime, with the built-in
@@ -219,7 +222,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       backchannel_token_delivery_mode,
 		       coalesce(backchannel_client_notification_endpoint, ''),
 		       coalesce(claims_redirect_uris, ARRAY[]::text[]),
-		       access_token_ttl_s, require_pushed_authorization
+		       access_token_ttl_s, require_pushed_authorization, minimum_acr
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -233,7 +236,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.BackchannelTokenDeliveryMode,
 			&c.BackchannelClientNotificationEndpoint,
 			&c.ClaimsRedirectURIs,
-			&c.AccessTTL, &c.RequirePAR)
+			&c.AccessTTL, &c.RequirePAR, &c.MinimumACR)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

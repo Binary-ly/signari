@@ -176,8 +176,14 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				Description: "could not verify session", Disposition: oauth.DispositionRedirect})
 			return
 		}
-		if reason, detail := oauth.SessionSufficient(amr, authTime, time.Now(),
-			req.ACRValues, req.MaxAge, req.Prompt); reason != oauth.StepUpNone {
+		reason, detail := oauth.SessionSufficient(amr, authTime, time.Now(),
+			req.ACRValues, req.MaxAge, req.Prompt)
+		// The client's own floor, whatever the request asks for: acr_values is
+		// the relying party's to send, and a user can remove it from the URL.
+		if reason == oauth.StepUpNone && !meetsClientFloor(c, amr) {
+			reason, detail = oauth.StepUpNeedStronger, "this application requires multi-factor authentication"
+		}
+		if reason != oauth.StepUpNone {
 			s.log.Info("step-up required", "sid", sid, "reason", reason,
 				"correlation_id", correlationID(ctx))
 			// The session stays live. Step-up asks for another factor; it does
@@ -1470,6 +1476,21 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "refresh token was not issued to this client", Status: http.StatusBadRequest})
 		return
+	}
+
+	// The client's floor (clientacr.go), against the session the lineage was
+	// authorized from, so raising it reaches the refresh tokens already issued.
+	// Refused, not revoked: the token is not spent, and signing in again with a
+	// second factor starts a lineage that meets it. A session that cannot be
+	// read meets no floor (sessionFactors).
+	if c.MinimumACR == oauth.ACRMultiFactor {
+		if _, amr := sessionFactors(ctx, tx, grant.SessionID); !meetsClientFloor(c, amr) {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "this application requires multi-factor authentication, and the " +
+					"sign-in this refresh token came from had one factor; sign in again",
+				Status: http.StatusBadRequest})
+			return
+		}
 	}
 
 	// RFC 9449 §5, the sentence that is easy to skip: "The binding MUST be

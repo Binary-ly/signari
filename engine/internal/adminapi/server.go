@@ -425,6 +425,8 @@ type patchClientRequest struct {
 	FirstParty                         *bool `json:"first_party"`
 	// IssuerAlias pins the client to a live alias of its instance; "" clears.
 	IssuerAlias *string `json:"issuer_alias"`
+	// MinimumACR is the weakest authentication the client accepts, "1" or "2".
+	MinimumACR *string `json:"minimum_acr"`
 }
 
 func (r patchClientRequest) setsLogout() bool {
@@ -445,9 +447,10 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 	}
 	s.IDTokenAlg = r.IDTokenSignedResponseAlg
 	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
+	s.MinimumACR = r.MinimumACR
 	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil ||
 		r.IDTokenSignedResponseAlg != nil || r.RequirePushedAuthorizationRequests != nil ||
-		r.FirstParty != nil || r.IssuerAlias != nil
+		r.FirstParty != nil || r.IssuerAlias != nil || r.MinimumACR != nil
 }
 
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
@@ -579,6 +582,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				"require_pushed_authorization_requests": got.RequirePAR,
 				"first_party":                           got.FirstParty,
 				"issuer_alias":                          got.IssuerAlias,
+				"minimum_acr":                           got.MinimumACR,
 			}
 			for k, v := range lifetimes {
 				detail[k] = v

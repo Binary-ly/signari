@@ -243,6 +243,31 @@ func CanGoPasswordless(ctx context.Context, tx pgx.Tx, userID string) (bool, err
 	return n >= MinCredentialsForPasswordless, nil
 }
 
+// SignInMethodsBesides counts the ways a person could still sign in once one is
+// removed (2.56): every password credential -- an imported hash not yet
+// rehashed signs in as well as a current one -- every passkey but exceptPasskey
+// and every linked provider but exceptProvider. It is the one count every
+// removal path asks, taken under a lock on the person, so two removals at once
+// cannot each count the other's method and leave none. There were two: passkey
+// removal counted no linked provider, and unlinking counted only rehashed
+// passwords, so each refused removals that left a way in.
+func SignInMethodsBesides(ctx context.Context, tx pgx.Tx, userID, exceptPasskey, exceptProvider string) (int, error) {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM core.users WHERE id = $1::uuid FOR UPDATE`, userID); err != nil {
+		return 0, fmt.Errorf("locking the person: %w", err)
+	}
+	var n int
+	if err := tx.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM core.password_credentials WHERE user_id = $1::uuid)
+		     + (SELECT count(*) FROM core.webauthn_credentials WHERE user_id = $1::uuid AND id::text <> $2)
+		     + (SELECT count(*) FROM core.federated_identities f
+		        JOIN core.identity_providers p ON p.id = f.provider_id
+		        WHERE f.user_id = $1::uuid AND p.slug <> $3)`,
+		userID, exceptPasskey, exceptProvider).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting the remaining sign-in methods: %w", err)
+	}
+	return n, nil
+}
+
 // DeleteCredential removes an authenticator, refusing when it is the user's last
 // way in.
 //
@@ -268,19 +293,15 @@ func DeleteCredential(ctx context.Context, tx pgx.Tx, userID, credentialRowID st
 		return fmt.Errorf("locating webauthn credential: %w", err)
 	}
 
-	var total, withPassword int
-	if err := tx.QueryRow(ctx, `
-		SELECT (SELECT count(*) FROM core.webauthn_credentials WHERE user_id = $1::uuid),
-		       (SELECT count(*) FROM core.password_credentials WHERE user_id = $1::uuid)`,
-		userID).Scan(&total, &withPassword); err != nil {
-		return fmt.Errorf("checking remaining credentials: %w", err)
+	// Removing the last way in leaves the account with no authentication method
+	// at all, and no recovery path that does not go through a human being --
+	// which is the weakest link in any system that has one. A password, another
+	// passkey or a linked provider each keeps one.
+	left, err := SignInMethodsBesides(ctx, tx, userID, credentialRowID, "")
+	if err != nil {
+		return err
 	}
-
-	// Removing the last passkey is only safe when a password remains. Otherwise
-	// the account has no authentication method at all, and no recovery path that
-	// does not go through a human being -- which is the weakest link in any
-	// system that has one.
-	if total <= 1 && withPassword == 0 {
+	if left == 0 {
 		return ErrWouldLockOut
 	}
 

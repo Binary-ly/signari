@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"signari.dev/engine/internal/store"
 )
 
 // externalProvider is one sign-in button on the login page.
@@ -250,32 +252,37 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 	//
 	// A user who signed up through a provider has no password, so unlinking it
 	// leaves an account nobody can reach -- recoverable only by an administrator,
-	// and only if the account has a verified address. The check is one query and
-	// it prevents a self-inflicted lockout that looks like data loss.
-	var remaining int
-	if err := s.db.QueryRow(ctx, `
-		SELECT (SELECT count(*) FROM core.federated_identities f
-		        JOIN core.identity_providers p ON p.id = f.provider_id
-		        WHERE f.user_id = $1::uuid AND p.slug <> $2)
-		     + (SELECT count(*) FROM core.password_credentials
-		        WHERE user_id = $1::uuid AND is_current)
-		     + (SELECT count(*) FROM core.webauthn_credentials WHERE user_id = $1::uuid)`,
-		userID, slug).Scan(&remaining); err != nil {
+	// and only if the account has a verified address. Counted as passkey removal
+	// counts (store.SignInMethodsBesides), in the transaction that removes it.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	remaining, err := store.SignInMethodsBesides(ctx, tx, userID, "", slug)
+	if err != nil {
 		s.log.Error("counting remaining sign-in methods", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 	if remaining == 0 {
+		_ = tx.Rollback(ctx)
 		s.federationError(w, r, "That is the only way to sign in to this account. Set a "+
 			"password or add a passkey first, then remove it.")
 		return
 	}
 
-	if _, err := s.db.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		DELETE FROM core.federated_identities f
 		USING core.identity_providers p
 		WHERE f.provider_id = p.id AND f.user_id = $1::uuid AND p.slug = $2`,
 		userID, slug); err != nil {
+		s.log.Error("unlinking provider", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
 		s.log.Error("unlinking provider", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return

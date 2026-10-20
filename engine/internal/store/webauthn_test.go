@@ -164,6 +164,24 @@ func TestDeletingTheLastCredentialIsRefused(t *testing.T) {
 	if err := DeleteCredential(ctx, tx, userID, creds[0].ID); !errors.Is(err, ErrWouldLockOut) {
 		t.Fatalf("the last authentication method was deletable (err = %v)", err)
 	}
+
+	// A linked provider is a way in as well (2.56): this count left it out, so a
+	// person who signs in through one could not remove their only passkey.
+	var providerID string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.identity_providers (org_id, slug, display_name, kind, client_id, scopes)
+		VALUES ($1::uuid, 'wa-link-' || substr(gen_random_uuid()::text, 1, 8), 'Linked', 'oidc', 'c', '{openid}')
+		RETURNING id::text`, orgID).Scan(&providerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.federated_identities (provider_id, user_id, org_id, subject)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, 'upstream-subject')`, providerID, userID, orgID); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteCredential(ctx, tx, userID, creds[0].ID); err != nil {
+		t.Fatalf("removing the only passkey of a person with a linked provider was refused: %v", err)
+	}
 }
 
 // One user must not be able to delete another's credential by guessing a uuid.

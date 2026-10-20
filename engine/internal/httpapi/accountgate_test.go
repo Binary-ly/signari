@@ -14,6 +14,84 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
+// Unlinking a provider counts the person's other ways in as removing a passkey
+// does (2.56). It counted only rehashed passwords, so a person imported with
+// their old hash, who signs in with it every day, was told the provider was
+// "the only way to sign in".
+func TestUnlinkingCountsAPasswordNotYetRehashed(t *testing.T) {
+	f, cookie := enrolFixture(t)
+	ctx := context.Background()
+	slug := fmt.Sprintf("unlink-%d", time.Now().UnixNano())
+	var providerID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO core.identity_providers (org_id, slug, display_name, kind, client_id, scopes)
+		VALUES ($1::uuid, $2, 'Unlink OIDC', 'oidc', 'c', '{openid}') RETURNING id::text`, f.orgID, slug).Scan(&providerID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.identity_providers WHERE slug = $1`, slug)
+	})
+	linked := func() int {
+		t.Helper()
+		var n int
+		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM core.federated_identities WHERE provider_id = $1::uuid`,
+			providerID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	link := func() {
+		t.Helper()
+		if _, err := f.pool.Exec(ctx, `
+			INSERT INTO core.federated_identities (provider_id, user_id, org_id, subject)
+			VALUES ($1::uuid, $2::uuid, $3::uuid, 'upstream-subject') ON CONFLICT DO NOTHING`,
+			providerID, f.userID, f.orgID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page := accountGET(f, cookie, "/account")
+	m := csrfValue.FindStringSubmatch(page.Body.String())
+	if m == nil {
+		t.Fatal("the account page carries no CSRF field")
+	}
+	var csrfCookie string
+	for _, c := range page.Result().Cookies() {
+		if c.Name == CSRFCookieName {
+			csrfCookie = c.Value
+		}
+	}
+	unlink := func() *httptest.ResponseRecorder {
+		t.Helper()
+		form := url.Values{csrfFormField: {m[1]}}
+		r := httptest.NewRequest(http.MethodPost, "/account/unlink/"+slug, strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})
+		r.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: csrfCookie})
+		rec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(rec, r)
+		return rec
+	}
+
+	link()
+	if _, err := f.pool.Exec(ctx, `UPDATE core.password_credentials SET is_current = false WHERE user_id = $1::uuid`,
+		f.userID); err != nil {
+		t.Fatal(err)
+	}
+	if rec := unlink(); rec.Code != http.StatusSeeOther || linked() != 0 {
+		t.Fatalf("unlinking with an imported password left answered %d and kept %d link(s); want it removed",
+			rec.Code, linked())
+	}
+
+	// With no password at all, the provider is the last way in and stays.
+	link()
+	if _, err := f.pool.Exec(ctx, `DELETE FROM core.password_credentials WHERE user_id = $1::uuid`, f.userID); err != nil {
+		t.Fatal(err)
+	}
+	if unlink(); linked() != 1 {
+		t.Error("the last way in was unlinked")
+	}
+}
+
 // Every route that changes how the account signs in needs a recent sign-in and
 // refuses an impersonation session. A live session was once enough, so a
 // stolen cookie could register its own passkey, link its own external account

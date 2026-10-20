@@ -8896,7 +8896,7 @@ func credentialTrustRoot(ctx context.Context, conn *pgx.Conn, orgID, name, certP
 	if orgID == "" || name == "" || certPath == "" {
 		return fmt.Errorf("credential trust-root needs -org, -name and -root-cert")
 	}
-	blob, err := os.ReadFile(certPath)
+	blob, err := os.ReadFile(certPath) // #nosec G304 -- the operator names the file
 	if err != nil {
 		return fmt.Errorf("reading the root certificate: %w", err)
 	}

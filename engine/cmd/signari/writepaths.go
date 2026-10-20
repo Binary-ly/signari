@@ -2130,7 +2130,7 @@ func migrationSourceAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, name, 
 			return fmt.Errorf("-token-endpoint is for -kind oidc_password")
 		}
 		if caPath != "" {
-			raw, err := os.ReadFile(caPath)
+			raw, err := os.ReadFile(caPath) // #nosec G304 -- the operator names the file
 			if err != nil {
 				return err
 			}

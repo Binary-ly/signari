@@ -75,8 +75,14 @@ a code aloud is enough to find both layers.
 
 ## Layer 2 — the audit trail
 
-**Storage.** `core.audit_events`, PostgreSQL, `occurred_at timestamptz` defaulting
-to `now()`.
+**Storage.** `core.audit_events`, PostgreSQL, `occurred_at timestamptz` set by
+the engine when it writes the row and, from hash version 2, covered by the
+row's hash. Until October 2026 it defaulted to the database's clock and sat
+outside the hash, so a row's time could be rewritten and the chain still
+verified. Rows written before that, and by a release before it, are version 1
+and keep verifying without their time; `hash_version` says which a row is, and
+claiming version 1 for a version-2 row breaks the chain at that row like any
+other change.
 
 **Coverage.** 54 distinct event types, emitted from `internal/httpapi` (50 sites)
 and `internal/adminapi` (5). Authentication is covered in both directions —

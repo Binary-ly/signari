@@ -29,9 +29,12 @@ import (
 // was anything stopping the fixture being written that way in the first place.
 //
 // The correct shape is `audit.Write` inside a transaction, and no cleanup: an
-// append-only trail is append-only for tests too. `occurred_at` may be moved
-// afterwards because it is not part of the hash (see audit.chainHash); nothing
-// else may.
+// append-only trail is append-only for tests too. A fixture that needs an
+// older row writes it with `Event.OccurredAt`: since hash version 2 (3.19)
+// occurred_at is in the hash, so moving it afterwards breaks the chain too.
+//
+// An UPDATE of any chain column is therefore a broken link as well.
+var movedLink = regexp.MustCompile(`(?is)UPDATE\s+core\.audit_events\s+SET`)
 
 var (
 	// An INSERT naming the chain columns. The columns are the tell: a fixture
@@ -76,8 +79,16 @@ func TestNoTestForgesOrDeletesAnAuditChainLink(t *testing.T) {
 				"Deleting a row breaks the link that pointed at it, and every "+
 				"row after it, permanently. An append-only trail is append-only "+
 				"for tests too -- write real events and leave them. If a fixture "+
-				"needs an older row, move occurred_at, which is not part of the "+
-				"hash.", rel)
+				"needs an older row, write it with audit.Event.OccurredAt.", rel)
+		}
+		// A test that alters a row on a database of its own is not a fixture
+		// breaking the shared chain; it names its own database to say so.
+		if movedLink.MatchString(body) && !strings.Contains(body, "CREATE DATABASE") {
+			t.Errorf("%s updates core.audit_events in the shared database.\n\n"+
+				"Every column but id is in the chain hash, occurred_at included "+
+				"since hash version 2, so an UPDATE breaks the chain from that row "+
+				"on. Write the row as it should be with audit.Write, giving "+
+				"Event.OccurredAt for an older one.", rel)
 		}
 		return nil
 	})

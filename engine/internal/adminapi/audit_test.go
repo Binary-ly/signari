@@ -196,16 +196,19 @@ func TestAuditTimeFiltersApply(t *testing.T) {
 	orgID := anyOrgID(t, s)
 	marker := fmt.Sprintf("timed-%d", time.Now().UnixNano())
 
-	// Written properly, then BACKDATED with an UPDATE of occurred_at only.
-	//
-	// occurred_at is not part of the chain hash, so moving it leaves every link
-	// intact -- which is the only way to age a row without forging one. An
-	// INSERT with hand-made hashes would break the chain, and a DELETE
-	// afterwards would break it again.
-	writeFixtureEvents(t, s, orgID, "", marker, 1)
-	if _, err := s.db.Exec(ctx, `
-		UPDATE core.audit_events SET occurred_at = now() - interval '72 hours'
-		WHERE event_type = $1`, marker); err != nil {
+	// Written as having happened 72 hours ago, through audit.Write. It was
+	// written now and moved with an UPDATE of occurred_at, which was not in the
+	// chain hash; since 3.19 it is, and that UPDATE breaks the chain.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.Write(ctx, tx, audit.Event{Type: marker, OrgID: orgID,
+		OccurredAt: time.Now().Add(-72 * time.Hour)}); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 

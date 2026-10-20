@@ -49,6 +49,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -107,7 +108,16 @@ type Event struct {
 	// Detail is NON-personal context: reason codes, counts, scope names. Anything
 	// identifying a person belongs in the encrypted column, not here.
 	Detail map[string]any
+	// OccurredAt is when it happened; the zero value is now. Set here and
+	// hashed (hash version 2, 3.19): the column defaulted to the database's
+	// clock and sat outside the hash, so a row's time could be rewritten and
+	// the chain still verified.
+	OccurredAt time.Time
 }
+
+// hashVersion is what Write hashes. Version 1 left occurred_at out; rows
+// written before it, and by a release before this one, keep verifying as 1.
+const hashVersion = 2
 
 // Write appends one event inside the caller's transaction.
 //
@@ -124,6 +134,12 @@ const auditChainLock int64 = 0x51474e415249_01
 // writers cannot both chain off the same predecessor and silently fork the chain
 // -- the second serialises behind the first.
 func Write(ctx context.Context, tx pgx.Tx, e Event) error {
+	return write(ctx, tx, e, hashVersion)
+}
+
+// write is Write at a given hash version; a test writes a version-1 row with it
+// to prove such rows keep verifying.
+func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 	if e.Type == "" {
 		return fmt.Errorf("audit: event type is required")
 	}
@@ -227,16 +243,22 @@ func Write(ctx context.Context, tx pgx.Tx, e Event) error {
 		return fmt.Errorf("audit: reading chain head: %w", err)
 	}
 
-	entry := chainHash(prev, e, detail)
+	// Microseconds, which is what timestamptz keeps, so the time hashed is the
+	// time stored.
+	if e.OccurredAt.IsZero() {
+		e.OccurredAt = time.Now()
+	}
+	e.OccurredAt = e.OccurredAt.UTC().Truncate(time.Microsecond)
+	entry := hashFor(version, prev, e, detail)
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO core.audit_events
 			(org_id, event_type, subject_id, actor_id, client_id, correlation_id,
-			 retention_class, detail, prev_hash, entry_hash, admin_token_id)
-		VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5, $6::uuid, $7, $8, $9, $10, $11::uuid)`,
+			 retention_class, detail, prev_hash, entry_hash, admin_token_id, occurred_at, hash_version)
+		VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5, $6::uuid, $7, $8, $9, $10, $11::uuid, $12, $13)`,
 		nullIfEmpty(e.OrgID), e.Type, nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
 		nullIfEmpty(e.ClientID), nullIfEmpty(e.CorrelationID), e.Retention,
-		detail, prev, entry, nullIfEmpty(e.AdminTokenID))
+		detail, prev, entry, nullIfEmpty(e.AdminTokenID), e.OccurredAt, version)
 	if err != nil {
 		return fmt.Errorf("audit: appending %s: %w", e.Type, err)
 	}
@@ -333,6 +355,27 @@ func chainHash(prev []byte, e Event, detail string) []byte {
 	return h.Sum(nil)
 }
 
+// hashFor is the entry hash at a version, or nil for one this binary does
+// not know, which no stored hash equals: a row claiming an unknown version is
+// read as broken, not skipped.
+//
+// Version 2 is version 1 followed by the version and occurred_at, in UTC to
+// the microsecond. Appended rather than mixed in, so version 1 stays exactly
+// what every existing row was hashed as.
+func hashFor(version int, prev []byte, e Event, detail string) []byte {
+	switch version {
+	case 1:
+		return chainHash(prev, e, detail)
+	case 2:
+		h := sha256.New()
+		h.Write(chainHash(prev, e, detail))
+		h.Write([]byte("v2\x00"))
+		h.Write([]byte(e.OccurredAt.UTC().Format("2006-01-02T15:04:05.000000Z")))
+		return h.Sum(nil)
+	}
+	return nil
+}
+
 // Verify walks the chain and reports the first entry whose hash does not follow
 // from its predecessor.
 //
@@ -345,7 +388,7 @@ func Verify(ctx context.Context, tx pgx.Tx) (brokenAt int64, checked int, err er
 		       COALESCE(actor_id::text,''), COALESCE(client_id,''),
 		       COALESCE(correlation_id::text,''), retention_class,
 		       detail::text, prev_hash, entry_hash,
-		       COALESCE(admin_token_id::text,'')
+		       COALESCE(admin_token_id::text,''), occurred_at, hash_version
 		FROM core.audit_events ORDER BY id`)
 	if err != nil {
 		return 0, 0, err
@@ -358,9 +401,10 @@ func Verify(ctx context.Context, tx pgx.Tx) (brokenAt int64, checked int, err er
 		var e Event
 		var detail string
 		var prev, entry []byte
+		var version int
 		if err := rows.Scan(&id, &e.Type, &e.OrgID, &e.SubjectID, &e.ActorID,
 			&e.ClientID, &e.CorrelationID, &e.Retention, &detail, &prev, &entry,
-			&e.AdminTokenID); err != nil {
+			&e.AdminTokenID, &e.OccurredAt, &version); err != nil {
 			return 0, checked, err
 		}
 		checked++
@@ -371,7 +415,7 @@ func Verify(ctx context.Context, tx pgx.Tx) (brokenAt int64, checked int, err er
 		if !equalBytes(prev, expectedPrev) {
 			return id, checked, nil
 		}
-		want := chainHash(prev, e, detail)
+		want := hashFor(version, prev, e, detail)
 		if !equalBytes(want, entry) {
 			return id, checked, nil
 		}

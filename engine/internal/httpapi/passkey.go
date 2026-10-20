@@ -442,9 +442,10 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		// Told plainly, because the number is the difference between a recoverable
 		// lost device and a dead account.
 		"passwordless_available": total >= store.MinCredentialsForPasswordless,
+		// No promise of removing the password, which no page offers yet (5.15).
 		"hint": map[bool]string{
-			true:  "You can now sign in without a password.",
-			false: "Register a second passkey on another device before removing your password.",
+			true:  "You have passkeys on more than one device, so losing one does not lock you out.",
+			false: "Add a passkey on a second device too, so losing this one does not lock you out.",
 		}[total >= store.MinCredentialsForPasswordless],
 	})
 }

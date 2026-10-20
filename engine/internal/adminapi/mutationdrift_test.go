@@ -704,10 +704,10 @@ func TestEveryMutatingRouteBumpsTheConfigVersion(t *testing.T) {
 			}
 			after := currentVersion(t, s)
 			if after <= before {
-				t.Errorf("config version %d -> %d: this mutation is durable and "+
-					"INVISIBLE. Engine nodes poll this counter to decide when to "+
-					"reload, so a write that does not move it is applied in the "+
-					"database and ignored by every running node", before, after)
+				t.Errorf("config version %d -> %d: this mutation does not move the "+
+					"counter If-Match compares, so a client that read before it still "+
+					"matches and its conditional write overwrites this one unseen",
+					before, after)
 			}
 			// And the caller is told, so it can confirm propagation without polling.
 			if tag := rec.Header().Get("ETag"); tag != fmt.Sprintf(`"%d"`, after) {

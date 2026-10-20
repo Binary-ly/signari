@@ -65,9 +65,10 @@ func (b *Bucket) Allow() bool {
 // # Why a global bucket is not enough on its own
 //
 // One bucket shared by every caller means the noisiest one decides what everybody
-// else gets. That is already a known problem elsewhere in this engine: the login
-// limiter is a single global bucket, so one attacker can lock out every user at
-// once. It is the wrong shape wherever callers are distinguishable, and on an
+// else gets. The sign-in page's flood bucket is that shape on purpose, as a CPU
+// ceiling, with its guessing budgets kept per address and per account; it was
+// once the only limiter there, so one caller could refuse every sign-in. It is
+// the wrong shape wherever callers are distinguishable, and on an
 // administrative API they are -- each request arrives with an authenticated token.
 //
 // # Why eviction is safe here, which is not generally true

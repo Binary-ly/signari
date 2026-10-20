@@ -422,10 +422,13 @@ that cannot do GCM is better served by TLS alone than by encryption that does no
 hold. There is a test that tampers with a ciphertext and requires the decryption
 to fail.
 
-Key transport is `rsa-oaep-mgf1p`. The SHA-1 in its name is OAEP's mask
-generation function, which needs a pseudorandom function rather than collision
-resistance — a different question from SHA-1 in a signature, which this package
-refuses on both bindings. See `docs/security-scanning.md`.
+Key transport is `rsa-oaep-mgf1p` by default. The SHA-1 in its name is OAEP's
+mask generation function, which needs a pseudorandom function rather than
+collision resistance — a different question from SHA-1 in a signature, which
+this package refuses on both bindings. See `docs/security-scanning.md`. A
+provider that supports it can be given `xmlenc11#rsa-oaep` with SHA-256 and
+MGF1-SHA-256 instead (`saml add-sp -sp-key-transport rsa-oaep-sha256`), which is
+the one to choose under FIPS.
 
 ### Proved end to end, by tools that are not ours
 
@@ -450,10 +453,6 @@ key and IV.
 
 ## Not yet built
 
-- **`xmlenc11#rsa-oaep` key transport with SHA-256.** `rsa-oaep-mgf1p` is what
-  service providers actually implement, and the SHA-1 in it is not a weakness (see
-  above). Worth adding when a provider asks for it; not worth a second code path
-  before then.
 - **Decrypting inbound encrypted `NameID`s.** We encrypt outbound assertions; we
   do not accept encrypted identifiers in inbound requests.
 - **Per-organisation SSO endpoints and IdP entity IDs.** These would let two

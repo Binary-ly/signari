@@ -16,7 +16,8 @@ const (
 	// did not ask for. Long enough that a notification sent at 3am is seen before
 	// it matters; short enough that a locked-out user is not stuck for a day.
 	//
-	// Waived entirely by proving a second factor -- see 0012.
+	// CreateRecoveryRequest can waive it for a proven second factor (0012), and
+	// no path proves one before recovery yet (5.12), so every reset waits it out.
 	RecoveryDelay = 30 * time.Minute
 
 	// RecoveryLifetime is how long the whole request stays usable. A reset link

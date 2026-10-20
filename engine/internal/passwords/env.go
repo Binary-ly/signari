@@ -24,7 +24,7 @@ func PolicyFromEnv() Policy {
 			p.MinLength = n
 		}
 	}
-	// Strength estimation is ON by default at score 2.
+	// Strength estimation is ON by default at score 3.
 	//
 	// Unlike the breach check it makes no network call and leaks nothing, so
 	// there is no reason to make an operator opt in.

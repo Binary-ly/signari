@@ -197,8 +197,9 @@ func (s *Server) beginRecoveryFor(ctx context.Context, userID, orgID string) err
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// No waiver here: this path is reached by someone who proved only that they
-	// can read an address. A second factor waives the delay elsewhere, after it
-	// has actually been proven.
+	// can read an address. A proven second factor may waive the delay, and no
+	// path proves one before recovery yet (5.12), so this is the only caller and
+	// every reset waits it out.
 	req, err := store.CreateRecoveryRequest(ctx, tx, userID, orgID,
 		tokenHash, cancelHash, "", time.Now())
 	if err != nil {

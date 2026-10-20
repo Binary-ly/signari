@@ -23,8 +23,10 @@ import (
 // path used it; what was missing was the page where the person whose sessions
 // they are can see them and press the button. The "authenticated again" clause is
 // satisfied here by the session cookie plus a CSRF token -- the person is signed
-// in on this browser -- which is the practical floor; a full step-up is a policy
-// an operator can layer on the /account routes.
+// in on this browser -- which is the practical floor. Nothing asks for a fresh
+// sign-in before ending a session, and no setting can yet; putting every
+// changing /account route behind one is 4.04. This said an operator could layer
+// a step-up on these routes, which nothing let them do.
 
 type sessionRow struct {
 	SID       string

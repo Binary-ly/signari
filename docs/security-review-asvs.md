@@ -300,11 +300,11 @@ than claimed.
 | **V7.2.4** new token on authentication **and the current one terminated** | **was half met** — fixed, below |
 | **V7.4.1** termination disallows further use | met — every lookup filters `revoked_at IS NULL` |
 | **V7.4.2** all sessions terminated when an account is disabled | **exceeded** — session lookups join `u.status = 'active'`, so disabling a user kills every session *instantly*, with no sweep and no window |
-| **V7.4.3** option to end other sessions after a factor changes | partial — `ReasonPasswordChange` and `ReasonMFAReset` exist and terminate; the user-facing *option* does not |
+| **V7.4.3** option to end other sessions after a factor changes | **met** — a password change ends every session, this one included (`httpapi/passwordselfservice.go:180-187`), and `/account/sessions` ends any or all of them after any other change |
 | **V7.4.5** administrators can terminate sessions | met — `ReasonAdminRevoke` |
 | **V7.3.1** inactivity timeout | **not met** — item 9f, unchanged |
 | **V7.3.2** absolute maximum lifetime | met — `not_after`, enforced in every lookup as well as by the sweep |
-| **V7.5.2** users can view and terminate their sessions | partial — the data exists; the page does not |
+| **V7.5.2** users can view and terminate their sessions | **met** — `/account/sessions` lists them (device, how each signed in, when) and ends one or all (`ReasonUserRevoke`) |
 | **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | partial — timeouts and deviations are documented here; concurrent-session policy is not |
 
 ### V7.2.4: the half that was missing
@@ -345,11 +345,8 @@ value travels to relying parties in the CAEP event.
 ### What V7 leaves open
 
 V7.3.1 (inactivity timeout) is item **9f** and unchanged. V7.4.3 and V7.5.2 both
-describe a *page* — "give the option to terminate all other sessions", "users are
-able to view and terminate active sessions" — and the mechanism behind both
-already exists and is used by the admin path. What is missing is the screen, which
-is the same shape as **9k**. Recorded rather than built, because a session-list UI
-is a product surface and you have not asked for one.
+describe a *page*, and when this was written the mechanism existed without one.
+The page has since shipped as `/account/sessions`, and both are met.
 
 ## V8 Authorization: the tenant boundary, audited by enumeration (21 August 2026)
 
@@ -866,7 +863,7 @@ now written down rather than assumed.
 | V16.3.4 unexpected errors | met, and this is what V16.5.4 fixed |
 | V16.4.1 log injection | met — structured key/values throughout, **zero** `fmt.Sprintf` inside a log call |
 | V16.4.2 protected from modification | met as *detectable*: hash chain over ciphertext, and migration 0043 removed the foreign keys that silently rewrote history. Stated precisely because it is not a trigger refusing `UPDATE` |
-| V16.4.3 shipped to a separate system | **not met** — engine writes to stderr and its own database; forwarding is a deployment decision, recorded in the inventory as the operator's |
+| V16.4.3 shipped to a separate system | **met** — the audit trail streams to a SIEM webhook or a syslog collector as it is written (`SIGNARI_AUDIT_WEBHOOK_URL`, `SIGNARI_AUDIT_SYSLOG_ADDR`, `internal/auditsink`), and `GET /admin/audit-events` reads it back from outside |
 | V16.5.1 generic error to the consumer | met, and now enforced on the panic path |
 | V16.5.2 graceful degradation | met — 12 explicit fail-closed sites |
 | V16.5.3 fails securely, no fail-open | met — repeatedly verified in the protocol reviews |
@@ -951,7 +948,7 @@ it.
 | V4.1.2 transparent HTTP→HTTPS only for user-facing | n/a — the engine does not redirect http to https; TLS terminates ahead of it |
 | V4.1.3 intermediary headers not user-overridable | met, and deliberately: `clientIP` reads `r.RemoteAddr` only, never `X-Forwarded-For`. Forward-auth does read `X-Forwarded-Proto/Host/Uri`, but `firstHeader` takes only the first value — the comment names the `good, evil` injection it exists to stop — and the result only builds a redirect back to our own `/proxy/start`, whose target is validated |
 | V4.1.4 unused HTTP methods blocked | met by construction — every route is registered with a method pattern, so anything else is 405 |
-| V4.1.5 per-message signatures | met beyond the requirement — logout tokens, SSF SETs, JARM and webhook bodies are all signed or MACed |
+| V4.1.5 per-message signatures | met beyond the requirement — logout tokens, SSF SETs and webhook bodies are all signed or MACed (this listed JARM, which is not built; 9.02) |
 | V4.2.1–V4.2.4 request smuggling, header injection | met by the runtime: Go's `net/http` rejects conflicting `Content-Length`/`Transfer-Encoding`, and rejects CR/LF in header values |
 | V4.2.5 over-long outbound URIs and headers | partial — outbound requests are bounded by what we construct, but no explicit length ceiling is enforced |
 | V4.3.1–V4.3.2 GraphQL | n/a — none |

@@ -31,7 +31,8 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 	// through it, so a new endpoint cannot forget the control.
 	//
 	// Deliberately NOT a rate limit on those endpoints. `client_credentials` runs
-	// at five figures a second on this engine, so a limiter on the endpoint would
+	// at thousands a second on this engine (3.4k measured with two workers; this
+	// once claimed five figures), so a limiter on the endpoint would
 	// throttle legitimate machine traffic and hand an attacker a tenant-wide
 	// denial of service: burn the bucket, lock the integration out. The
 	// brute-forceable asset here is the secret, not the endpoint, so the budget

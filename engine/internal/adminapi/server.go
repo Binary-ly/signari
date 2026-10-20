@@ -8,12 +8,14 @@
 //
 //	EVERY mutation bumps core.config_version IN THE SAME TRANSACTION.
 //
-// Engine nodes poll that version to decide when to reload. If a write commits
-// without bumping it, the change is durable but invisible: the database says a
-// client is disabled while every running node keeps honouring it, until some
-// unrelated write happens to bump the version. That failure is silent, it is
-// intermittent, and it looks like a caching bug rather than a missing line --
-// so the bump lives in one helper that every handler must route through.
+// That version is what an If-Match precondition is compared against, and what
+// the console and Terraform send back. If a write commits without bumping it,
+// a client that read the configuration before the write still matches, and its
+// conditional write overwrites the change it never saw. That failure is silent
+// and looks like a lost edit rather than a missing line -- so the bump lives in
+// one helper that every handler must route through. No reload loop watches the
+// counter: configuration is read per request (ADR-007, ADR-008). This comment
+// once described a reload driven by it, which never existed.
 package adminapi
 
 import (

@@ -205,8 +205,8 @@ const (
 	CondDeviceCompliant Condition = "device_compliant"
 	// CondNetworkTrusted -- the request came from a network the operator named.
 	CondNetworkTrusted Condition = "network_trusted"
-	// CondClientRequiresMFA -- the client asked for multi-factor, through
-	// acr_values or its registration.
+	// CondClientRequiresMFA -- the authorization request asked for multi-factor
+	// through acr_values. Not its registration: nothing on a client stores it.
 	CondClientRequiresMFA Condition = "client_requires_mfa"
 	// CondKerberosAvailable -- the request carried a Negotiate header.
 	CondKerberosAvailable Condition = "kerberos_available"

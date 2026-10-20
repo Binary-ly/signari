@@ -1,11 +1,14 @@
 package docsync
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -505,6 +508,69 @@ func TestEveryReloadLoopInTheEntrypointIsAccountedFor(t *testing.T) {
 			"polling on its own interval. Record what it reloads and how stale "+
 			"it may be in the ADR-008 table, or make the case that the config "+
 			"bus ADR-008 describes should finally be built.", got, expected)
+	}
+}
+
+// Nor any page or comment (AD-33). The ADR was rewritten, and the Admin API's
+// package comment, its drift test's message and a published page went on
+// saying engine nodes polled the version to reload. Scanned: every tracked page
+// under docs/ and every Go file in the engine, this package's own excepted,
+// since it names the claim to refuse it.
+func TestNoPageOrCommentSaysTheVersionIsPolled(t *testing.T) {
+	root := repoRoot(t)
+	claims := []string{"nodes poll", "poll this counter", "poll that version", "polls the version",
+		"poll the version", "listen for a nudge", "fires `pg_notify`"}
+	var found []string
+	scan := func(rel, body string) {
+		lower := strings.ToLower(body)
+		for _, c := range claims {
+			if i := strings.Index(lower, c); i >= 0 {
+				found = append(found, fmt.Sprintf("%s: %q", rel, strings.TrimSpace(body[max(0, i-30):min(len(body), i+len(c)+30)])))
+			}
+		}
+	}
+	out, err := exec.Command("git", "-C", root, "ls-files", "docs").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pages := 0
+	for _, rel := range strings.Fields(string(out)) {
+		if !strings.HasSuffix(rel, ".md") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		scan(rel, string(b))
+	}
+	engine := filepath.Join(root, "engine")
+	files := 0
+	if err := filepath.WalkDir(engine, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.Contains(rel, "internal/docsync/") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files++
+		scan(rel, string(b))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if pages < 50 || files < 100 {
+		t.Fatalf("scanned %d pages and %d Go files; the walk is not finding the tree", pages, files)
+	}
+	for _, f := range found {
+		t.Errorf("%s describes a configuration bus or a version poll that does not exist (ADR-008): "+
+			"configuration is read per request, and the version is what If-Match compares", f)
 	}
 }
 

@@ -495,8 +495,9 @@ func normaliseRecoveryCode(s string) string {
 // hashRecoveryCode hashes for lookup.
 //
 // A fast hash, deliberately. Argon2id is the right answer for a user-CHOSEN
-// secret, where the threat is a dictionary. These are 128 bits of our own
-// randomness: there is no dictionary, and no user reusing them elsewhere. What
+// secret, where the threat is a dictionary. These are 99 bits of our own
+// randomness (see newRecoveryCode): there is no dictionary, and no user
+// reusing them elsewhere. What
 // matters is that the stored form is not the code.
 func hashRecoveryCode(code string) []byte {
 	sum := sha256.Sum256([]byte(normaliseRecoveryCode(code)))

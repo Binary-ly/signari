@@ -104,7 +104,7 @@ Against the real schema and a faithful fake of each API:
 | | |
 |---|---|
 | create, then re-sync unchanged | second run proposes nothing |
-| a user removed upstream | deactivated, sessions revoked |
+| a user removed upstream | deactivated, sessions ended, each application they reached sent a back-channel logout notice |
 | a user still present | untouched |
 | empty directory, 50 users local | **refused**, nothing written |
 | two leavers out of fifty | allowed |

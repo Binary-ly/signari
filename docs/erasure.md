@@ -40,6 +40,9 @@ signari erase subject -subject-id <uuid> -confirm <uuid> -deactivate
 # or: deactivate first, then erase — the same thing in two deliberate steps
 ```
 
+Deactivating here ends the account's sessions in the same transaction, and
+each application it signed in to is sent a back-channel logout notice.
+
 This is a guard, not a policy. What erasure should *mean* is the operator's
 decision, and there are three defensible answers — immediate, delay-and-notify
 like account recovery, or two-person. The engine implements immediate and makes

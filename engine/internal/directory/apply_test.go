@@ -136,6 +136,21 @@ func TestApplyCreatesLinksAndDeactivates(t *testing.T) {
 		"dir-test-"+suffix, orgID, bobID, []byte("cookie-"+suffix)); err != nil {
 		t.Fatal(err)
 	}
+	// In an application that has to be told he left.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO core.clients (client_id, org_id, display_name, client_type, backchannel_logout_uri)
+		VALUES ($1, $2::uuid, 'RP', 'public', 'https://rp.example.test/backchannel')`,
+		"dir-rp-"+suffix, orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO core.session_clients (sid, client_id) VALUES ($1, $2)`,
+		"dir-test-"+suffix, "dir-rp-"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM core.outbox WHERE topic = 'backchannel_logout' AND payload->>'sub' = $1`, bobID)
+	})
 
 	// Now Bob leaves.
 	local, _ = LoadLocal(ctx, pool, sourceID, orgID)
@@ -166,6 +181,18 @@ func TestApplyCreatesLinksAndDeactivates(t *testing.T) {
 	}
 	if live != 0 {
 		t.Errorf("the departed user still has %d live session(s)", live)
+	}
+	// And the application he was signed in to is told. Ending the row alone
+	// leaves him signed in there.
+	var notices int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM core.outbox WHERE topic = 'backchannel_logout'
+		   AND payload->>'sub' = $1 AND payload->>'client_id' = $2
+		   AND payload->>'reason' = 'user_deactivated'`, bobID, "dir-rp-"+suffix).Scan(&notices); err != nil {
+		t.Fatal(err)
+	}
+	if notices != 1 {
+		t.Errorf("%d back-channel logout notices queued for the departed user's application, want 1", notices)
 	}
 	// And Alice is untouched.
 	if err := pool.QueryRow(ctx,

@@ -136,20 +136,15 @@ func Apply(ctx context.Context, db *pgxpool.Pool, sourceID, orgID string, p *Pla
 				WHERE id = $1::uuid`, a.UserID); err != nil {
 				return fmt.Errorf("deactivating %s: %w", a.Email, err)
 			}
-			// 'user_deactivated', not 'admin'. core.sessions constrains this
-			// column to a fixed vocabulary, and 'admin' is not in it -- so this
-			// statement failed, the transaction rolled back, and the
-			// deactivation it was part of never happened. A departed employee
-			// stayed active AND stayed signed in, which is the precise outcome
-			// this code exists to prevent.
-			//
-			// It passed its tests because none of them gave the user a session,
-			// so this statement matched zero rows and never checked the value.
-			if _, err := tx.Exec(ctx, `
-				UPDATE core.sessions SET revoked_at = now(),
-				       revocation_reason = 'user_deactivated'
-				WHERE user_id = $1::uuid AND revoked_at IS NULL`, a.UserID); err != nil {
-				return fmt.Errorf("revoking sessions for %s: %w", a.Email, err)
+			// Through TerminateSessions, not an UPDATE of its own. The UPDATE
+			// that was here first wrote 'admin', which core.sessions' fixed
+			// vocabulary refuses, so the transaction rolled back and the
+			// departed employee stayed active and signed in; its tests never
+			// gave the user a session. Once that was fixed it still told no
+			// application, so they stayed signed in at every relying party
+			// they had reached.
+			if _, err := store.TerminateSessions(ctx, tx, "", a.UserID, store.ReasonUserDeactivated); err != nil {
+				return fmt.Errorf("ending the sessions of %s: %w", a.Email, err)
 			}
 
 		case "reactivate":

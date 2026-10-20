@@ -11,6 +11,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/ldapd"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/store"
 )
 
 // The LDAP write path, RFC 4511 §4.6–§4.9, against the real store.
@@ -349,6 +350,11 @@ func (w *LDAPWriter) Remove(ctx context.Context, actor, username string) error {
 		Detail: map[string]any{"via": "ldap", "actor": actor, "uid": username},
 	}); err != nil {
 		return fmt.Errorf("auditing the deletion: %w", err)
+	}
+	// Signed out first, as the admin API's delete is: the DELETE cascades the
+	// sessions away, and with them the list of applications to tell.
+	if _, err := store.TerminateSessions(ctx, tx, "", userID, store.ReasonUserDeleted); err != nil {
+		return fmt.Errorf("ending the entry's sessions: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM core.users WHERE id = $1::uuid`, userID); err != nil {

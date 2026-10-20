@@ -394,18 +394,6 @@ func PatchSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		}
 	}
 
-	// Deactivation ends sessions. A SCIM deactivation that leaves a live session
-	// running means the person who was just deprovisioned stays signed in until
-	// their session expires, which is the whole point of deprovisioning.
-	if p.Active != nil && !*p.Active {
-		if _, err := tx.Exec(ctx,
-			`UPDATE core.sessions SET revoked_at = now(),
-			        revocation_reason = 'user_deactivated'
-			 WHERE user_id = $1::uuid AND revoked_at IS NULL`, link.UserID); err != nil {
-			return out, err
-		}
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return out, err
 	}
@@ -440,6 +428,11 @@ func DeleteSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		return out, err
 	}
 	if src.OnDelete == "delete" && !privileged {
+		// Terminated first: the DELETE cascades the sessions away, and with
+		// them the list of applications to tell.
+		if _, err := TerminateSessions(ctx, tx, "", u.UserID, ReasonUserDeleted); err != nil {
+			return out, err
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM core.users WHERE id = $1::uuid`,
 			u.UserID); err != nil {
 			return out, err
@@ -448,12 +441,6 @@ func DeleteSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		u.Kept = src.OnDelete == "delete"
 		f := false
 		if err := applyUserFields(ctx, tx, u.UserID, nil, &f); err != nil {
-			return out, err
-		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE core.sessions SET revoked_at = now(),
-			        revocation_reason = 'user_deactivated'
-			 WHERE user_id = $1::uuid AND revoked_at IS NULL`, u.UserID); err != nil {
 			return out, err
 		}
 	}
@@ -497,6 +484,17 @@ func applyUserFields(ctx context.Context, tx pgx.Tx, userID string,
 			`UPDATE core.users SET status = $2 WHERE id = $1::uuid`,
 			userID, status); err != nil {
 			return err
+		}
+		// Deactivation ends sessions, whichever request carried it: a PUT or
+		// a POST resent with active:false ended nothing, and the person the
+		// directory had just removed kept passing forward auth until their
+		// proxy cookie expired. Through TerminateSessions, so every
+		// application they reached is told; a session that was already ended
+		// is not told twice.
+		if !*active {
+			if _, err := TerminateSessions(ctx, tx, "", userID, ReasonUserDeactivated); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

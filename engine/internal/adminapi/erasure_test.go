@@ -116,6 +116,31 @@ func TestErasingAnActiveAccountIsRefusedUnlessStated(t *testing.T) {
 		t.Errorf("error = %v, want account_still_active", body["error"])
 	}
 
+	// Signed in, to an application that has to be told.
+	ctx := context.Background()
+	sid, clientID := "er-sid-"+id, "er-rp-"+id
+	if _, err := s.db.Exec(ctx, `
+		INSERT INTO core.clients (client_id, org_id, display_name, client_type, backchannel_logout_uri)
+		SELECT $1, org_id, 'RP', 'public', 'https://rp.example.test/backchannel'
+		  FROM core.users WHERE id = $2::uuid`, clientID, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `
+		INSERT INTO core.sessions (sid, org_id, user_id, auth_time, not_after)
+		SELECT $1, org_id, id, now(), now() + interval '1 hour' FROM core.users WHERE id = $2::uuid`,
+		sid, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx,
+		`INSERT INTO core.session_clients (sid, client_id) VALUES ($1, $2)`, sid, clientID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = s.db.Exec(c, `DELETE FROM core.outbox WHERE topic = 'backchannel_logout' AND payload->>'sub' = $1`, id)
+		_, _ = s.db.Exec(c, `DELETE FROM core.clients WHERE client_id = $1`, clientID)
+	})
+
 	// Saying so proceeds, and deactivates in the same transaction.
 	code, body = erase(t, s, id, `{"confirm_subject_id":"`+id+`","deactivate":true}`)
 	if code != http.StatusOK {
@@ -132,6 +157,19 @@ func TestErasingAnActiveAccountIsRefusedUnlessStated(t *testing.T) {
 	}
 	if status != "deactivated" {
 		t.Errorf("account status = %q after erasure, want deactivated", status)
+	}
+	// And signed out, everywhere it had reached.
+	var live, notices int
+	if err := s.db.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM core.sessions WHERE sid = $1 AND revoked_at IS NULL),
+		       (SELECT count(*) FROM core.outbox WHERE topic = 'backchannel_logout'
+		           AND payload->>'sub' = $2 AND payload->>'client_id' = $3)`,
+		sid, id, clientID).Scan(&live, &notices); err != nil {
+		t.Fatal(err)
+	}
+	if live != 0 || notices != 1 {
+		t.Errorf("after erasing with deactivate: %d live sessions and %d logout notices, want 0 and 1",
+			live, notices)
 	}
 }
 

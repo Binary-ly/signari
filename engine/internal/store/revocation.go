@@ -143,6 +143,10 @@ func LookupRefreshToken(ctx context.Context, db *pgxpool.Pool, tokenHash []byte)
 // access tokens issued from that session. Without it, "active" would mean only
 // "correctly signed and not yet expired", which is the weak answer that makes
 // introspection worth little.
+//
+// A session of a person who is no longer active is not live, whether or not
+// whatever deactivated them ended it: this is IsSessionLive's question, and
+// forward auth asking a narrower one let a proxy cookie outlive the account.
 func SessionLive(ctx context.Context, db *pgxpool.Pool, sid string) (bool, error) {
 	if sid == "" {
 		// Client-credentials tokens have no session. Absence of a session is not
@@ -150,10 +154,7 @@ func SessionLive(ctx context.Context, db *pgxpool.Pool, sid string) (bool, error
 		// function only answers about tokens that claim one.
 		return false, nil
 	}
-	var live bool
-	err := db.QueryRow(ctx, `
-		SELECT revoked_at IS NULL AND not_after > now()
-		FROM core.sessions WHERE sid = $1`, sid).Scan(&live)
+	live, err := IsSessionLive(ctx, db, sid)
 	switch {
 	case err == pgx.ErrNoRows:
 		return false, nil

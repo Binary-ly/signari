@@ -313,6 +313,11 @@ It does not deactivate. A directory `delete` that quietly deactivates is the
 failure this whole design is against: the client asked for the entry to be gone,
 a subsequent search would not find it, and the row would still be there.
 
+The person's sessions are ended first, in the same transaction, so each
+application they signed in to is sent a back-channel logout notice with
+`reason` `user_deleted`. Letting the delete cascade the sessions away would
+remove the list of applications to tell before anyone was told.
+
 It is **not** `signari erase subject`. Deleting removes the row and everything
 cascading from it; it does not destroy the subject's data-encryption key, so
 ciphertext already written to backups stays readable. Crypto-shredding is a

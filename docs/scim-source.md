@@ -76,8 +76,13 @@ departed administrator signed in.
 ## Deactivation ends sessions
 
 A deactivated account with a live session is still a signed-in person. Every
-path that deactivates — PATCH, DELETE — revokes sessions in the same
-transaction.
+request that deactivates — a PUT, PATCH or re-sent POST carrying
+`"active": false`, or a DELETE — ends the person's sessions in the same
+transaction, and so does a DELETE under `on_delete = delete` before the row
+goes. Each application the person signed in to is sent a back-channel logout
+notice (`reason` `user_deactivated` or `user_deleted`), CAEP receivers get
+`session-revoked`, and the refresh tokens issued under those sessions stop
+working. A proxy cookie stops passing [forward auth](forward-auth.md) at once.
 
 ## Groups
 

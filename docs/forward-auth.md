@@ -267,3 +267,8 @@ The proxy cookie lasts 30 minutes and is refreshed by the flow, but **the live
 session is rechecked on every single request**. Signing out of Signari revokes
 proxy access immediately — forward auth cannot be used to outlive a logout,
 which is the failure this project spent a day making visible elsewhere.
+
+The recheck also reads the person: a session whose person is no longer active
+is refused, whichever path deactivated them. The check used to read only the
+session row, so a deactivation that ended no session, such as a SCIM PUT with
+`"active": false`, left the proxy cookie working for the rest of its 30 minutes.

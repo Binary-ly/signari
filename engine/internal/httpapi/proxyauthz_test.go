@@ -119,6 +119,28 @@ func TestForwardAuthAdmitsOnlyItsOwnOrganisationsHosts(t *testing.T) {
 	}
 }
 
+// The session is live only while its person is active. Forward auth asked
+// store.SessionLive, which read the session row alone, while the sign-in
+// cookie's own check also read the person: so a deactivation that ended no
+// session left the proxy cookie working until it expired. Deactivated here by
+// the bare UPDATE such a writer would make, so this holds for the next one too.
+func TestForwardAuthRefusesTheSessionOfADeactivatedPerson(t *testing.T) {
+	pa := newProxyAuthz(t)
+	tok := pa.token(t, pa.f.orgID)
+	if rec := pa.verify(t, tok, pa.own, ""); rec.Code != http.StatusOK {
+		t.Fatalf("an active person answered %d, want 200, so this proves nothing", rec.Code)
+	}
+	if _, err := pa.f.pool.Exec(context.Background(),
+		`UPDATE core.users SET status = 'deactivated' WHERE id = $1::uuid`, pa.f.userID); err != nil {
+		t.Fatal(err)
+	}
+	if rec := pa.verify(t, tok, pa.own, ""); rec.Code != http.StatusUnauthorized ||
+		rec.Header().Get("X-Forwarded-User") != "" {
+		t.Errorf("a deactivated person's live session answered %d (identity %q), want 401 and no identity",
+			rec.Code, rec.Header().Get("X-Forwarded-User"))
+	}
+}
+
 func TestTheAccessPolicyDecidesWhoReachesAProtectedHost(t *testing.T) {
 	pa := newProxyAuthz(t)
 	tok := pa.token(t, pa.f.orgID)

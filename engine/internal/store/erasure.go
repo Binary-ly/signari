@@ -132,6 +132,10 @@ func EraseSubject(ctx context.Context, tx pgx.Tx, subjectID string, deactivate b
 			WHERE id = $1::uuid`, subjectID); err != nil {
 			return nil, fmt.Errorf("deactivating the erased account: %w", err)
 		}
+		// And signed out everywhere, as every other deactivation is.
+		if _, err := TerminateSessions(ctx, tx, "", subjectID, ReasonUserDeactivated); err != nil {
+			return nil, fmt.Errorf("ending the erased account's sessions: %w", err)
+		}
 		rep.Deactivated = true
 	}
 	return rep, nil

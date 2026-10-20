@@ -2237,9 +2237,7 @@ func (s *Server) writeAuthzError(w http.ResponseWriter, r *http.Request,
 		}
 		s.log.Error("building error redirect", "err", err)
 	}
-	htmlPageHeaders(w)
-	w.WriteHeader(http.StatusBadRequest)
-	s.renderPage(w, r, "err", map[string]any{
+	s.renderPageStatus(w, r, http.StatusBadRequest, "err", map[string]any{
 		"Code":        e.Code,
 		"Description": e.Description,
 	})

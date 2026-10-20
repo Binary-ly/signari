@@ -431,9 +431,7 @@ func randomToken() (string, error) {
 // a provider returned, and a message concatenated into HTML is a cross-site
 // scripting hole on the sign-in page of an identity provider.
 func (s *Server) federationError(w http.ResponseWriter, r *http.Request, reason string) {
-	htmlPageHeaders(w)
-	w.WriteHeader(http.StatusBadRequest)
-	s.renderPage(w, r, "federr", map[string]any{
+	s.renderPageStatus(w, r, http.StatusBadRequest, "federr", map[string]any{
 		"Reason":        reason,
 		"CorrelationID": correlationID(r.Context()),
 	})

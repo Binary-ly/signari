@@ -369,9 +369,7 @@ func writeJSONBody(w http.ResponseWriter, v any) {
 // html/template, because the reason can contain text derived from what the
 // caller supplied.
 func (s *Server) renderAuthzFailure(w http.ResponseWriter, r *http.Request, reason string) {
-	htmlPageHeaders(w)
-	w.WriteHeader(http.StatusBadRequest)
-	s.renderPage(w, r, "federr", map[string]any{
+	s.renderPageStatus(w, r, http.StatusBadRequest, "federr", map[string]any{
 		"Reason":        reason,
 		"CorrelationID": correlationID(r.Context()),
 	})

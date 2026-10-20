@@ -114,7 +114,7 @@ func TestAPasswordAndASecurityKeyAreTwoFactors(t *testing.T) {
 	if !strings.Contains(body, `id="mfa-key"`) || !strings.Contains(body, `src="/passkey.js"`) {
 		t.Error("the code page does not offer the security key")
 	}
-	if csp := step.page.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") {
+	if csp := step.page.Result().Header.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") {
 		t.Errorf("the code page's policy blocks the key's script: %q", csp)
 	}
 
@@ -279,7 +279,7 @@ func TestTheCodePageOffersNoKeyToSomebodyWithout(t *testing.T) {
 	if strings.Contains(rec.Body.String(), `id="mfa-key"`) {
 		t.Error("the code page offers a key to somebody with none")
 	}
-	if csp := rec.Header().Get("Content-Security-Policy"); strings.Contains(csp, "script-src") {
+	if csp := rec.Result().Header.Get("Content-Security-Policy"); strings.Contains(csp, "script-src") {
 		t.Errorf("the code page allows script for somebody with no key: %q", csp)
 	}
 }

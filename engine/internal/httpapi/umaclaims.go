@@ -365,8 +365,7 @@ func appendQuery(raw string, add func(url.Values)) (string, error) {
 // renderClaimsError tells the requesting party what went wrong, here, on this
 // origin -- never by redirecting.
 func (s *Server) renderClaimsError(w http.ResponseWriter, r *http.Request, title, detail string) {
-	w.WriteHeader(http.StatusBadRequest)
-	s.renderPage(w, r, "umaclaimserr", map[string]any{
+	s.renderPageStatus(w, r, http.StatusBadRequest, "umaclaimserr", map[string]any{
 		"Title": title, "Detail": detail,
 	})
 }

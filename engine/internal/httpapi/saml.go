@@ -678,11 +678,9 @@ func (s *Server) markAuthnRequestAnswered(ctx context.Context, requestID string,
 func (s *Server) samlRefuse(w http.ResponseWriter, r *http.Request, reason string) {
 	s.log.Info("SAML request refused", "reason", reason,
 		"correlation_id", correlationID(r.Context()))
-	htmlPageHeaders(w)
-	w.WriteHeader(http.StatusBadRequest)
 	// The reason is rendered as text through the template package, never
 	// concatenated into HTML: much of it is attacker-controlled.
-	s.renderPage(w, r, "samlerr", map[string]any{
+	s.renderPageStatus(w, r, http.StatusBadRequest, "samlerr", map[string]any{
 		"Reason":        reason,
 		"CorrelationID": correlationID(r.Context()),
 	})

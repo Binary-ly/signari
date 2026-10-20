@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -54,10 +55,13 @@ type fakeSink struct {
 	mu   sync.Mutex
 	got  []audit.StreamRecord
 	fail bool
+	// slow, when set, is how long Emit takes, so two pumps overlap.
+	slow time.Duration
 }
 
 func (f *fakeSink) Describe() string { return "fake" }
 func (f *fakeSink) Emit(_ context.Context, rs []audit.StreamRecord) error {
+	time.Sleep(f.slow)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fail {
@@ -65,6 +69,67 @@ func (f *fakeSink) Emit(_ context.Context, rs []audit.StreamRecord) error {
 	}
 	f.got = append(f.got, rs...)
 	return nil
+}
+
+// Two nodes' pumps at once send a batch once between them (3.22). Each read
+// the cursor and sent what followed it, so every replica sent every event.
+func TestTwoPumpsSendABatchOnce(t *testing.T) {
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
+	if dsn == "" {
+		t.Skip("SIGNARI_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.Write(ctx, tx, audit.Event{Type: "test.stream", Retention: "security",
+		Detail: map[string]any{"pumps": 2}}); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM core.audit_events WHERE event_type = 'test.stream' ORDER BY id DESC LIMIT 1`).
+		Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE core.audit_stream_state SET last_id = $1 WHERE only_row`, id-1); err != nil {
+		t.Fatal(err)
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sinks := []*fakeSink{{slow: 300 * time.Millisecond}, {slow: 300 * time.Millisecond}}
+	var wg sync.WaitGroup
+	for _, s := range sinks {
+		wg.Add(1)
+		go func(s *fakeSink) {
+			defer wg.Done()
+			if _, err := NewPump(pool, s, log).once(ctx); err != nil {
+				t.Error(err)
+			}
+		}(s)
+	}
+	wg.Wait()
+	times := 0
+	for _, s := range sinks {
+		for _, r := range s.got {
+			if r.ID == id {
+				times++
+			}
+		}
+	}
+	if times != 1 {
+		t.Errorf("two pumps at once sent event %d %d times, want once", id, times)
+	}
 }
 
 // The pump forwards new events and advances the cursor only on success; a failing

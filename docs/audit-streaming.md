@@ -49,6 +49,11 @@ holding the shred-able content.
   investigation needs.
 - **Ordered.** Events are read `id ASC`, so a collector sees them in the order
   they happened.
+- **Once across nodes.** Every engine node runs the forwarder, and a pass holds a
+  transaction-scoped advisory lock from reading the cursor until it has advanced
+  it, so one node sends a batch and the others find the lock taken. Until October
+  2026 each node read the same cursor and sent the same batch, so a deployment of
+  N nodes sent every event N times. The lag is `signari_audit_stream_lag_events`.
 - **Fail-safe.** A sink error leaves the cursor where it was; the batch retries on
   the next tick rather than being lost. The lag is visible (the copy falls behind)
   rather than silent (events vanish).

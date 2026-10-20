@@ -18,6 +18,16 @@ feeds the real client a real scene, and the vector drawing and the PNG image
 stream both appear. Mouse clicks arrive at the far end with coordinates
 translated into the remote display's space. Keystrokes arrive as X11 keysyms.
 
+**Until October 2026 no session opened through the engine itself.** The
+harness serves the proxy without the engine's middleware, and one of those
+middlewares, the panic recovery every request passes through, hid the
+connection a WebSocket upgrade takes over. So a signed-in person opening a
+connection got `501 Not Implemented`, and the session was recorded as `upgrade
+failed`, on every deployment. Checked against a running engine with a guacd
+stand-in, it now answers `101 Switching Protocols`, with metrics on or off.
+Every response wrapper passes the connection through, and a test fails on any
+that does not.
+
 **What is not done:**
 
 - **Not verified against a real guacd.** The harness speaks the handshake

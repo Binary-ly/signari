@@ -213,6 +213,10 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
+// Unwrap lets a websocket upgrade reach the connection through the metrics
+// middleware, which wraps every request when metrics are on.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 // Flush lets the recorder sit in front of a streaming handler.
 //
 // Without it, wrapping the mux would silently break server-sent events and any

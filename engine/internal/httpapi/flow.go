@@ -503,6 +503,9 @@ func (t *tokenStatus) Write(b []byte) (int, error) {
 	return t.ResponseWriter.Write(b)
 }
 
+// Unwrap keeps the writer underneath reachable, as every wrapper must.
+func (t *tokenStatus) Unwrap() http.ResponseWriter { return t.ResponseWriter }
+
 // grantLabel is a grant_type as the tokens-issued counter labels it. A value
 // outside the counter's set is contained there as "other".
 func grantLabel(grant string) string {

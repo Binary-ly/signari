@@ -103,3 +103,9 @@ func (w *startedWriter) Write(b []byte) (int, error) {
 	w.wrote = true
 	return w.ResponseWriter.Write(b)
 }
+
+// Unwrap lets http.ResponseController, and the websocket upgrade behind a
+// remote-access session, reach the connection underneath. Every request
+// passes through this writer, so without it every session was answered 501
+// "does not implement http.Hijacker" (3.32).
+func (w *startedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

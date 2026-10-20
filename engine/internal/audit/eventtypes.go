@@ -25,7 +25,7 @@ var EventTypes = []string{
 	"admin.scope_deleted", "admin.session_revoked", "admin.sessions_revoked",
 	"admin.subject_erased", "admin.user_created", "admin.user_deleted", "admin.user_updated",
 	"admin.webauthn_policy_set",
-	"audit.checkpoint",
+	"audit.archived", "audit.checkpoint",
 	"ciba.approved", "ciba.denied", "ciba.requested", "ciba.step_up_required",
 	"ciba.unknown_subject",
 	"config.applied",

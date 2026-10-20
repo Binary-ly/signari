@@ -280,7 +280,7 @@ func run(args []string) (err error) {
 	// to set the column was an UPDATE by hand.
 	requirePKCE := fs.Bool("require-pkce", true,
 		"refuse an authorization request from this client that carries no PKCE challenge")
-	file := fs.String("file", "", "path to a realm export (import)")
+	file := fs.String("file", "", "path to a realm export (import), or an audit archive (audit verify)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
 	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
 	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm (default: all in use); "+
@@ -738,6 +738,14 @@ func run(args []string) (err error) {
 		return kerberosPrincipals(pctx, *krbRealm, *krbAdmin, *keytabPath)
 	}
 
+	// An audit archive is checked from the file alone, on whatever machine
+	// holds it, which is the point of writing one (3.18).
+	if cmd == "audit verify" {
+		if *file != "" {
+			return auditVerifyFile(*file)
+		}
+	}
+
 	// `brand check` needs no database: it answers "would this palette be
 	// readable", which is arithmetic, and an operator should be able to try
 	// colours before committing to them.
@@ -928,6 +936,8 @@ func run(args []string) (err error) {
 		return auditCheckpoint(ctx, conn, *orgID, *declaredBy, *reason)
 	case "audit verify":
 		return auditVerify(ctx, conn)
+	case "audit archive":
+		return auditArchive(ctx, conn, *toDay, *outFile, *declaredBy)
 	case "export audit":
 		return exportAudit(ctx, conn, *orgID, *fromDay, *toDay, *outFile)
 	case "registration enable":

@@ -12,7 +12,7 @@ Most commands need `SIGNARI_DSN`. Anything touching sealed material also needs
 A command that edits configuration is cancelled after 60 seconds, so one stuck
 behind a lock fails instead of hanging a deploy script. A command whose work
 grows with the data has no limit: `serve`, the three `migrate` commands that
-apply, `export audit`, `audit checkpoint`, `audit verify`, both `import` commands, `dir sync`,
+apply, `export audit`, `audit checkpoint`, `audit verify`, `audit archive`, both `import` commands, `dir sync`,
 `scim sync`, `kerberos sync`, `keys rewrap-root`, `janitor once` and `restore
 finalize`. `proxy
 check` has five minutes. `-timeout` replaces any of these, and `-timeout 0`
@@ -122,7 +122,8 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari keys list` / `keys rotate` / `keys retire` | Signing keys; rotation is next → active → passive → retired. See [key-rotation.md](key-rotation.md) |
 | `signari keys rewrap-root` | Rotate `SIGNARI_ROOT_KEY` itself. Re-seals every root-wrapped secret — signing keys, per-subject DEKs, and every integration credential — in **one transaction**: from the current key to `SIGNARI_NEW_ROOT_KEY` with the deployment stopped, or, with it running, from `SIGNARI_ACCEPTED_ROOT_KEY` to `SIGNARI_ROOT_KEY` once every node seals with the latter, which it checks and refuses otherwise, naming the nodes. `-dry-run` performs the whole rotation and rolls back, which is the only way to learn it would succeed without betting the deployment on it |
 | `signari audit checkpoint` | Anchor the audit chain. See [audit-chain-fork.md](audit-chain-fork.md) |
-| `signari audit verify` | Say whether the audit chain verifies, the whole of it or since the latest checkpoint, as an export judges it; exits non-zero and names the entry when it does not. Needs no Go toolchain. `signari doctor` reports the same |
+| `signari audit verify` | Say whether the audit chain verifies, the whole of it or since the latest checkpoint, as an export judges it; exits non-zero and names the entry when it does not. Needs no Go toolchain. `signari doctor` reports the same. `-file <archive>` checks an archive file instead, with no database |
+| `signari audit archive` | `-until YYYY-MM-DD -out <file> -by <name>`: write the entries before that date to a new file that verifies on its own, then remove them from the database, recording in the chain the last archived hash and the file's SHA-256, so the trail left verifies from it. Refused unless the whole chain verifies. See [audit-export.md](audit-export.md#archiving-the-oldest-entries) |
 | `signari export audit` | Export the trail |
 | `signari admin-token create` / `admin-token list` / `admin-token revoke` | Admin API credentials |
 

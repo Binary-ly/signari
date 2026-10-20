@@ -129,9 +129,12 @@ request can be honoured partially with a documented reason — security events
 survive on legitimate-interest grounds, profile events do not.
 
 **This is classification, not expiry.** No job deletes audit rows by age. Rows are
-removed only by an erasure request acting on class. An operator who needs
-time-based retention has to implement it, and this sentence is here so that is a
-decision rather than a surprise.
+removed only by an erasure request acting on class, or by an operator running
+`signari audit archive -until <date>`. That command moves the oldest entries to a
+file that verifies on its own, and the trail left goes on verifying from it (see
+[audit-export.md](audit-export.md#archiving-the-oldest-entries)). Until October
+2026 there was no way to shrink the trail that did not break the chain, so it
+only grew.
 
 **Access control.** `signari_admin`, the role the console uses, holds **no grants
 on `core`** — it reads 15 views in `core_v1`. `signari_maintenance` is `NOLOGIN`

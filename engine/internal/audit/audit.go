@@ -382,7 +382,15 @@ func hashFor(version int, prev []byte, e Event, detail string) []byte {
 // This is what makes the chain worth having: a log nobody can check is a log
 // that only deters attackers who have not thought about it. Returns the id of
 // the first broken entry, or 0 when the chain is intact.
+//
+// After an archive (3.18) the trail starts where the latest one ended: the
+// first entry left must link to the last one archived, and no entry the
+// archive removed may still be here.
 func Verify(ctx context.Context, tx pgx.Tx) (brokenAt int64, checked int, err error) {
+	anchor, archivedThrough, err := archiveAnchor(ctx, tx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("reading the latest archive: %w", err)
+	}
 	rows, err := tx.Query(ctx, `
 		SELECT id, event_type, COALESCE(org_id::text,''), COALESCE(subject_id::text,''),
 		       COALESCE(actor_id::text,''), COALESCE(client_id,''),
@@ -395,7 +403,7 @@ func Verify(ctx context.Context, tx pgx.Tx) (brokenAt int64, checked int, err er
 	}
 	defer rows.Close()
 
-	var expectedPrev []byte
+	expectedPrev := anchor
 	for rows.Next() {
 		var id int64
 		var e Event
@@ -408,6 +416,9 @@ func Verify(ctx context.Context, tx pgx.Tx) (brokenAt int64, checked int, err er
 			return 0, checked, err
 		}
 		checked++
+		if id <= archivedThrough {
+			return id, checked, nil
+		}
 
 		// A rewritten or deleted predecessor shows up here, not at the entry
 		// that was tampered with -- which is the property that makes deletion

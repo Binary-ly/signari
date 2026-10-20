@@ -23,6 +23,7 @@ var unboundedCommands = map[string]string{
 	"export audit":      "verifies and writes the whole audit trail",
 	"audit checkpoint":  "verifies the whole audit trail before declaring the restart point",
 	"audit verify":      "verifies the whole audit trail",
+	"audit archive":     "verifies the whole audit trail and writes what it archives to a file",
 	"import authentik":  "imports every user in the export file",
 	"import keycloak":   "imports every user in the export file",
 	"dir sync":          "reads every person in the directory",

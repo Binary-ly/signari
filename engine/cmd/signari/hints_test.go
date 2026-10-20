@@ -239,6 +239,13 @@ func TestEveryFlagTheCLINamesExists(t *testing.T) {
 	// the flags its body dereferences, per command and per function called.
 	dispatch := func(labels []string, body ast.Node) {
 		passed := map[string]bool{"dsn": true}
+		// A command dispatched in two places, as `audit verify` is before and
+		// after the database is required, has the flags of both branches.
+		for _, l := range labels {
+			if prev := cmdFlags[l]; prev != nil {
+				passed = prev
+			}
+		}
 		for _, l := range labels {
 			cmdFlags[l] = passed
 		}

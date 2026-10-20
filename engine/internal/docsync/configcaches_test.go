@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -37,8 +38,8 @@ import (
 // ADR-007, and nothing failed. Replacing it with a truer paragraph reproduces
 // exactly that setup.
 //
-// So the durable part is this list. Three consumers cache configuration and
-// each refreshes on its own timer; a fourth added later inherits none of that
+// So the durable part is this list. Four consumers cache configuration and
+// each refreshes on its own timer; a fifth added later inherits none of that
 // reasoning and would silently widen the window in which a node acts on
 // configuration an administrator has already changed. When this test fails,
 // the answer is not to add the name -- it is to decide whether the new cache
@@ -159,103 +160,126 @@ func cacheFields(src string) []string {
 // through an exception written for it by hand.
 func timeBoundFields(t *testing.T, root string) []string {
 	t.Helper()
-	fset := token.NewFileSet()
-	parsed := map[string][]*ast.File{}
-	load := func(dir string) []*ast.File {
-		if fs, ok := parsed[dir]; ok {
-			return fs
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			parsed[dir] = nil
-			return nil
-		}
-		var files []*ast.File
-		for _, e := range entries {
-			if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
-				continue
-			}
-			f, perr := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, 0)
-			if perr != nil {
-				t.Fatal(perr)
-			}
-			files = append(files, f)
-		}
-		parsed[dir] = files
-		return files
-	}
-	engine := filepath.Join(root, "engine")
-	dirOf := func(f *ast.File, alias string) string {
-		for _, imp := range f.Imports {
-			p := strings.Trim(imp.Path.Value, `"`)
-			name := p[strings.LastIndex(p, "/")+1:]
-			if imp.Name != nil {
-				name = imp.Name.Name
-			}
-			if name == alias && strings.HasPrefix(p, "signari.dev/engine/") {
-				return filepath.Join(engine, strings.TrimPrefix(p, "signari.dev/engine/"))
-			}
-		}
-		return ""
-	}
-	find := func(dir, name string) (*ast.StructType, *ast.File) {
-		for _, f := range load(dir) {
-			for _, d := range f.Decls {
-				gd, ok := d.(*ast.GenDecl)
-				if !ok {
-					continue
-				}
-				for _, s := range gd.Specs {
-					if ts, ok := s.(*ast.TypeSpec); ok && ts.Name.Name == name {
-						st, _ := ts.Type.(*ast.StructType)
-						return st, f
-					}
-				}
-			}
-		}
-		return nil, nil
-	}
-	var holdsTime func(dir string, file *ast.File, expr ast.Expr, depth int) bool
-	holdsTime = func(dir string, file *ast.File, expr ast.Expr, depth int) bool {
-		if depth > 3 {
-			return false
-		}
-		switch e := expr.(type) {
-		case *ast.StarExpr:
-			return holdsTime(dir, file, e.X, depth)
-		case *ast.ArrayType:
-			return holdsTime(dir, file, e.Elt, depth)
-		case *ast.MapType:
-			return holdsTime(dir, file, e.Value, depth)
-		case *ast.SelectorExpr:
-			x, ok := e.X.(*ast.Ident)
-			if !ok {
-				return false
-			}
-			if x.Name == "time" {
-				return e.Sel.Name == "Time" || e.Sel.Name == "Duration"
-			}
-			if d := dirOf(file, x.Name); d != "" {
-				if st, f := find(d, e.Sel.Name); st != nil {
-					return structHoldsTime(st, func(fe ast.Expr) bool { return holdsTime(d, f, fe, depth+1) })
-				}
-			}
-		case *ast.Ident:
-			if st, f := find(dir, e.Name); st != nil {
-				return structHoldsTime(st, func(fe ast.Expr) bool { return holdsTime(dir, f, fe, depth+1) })
-			}
-		}
-		return false
-	}
-
-	httpapi := filepath.Join(engine, "internal", "httpapi")
-	server, file := find(httpapi, "Server")
-	if server == nil {
+	w := newTypeWalker(t, root)
+	httpapi := filepath.Join(w.engine, "internal", "httpapi")
+	if st, _ := w.find(httpapi, "Server"); st == nil {
 		t.Fatal("httpapi has no Server struct")
 	}
+	return w.timedFields(httpapi, "Server")
+}
+
+// typeWalker follows struct types through the engine's packages, parsing each
+// package once.
+type typeWalker struct {
+	t      *testing.T
+	fset   *token.FileSet
+	engine string
+	parsed map[string][]*ast.File
+}
+
+func newTypeWalker(t *testing.T, root string) *typeWalker {
+	return &typeWalker{t: t, fset: token.NewFileSet(), engine: filepath.Join(root, "engine"),
+		parsed: map[string][]*ast.File{}}
+}
+
+func (w *typeWalker) load(dir string) []*ast.File {
+	if fs, ok := w.parsed[dir]; ok {
+		return fs
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		w.parsed[dir] = nil
+		return nil
+	}
+	var files []*ast.File
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		f, perr := parser.ParseFile(w.fset, filepath.Join(dir, e.Name()), nil, 0)
+		if perr != nil {
+			w.t.Fatal(perr)
+		}
+		files = append(files, f)
+	}
+	w.parsed[dir] = files
+	return files
+}
+
+// dirOf resolves an import alias in f to an engine package directory, or "".
+func (w *typeWalker) dirOf(f *ast.File, alias string) string {
+	for _, imp := range f.Imports {
+		p := strings.Trim(imp.Path.Value, `"`)
+		name := p[strings.LastIndex(p, "/")+1:]
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		if name == alias && strings.HasPrefix(p, "signari.dev/engine/") {
+			return filepath.Join(w.engine, strings.TrimPrefix(p, "signari.dev/engine/"))
+		}
+	}
+	return ""
+}
+
+func (w *typeWalker) find(dir, name string) (*ast.StructType, *ast.File) {
+	for _, f := range w.load(dir) {
+		for _, d := range f.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, s := range gd.Specs {
+				if ts, ok := s.(*ast.TypeSpec); ok && ts.Name.Name == name {
+					st, _ := ts.Type.(*ast.StructType)
+					return st, f
+				}
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (w *typeWalker) holdsTime(dir string, file *ast.File, expr ast.Expr, depth int) bool {
+	if depth > 3 {
+		return false
+	}
+	switch e := expr.(type) {
+	case *ast.StarExpr:
+		return w.holdsTime(dir, file, e.X, depth)
+	case *ast.ArrayType:
+		return w.holdsTime(dir, file, e.Elt, depth)
+	case *ast.MapType:
+		return w.holdsTime(dir, file, e.Value, depth)
+	case *ast.SelectorExpr:
+		x, ok := e.X.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		if x.Name == "time" {
+			return e.Sel.Name == "Time" || e.Sel.Name == "Duration"
+		}
+		if d := w.dirOf(file, x.Name); d != "" {
+			if st, f := w.find(d, e.Sel.Name); st != nil {
+				return structHoldsTime(st, func(fe ast.Expr) bool { return w.holdsTime(d, f, fe, depth+1) })
+			}
+		}
+	case *ast.Ident:
+		if st, f := w.find(dir, e.Name); st != nil {
+			return structHoldsTime(st, func(fe ast.Expr) bool { return w.holdsTime(dir, f, fe, depth+1) })
+		}
+	}
+	return false
+}
+
+// timedFields returns the fields of the struct name in dir that hold a time.
+func (w *typeWalker) timedFields(dir, name string) []string {
+	st, file := w.find(dir, name)
+	if st == nil {
+		return nil
+	}
 	var out []string
-	for _, fld := range server.Fields.List {
-		if holdsTime(httpapi, file, fld.Type, 0) {
+	for _, fld := range st.Fields.List {
+		if w.holdsTime(dir, file, fld.Type, 0) {
 			for _, n := range fld.Names {
 				out = append(out, n.Name)
 			}
@@ -323,6 +347,131 @@ func TestEveryConfigConsumerThatCachesIsDeclared(t *testing.T) {
 				"httpapi/server.go", c.symbol)
 		}
 	}
+}
+
+// Everything the entrypoint builds is held to the rule the test above holds
+// httpapi's Server to (0.10).
+//
+// That test read one struct. ldapd's and radius's Servers answer binds and
+// access requests, adminapi's answers the console and Terraform, and a cache
+// added to any of them passed unseen. So the structs are found from what
+// cmd/signari constructs: every engine constructor it calls (a function named
+// New…) whose result is a struct declared beside it. Each field that holds a
+// time, or is named or typed for a cache, is declared here with what it holds.
+var componentTimeHeld = map[string]string{
+	"adminapi.Server.pwPolicy": "the password policy, configured from the environment at startup; " +
+		"its times are rules, not the age of anything held",
+	"adminapi.Server.arrivals": "a rate-limit bucket: request counts per window, not configuration",
+	"adminapi.Server.perToken": "rate-limit buckets per admin token: request counts, not configuration",
+	"httpapi.LDAPWriter.policy": "the password policy, configured from the environment at startup; " +
+		"its times are rules, not the age of anything held",
+	"ldapd.Server.cfg": "the listener's settings from the environment at startup; its time is " +
+		"ReadTimeout, a bound on one request",
+	"radius.Server.cfg": "the listener's settings at startup; its time is ReadTimeout. The client " +
+		"list it starts with is replaced by the one-minute reload the ticker test accounts for",
+	"radius.Server.sessions": "EAP conversations in flight, each with its own expiry: protocol " +
+		"state, not configuration",
+}
+
+func TestEveryComponentTheEntrypointBuildsDeclaresWhatItHolds(t *testing.T) {
+	w := newTypeWalker(t, repoRoot(t))
+	type component struct{ dir, name string }
+	var components []component
+	seenComponent := map[component]bool{}
+	cmd := filepath.Join(w.engine, "cmd", "signari")
+	for _, file := range w.load(cmd) {
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || !strings.HasPrefix(sel.Sel.Name, "New") {
+				return true
+			}
+			alias, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			dir := w.dirOf(file, alias.Name)
+			if dir == "" {
+				return true
+			}
+			if name := constructedStruct(w, dir, sel.Sel.Name); name != "" {
+				c := component{dir, name}
+				if !seenComponent[c] {
+					seenComponent[c] = true
+					components = append(components, c)
+				}
+			}
+			return true
+		})
+	}
+	httpapi := filepath.Join(w.engine, "internal", "httpapi")
+	for _, want := range []component{{httpapi, "Server"},
+		{filepath.Join(w.engine, "internal", "ldapd"), "Server"},
+		{filepath.Join(w.engine, "internal", "radius"), "Server"},
+		{filepath.Join(w.engine, "internal", "adminapi"), "Server"}} {
+		if !seenComponent[want] {
+			t.Fatalf("found %d components, and not %s.%s: the constructor walk is not finding what "+
+				"cmd/signari builds", len(components), filepath.Base(want.dir), want.name)
+		}
+	}
+
+	found := map[string]bool{}
+	for _, c := range components {
+		if c.dir == httpapi && c.name == "Server" {
+			continue // the test above
+		}
+		st, file := w.find(c.dir, c.name)
+		for _, fld := range st.Fields.List {
+			typ := types.ExprString(fld.Type)
+			for _, n := range fld.Names {
+				if !w.holdsTime(c.dir, file, fld.Type, 0) &&
+					!strings.Contains(strings.ToLower(n.Name+" "+typ), "cache") {
+					continue
+				}
+				key := filepath.Base(c.dir) + "." + c.name + "." + n.Name
+				found[key] = true
+				if componentTimeHeld[key] == "" {
+					t.Errorf("%s (%s) holds a time or a cache and is not in componentTimeHeld. "+
+						"Decide first whether it holds configuration an administrator can change "+
+						"-- ADR-007 says a security-negative answer is never cached -- and if it "+
+						"does, declare its delay in the ADR-008 table too.", key, typ)
+				}
+			}
+		}
+	}
+	for key := range componentTimeHeld {
+		if !found[key] {
+			t.Errorf("componentTimeHeld names %s, which no component the entrypoint builds "+
+				"holds any more; remove it", key)
+		}
+	}
+}
+
+// constructedStruct is the struct a package-level function in dir returns
+// (as T or *T), or "" when it returns anything else.
+func constructedStruct(w *typeWalker, dir, fn string) string {
+	for _, f := range w.load(dir) {
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Recv != nil || fd.Name.Name != fn || fd.Type.Results == nil ||
+				len(fd.Type.Results.List) == 0 {
+				continue
+			}
+			res := fd.Type.Results.List[0].Type
+			if star, ok := res.(*ast.StarExpr); ok {
+				res = star.X
+			}
+			if id, ok := res.(*ast.Ident); ok {
+				if st, _ := w.find(dir, id.Name); st != nil {
+					return id.Name
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // A ticker-driven reload in the entrypoint is a config consumer too.

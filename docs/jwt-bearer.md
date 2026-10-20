@@ -72,8 +72,14 @@ across the industry of exactly that mistake.
 5. The assertion's `sub` is linked to a local user whose status is `active`.
 6. The assertion's `jti` has not been seen before.
 
-6. The account has no unmet obligation — an account flagged as needing a password
+7. The account has no unmet obligation — an account flagged as needing a password
    change cannot mint tokens through a door that involves no password.
+8. The person has not withdrawn their consent from this client on the account
+   page. No consent is asked for beforehand, since a workload never sees a
+   consent screen and pairing the client with the issuer is your authorisation;
+   but a person who disconnected the client is not minted for by its next
+   assertion. Until October 2026 they were. Consenting again at sign-in restores
+   it.
 
 Every failure returns the **same** `invalid_grant` and the same sentence, with the
 real reason in the log against a correlation id. That matters more than it looks:

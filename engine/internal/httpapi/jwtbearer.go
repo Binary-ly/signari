@@ -223,6 +223,25 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		joinScopes(scopes), "jwt_bearer") {
 		return
 	}
+	// A person who withdrew their consent from this client on the account page
+	// is not minted for by it again. No prior consent is required: the grant
+	// exists for workloads that never see a consent screen, and pairing the
+	// client with the issuer is the operator's authorisation. But a withdrawal
+	// is the person's decision about this client, and the next assertion
+	// overrode it.
+	if withdrawn, werr := store.ConsentWithdrawn(ctx, s.db, userID, c.ClientID); werr != nil || withdrawn {
+		if werr != nil {
+			s.log.Error("jwt-bearer: checking for a withdrawn consent", "err", werr,
+				"correlation_id", correlationID(ctx))
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		s.log.Info("jwt-bearer: the person withdrew consent from this client",
+			"provider", provider.Slug, "client_id", c.ClientID, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: assertionRefused, Status: http.StatusBadRequest})
+		return
+	}
 	// The operator's token provider, before the transaction below holds a
 	// connection for as long as it takes to answer.
 	hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{

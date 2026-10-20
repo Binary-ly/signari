@@ -109,6 +109,22 @@ func WithdrawConsent(ctx context.Context, tx pgx.Tx, userID, clientID string) er
 	return nil
 }
 
+// ConsentWithdrawn reports whether the person withdrew their consent from this
+// client and has not given it again: a decision every grant that mints for them
+// without them present must honour, not only the next authorization.
+func ConsentWithdrawn(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID, clientID string) (bool, error) {
+	var withdrawn bool
+	if err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.consents
+		               WHERE user_id = $1::uuid AND client_id = $2 AND withdrawn_at IS NOT NULL)`,
+		userID, clientID).Scan(&withdrawn); err != nil {
+		return false, fmt.Errorf("checking for a withdrawn consent: %w", err)
+	}
+	return withdrawn, nil
+}
+
 // ConnectedApp is one application a user has granted access to.
 type ConnectedApp struct {
 	ClientID    string

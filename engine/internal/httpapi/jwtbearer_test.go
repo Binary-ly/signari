@@ -28,6 +28,7 @@ import (
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/safedial"
+	"signari.dev/engine/internal/store"
 )
 
 // RFC 7523 §2.1, end to end and adversarially.
@@ -314,6 +315,47 @@ func TestADeactivatedUserCannotBeImpersonated(t *testing.T) {
 	}
 	if code, _ := f.grant(t, f.assert(t, nil), nil); code == http.StatusOK {
 		t.Fatal("an assertion minted a token for a DEACTIVATED user")
+	}
+}
+
+// A person who withdrew consent from a client on the account page is not minted
+// for by that client's next assertion (1.88). No prior consent is asked for --
+// the grant serves workloads that never see a consent screen -- so the fixture
+// mints first with no consent at all.
+func TestAWithdrawnConsentIsHonouredByTheJWTBearerGrant(t *testing.T) {
+	f := newAssertionFixture(t)
+	ctx := context.Background()
+	if code, body := f.grant(t, f.assert(t, nil), nil); code != http.StatusOK {
+		t.Fatalf("with no consent recorded the grant was refused: %d %v; the workload model needs none", code, body)
+	}
+	consent := func(do func(pgx.Tx) error) {
+		t.Helper()
+		tx, err := f.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if err := do(tx); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.consents WHERE user_id = $1::uuid`, f.userID)
+	})
+	consent(func(tx pgx.Tx) error { return store.RecordConsent(ctx, tx, f.userID, f.clientID, []string{"profile"}) })
+	consent(func(tx pgx.Tx) error {
+		_, err := store.DisconnectApp(ctx, tx, f.userID, f.clientID)
+		return err
+	})
+	if code, body := f.grant(t, f.assert(t, nil), nil); code == http.StatusOK || body["error"] != "invalid_grant" {
+		t.Fatalf("after the person disconnected the client, its assertion answered %d %v, want invalid_grant", code, body)
+	}
+	consent(func(tx pgx.Tx) error { return store.RecordConsent(ctx, tx, f.userID, f.clientID, []string{"profile"}) })
+	if code, body := f.grant(t, f.assert(t, nil), nil); code != http.StatusOK {
+		t.Errorf("once the person consented again the grant answered %d %v, want 200", code, body)
 	}
 }
 

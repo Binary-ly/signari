@@ -404,6 +404,22 @@ against the authenticator app, twenty recovery-code characters against the
 recovery codes. Only somebody who already entered the password reaches this
 step, so unlike a password counter these cannot be used to lock out a stranger.
 
+## Signed audit heads
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SIGNARI_AUDIT_HEAD_INTERVAL` | `1h` | How often the node running the janitor signs the audit chain's head: the newest entry's id and hash, as a JWS under the instance's active signing key (`typ` `signari-audit-head+jwt`), recorded in the trail as `audit.head_signed`. At least `1m`. A head is signed within a minute of the first start, and only when entries were written since the last |
+
+The chain on its own is unkeyed: anyone who can write the table could rewrite
+an entry and recompute every hash after it. A head cannot be recomputed without
+the signing key, which is sealed under the root key and never stored in the
+database. Every reader of the chain checks each head against the entry it
+covers. Heads also leave the database: the audit stream carries them like any
+other entry, and an export prints the newest. Keep one, and `signari audit
+verify -head @<file>` holds the chain against it even if every head in the
+database was removed. `signari doctor` warns when no head is newer than twice
+the interval. Until October 2026 there were no heads.
+
 ## Audit streaming
 
 Forwarding the audit trail to a logically separate system (ASVS V16.4.3). Off

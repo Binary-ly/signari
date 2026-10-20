@@ -281,6 +281,7 @@ func run(args []string) (err error) {
 	requirePKCE := fs.Bool("require-pkce", true,
 		"refuse an authorization request from this client that carries no PKCE challenge")
 	file := fs.String("file", "", "path to a realm export (import), or an audit archive (audit verify)")
+	auditHead := fs.String("head", "", "a signed audit head kept outside the database, or @file holding one (audit verify)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
 	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
 	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm (default: all in use); "+
@@ -935,7 +936,7 @@ func run(args []string) (err error) {
 	case "audit checkpoint":
 		return auditCheckpoint(ctx, conn, *orgID, *declaredBy, *reason)
 	case "audit verify":
-		return auditVerify(ctx, conn)
+		return auditVerify(ctx, conn, *auditHead)
 	case "audit archive":
 		return auditArchive(ctx, conn, *toDay, *outFile, *declaredBy)
 	case "export audit":
@@ -1996,6 +1997,13 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		return err
 	}
 	janitor.SetRetention(keep)
+	// The janitor also signs the audit chain's head (3.20): the chain alone is
+	// unkeyed, and anyone who can write it can recompute it.
+	headInterval, err := audit.HeadInterval(os.Getenv)
+	if err != nil {
+		return err
+	}
+	janitor.SetHeadSigner(auditHeadSigner(set, issuer, headInterval))
 	go janitor.Run(workerCtx, workerPool, log, janitor.DefaultInterval)
 
 	// Audit streaming to a logically separate system (ASVS V16.4.3), off unless a
@@ -5418,6 +5426,10 @@ func exportAudit(ctx context.Context, conn *pgx.Conn, orgID, from, to, out strin
 		// the fact would be worse than no export at all.
 		fmt.Fprintf(os.Stderr, "\n  WARNING: the audit chain is BROKEN at entry %d "+
 			"(after checking %d).\n", res.BrokenAt, res.Checked)
+		if res.HeadFailure != "" {
+			fmt.Fprintf(os.Stderr, "  Its hashes agree with each other but not with a signed head:\n    %s\n",
+				res.HeadFailure)
+		}
 		if res.Checkpoint != nil {
 			// Said explicitly, because the operator declared that checkpoint and
 			// may otherwise assume this is the same old break they already
@@ -5429,6 +5441,12 @@ func exportAudit(ctx context.Context, conn *pgx.Conn, orgID, from, to, out strin
 		fmt.Fprintln(os.Stderr, "  This file is still the data as stored, but its integrity cannot be\n"+
 			"  asserted. Investigate before submitting it anywhere that matters.")
 		return fmt.Errorf("the audit chain did not verify")
+	}
+	// The newest signed head, so this export can later be held against the
+	// chain as it is then (3.20): `signari audit verify -head <it>`.
+	if res.LatestHead != "" {
+		fmt.Fprintf(os.Stderr, "\n  %d signed head(s) checked. The newest, signed %s:\n  %s\n",
+			res.HeadsChecked, res.LatestHeadAt.UTC().Format(time.RFC3339), res.LatestHead)
 	}
 	return nil
 }

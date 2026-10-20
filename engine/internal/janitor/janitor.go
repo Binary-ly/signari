@@ -29,6 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/outbox"
@@ -116,6 +117,8 @@ type Stats struct {
 	Parked           []string
 	// Retained is how many rows the retention deleted, by table.
 	Retained map[string]int
+	// HeadSigned is whether the pass signed the audit chain's head (3.20).
+	HeadSigned bool
 	// Skipped means another node held the lock. Not an error, and deliberately
 	// distinguished from "nothing to do" so a misconfigured cluster where every
 	// pass is skipped is visible rather than looking idle.
@@ -292,6 +295,25 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 		return st, err
 	}
 
+	// The audit chain's signed head (3.20), on the one node holding the lock,
+	// so no second ticker is needed. In a savepoint: a head that cannot be
+	// signed is logged, and does not undo the sweeping above.
+	if fn := headSigner.Load(); fn != nil {
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return st, err
+		}
+		signed, herr := (*fn)(ctx, sp)
+		if herr != nil {
+			_ = sp.Rollback(ctx)
+			log.Error("signing the audit head", "err", herr)
+		} else if err := sp.Commit(ctx); err != nil {
+			return st, err
+		} else {
+			st.HeadSigned = signed
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return st, fmt.Errorf("committing janitor pass: %w", err)
 	}
@@ -322,6 +344,20 @@ var retention atomic.Pointer[store.Retention]
 
 // SetRetention sets what each pass keeps.
 func SetRetention(r store.Retention) { retention.Store(&r) }
+
+// headSigner, when set, signs the audit chain's head if one is due and says
+// whether it did (3.20). serve sets it with the signing keys this package
+// does not hold.
+var headSigner atomic.Pointer[func(context.Context, pgx.Tx) (bool, error)]
+
+// SetHeadSigner installs fn; nil removes it.
+func SetHeadSigner(fn func(ctx context.Context, tx pgx.Tx) (bool, error)) {
+	if fn == nil {
+		headSigner.Store(nil)
+		return
+	}
+	headSigner.Store(&fn)
+}
 
 // retentionObserver, when set, is told how many rows each pass deleted from
 // each table, for the metrics.
@@ -420,6 +456,9 @@ func (s Stats) Log(log *slog.Logger) {
 	add("impersonations_expired", int64(s.ImpersonationsExpired))
 	for _, table := range store.RetentionTables {
 		add(table+"_deleted", int64(s.Retained[table]))
+	}
+	if s.HeadSigned {
+		add("audit_head_signed", 1)
 	}
 
 	if len(fields) > 0 {

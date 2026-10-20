@@ -63,6 +63,14 @@ type ExportResult struct {
 	// making a stronger claim than the data supports: everything before the
 	// checkpoint is not asserted, and a reader has to be told so.
 	Checkpoint *Checkpoint
+
+	// HeadsChecked and HeadFailure are JudgeChain's (3.20). LatestHead is the
+	// newest signed head, carried so the export can be checked later against
+	// the chain as it is then, and LatestHeadAt when it was signed.
+	HeadsChecked int
+	HeadFailure  string
+	LatestHead   string
+	LatestHeadAt time.Time
 }
 
 // ExportCSV writes the trail and reports whether it can be trusted.
@@ -76,7 +84,11 @@ func ExportCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions) (
 		return nil, err
 	}
 	res := &ExportResult{ChainVerified: state.Verified, BrokenAt: state.BrokenAt,
-		Checked: state.Checked, Checkpoint: state.Checkpoint}
+		Checked: state.Checked, Checkpoint: state.Checkpoint,
+		HeadsChecked: state.HeadsChecked, HeadFailure: state.HeadFailure}
+	if res.LatestHead, res.LatestHeadAt, err = LatestHead(ctx, tx); err != nil {
+		return nil, err
+	}
 	return res, writeCSV(ctx, tx, w, opt, res)
 }
 
@@ -92,6 +104,12 @@ type ChainState struct {
 	// any. A caller that reports Verified without it claims more than the data
 	// supports.
 	Checkpoint *Checkpoint
+	// HeadsChecked is how many signed heads were checked against the chain
+	// (3.20); HeadFailure says why one did not match, and BrokenAt is then the
+	// head's entry. A chain recomputed after a rewrite verifies by its hashes
+	// and fails here.
+	HeadsChecked int
+	HeadFailure  string
 }
 
 // JudgeChain verifies the chain the way every reader of it does (3.21): the
@@ -161,6 +179,23 @@ func JudgeChain(ctx context.Context, tx pgx.Tx) (*ChainState, error) {
 				res.Checked = fromChecked
 				res.Checkpoint = cp
 			}
+		}
+	}
+
+	// The hashes agree with each other; the signed heads say whether they
+	// still agree with what was signed (3.20).
+	if res.Verified {
+		var from int64
+		if res.Checkpoint != nil {
+			from = res.Checkpoint.EntryID
+		}
+		n, at, why, err := VerifyHeads(ctx, tx, from)
+		if err != nil {
+			return nil, fmt.Errorf("checking the signed heads: %w", err)
+		}
+		res.HeadsChecked = n
+		if at != 0 {
+			res.Verified, res.BrokenAt, res.HeadFailure = false, at, why
 		}
 	}
 	return res, nil

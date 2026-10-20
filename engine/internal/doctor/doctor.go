@@ -1478,6 +1478,12 @@ func checkAuditChain(ctx context.Context, conn *pgx.Conn, r *Report) error {
 		return err
 	}
 	switch {
+	case s.HeadFailure != "":
+		r.add(Critical, "audit",
+			fmt.Sprintf("the audit chain's hashes agree with each other but not with the signed head "+
+				"at entry %d: %s", s.BrokenAt, s.HeadFailure),
+			"The trail was rewritten and its hashes recomputed after that head was signed. Hold it "+
+				"against a head kept outside the database too: `signari audit verify -head @<file>`.")
 	case !s.Verified:
 		r.add(Critical, "audit",
 			fmt.Sprintf("the audit chain is broken at entry %d: a row was altered or removed, "+
@@ -1490,6 +1496,32 @@ func checkAuditChain(ctx context.Context, conn *pgx.Conn, r *Report) error {
 			fmt.Sprintf("the audit chain verifies over %d entries since the checkpoint declared on %s; "+
 				"the %d before it are not asserted", s.Checked, s.Checkpoint.At.Format("2006-01-02"),
 				s.Checkpoint.SkippedEntries), "")
+	}
+
+	// Heads that stopped appearing (3.20). Removing every head and recomputing
+	// the chain leaves nothing to compare in the database; it leaves this.
+	interval, err := audit.HeadInterval(os.Getenv)
+	if err != nil {
+		r.add(Warning, "audit", err.Error(), "serve refuses to start on it too.")
+		return nil
+	}
+	age, since, ok, err := audit.HeadAge(ctx, tx, time.Now())
+	if err != nil {
+		return err
+	}
+	switch {
+	case since > 0 && !ok:
+		r.add(Warning, "audit",
+			fmt.Sprintf("no signed audit head exists, and the trail holds %d entries", since),
+			"serve's janitor signs one within a minute of starting, then every "+
+				"SIGNARI_AUDIT_HEAD_INTERVAL. If serve is running, its log says why signing failed; "+
+				"if every head was removed, compare with one kept outside the database.")
+	case since > 0 && age > 2*interval:
+		r.add(Warning, "audit",
+			fmt.Sprintf("the newest signed audit head is %s old, with %d entries written since",
+				age.Round(time.Minute), since),
+			"Heads are signed every SIGNARI_AUDIT_HEAD_INTERVAL by the node running the janitor; "+
+				"its log says why signing stopped.")
 	}
 	return nil
 }

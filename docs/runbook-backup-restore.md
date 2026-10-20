@@ -78,6 +78,49 @@ that gave 296 errors and no `signari_engine` role, which the bootstrap did not
 create because the restored ledger already recorded 0001. The order above restored
 with none, and the checks below passed.
 
+## Point-in-time recovery
+
+A dump restores the database as it was when the dump ran. To restore it as it was
+at a chosen moment, for instance just before a bad change, keep a base backup and
+every WAL segment written since, and replay the WAL up to that moment.
+
+```sh
+# Once, on the primary (postgresql.conf), then restart it:
+#   wal_level = replica
+#   archive_mode = on
+#   archive_command = 'test ! -f /archive/%f && cp %p /archive/%f'
+
+# A base backup, as a superuser, on a schedule:
+pg_basebackup --dbname="postgres://superuser@host/postgres" -D /backups/base-TIMESTAMP -Fp -X none -c fast
+
+# To recover: stop PostgreSQL, put the base backup in place of the data
+# directory, and add to its postgresql.conf:
+#   restore_command = 'cp /archive/%f %p'
+#   recovery_target_time = '2026-10-20 18:37:54+02'
+#   recovery_target_action = 'promote'
+touch "$PGDATA/recovery.signal"
+pg_ctl -D "$PGDATA" start      # replays the WAL to the target, then promotes
+```
+
+Then run `migrate up` if the backup is older than the binary, followed by the
+checks and `restore finalize` below. Recovery leaves every session as it was at
+the target, including the ones ended since, exactly as a dump does.
+
+The archive must hold a commit at or after the target. PostgreSQL stops when it
+reaches the first commit past the target, and if the WAL runs out first it shuts
+down with `FATAL: recovery ended before configured recovery target was reached`.
+On a quiet database the segment holding the last commits may not be archived
+yet, so `SELECT pg_switch_wal()` before relying on a recent target. The root key
+is unaffected: it is not in the database, and the recovered rows are sealed under
+whichever key was in use at the target.
+
+Drilled on a throwaway PostgreSQL 17 cluster holding a copy of a working
+deployment. It was restored by the steps above with no errors, and a base backup
+was taken. One person was created, the target noted, and a second person created.
+Recovery stopped "before commit of transaction 2134" and brought back the first
+person only. `verify` said `schema ok`, `audit verify` verified 2,971 entries,
+and `restore finalize` ended 9 sessions of 1 person.
+
 ## Finalize, before the engine serves it
 
 ```sh

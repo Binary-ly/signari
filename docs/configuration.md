@@ -674,6 +674,9 @@ one latency histogram across every route, and none of the backlog, provider,
 build or runtime series existed. Parked notices were briefly counted as pending
 too, so one of them made the oldest pending notice older by the second, forever.
 
+[`deploy/monitoring/`](../deploy/monitoring/README.md) has alert rules and a
+Grafana dashboard built on these series.
+
 The HTTP series covers the admin API as well as the protocol listener, under
 its own `/admin/…` route patterns. Until October 2026 the admin API was not
 counted at all, so every write to the deployment went unmeasured.

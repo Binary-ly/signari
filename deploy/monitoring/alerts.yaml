@@ -1,0 +1,327 @@
+# Alert rules for the Signari engine, in Prometheus rule-file format: load it
+# with `rule_files:`, or wrap it in a PrometheusRule (see README.md).
+#
+# Every series named here is one the engine exports; a test in
+# engine/internal/docsync fails when one is not. Thresholds are starting
+# points: the ones that depend on traffic say so.
+#
+# critical: users are failing to sign in, or a security control is not being
+# applied, now. warning: something will fail, or has failed quietly.
+groups:
+  - name: signari.availability
+    rules:
+      - alert: SignariAbsent
+        expr: absent(signari_build_info)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: No Signari engine is reporting metrics.
+          description: >-
+            Prometheus has scraped no engine for five minutes. Either every
+            engine is down or none is being scraped (SIGNARI_METRICS_ADDR unset,
+            or the scrape target is wrong).
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/doctor.md
+
+      # The backlog gauges query PostgreSQL at scrape time and read NaN when
+      # they cannot, and NaN is the one value not equal to itself.
+      - alert: SignariDatabaseUnreachable
+        expr: signari_outbox_pending != signari_outbox_pending
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} cannot reach its database."
+          description: >-
+            The engine's scrape-time queries have not answered within two
+            seconds for two minutes. Its readiness check fails on the same
+            cause, so it is taking no traffic. Run `signari doctor` from that
+            host.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/doctor.md
+
+      - alert: SignariServerErrors
+        expr: |
+          sum(rate(signari_http_requests_total{status="5xx"}[5m]))
+            / sum(rate(signari_http_requests_total[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of responses are server errors."
+          description: >-
+            More than 5% of responses have been 5xx for ten minutes.
+            `sum by (route) (rate(signari_http_requests_total{status="5xx"}[5m]))`
+            shows which route. The access log (SIGNARI_ACCESS_LOG=1) records
+            each response's route and status with its correlation id.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/doctor.md
+
+      - alert: SignariTokenEndpointSlow
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(signari_http_request_duration_seconds_bucket{route="/oauth2/token"}[5m]))) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Token endpoint p99 latency is {{ $value | humanizeDuration }}."
+          description: >-
+            The slowest 1% of token requests have taken over a second for ten
+            minutes. Look at the request pool (SignariRequestPoolSaturated),
+            the password hasher, and any provider on the token_issue hook.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/performance.md
+
+      # A container restarting in place keeps its instance label, so its start
+      # time changes on one series.
+      - alert: SignariRestarting
+        expr: changes(process_start_time_seconds[30m]) > 2
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} restarted {{ $value }} times in 30 minutes."
+          description: >-
+            The engine keeps exiting. It refuses to start on an unverified
+            schema, a bad root key or an unsafe admin listener, and says why in
+            its last log lines.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/doctor.md
+
+      - alert: SignariVersionSkew
+        expr: count(count by (version) (signari_build_info)) > 1
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} engine releases are serving one deployment."
+          description: >-
+            More than one release has reported for an hour: a rollout stopped
+            halfway, or an image tag that moves. An older release serves the
+            newer schema only while every migration since it is declared
+            compatible, and `signari migrate status` names the oldest that may.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/upgrading.md
+
+  - name: signari.signin
+    rules:
+      # Traffic-dependent: the second condition keeps a quiet night's three
+      # failures out of it.
+      - alert: SignariSignInFailures
+        expr: |
+          sum(rate(signari_signins_total{outcome="failed"}[15m]))
+            / sum(rate(signari_signins_total[15m])) > 0.5
+          and sum(rate(signari_signins_total[15m])) > 0.05
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of sign-ins are failing."
+          description: >-
+            More than half of sign-in attempts have failed for fifteen minutes.
+            Either an integration is broken (a directory, a flow, a provider) or
+            someone is guessing passwords. login.failed events in the audit
+            trail carry the reason.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/events.md
+
+      # Traffic-dependent.
+      - alert: SignariAuthFailureBurst
+        expr: sum by (mechanism) (rate(signari_auth_failures_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over one failed {{ $labels.mechanism }} authentication a second."
+          description: >-
+            Failed authentications by this mechanism have exceeded one a second
+            for ten minutes. Against ldap or radius that is usually a guessing
+            run from a service that does not show a sign-in page.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/events.md
+
+      - alert: SignariSMSRefused
+        expr: sum by (outcome) (rate(signari_sms_total{outcome=~"refused_.*"}[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Text messages are being refused ({{ $labels.outcome }})."
+          description: >-
+            The SMS budget has been refusing messages for fifteen minutes.
+            Either SMS pumping is being stopped, or the budget is too tight for
+            real traffic.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/sms.md
+
+      - alert: SignariSMSFailing
+        expr: |
+          sum(rate(signari_sms_total{outcome="failed"}[15m]))
+            / sum(rate(signari_sms_total{outcome=~"sent|failed"}[15m])) > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of text messages fail to send."
+          description: >-
+            The SMS provider has rejected more than a fifth of messages for
+            fifteen minutes, so users who rely on SMS cannot complete sign-in.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/sms.md
+
+  - name: signari.extensions
+    rules:
+      # The failure series start at zero, so the first one is a rise.
+      - alert: SignariProviderFailingOpen
+        expr: sum by (hook) (increase(signari_provider_calls_total{outcome="failed_open"}[5m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The {{ $labels.hook }} provider is failing open."
+          description: >-
+            Calls to the provider for this hook are failing, and the hook is
+            declared fail-open, so its decision is being skipped: whatever the
+            provider enforces is not being enforced.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/extensibility.md
+
+      - alert: SignariProviderFailingClosed
+        expr: sum by (hook) (increase(signari_provider_calls_total{outcome="failed_closed"}[5m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The {{ $labels.hook }} provider is failing closed."
+          description: >-
+            Calls to the provider for this hook are failing, and the hook is
+            declared fail-closed, so the requests it decides are being refused.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/extensibility.md
+
+  - name: signari.delivery
+    rules:
+      # A notice is parked after eight attempts, about eight and a half minutes
+      # of backoff, so one still pending after fifteen means the worker is not
+      # getting to it.
+      - alert: SignariOutboxBacklog
+        expr: max(signari_outbox_oldest_pending_seconds) > 900
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A logout notice or security event has waited {{ $value | humanizeDuration }}."
+          description: >-
+            The outbox worker is behind or not running, so relying parties are
+            not being told that sessions ended.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/logout.md
+
+      - alert: SignariOutboxParked
+        expr: max(delta(signari_outbox_parked[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: A logout notice was given up on.
+          description: >-
+            A notice failed every delivery attempt and will not be retried. A
+            relying party missed a logout, so its own session for that user
+            may still be live.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/logout.md
+
+      # Stuck, not merely busy: the lag never reached zero in half an hour and
+      # is at its highest now, at every evaluation for fifteen minutes. A
+      # working stream's lag rises and falls with each batch.
+      - alert: SignariAuditStreamStuck
+        expr: |
+          min_over_time(signari_audit_stream_lag_events[30m]) > 0
+          and signari_audit_stream_lag_events >= max_over_time(signari_audit_stream_lag_events[30m])
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The audit stream is {{ $value }} events behind and not catching up."
+          description: >-
+            The configured audit sink has not accepted events for at least
+            fifteen minutes. Events are kept in the database and are sent once
+            it accepts them, so nothing is lost while the stream is stuck.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/audit-streaming.md
+
+  - name: signari.maintenance
+    rules:
+      # A pass runs every minute on whichever node holds the lock; the others
+      # report 0, hence the newest across nodes.
+      - alert: SignariJanitorStalled
+        expr: time() - max(signari_janitor_last_pass_timestamp_seconds) > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: No janitor pass has completed for fifteen minutes.
+          description: >-
+            Expired sessions are not being swept and retention is not running,
+            so relying parties are not told sessions ended and tables grow. The
+            engine logs "janitor pass failed" with the cause.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/configuration.md
+
+      # For SIGNARI_KEY_ROTATION_PERIOD=2160h. An active key is published a
+      # day before it signs, so its age runs a little past the period.
+      - alert: SignariSigningKeyOld
+        expr: max(signari_signing_key_active_age_seconds) > 100 * 86400
+        labels:
+          severity: warning
+        annotations:
+          summary: "The active signing key is {{ $value | humanizeDuration }} old."
+          description: >-
+            Unattended rotation is off (SIGNARI_KEY_ROTATION_PERIOD unset) or
+            not running. Rotate with `signari keys rotate`, or set the period.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/key-rotation.md
+
+      - alert: SignariKeyRefreshFailing
+        expr: signari_key_refresh_failures >= 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} has failed {{ $value }} signing-key refreshes in a row."
+          description: >-
+            The engine cannot reload signing keys from the database. At five in
+            a row its readiness check fails and it stops taking traffic.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/key-rotation.md
+
+      - alert: SignariKeyRefreshUnready
+        expr: signari_key_refresh_failures >= 5
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} is unready: its signing keys are stale."
+          description: >-
+            Five signing-key refreshes in a row have failed, so readiness fails
+            and this node is out of rotation. If every node shows this, sign-in
+            is down.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/key-rotation.md
+
+  - name: signari.capacity
+    rules:
+      - alert: SignariRequestPoolSaturated
+        expr: signari_db_pool_connections_acquired / signari_db_pool_connections_max >= 0.9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} has used {{ $value | humanizePercentage }} of its request pool for ten minutes."
+          description: >-
+            Requests are waiting for database connections. Raise
+            SIGNARI_DB_MAX_CONNS if PostgreSQL has room, or add nodes.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/connection-pooling.md
+
+      - alert: SignariWorkerPoolSaturated
+        expr: signari_db_worker_pool_connections_acquired / signari_db_worker_pool_connections_max >= 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}'s background workers have held every connection for fifteen minutes."
+          description: >-
+            The outbox, janitor, audit stream and key refresher share this
+            pool. Raise SIGNARI_DB_WORKER_MAX_CONNS.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/connection-pooling.md
+
+      - alert: SignariPasswordHasherSaturated
+        expr: signari_password_hashes_in_flight / signari_password_hash_slots >= 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} has every password-hashing slot busy."
+          description: >-
+            Password sign-ins are queueing for a hashing slot. Add CPU or nodes;
+            lowering the hash cost makes every password hashed afterwards
+            cheaper to guess.
+          runbook_url: https://github.com/binary-ly/signari/blob/main/docs/performance.md

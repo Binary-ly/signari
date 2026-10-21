@@ -57,11 +57,11 @@ func TestApplySetsAClientsMinimumACR(t *testing.T) {
 	}
 
 	f, err := Parse([]byte("version: 1\nclients:\n  - client_id: x\n    redirect_uris: [https://app.test/cb]\n" +
-		"    minimum_acr: \"3\"\n"))
+		"    minimum_acr: \"5\"\n"))
 	if err == nil {
 		err = f.Validate()
 	}
 	if err == nil || !strings.Contains(err.Error(), "acr") {
-		t.Errorf("a floor of 3 was not refused before applying: %v", err)
+		t.Errorf("a floor of 5 was not refused before applying: %v", err)
 	}
 }

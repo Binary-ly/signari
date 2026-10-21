@@ -38,12 +38,13 @@ type ClientSettings struct {
 	// alias of the client's own instance; empty clears it.
 	IssuerAlias *string
 	// MinimumACR is the weakest authentication the client accepts: "1" a
-	// single factor, "2" multi-factor (migration 0166).
+	// single factor, "2" multi-factor (migration 0166), "3" multi-factor with
+	// a WebAuthn assertion, "4" with a device-bound key (0174).
 	MinimumACR *string
 }
 
 // ClientACRs are the floors a client may be given, the schema's own CHECK.
-var ClientACRs = []string{"1", "2"}
+var ClientACRs = []string{"1", "2", "3", "4"}
 
 // ClientAlgorithms are the JWS algorithms a client may be set to sign with,
 // the schema's own CHECK. No symmetric algorithm, ever.

@@ -338,7 +338,7 @@ func Build(cfg Config) (*Metadata, error) {
 			"urn:ietf:params:oauth:grant-type:jwt-bearer"},
 
 		SubjectTypesSupported:   []string{"public"},
-		AcrValuesSupported:      []string{oauth.ACRSingleFactor, oauth.ACRMultiFactor, oauth.ACRPapeMultiFactor},
+		AcrValuesSupported:      []string{oauth.ACRSingleFactor, oauth.ACRMultiFactor, oauth.ACRPapeMultiFactor, oauth.ACRPhishingResistant, oauth.ACRPhishingResistantHardware},
 		IDTokenSigningAlgValues: algNames,
 		// private_key_jwt is advertised because it is implemented AND enforced --
 		// a client configured for it cannot fall back to a secret, which is the

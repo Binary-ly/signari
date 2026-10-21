@@ -348,13 +348,12 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		// The client's floor (clientacr.go). Not a denial: the device keeps
 		// waiting, so the person can sign in again with a second factor and
 		// enter the code once more.
-		if required, err := clientFloorIsMFA(ctx, s.db, d.ClientID); err != nil {
+		if floor, err := clientFloor(ctx, s.db, d.ClientID); err != nil {
 			s.log.Error("reading a client's acr floor at a device approval", "err", err)
 			render("", "Try again in a moment.", nil)
 			return
-		} else if required && !mfa {
-			render("", "This application requires a second factor. Sign out, sign in again "+
-				"with your second factor, then enter the code again.", nil)
+		} else if !oauth.Meets(amr, floor) {
+			render("", floorRefusal(floor)+" Sign out, sign in again with it, then enter the code again.", nil)
 			return
 		}
 		if err := store.ApproveDeviceAuthorization(ctx, s.db, d.ID, userID, sid); err != nil {

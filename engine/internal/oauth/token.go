@@ -192,6 +192,9 @@ type GrantRecord struct {
 	Scopes     []string
 	ExpiresAt  time.Time
 	ConsumedAt *time.Time
+	// ACR is the rung above the session's own this request asked for and was
+	// given (SatisfiedACR), for its ID token; empty reports the session's.
+	ACR string
 }
 
 // ValidateCodeRedemption checks a code exchange.

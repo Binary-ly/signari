@@ -377,7 +377,8 @@ func clientRequiresMFA(authzQuery string) bool {
 		return false
 	}
 	for _, v := range oauth.ParseACRValues(q.Get("acr_values")) {
-		if v == oauth.ACRMultiFactor || v == oauth.ACRPapeMultiFactor {
+		// "2" and above: the two rungs over it are multi-factor too.
+		if oauth.RequiredRung(v, "") >= 2 {
 			return true
 		}
 	}

@@ -137,8 +137,8 @@ type Client struct {
 	// RequirePAR is RFC 9126 §6's require_pushed_authorization_requests: the
 	// client may start an authorization only by pushing it first.
 	RequirePAR bool
-	// MinimumACR is the weakest authentication the client accepts, "1" or
-	// "2" (migration 0166), whatever its request asks for.
+	// MinimumACR is the weakest authentication the client accepts, "1" to
+	// "4" (migrations 0166, 0174; oauth.Meets), whatever its request asks for.
 	MinimumACR string
 }
 

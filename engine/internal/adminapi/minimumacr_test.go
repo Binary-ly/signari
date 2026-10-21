@@ -42,9 +42,10 @@ func TestAClientPATCHSetsTheMinimumACR(t *testing.T) {
 		t.Errorf("stored floor %q, want 2", got.MinimumACR)
 	}
 
-	rec = call(t, s, http.MethodPatch, "/admin/clients/"+id, testToken, map[string]any{"minimum_acr": "3"})
+	// "3" and "4" are rungs since 4.15; "5" is none.
+	rec = call(t, s, http.MethodPatch, "/admin/clients/"+id, testToken, map[string]any{"minimum_acr": "5"})
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
 	if rec.Code != http.StatusBadRequest || out["error"] != "invalid_client_setting" {
-		t.Errorf("a floor of 3 gave %d %v", rec.Code, out["error"])
+		t.Errorf("a floor of 5 gave %d %v", rec.Code, out["error"])
 	}
 }

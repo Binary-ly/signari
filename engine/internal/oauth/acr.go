@@ -30,13 +30,103 @@ const (
 	// because several older libraries emit it and rejecting it would fail a
 	// legitimate step-up request for a spelling difference.
 	ACRPapeMultiFactor = "http://schemas.openid.net/pape/policies/2007/06/multi-factor"
+	// ACRPhishingResistant is multi-factor that includes a WebAuthn assertion
+	// (4.15): a passkey that verified its user, or a key after a password. The
+	// assertion is bound to this server's origin, so a page that relays the
+	// sign-in cannot obtain one. This engine's rung, not a registered value.
+	ACRPhishingResistant = "3"
+	// ACRPhishingResistantHardware is ACRPhishingResistant with a device-bound
+	// key (amr `hwk`): one that is not synced, so it exists on one device only.
+	ACRPhishingResistantHardware = "4"
 )
+
+// rung orders the values: higher satisfies lower. Zero is a value this engine
+// does not implement.
+func rung(acr string) int {
+	switch acr {
+	case ACRSingleFactor:
+		return 1
+	case ACRMultiFactor, ACRPapeMultiFactor:
+		return 2
+	case ACRPhishingResistant:
+		return 3
+	case ACRPhishingResistantHardware:
+		return 4
+	}
+	return 0
+}
+
+// Assurance is the highest rung a session's factors reach. ACRFromAMR stops
+// at "2", and is what a session records and an ID token carries unless the
+// client asked for more, so a relying party that was told "2" for a passkey
+// sign-in is told "2" still.
+//
+// The two upper rungs are read from `hwk` and `swk`, which only a WebAuthn
+// assertion here produces: a hardware OTP token reports `otp`.
+func Assurance(amr []string) string {
+	if ACRFromAMR(amr) != ACRMultiFactor {
+		return ACRSingleFactor
+	}
+	for _, m := range amr {
+		if m == AMRHardwareKey {
+			return ACRPhishingResistantHardware
+		}
+	}
+	for _, m := range amr {
+		if m == AMRSoftwareKey {
+			return ACRPhishingResistant
+		}
+	}
+	return ACRMultiFactor
+}
+
+// Meets reports whether a session's factors reach a floor ("1" to "4"). An
+// empty floor is no floor; one this engine does not implement is not met.
+func Meets(amr []string, floor string) bool {
+	if floor == "" {
+		return true
+	}
+	need := rung(floor)
+	return need > 0 && rung(Assurance(amr)) >= need
+}
+
+// SatisfiedACR is the value an ID token reports for a request: the first of
+// acrValues the session's factors satisfy, when that is a rung above what the
+// session records, and "" otherwise, leaving the session's own.
+func SatisfiedACR(amr []string, acrValues string) string {
+	for _, want := range ParseACRValues(acrValues) {
+		if satisfies(Assurance(amr), want) {
+			if rung(want) > rung(ACRFromAMR(amr)) {
+				return want
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// RequiredRung is what an authorization needs: the lowest of the requested
+// values, since any one satisfies, and the client's floor, whichever is higher.
+// Zero is nothing required.
+func RequiredRung(acrValues, floor string) int {
+	need := 0
+	for _, want := range ParseACRValues(acrValues) {
+		if r := rung(want); r > 0 && (need == 0 || r < need) {
+			need = r
+		}
+	}
+	if f := rung(floor); f > need {
+		need = f
+	}
+	return need
+}
 
 // AMR values (RFC 8176). Only the ones this server can honestly assert.
 const (
 	AMRPassword     = "pwd"
 	AMROTP          = "otp"
 	AMRHardwareKey  = "hwk"
+	AMRSoftwareKey  = "swk" // a synced passkey, not bound to one device
 	AMRUserPresence = "user"
 	AMRPIN          = "pin"
 	AMRMFA          = "mfa"
@@ -114,21 +204,14 @@ func ACRFromAMR(amr []string) string {
 // TestThereIsOneMultiFactorPredicate fails the build if a fifth appears.
 func IsMultiFactor(amr []string) bool { return ACRFromAMR(amr) == ACRMultiFactor }
 
-// satisfies reports whether an achieved context meets a requested one.
+// satisfies reports whether an achieved context meets a requested one: a
+// higher rung meets a lower, since refusing would force a pointless
+// re-authentication on the stronger session. An acr we do not implement is
+// refused rather than pretended: telling a client its requirement was met
+// when we do not know what it means is the worst available answer.
 func satisfies(achieved, requested string) bool {
-	switch requested {
-	case ACRMultiFactor, ACRPapeMultiFactor:
-		return achieved == ACRMultiFactor
-	case ACRSingleFactor:
-		// Multi-factor satisfies a single-factor request. Refusing would force a
-		// pointless re-authentication on the stronger session.
-		return achieved == ACRSingleFactor || achieved == ACRMultiFactor
-	default:
-		// An acr we do not implement. Refuse rather than pretend: telling a
-		// client its requirement was met when we do not know what it means is
-		// the worst available answer.
-		return false
-	}
+	want := rung(requested)
+	return want > 0 && rung(achieved) >= want
 }
 
 // StepUpReason says why an existing session is not sufficient. Empty means it is.
@@ -174,7 +257,7 @@ func SessionSufficient(sessionAMR []string, authTime time.Time, now time.Time,
 	}
 
 	// Derived from what actually happened, not from anything stored.
-	achieved := ACRFromAMR(sessionAMR)
+	achieved := Assurance(sessionAMR)
 	for _, want := range requested {
 		if satisfies(achieved, want) {
 			return StepUpNone, ""
@@ -189,6 +272,8 @@ func SessionSufficient(sessionAMR []string, authTime time.Time, now time.Time,
 func RequiredFactor(acrValues string) string {
 	for _, want := range ParseACRValues(acrValues) {
 		switch want {
+		case ACRPhishingResistant, ACRPhishingResistantHardware:
+			return "passkey"
 		case ACRMultiFactor, ACRPapeMultiFactor:
 			return "mfa"
 		case ACRSingleFactor:

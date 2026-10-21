@@ -233,6 +233,21 @@ func HasPasskey(ctx context.Context, db interface {
 	return any, nil
 }
 
+// HasWebAuthnKey reports whether a person holds a passkey or security key,
+// and with deviceBound one that is not synced (backup_eligible false): what
+// the acr rungs "3" and "4" need (oauth.Assurance).
+func HasWebAuthnKey(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID string, deviceBound bool) (bool, error) {
+	var held bool
+	if err := db.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM core.webauthn_credentials
+		 WHERE user_id = $1::uuid AND (NOT $2 OR NOT backup_eligible))`, userID, deviceBound).Scan(&held); err != nil {
+		return false, fmt.Errorf("checking for a key: %w", err)
+	}
+	return held, nil
+}
+
 // CanGoPasswordless reports whether it is safe to let this user remove their
 // password. See MinCredentialsForPasswordless for why the answer is not one.
 func CanGoPasswordless(ctx context.Context, tx pgx.Tx, userID string) (bool, error) {

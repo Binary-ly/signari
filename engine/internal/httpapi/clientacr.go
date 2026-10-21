@@ -25,23 +25,56 @@ import (
 // expired. Token exchange and the JWT bearer grant are not held to it: they
 // carry another token's or another issuer's assertion, not a session here.
 
-// meetsClientFloor reports whether a session's factors meet the client's.
+// meetsClientFloor reports whether a session's factors meet the client's:
+// "1" to "4", the upper two a WebAuthn assertion (oauth.Assurance).
 func meetsClientFloor(c *clients.Client, amr []string) bool {
-	return c == nil || c.MinimumACR != oauth.ACRMultiFactor || oauth.IsMultiFactor(amr)
+	return c == nil || oauth.Meets(amr, c.MinimumACR)
 }
 
-// clientFloorIsMFA reports whether a client requires multi-factor. An unknown
-// client has no floor; it is refused by whatever looked it up.
-func clientFloorIsMFA(ctx context.Context, q interface {
+// clientFloor reads a client's floor. An unknown client has none; it is
+// refused by whatever looked it up.
+func clientFloor(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, clientID string) (bool, error) {
+}, clientID string) (string, error) {
 	var floor string
 	err := q.QueryRow(ctx, `SELECT minimum_acr FROM core.clients WHERE client_id = $1`,
 		clientID).Scan(&floor)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return "", nil
 	}
-	return floor == oauth.ACRMultiFactor, err
+	return floor, err
+}
+
+// clientFloorIsMFA reports whether a client requires multi-factor, at any
+// rung from "2" up.
+func clientFloorIsMFA(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, clientID string) (bool, error) {
+	floor, err := clientFloor(ctx, q, clientID)
+	return oauth.RequiredRung("", floor) >= 2, err
+}
+
+// floorRefusal is what a person is told when a session does not reach a
+// client's floor: which kind of sign-in it asks for.
+func floorRefusal(floor string) string {
+	if oauth.RequiredRung("", floor) >= 3 {
+		return "This application requires a sign-in with a passkey or security key."
+	}
+	return "This application requires a second factor."
+}
+
+type grantedACRKey struct{}
+
+// withGrantedACR carries the rung a code's request asked for and was given
+// (oauth.SatisfiedACR) into mintSet for its ID token, as the DPoP thumbprint
+// is carried: most callers would never set it.
+func withGrantedACR(ctx context.Context, acr string) context.Context {
+	return context.WithValue(ctx, grantedACRKey{}, acr)
+}
+
+func grantedACRFrom(ctx context.Context) string {
+	s, _ := ctx.Value(grantedACRKey{}).(string)
+	return s
 }
 
 // stepUpNeverAsked reports whether signing in again cannot reach

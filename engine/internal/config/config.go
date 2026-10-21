@@ -96,8 +96,8 @@ type Client struct {
 	// IssuerAlias pins the client to a legacy issuer the instance claims;
 	// empty clears it, absent leaves it.
 	IssuerAlias *string `yaml:"issuer_alias"`
-	// MinimumACR is the weakest authentication the client accepts, "1" or
-	// "2"; absent leaves it.
+	// MinimumACR is the weakest authentication the client accepts, "1" to
+	// "4" (oauth.Meets); absent leaves it.
 	MinimumACR *string `yaml:"minimum_acr"`
 }
 

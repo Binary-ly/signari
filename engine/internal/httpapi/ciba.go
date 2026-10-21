@@ -493,8 +493,11 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 				})
 				msg := "This application asked for a stronger sign-in than this session has. " +
 					"Sign out, sign in again"
-				if oauth.RequiredFactor(wanted) == "mfa" {
+				switch oauth.RequiredFactor(wanted) {
+				case "mfa":
 					msg += " with your second factor"
+				case "passkey":
+					msg += " with your passkey or security key"
 				}
 				s.renderBackchannel(w, r, userID, msg+", then approve it.")
 				return
@@ -503,20 +506,20 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 		// The client's floor (clientacr.go), whatever the request asked for.
 		// Not a denial either, for the same reason.
 		if approve && d != nil {
-			required, err := clientFloorIsMFA(ctx, s.db, d.ClientID)
+			floor, err := clientFloor(ctx, s.db, d.ClientID)
 			if err != nil {
 				s.log.Error("reading a client's acr floor at a backchannel approval", "err", err)
 				http.Error(w, "that request could not be checked; try again", http.StatusServiceUnavailable)
 				return
 			}
-			if mfa, _ := sessionFactors(ctx, s.db, sid); required && !mfa {
+			if _, amr := sessionFactors(ctx, s.db, sid); !oauth.Meets(amr, floor) {
 				s.auditDetached(ctx, audit.Event{
 					Type: "ciba.step_up_required", OrgID: orgID, SubjectID: userID,
 					ClientID: d.ClientID, CorrelationID: correlationID(ctx),
-					Detail: map[string]any{"request_id": id, "client_minimum_acr": oauth.ACRMultiFactor},
+					Detail: map[string]any{"request_id": id, "client_minimum_acr": floor},
 				})
-				s.renderBackchannel(w, r, userID, "This application requires a second factor. "+
-					"Sign out, sign in again with your second factor, then approve it.")
+				s.renderBackchannel(w, r, userID, floorRefusal(floor)+
+					" Sign out, sign in again with it, then approve it.")
 				return
 			}
 		}

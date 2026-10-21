@@ -166,6 +166,8 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Re-evaluated per authorization request, deliberately. Treating acr as a
 	// property frozen at login is a genuine bypass -- a password-only session
 	// would satisfy every future multi-factor demand for as long as it lives.
+	// What the sign-in form says when a step-up sends a person to it.
+	loginMsg := ""
 	if live {
 		var authTime time.Time
 		var amr []string
@@ -182,6 +184,9 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		// the relying party's to send, and a user can remove it from the URL.
 		if reason == oauth.StepUpNone && !meetsClientFloor(c, amr) {
 			reason, detail = oauth.StepUpNeedStronger, "this application requires multi-factor authentication"
+			if oauth.RequiredRung("", c.MinimumACR) >= 3 {
+				detail = "this application requires a sign-in with a passkey or security key"
+			}
 		}
 		if reason != oauth.StepUpNone {
 			s.log.Info("step-up required", "sid", sid, "reason", reason,
@@ -218,6 +223,24 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 					`SELECT user_id::text, org_id::text FROM core.sessions WHERE sid = $1`, sid).
 					Scan(&subject, &sessionOrg); err != nil {
 					s.log.Error("loading the session subject for a step-up check", "err", err)
+				} else if need := oauth.RequiredRung(req.ACRValues, c.MinimumACR); need >= 3 {
+					// Only a passkey or a security key reaches these rungs, and at
+					// "4" only one bound to its device: without one, every sign-in
+					// lands back here, so the requirement is refused instead. With
+					// one, the form says which sign-in it wants.
+					held, kerr := store.HasWebAuthnKey(ctx, s.db, subject, need == 4)
+					switch {
+					case kerr != nil:
+						s.log.Error("checking for a key at a step-up", "err", kerr)
+					case !held:
+						s.writeAuthzError(w, r, req, &oauth.AuthzError{
+							Code: "unmet_authentication_requirements",
+							Description: "the requested authentication context needs a passkey or " +
+								"security key, and this account has none that reaches it",
+							Disposition: oauth.DispositionRedirect})
+						return
+					}
+					loginMsg = "This application asks you to sign in with a passkey or security key."
 				} else if enrolled, ferr := store.HasSecondFactor(ctx, s.db, subject); ferr != nil {
 					// Failing open here shows the form, which is the previous
 					// behaviour: a database error must not turn into a refusal.
@@ -257,7 +280,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 					Disposition: oauth.DispositionRedirect})
 			return
 		}
-		s.renderLogin(w, r, r.URL.RawQuery, "")
+		s.renderLogin(w, r, r.URL.RawQuery, loginMsg)
 		return
 	}
 
@@ -379,6 +402,10 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// The rung this request asked for and the session reaches, above the
+	// session's own, for the ID token to report. Read before the transaction,
+	// which a second connection must not overlap.
+	_, sessionAMR := sessionFactors(ctx, s.db, sid)
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -395,6 +422,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		Nonce:               req.Nonce,
 		Scopes:              splitScopes(req.Scope),
 		ExpiresAt:           time.Now().Add(codeTTL),
+		ACR:                 oauth.SatisfiedACR(sessionAMR, req.ACRValues),
 	}
 	// RFC 9396 §7 requires the token response to return the details "as granted
 	// by the resource owner", so they are carried on the code rather than
@@ -1069,6 +1097,11 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			Scan(&authTime, &acr, &amr); err != nil {
 			return nil, nil, fmt.Errorf("loading session context: %w", err)
 		}
+		// The rung the authorization request asked for and was given, above
+		// the session's own "1" or "2".
+		if granted := grantedACRFrom(ctx); granted != "" {
+			acr = granted
+		}
 		claims := tokens.IDTokenClaims{
 			Issuer:          issuer,
 			Subject:         userID,
@@ -1141,7 +1174,7 @@ func (s *Server) mintTokens(ctx context.Context, tx pgx.Tx, c *clients.Client, g
 	if derr != nil {
 		return nil, derr
 	}
-	resp, _, err := s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, g.Nonce,
+	resp, _, err := s.mintSet(withGrantedACR(ctx, g.ACR), tx, c, g.OrgID, g.UserID, g.SessionID, g.Nonce,
 		g.Scopes, g.Resources, granted, "")
 	if err != nil {
 		return resp, err
@@ -1494,11 +1527,11 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	// Refused, not revoked: the token is not spent, and signing in again with a
 	// second factor starts a lineage that meets it. A session that cannot be
 	// read meets no floor (sessionFactors).
-	if c.MinimumACR == oauth.ACRMultiFactor {
+	if oauth.RequiredRung("", c.MinimumACR) >= 2 {
 		if _, amr := sessionFactors(ctx, tx, grant.SessionID); !meetsClientFloor(c, amr) {
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "this application requires multi-factor authentication, and the " +
-					"sign-in this refresh token came from had one factor; sign in again",
+				Description: "this application requires a stronger sign-in than the one this " +
+					"refresh token came from; sign in again",
 				Status: http.StatusBadRequest})
 			return
 		}

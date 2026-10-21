@@ -426,7 +426,7 @@ type patchClientRequest struct {
 	FirstParty                         *bool `json:"first_party"`
 	// IssuerAlias pins the client to a live alias of its instance; "" clears.
 	IssuerAlias *string `json:"issuer_alias"`
-	// MinimumACR is the weakest authentication the client accepts, "1" or "2".
+	// MinimumACR is the weakest authentication the client accepts, "1" to "4".
 	MinimumACR *string `json:"minimum_acr"`
 }
 

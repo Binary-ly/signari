@@ -441,6 +441,24 @@ starts from a session here: one carries a token already issued, the other an
 assertion from an issuer you trust. Until October 2026 nothing set a floor for
 a client.
 
+### Above multi-factor: a passkey or security key
+
+Two rungs go above `2`, as a floor (`-minimum-acr 3` or `4`) or in a request's
+`acr_values`:
+
+| | |
+|---|---|
+| `3` | multi-factor that includes a WebAuthn assertion: a passkey that verified its user, or a security key after a password. The assertion is bound to this server's origin, so a page that relays the sign-in cannot obtain one. An authenticator app, a text or a federated sign-in does not reach it |
+| `4` | the same with a key bound to its device. A synced passkey can be copied to another device, so it does not reach `4` |
+
+These are this engine's rungs, not values another server will recognise. A
+session still records `1` or `2`, so an ID token says what it said before. A
+request that asked for `3` or `4` and got it is told that value instead. An
+account with no key that reaches the rung is refused with
+`unmet_authentication_requirements`. With one, the sign-in form says which
+sign-in the application wants. The floor reaches approvals and refreshes as `2`
+does.
+
 An organisation with no flow applied runs the built-in file, so nothing changes
 until somebody applies one.
 

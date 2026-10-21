@@ -210,6 +210,20 @@ func TestAClientFloorReachesRefreshTokensAlreadyIssued(t *testing.T) {
 		t.Errorf("the refused token did not refresh once the session met the floor: %d %v",
 			status, body["error_description"])
 	}
+
+	// A floor above multi-factor (4.15) reaches refresh tokens too: this
+	// check once ran only for a floor of exactly 2.
+	setClientFloor(t, f.pool, f.clientID, "3")
+	if status, _ := refresh(mint()); status != http.StatusBadRequest {
+		t.Errorf("a refresh token from a password-and-app session refreshed under a floor of 3: %d", status)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE core.sessions SET amr = ARRAY['user','swk','mfa'] WHERE sid = $1`,
+		f.sid); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := refresh(mint()); status != http.StatusOK {
+		t.Errorf("a passkey session did not refresh under a floor of 3: %d %v", status, body["error_description"])
+	}
 }
 
 func TestAClientFloorHoldsDeviceAndBackchannelApprovals(t *testing.T) {
@@ -268,7 +282,7 @@ func TestAClientFloorHoldsDeviceAndBackchannelApprovals(t *testing.T) {
 }
 
 func TestAClientFloorOutsideTheLadderIsRefused(t *testing.T) {
-	for _, bad := range []string{"0", "3", "", "urn:mace:incommon:iap:silver"} {
+	for _, bad := range []string{"0", "5", "", "urn:mace:incommon:iap:silver"} {
 		v := bad
 		if err := store.CheckClientSettings(store.ClientSettings{MinimumACR: &v}); err == nil {
 			t.Errorf("a floor of %q was accepted", bad)

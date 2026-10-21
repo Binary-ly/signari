@@ -125,4 +125,22 @@ func TestAssignOTPStoresOnlyASeedItsCodesProve(t *testing.T) {
 			t.Errorf("instance totp-policy %v was accepted", bad)
 		}
 	}
+
+	// How SMS numbers are kept (4.28), in the same organisation of its own.
+	numbers := func() string {
+		t.Helper()
+		var mode string
+		if err := db.QueryRow(ctx, `SELECT sms_numbers FROM core.organizations WHERE id = $1::uuid`, org).
+			Scan(&mode); err != nil {
+			t.Fatal(err)
+		}
+		return mode
+	}
+	if err := run([]string{"instance", "sms-numbers", "-dsn", dsn, "-org", org, "-sms-numbers", "hashed"}); err != nil ||
+		numbers() != "hashed" {
+		t.Errorf("instance sms-numbers hashed: %v, now %s", err, numbers())
+	}
+	if err := run([]string{"instance", "sms-numbers", "-dsn", dsn, "-org", org, "-sms-numbers", "clear"}); err == nil {
+		t.Error("instance sms-numbers clear was accepted")
+	}
 }

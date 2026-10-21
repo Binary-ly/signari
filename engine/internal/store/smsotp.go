@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/sms"
 )
 
@@ -49,9 +51,10 @@ var (
 	ErrSMSVerifierUnavailable = errors.New("the SMS verification service did not answer")
 )
 
-// SMSDelegate checks a code a delegated verification service sent to number
-// (sms.Verifier.Check); nil where there is none.
-type SMSDelegate func(ctx context.Context, number, code string) (bool, error)
+// SMSDelegate checks a code a delegated verification service sent, to number
+// or under its id, whichever is known (sms.Verifier.Check); nil where there is
+// no service.
+type SMSDelegate func(ctx context.Context, number, id, code string) (bool, error)
 
 // plausibleDelegatedCode is what a verification service's code can look like:
 // 4 to 10 digits. Anything else is not sent to it, so a recovery code or an
@@ -70,12 +73,79 @@ func plausibleDelegatedCode(s string) bool {
 
 // SMSOTPCredential is an enrolled SMS factor.
 type SMSOTPCredential struct {
-	UserID   string
-	OrgID    string
+	UserID string
+	OrgID  string
+	// Number is empty when only its hash is kept (Hashed).
 	Number   string
 	Verified bool
-	// Pending is a number being enrolled, until a code sent to it comes back.
+	// Pending is a number being enrolled, until a code sent to it comes back;
+	// empty when only its hash is kept (PendingHashed).
 	Pending string
+	// Hashed is a proved number kept only as a keyed hash (migration 0173):
+	// the person retypes it to be sent a code.
+	Hashed        bool
+	PendingHashed bool
+}
+
+// ErrSMSNumberMismatch is a retyped number whose hash is not the one kept.
+var ErrSMSNumberMismatch = errors.New("that is not the number on the account")
+
+// SMSNumberMAC is the keyed hash kept for a number in an organisation that
+// keeps only hashes: under the person's own subject key (keys.SubjectKey.MAC).
+func SMSNumberMAC(sk *keys.SubjectKey, number string) []byte {
+	return sk.MAC([]byte(number), "sms_number")
+}
+
+// SMSNumbersHashed reports whether an organisation keeps only hashes of
+// numbers (organizations.sms_numbers).
+func SMSNumbersHashed(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID string) (bool, error) {
+	var mode string
+	if err := q.QueryRow(ctx, `SELECT sms_numbers FROM core.organizations WHERE id = $1::uuid`,
+		orgID).Scan(&mode); err != nil {
+		return false, fmt.Errorf("reading how SMS numbers are kept: %w", err)
+	}
+	return mode == "hashed", nil
+}
+
+// SetSMSNumbers sets whether an organisation keeps numbers or only their
+// hashes. The one writer, behind `signari instance sms-numbers`.
+func SetSMSNumbers(ctx context.Context, tx pgx.Tx, orgID string, hashed bool) error {
+	mode := "stored"
+	if hashed {
+		mode = "hashed"
+	}
+	tag, err := tx.Exec(ctx, `UPDATE core.organizations SET sms_numbers = $2 WHERE id = $1::uuid`, orgID, mode)
+	if err != nil {
+		return fmt.Errorf("setting how SMS numbers are kept: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrOrganizationNotFound
+	}
+	return nil
+}
+
+// HashSMSNumber replaces a proved number with its keyed hash, for a person in
+// an organisation that has moved to keeping hashes: done at their next
+// sign-in, which is still texted to the stored number.
+func HashSMSNumber(ctx context.Context, tx pgx.Tx, userID string, hash []byte) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE core.sms_otp_credentials SET number_hash = $2, number = NULL, updated_at = now()
+		 WHERE user_id = $1::uuid AND number IS NOT NULL AND verified_at IS NOT NULL`, userID, hash)
+	if err != nil {
+		return fmt.Errorf("hashing the SMS number: %w", err)
+	}
+	return nil
+}
+
+// SetSMSCodeRef records a delegated service's id for the outstanding code.
+func SetSMSCodeRef(ctx context.Context, db interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, userID, ref string) error {
+	_, err := db.Exec(ctx, `UPDATE core.sms_otp_credentials SET code_ref = $2
+		 WHERE user_id = $1::uuid AND code_delegated AND code_purpose IS NOT NULL`, userID, ref)
+	return err
 }
 
 // The two kinds of code, kept apart in code_purpose (0135).
@@ -93,23 +163,33 @@ const (
 // pointed the account at a number of the session holder's choosing (0135). A
 // first-time row is created unverified, so it is not a second factor yet
 // either: a typo would otherwise enrol somebody else's phone.
-func EnrollSMSOTP(ctx context.Context, tx pgx.Tx, userID, orgID, rawNumber string) (
+//
+// hash, for an organisation that keeps only hashes, is the number's keyed
+// hash, and the number itself is not stored at all: the code that proves it
+// is sent to the number from the same request (IssueSMSOTPEnrolmentTo).
+func EnrollSMSOTP(ctx context.Context, tx pgx.Tx, userID, orgID, rawNumber string, hash []byte) (
 	string, error) {
 
 	number, err := sms.NormaliseNumber(rawNumber)
 	if err != nil {
 		return "", err
 	}
+	var kept *string
+	if hash == nil {
+		kept = &number
+	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.sms_otp_credentials (user_id, org_id, number, pending_number)
-		VALUES ($1::uuid, $2::uuid, $3, $3)
+		INSERT INTO core.sms_otp_credentials (user_id, org_id, number, pending_number, pending_hash)
+		VALUES ($1::uuid, $2::uuid, $3, $3, $4)
 		ON CONFLICT (user_id) DO UPDATE SET
 			pending_number = EXCLUDED.pending_number,
+			pending_hash = EXCLUDED.pending_hash,
 			-- Any code in flight is invalidated: one sent for a different
 			-- purpose or number must not complete this enrolment.
-			code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, code_delegated = false, attempts = 0,
+			code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, code_delegated = false,
+			code_ref = NULL, attempts = 0,
 			updated_at = now()`,
-		userID, orgID, number); err != nil {
+		userID, orgID, kept, hash); err != nil {
 		return "", fmt.Errorf("enrolling the SMS factor: %w", err)
 	}
 	return number, nil
@@ -122,11 +202,12 @@ func LoadSMSOTP(ctx context.Context, q interface {
 
 	c := &SMSOTPCredential{UserID: userID}
 	var verifiedAt *time.Time
-	var pending *string
+	var number, pending *string
 	err := q.QueryRow(ctx, `
-		SELECT org_id::text, number, verified_at, pending_number
+		SELECT org_id::text, number, verified_at, pending_number,
+		       number IS NULL AND number_hash IS NOT NULL, pending_hash IS NOT NULL
 		FROM core.sms_otp_credentials WHERE user_id = $1::uuid`, userID).
-		Scan(&c.OrgID, &c.Number, &verifiedAt, &pending)
+		Scan(&c.OrgID, &number, &verifiedAt, &pending, &c.Hashed, &c.PendingHashed)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNoSMSOTP
@@ -134,6 +215,9 @@ func LoadSMSOTP(ctx context.Context, q interface {
 		return nil, err
 	}
 	c.Verified = verifiedAt != nil
+	if number != nil {
+		c.Number = *number
+	}
 	if pending != nil {
 		c.Pending = *pending
 	}
@@ -169,26 +253,57 @@ func HasVerifiedSMS(ctx context.Context, q interface {
 // delegated records a code a verification service will make and send
 // instead, and returns no code: the caller asks the service to start.
 func IssueSMSOTP(ctx context.Context, tx pgx.Tx, userID string, delegated bool) (code, number string, err error) {
-	return issueSMSCode(ctx, tx, userID, smsCodeSignIn, delegated)
+	return issueSMSCode(ctx, tx, userID, smsCodeSignIn, delegated, "", nil)
+}
+
+// IssueSMSOTPTo is IssueSMSOTP for a number kept only as a hash: to is the
+// number the person retyped and toHash its keyed hash, and a hash that is not
+// the kept one is ErrSMSNumberMismatch, with nothing sent.
+func IssueSMSOTPTo(ctx context.Context, tx pgx.Tx, userID, to string, toHash []byte, delegated bool) (
+	code, number string, err error) {
+	return issueSMSCode(ctx, tx, userID, smsCodeSignIn, delegated, to, toHash)
 }
 
 // IssueSMSOTPEnrolment generates an ENROLMENT code for the pending number.
 func IssueSMSOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, delegated bool) (code, number string, err error) {
-	return issueSMSCode(ctx, tx, userID, smsCodeEnrol, delegated)
+	return issueSMSCode(ctx, tx, userID, smsCodeEnrol, delegated, "", nil)
 }
 
-func issueSMSCode(ctx context.Context, tx pgx.Tx, userID, purpose string, delegated bool) (code, number string, err error) {
+// IssueSMSOTPEnrolmentTo is IssueSMSOTPEnrolment for a pending number kept
+// only as a hash, sent to the number from the enrolling request.
+func IssueSMSOTPEnrolmentTo(ctx context.Context, tx pgx.Tx, userID, to string, toHash []byte, delegated bool) (
+	code, number string, err error) {
+	return issueSMSCode(ctx, tx, userID, smsCodeEnrol, delegated, to, toHash)
+}
+
+func issueSMSCode(ctx context.Context, tx pgx.Tx, userID, purpose string, delegated bool, to string,
+	toHash []byte) (code, number string, err error) {
+
 	var lastSent, verifiedAt, disabledAt *time.Time
-	var proved string
-	var pending *string
+	var proved, pending *string
+	var provedHash, pendingHash []byte
 	err = tx.QueryRow(ctx, `
-		SELECT number, pending_number, verified_at, last_sent_at, disabled_at FROM core.sms_otp_credentials
-		WHERE user_id = $1::uuid FOR UPDATE`, userID).Scan(&proved, &pending, &verifiedAt, &lastSent, &disabledAt)
+		SELECT number, pending_number, number_hash, pending_hash, verified_at, last_sent_at, disabled_at
+		  FROM core.sms_otp_credentials
+		WHERE user_id = $1::uuid FOR UPDATE`, userID).
+		Scan(&proved, &pending, &provedHash, &pendingHash, &verifiedAt, &lastSent, &disabledAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", "", ErrNoSMSOTP
 		}
 		return "", "", err
+	}
+	// The kept number, or the retyped one when its hash is the kept hash.
+	choose := func(kept *string, keptHash []byte) (string, error) {
+		switch {
+		case kept != nil:
+			return *kept, nil
+		case keptHash == nil:
+			return "", ErrNoSMSOTP
+		case toHash == nil || subtle.ConstantTimeCompare(toHash, keptHash) != 1:
+			return "", ErrSMSNumberMismatch
+		}
+		return to, nil
 	}
 	switch purpose {
 	case smsCodeSignIn:
@@ -197,12 +312,13 @@ func issueSMSCode(ctx context.Context, tx pgx.Tx, userID, purpose string, delega
 		if verifiedAt == nil || disabledAt != nil {
 			return "", "", ErrNoSMSOTP
 		}
-		number = proved
-	case smsCodeEnrol:
-		if pending == nil {
-			return "", "", ErrNoSMSOTP
+		if number, err = choose(proved, provedHash); err != nil {
+			return "", "", err
 		}
-		number = *pending
+	case smsCodeEnrol:
+		if number, err = choose(pending, pendingHash); err != nil {
+			return "", "", err
+		}
 	}
 	if lastSent != nil && time.Since(*lastSent) < SMSOTPResendInterval {
 		return "", "", ErrSMSOTPTooSoon
@@ -225,8 +341,8 @@ func issueSMSCode(ctx context.Context, tx pgx.Tx, userID, purpose string, delega
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.sms_otp_credentials
-		SET code_hash = $2, code_delegated = $5, code_expires_at = now() + $3::interval, code_purpose = $4,
-		    attempts = 0, last_sent_at = now(), updated_at = now()
+		SET code_hash = $2, code_delegated = $5, code_ref = NULL, code_expires_at = now() + $3::interval,
+		    code_purpose = $4, attempts = 0, last_sent_at = now(), updated_at = now()
 		WHERE user_id = $1::uuid`,
 		userID, hash, fmt.Sprintf("%d seconds", int(SMSOTPLifetime.Seconds())), purpose, delegated); err != nil {
 		return "", "", err
@@ -286,17 +402,17 @@ func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose str
 	ok bool, replaced string, guessed bool, err error) {
 
 	const none = false
-	var storedHash []byte
+	var storedHash, pendingHash []byte
 	var delegated bool
 	var expires, verifiedAt, disabledAt *time.Time
 	var attempts int
-	var codePurpose, pending *string
-	var proved string
+	var codePurpose, pending, proved, ref *string
 	err = tx.QueryRow(ctx, `
-		SELECT code_hash, code_delegated, code_expires_at, attempts, code_purpose, number, pending_number,
-		       verified_at, disabled_at
+		SELECT code_hash, code_delegated, code_ref, code_expires_at, attempts, code_purpose, number,
+		       pending_number, pending_hash, verified_at, disabled_at
 		FROM core.sms_otp_credentials WHERE user_id = $1::uuid FOR UPDATE`, userID).
-		Scan(&storedHash, &delegated, &expires, &attempts, &codePurpose, &proved, &pending, &verifiedAt, &disabledAt)
+		Scan(&storedHash, &delegated, &ref, &expires, &attempts, &codePurpose, &proved, &pending, &pendingHash,
+			&verifiedAt, &disabledAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, "", none, nil
@@ -314,7 +430,7 @@ func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose str
 	if purpose == smsCodeSignIn && (verifiedAt == nil || disabledAt != nil) {
 		return false, "", none, nil
 	}
-	if purpose == smsCodeEnrol && pending == nil {
+	if purpose == smsCodeEnrol && pending == nil && pendingHash == nil {
 		return false, "", none, nil
 	}
 	if attempts >= SMSOTPMaxAttempts {
@@ -328,11 +444,24 @@ func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose str
 		if !plausibleDelegatedCode(submitted) {
 			return false, "", none, nil
 		}
-		number := proved
+		// The number where it is kept, and the service's id where it gave one:
+		// a number kept only as a hash is checked by the id alone.
+		var number, id string
+		kept := proved
 		if purpose == smsCodeEnrol {
-			number = *pending
+			kept = pending
 		}
-		approved, derr := delegate(ctx, number, submitted)
+		if kept != nil {
+			number = *kept
+		}
+		if ref != nil {
+			id = *ref
+		}
+		if number == "" && id == "" {
+			return false, "", none, fmt.Errorf("%w: the number is kept only as a hash and the service "+
+				"gave no id for the code", ErrSMSVerifierUnavailable)
+		}
+		approved, derr := delegate(ctx, number, id, submitted)
 		if derr != nil {
 			return false, "", none, fmt.Errorf("%w: %v", ErrSMSVerifierUnavailable, derr)
 		}
@@ -355,7 +484,7 @@ func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose str
 		if _, err := tx.Exec(ctx, `
 			UPDATE core.sms_otp_credentials
 			SET code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, code_delegated = false,
-			    attempts = 0, failed_attempts = 0, updated_at = now()
+			    code_ref = NULL, attempts = 0, failed_attempts = 0, updated_at = now()
 			WHERE user_id = $1::uuid`, userID); err != nil {
 			return false, "", none, err
 		}
@@ -364,14 +493,17 @@ func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose str
 
 	// The proof that the number belongs to the person enrolling it rather than
 	// to whoever their typo reached. Proving a number again is also how a
-	// disabled factor comes back.
-	if verifiedAt != nil && proved != *pending {
-		replaced = proved
+	// disabled factor comes back. The number it moved from is told only where
+	// it is kept, and the new one compared only where it is too.
+	if verifiedAt != nil && proved != nil && (pending == nil || *proved != *pending) {
+		replaced = *proved
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.sms_otp_credentials
-		SET number = pending_number, pending_number = NULL, verified_at = now(),
-		    code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, code_delegated = false, attempts = 0,
+		SET number = pending_number, number_hash = pending_hash, pending_number = NULL, pending_hash = NULL,
+		    verified_at = now(),
+		    code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, code_delegated = false,
+		    code_ref = NULL, attempts = 0,
 		    failed_attempts = 0, disabled_at = NULL, updated_at = now()
 		WHERE user_id = $1::uuid`, userID); err != nil {
 		return false, "", none, err

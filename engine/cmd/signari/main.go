@@ -677,6 +677,9 @@ func run(args []string) (err error) {
 	otpCode := fs.String("code", "", "`user assign-otp`: the code the token shows now, proving the seed is its own")
 	otpNextCode := fs.String("next-code", "",
 		"`user assign-otp -hotp`: the code after -code, so a wrong seed cannot match one code by chance")
+	smsNumbers := fs.String("sms-numbers", "",
+		"`instance sms-numbers`: stored, or hashed to keep only a keyed hash of each SMS number, "+
+			"which the person retypes to be sent a code")
 	freeAttempts := fs.Int("free-attempts", 0,
 		"`instance login-throttle`: wrong passwords for one account before the sign-in delay begins, 1 to 20")
 	maxLoginDelay := fs.Duration("max-delay", 0,
@@ -894,6 +897,8 @@ func run(args []string) (err error) {
 		return userUnlock(ctx, conn, *orgID, *email)
 	case "instance login-throttle":
 		return instanceLoginThrottle(ctx, conn, *orgID, *freeAttempts, *maxLoginDelay)
+	case "instance sms-numbers":
+		return instanceSMSNumbers(ctx, conn, *orgID, *smsNumbers)
 	case "instance totp-policy":
 		return instanceTOTPPolicy(ctx, conn, *orgID, mfa.Params{Algorithm: mfa.Algorithm(*totpAlgorithm),
 			Digits: *totpDigits, Period: *totpPeriod})

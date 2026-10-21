@@ -92,6 +92,8 @@ var columnClass = map[string]string{
 	"sessions.cookie_hash":                          "oneWay",
 	"sessions.ip_hash":                              "oneWay",
 	"sms_otp_credentials.code_hash":                 "oneWay",
+	"sms_otp_credentials.number_hash":               "oneWay",
+	"sms_otp_credentials.pending_hash":              "oneWay",
 	"trusted_devices.token_hash":                    "oneWay",
 	"uma_claims_interactions.handle_hash":           "oneWay",
 	"uma_claims_interactions.ticket_hash":           "oneWay",

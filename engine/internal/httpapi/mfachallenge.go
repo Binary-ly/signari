@@ -603,6 +603,12 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 // starting the ceremony would tell them anyway; they have the password, and
 // offering everybody a button that fails for most is the worse page.
 func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, userID, authzQuery, msg string) {
+	s.renderMFAWith(w, r, userID, authzQuery, msg, "")
+}
+
+// renderMFAWith is renderMFA with a notice that is not an error: what the
+// number form says after a try (mfasms.go).
+func (s *Server) renderMFAWith(w http.ResponseWriter, r *http.Request, userID, authzQuery, msg, notice string) {
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
 		s.log.Error("minting csrf token", "err", err)
@@ -620,6 +626,13 @@ func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, userID, authz
 	if err != nil {
 		s.log.Error("reading the remembered-device setting", "err", err)
 	}
+	// A number kept only as a hash is typed here to be sent a code.
+	smsForm := false
+	if s.smsAvailable() {
+		if cred, cerr := store.LoadSMSOTP(r.Context(), s.db, userID); cerr == nil {
+			smsForm = cred.Verified && cred.Hashed
+		}
+	}
 
 	ref := ""
 	status := http.StatusOK
@@ -635,6 +648,7 @@ func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, userID, authz
 		"Authz": authzQuery, "Error": msg, "CSRF": csrf,
 		"CSRFField": csrfFormField, "Reference": ref,
 		"SecurityKey": hasKey, "PasskeyScript": hasKey, "RememberDays": rememberDays,
+		"SMSNumberForm": smsForm, "Notice": notice,
 	})
 }
 
@@ -651,12 +665,24 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 	if !s.smsAvailable() {
 		return
 	}
-	verified, err := store.HasVerifiedSMS(ctx, s.db, userID)
+	cred, err := store.LoadSMSOTP(ctx, s.db, userID)
+	if errors.Is(err, store.ErrNoSMSOTP) {
+		return
+	}
 	if err != nil {
 		s.log.Error("checking the SMS factor", "err", err)
 		return
 	}
-	if !verified {
+	// A number kept only as a hash is texted when the person types it on the
+	// code page (handleMFASMSSend), never here.
+	if !cred.Verified || cred.Hashed {
+		return
+	}
+	// An organisation that has moved to keeping hashes: this sign-in is still
+	// texted to the stored number, which is then replaced by its hash.
+	hashed, err := store.SMSNumbersHashed(ctx, s.db, cred.OrgID)
+	if err != nil {
+		s.log.Error("reading how SMS numbers are kept", "err", err)
 		return
 	}
 
@@ -677,6 +703,16 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 	case err != nil:
 		s.log.Error("issuing an SMS code", "err", err)
 		return
+	}
+	if hashed {
+		hash, herr := s.smsNumberHash(ctx, tx, userID, number)
+		if herr == nil {
+			herr = store.HashSMSNumber(ctx, tx, userID, hash)
+		}
+		if herr != nil {
+			s.log.Error("replacing an SMS number with its hash", "err", herr)
+			return
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		s.log.Error("storing an SMS code", "err", err)

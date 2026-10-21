@@ -29,11 +29,15 @@ operator runs in front of whichever provider's verification API they use:
 
 ```
 POST {"version":1,"action":"start","to":"+447700900123"}
-     2xx                      a code was sent
-POST {"version":1,"action":"check","to":"+447700900123","code":"123456"}
-     2xx {"approved":true}    the code is right; the service spends it
-     2xx {"approved":false}   it is not
+     2xx, optionally {"id":"..."}   a code was sent
+POST {"version":1,"action":"check","to":"+447700900123","id":"...","code":"123456"}
+     2xx {"approved":true}          the code is right; the service spends it
+     2xx {"approved":false}         it is not
 ```
+
+A check carries `to`, `id` or both, as known. An organisation that keeps only
+hashes of numbers (below) sends the `id` alone, so a service that gives none
+cannot serve it.
 
 Anything else is an error, and a check that errors is refused, not charged, so
 an outage of the service signs nobody in and disables nobody's factor. Only a
@@ -44,6 +48,31 @@ attempts per code and the consecutive-failure ceiling. The service sends only
 codes, so account notices go by email alone, which `signari doctor` says. The
 URL must be https, as a check carries a live code.
 
+
+## Keeping only a hash of the number
+
+```sh
+signari instance sms-numbers -org <id> -sms-numbers hashed
+```
+
+By default a person's number is stored, so a code can be texted without being
+asked for and account notices reach the phone. A copy of the database then
+holds every person's number, which is where a SIM swap begins. An organisation
+can keep instead only a keyed hash of each number, made under the person's own
+subject key. That key is sealed under the root key, which is not in the
+database, so a copy of the database cannot test guesses. The same number in two
+accounts hashes differently, a root-key rotation leaves the hash as it was, and
+erasing the person destroys it.
+
+What changes for the person: the code page asks for their number, and the code
+goes to the number typed when its hash matches. The page says the same whether
+it matched or not, because whoever is on that page has the password. Each try
+spends the code page's own budget, so the number cannot be walked. No account
+notice is texted to a number that is not kept. A number already stored is
+replaced by its hash at the person's next sign-in, which is still texted to the
+stored number. Moving back to `stored` applies to numbers enrolled from then
+on: a hash cannot be read back, so it keeps working when typed until the person
+enrols again.
 
 ## Why it is offered at all
 

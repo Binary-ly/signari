@@ -27,6 +27,9 @@
   "mfa.code": "Code from your authenticator app",
   "mfa.lostdevice": "Lost your device? Enter one of your recovery codes instead.",
   "mfa.securitykey": "Use your security key or passkey",
+  "mfa.sms.number": "Or have a code texted to you: your mobile number, with the country code",
+  "mfa.sms.send": "Text me a code",
+  "mfa.sms.sent": "If that is the number on your account, a code is on its way.",
   "mfa.remember": "Remember this device for {RememberDays} days",
   "devices.title": "Remembered devices",
   "devices.intro": "When you sign in with your password on one of these, you are not asked for your second factor. Forget any you do not recognise.",
@@ -54,6 +57,7 @@
   "smsotp.number.label": "Mobile number, with the country code",
   "smsotp.number.note": "Start with a + and the country code. Without it the number cannot be dialled, and guessing wrong sends your codes to somebody else.",
   "smsotp.unavailable": "Text messages are not available on this server.",
+  "smsotp.hashed": "the number you gave, which is not kept: type it again to be sent a code",
 
   "enrol.title": "Set up two-factor authentication",
   "enrol.scan": "Scan this with your authenticator app:",

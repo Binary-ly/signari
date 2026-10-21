@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +35,10 @@ import (
 // what erasure means. Recovery after erasure is account re-creation, not repair.
 type SubjectKey struct {
 	aead cipher.AEAD
+	// mac is derived from the DEK, for values kept only as a keyed hash
+	// (MAC). The DEK is re-wrapped, never changed, by a root-key rotation, so
+	// a hash survives one; it is destroyed with the DEK at erasure.
+	mac []byte
 }
 
 // ErrErased means the subject's key has been destroyed. Their ciphertext is
@@ -141,7 +148,25 @@ func newSubjectKey(raw []byte) (*SubjectKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &SubjectKey{aead: aead}, nil
+	mac, err := hkdf.Key(sha256.New, raw, nil, "signari subject mac v1", 32)
+	if err != nil {
+		return nil, err
+	}
+	return &SubjectKey{aead: aead, mac: mac}, nil
+}
+
+// MAC is a keyed hash of data belonging to this subject, for a value kept
+// only so that a later one can be compared with it -- a phone number nobody
+// should be able to read back. purpose separates uses, as Seal's context does.
+// Without the root key the DEK cannot be unwrapped, so a copy of the database
+// alone cannot test guesses; the same value in another person's account hashes
+// differently.
+func (s *SubjectKey) MAC(data []byte, purpose string) []byte {
+	m := hmac.New(sha256.New, s.mac)
+	m.Write([]byte(purpose))
+	m.Write([]byte{0})
+	m.Write(data)
+	return m.Sum(nil)
 }
 
 // Seal encrypts data belonging to this subject.

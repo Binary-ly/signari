@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/store"
 )
@@ -77,7 +80,14 @@ func (s *Server) sendSMS(ctx context.Context, userID string, kind smsKind, m sms
 
 	send := func() error { return s.texter.Send(ctx, m) }
 	if delegated {
-		send = func() error { return s.smsVerifier.Start(ctx, m.To) }
+		send = func() error {
+			id, err := s.smsVerifier.Start(ctx, m.To)
+			if err == nil && id != "" {
+				// What its check is made with where the number is not kept.
+				err = store.SetSMSCodeRef(ctx, s.db, userID, id)
+			}
+			return err
+		}
 	}
 	if err := send(); err != nil {
 		s.countSMS("failed")
@@ -90,6 +100,19 @@ func (s *Server) sendSMS(ctx context.Context, userID string, kind smsKind, m sms
 // smsAvailable reports whether a code can reach a phone: a gateway that sends
 // what this engine makes, or a service that makes and sends its own.
 func (s *Server) smsAvailable() bool { return s.texter != nil || s.smsVerifier != nil }
+
+// smsNumberHash is the keyed hash kept for a number in an organisation that
+// keeps only hashes, under the person's own subject key.
+func (s *Server) smsNumberHash(ctx context.Context, tx pgx.Tx, userID, number string) ([]byte, error) {
+	if s.cfg.Root == nil {
+		return nil, errors.New("no root key, so no subject key to hash a number under")
+	}
+	sk, err := keys.LoadOrCreateSubjectKey(ctx, tx, userID, s.cfg.Root)
+	if err != nil {
+		return nil, fmt.Errorf("the subject key for an SMS number: %w", err)
+	}
+	return store.SMSNumberMAC(sk, number), nil
+}
 
 // smsDelegate is the delegated service's check, nil without one; codes issued
 // while there is one are its own (store.IssueSMSOTP's delegated).

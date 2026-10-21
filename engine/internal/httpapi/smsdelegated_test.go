@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,11 +24,14 @@ type fakeVerifier struct {
 	checks int
 	down   bool
 	next   int
+	// lastTo and lastID are what the last check was given.
+	lastTo, lastID string
 }
 
 func (v *fakeVerifier) Describe() string { return "fake" }
 
-func (v *fakeVerifier) Start(_ context.Context, to string) error {
+// Start gives an id as "v-<number>", so a check by id alone finds the code.
+func (v *fakeVerifier) Start(_ context.Context, to string) (string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.starts++
@@ -36,15 +40,19 @@ func (v *fakeVerifier) Start(_ context.Context, to string) error {
 		v.codes = map[string]string{}
 	}
 	v.codes[to] = fmt.Sprintf("%06d", 314159+v.next)
-	return nil
+	return "v-" + to, nil
 }
 
-func (v *fakeVerifier) Check(_ context.Context, to, code string) (bool, error) {
+func (v *fakeVerifier) Check(_ context.Context, to, id, code string) (bool, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.checks++
+	v.lastTo, v.lastID = to, id
 	if v.down {
 		return false, errors.New("the service is down")
+	}
+	if to == "" {
+		to = strings.TrimPrefix(id, "v-")
 	}
 	if v.codes[to] != "" && v.codes[to] == code {
 		delete(v.codes, to)

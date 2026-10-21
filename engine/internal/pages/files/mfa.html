@@ -3,6 +3,7 @@
 <h1>{{T "mfa.heading"}}</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
 {{if .Reference}}<p class="ref">{{T "common.reference"}} <code>{{.Reference}}</code></p>{{end}}
+{{if .Notice}}<p class="hint" role="status">{{.Notice}}</p>{{end}}
 <form method="POST" action="/login/mfa">
 <input type="hidden" name="authz" value="{{.Authz}}">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
@@ -13,6 +14,13 @@
 {{if .RememberDays}}<p><label><input type="checkbox" name="remember" value="1" id="mfa-remember"> {{T "mfa.remember" .}}</label></p>{{end}}
 <button type="submit">{{T "common.continue"}}</button>
 </form>
+{{if .SMSNumberForm}}<form method="POST" action="/login/mfa/sms">
+<input type="hidden" name="authz" value="{{.Authz}}">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="mfa-sms-number">{{T "mfa.sms.number"}}</label>
+<input id="mfa-sms-number" name="number" type="tel" autocomplete="tel" required>
+<p class="alt"><button type="submit">{{T "mfa.sms.send"}}</button></p>
+</form>{{end}}
 {{if .SecurityKey}}<form method="POST" action="/login/mfa" id="mfa-key" hidden>
 <input type="hidden" name="authz" value="{{.Authz}}">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">

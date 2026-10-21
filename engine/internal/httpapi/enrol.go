@@ -851,12 +851,14 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		cred, lerr := store.LoadSMSOTP(ctx, s.db, userID)
 		switch {
-		case lerr == nil && cred.Pending != "":
+		case lerr == nil && (cred.Pending != "" || cred.PendingHashed):
 			// A number being enrolled and not yet proven. Resume where they left
 			// off rather than starting again: the number is already stored and
 			// re-typing it is another chance to mistype it. A proved number, if
 			// there is one, keeps receiving sign-in codes meanwhile.
 			render("verify", sms.RedactNumber(cred.Pending), "")
+		case lerr == nil && cred.Verified && cred.Hashed:
+			render("enrolled", string(s.tr(r).T("smsotp.hashed")), "")
 		case lerr == nil && cred.Verified:
 			render("enrolled", sms.RedactNumber(cred.Number), "")
 		default:
@@ -924,7 +926,10 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		}
 		cred, _ := store.LoadSMSOTP(ctx, s.db, userID)
 		number := ""
-		if cred != nil {
+		switch {
+		case cred != nil && cred.Hashed:
+			number = string(s.tr(r).T("smsotp.hashed"))
+		case cred != nil:
 			number = sms.RedactNumber(cred.Number)
 		}
 		render("enrolled", number, "")
@@ -965,6 +970,15 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Read before the transaction, which a second connection must not
+		// overlap. An organisation that keeps only hashes stores the number's
+		// keyed hash, and the code that proves it goes to the number typed here.
+		hashed, herr := store.SMSNumbersHashed(ctx, s.db, orgID)
+		if herr != nil {
+			s.log.Error("reading how SMS numbers are kept", "err", herr)
+			render("start", "", "Something went wrong. Try again.")
+			return
+		}
 		tx, terr := s.db.Begin(ctx)
 		if terr != nil {
 			render("start", "", "Something went wrong. Try again.")
@@ -972,8 +986,16 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		number, nerr := store.EnrollSMSOTP(ctx, tx, userID, orgID,
-			r.PostForm.Get("number"))
+		var hash []byte
+		typed, nerr := sms.NormaliseNumber(r.PostForm.Get("number"))
+		if nerr == nil && hashed {
+			if hash, nerr = s.smsNumberHash(ctx, tx, userID, typed); nerr != nil {
+				s.log.Error("hashing an SMS number", "err", nerr)
+				render("start", "", "Something went wrong. Try again.")
+				return
+			}
+		}
+		number, nerr := store.EnrollSMSOTP(ctx, tx, userID, orgID, r.PostForm.Get("number"), hash)
 		if nerr != nil {
 			// The number errors are written for the person typing them and are
 			// shown as-is: "give the number in international form" is actionable
@@ -982,7 +1004,13 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		code, to, ierr := store.IssueSMSOTPEnrolment(ctx, tx, userID, s.smsVerifier != nil)
+		var code, to string
+		var ierr error
+		if hashed {
+			code, to, ierr = store.IssueSMSOTPEnrolmentTo(ctx, tx, userID, number, hash, s.smsVerifier != nil)
+		} else {
+			code, to, ierr = store.IssueSMSOTPEnrolment(ctx, tx, userID, s.smsVerifier != nil)
+		}
 		switch {
 		case errors.Is(ierr, store.ErrSMSOTPTooSoon):
 			// A live code is already on its way. Moving to the verify step is

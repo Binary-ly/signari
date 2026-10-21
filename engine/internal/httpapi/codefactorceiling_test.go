@@ -175,7 +175,7 @@ func giveSMSFactor(t *testing.T, f *signInFixture) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	number := fmt.Sprintf("+4477%09d", time.Now().UnixNano()%1_000_000_000)
-	if _, err := store.EnrollSMSOTP(ctx, tx, f.userID, f.orgID, number); err != nil {
+	if _, err := store.EnrollSMSOTP(ctx, tx, f.userID, f.orgID, number, nil); err != nil {
 		t.Fatal(err)
 	}
 	code, _, err := store.IssueSMSOTPEnrolment(ctx, tx, f.userID, false)

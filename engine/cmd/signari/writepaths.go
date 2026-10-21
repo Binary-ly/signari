@@ -1168,6 +1168,42 @@ func instanceTOTPPolicy(ctx context.Context, conn *pgx.Conn, orgID string, p mfa
 	return nil
 }
 
+// instanceSMSNumbers sets whether an organisation keeps SMS numbers or only a
+// keyed hash of each (migration 0173).
+func instanceSMSNumbers(ctx context.Context, conn *pgx.Conn, orgID, mode string) error {
+	if orgID == "" || (mode != "stored" && mode != "hashed") {
+		return fmt.Errorf("give -org and -sms-numbers stored or hashed")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetSMSNumbers(ctx, tx, orgID, mode == "hashed"); err != nil {
+		if errors.Is(err, store.ErrOrganizationNotFound) {
+			return fmt.Errorf("no organisation %s", orgID)
+		}
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "org.sms_numbers_set", OrgID: orgID, Detail: map[string]any{"sms_numbers": mode, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if mode == "hashed" {
+		fmt.Println("SMS numbers: hashed. A number enrolled from now on is kept only as a keyed hash;")
+		fmt.Println("one already stored is replaced by its hash at the person's next sign-in. The")
+		fmt.Println("person then types their number to be sent a code, and is texted no notices.")
+		return nil
+	}
+	fmt.Println("SMS numbers: stored, for numbers enrolled from now on. One kept only as a hash")
+	fmt.Println("cannot be read back: it keeps working when typed, until the person enrols again.")
+	return nil
+}
+
 // hotpSyncWindow is how many presses of a counter-based token assign-otp
 // searches for its codes: a token fresh from its vendor, or pressed a few
 // times in testing. Two consecutive codes are asked for, so a wrong seed

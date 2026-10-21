@@ -672,6 +672,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.rateLimitedLogin)
 	mux.HandleFunc("POST /login/mfa", s.handleMFAPost)
+	mux.HandleFunc("POST /login/mfa/sms", s.handleMFASMSSend)
 	mux.HandleFunc("POST /login/mfa/webauthn/begin", s.handleMFAKeyBegin)
 	mux.HandleFunc("POST /login/enrol-mfa/start", s.handleEnrolMFAStart)
 	mux.HandleFunc("POST /login/enrol-mfa", s.handleEnrolMFAConfirm)

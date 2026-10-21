@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -164,16 +165,42 @@ func (s *Server) anySigningKey() (keys.Key, error) {
 // keep issuing ceremonies against the old one until a restart.
 func (s *Server) relyingParty(ctx context.Context, orgID string) (*passkeys.Relying, error) {
 	var rpID, displayName string
+	var related []string
 	if err := s.db.QueryRow(ctx, `
-		SELECT COALESCE(i.rp_id,''), COALESCE(i.rp_display_name, i.display_name, '')
+		SELECT COALESCE(i.rp_id,''), COALESCE(i.rp_display_name, i.display_name, ''),
+		       i.webauthn_related_origins
 		FROM core.instances i
 		JOIN core.organizations o ON o.instance_id = i.id
-		WHERE o.id = $1::uuid`, orgID).Scan(&rpID, &displayName); err != nil {
+		WHERE o.id = $1::uuid`, orgID).Scan(&rpID, &displayName, &related); err != nil {
 		return nil, fmt.Errorf("loading instance rp_id: %w", err)
 	}
 	// The FIDO catalogue, when one is configured and loaded, so certificate-chain
-	// attestations are anchored and revoked models refused. Nil otherwise.
-	return passkeys.New(rpID, displayName, s.cfg.Issuer, s.models.Provider())
+	// attestations are anchored and revoked models refused. Nil otherwise. The
+	// related origins a ceremony may also come from (migration 0175).
+	return passkeys.New(rpID, displayName, s.cfg.Issuer, s.models.Provider(), related...)
+}
+
+// handleWebAuthnWellKnown serves WebAuthn §5.11's document at
+// /.well-known/webauthn: {"origins": [...]}, application/json, the origins a
+// passkey under this instance's RP ID may also be used from. A browser fetches
+// it from https://<rp_id>/, so it is served only when the RP ID is this
+// server's own host; otherwise `signari instance related-origins` prints it for
+// the operator to host there. 404 with none, as §5.11 requires one or more.
+func (s *Server) handleWebAuthnWellKnown(w http.ResponseWriter, r *http.Request) {
+	var rpID string
+	var origins []string
+	err := s.db.QueryRow(r.Context(), `SELECT COALESCE(rp_id,''), webauthn_related_origins
+		FROM core.instances WHERE id = $1::uuid`, s.instanceID).Scan(&rpID, &origins)
+	host := r.Host
+	if h, _, serr := net.SplitHostPort(host); serr == nil {
+		host = h
+	}
+	if err != nil || len(origins) == 0 || !strings.EqualFold(host, rpID) {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	writeJSON(w, http.StatusOK, map[string]any{"origins": origins})
 }
 
 // handlePasskeyRegisterBegin starts adding an authenticator to a live account.

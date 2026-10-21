@@ -548,6 +548,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /ssf/poll", s.handleSSFPoll)
 
 	mux.HandleFunc("GET /.well-known/authzen-configuration", s.handleAuthzMetadata)
+	mux.HandleFunc("GET /.well-known/webauthn", s.handleWebAuthnWellKnown)
 
 	// SSF §7.2. The bare path is correct for an issuer with no path component,
 	// which is the ordinary case and the only one most implementations serve.

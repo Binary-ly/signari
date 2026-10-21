@@ -715,6 +715,9 @@ func run(args []string) (err error) {
 	rpID := fs.String("rp-id", "",
 		"WebAuthn Relying Party ID: a bare domain, no scheme, port or path. Passkeys "+
 			"are unavailable until this is set, and it can never be widened afterwards")
+	relatedOrigins := fs.String("related-origins", "",
+		"`instance related-origins`: comma-separated web origins (https://host[:port]) a passkey "+
+			"under the RP ID may also be used from; empty clears them")
 
 	cmd := args[0]
 	rest := args[1:]
@@ -1308,6 +1311,8 @@ func run(args []string) (err error) {
 		return idpLinks(ctx, conn, *slug)
 	case "instance webauthn":
 		return instanceWebAuthn(ctx, conn, *issuer, *rpID, *name)
+	case "instance related-origins":
+		return instanceRelatedOrigins(ctx, conn, *issuer, splitList(*relatedOrigins))
 	case "scim enable":
 		return scimSetEnabled(ctx, conn, *orgID, *slug, true)
 	case "scim disable":

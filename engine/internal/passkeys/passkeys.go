@@ -45,7 +45,12 @@ type Relying struct {
 // attestation for a model it lists is checked against that model's roots, and
 // a model marked revoked or compromised is refused. Nil means no catalogue,
 // and then no attestation can vouch for an AAGUID.
-func New(rpID, displayName string, issuer string, mds metadata.Provider) (*Relying, error) {
+//
+// related are further origins a credential under rpID may be used from
+// (WebAuthn §5.11, related origin requests), each checked by
+// CheckRelatedOrigin; the browser allows them only when the RP ID's
+// /.well-known/webauthn lists them too.
+func New(rpID, displayName string, issuer string, mds metadata.Provider, related ...string) (*Relying, error) {
 	if rpID == "" {
 		return nil, fmt.Errorf("passkeys: this instance has no rp_id set; passkeys are unavailable until it is")
 	}
@@ -64,6 +69,14 @@ func New(rpID, displayName string, issuer string, mds metadata.Provider) (*Relyi
 	}
 
 	origins := originsFor(rpID, issuer)
+	for _, o := range related {
+		if err := CheckRelatedOrigin(o); err != nil {
+			return nil, err
+		}
+		if !contains(origins, o) {
+			origins = append(origins, o)
+		}
+	}
 	w, err := webauthn.New(&webauthn.Config{
 		RPID:          rpID,
 		RPDisplayName: displayName,
@@ -121,6 +134,30 @@ func originsFor(rpID, issuer string) []string {
 		}
 	}
 	return origins
+}
+
+// CheckRelatedOrigin refuses what cannot be a related origin: it is a web
+// origin, so a scheme, a host and an optional port, and nothing else; and it is
+// https, since a ceremony over an interceptable connection is what an origin
+// list exists to rule out. http is allowed for localhost alone, as browsers
+// treat it as a secure context.
+func CheckRelatedOrigin(o string) error {
+	u, err := url.Parse(o)
+	switch {
+	case err != nil || u.Host == "":
+		return fmt.Errorf("passkeys: related origin %q is not an origin such as https://example.co.uk", o)
+	case u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "":
+		return fmt.Errorf("passkeys: related origin %q has a path, query or credentials; "+
+			"an origin is a scheme, a host and a port", o)
+	case u.Scheme != "https" && !(u.Scheme == "http" && u.Hostname() == "localhost"):
+		return fmt.Errorf("passkeys: related origin %q is not https", o)
+	case o != u.Scheme+"://"+strings.ToLower(u.Host):
+		// Lower case, as a browser serialises the origin it compares: one
+		// listed in capitals would never match.
+		return fmt.Errorf("passkeys: related origin %q is not written as one: use %s",
+			o, u.Scheme+"://"+strings.ToLower(u.Host))
+	}
+	return nil
 }
 
 // User adapts a stored user and their credentials to the library's interface.

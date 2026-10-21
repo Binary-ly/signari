@@ -52,6 +52,7 @@ import (
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mfa"
+	"signari.dev/engine/internal/passkeys"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
@@ -2130,6 +2131,50 @@ func scimSourceSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug strin
 	}
 	fmt.Printf("%s is disabled: its token is refused from the next request. Links and\n", slug)
 	fmt.Println("settings are kept, and the accounts it provisioned are left as they are.")
+	return nil
+}
+
+// instanceRelatedOrigins sets the further origins a passkey under the
+// instance's RP ID may be used from (WebAuthn §5.11, migration 0175), and
+// prints the document a browser checks them against. The engine serves it at
+// /.well-known/webauthn when the RP ID is its own host; otherwise it must be
+// hosted at https://<rp_id>/.well-known/webauthn, or no browser allows them.
+func instanceRelatedOrigins(ctx context.Context, conn *pgx.Conn, issuer string, origins []string) error {
+	if issuer == "" {
+		return fmt.Errorf("give -issuer; -related-origins lists the origins, and empty clears them")
+	}
+	for _, o := range origins {
+		if err := passkeys.CheckRelatedOrigin(o); err != nil {
+			return err
+		}
+	}
+	var rpID *string
+	var host string
+	if err := conn.QueryRow(ctx, `SELECT rp_id, issuer FROM core.instances WHERE issuer = $1`,
+		issuer).Scan(&rpID, &host); err != nil {
+		return fmt.Errorf("no instance with issuer %q", issuer)
+	}
+	if rpID == nil || *rpID == "" {
+		return fmt.Errorf("the instance has no RP ID yet; set it with `signari instance webauthn` first")
+	}
+	if _, err := conn.Exec(ctx, `UPDATE core.instances SET webauthn_related_origins = $2 WHERE issuer = $1`,
+		issuer, origins); err != nil {
+		return err
+	}
+	if len(origins) == 0 {
+		fmt.Println("related origins: none; a passkey is used only under its RP ID")
+		return nil
+	}
+	doc, err := json.MarshalIndent(map[string]any{"origins": origins}, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("related origins for RP ID %s:\n%s\n", *rpID, doc)
+	if u, err := url.Parse(host); err != nil || !strings.EqualFold(u.Hostname(), *rpID) {
+		fmt.Printf("\n  The RP ID is not this server's host, so it does not serve that document.\n"+
+			"  Host it as application/json at https://%s/.well-known/webauthn, or no\n"+
+			"  browser will allow these origins.\n", *rpID)
+	}
 	return nil
 }
 

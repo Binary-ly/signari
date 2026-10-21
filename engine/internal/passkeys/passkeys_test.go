@@ -132,6 +132,26 @@ func TestRegistrationRequiresResidentKeyAndUserVerification(t *testing.T) {
 	}
 }
 
+// A related origin (WebAuthn §5.11) is a web origin and nothing more, over
+// https, written as one, so the list cannot carry a path that matches nothing
+// or a plaintext origin a ceremony could be intercepted on.
+func TestARelatedOriginIsAnHTTPSOrigin(t *testing.T) {
+	for _, ok := range []string{"https://example.co.uk", "https://shop.example:8443", "http://localhost:9000"} {
+		if err := CheckRelatedOrigin(ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"http://example.com", "https://example.com/login", "https://u@example.com",
+		"example.com", "https://example.com/", "https://Example.com", "https://example.com?x=1", ""} {
+		if err := CheckRelatedOrigin(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if _, err := New("localhost", "Signari", "http://localhost:9411", nil, "https://example.com/x"); err == nil {
+		t.Error("a relying party was built with a related origin that is not one")
+	}
+}
+
 // The organisation's timeout is what the browser is told and how long the
 // challenge is held: the library refuses a finish after Expires.
 func TestTheCeremonyTimeoutBoundsTheChallenge(t *testing.T) {

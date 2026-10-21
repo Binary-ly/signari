@@ -10,9 +10,39 @@ SIGNARI_SMS_FROM=+15550000000        # or a messaging service SID, MG...
 SIGNARI_SMS_GATEWAY=webhook
 SIGNARI_SMS_WEBHOOK_URL=https://sms.internal/send
 SIGNARI_SMS_WEBHOOK_AUTH="Bearer ..."
+
+# or a verification service that makes, sends and checks the code itself
+SIGNARI_SMS_GATEWAY=verify-webhook
+SIGNARI_SMS_VERIFY_URL=https://verify.internal/v1
+SIGNARI_SMS_VERIFY_AUTH="Bearer ..."
 ```
 
 Users enrol at `/account/mfa/sms`.
+
+## A delegated verification service
+
+With `verify-webhook` the engine never holds a code: the service makes it,
+sends it and says whether the one typed is right. That keeps codes out of this
+database and its logs, and puts delivery where a provider's fraud and routing
+controls are. The engine speaks one contract, version 1, to a service the
+operator runs in front of whichever provider's verification API they use:
+
+```
+POST {"version":1,"action":"start","to":"+447700900123"}
+     2xx                      a code was sent
+POST {"version":1,"action":"check","to":"+447700900123","code":"123456"}
+     2xx {"approved":true}    the code is right; the service spends it
+     2xx {"approved":false}   it is not
+```
+
+Anything else is an error, and a check that errors is refused, not charged, so
+an outage of the service signs nobody in and disables nobody's factor. Only a
+code of 4 to 10 digits is sent to it, so an authenticator or recovery code
+tried first spends none of its checks. The engine's own rules still apply on
+top: the countries, the daily allowances, the five-minute lifetime, five
+attempts per code and the consecutive-failure ceiling. The service sends only
+codes, so account notices go by email alone, which `signari doctor` says. The
+URL must be https, as a check carries a live code.
 
 
 ## Why it is offered at all
@@ -152,8 +182,8 @@ A misconfigured gateway is **fatal at startup**, not a silent fallback to no
 SMS:
 
 ```
-signari: configuring the SMS gateway: SIGNARI_SMS_GATEWAY must be twilio or
-webhook (got "twilo")
+signari: configuring the SMS gateway: SIGNARI_SMS_GATEWAY must be twilio,
+webhook or verify-webhook (got "twilo")
 ```
 
 A deployment that named a gateway stated an intention. Quietly ignoring a typo

@@ -23,7 +23,10 @@ func TestEmailAndSMSCodesStopAtTheCeilingAndTellTheHolder(t *testing.T) {
 		issue                  func(context.Context, pgx.Tx, string) (string, string, error)
 	}{
 		{factorEmailOTP, "email_otp_credentials", "mail.emailotp.disabled.subject", giveEmailFactor, store.IssueEmailOTP},
-		{factorSMSOTP, "sms_otp_credentials", "mail.smsotp.disabled.subject", giveSMSFactor, store.IssueSMSOTP},
+		{factorSMSOTP, "sms_otp_credentials", "mail.smsotp.disabled.subject", giveSMSFactor,
+			func(ctx context.Context, tx pgx.Tx, userID string) (string, string, error) {
+				return store.IssueSMSOTP(ctx, tx, userID, false)
+			}},
 	} {
 		t.Run(c.factor, func(t *testing.T) {
 			f := newSignInFixture(t)
@@ -175,11 +178,11 @@ func giveSMSFactor(t *testing.T, f *signInFixture) {
 	if _, err := store.EnrollSMSOTP(ctx, tx, f.userID, f.orgID, number); err != nil {
 		t.Fatal(err)
 	}
-	code, _, err := store.IssueSMSOTPEnrolment(ctx, tx, f.userID)
+	code, _, err := store.IssueSMSOTPEnrolment(ctx, tx, f.userID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _, err := store.ConfirmSMSOTPEnrolment(ctx, tx, f.userID, code); err != nil || !ok {
+	if ok, _, err := store.ConfirmSMSOTPEnrolment(ctx, tx, f.userID, code, nil); err != nil || !ok {
 		t.Fatalf("proving the number: %v %v", ok, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

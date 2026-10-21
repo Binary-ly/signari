@@ -152,7 +152,9 @@ func TestNoTextMessageBypassesTheGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	direct := regexp.MustCompile(`\.texter\.Send\(`)
+	// The gateway, or a delegated service asked to send a code: both under the
+	// same countries and allowances.
+	direct := regexp.MustCompile(`\.texter\.Send\(|\.smsVerifier\.Start\(`)
 	found := 0
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
@@ -169,7 +171,7 @@ func TestNoTextMessageBypassesTheGate(t *testing.T) {
 				"the daily ceilings do not apply to it", e.Name())
 		}
 	}
-	if found != 1 {
-		t.Fatalf("found %d calls to the gateway; the gate's own should be the only one", found)
+	if found != 2 {
+		t.Fatalf("found %d calls to the gateway and the service; the gate's own two should be the only ones", found)
 	}
 }

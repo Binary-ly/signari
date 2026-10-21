@@ -844,7 +844,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		s.renderPage(w, r, "smsotp", map[string]any{
 			"Stage": stage, "Number": number, "Error": msg,
 			"CSRF": csrf, "CSRFField": csrfFormField,
-			"Configured": s.texter != nil,
+			"Configured": s.smsAvailable(),
 		})
 	}
 
@@ -875,7 +875,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 
 	// Refused up front when no gateway is configured. Accepting an enrolment
 	// that can never deliver a code would be building somebody a lockout.
-	if s.texter == nil {
+	if !s.smsAvailable() {
 		render("start", "",
 			"Text messages are not available on this server. Ask an administrator, "+
 				"or use an authenticator app instead.")
@@ -892,7 +892,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		defer func() { _ = tx.Rollback(ctx) }()
 
 		okCode, replaced, verr := store.ConfirmSMSOTPEnrolment(ctx, tx, userID,
-			strings.TrimSpace(r.PostForm.Get("code")))
+			strings.TrimSpace(r.PostForm.Get("code")), s.smsDelegate())
 		if verr != nil {
 			s.log.Error("verifying an SMS enrolment code", "err", verr)
 			render("verify", "", "Something went wrong. Try again.")
@@ -982,7 +982,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		code, to, ierr := store.IssueSMSOTPEnrolment(ctx, tx, userID)
+		code, to, ierr := store.IssueSMSOTPEnrolment(ctx, tx, userID, s.smsVerifier != nil)
 		switch {
 		case errors.Is(ierr, store.ErrSMSOTPTooSoon):
 			// A live code is already on its way. Moving to the verify step is

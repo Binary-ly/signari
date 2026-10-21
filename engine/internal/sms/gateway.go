@@ -226,10 +226,35 @@ func NewFromEnv(getenv func(string) string) (Sender, error) {
 		}
 		return w, nil
 
+	case "verify-webhook":
+		// No sender: the service sends only the codes it makes, so account
+		// notices go by email alone. NewVerifierFromEnv builds the service.
+		return nil, nil
+
 	default:
-		return nil, fmt.Errorf("SIGNARI_SMS_GATEWAY must be twilio or webhook (got %q)",
+		return nil, fmt.Errorf("SIGNARI_SMS_GATEWAY must be twilio, webhook or verify-webhook (got %q)",
 			getenv("SIGNARI_SMS_GATEWAY"))
 	}
+}
+
+// NewVerifierFromEnv builds the delegated verification service when
+// SIGNARI_SMS_GATEWAY is verify-webhook, and nothing otherwise.
+func NewVerifierFromEnv(getenv func(string) string) (Verifier, error) {
+	if strings.ToLower(strings.TrimSpace(getenv("SIGNARI_SMS_GATEWAY"))) != "verify-webhook" {
+		return nil, nil
+	}
+	v := &VerifyWebhook{URL: getenv("SIGNARI_SMS_VERIFY_URL"), AuthHeader: getenv("SIGNARI_SMS_VERIFY_AUTH")}
+	u, err := url.Parse(v.URL)
+	switch {
+	case v.URL == "":
+		return nil, fmt.Errorf("SIGNARI_SMS_VERIFY_URL is required for the verify-webhook gateway")
+	case err != nil || u.Host == "":
+		return nil, fmt.Errorf("SIGNARI_SMS_VERIFY_URL is not a URL: %q", v.URL)
+	case u.Scheme != "https" && !isLoopbackHost(u.Hostname()):
+		// A check carries the code the person typed, live until it is spent.
+		return nil, fmt.Errorf("SIGNARI_SMS_VERIFY_URL must be https: a check carries a live one-time code")
+	}
+	return v, nil
 }
 
 func isLoopbackHost(h string) bool {

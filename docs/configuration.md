@@ -350,10 +350,11 @@ See [SMS](sms.md), including why it is the weakest factor offered here.
 
 | | |
 |---|---|
-| `SIGNARI_SMS_GATEWAY` | `twilio` or `webhook`. A misspelling is **fatal at startup**, not a silent fallback |
+| `SIGNARI_SMS_GATEWAY` | `twilio`, `webhook`, or `verify-webhook` for a service that makes, sends and checks codes itself ([sms](sms.md)). A misspelling is **fatal at startup**, not a silent fallback |
 | `SIGNARI_SMS_FROM` | Sending number, or a Twilio messaging service SID |
 | `SIGNARI_SMS_TWILIO_SID`, `SIGNARI_SMS_TWILIO_TOKEN` | Twilio credentials |
 | `SIGNARI_SMS_WEBHOOK_URL`, `SIGNARI_SMS_WEBHOOK_AUTH` | For any other provider. Must be https: the body carries a live code |
+| `SIGNARI_SMS_VERIFY_URL`, `SIGNARI_SMS_VERIFY_AUTH` | For `verify-webhook`: the service's URL and the `Authorization` header sent to it. Must be https: a check carries a live code. The contract is in [sms](sms.md). Account notices then go by email only |
 | `SIGNARI_SMS_ALLOWED_PREFIXES` | Comma-separated E.164 prefixes of the countries you serve, such as `+1,+44`. A number outside the list cannot be enrolled and is sent nothing. Unset allows every country; `signari doctor` and the startup log both say so |
 | `SIGNARI_SMS_NUMBER_DAILY_LIMIT` | Messages one number may be sent per 24 hours, default `10`. Codes and account notices each get this many |
 | `SIGNARI_SMS_ORG_DAILY_LIMIT` | Messages one organisation may send per 24 hours, default `1000`. Codes and account notices each get this many. Raise it for a large organisation that uses SMS sign-in daily |

@@ -189,6 +189,9 @@ type Server struct {
 	// the decision rather than approving without asking the policy.
 	pendingBackchannel func(context.Context, *pgxpool.Pool, string, string) (*store.DeviceAuthorization, error)
 
+	// smsVerifier is a delegated verification service that makes, sends and
+	// checks SMS codes itself; nil unless SIGNARI_SMS_GATEWAY=verify-webhook.
+	smsVerifier sms.Verifier
 	// smsPolicy bounds text messages: countries and daily ceilings (smsgate.go).
 	// The zero value allows any country under the default ceilings.
 	smsPolicy sms.Policy
@@ -207,6 +210,9 @@ func (s *Server) SetFactorFailureLimit(n int) { s.factorFailureLimit = n }
 
 // SetSMSPolicy supplies the country list and daily ceilings for text messages.
 func (s *Server) SetSMSPolicy(p sms.Policy) { s.smsPolicy = p }
+
+// SetSMSVerifier supplies a delegated verification service for SMS codes.
+func (s *Server) SetSMSVerifier(v sms.Verifier) { s.smsVerifier = v }
 
 // SetClientIPResolver supplies how the client address is read behind a proxy,
 // from SIGNARI_CLIENT_IP_SOURCE and SIGNARI_TRUSTED_PROXIES.

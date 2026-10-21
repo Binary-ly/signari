@@ -522,7 +522,13 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 	// from an authenticator app in every record and every policy decision --
 	// documenting the weakness and then erasing it in the one field that
 	// machines read.
-	ok, smsGuessed, serr := store.VerifySMSOTP(ctx, tx, userID, strings.TrimSpace(code))
+	ok, smsGuessed, serr := store.VerifySMSOTP(ctx, tx, userID, strings.TrimSpace(code), s.smsDelegate())
+	if errors.Is(serr, store.ErrSMSVerifierUnavailable) {
+		// Refused, not charged, and the other factors still tried: an outage of
+		// the service is not the person's guess.
+		s.log.Error("checking an SMS code with the verification service", "err", serr)
+		serr = nil
+	}
 	if serr != nil {
 		return res, serr
 	} else if ok {
@@ -642,7 +648,7 @@ func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, userID, authz
 // sending codes to it would be this engine spamming a stranger every time an
 // account it does not own is signed into.
 func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
-	if s.texter == nil {
+	if !s.smsAvailable() {
 		return
 	}
 	verified, err := store.HasVerifiedSMS(ctx, s.db, userID)
@@ -661,7 +667,7 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	code, number, err := store.IssueSMSOTP(ctx, tx, userID)
+	code, number, err := store.IssueSMSOTP(ctx, tx, userID, s.smsVerifier != nil)
 	switch {
 	case errors.Is(err, store.ErrNoSMSOTP):
 		return

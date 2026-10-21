@@ -308,6 +308,14 @@ func checkSMS(r *Report) {
 		r.add(Critical, "sms", err.Error(), "correct it; the server will not start until it is")
 		return
 	}
+	if v, err := sms.NewVerifierFromEnv(os.Getenv); err != nil {
+		r.add(Critical, "sms", err.Error(), "correct it; the server will not start until it is")
+		return
+	} else if v != nil {
+		r.add(Info, "sms", "SMS codes are made, sent and checked by "+v.Describe()+
+			", so account notices go by email only",
+			"a person whose email is compromised hears about changes to their account nowhere else")
+	}
 	if !p.Restricted() {
 		number, org := p.Limits()
 		r.add(Warning, "sms", "SMS is enabled for numbers in every country",

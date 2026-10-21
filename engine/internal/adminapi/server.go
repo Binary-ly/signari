@@ -709,6 +709,14 @@ func (s *Server) mutateIf(ctx context.Context, p precondition, fn func(pgx.Tx) e
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// The version row first, conditional or not, before fn can take another
+	// lock (store.LockConfigVersion). An unconditional write here took the
+	// audit chain's lock inside fn and the row at the end, and a CLI command
+	// and this API, run together, deadlocked (4.25).
+	if err := store.LockConfigVersion(ctx, tx); err != nil {
+		return 0, err
+	}
+
 	if err := checkPrecondition(ctx, tx, p); err != nil {
 		return 0, err
 	}

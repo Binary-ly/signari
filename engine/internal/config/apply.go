@@ -427,6 +427,12 @@ func sameSet(a, b []string) bool {
 // and fails somewhere in the middle, which is the hardest state to diagnose and
 // the easiest to avoid.
 func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) error {
+	// Before the first write, as every writer that moves the version does
+	// (store.LockConfigVersion): recordApply audits and then bumps, which
+	// for a caller outside the CLI is the order that deadlocks with it.
+	if err := store.LockConfigVersion(ctx, tx); err != nil {
+		return err
+	}
 	byName := map[string]Change{}
 	for _, c := range plan.Changes {
 		byName[c.Kind+"/"+c.Name] = c

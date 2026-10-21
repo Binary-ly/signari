@@ -34,6 +34,9 @@ func SetIdentityProviderEnabled(ctx context.Context, db interface {
 		return "", err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := LockConfigVersion(ctx, tx); err != nil {
+		return "", err
+	}
 	var orgID string
 	if err := tx.QueryRow(ctx, `
 		UPDATE core.identity_providers SET enabled = $2, updated_at = now()

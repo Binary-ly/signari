@@ -49,13 +49,28 @@ password constructed from a cheap pattern that has never appeared in a dump.
 
 ## What is deliberately **not** checked
 
-Composition rules — "one uppercase, one digit, one symbol". NIST SP 800-63B
-advises against them: they push people towards `Password1!`, which is in every
-breach corpus, and away from long passphrases, which are not.
+Composition rules — "one uppercase, one digit, one symbol". NIST SP
+800-63B-4 §3.1.1.2 says verifiers SHALL NOT impose them, where revision 3 said
+SHOULD NOT: they push people towards `Password1!`, which is in every breach
+corpus, and away from long passphrases, which are not.
 
 Length and a breach check do the work those rules pretend to do. What they never
 catch is context — `alice-was-here-2026` satisfies every composition rule ever
 written and is guessable by anyone who knows Alice.
+
+Periodic expiry — "change your password every 90 days". The same section says
+verifiers SHALL NOT require it. A password expiring on a schedule becomes the
+previous one with a digit changed. A password is changed when there is evidence
+it is compromised instead. With the breach check on, a password found in a
+breach corpus at sign-in is flagged, and the person is asked to change it before
+the session is issued.
+
+Both are compliance by absence: there is no composition check and no expiry
+column. Absence is the hardest thing to keep, because a change that adds either
+reads like tightening security. `TestNoCompositionRulesAreImposed` and
+`TestNoPasswordExpiresOnASchedule` fail the build if either appears. This was
+recorded as a decision in October 2026: a procurement checklist that asks for
+either is asking for what the standard forbids, and the answer is this page.
 
 ## The breach check, and how it differs from the alternatives
 

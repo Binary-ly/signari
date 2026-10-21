@@ -288,6 +288,15 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		}); aerr != nil {
 			s.log.Error("recording the link", "err", aerr)
 		}
+		// A new way into the account: the holder is told on every channel,
+		// queued in the transaction the sign-in below commits, so a link that
+		// does not hold tells nobody.
+		if nerr := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+			Notice: store.NoticeProviderLinked, Provider: provider.DisplayName}); nerr != nil {
+			s.log.Error("queueing the link notice", "err", nerr)
+			fail("Something went wrong. Please try again.")
+			return
+		}
 
 	case federation.CreateUser:
 		ext.Email = email

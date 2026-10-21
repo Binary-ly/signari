@@ -175,6 +175,14 @@ func (s *Server) handlePasswordChangePost(w http.ResponseWriter, r *http.Request
 	}); aerr != nil {
 		s.log.Error("auditing a password change", "err", aerr)
 	}
+	// Queued in the change's transaction, which the walk below commits or
+	// abandons: the notice goes out exactly when the change does.
+	if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: pending.Subject,
+		Notice: store.NoticePasswordChanged}); err != nil {
+		s.log.Error("queueing the password-changed notice", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 
 	// Back into the funnel. The flag is now clear, so this step does not repeat.
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, pending.AMR, pending.Authz)

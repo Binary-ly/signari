@@ -179,6 +179,13 @@ func EraseSubject(ctx context.Context, tx pgx.Tx, subjectID string, deactivate b
 		if _, err := tx.Exec(ctx, `DELETE FROM core.users WHERE id = $1::uuid`, subjectID); err != nil {
 			return nil, fmt.Errorf("removing the erased account: %w", err)
 		}
+		// Notices to the holder are not keyed to the account by a foreign key,
+		// and one about a changed address carries the old address. Nobody is
+		// left to tell, so they go with the account rather than at retention.
+		if _, err := tx.Exec(ctx, `DELETE FROM core.outbox WHERE topic = $1 AND payload->>'user_id' = $2`,
+			AccountNoticeTopic, subjectID); err != nil {
+			return nil, fmt.Errorf("removing notices to the erased account: %w", err)
+		}
 		rep.AccountDeleted = true
 		rep.Deactivated = rep.StillActive
 	}

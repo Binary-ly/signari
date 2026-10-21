@@ -27,6 +27,19 @@ const (
 	// NoticePasskeyLink: the link to register a passkey (IssuePasskeyLink),
 	// emailed to the account's address alone; its token is minted as it is sent.
 	NoticePasskeyLink = "passkey_link"
+	// NoticePasswordChanged: the person changed their password, by choice or
+	// because the sign-in required it, and every session ended.
+	NoticePasswordChanged = "password_changed"
+	// NoticePasswordSet: an administrator set the password.
+	NoticePasswordSet = "password_set"
+	// NoticeEmailChanged: an administrator changed the address. Sent to the
+	// new one and to the old (OldAddress), which is the one the holder may
+	// still be reading if the change was not theirs.
+	NoticeEmailChanged = "email_changed"
+	// NoticeProviderLinked and NoticeProviderUnlinked: a provider (Provider,
+	// its display name) can now, or can no longer, sign the person in.
+	NoticeProviderLinked   = "provider_linked"
+	NoticeProviderUnlinked = "provider_unlinked"
 )
 
 // AccountNotice is one queued notice.
@@ -38,6 +51,10 @@ type AccountNotice struct {
 	// LinkID is the passkey link a NoticePasskeyLink carries. Its id, never
 	// its token.
 	LinkID string `json:"link_id,omitempty"`
+	// OldAddress is the address a NoticeEmailChanged also goes to.
+	OldAddress string `json:"old_address,omitempty"`
+	// Provider is the provider a NoticeProviderLinked or Unlinked names.
+	Provider string `json:"provider,omitempty"`
 }
 
 // EnqueueAccountNotice queues a notice in tx.

@@ -21,6 +21,8 @@ func TestAnotherNumberIsPendingUntilProved(t *testing.T) {
 	f, cookie := enrolFixture(t)
 	texter := &captureTexter{}
 	f.srv.texter = texter
+	mailer := &captureMailer{}
+	f.srv.mailer = mailer
 	f.srv.SetSMSPolicy(smsPolicy(t, map[string]string{"SIGNARI_SMS_ALLOWED_PREFIXES": "+44"}))
 	ctx := context.Background()
 	base := time.Now().UnixNano() % 100_000_000
@@ -66,6 +68,16 @@ func TestAnotherNumberIsPendingUntilProved(t *testing.T) {
 	step(url.Values{"step": {"verify"}, "code": {lastCodeTo(first)}})
 	if c := state(); !c.Verified || c.Number != first {
 		t.Fatalf("the first number was not proved: %+v", c)
+	}
+	// The holder is told by email too, as for an app or an address (5.04).
+	enrolMails := 0
+	for _, m := range mailer.messages() {
+		if m.To == f.email && m.Subject == "Sign-in codes will now be sent by text message" {
+			enrolMails++
+		}
+	}
+	if enrolMails != 1 {
+		t.Errorf("%d enrolment emails for a proved number, want 1", enrolMails)
 	}
 
 	clearResendFloor()

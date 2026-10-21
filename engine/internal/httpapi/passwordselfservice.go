@@ -200,6 +200,15 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 		s.log.Error("recording a voluntary password change", "err", aerr)
 	}
 
+	// Told on every channel, queued with the change so it goes out if and only
+	// if the change commits: whoever changed it may not be the account's holder.
+	if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+		Notice: store.NoticePasswordChanged}); err != nil {
+		s.log.Error("queueing the password-changed notice", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return

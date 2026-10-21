@@ -2,10 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/store"
 )
 
@@ -238,7 +242,7 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 		s.federationError(w, r, "That request could not be verified. Please try again.")
 		return
 	}
-	sid, userID, _, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account"), http.StatusSeeOther)
 		return
@@ -273,12 +277,36 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := tx.Exec(ctx, `
+	var provider string
+	err = tx.QueryRow(ctx, `
 		DELETE FROM core.federated_identities f
 		USING core.identity_providers p
-		WHERE f.provider_id = p.id AND f.user_id = $1::uuid AND p.slug = $2`,
-		userID, slug); err != nil {
+		WHERE f.provider_id = p.id AND f.user_id = $1::uuid AND p.slug = $2
+		RETURNING p.display_name`, userID, slug).Scan(&provider)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Not linked: nothing to remove, record or tell.
+		http.Redirect(w, r, "/account", http.StatusSeeOther)
+		return
+	}
+	if err != nil {
 		s.log.Error("unlinking provider", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	// A way into the account went, so it is audited and the holder told, as
+	// linking one is: an unlink they did not make is somebody else in their
+	// session.
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "federation.account_unlinked", OrgID: orgID, SubjectID: userID,
+		CorrelationID: correlationID(ctx), Detail: map[string]any{"provider": slug},
+	}); err != nil {
+		s.log.Error("auditing an unlink", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+		Notice: store.NoticeProviderUnlinked, Provider: provider}); err != nil {
+		s.log.Error("queueing the unlink notice", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}

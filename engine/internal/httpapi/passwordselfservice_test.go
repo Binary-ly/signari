@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/store"
 )
 
 // A voluntary password change must prove the CURRENT password.
@@ -63,6 +65,9 @@ func TestVoluntaryPasswordChangeRequiresTheCurrentPassword(t *testing.T) {
 		t.Error("the stored password no longer verifies against the original; a " +
 			"failed change must leave the credential untouched")
 	}
+	if n := queuedNotices(t, f.pool, f.userID, store.NoticePasswordChanged); n != 0 {
+		t.Errorf("%d password-changed notices for a change that did not happen", n)
+	}
 
 	// Right current password: succeeds (redirects to sign in) and the new one works.
 	rec = post(signInTestPassword, "a-brand-new-passphrase-9271")
@@ -76,6 +81,10 @@ func TestVoluntaryPasswordChangeRequiresTheCurrentPassword(t *testing.T) {
 	}
 	if _, verr := f.srv.hasher.Verify(ctx, stored, "a-brand-new-passphrase-9271"); verr != nil {
 		t.Error("after a successful change the new password does not verify")
+	}
+	// The holder is told, whoever was holding the session.
+	if n := queuedNotices(t, f.pool, f.userID, store.NoticePasswordChanged); n != 1 {
+		t.Errorf("%d password-changed notices queued after the change, want 1", n)
 	}
 }
 

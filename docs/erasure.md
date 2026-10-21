@@ -10,7 +10,9 @@ including in every backup taken before the erasure, which is the part row deleti
 cannot give you. And it removes their account: signed out everywhere, each
 application they used told, then the account and every row keyed by it deleted.
 The address, the username and the names are in the account in the clear, and a
-key shred does not reach them.
+key shred does not reach them. Notices still waiting to be sent to the person go
+too: one about a changed address carries the old address, and there is nobody
+left to tell.
 
 Until October 2026 an erasure only destroyed the key and deactivated the account,
 so it left all of those behind. A person who had never enrolled a second factor had

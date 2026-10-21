@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/outbox"
 	"signari.dev/engine/internal/store"
 )
@@ -30,11 +31,29 @@ func (s *Server) DeliverAccountNotice(ctx context.Context, n store.AccountNotice
 		key = "factor.assigned"
 	case store.NoticePasskeyLink:
 		return s.deliverPasskeyLink(ctx, n)
+	case store.NoticePasswordChanged:
+		key = "password.changed"
+	case store.NoticePasswordSet:
+		key = "password.set"
+	case store.NoticeEmailChanged:
+		key = "email.changed"
+	case store.NoticeProviderLinked:
+		key = "federation.linked"
+	case store.NoticeProviderUnlinked:
+		key = "federation.unlinked"
 	default:
 		return fmt.Errorf("an account notice of no known kind %q", n.Notice)
 	}
 	tr := s.notifierFor(ctx, n.UserID)
-	data := map[string]any{"Factor": tr.Text("factor.kind." + n.Factor)}
-	return s.notifyAccount(ctx, n.UserID, tr.Text("mail."+key+".subject"),
-		tr.Text("mail."+key+".body", data), tr.Text("sms."+key, data))
+	data := map[string]any{"Factor": tr.Text("factor.kind." + n.Factor), "Provider": n.Provider}
+	subject, body := tr.Text("mail."+key+".subject", data), tr.Text("mail."+key+".body", data)
+	err := s.notifyAccount(ctx, n.UserID, subject, body, tr.Text("sms."+key, data))
+	if n.Notice == store.NoticeEmailChanged && n.OldAddress != "" {
+		// The old address too: if the change was not the holder's, it is the
+		// one they still read. Neither address is named in the message.
+		if merr := s.mailer.Send(ctx, mail.Message{To: n.OldAddress, Subject: subject, Body: body}); err == nil {
+			err = merr
+		}
+	}
+	return err
 }

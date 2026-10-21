@@ -81,6 +81,19 @@ func TestUnlinkingCountsAPasswordNotYetRehashed(t *testing.T) {
 		t.Fatalf("unlinking with an imported password left answered %d and kept %d link(s); want it removed",
 			rec.Code, linked())
 	}
+	// A way in went: audited, and the holder told (5.04).
+	var audited int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM core.audit_events WHERE subject_id = $1::uuid
+		AND event_type = 'federation.account_unlinked' AND detail->>'provider' = $2`, f.userID, slug).Scan(&audited); err != nil {
+		t.Fatal(err)
+	}
+	if n := queuedNotices(t, f.pool, f.userID, store.NoticeProviderUnlinked); audited != 1 || n != 1 {
+		t.Errorf("unlinking: %d audited, %d notices queued; want 1 and 1", audited, n)
+	}
+	// Unlinking what is not linked records and tells nothing.
+	if unlink(); queuedNotices(t, f.pool, f.userID, store.NoticeProviderUnlinked) != 1 {
+		t.Error("unlinking a provider that was not linked queued a notice")
+	}
 
 	// With no password at all, the provider is the last way in and stays.
 	link()

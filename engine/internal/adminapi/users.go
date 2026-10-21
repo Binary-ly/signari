@@ -333,6 +333,15 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		//
 		// Found by a test, not by reading: the version with two UPDATEs passed
 		// every single-field case and failed the first combined one.
+		// The address before the change, so the holder is told there too: if the
+		// change was not theirs, the old address is the one they still read.
+		var oldEmail string
+		if req.Email != nil {
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(email, '') FROM core.users WHERE id = $1::uuid`,
+				userID).Scan(&oldEmail); err != nil {
+				return err
+			}
+		}
 		if req.Email != nil || req.Username != nil {
 			if _, err := tx.Exec(ctx, `
 				UPDATE core.users SET
@@ -422,6 +431,21 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			if err := store.RequirePasswordChange(ctx, tx, userID,
 				"reason.administrator"); err != nil {
 				return fmt.Errorf("requiring a password change: %w", err)
+			}
+		}
+
+		// The holder hears of a password or address an administrator changed,
+		// queued with the change so it goes out exactly when the change commits.
+		if req.Password != nil {
+			if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+				Notice: store.NoticePasswordSet}); err != nil {
+				return err
+			}
+		}
+		if req.Email != nil && oldEmail != "" && !strings.EqualFold(oldEmail, strings.TrimSpace(*req.Email)) {
+			if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+				Notice: store.NoticeEmailChanged, OldAddress: oldEmail}); err != nil {
+				return err
 			}
 		}
 

@@ -146,6 +146,14 @@ func TestAnErasedPersonLeavesNoIdentifierAnywhere(t *testing.T) {
 		"display_name": identifiers[2], "surname": identifiers[3]}); rec.Code != http.StatusOK {
 		t.Fatalf("renaming: %d %s", rec.Code, rec.Body.String())
 	}
+	// A changed address queues a notice to the old one, which carries it; the
+	// old address is one of the identifiers that must not survive (5.04).
+	moved := "moved" + tag + "@example.test"
+	if rec := call(t, s, http.MethodPatch, "/admin/users/"+created.ID, testToken, map[string]any{
+		"email": moved}); rec.Code != http.StatusOK {
+		t.Fatalf("changing the address: %d %s", rec.Code, rec.Body.String())
+	}
+	identifiers = append(identifiers, moved)
 	// Signed in, so erasure has a session to end.
 	if _, err := s.db.Exec(ctx, `
 		INSERT INTO core.sessions (sid, org_id, user_id, auth_time, not_after)

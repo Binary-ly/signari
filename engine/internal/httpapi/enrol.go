@@ -924,6 +924,12 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 				s.log.Warn("telling the previous number its codes have moved", "err", serr)
 			}
 		}
+		// Every channel the account has, as an app or an address being added
+		// is told: a number somebody else added in this session is a second
+		// factor in their hands.
+		trE := s.notifierFor(ctx, userID)
+		_ = s.notifyAccount(ctx, userID, trE.Text("mail.smsotp.enrolled.subject"),
+			trE.Text("mail.smsotp.enrolled.body"), trE.Text("sms.smsotp.enrolled"))
 		cred, _ := store.LoadSMSOTP(ctx, s.db, userID)
 		number := ""
 		switch {

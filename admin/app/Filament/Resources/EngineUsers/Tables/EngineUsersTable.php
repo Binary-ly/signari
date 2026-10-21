@@ -4,6 +4,7 @@ namespace App\Filament\Resources\EngineUsers\Tables;
 
 use App\Services\EngineAdminApi;
 use Filament\Actions\Action;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use RuntimeException;
@@ -98,6 +99,7 @@ class EngineUsersTable
             ->recordActions([
                 self::toggleActiveAction(),
                 self::setPasswordAction(),
+                self::removeFactorAction(),
             ])
             ->toolbarActions([])
             ->defaultSort('created_at', 'desc')
@@ -189,6 +191,84 @@ class EngineUsersTable
                     ->body($ended > 0 ? self::endedSessions($ended) : __('No sessions were open.'))
                     ->success()->send();
             });
+    }
+
+    /**
+     * Remove a sign-in method, for somebody whose phone or key is lost.
+     *
+     * The choices are the engine's own listing, read when the form opens: what
+     * each method IS, never what it holds. A passkey is chosen by its id, since
+     * a person may hold several. The engine ends every session they hold and
+     * tells them by email and a verified number; their next sign-in enrols a new
+     * method where a flow requires one.
+     */
+    private static function removeFactorAction(): Action
+    {
+        return Action::make('removeFactor')
+            ->label(__('Remove a sign-in method'))
+            ->icon('heroicon-m-shield-exclamation')
+            ->color('danger')
+            ->requiresConfirmation()
+            ->modalDescription(__('Every session they hold is ended, and they are told by email and a verified number.'))
+            ->schema([
+                Select::make('factor')->label(__('Sign-in method'))->required()
+                    ->options(fn ($record): array => self::factorOptions($record->id)),
+            ])
+            ->action(function ($record, array $data): void {
+                [$kind, $id] = array_pad(explode(':', (string) $data['factor'], 2), 2, null);
+                try {
+                    $r = EngineAdminApi::fromConfig()->removeUserFactor($record->id, $kind, $id);
+                } catch (RuntimeException $e) {
+                    Notification::make()->title(__('Nothing was removed'))->body($e->getMessage())
+                        ->danger()->persistent()->send();
+
+                    return;
+                }
+                Notification::make()->title(__('Sign-in method removed'))
+                    ->body(self::endedSessions((int) ($r['sessions_ended'] ?? 0)))
+                    ->success()->send();
+            });
+    }
+
+    /**
+     * The methods to choose from, keyed `kind` or `kind:id`. Empty when the
+     * engine cannot be read, which the form shows as nothing to pick rather
+     * than a guess.
+     *
+     * @return array<string, string>
+     */
+    private static function factorOptions(string $userId): array
+    {
+        try {
+            $listing = EngineAdminApi::fromConfig()->userFactors($userId);
+        } catch (RuntimeException) {
+            return [];
+        }
+        $names = [
+            'totp' => __('Authenticator app'),
+            'email_otp' => __('Email codes'),
+            'sms_otp' => __('Text message codes'),
+            'duo' => __('Duo'),
+            'webauthn' => __('Passkey or security key'),
+        ];
+        $out = [];
+        foreach ($listing['factors'] ?? [] as $f) {
+            $type = (string) ($f['type'] ?? '');
+            if (! isset($names[$type])) {
+                continue;
+            }
+            $id = (string) ($f['id'] ?? '');
+            $label = $names[$type].(($f['label'] ?? '') !== '' ? ' — '.$f['label'] : '');
+            if (! empty($f['disabled'])) {
+                $label .= ' ('.__('switched off').')';
+            }
+            $out[$id !== '' ? $type.':'.$id : $type] = $label;
+        }
+        if ((int) ($listing['recovery_codes_unused'] ?? 0) > 0 || ! empty($listing['recovery_codes_disabled'])) {
+            $out['recovery'] = __('Recovery codes');
+        }
+
+        return $out;
     }
 
     private static function setPasswordAction(): Action

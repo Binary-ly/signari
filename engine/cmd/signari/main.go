@@ -677,6 +677,11 @@ func run(args []string) (err error) {
 	otpCode := fs.String("code", "", "`user assign-otp`: the code the token shows now, proving the seed is its own")
 	otpNextCode := fs.String("next-code", "",
 		"`user assign-otp -hotp`: the code after -code, so a wrong seed cannot match one code by chance")
+	factorKind := fs.String("factor", "",
+		"`user remove-factor`: totp, email_otp, sms_otp, duo, webauthn or recovery")
+	factorID := fs.String("factor-id", "",
+		"`user remove-factor`: which passkey (its id from GET /admin/users/{id}/factors), "+
+			"when the person holds several")
 	smsNumbers := fs.String("sms-numbers", "",
 		"`instance sms-numbers`: stored, or hashed to keep only a keyed hash of each SMS number, "+
 			"which the person retypes to be sent a code")
@@ -893,6 +898,8 @@ func run(args []string) (err error) {
 		return userCreate(ctx, conn, *orgID, *email, *password)
 	case "user locale":
 		return userLocale(ctx, conn, *orgID, *email, *localeTag)
+	case "user remove-factor":
+		return userRemoveFactor(ctx, conn, *orgID, *email, *factorKind, *factorID)
 	case "user unlock":
 		return userUnlock(ctx, conn, *orgID, *email)
 	case "instance login-throttle":
@@ -2096,7 +2103,11 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// without it being publishable.
 	audit.SetPublisher(store.AuditPublisher)
 
-	go outbox.New(workerPool, set, issuer, root, log).Run(workerCtx, 2*time.Second)
+	worker := outbox.New(workerPool, set, issuer, root, log)
+	// Notices to account holders the Admin API and the CLI queued, told through
+	// this server's channels.
+	worker.SetAccountNotifier(srv.DeliverAccountNotice)
+	go worker.Run(workerCtx, 2*time.Second)
 
 	// The janitor is likewise a singleton, but it enforces that itself with an
 	// advisory lock rather than by convention -- so it is safe to start on every

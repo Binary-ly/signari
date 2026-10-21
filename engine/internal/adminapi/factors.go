@@ -2,11 +2,9 @@ package adminapi
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/store"
@@ -60,31 +58,8 @@ import (
 // way that rule normally breaks is somebody selecting `*` because it was
 // convenient. There is a test asserting the absence.
 
-// factorKinds maps the URL segment to the table holding it.
-//
-// A fixed map, never the path value interpolated into SQL. The table name is the
-// one part of this query that cannot be a bind parameter, so it must not come
-// from the request at all -- and this is the shape where that mistake is easy,
-// because the segment and the table name look interchangeable.
-var factorKinds = map[string]struct {
-	table string
-	// keyed says the table holds one row per credential rather than one per
-	// user, so a delete needs the credential's own id.
-	keyed bool
-	// whole says a keyed kind may also be removed all at once, without an id.
-	// Recovery codes are one authenticator spread over several rows: the
-	// listing never shows their ids (it would be a list of the codes' handles
-	// for no purpose), and the support call is "remove this person's codes",
-	// including a set switched off for too many wrong attempts.
-	whole bool
-}{
-	"totp":      {table: "totp_credentials"},
-	"email_otp": {table: "email_otp_credentials"},
-	"sms_otp":   {table: "sms_otp_credentials"},
-	"duo":       {table: "duo_enrollments"},
-	"webauthn":  {table: "webauthn_credentials", keyed: true},
-	"recovery":  {table: "recovery_codes", keyed: true, whole: true},
-}
+// The kinds a factor removal names, and the table each is in, are
+// store.FactorKinds: the URL segment is never interpolated into SQL.
 
 type factorSummary struct {
 	Type string `json:"type"`
@@ -238,7 +213,7 @@ func (s *Server) deleteUserFactor(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("userID")
 	kind := r.PathValue("kind")
 
-	spec, ok := factorKinds[kind]
+	spec, ok := store.FactorKinds[kind]
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "unknown_factor", "detail": "no factor of that kind exists",
@@ -246,7 +221,7 @@ func (s *Server) deleteUserFactor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	factorID := r.PathValue("factorID")
-	if spec.keyed && factorID == "" && !spec.whole {
+	if spec.Keyed && factorID == "" && !spec.Whole {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "factor_id_required",
 			"detail": "a user may hold several of these, so the one to remove " +
@@ -275,43 +250,16 @@ func (s *Server) deleteUserFactor(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		// The table comes from factorKinds, the values are bound. The user_id
-		// predicate is present on BOTH branches: without it a caller could
-		// delete another user's credential by id, which is the whole tenancy
-		// boundary undone by an omitted clause.
-		var tag pgconn.CommandTag
-		var execErr error
-		if spec.keyed && factorID != "" {
-			tag, execErr = tx.Exec(ctx,
-				`DELETE FROM core.`+spec.table+` WHERE user_id = $1::uuid AND id = $2::uuid`,
-				userID, factorID)
-		} else {
-			tag, execErr = tx.Exec(ctx,
-				`DELETE FROM core.`+spec.table+` WHERE user_id = $1::uuid`, userID)
-		}
-		if execErr != nil {
-			return execErr
-		}
-		removed = tag.RowsAffected()
-		if removed == 0 {
+		// The removal, the sessions ended and the holder's notice queued, as
+		// the CLI's `user remove-factor` does them (store.RemoveFactor).
+		got, err := store.RemoveFactor(ctx, tx, userID, kind, factorID)
+		if errors.Is(err, store.ErrFactorNotFound) {
 			return errNotFound
 		}
-		// The whole set gone, its count of wrong attempts goes with it, so a
-		// set generated afterwards does not inherit a disabled state.
-		if kind == "recovery" && factorID == "" {
-			if err := store.ClearRecoveryCodeFailures(ctx, tx, userID); err != nil {
-				return err
-			}
-		}
-
-		// See the file comment: the sessions are the point, not a side effect.
-		term, err := store.TerminateSessions(ctx, tx, "", userID, store.ReasonMFAReset)
 		if err != nil {
-			return fmt.Errorf("ending sessions after a factor reset: %w", err)
+			return err
 		}
-		if term != nil {
-			ended, notified = term.Sessions, term.Notices
-		}
+		removed, ended, notified = got.Removed, got.SessionsEnded, got.NoticesQueued
 
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.factor_removed", AdminTokenID: TokenIDFrom(ctx),

@@ -1129,6 +1129,49 @@ func instanceLoginThrottle(ctx context.Context, conn *pgx.Conn, orgID string, fr
 	return nil
 }
 
+// userRemoveFactor removes one of a person's sign-in methods, as the Admin
+// API's DELETE /admin/users/{id}/factors/{kind} does (store.RemoveFactor): the
+// method, every session they hold, and a notice to them, which serve's outbox
+// worker delivers. For somebody whose phone or key is lost; their next sign-in
+// enrols a new one where a flow requires it.
+func userRemoveFactor(ctx context.Context, conn *pgx.Conn, orgID, email, kind, factorID string) error {
+	if email == "" || kind == "" {
+		return fmt.Errorf("give -email and -factor (totp, email_otp, sms_otp, duo, webauthn or recovery)")
+	}
+	userID, userOrg, err := oneInOrg(ctx, conn, "users",
+		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	got, err := store.RemoveFactor(ctx, tx, userID, kind, factorID)
+	switch {
+	case errors.Is(err, store.ErrFactorIDRequired):
+		return fmt.Errorf("%w: give -factor-id", err)
+	case errors.Is(err, store.ErrFactorNotFound):
+		return fmt.Errorf("%s has no %s to remove", email, kind)
+	case err != nil:
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "admin.factor_removed", OrgID: userOrg, SubjectID: userID,
+		Detail: map[string]any{"factor": kind, "removed": got.Removed, "sessions_ended": got.SessionsEnded,
+			"notices_queued": got.NoticesQueued, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the removal: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s removed (%d); %d session(s) ended. They are told by email and a verified number.\n",
+		email, kind, got.Removed, got.SessionsEnded)
+	return nil
+}
+
 // instanceTOTPPolicy sets what an organisation enrols new authenticator apps
 // with (migration 0171). Each credential keeps what it was enrolled with, so
 // this changes nothing for anybody already enrolled.
@@ -1281,6 +1324,11 @@ func userAssignOTP(ctx context.Context, conn *pgx.Conn, orgID, email, seedFile s
 	replaced, err := store.AssignOTPToken(ctx, tx, userID, userOrg, seed, kind, string(p.Algorithm),
 		p.Digits, p.Period, counter, root)
 	if err != nil {
+		return err
+	}
+	// The holder hears of it on their own channels, as of any factor change.
+	if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+		Notice: store.NoticeFactorAssigned, Factor: "totp"}); err != nil {
 		return err
 	}
 	if err := audit.Write(ctx, tx, audit.Event{

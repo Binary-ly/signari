@@ -103,6 +103,35 @@ class EngineAdminApi
     }
 
     /**
+     * A person's sign-in methods as the engine lists them: what each IS, never
+     * what it holds. `factors` carries a `type`, an `id` for the kinds a person
+     * may hold several of, and whether each is confirmed or disabled;
+     * `recovery_codes_unused` counts the codes without listing them.
+     */
+    public function userFactors(string $userId): array
+    {
+        return $this->request('get', "/admin/users/{$userId}/factors");
+    }
+
+    /**
+     * Remove one of a person's sign-in methods, for somebody whose phone or key
+     * is lost. The engine ends every session they hold and tells them by email
+     * and a verified number. A passkey is named by its id; `recovery` with no
+     * id removes the whole set.
+     *
+     * Conditional, like every other mutation here.
+     */
+    public function removeUserFactor(string $userId, string $kind, ?string $factorId = null): array
+    {
+        $path = "/admin/users/{$userId}/factors/".rawurlencode($kind);
+        if ($factorId !== null && $factorId !== '') {
+            $path .= '/'.rawurlencode($factorId);
+        }
+
+        return $this->request('delete', $path, [], $this->configVersion());
+    }
+
+    /**
      * Create a client. Returns the engine's response, including `client_secret`
      * for a confidential client.
      *

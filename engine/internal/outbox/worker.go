@@ -54,6 +54,8 @@ type Worker struct {
 	// place a third party's credential should sit, and rows there outlive the
 	// delivery by design.
 	root *keys.RootKey
+	// notify delivers account notices (accountnotice.go); nil leaves them queued.
+	notify AccountNotifier
 }
 
 func New(db *pgxpool.Pool, keySet *keys.Set, issuer string, root *keys.RootKey,
@@ -127,6 +129,12 @@ func (w *Worker) Run(ctx context.Context, interval time.Duration) {
 				w.log.Error("draining event subscriptions", "err", err)
 			} else if n > 0 {
 				w.log.Info("delivered events", "count", n)
+			}
+			// Notices to account holders the Admin API and the CLI raised.
+			if n, err := w.DrainAccountNotices(ctx); err != nil {
+				w.log.Error("draining account notices", "err", err)
+			} else if n > 0 {
+				w.log.Info("delivered account notices", "count", n)
 			}
 		}
 	}

@@ -936,11 +936,12 @@ func TestNoPageHasEnglishWrittenIntoIt(t *testing.T) {
 // dynamicKeyPrefixes finds key prefixes the server concatenates at runtime.
 //
 // Matches `"scope." + something`, which is how a family of keys gets asked for
-// without any one of them appearing as a literal.
+// without any one of them appearing as a literal, and `"factor.kind." + kind`,
+// a family inside a namespace, which counts only its own keys.
 func dynamicKeyPrefixes(t *testing.T) []string {
 	t.Helper()
 
-	concat := regexp.MustCompile(`"([a-z][a-z0-9]*\.)"\s*\+`)
+	concat := regexp.MustCompile(`"([a-z][a-z0-9]*(?:\.[a-z0-9_]+)*\.)"\s*\+`)
 	var out []string
 	for _, key := range keysUsedInGo(t, concat) {
 		out = append(out, key)

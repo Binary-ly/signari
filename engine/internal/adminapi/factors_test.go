@@ -74,6 +74,13 @@ func TestRemovingAFactorEndsTheUsersSessions(t *testing.T) {
 	if liveSessionCount(t, s, userID) != 0 {
 		t.Error("a session survived the factor reset")
 	}
+	// The holder is told, by serve's outbox worker (4.14): queued with the change.
+	var queued int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM core.outbox WHERE topic = 'account_notice'
+		AND payload->>'user_id' = $1 AND payload->>'notice' = 'factor_removed'
+		AND payload->>'factor' = 'totp'`, userID).Scan(&queued); err != nil || queued != 1 {
+		t.Errorf("%d notices to the holder queued (%v), want 1", queued, err)
+	}
 }
 
 // One passkey may be removed without touching the others.

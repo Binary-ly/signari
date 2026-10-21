@@ -122,6 +122,66 @@ class UserAdministrationTest extends TestCase
             ->assertNotified(__('User not created'));
     }
 
+    /**
+     * Removing a sign-in method offers what the engine lists, sends the one
+     * chosen -- a passkey by its id -- and sends it conditionally, as every
+     * other write here is. The engine ends the sessions and tells the holder.
+     */
+    public function test_removing_a_sign_in_method_is_conditional_and_names_it(): void
+    {
+        $user = $this->plantedUser();
+        Http::fake(function (Request $r) {
+            if (str_ends_with($r->url(), '/admin/config-version')) {
+                return Http::response(['config_version' => 9], 200);
+            }
+            if ($r->method() === 'GET') {
+                return Http::response(['factors' => [
+                    ['type' => 'totp', 'confirmed' => true],
+                    ['type' => 'webauthn', 'id' => 'pk-1', 'label' => 'Laptop', 'confirmed' => true],
+                ], 'recovery_codes_unused' => 4], 200);
+            }
+
+            return Http::response(['removed' => 1, 'sessions_ended' => 2, 'config_version' => 10], 200);
+        });
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('removeFactor')->table($user), data: ['factor' => 'webauthn:pk-1'])
+                ->assertHasNoActionErrors()
+                ->assertNotified(__('Sign-in method removed'));
+        });
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'DELETE'
+            && str_ends_with($r->url(), "/admin/users/{$user->id}/factors/webauthn/pk-1")
+            && $r->header('If-Match') === ['"9"']);
+    }
+
+    /** A removal the engine refuses says so, not a success over a failure. */
+    public function test_a_refused_removal_is_reported(): void
+    {
+        $user = $this->plantedUser();
+        Http::fake(function (Request $r) {
+            if (str_ends_with($r->url(), '/admin/config-version')) {
+                return Http::response(['config_version' => 9], 200);
+            }
+            if ($r->method() === 'GET') {
+                return Http::response(['factors' => [['type' => 'totp', 'confirmed' => true]]], 200);
+            }
+
+            return Http::response(['error' => 'factor_not_found'], 404);
+        });
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('removeFactor')->table($user), data: ['factor' => 'totp'])
+                ->assertNotified(__('Nothing was removed'));
+        });
+    }
+
     private function plantedUser(): EngineUser
     {
         $userId = $this->plantUser($this->orgId);

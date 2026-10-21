@@ -1167,7 +1167,8 @@ func userRemoveFactor(ctx context.Context, conn *pgx.Conn, orgID, email, kind, f
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	fmt.Printf("%s: %s removed (%d); %d session(s) ended. They are told by email and a verified number.\n",
+	fmt.Printf("%s: %s removed (%d); %d session(s) ended. They will be told by email, and by text "+
+		"where they have a verified number, once the server's outbox delivers it.\n",
 		email, kind, got.Removed, got.SessionsEnded)
 	return nil
 }

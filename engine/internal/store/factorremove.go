@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -44,6 +45,45 @@ var (
 	ErrFactorIDRequired = errors.New("a person may hold several of these, so the one to remove must be named")
 	ErrFactorNotFound   = errors.New("no such factor")
 )
+
+// OwnRemovable are the methods a person removes from their own account page:
+// the ones with one row each. A passkey is removed by its own route, which
+// refuses the last; Duo is enrolled and removed by an administrator; recovery
+// codes are replaced, not removed, on their page.
+var OwnRemovable = []string{"totp", "email_otp", "sms_otp"}
+
+// RemoveOwnFactor removes one of a person's own sign-in methods in tx.
+//
+// Unlike RemoveFactor it ends no session: the person is the one signed in,
+// having just proved a recent sign-in, as passkey removal works. When nothing
+// remains that is a second factor, their recovery codes go too
+// (recoveryCleared): a recovery code stands in for a lost second factor, and
+// with none left it is a credential that opens nothing but is still a guess
+// somebody can make at the code step.
+func RemoveOwnFactor(ctx context.Context, tx pgx.Tx, userID, kind string) (recoveryCleared bool, err error) {
+	if !slices.Contains(OwnRemovable, kind) {
+		return false, ErrUnknownFactor
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM core.`+FactorKinds[kind].Table+` WHERE user_id = $1::uuid`, userID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, ErrFactorNotFound
+	}
+	has, err := HasSecondFactor(ctx, tx, userID)
+	if err != nil || has {
+		return false, err
+	}
+	tag, err = tx.Exec(ctx, `DELETE FROM core.recovery_codes WHERE user_id = $1::uuid`, userID)
+	if err != nil {
+		return false, err
+	}
+	if err := ClearRecoveryCodeFailures(ctx, tx, userID); err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
 
 // RemovedFactor is what removing a factor did.
 type RemovedFactor struct {

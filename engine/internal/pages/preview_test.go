@@ -374,6 +374,12 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 		"verifyemail": csrf(map[string]any{
 			"Address": "amelia.hart@example.com", "Closed": false, "Error": "",
 		}),
+		"security": csrf(map[string]any{
+			"TOTP": true, "TOTPDisabled": false, "Email": "amelia.hart@example.com", "EmailDisabled": false,
+			"Number": "+44 7700 •••912", "Hashed": false, "Configured": true,
+			"Passkeys": 2, "Recovery": 7, "RecoveryDisabled": false, "HasSecondFactor": true, "Duo": false,
+			"Message": "",
+		}),
 		"sent":       map[string]any{},
 		"done":       map[string]any{},
 		"cancelled":  map[string]any{},

@@ -1,0 +1,51 @@
+{{define "title"}}{{T "security.title"}}{{end}}
+{{define "style"}}<style>
+:root{--page-w:34rem}
+td:last-child{text-align:end;white-space:nowrap}
+td form{display:inline;margin:0}
+</style>{{end}}
+{{define "content"}}
+<h1>{{T "security.title"}}</h1>
+<p>{{T "security.intro"}}</p>
+{{if .Message}}<p class="note" role="status">{{.Message}}</p>{{end}}
+<table>
+<tr><th>{{T "security.col.method"}}</th><th>{{T "security.col.state"}}</th><th></th></tr>
+<tr>
+<td>{{T "security.totp"}}</td>
+<td>{{if .TOTP}}{{if .TOTPDisabled}}<span class="err">{{T "security.switchedoff"}}</span>{{else}}{{T "security.inuse"}}{{end}}{{else}}<span class="muted">{{T "security.notsetup"}}</span>{{end}}</td>
+<td>{{if .TOTP}}<a class="btn" href="/account/mfa/totp">{{T "security.replace"}}</a>
+<form method="POST" action="/account/security/remove"><input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}"><input type="hidden" name="factor" value="totp"><button type="submit">{{T "account.remove"}}</button></form>
+{{else}}<a class="btn" href="/account/mfa/totp">{{T "security.setup"}}</a>{{end}}</td>
+</tr>
+<tr>
+<td>{{T "security.email"}}</td>
+<td>{{if .Email}}{{.Email}}{{if .EmailDisabled}} <span class="err">{{T "security.switchedoff"}}</span>{{end}}{{else}}<span class="muted">{{T "security.notsetup"}}</span>{{end}}</td>
+<td>{{if .Email}}<a class="btn" href="/account/mfa/email">{{T "security.change"}}</a>
+<form method="POST" action="/account/security/remove"><input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}"><input type="hidden" name="factor" value="email_otp"><button type="submit">{{T "account.remove"}}</button></form>
+{{else}}<a class="btn" href="/account/mfa/email">{{T "security.setup"}}</a>{{end}}</td>
+</tr>
+{{if or .Number .Configured}}<tr>
+<td>{{T "security.sms"}}</td>
+<td>{{if .Hashed}}{{T "security.sms.hashed"}}{{else if .Number}}{{.Number}}{{else}}<span class="muted">{{T "security.notsetup"}}</span>{{end}}</td>
+<td>{{if .Number}}{{if .Configured}}<a class="btn" href="/account/mfa/sms">{{T "security.change"}}</a>{{end}}
+<form method="POST" action="/account/security/remove"><input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}"><input type="hidden" name="factor" value="sms_otp"><button type="submit">{{T "account.remove"}}</button></form>
+{{else}}<a class="btn" href="/account/mfa/sms">{{T "security.setup"}}</a>{{end}}</td>
+</tr>{{end}}
+<tr>
+<td>{{T "security.passkeys"}}</td>
+<td>{{with .Passkeys}}{{N "security.passkeys.count" .}}{{else}}<span class="muted">{{T "security.notsetup"}}</span>{{end}}</td>
+<td><a class="btn" href="/account">{{T "security.manage"}}</a></td>
+</tr>
+<tr>
+<td>{{T "reccodes.title"}}</td>
+<td>{{if .RecoveryDisabled}}<span class="err">{{T "security.switchedoff"}}</span>{{else if .HasSecondFactor}}{{with .Recovery}}{{N "security.recovery.count" .}}{{else}}{{T "security.recovery.used"}}{{end}}{{else}}<span class="muted">{{T "security.recovery.none"}}</span>{{end}}</td>
+<td>{{if .HasSecondFactor}}<a class="btn" href="/account/recovery">{{T "security.manage"}}</a>{{end}}</td>
+</tr>
+{{if .Duo}}<tr>
+<td>Duo</td>
+<td>{{T "security.inuse"}}</td>
+<td><span class="muted">{{T "security.duo"}}</span></td>
+</tr>{{end}}
+</table>
+<p class="hint">{{T "security.hint"}}</p>
+{{end}}

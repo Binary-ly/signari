@@ -17,7 +17,10 @@ SIGNARI_SMS_VERIFY_URL=https://verify.internal/v1
 SIGNARI_SMS_VERIFY_AUTH="Bearer ..."
 ```
 
-Users enrol at `/account/mfa/sms`.
+Users enrol at `/account/mfa/sms`, and see and remove the number at
+`/account/security` with their other sign-in methods; removing it there or from
+the enrolment page is the same removal, told to the holder and taking the
+recovery codes with it when it was the last second factor.
 
 ## A delegated verification service
 

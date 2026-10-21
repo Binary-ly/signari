@@ -4,7 +4,14 @@ A six-digit code sent by email, offered alongside TOTP and passkeys.
 
 ```
 GET|POST /account/mfa/email     enrol
+POST /account/security/remove   remove (factor=email_otp)
 ```
+
+`/account/security` lists every way the person signs in, and from there they
+remove their own email codes, authenticator app or text-message codes: behind a
+recent sign-in, audited, and told on every channel the account still has. When
+it was their last second factor their recovery codes go too, since a recovery
+code stands in for a second factor that no longer exists.
 
 ## What it is honestly worth
 

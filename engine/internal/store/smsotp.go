@@ -510,10 +510,3 @@ func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose str
 	}
 	return true, replaced, none, nil
 }
-
-// RemoveSMSOTP deletes the factor.
-func RemoveSMSOTP(ctx context.Context, tx pgx.Tx, userID string) error {
-	_, err := tx.Exec(ctx,
-		`DELETE FROM core.sms_otp_credentials WHERE user_id = $1::uuid`, userID)
-	return err
-}

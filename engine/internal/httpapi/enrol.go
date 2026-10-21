@@ -935,24 +935,11 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		render("enrolled", number, "")
 
 	case "remove":
-		tx, terr := s.db.Begin(ctx)
-		if terr != nil {
-			render("start", "", "Something went wrong. Try again.")
-			return
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		if rerr := store.RemoveSMSOTP(ctx, tx, userID); rerr != nil {
+		// The same removal as the security page's: audited, the holder told,
+		// and the recovery codes gone with the last second factor.
+		if _, rerr := s.removeOwnFactor(ctx, userID, orgID, "sms_otp"); rerr != nil &&
+			!errors.Is(rerr, store.ErrFactorNotFound) {
 			s.log.Error("removing the SMS factor", "err", rerr)
-			render("start", "", "Something went wrong. Try again.")
-			return
-		}
-		if aerr := audit.Write(ctx, tx, audit.Event{
-			Type: "mfa.sms_removed", OrgID: orgID, SubjectID: userID,
-			CorrelationID: correlationID(ctx),
-		}); aerr != nil {
-			s.log.Error("recording the SMS removal", "err", aerr)
-		}
-		if cerr := tx.Commit(ctx); cerr != nil {
 			render("start", "", "Something went wrong. Try again.")
 			return
 		}

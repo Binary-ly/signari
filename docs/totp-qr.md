@@ -115,3 +115,13 @@ session is sent to sign in again and brought back to the page. Both are refused
 outright in an [impersonation session](impersonation.md). Confirming replaces
 the authenticator and deletes the recovery codes, so a stolen cookie must not
 be enough to do it.
+
+## Removing it
+
+`/account/security` lists the authenticator app with the person's other sign-in
+methods, and removes it under the same recent-sign-in rule. The holder is told
+on every channel they have, the removal is audited as `mfa.totp_removed`, and
+when it was their last second factor the recovery codes go with it. Until
+October 2026 only an administrator could remove one, so somebody who had moved
+to a new phone was asked at every sign-in for an authenticator they no longer
+had.

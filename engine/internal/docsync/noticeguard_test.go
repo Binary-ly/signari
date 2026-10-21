@@ -42,6 +42,7 @@ var credentialEvents = map[string]bool{
 	"admin.factor_removed":           true,
 	"admin.passkey_link_issued":      true,
 	"admin.user_updated":             true,
+	"user.email_changed":             true,
 }
 
 // noticeCalls tell the holder, or queue the notice in the change's own

@@ -92,7 +92,21 @@ signari signup enable -org <uuid> -domains acme.com -verify-email=false
 ```
 
 turns it off, so new accounts sign straight in on an address nobody has proved
-and their tokens say `email_verified: false`. Accounts made by invitation or by
+and their tokens say `email_verified: false`.
+
+### Changing the address later
+
+A person moves their account to another address at `/account/email`, from a
+recent sign-in. A code goes to the new address, and the account keeps its old
+one — for sign-in, for recovery, and as the address its tokens carry — until the
+code comes back; then the new address is the account's, verified by that proof,
+and the old address and every channel the account has are told, naming
+neither. An address another account in the organisation uses is refused, a
+wrong code counts against the second-factor budget and twenty close that
+change, and the change can be abandoned with the address untouched. Audited
+`user.email_changed`. Usernames are not changeable by their owner: many
+organisations assign them from a directory, and that needs a per-organisation
+switch that does not exist yet. Accounts made by invitation or by
 an administrator are never held. Until October 2026 the rule's setting existed,
 was on, and was consulted by nothing: anybody could sign up, and straight in,
 as any address at an allowed domain.

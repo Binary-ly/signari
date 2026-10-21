@@ -73,6 +73,7 @@ var columnClass = map[string]string{
 	"device_authorizations.device_code_hash":        "oneWay",
 	"device_authorizations.user_code_hash":          "oneWay",
 	"email_otp_credentials.code_hash":               "oneWay",
+	"email_changes.code_hash":                       "oneWay",
 	"email_verifications.code_hash":                 "oneWay",
 	"federated_logins.binding_hash":                 "oneWay",
 	"federated_logins.state_hash":                   "oneWay",

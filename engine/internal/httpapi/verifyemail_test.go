@@ -275,7 +275,8 @@ func TestACompletedResetProvesTheAddressItWentTo(t *testing.T) {
 		email := fmt.Sprintf("reset-proves-%d@example.test", time.Now().UnixNano())
 		var userID string
 		if err := f.pool.QueryRow(ctx, `INSERT INTO core.users (org_id, user_handle, email)
-			VALUES ($1::uuid, sha256($2::bytea) || sha256($2::bytea || 'x'), $2) RETURNING id::text`,
+			VALUES ($1::uuid, sha256(convert_to($2, 'UTF8')) || sha256(convert_to($2 || 'x', 'UTF8')), $2)
+			RETURNING id::text`,
 			f.orgID, email).Scan(&userID); err != nil {
 			t.Fatal(err)
 		}

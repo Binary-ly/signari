@@ -374,6 +374,10 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 		"verifyemail": csrf(map[string]any{
 			"Address": "amelia.hart@example.com", "Closed": false, "Error": "",
 		}),
+		"emailchange": csrf(map[string]any{
+			"Address": "amelia.hart@example.com", "NewAddress": "amelia@hart.example",
+			"Closed": false, "Message": "", "Error": "",
+		}),
 		"profile": csrf(map[string]any{
 			"Fields": []map[string]any{
 				{"Name": "department", "Label": "Department", "Type": "string", "Value": "Platform",

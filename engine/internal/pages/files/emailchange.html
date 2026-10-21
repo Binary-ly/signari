@@ -1,0 +1,35 @@
+{{define "title"}}{{T "emailchange.title"}}{{end}}
+{{define "content"}}
+<h1>{{T "emailchange.title"}}</h1>
+{{if .Message}}<p class="note" role="status">{{.Message}}</p>{{end}}
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+<p>{{T "emailchange.current" .}}</p>
+{{if .NewAddress}}
+{{if .Closed}}
+<p>{{T "emailchange.closed"}}</p>
+{{else}}
+<p>{{T "emailchange.sent" .}}</p>
+<form method="POST" action="/account/email">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<input type="hidden" name="step" value="verify">
+<label for="c">{{T "common.code"}}</label>
+<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
+<button type="submit">{{T "common.confirm"}}</button>
+</form>
+{{end}}
+<form method="POST" action="/account/email">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<input type="hidden" name="step" value="cancel">
+<button type="submit" class="secondary">{{T "emailchange.cancel"}}</button>
+</form>
+{{else}}
+<form method="POST" action="/account/email">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<input type="hidden" name="step" value="start">
+<label for="a">{{T "emailchange.new"}}</label>
+<input id="a" name="address" type="email" autocomplete="email" required>
+<button type="submit">{{T "common.sendcode"}}</button>
+</form>
+<p class="hint">{{T "emailchange.hint"}}</p>
+{{end}}
+{{end}}

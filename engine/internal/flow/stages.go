@@ -274,6 +274,8 @@ var answered = map[Designation][]Condition{
 	// answer, not the absence of one.
 	Enrolment: {CondCaptchaRequired, CondPromptsPending},
 	Recovery:  {CondCaptchaRequired},
+	// Which way the person signed in to reach the page, from the session.
+	Unenrolment: {CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated},
 }
 
 // drivable is which stages each journey this engine drives can run.
@@ -305,6 +307,9 @@ var drivable = map[Designation][]StageName{
 	Recovery: {
 		StageCaptcha, StageIdentify, StageEmailOTP, StagePasswordChange, StageDeny, StageDone,
 	},
+	// The proving stages are settled by the recent sign-in the page requires,
+	// each only by its own proof, as at sign-in; done deletes the account.
+	Unenrolment: {StagePassword, StagePasskey, StageKerberos, StageFederated, StageDeny, StageDone},
 }
 
 // signInProofs are the proving stages a sign-in settles from the route that

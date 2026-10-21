@@ -66,9 +66,11 @@ func paths(fl *Flow) [][]StageName {
 //
 // Enrolment is exempt from proof and order BECAUSE it cannot reach a session.
 // An oracle that applied all three rules to every designation would fail the
-// analysis for being correct.
+// analysis for being correct. An unenrolment acts at done -- the account is
+// deleted there -- so for it reaching done is reaching what must be proved.
 
-// unsafePath returns a path that reaches a session having proved nothing.
+// unsafePath returns a path that reaches a session, or an unenrolment's done,
+// having proved nothing.
 func unsafePath(fl *Flow, d Designation) ([]StageName, bool) {
 	for _, p := range paths(fl) {
 		reached, proved := false, false
@@ -79,7 +81,7 @@ func unsafePath(fl *Flow, d Designation) ([]StageName, bool) {
 			if d != Enrolment && s.proves(d) {
 				proved = true
 			}
-			if s == StageSession {
+			if s == StageSession || (d == Unenrolment && s == StageDone) {
 				reached = true
 			}
 		}
@@ -551,10 +553,15 @@ func randomFlow(rng *rand.Rand) *Flow {
 			fl.Stages = append(fl.Stages, Step{Stage: pool[rng.Intn(len(pool))]})
 		}
 	}
-	// Terminal, unconditional, as validate() requires.
-	if rng.Intn(4) == 0 {
+	// Terminal, unconditional, as validate() requires. done is among them: an
+	// unenrolment acts there, and a generator that never ended in it could not
+	// see the proof rule that covers it.
+	switch rng.Intn(5) {
+	case 0:
 		fl.Stages = append(fl.Stages, Step{Stage: StageDeny})
-	} else {
+	case 1:
+		fl.Stages = append(fl.Stages, Step{Stage: StageDone})
+	default:
 		fl.Stages = append(fl.Stages, Step{Stage: StageSession})
 	}
 	return fl

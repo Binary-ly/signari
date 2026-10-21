@@ -10,7 +10,7 @@ import "sort"
 // TestEveryEventTypeIsRegisteredAndCatalogued keeps it equal to the types the
 // source actually writes and to the catalogue in docs/events.md. Sorted.
 var EventTypes = []string{
-	"account.migrated", "account.password_reset", "account.recovery_cancelled",
+	"account.deleted", "account.migrated", "account.password_reset", "account.recovery_cancelled",
 	"account.recovery_requested",
 	"admin.attribute_declared", "admin.attributes_set", "admin.claim_mapper_created",
 	"admin.claim_mapper_deleted", "admin.cli_command", "admin.client_created",

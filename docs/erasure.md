@@ -14,6 +14,11 @@ key shred does not reach them. Notices still waiting to be sent to the person go
 too: one about a changed address carries the old address, and there is nobody
 left to tell.
 
+A person may also erase their own account, at `/account/delete`, through the
+organisation's [unenrolment flow](flows.md): the same erasure, from a recent
+sign-in, confirmed by typing their address, audited `account.deleted`, with one
+last message to the address. An organisation closes it with `stages: [deny]`.
+
 Until October 2026 an erasure only destroyed the key and deactivated the account,
 so it left all of those behind. A person who had never enrolled a second factor had
 no key at all, and was refused as unknown, with nothing erased.

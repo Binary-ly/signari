@@ -22,13 +22,19 @@ func guarded(on Designation, cond string) string {
 		stages, expect = "[{stage: captcha, when: COND}, identify, email_otp, password_change, done]",
 			"[PROMPTidentify, email_otp, password_change, done]"
 	case Unenrolment:
-		stages, expect = "[password, {stage: prompt, when: COND}, done]", "[password, PROMPTdone]"
+		// The proof is the one thing an unenrolment chooses between, so the
+		// condition guards a branch of it.
+		guardedStage = "passkey"
+		stages, expect = "[{one_of: [{stage: passkey, when: COND}, {stage: password}]}, done]", "[password, done]"
 	}
 	// Nothing is given, so the condition is false and only its negation runs
 	// the guarded stage.
 	prompt := ""
 	if strings.HasPrefix(cond, "not ") {
 		prompt = guardedStage + ", "
+		if on == Unenrolment {
+			expect = "[passkey, done]"
+		}
 	}
 	return fmt.Sprintf(`
 version: 1
@@ -45,7 +51,7 @@ flows:
 // cannot evaluate reads false every time, and `{stage: deny, when:
 // risk_elevated}` parsed, passed its own tests and never refused anybody.
 func TestEveryConditionIsAnsweredOrRefused(t *testing.T) {
-	for _, on := range []Designation{Authentication, Enrolment, Recovery} {
+	for _, on := range []Designation{Authentication, Enrolment, Recovery, Unenrolment} {
 		ok := map[Condition]bool{}
 		for _, c := range Answered(on) {
 			ok[c] = true
@@ -64,12 +70,6 @@ func TestEveryConditionIsAnsweredOrRefused(t *testing.T) {
 				}
 			}
 		}
-	}
-
-	// Nothing walks an unenrolment flow, and flow test and flow apply say so
-	// about the whole of it, so its conditions are not judged one by one.
-	if _, err := Parse([]byte(guarded(Unenrolment, "risk_elevated"))); err != nil {
-		t.Errorf("an unenrolment flow was refused over a condition: %v", err)
 	}
 }
 

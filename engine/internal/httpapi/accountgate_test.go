@@ -166,6 +166,7 @@ func TestCredentialChangesNeedARecentSignInAndAreRefusedWhileImpersonating(t *te
 		{http.MethodPost, "/account/profile", "/account/profile", url.Values{}, false},
 		{http.MethodPost, "/account/email", "/account/email",
 			url.Values{"step": {"start"}, "address": {"moved@example.test"}}, false},
+		{http.MethodPost, "/account/delete", "/account/delete", url.Values{"confirm": {"x"}}, false},
 	}
 	send := func(rt route) *httptest.ResponseRecorder {
 		var r *http.Request

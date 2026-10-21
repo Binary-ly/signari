@@ -19,17 +19,10 @@ import "testing"
 // warned about a flow that now runs; if Driven() is widened without a driver,
 // they stop being warned about one that does not.
 func TestDrivenReportsTheDesignationsWithDrivers(t *testing.T) {
-	for _, d := range []Designation{Authentication, Enrolment, Recovery} {
+	// Unenrolment since 5.07: /account/delete walks it.
+	for _, d := range []Designation{Authentication, Enrolment, Recovery, Unenrolment} {
 		if !d.Driven() {
 			t.Errorf("%s is reported as not driven, but the engine executes it", d)
-		}
-	}
-	for _, d := range []Designation{Unenrolment} {
-		if d.Driven() {
-			t.Errorf("%s is reported as driven. If a self-service unenrolment "+
-				"journey was built, update this test with it -- and if one was NOT "+
-				"built, the CLI is now telling operators their flow runs when there "+
-				"is no endpoint for it to run at", d)
 		}
 	}
 }

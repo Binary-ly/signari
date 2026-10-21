@@ -616,6 +616,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /account/connected/revoke", s.handleConnectedRevoke)
 	mux.HandleFunc("GET /account/sessions", s.handleSessions)
 	mux.HandleFunc("GET /account/devices", s.handleDevices)
+	mux.HandleFunc("GET /account/delete", s.handleAccountDelete)
+	mux.HandleFunc("POST /account/delete", s.handleAccountDeletePost)
 	mux.HandleFunc("GET /account/email", s.handleEmailChange)
 	mux.HandleFunc("POST /account/email", s.handleEmailChangePost)
 	mux.HandleFunc("GET /account/profile", s.handleProfile)

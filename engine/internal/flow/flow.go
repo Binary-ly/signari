@@ -58,26 +58,19 @@ const (
 // being warned about a file that does not run; left behind after one is added,
 // they are warned about a file that does.
 //
-// # The three that are driven
+// # All four are driven
 //
 //	authentication  the sign-in journey, driven since the package existed
 //	enrolment       /signup walks the flow (9q option 2)
 //	recovery        /recover and /recover/reset walk it (9q option 3)
+//	unenrolment     /account/delete walks it (5.07): a person deleting their
+//	                own account, proved by the sign-in that reached the page
 //
-// # Why unenrolment is not, and why that is not the same kind of gap
-//
-// Because there is no unenrolment journey to drive. This engine has no
-// self-service account-deletion endpoint at all: deletion is `signari erase
-// subject` and the admin API, both of which are operator actions rather than
-// journeys a subject walks. The designation is defined, parsed and safety-checked
-// so that a file declaring one is understood rather than rejected, and so the
-// language does not have to change on the day such an endpoint is built.
-//
-// So the other three were "the file is ignored". This one is "there is nothing
-// for the file to be about", which is why the two must not be reported the same
-// way.
+// Until 5.07 unenrolment had no journey at all -- deletion was `signari erase
+// subject` and the Admin API, operator actions rather than something a subject
+// walks -- so it was defined, parsed and safety-checked and reported as not run.
 func (d Designation) Driven() bool {
-	return d == Authentication || d == Enrolment || d == Recovery
+	return d == Authentication || d == Enrolment || d == Recovery || d == Unenrolment
 }
 
 // Undriven returns the designations this engine parses and does not execute.

@@ -25,6 +25,7 @@ func TestEveryConditionAFlowCanUseIsAnswered(t *testing.T) {
 	ctx := context.Background()
 	compare(t, flow.Enrolment, stateKeys(s.enrolmentFacts(ctx, "192.0.2.1:1")))
 	compare(t, flow.Recovery, stateKeys(s.recoveryFacts(ctx, "192.0.2.1:1")))
+	compare(t, flow.Unenrolment, stateKeys(unenrolmentFacts(nil)))
 }
 
 // user_has_passkey is answered from the person's credentials, and a flow that

@@ -88,7 +88,10 @@ func (fl *Flow) checkProof() error {
 	last := fl.Stages[len(fl.Stages)-1]
 	reachesSession := false
 	for _, name := range last.stageNames() {
-		if name == StageSession {
+		// An unenrolment's done is its act: the account is deleted there, so
+		// reaching it must be proved as reaching a session is. Without this
+		// `[done]` was a flow deleting whoever walked it.
+		if name == StageSession || (fl.On == Unenrolment && name == StageDone) {
 			reachesSession = true
 		}
 	}

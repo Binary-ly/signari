@@ -153,6 +153,32 @@ flows:
         expect: [captcha, identify, email_otp, password_change, done]
 
   # ---------------------------------------------------------------------------
+  - name: default-unenrolment
+    on: unenrolment
+    stages:
+      # A person deleting their own account, from /account/delete. The proof
+      # is the sign-in that reached the page, which must be recent: each way
+      # in by name, as at sign-in, so a flow can say which it accepts. `deny`
+      # in its place closes self-service deletion.
+      - one_of:
+          - {stage: passkey, when: proved_by_passkey}
+          - {stage: kerberos, when: proved_by_kerberos}
+          - {stage: federated, when: proved_by_federated}
+          - {stage: password}
+      # Where the account is erased. The analysis holds an unenrolment's done
+      # to the proof rule a session is held to.
+      - done
+
+    tests:
+      - name: signed in with a password
+        given: {}
+        expect: [password, done]
+
+      - name: signed in with a passkey
+        given: {proved_by_passkey: true}
+        expect: [passkey, done]
+
+  # ---------------------------------------------------------------------------
   - name: default-sign-up
     on: enrolment
     stages:

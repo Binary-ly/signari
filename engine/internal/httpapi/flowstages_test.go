@@ -36,6 +36,12 @@ func TestEveryStageAFlowCanUseIsDriven(t *testing.T) {
 		recovery[st] = true
 	}
 	compareStages(t, flow.Recovery, recovery)
+
+	unenrolment := switchStages(t, "accountdelete.go", "walkUnenrolment", values)
+	for st := range unenrolmentSettledStages {
+		unenrolment[st] = true
+	}
+	compareStages(t, flow.Unenrolment, unenrolment)
 }
 
 // stageConstants maps each flow.StageX identifier to its value, read from the

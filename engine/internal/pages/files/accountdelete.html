@@ -1,0 +1,19 @@
+{{define "title"}}{{T "accountdelete.title"}}{{end}}
+{{define "content"}}
+<h1>{{T "accountdelete.title"}}</h1>
+{{if .Deleted}}
+<p>{{T "accountdelete.done"}}</p>
+{{else if .Closed}}
+<p>{{T "accountdelete.closed"}}</p>
+{{else}}
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+<p>{{T "accountdelete.intro"}}</p>
+<p class="hint">{{T "accountdelete.what"}}</p>
+<form method="POST" action="/account/delete">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="confirm">{{T "accountdelete.type" .}}</label>
+<input id="confirm" name="confirm" autocomplete="off" spellcheck="false" required>
+<button type="submit" class="deny">{{T "accountdelete.submit"}}</button>
+</form>
+{{end}}
+{{end}}

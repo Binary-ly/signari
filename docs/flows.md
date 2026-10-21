@@ -86,16 +86,20 @@ and more obvious version of the same bug.
 | `authentication` | signing in | must prove the subject before a session | `/login` |
 | `enrolment` | creating an account | exempt from proof — and may not reach a session | `/signup` |
 | `recovery` | restoring lost access | must prove the subject, from a **narrower** set of factors | `/recover`, `/recover/reset` |
-| `unenrolment` | deleting an account | must prove the subject | **none — see below** |
+| `unenrolment` | deleting one's own account | must prove the subject before `done` | `/account/delete` |
 
-**Three of the four run.** `unenrolment` is defined, parsed and safety-checked,
-and nothing executes it, because there is no self-service unenrolment journey in
-this engine to execute: deleting an account is `signari erase subject` and the
-admin API, which are operator actions rather than a sequence a subject walks. The
-designation exists so that a file declaring one is understood rather than
-rejected, and so the language does not have to change on the day such an endpoint
-is built. `signari flow test` says so about any flow it cannot run, and
-`signari flow apply` warns before storing one.
+**All four run.** `unenrolment` is the person deleting their own account from
+`/account/delete`. The page needs a recent sign-in, refuses an impersonation
+session, and has the person type their address or username to confirm; the
+proving stage is that sign-in, each proof counting only for itself as at sign-in,
+and `done` erases the account exactly as `signari erase subject` does — the key
+their data is sealed under destroyed, every session ended with each application
+sent a back-channel logout, the account deleted, audited `account.deleted` — and
+the address is sent one last message. An unenrolment's `done` is held to the
+proof rule a `session` is held to, so `[done]` is refused. The built-in flow
+accepts every way in; `stages: [deny]` closes self-service deletion, and
+`stages: [passkey, done]` lets only a passkey sign-in delete. Until October 2026
+nothing walked this designation, and deletion was an operator's act only.
 
 ### What a recovery flow governs, and what it refuses
 
@@ -167,7 +171,7 @@ stage.
 | `authentication` | `mfa`, `enrol_mfa`, `verify_email`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the authorization endpoint |
 | `enrolment` | `captcha`, `prompt`, `create_user`, `deny`, `done` |
 | `recovery` | `captcha`, `identify`, `email_otp`, `password_change`, `deny`, `done` |
-| `unenrolment` | not judged: nothing walks this designation |
+| `unenrolment` | `password`, `passkey`, `kerberos`, `federated`, settled by the recent sign-in that reached `/account/delete`, each only by its own proof; `deny`; `done`, where the account is erased |
 
 The rest wait for a driver: `delegated` and `certificate` (a source the flow
 would have to pin), and `email_otp` and `sms_otp` as a first factor at sign-in.
@@ -293,7 +297,7 @@ apply` and by the engine's load alike.
 | `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`, `risk_elevated`, `email_verification_pending`, and the four `proved_by_*`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
 | `enrolment` | `captcha_required`, `prompts_pending` (always false: there is no account yet to have one) |
 | `recovery` | `captcha_required` |
-| `unenrolment` | not judged: nothing walks this designation |
+| `unenrolment` | the four `proved_by_*`: which way the person signed in to reach the page |
 
 The rest of the list (`user_is_new`, `consent_required`,
 `device_managed`, `device_compliant`, `network_trusted`, `kerberos_available`,

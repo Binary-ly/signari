@@ -145,7 +145,7 @@ Proving — establish the subject:
 Not proving:
 
 `identify`, `captcha`, `consent`, `prompt`, `password_change`, `enrol_mfa`,
-`create_user`
+`verify_email`, `create_user`
 
 Terminal — a flow ends in exactly one, and it must be last:
 
@@ -164,7 +164,7 @@ stage.
 
 | `on:` | stages it runs |
 |---|---|
-| `authentication` | `mfa`, `enrol_mfa`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the authorization endpoint |
+| `authentication` | `mfa`, `enrol_mfa`, `verify_email`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the authorization endpoint |
 | `enrolment` | `captcha`, `prompt`, `create_user`, `deny`, `done` |
 | `recovery` | `captcha`, `identify`, `email_otp`, `password_change`, `deny`, `done` |
 | `unenrolment` | not judged: nothing walks this designation |
@@ -199,6 +199,27 @@ existing authenticator. Only an authenticator app can be enrolled here; a
 passkey is added from the account page. Until October 2026 a flow naming
 `enrol_mfa` was refused when parsed, and an unconditional `mfa` turned away
 everybody with nothing enrolled.
+
+### Confirming a self-sign-up's address
+
+`verify_email` holds a sign-in until a code sent to the account's address comes
+back, for an account self-sign-up made under a rule that requires a proved
+address (`signari signup enable`, on by default). The built-in flow runs it
+straight after the proof:
+
+```yaml
+- {stage: verify_email, when: email_verification_pending}
+```
+
+The right code sets the address verified, so ID tokens and `/userinfo` say
+`email_verified: true`, and the sign-in goes on from the start. Accounts an
+administrator made, or self-sign-ups under a rule with `-verify-email=false`,
+have nothing outstanding and pass. A wrong code counts against the same
+per-account budget as a second factor, and twenty across codes close the
+confirmation; resetting the password from the emailed link then proves the
+address instead, as any completed reset does. Until October 2026 the rule's
+setting was consulted by nothing, so a rule naming one domain let anybody sign
+up, and straight in, as any address there.
 
 ### A sign-in's proving stage is the proof presented
 
@@ -251,8 +272,9 @@ A `when:` is one condition, optionally negated with `not`. There is no `and` or
 `password_change_required`, `prompts_pending`, `consent_required`,
 `captcha_required`, `risk_elevated`, `device_managed`, `device_compliant`,
 `network_trusted`, `client_requires_mfa`, `kerberos_available`,
-`migration_pending`, `federated_source`, `proved_by_password`,
-`proved_by_passkey`, `proved_by_kerberos`, `proved_by_federated`
+`migration_pending`, `federated_source`, `email_verification_pending`,
+`proved_by_password`, `proved_by_passkey`, `proved_by_kerberos`,
+`proved_by_federated`
 
 The list is closed, and a condition outside it is refused at parse. That is what
 makes a typo an error rather than a stage that silently never runs. It is also
@@ -268,7 +290,7 @@ apply` and by the engine's load alike.
 
 | `on:` | conditions it evaluates |
 |---|---|
-| `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`, `risk_elevated`, and the four `proved_by_*`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
+| `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`, `risk_elevated`, `email_verification_pending`, and the four `proved_by_*`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
 | `enrolment` | `captcha_required`, `prompts_pending` (always false: there is no account yet to have one) |
 | `recovery` | `captcha_required` |
 | `unenrolment` | not judged: nothing walks this designation |
@@ -362,7 +384,8 @@ reproduce exactly the journey the server ran when the sequence was fixed Go:
 
 ```
 captcha (if required) -> password, passkey, kerberos or federated (whichever was presented)
-  -> mfa (if enrolled) -> prompt (if pending) -> password_change (if flagged) -> session
+  -> verify_email (if a self-sign-up's address is unproved) -> mfa (if enrolled)
+  -> prompt (if pending) -> password_change (if flagged) -> session
 ```
 
 `signari flow show` prints that file verbatim, to start from. It is parsed by the

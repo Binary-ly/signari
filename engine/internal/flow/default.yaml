@@ -39,6 +39,11 @@ flows:
           - {stage: federated, when: proved_by_federated}
           - {stage: password}
 
+      # An account self-sign-up made under a rule requiring a proved address
+      # is held here until a code sent to it comes back. Nobody else has a
+      # verification outstanding, so for every other account this is no step.
+      - {stage: verify_email, when: email_verification_pending}
+
       # A correct password does not create a session when a second factor is
       # enrolled.
       - {stage: mfa, when: user_has_second_factor}
@@ -79,6 +84,10 @@ flows:
         given: {prompts_pending: true}
         expect: [password, prompt, session]
 
+      - name: a self-sign-up whose address is not yet proved
+        given: {email_verification_pending: true}
+        expect: [password, verify_email, session]
+
       - name: the password is flagged
         given: {password_change_required: true}
         expect: [password, password_change, session]
@@ -92,10 +101,11 @@ flows:
       - name: everything at once
         given:
           captcha_required: true
+          email_verification_pending: true
           user_has_second_factor: true
           prompts_pending: true
           password_change_required: true
-        expect: [captcha, password, mfa, prompt, password_change, session]
+        expect: [captcha, password, verify_email, mfa, prompt, password_change, session]
 
   # ---------------------------------------------------------------------------
   - name: default-recovery

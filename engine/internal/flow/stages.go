@@ -75,6 +75,12 @@ const (
 	// proves you hold the factor you just created, which is nothing.
 	StageEnrolMFA StageName = "enrol_mfa"
 
+	// StageVerifyEmail holds a sign-in until a code sent to the account's
+	// address comes back, for an address self-sign-up has not yet seen proved.
+	// Not proving who is signing in -- they proved that already -- but what
+	// they claimed: that the address is theirs.
+	StageVerifyEmail StageName = "verify_email"
+
 	// StageCreateUser writes a new account. Enrolment only.
 	StageCreateUser StageName = "create_user"
 
@@ -98,7 +104,7 @@ var allStages = []StageName{
 	StageIdentify, StageCaptcha,
 	StagePassword, StagePasskey, StageMFA, StageEmailOTP, StageSMSOTP,
 	StageCertificate, StageKerberos, StageFederated, StageDelegated,
-	StageConsent, StagePrompt, StagePasswordChange, StageEnrolMFA, StageCreateUser,
+	StageConsent, StagePrompt, StagePasswordChange, StageEnrolMFA, StageVerifyEmail, StageCreateUser,
 	StageSession, StageDeny, StageDone,
 }
 
@@ -215,6 +221,10 @@ const (
 	CondMigrationPending Condition = "migration_pending"
 	// CondFederatedSource -- the request arrived by way of an upstream source.
 	CondFederatedSource Condition = "federated_source"
+	// CondEmailVerificationPending -- the subject's address is still to be
+	// proved: self-sign-up made the account under a rule that requires it, and
+	// no code has come back.
+	CondEmailVerificationPending Condition = "email_verification_pending"
 
 	// The proved_by family says which proof the person presented to reach this
 	// walk (2.49). A sign-in's proving stage must be the one proved: a
@@ -233,7 +243,7 @@ var allConditions = []Condition{
 	CondCaptchaRequired, CondRiskElevated,
 	CondDeviceManaged, CondDeviceCompliant, CondNetworkTrusted,
 	CondClientRequiresMFA, CondKerberosAvailable, CondMigrationPending,
-	CondFederatedSource,
+	CondFederatedSource, CondEmailVerificationPending,
 	CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
 }
 
@@ -257,7 +267,7 @@ var allConditions = []Condition{
 var answered = map[Designation][]Condition{
 	Authentication: {
 		CondHasSecondFactor, CondHasPasskey, CondPasswordChangeRequired,
-		CondPromptsPending, CondClientRequiresMFA, CondRiskElevated,
+		CondPromptsPending, CondClientRequiresMFA, CondRiskElevated, CondEmailVerificationPending,
 		CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
 	},
 	// No account exists yet, so nothing is pending for it: false is the
@@ -275,7 +285,7 @@ var answered = map[Designation][]Condition{
 // name, like a condition no journey evaluates.
 //
 // The sign-in set has two kinds. The walker acts on mfa, enrol_mfa, prompt,
-// password_change and the terminals. identify, captcha, password, passkey,
+// password_change, verify_email and the terminals. identify, captcha, password, passkey,
 // kerberos, federated and consent are settled before the walk, by the route
 // that reached it -- the sign-in form, the passkey ceremony, the Negotiate
 // exchange, a provider's callback -- and the walker requires a proving one
@@ -289,7 +299,7 @@ var drivable = map[Designation][]StageName{
 	Authentication: {
 		StageMFA, StagePrompt, StagePasswordChange, StageSession, StageDeny, StageDone,
 		StageIdentify, StageCaptcha, StagePassword, StagePasskey, StageKerberos, StageFederated,
-		StageConsent, StageEnrolMFA,
+		StageConsent, StageEnrolMFA, StageVerifyEmail,
 	},
 	Enrolment: {StageCaptcha, StagePrompt, StageCreateUser, StageDeny, StageDone},
 	Recovery: {

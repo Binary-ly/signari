@@ -678,6 +678,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /login/enrol-mfa/start", s.handleEnrolMFAStart)
 	mux.HandleFunc("POST /login/enrol-mfa", s.handleEnrolMFAConfirm)
 	mux.HandleFunc("POST /login/enrol-mfa/continue", s.handleEnrolMFAContinue)
+	mux.HandleFunc("POST /login/verify-email", s.handleVerifyEmailPost)
+	mux.HandleFunc("POST /login/verify-email/resend", s.handleVerifyEmailResend)
 	mux.HandleFunc("POST /consent", s.handleConsentPost)
 	mux.HandleFunc("GET /recover", s.handleRecoverGet)
 	mux.HandleFunc("POST /recover", s.handleRecoverPost)

@@ -2,5 +2,6 @@
 {{define "content"}}
 <h1>{{T "signupdone.title"}}</h1>
 <p>{{T "signupdone.body" .}}</p>
+{{if .Verify}}<p>{{T "signupdone.verify" .}}</p>{{end}}
 <p><a href="/login">{{T "common.signin"}}</a></p>
 {{end}}

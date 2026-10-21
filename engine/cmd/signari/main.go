@@ -497,6 +497,9 @@ func run(args []string) (err error) {
 	inviteID := fs.String("invitation", "", "`invite revoke`: the invitation's id, from `invite list`")
 	signupDomains := fs.String("domains", "",
 		"comma-separated email domains permitted to self-sign-up")
+	signupVerify := fs.Bool("verify-email", true,
+		"`signup enable`: a new account proves its address with a code before its first sign-in; "+
+			"-verify-email=false lets it in on an address nobody has proved")
 	brandName := fs.String("brand-name", "", "product name shown on sign-in pages")
 	brandLogo := fs.String("brand-logo", "", "https URL of the logo shown above the sign-in form")
 	brandSupport := fs.String("brand-support", "", "https URL offered when someone cannot get in")
@@ -1260,7 +1263,7 @@ func run(args []string) (err error) {
 	case "invite revoke":
 		return inviteRevoke(ctx, conn, *orgID, *inviteID)
 	case "signup enable":
-		return signupEnable(ctx, conn, *orgID, *signupDomains, *inviteGroups)
+		return signupEnable(ctx, conn, *orgID, *signupDomains, *inviteGroups, *signupVerify)
 	case "signup disable":
 		return signupDisable(ctx, conn, *orgID)
 	case "signup show":
@@ -7050,8 +7053,9 @@ func inviteList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	return rows.Err()
 }
 
-// signupEnable turns on open self-signup for an organisation.
-func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups string) error {
+// signupEnable turns on open self-signup for an organisation. verify is
+// whether a new account proves its address before its first sign-in (0177).
+func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups string, verify bool) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
@@ -7066,12 +7070,13 @@ func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups st
 		d = []string{}
 	}
 	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.signup_rules (org_id, allowed_domains, default_groups)
-		VALUES ($1::uuid, $2, $3)
+		INSERT INTO core.signup_rules (org_id, allowed_domains, default_groups, require_verified_email)
+		VALUES ($1::uuid, $2, $3, $4)
 		ON CONFLICT (org_id) DO UPDATE SET
 			allowed_domains = EXCLUDED.allowed_domains,
 			default_groups = EXCLUDED.default_groups,
-			updated_at = now()`, orgID, d, splitList(groups)); err != nil {
+			require_verified_email = EXCLUDED.require_verified_email,
+			updated_at = now()`, orgID, d, splitList(groups), verify); err != nil {
 		return err
 	}
 	if len(d) == 0 {
@@ -7082,7 +7087,18 @@ func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups st
 	if g := splitList(groups); len(g) > 0 {
 		fmt.Printf("  new accounts join: %s\n", strings.Join(g, ", "))
 	}
+	printSignupVerify(verify)
 	return nil
+}
+
+// printSignupVerify says what the rule asks of a new account's address.
+func printSignupVerify(verify bool) {
+	if verify {
+		fmt.Println("  a new account proves its address with a code before its first sign-in")
+		return
+	}
+	fmt.Println("  a new account signs in on an address nobody has proved, and its tokens say " +
+		"email_verified: false; a domain in the rule is then only what people typed")
 }
 
 func signupDisable(ctx context.Context, conn *pgx.Conn, orgID string) error {
@@ -7123,6 +7139,7 @@ func signupShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	if len(groups) > 0 {
 		fmt.Printf("  new accounts join: %s\n", strings.Join(groups, ", "))
 	}
+	printSignupVerify(verify)
 	return nil
 }
 

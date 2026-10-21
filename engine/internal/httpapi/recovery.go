@@ -461,6 +461,14 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
 		return
 	}
+	// The link came to the address, so reaching here proves it: it is verified
+	// and an outstanding confirmation ends (0177), which is the way back for one
+	// past its ceiling of wrong codes.
+	if err := store.AddressProvedByRecovery(ctx, tx, req.ID, req.UserID); err != nil {
+		s.log.Error("recording the address the reset proved", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
 	if err := audit.Write(ctx, tx, audit.Event{
 		Type: "account.password_reset", OrgID: req.OrgID, SubjectID: req.UserID,
 		CorrelationID: correlationID(ctx),

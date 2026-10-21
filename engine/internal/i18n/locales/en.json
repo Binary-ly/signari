@@ -117,6 +117,15 @@
 
   "signupdone.title": "Account created",
   "signupdone.body": "{Email} can now sign in.",
+  "signupdone.verify": "The first time you sign in, we will send a code to {Email} to confirm the address is yours.",
+  "verifyemail.title": "Confirm your email address",
+  "verifyemail.sent": "We sent a six-digit code to <strong>{Address}</strong>. Enter it to finish signing in.",
+  "verifyemail.resend": "Send another code",
+  "verifyemail.resent": "Another code is on its way.",
+  "verifyemail.toosoon": "A code was sent less than a minute ago. Check your inbox, or ask again shortly.",
+  "verifyemail.hint": "A code works for ten minutes. Until the address is confirmed, this account cannot sign in.",
+  "verifyemail.closed": "Too many wrong codes were entered, so this address can no longer be confirmed with a code. Reset your password from the link we email you instead: that confirms the address too.",
+  "verifyemail.closed.recover": "Reset your password",
 
   "logout.title": "Sign out?",
   "logout.heading": "Sign out?",
@@ -270,6 +279,8 @@
   "error.reset.invalid": "That link is not valid.",
   "error.reset.expired": "That link is not valid or has expired.",
   "error.passkeylink.invalid": "This link has been used, has expired or was never issued.",
+  "error.verifyemail.mismatch": "That code is not right, or it has expired.",
+  "error.verifyemail.unsent": "The code could not be sent just now. Try sending another.",
   "error.invite.invalid": "That invitation link is not valid. It may have been used already, or expired. Ask whoever invited you for a new one.",
   "error.captcha.incomplete": "That challenge was not completed. Please try again.",
 
@@ -316,6 +327,8 @@
   "sms.factor.removed": "An administrator removed a sign-in method ({Factor}) from your account and signed you out. If you did not ask for this, contact them.",
   "mail.factor.assigned.subject": "A security token was added to your account",
   "mail.factor.assigned.body": "An administrator made a hardware token the second step of your sign-in. It replaces any authenticator app you had.\n\nIf you did not ask for this, contact your administrator.",
+  "mail.verifyemail.subject": "Your code to confirm this address",
+  "mail.verifyemail.body": "Your code is {Code}. Enter it on the sign-in page to confirm this address is yours. It works for ten minutes.\n\nIf you did not create an account, you can ignore this message: nobody can sign in to it until the code is entered.",
   "mail.passkeylink.subject": "Add a passkey to your account",
   "mail.passkeylink.body": "An administrator sent you a link to add a passkey to your account, so you can sign in with your device's screen lock:\n\n  {URL}\n\nIt works once, until {Until}. Do not forward it: whoever opens it can add a passkey to your account.\n\nIf you did not expect this, do not open it, and contact your administrator.",
   "sms.factor.assigned": "An administrator added a hardware token to your account. If you did not ask for this, contact them.",

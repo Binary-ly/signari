@@ -246,6 +246,9 @@ type signInFacts struct {
 	// the way past so the stage does not repeat the query that produced it.
 	changeKnown  bool
 	changeReason string
+
+	obligationsKnown bool
+	obligations      store.Obligations
 }
 
 // Holds answers one condition, querying only if asked and only once.
@@ -307,13 +310,7 @@ var signInConditions = map[flow.Condition]func(f *signInFacts) bool{
 		return len(f.pendingPrompts()) > 0
 	},
 	flow.CondPasswordChangeRequired: func(f *signInFacts) bool {
-		must, reason, err := store.PasswordChangeRequired(f.ctx, f.db, f.userID)
-		if err != nil {
-			f.s.log.Error("checking whether a password change is required", "err", err)
-		}
-		f.changeReason = reason
-		f.changeKnown = true
-		return must
+		return f.accountObligations().PasswordChange
 	},
 	flow.CondClientRequiresMFA: func(f *signInFacts) bool {
 		return clientRequiresMFA(f.authzQuery) || f.authzClientFloorIsMFA()
@@ -321,6 +318,33 @@ var signInConditions = map[flow.Condition]func(f *signInFacts) bool{
 	flow.CondRiskElevated: func(f *signInFacts) bool {
 		return f.s.riskElevated(f.ctx, f.db, f.userID, f.ip)
 	},
+	// Read through the walk's handle, so the transaction that just took the
+	// right code answers false and the walk goes on.
+	flow.CondEmailVerificationPending: func(f *signInFacts) bool {
+		return f.accountObligations().EmailPending
+	},
+}
+
+// accountObligations reads, once, the two things the built-in flow asks of
+// every account: a flagged password and an address to prove. One query for
+// both, so the address check added nothing to a sign-in's round trips.
+func (f *signInFacts) accountObligations() store.Obligations {
+	if f.obligationsKnown {
+		return f.obligations
+	}
+	o, err := store.AccountObligations(f.ctx, f.db, f.userID)
+	if err != nil {
+		f.s.log.Error("reading what the account must do before signing in", "err", err)
+	}
+	f.obligations, f.obligationsKnown = o, true
+	// Both answers recorded whichever condition asked: the password_change
+	// stage reads the recorded answer once changeKnown is set, and an
+	// unconditional stage after verify_email would otherwise read a flagged
+	// password as not.
+	f.changeReason, f.changeKnown = o.ChangeReason, true
+	f.setKnown(flow.CondPasswordChangeRequired, o.PasswordChange)
+	f.setKnown(flow.CondEmailVerificationPending, o.EmailPending)
+	return o
 }
 
 // setKnown records a condition the caller has already decided.
@@ -500,6 +524,17 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			}
 			_ = tx.Rollback(ctx)
 			s.beginEnrolMFA(w, r, userID, orgID, amr, authzQuery)
+			return decisionHandled
+
+		case flow.StageVerifyEmail:
+			// Nothing outstanding, whatever the stage's condition said: an
+			// address already proved, or one nobody asked to have proved, is
+			// not held (verifyemail.go).
+			if !facts.Holds(string(flow.CondEmailVerificationPending)) {
+				continue
+			}
+			_ = tx.Rollback(ctx)
+			s.beginVerifyEmail(w, r, userID, orgID, amr, authzQuery)
 			return decisionHandled
 
 		case flow.StageMFA:

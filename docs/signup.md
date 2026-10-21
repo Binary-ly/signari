@@ -72,6 +72,31 @@ want, so it appears in the shell history of whoever did it.
 "Anyone may sign up" is almost never what an organisation means. "Anyone with an
 `@acme.com` address" usually is, and a checkbox cannot express the difference.
 
+### The address is proved before the first sign-in
+
+A domain in the rule is only what somebody typed until a message sent to the
+address comes back. So, by default, an account self-signup creates cannot sign
+in until it has: its first sign-in is held at the sign-in flow's `verify_email`
+stage, a six-digit code goes to the address, and the session is issued when the
+code is entered. The address is then verified, and ID tokens and `/userinfo`
+say `email_verified: true`. Later sign-ins are not held.
+
+A code works for ten minutes, "send another" waits a minute between codes, and
+a wrong one counts against the same per-account budget as a second factor.
+Twenty wrong codes, across codes, close the confirmation; resetting the password
+from its emailed link then proves the address instead, as any completed reset
+does for the address its link was sent to.
+
+```sh
+signari signup enable -org <uuid> -domains acme.com -verify-email=false
+```
+
+turns it off, so new accounts sign straight in on an address nobody has proved
+and their tokens say `email_verified: false`. Accounts made by invitation or by
+an administrator are never held. Until October 2026 the rule's setting existed,
+was on, and was consulted by nothing: anybody could sign up, and straight in,
+as any address at an allowed domain.
+
 A self-signup never joins a group whose members may impersonate, even when
 `-groups` names one. The rule's groups go to anyone at an allowed domain, so
 that group would hand impersonation to whoever signs up. The account is created

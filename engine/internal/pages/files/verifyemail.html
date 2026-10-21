@@ -1,0 +1,22 @@
+{{define "title"}}{{T "verifyemail.title"}}{{end}}
+{{define "content"}}
+<h1>{{T "verifyemail.title"}}</h1>
+{{if .Closed}}
+<p>{{T "verifyemail.closed"}}</p>
+<p><a href="/recover">{{T "verifyemail.closed.recover"}}</a></p>
+{{else}}
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+<p>{{T "verifyemail.sent" .}}</p>
+<form method="POST" action="/login/verify-email">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="c">{{T "common.code"}}</label>
+<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
+<button type="submit">{{T "common.confirm"}}</button>
+</form>
+<form method="POST" action="/login/verify-email/resend">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<button type="submit" class="secondary">{{T "verifyemail.resend"}}</button>
+</form>
+<p class="hint">{{T "verifyemail.hint"}}</p>
+{{end}}
+{{end}}

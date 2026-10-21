@@ -76,11 +76,6 @@ var knownUnwritable = map[string]string{
 	// the command.
 	"organizations.status": "a suspended organisation is still served; nothing on the request path reads it",
 	"instances.status":     "the same for an issuer",
-
-	// Consulted by nothing (2.46): self-signup verifies no address yet, so a
-	// command to relax the requirement would relax nothing. 5.01 builds the
-	// verification this governs, then the writer.
-	"signup_rules.require_verified_email": "consulted by nothing until self-signup verifies an address (5.01)",
 }
 
 var (

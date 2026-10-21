@@ -294,6 +294,12 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 	var orgID string
 	var groups []string
 	var invitationID string
+	// Self-sign-up under a rule that requires a proved address: the account
+	// is made with its address still to prove, and the sign-in flow's
+	// verify_email stage holds its first sign-in until a code comes back.
+	// Nothing consulted the rule's flag before, so its default of true
+	// meant nothing.
+	var verify bool
 
 	if token != "" {
 		inv, err := store.ClaimInvitation(ctx, s.db, token)
@@ -329,10 +335,10 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 				strings.Join(rule.AllowedDomains, ", "))
 			return
 		}
-		orgID, groups = rule.OrgID, rule.DefaultGroups
+		orgID, groups, verify = rule.OrgID, rule.DefaultGroups, rule.RequireVerify
 	}
 
-	userID, groups, err := s.createAccount(ctx, orgID, email, password, groups, invitationID == "")
+	userID, groups, err := s.createAccount(ctx, orgID, email, password, groups, invitationID == "", verify)
 	if err != nil {
 		if invitationID != "" {
 			// Give it back. A duplicate address or a refused password should not
@@ -361,10 +367,11 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 		Detail: map[string]any{
 			"route":  map[bool]string{true: "invitation", false: "self-signup"}[invitationID != ""],
 			"groups": groups,
+			"verify": verify,
 		},
 	})
 
-	s.renderPage(w, r, "signupdone", map[string]any{"Email": email})
+	s.renderPage(w, r, "signupdone", map[string]any{"Email": email, "Verify": verify})
 }
 
 // createAccount makes the user, the password credential and the memberships.
@@ -379,9 +386,10 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 // so such a group in that list would give impersonation to whoever signs up.
 // That is the same reason directory and SCIM sync may not reach such a group.
 // An invitation names one person and comes from the operator, so it is left to
-// the operator.
+// the operator. verify records that the address must be proved before the
+// account is signed in (store.RequireEmailVerification).
 func (s *Server) createAccount(ctx context.Context, orgID, email, password string,
-	groups []string, selfSignup bool) (string, []string, error) {
+	groups []string, selfSignup, verify bool) (string, []string, error) {
 
 	handle := make([]byte, 64)
 	if _, err := io.ReadFull(rand.Reader, handle); err != nil {
@@ -413,6 +421,11 @@ func (s *Server) createAccount(ctx context.Context, orgID, email, password strin
 		INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm)
 		VALUES ($1::uuid, $2::uuid, $3, 'argon2id')`, userID, orgID, hash); err != nil {
 		return "", nil, err
+	}
+	if verify {
+		if err := store.RequireEmailVerification(ctx, tx, userID, orgID); err != nil {
+			return "", nil, err
+		}
 	}
 	joined := []string{}
 	for _, g := range groups {

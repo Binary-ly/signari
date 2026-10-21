@@ -68,10 +68,13 @@ func CreateRecoveryRequest(ctx context.Context, tx pgx.Tx, userID, orgID string,
 
 	r := &RecoveryRequest{UserID: userID, OrgID: orgID, EffectiveAt: effective,
 		ExpiresAt: now.Add(RecoveryLifetime), WaivedBy: waivedBy}
+	// sent_to is the address the link is about to go to (notifyAccount sends it
+	// to users.email), which a completed reset then proves.
 	err := tx.QueryRow(ctx, `
 		INSERT INTO core.recovery_requests
-			(user_id, org_id, token_hash, cancel_hash, effective_at, expires_at, waived_by)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7)
+			(user_id, org_id, token_hash, cancel_hash, effective_at, expires_at, waived_by, sent_to)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7,
+		        (SELECT email FROM core.users WHERE id = $1::uuid))
 		RETURNING id::text`,
 		userID, orgID, tokenHash, cancelHash, effective, r.ExpiresAt,
 		nullIfEmpty(waivedBy)).Scan(&r.ID)

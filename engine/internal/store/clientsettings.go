@@ -170,8 +170,9 @@ func CheckClientSettings(s ClientSettings) error {
 			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
 	}
 	if a := s.MinimumACR; a != nil && !slices.Contains(ClientACRs, *a) {
-		return fmt.Errorf("%w: %q is not an acr a client may require: 1, a single factor, "+
-			"or 2, multi-factor", ErrInvalidClientSetting, *a)
+		return fmt.Errorf("%w: %q is not an acr a client may require: 1, a single factor; 2, "+
+			"multi-factor; 3, with a passkey or security key; or 4, with a key bound to its device",
+			ErrInvalidClientSetting, *a)
 	}
 	return nil
 }

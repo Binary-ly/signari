@@ -112,32 +112,40 @@ func TestEveryDesktopRefusalCostsAHash(t *testing.T) {
 		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.users WHERE email = $1`, noPassword)
 	})
 
-	timed := func(username, password string) time.Duration {
+	once := func(username, password string) time.Duration {
 		t.Helper()
-		best := time.Duration(1 << 62)
-		for range 3 {
-			body, _ := json.Marshal(map[string]string{"username": username, "password": password})
-			r := httptest.NewRequest(http.MethodPost, "/outpost/desktop", bytes.NewReader(body))
-			r.Header.Set("Authorization", "Bearer "+token)
-			rec := httptest.NewRecorder()
-			start := time.Now()
-			f.srv.Routes().ServeHTTP(rec, r)
-			if took := time.Since(start); took < best {
-				best = took
-			}
-			if rec.Code != http.StatusUnauthorized {
-				t.Fatalf("%s answered %d, want 401", username, rec.Code)
-			}
+		body, _ := json.Marshal(map[string]string{"username": username, "password": password})
+		r := httptest.NewRequest(http.MethodPost, "/outpost/desktop", bytes.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		start := time.Now()
+		f.srv.Routes().ServeHTTP(rec, r)
+		took := time.Since(start)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s answered %d, want 401", username, rec.Code)
 		}
-		return best
+		return took
 	}
-	wrong := timed(f.email, "not-the-password-at-all")
-	for name, try := range map[string][2]string{
+	tries := map[string][2]string{
+		"a wrong password":          {f.email, "not-the-password-at-all"},
 		"an unknown person":         {"nobody-" + fmt.Sprint(time.Now().UnixNano()) + "@example.test", "anything-at-all"},
 		"an empty password":         {f.email, ""},
 		"a person with no password": {noPassword, "anything-at-all"},
-	} {
-		if took := timed(try[0], try[1]); took < wrong/2 {
+	}
+	// Interleaved, round by round, so a slow patch on the machine falls on
+	// every kind of refusal alike. Measured one kind after another, three slow
+	// wrong passwords in a row made a hashed refusal look like an unhashed one.
+	best := map[string]time.Duration{}
+	for range 5 {
+		for name, try := range tries {
+			if took := once(try[0], try[1]); best[name] == 0 || took < best[name] {
+				best[name] = took
+			}
+		}
+	}
+	wrong := best["a wrong password"]
+	for name, took := range best {
+		if name != "a wrong password" && took < wrong/2 {
 			t.Errorf("%s was refused in %v and a wrong password in %v: the time tells them apart", name, took, wrong)
 		}
 	}

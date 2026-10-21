@@ -260,6 +260,72 @@ func SetUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name, value
 	return nil
 }
 
+// ClearUserAttribute removes one of a person's values.
+func ClearUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name string) error {
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM core.user_attributes a USING core.user_attribute_schema s
+		 WHERE a.attribute_id = s.id AND a.user_id = $1::uuid AND s.org_id = $2::uuid AND s.name = $3`,
+		userID, orgID, name); err != nil {
+		return fmt.Errorf("clearing attribute %q: %w", name, err)
+	}
+	return nil
+}
+
+// ErrAttributeRequired is a required attribute left empty.
+var ErrAttributeRequired = errors.New("this attribute is required")
+
+// SetOwnAttributes writes what a person set for themselves, from their profile
+// or at sign-up: only the attributes they may write, each checked against its
+// type and sealed as its declaration says. values maps a name to its new value;
+// an empty value clears an optional attribute and is refused for a required
+// one. A name the person may not write is refused (ErrNoSuchAttribute) rather
+// than skipped, so an administrator's attribute cannot be set by posting it.
+// changed is the names that were written or cleared.
+func SetOwnAttributes(ctx context.Context, tx pgx.Tx, userID, orgID string, values map[string]string,
+	root *keys.RootKey) (changed []string, err error) {
+
+	decl, err := Attributes(ctx, tx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	writable := map[string]Attribute{}
+	for _, a := range decl {
+		if a.UserWritable {
+			writable[a.Name] = a
+		}
+	}
+	for name := range values {
+		if _, ok := writable[name]; !ok {
+			return nil, fmt.Errorf("%w: %q is not one you can set", ErrNoSuchAttribute, name)
+		}
+	}
+	for _, a := range decl {
+		v, posted := values[a.Name]
+		if !a.UserWritable || !posted {
+			continue
+		}
+		if v == "" {
+			if a.Required {
+				return nil, fmt.Errorf("%w: %s", ErrAttributeRequired, attributeLabel(a))
+			}
+			if err := ClearUserAttribute(ctx, tx, userID, orgID, a.Name); err != nil {
+				return nil, err
+			}
+		} else if err := SetUserAttribute(ctx, tx, userID, orgID, a.Name, v, root); err != nil {
+			return nil, err
+		}
+		changed = append(changed, a.Name)
+	}
+	return changed, nil
+}
+
+func attributeLabel(a Attribute) string {
+	if a.DisplayName != "" {
+		return a.DisplayName
+	}
+	return a.Name
+}
+
 // attributeContext binds a sealed value to the attribute it belongs to.
 //
 // Without it, a ciphertext copied from one attribute's row to another's would

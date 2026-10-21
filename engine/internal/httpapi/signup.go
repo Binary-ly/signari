@@ -83,6 +83,7 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 		// A bound invitation fixes the address; showing it editable invites
 		// someone to change it and then be refused for no visible reason.
 		data["EmailFixed"] = inv.Email != ""
+		data["Fields"] = s.signupFields(ctx, inv.OrgID, nil)
 		s.renderPage(w, r, "signup", data)
 		return
 	}
@@ -98,7 +99,39 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 	if len(rule.AllowedDomains) > 0 {
 		data["Domains"] = strings.Join(rule.AllowedDomains, ", ")
 	}
+	data["Fields"] = s.signupFields(ctx, rule.OrgID, nil)
 	s.renderPage(w, r, "signup", data)
+}
+
+// signupFields are the attributes a new account may set for itself, the
+// required ones marked (5.05). A failure to read them shows none: the account
+// can still be made, and a required one is then refused at submission with its
+// name, rather than the form refusing to load.
+func (s *Server) signupFields(ctx context.Context, orgID string, posted map[string]string) []profileField {
+	if orgID == "" {
+		return nil
+	}
+	fields, err := s.profileFields(ctx, "", orgID, true, posted)
+	if err != nil {
+		s.log.Error("reading the attributes a sign-up may set", "err", err)
+		return nil
+	}
+	return fields
+}
+
+// signupOrg is the organisation a sign-up form is for: the invitation's, or the
+// signup rule's.
+func (s *Server) signupOrg(ctx context.Context, token string) string {
+	if token != "" {
+		if inv, err := store.PeekInvitation(ctx, s.db, token); err == nil {
+			return inv.OrgID
+		}
+		return ""
+	}
+	if rule, err := s.signupRule(ctx); err == nil && rule != nil {
+		return rule.OrgID
+	}
+	return ""
 }
 
 // enrolmentFacts answers the conditions an enrolment flow may branch on:
@@ -262,15 +295,18 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 	email := strings.ToLower(strings.TrimSpace(r.PostFormValue("email")))
 	password := r.PostFormValue("password")
 	token := r.PostFormValue("invite")
+	attrs := postedAttributes(r.PostForm)
 
 	fail := func(msg string) {
 		csrf, _ := s.csrfToken(w, r)
 		// The widget is re-rendered on failure. Without it the form comes back
 		// with no challenge, the next submission has nothing to send, and the
-		// person is refused for a reason the page does not show them.
+		// person is refused for a reason the page does not show them. So are
+		// the attributes, with what was typed.
 		s.renderPage(w, r, "signup", s.captchaFields(r, map[string]any{
 			"Error": msg, "Email": email, "Invite": token,
-			"CSRF": csrf, "CSRFField": csrfFormField,
+			"Fields": s.signupFields(ctx, s.signupOrg(ctx, token), attrs),
+			"CSRF":   csrf, "CSRFField": csrfFormField,
 		}))
 	}
 
@@ -338,7 +374,14 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 		orgID, groups, verify = rule.OrgID, rule.DefaultGroups, rule.RequireVerify
 	}
 
-	userID, groups, err := s.createAccount(ctx, orgID, email, password, groups, invitationID == "", verify)
+	// Every attribute the person may set is written, so a required one left
+	// off the form is refused by name rather than skipped.
+	for _, f := range s.signupFields(ctx, orgID, nil) {
+		if _, posted := attrs[f.Name]; !posted {
+			attrs[f.Name] = ""
+		}
+	}
+	userID, groups, err := s.createAccount(ctx, orgID, email, password, groups, invitationID == "", verify, attrs)
 	if err != nil {
 		if invitationID != "" {
 			// Give it back. A duplicate address or a refused password should not
@@ -348,6 +391,11 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, errAddressTaken) {
 			fail("There is already an account with that address. Try signing in, " +
 				"or use the forgotten-password link.")
+			return
+		}
+		if errors.Is(err, store.ErrAttributeRequired) || errors.Is(err, store.ErrInvalidAttributeValue) ||
+			errors.Is(err, store.ErrNoSuchAttribute) {
+			fail(err.Error())
 			return
 		}
 		s.log.Error("creating an account", "err", err)
@@ -387,9 +435,10 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 // That is the same reason directory and SCIM sync may not reach such a group.
 // An invitation names one person and comes from the operator, so it is left to
 // the operator. verify records that the address must be proved before the
-// account is signed in (store.RequireEmailVerification).
+// account is signed in (store.RequireEmailVerification). attrs are the
+// attributes the person set on the form (store.SetOwnAttributes).
 func (s *Server) createAccount(ctx context.Context, orgID, email, password string,
-	groups []string, selfSignup, verify bool) (string, []string, error) {
+	groups []string, selfSignup, verify bool, attrs map[string]string) (string, []string, error) {
 
 	handle := make([]byte, 64)
 	if _, err := io.ReadFull(rand.Reader, handle); err != nil {
@@ -424,6 +473,11 @@ func (s *Server) createAccount(ctx context.Context, orgID, email, password strin
 	}
 	if verify {
 		if err := store.RequireEmailVerification(ctx, tx, userID, orgID); err != nil {
+			return "", nil, err
+		}
+	}
+	if len(attrs) > 0 {
+		if _, err := store.SetOwnAttributes(ctx, tx, userID, orgID, attrs, s.cfg.Root); err != nil {
 			return "", nil, err
 		}
 	}

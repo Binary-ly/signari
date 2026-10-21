@@ -244,6 +244,17 @@ The audit trail records **which** attributes were declared or set, never their
 values — writing those into an append-only table is precisely what the sealed
 storage exists to avoid.
 
+**What the person may do is part of the declaration.** `user_readable` shows the
+attribute on their own `/account/profile`; `user_writable` (which implies
+readable) lets them set it there and offers it on the sign-up form; `required`
+makes the sign-up refuse to create the account without it and the profile
+refuse to empty it. Their own writes go through the same typed, sealed write as
+this API's, are refused for an attribute they may not write (rather than
+skipped), and are audited `user.attributes_updated`, names only. An attribute
+that is neither readable nor writable is the administrator's alone and appears
+on no page the person sees. Until October 2026 all three were stored and
+honoured nowhere.
+
 ### Claim mappers
 
 Which attribute becomes which claim, where, and for whom.

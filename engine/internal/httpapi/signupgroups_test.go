@@ -38,7 +38,7 @@ func TestSelfSignupNeverJoinsAGroupThatMayImpersonate(t *testing.T) {
 		t.Helper()
 		email := fmt.Sprintf("signup-%d@example.test", time.Now().UnixNano())
 		userID, joined, err := f.srv.createAccount(ctx, f.orgID, email,
-			"correct horse battery staple", []string{support, staff}, selfSignup, false)
+			"correct horse battery staple", []string{support, staff}, selfSignup, false, nil)
 		if err != nil {
 			t.Fatalf("createAccount: %v", err)
 		}

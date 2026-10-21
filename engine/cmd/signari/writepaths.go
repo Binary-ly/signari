@@ -1161,7 +1161,7 @@ func instanceTOTPPolicy(ctx context.Context, conn *pgx.Conn, orgID string, p mfa
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	fmt.Printf("new authenticator apps: %s, %d digits, %s\n", p.Algorithm, p.Digits, p.Period)
+	fmt.Printf("new authenticator apps: %s, %d digits, %ds\n", p.Algorithm, p.Digits, int(p.Period/time.Second))
 	fmt.Println("\n  Applies to apps enrolled from now on; each one already enrolled keeps what")
 	fmt.Println("  it was enrolled with. Not every app computes SHA256 or SHA512, or shows 8")
 	fmt.Println("  digits or 60s codes: one that does not shows codes that never match.")

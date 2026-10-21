@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -41,7 +42,10 @@ func TestNoPasswordExpiresOnASchedule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := regexp.MustCompile("`SIGNARI_PASSWORD_[A-Z_]*(EXPIR|MAX_AGE|ROTAT|LIFETIME)[A-Z_]*`").Find(doc); m != nil {
-		t.Errorf("%s is a setting for password expiry, which SP 800-63B-4 says SHALL NOT be required", m)
+	expiry := regexp.MustCompile(`EXPIR|MAX_AGE|ROTAT|LIFETIME`)
+	for _, name := range regexp.MustCompile(`SIGNARI_[A-Z0-9_]+`).FindAllString(string(doc), -1) {
+		if strings.Contains(name, "PASSWORD") && expiry.MatchString(name) {
+			t.Errorf("%s is a setting for password expiry, which SP 800-63B-4 says SHALL NOT be required", name)
+		}
 	}
 }

@@ -196,6 +196,9 @@ func (s *Server) Routes() http.Handler {
 	privileged("DELETE /admin/users/{userID}/factors/{kind}", ScopeUsersWrite, targetUser, s.deleteUserFactor)
 	privileged("DELETE /admin/users/{userID}/factors/{kind}/{factorID}", ScopeUsersWrite, targetUser, s.deleteUserFactor)
 	privileged("DELETE /admin/users/{userID}/throttle", ScopeUsersWrite, targetUser, s.unlockUser)
+	// A passkey is a way into the account, so a privileged target needs the
+	// privileged scope as a password reset does.
+	privileged("POST /admin/users/{userID}/passkey-link", ScopeUsersWrite, targetUser, s.issuePasskeyLink)
 	route("POST /admin/organizations", ScopeOrganizationsWrite, s.createOrganization)
 
 	// The scope catalogue. Registered unconditionally — unlike attributes, a

@@ -693,6 +693,10 @@ func (s *Server) mux() *http.ServeMux {
 	// subscriber". There was no way to request it: store.DeleteCredential existed,
 	// was tested, and had no caller.
 	mux.HandleFunc("POST /account/passkeys/delete", s.handlePasskeyDelete)
+	// A passkey registered from an emailed link, with no session (passkeylink.go).
+	mux.HandleFunc("GET /enrol/passkey", s.handlePasskeyLinkPage)
+	mux.HandleFunc("POST /enrol/passkey/begin", s.handlePasskeyLinkBegin)
+	mux.HandleFunc("POST /enrol/passkey/finish", s.handlePasskeyLinkFinish)
 	mux.HandleFunc("POST /login/passkey/begin", s.handlePasskeyLoginBegin)
 	mux.HandleFunc("POST /login/passkey/finish", s.handlePasskeyLoginFinish)
 	return mux.ServeMux

@@ -83,6 +83,7 @@ var summaries = map[string]string{
 	"DELETE /admin/users/{userID}/factors/{kind}":            "Remove a factor the user holds one of.",
 	"DELETE /admin/users/{userID}/factors/{kind}/{factorID}": "Remove one of several factors.",
 	"DELETE /admin/users/{userID}/throttle":                  "Clear the sign-in delay and the budgets wrong guesses charged to the user.",
+	"POST /admin/users/{userID}/passkey-link":                "Email the user a single-use link to register a passkey. The token is never returned.",
 	"GET /admin/users/{userID}/sessions":                     "A user's live sessions.",
 	"DELETE /admin/users/{userID}/sessions":                  "End all of a user's sessions.",
 	"DELETE /admin/sessions/{sid}":                           "End one session.",

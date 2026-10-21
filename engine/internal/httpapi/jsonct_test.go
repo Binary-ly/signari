@@ -27,6 +27,8 @@ func TestWebAuthnEndpointsRequireTheJSONContentType(t *testing.T) {
 		"/account/passkeys/finish",
 		"/login/passkey/begin",
 		"/login/passkey/finish",
+		"/enrol/passkey/begin",
+		"/enrol/passkey/finish",
 	} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"a":1}`))

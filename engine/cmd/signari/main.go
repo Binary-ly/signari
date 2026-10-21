@@ -683,6 +683,8 @@ func run(args []string) (err error) {
 	factorID := fs.String("factor-id", "",
 		"`user remove-factor`: which passkey (its id from GET /admin/users/{id}/factors), "+
 			"when the person holds several")
+	linkExpires := fs.Duration("link-expires", 0,
+		"`user passkey-link`: how long the emailed link works, 1m to 168h (default 24h)")
 	smsNumbers := fs.String("sms-numbers", "",
 		"`instance sms-numbers`: stored, or hashed to keep only a keyed hash of each SMS number, "+
 			"which the person retypes to be sent a code")
@@ -906,6 +908,8 @@ func run(args []string) (err error) {
 		return userRemoveFactor(ctx, conn, *orgID, *email, *factorKind, *factorID)
 	case "user unlock":
 		return userUnlock(ctx, conn, *orgID, *email)
+	case "user passkey-link":
+		return userPasskeyLink(ctx, conn, *orgID, *email, *linkExpires)
 	case "instance login-throttle":
 		return instanceLoginThrottle(ctx, conn, *orgID, *freeAttempts, *maxLoginDelay)
 	case "instance sms-numbers":

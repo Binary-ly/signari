@@ -24,6 +24,9 @@ const (
 	NoticeFactorRemoved = "factor_removed"
 	// NoticeFactorAssigned: an administrator gave the person a hardware token.
 	NoticeFactorAssigned = "factor_assigned"
+	// NoticePasskeyLink: the link to register a passkey (IssuePasskeyLink),
+	// emailed to the account's address alone; its token is minted as it is sent.
+	NoticePasskeyLink = "passkey_link"
 )
 
 // AccountNotice is one queued notice.
@@ -32,6 +35,9 @@ type AccountNotice struct {
 	Notice string `json:"notice"`
 	// Factor is the kind concerned, as the Admin API names it.
 	Factor string `json:"factor,omitempty"`
+	// LinkID is the passkey link a NoticePasskeyLink carries. Its id, never
+	// its token.
+	LinkID string `json:"link_id,omitempty"`
 }
 
 // EnqueueAccountNotice queues a notice in tx.

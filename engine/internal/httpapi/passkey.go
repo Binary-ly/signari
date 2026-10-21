@@ -59,8 +59,11 @@ type ceremonyClaims struct {
 	Purpose string `json:"pur"` // "register" or "login" -- see below
 	// Subject is empty for a discoverable login, where the whole point is that
 	// we do not yet know who is signing in.
-	Subject string          `json:"sub,omitempty"`
-	OrgID   string          `json:"org,omitempty"`
+	Subject string `json:"sub,omitempty"`
+	OrgID   string `json:"org,omitempty"`
+	// Link is the emailed link a registration was begun from (passkeylink.go),
+	// spent when it finishes.
+	Link    string          `json:"lnk,omitempty"`
 	Session json.RawMessage `json:"sd"`
 	Expiry  int64           `json:"exp"`
 }
@@ -73,6 +76,12 @@ type ceremonyClaims struct {
 // ceremony with it -- the two look similar enough that only an explicit label
 // keeps them apart.
 func (s *Server) issueCeremony(w http.ResponseWriter, purpose, userID, orgID string, sd *webauthn.SessionData) error {
+	return s.setCeremony(w, ceremonyClaims{Purpose: purpose, Subject: userID, OrgID: orgID}, sd)
+}
+
+// setCeremony is issueCeremony for claims that carry more, such as the link a
+// registration was begun from.
+func (s *Server) setCeremony(w http.ResponseWriter, cl ceremonyClaims, sd *webauthn.SessionData) error {
 	raw, err := json.Marshal(sd)
 	if err != nil {
 		return fmt.Errorf("encoding ceremony state: %w", err)
@@ -81,10 +90,8 @@ func (s *Server) issueCeremony(w http.ResponseWriter, purpose, userID, orgID str
 	if err != nil {
 		return err
 	}
-	tok, err := tokens.NewSigner(key).SignJSON(ceremonyClaims{
-		Issuer: s.cfg.Issuer, Purpose: purpose, Subject: userID, OrgID: orgID,
-		Session: raw, Expiry: time.Now().Add(ceremonyTTL).Unix(),
-	}, typCeremony)
+	cl.Issuer, cl.Session, cl.Expiry = s.cfg.Issuer, raw, time.Now().Add(ceremonyTTL).Unix()
+	tok, err := tokens.NewSigner(key).SignJSON(cl, typCeremony)
 	if err != nil {
 		return fmt.Errorf("signing ceremony state: %w", err)
 	}
@@ -211,7 +218,6 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 		writeJSONContentTypeError(w, err)
 		return
 	}
-	ctx := r.Context()
 	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "login_required", "sign in first")
@@ -222,7 +228,15 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 	if s.credentialChangeRefused(w, r, sid, "/account", true) {
 		return
 	}
+	s.beginPasskeyRegistration(w, r, ceremonyClaims{Purpose: "register", Subject: userID, OrgID: orgID})
+}
 
+// beginPasskeyRegistration answers with the options for a new credential for
+// cl.Subject and sets the ceremony that finishing it reads: the account page's
+// registration and an emailed link's.
+func (s *Server) beginPasskeyRegistration(w http.ResponseWriter, r *http.Request, cl ceremonyClaims) {
+	ctx := r.Context()
+	userID, orgID := cl.Subject, cl.OrgID
 	rp, err := s.relyingParty(ctx, orgID)
 	if err != nil {
 		// The most likely cause by far is an unset rp_id, and saying so beats a
@@ -254,7 +268,7 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	if err := s.issueCeremony(w, "register", userID, orgID, sd); err != nil {
+	if err := s.setCeremony(w, cl, sd); err != nil {
 		s.log.Error("issuing ceremony", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
@@ -270,7 +284,6 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		writeJSONContentTypeError(w, err)
 		return
 	}
-	ctx := r.Context()
 
 	// Cleared unconditionally: a challenge that survives a failed attempt can be
 	// ground against.
@@ -300,7 +313,18 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid_request", "no valid registration in progress")
 		return
 	}
+	s.finishPasskeyRegistration(w, r, userID, orgID, sd, nil)
+}
 
+// finishPasskeyRegistration verifies an attestation and stores the credential:
+// the account page's registration and an emailed link's (passkeylink.go), so
+// the two cannot differ in what they accept. inTx, when given, runs in the
+// transaction that stores the credential, before it commits; an error from it
+// refuses the registration and stores nothing.
+func (s *Server) finishPasskeyRegistration(w http.ResponseWriter, r *http.Request, userID, orgID string,
+	sd *webauthn.SessionData, inTx func(pgx.Tx) error) {
+
+	ctx := r.Context()
 	rp, err := s.relyingParty(ctx, orgID)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "passkeys_unavailable", err.Error())
@@ -437,6 +461,18 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		s.log.Error("counting credentials", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
+	}
+	if inTx != nil {
+		// A link spent since the ceremony began is the caller's to hear about;
+		// anything else is ours.
+		if err := inTx(tx); errors.Is(err, store.ErrPasskeyLinkInvalid) {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		} else if err != nil {
+			s.log.Error("finishing a passkey registration", "err", err)
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")

@@ -1174,6 +1174,55 @@ func userRemoveFactor(ctx context.Context, conn *pgx.Conn, orgID, email, kind, f
 	return nil
 }
 
+// userPasskeyLink emails a person a single-use link to register a passkey with
+// no session, as the Admin API's POST /admin/users/{id}/passkey-link does
+// (migration 0176). The token is minted by serve's outbox worker as it sends
+// the email, so it is never printed here: whoever runs this cannot use it.
+func userPasskeyLink(ctx context.Context, conn *pgx.Conn, orgID, email string, ttl time.Duration) error {
+	if email == "" {
+		return fmt.Errorf("give -email; -link-expires is how long the link works, 1m to 168h (default 24h)")
+	}
+	userID, userOrg, err := oneInOrg(ctx, conn, "users",
+		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+	if err != nil {
+		return err
+	}
+	var status, address string
+	if err := conn.QueryRow(ctx, `SELECT status, COALESCE(email, '') FROM core.users WHERE id = $1::uuid`,
+		userID).Scan(&status, &address); err != nil {
+		return err
+	}
+	switch {
+	case status != "active":
+		return fmt.Errorf("%s is %s, and a link for an account that cannot sign in would do nothing", email, status)
+	case address == "":
+		return fmt.Errorf("%s has no email address to send the link to", email)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	link, err := store.IssuePasskeyLink(ctx, tx, userID, userOrg, ttl)
+	if err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "admin.passkey_link_issued", OrgID: userOrg, SubjectID: userID,
+		Detail: map[string]any{"link_id": link.ID, "expires_at": link.ExpiresAt.UTC().Format(time.RFC3339),
+			"via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the link: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: a link to register one passkey will be emailed to %s once the server's outbox "+
+		"delivers it. It works until %s; any earlier link they had no longer works.\n",
+		email, address, link.ExpiresAt.UTC().Format("15:04 MST on 2 January 2006"))
+	return nil
+}
+
 // instanceTOTPPolicy sets what an organisation enrols new authenticator apps
 // with (migration 0171). Each credential keeps what it was enrolled with, so
 // this changes nothing for anybody already enrolled.

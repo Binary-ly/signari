@@ -78,6 +78,7 @@ var columnClass = map[string]string{
 	"federation_trust_marks_issued.trust_mark_hash": "oneWay",
 	"invitations.token_hash":                        "oneWay",
 	"outposts.token_hash":                           "oneWay",
+	"passkey_links.token_hash":                      "oneWay",
 	"preauthorized_codes.code_hash":                 "oneWay",
 	"preauthorized_codes.tx_code_hash":              "oneWay",
 	"pushed_requests.uri_hash":                      "oneWay",

@@ -1,0 +1,18 @@
+{{define "title"}}{{T "passkeylink.title"}}{{end}}
+{{define "content"}}
+<h1>{{T "passkeylink.title"}}</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>
+<p class="hint">{{T "passkeylink.invalid.hint"}}</p>{{end}}
+{{if .Ready}}
+<p>{{T "passkeylink.intro" .}}</p>
+<p id="passkey-link-needs" class="hint">{{T "passkeylink.needs"}}</p>
+<div id="passkey-link" data-token="{{.Token}}" hidden>
+<label for="passkey-name">{{T "account.passkey.namelabel"}}</label>
+<input id="passkey-name" maxlength="64" autocomplete="off">
+<button type="button" id="passkey-link-register">{{T "account.passkey.add"}}</button>
+</div>
+<p id="passkey-link-done" hidden>{{T "passkeylink.done"}} <a href="/account">{{T "passkeylink.signin"}}</a></p>
+<p id="passkey-status" class="muted" role="status"></p>
+<script src="/passkey.js"></script>
+{{end}}
+{{end}}

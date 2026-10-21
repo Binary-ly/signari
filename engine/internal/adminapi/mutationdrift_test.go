@@ -101,6 +101,14 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			// The fixture user is active with an address, so the link is issued.
+			name: "POST /admin/users/{userID}/passkey-link", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/users/" + newDriftUser(t, s) + "/passkey-link"
+			},
+			body: func(*testing.T, *Server, string) string { return `{}` },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/attributes", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + anyOrgID(t, s) + "/attributes"

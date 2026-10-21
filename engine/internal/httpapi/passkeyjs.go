@@ -110,6 +110,35 @@ window.signariRegisterPasskey = async function (name) {
   return postJSON("/account/passkeys/finish" + q, encodeAttestation(cred));
 };
 
+// Registration from an emailed link, with no session: the link's token begins
+// the ceremony, which then carries it to the finish.
+window.signariRegisterPasskeyByLink = async function (token, name) {
+  const options = decodeCreation((await postJSON("/enrol/passkey/begin", { token: token })).publicKey);
+  const cred = await navigator.credentials.create({ publicKey: options });
+  const q = name ? "?name=" + encodeURIComponent(name) : "";
+  return postJSON("/enrol/passkey/finish" + q, encodeAttestation(cred));
+};
+
+document.addEventListener("DOMContentLoaded", function () {
+  const box = document.getElementById("passkey-link");
+  if (!box || !window.PublicKeyCredential) return;
+  box.hidden = false;
+  document.getElementById("passkey-link-needs").hidden = true;
+  const status = document.getElementById("passkey-status");
+  document.getElementById("passkey-link-register").addEventListener("click", async function () {
+    try {
+      await window.signariRegisterPasskeyByLink(box.dataset.token,
+        document.getElementById("passkey-name").value.trim());
+      box.hidden = true;
+      if (status) status.textContent = "";
+      document.getElementById("passkey-link-done").hidden = false;
+    } catch (e) {
+      if (e && e.name === "NotAllowedError") return;
+      if (status) status.textContent = e.message;
+    }
+  });
+});
+
 // Removal. A form post, with the page's CSRF token, because the endpoint
 // checks one: taking a factor away is the change another origin would want.
 window.signariRemovePasskey = async function (id, csrfField) {

@@ -367,6 +367,10 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 			"Ready": true, "Pending": false, "Wait": "", "When": "",
 			"Token": "0a94c1f7-6b2e-4d38-9f05-71c8ea4b2d63", "Error": "",
 		}),
+		"passkeylink": map[string]any{
+			"Ready": true, "Token": "q3Xv8mJb2tYcN0aKfP7sLw9eR4uHdG6iZ1oB5nCxVkE",
+			"Account": "amelia.hart@example.com", "Until": "16:30 UTC on 22 October", "Error": "",
+		},
 		"sent":       map[string]any{},
 		"done":       map[string]any{},
 		"cancelled":  map[string]any{},

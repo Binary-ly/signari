@@ -69,6 +69,7 @@ import (
 	"signari.dev/engine/internal/logging"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/metrics"
+	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/migrate"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/oidfed"
@@ -663,6 +664,19 @@ func run(args []string) (err error) {
 			"only a password, may sign in somebody the sign-in flow would ask for a second factor")
 	calibrateTarget := fs.Duration("target", 250*time.Millisecond,
 		"`passwords calibrate`: how long one password hash should take on this host")
+	totpAlgorithm := fs.String("totp-algorithm", "SHA1",
+		"`instance totp-policy`: the hash new authenticator apps are enrolled with; `user assign-otp`: "+
+			"the token's. SHA1, SHA256 or SHA512")
+	totpDigits := fs.Int("totp-digits", 6, "`instance totp-policy` / `user assign-otp`: digits per code, 6 or 8")
+	totpPeriod := fs.Duration("totp-period", 30*time.Second,
+		"`instance totp-policy` / `user assign-otp`: how long a time-based code lasts, 30s or 60s")
+	seedFile := fs.String("seed-file", "",
+		"`user assign-otp`: a file holding the token's seed, as base32 or hex (from the vendor's seed "+
+			"list); read from a file so it never appears in a process list or shell history")
+	hotp := fs.Bool("hotp", false, "`user assign-otp`: the token is counter-based (HOTP), not time-based")
+	otpCode := fs.String("code", "", "`user assign-otp`: the code the token shows now, proving the seed is its own")
+	otpNextCode := fs.String("next-code", "",
+		"`user assign-otp -hotp`: the code after -code, so a wrong seed cannot match one code by chance")
 	freeAttempts := fs.Int("free-attempts", 0,
 		"`instance login-throttle`: wrong passwords for one account before the sign-in delay begins, 1 to 20")
 	maxLoginDelay := fs.Duration("max-delay", 0,
@@ -880,6 +894,13 @@ func run(args []string) (err error) {
 		return userUnlock(ctx, conn, *orgID, *email)
 	case "instance login-throttle":
 		return instanceLoginThrottle(ctx, conn, *orgID, *freeAttempts, *maxLoginDelay)
+	case "instance totp-policy":
+		return instanceTOTPPolicy(ctx, conn, *orgID, mfa.Params{Algorithm: mfa.Algorithm(*totpAlgorithm),
+			Digits: *totpDigits, Period: *totpPeriod})
+	case "user assign-otp":
+		return userAssignOTP(ctx, conn, *orgID, *email, *seedFile, *hotp, mfa.Params{
+			Algorithm: mfa.Algorithm(*totpAlgorithm), Digits: *totpDigits, Period: *totpPeriod},
+			*otpCode, *otpNextCode)
 	case "client set-ciba":
 		return clientSetCIBA(ctx, conn, *clientID, *cibaDelivery, *cibaNotifyURL)
 	case "group impersonation":

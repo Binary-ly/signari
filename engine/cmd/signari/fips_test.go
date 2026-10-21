@@ -86,7 +86,15 @@ func TestServeRefusesWhatFIPSOnlyCannotRun(t *testing.T) {
 		SELECT id, org_id, '\x00', now() FROM u`); err != nil {
 		t.Fatal(err)
 	}
-	if err := fipsPreflight(ctx, conn, env(), true); err == nil || !strings.Contains(err.Error(), "1 people have TOTP") {
-		t.Errorf("enforced, with a person enrolled in TOTP: %v", err)
+	if err := fipsPreflight(ctx, conn, env(), true); err == nil ||
+		!strings.Contains(err.Error(), "1 people have a SHA-1 one-time-code authenticator") {
+		t.Errorf("enforced, with a person enrolled in SHA-1 TOTP: %v", err)
+	}
+	// A SHA-256 authenticator runs inside the module (migration 0171).
+	if _, err := conn.Exec(ctx, `UPDATE core.totp_credentials SET algorithm = 'SHA256'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := fipsPreflight(ctx, conn, env(), true); err != nil {
+		t.Errorf("enforced, with a person enrolled in SHA-256 TOTP: %v", err)
 	}
 }

@@ -44,7 +44,7 @@ func enrolFixture(t *testing.T) (*signInFixture, string) {
 func giveTOTP(t *testing.T, f *signInFixture) []byte {
 	t.Helper()
 	ctx := context.Background()
-	secret, _, err := mfa.GenerateSecret()
+	secret, _, err := mfa.GenerateSecret(mfa.SHA1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func giveTOTP(t *testing.T, f *signInFixture) []byte {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := store.StartTOTPEnrolment(ctx, tx, f.userID, f.orgID, secret,
-		mfa.DefaultDigits, mfa.DefaultPeriod, f.srv.cfg.Root); err != nil {
+		string(mfa.SHA1), mfa.DefaultDigits, mfa.DefaultPeriod, f.srv.cfg.Root); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CompleteTOTPEnrolment(ctx, tx, f.userID, 0); err != nil {

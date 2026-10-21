@@ -256,6 +256,7 @@
 
   "error.totp.mismatch": "That code did not match. Check your authenticator app and try again.",
   "error.totp.expired": "That setup code has expired. Start again to get a new one.",
+  "error.totp.fips": "Authenticator apps cannot be added here yet: this organisation uses SHA-1 codes, which this server's FIPS mode refuses. Ask your administrator to choose SHA-256, or add a passkey instead.",
   "error.reset.invalid": "That link is not valid.",
   "error.reset.expired": "That link is not valid or has expired.",
   "error.invite.invalid": "That invitation link is not valid. It may have been used already, or expired. Ask whoever invited you for a new one.",

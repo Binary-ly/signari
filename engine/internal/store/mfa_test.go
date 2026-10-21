@@ -35,12 +35,12 @@ func mfaFixture(t *testing.T) (pgx.Tx, string, string, *keys.RootKey) {
 // startEnrolment generates a secret and stores it as an enrolment in progress.
 func startEnrolment(t *testing.T, tx pgx.Tx, userID, orgID string, root *keys.RootKey) []byte {
 	t.Helper()
-	secret, _, err := mfa.GenerateSecret()
+	secret, _, err := mfa.GenerateSecret(mfa.SHA1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := StartTOTPEnrolment(context.Background(), tx, userID, orgID, secret,
-		mfa.DefaultDigits, mfa.DefaultPeriod, root); err != nil {
+		string(mfa.SHA1), mfa.DefaultDigits, mfa.DefaultPeriod, root); err != nil {
 		t.Fatal(err)
 	}
 	return secret
@@ -186,7 +186,8 @@ func TestReplayIsRefusedAcrossTheStore(t *testing.T) {
 	code := mfa.Code(secret, mfa.Counter(now, mfa.DefaultPeriod), mfa.DefaultDigits)
 
 	cred, _ := LoadTOTP(ctx, tx, userID, root)
-	counter, err := mfa.Verify(secret, code, now, cred.Digits, cred.Period, mfa.DefaultSkew, cred.LastCounter)
+	p := mfa.Params{Algorithm: mfa.Algorithm(cred.Algorithm), Digits: cred.Digits, Period: cred.Period}
+	counter, err := p.Verify(secret, code, now, mfa.DefaultSkew, cred.LastCounter)
 	if err != nil {
 		t.Fatalf("first use rejected: %v", err)
 	}
@@ -206,7 +207,7 @@ func TestReplayIsRefusedAcrossTheStore(t *testing.T) {
 		t.Error("a successful verification did not confirm the credential")
 	}
 
-	if _, err := mfa.Verify(secret, code, now, cred2.Digits, cred2.Period, mfa.DefaultSkew, cred2.LastCounter); !errors.Is(err, mfa.ErrReplay) {
+	if _, err := p.Verify(secret, code, now, mfa.DefaultSkew, cred2.LastCounter); !errors.Is(err, mfa.ErrReplay) {
 		t.Fatalf("the same code was accepted twice (err = %v)", err)
 	}
 }

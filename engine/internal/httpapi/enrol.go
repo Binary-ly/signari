@@ -122,7 +122,11 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret, encoded, err := mfa.GenerateSecret()
+	params := s.enrolmentParams(ctx, orgID)
+	if s.enrolmentRefusedUnderFIPS(w, r, params, false) {
+		return
+	}
+	secret, encoded, err := mfa.GenerateSecret(params.Algorithm)
 	if err != nil {
 		s.log.Error("generating a TOTP secret", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -137,7 +141,7 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := store.StartTOTPEnrolment(ctx, tx, userID, orgID, secret,
-		mfa.DefaultDigits, mfa.DefaultPeriod, s.cfg.Root); err != nil {
+		string(params.Algorithm), params.Digits, params.Period, s.cfg.Root); err != nil {
 		s.log.Error("starting a TOTP enrolment", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -153,7 +157,7 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	label := s.orgLabel(ctx, orgID)
 	account := s.accountLabel(ctx, userID)
 
-	uri := mfa.ProvisioningURI(label, account, encoded, mfa.DefaultDigits, mfa.DefaultPeriod)
+	uri := mfa.ProvisioningURI(label, account, encoded, params)
 
 	// The QR code is a convenience, not the credential. If it fails to build, the
 	// page still shows the key for manual entry rather than failing enrolment --
@@ -257,6 +261,39 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 }
 
 // What a TOTP confirmation found.
+// enrolmentParams is what the organisation enrols new authenticator apps
+// with (`signari instance totp-policy`). One it cannot read is the default,
+// which every app can scan: the choice is about which apps work, not about
+// who gets in.
+func (s *Server) enrolmentParams(ctx context.Context, orgID string) mfa.Params {
+	p, err := store.LoadTOTPPolicy(ctx, s.db, orgID)
+	if err != nil {
+		s.log.Error("loading the TOTP policy", "org_id", orgID, "err", err)
+	}
+	return mfa.Params{Algorithm: mfa.Algorithm(p.Algorithm), Digits: p.Digits, Period: p.Period}
+}
+
+// otpParams is a stored authenticator's own, whatever the organisation now
+// enrols with, so changing the choice never breaks a phone that works.
+func otpParams(c *store.TOTPCredential) mfa.Params {
+	return mfa.Params{Algorithm: mfa.Algorithm(c.Algorithm), Digits: c.Digits, Period: c.Period}
+}
+
+// enrolmentRefusedUnderFIPS shows the enrolment page's reason, when the
+// organisation enrols SHA-1 apps and FIPS 140-only mode refuses HMAC-SHA1: a
+// secret shown then is one no code could ever confirm.
+func (s *Server) enrolmentRefusedUnderFIPS(w http.ResponseWriter, r *http.Request, p mfa.Params, signIn bool) bool {
+	if mfa.Available(p.Algorithm) {
+		return false
+	}
+	csrf, _ := s.csrfToken(w, r)
+	s.renderPageStatus(w, r, http.StatusConflict, "enrol", map[string]any{
+		"Begin": true, "SignIn": signIn, "CSRF": csrf, "CSRFField": csrfFormField,
+		"Error": s.tr(r).T("error.totp.fips"),
+	})
+	return true
+}
+
 type totpOutcome int
 
 const (
@@ -288,8 +325,7 @@ func (s *Server) confirmTOTP(ctx context.Context, tx pgx.Tx, userID, orgID, code
 		s.log.Info("confirming TOTP without an enrolment in progress", "err", err)
 		return totpNone, nil, false, nil
 	}
-	counter, verr := mfa.Verify(pending.Secret, code, time.Now(),
-		pending.Digits, pending.Period, mfa.DefaultSkew, 0)
+	counter, verr := otpParams(pending).Verify(pending.Secret, code, time.Now(), mfa.DefaultSkew, 0)
 	if verr != nil {
 		return totpMismatch, nil, false, nil
 	}

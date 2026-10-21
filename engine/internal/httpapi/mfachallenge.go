@@ -485,8 +485,15 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 	case err != nil:
 		return res, err
 	default:
-		counter, verr := mfa.Verify(cred.Secret, code, time.Now(), cred.Digits,
-			cred.Period, mfa.DefaultSkew, cred.LastCounter)
+		// The credential's own parameters. A counter-based token is checked
+		// against its next presses; a time-based one against the clock.
+		var counter int64
+		var verr error
+		if cred.Kind == "hotp" {
+			counter, verr = otpParams(cred).VerifyHOTP(cred.Secret, code, cred.LastCounter, mfa.HOTPLookAhead)
+		} else {
+			counter, verr = otpParams(cred).Verify(cred.Secret, code, time.Now(), mfa.DefaultSkew, cred.LastCounter)
+		}
 		if verr == nil {
 			if err := store.RecordTOTPSuccess(ctx, tx, userID, counter); err != nil {
 				return res, err

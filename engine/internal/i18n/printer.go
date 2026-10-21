@@ -470,6 +470,12 @@ func stringify(v any) (string, bool) {
 		// something is safe HTML does not get to smuggle it through a message
 		// argument, because the message may be an operator's.
 		return string(s), true
+	case template.URL:
+		// Text as well, so an href it lands in is still held to the safe
+		// schemes. The enrolment page passes its otpauth link as one, for the
+		// template's own sanitiser; refused here, the link read {URI} and
+		// went nowhere, while the preview, given a string, looked right.
+		return string(s), true
 	case int:
 		return strconv.Itoa(s), true
 	case int64:

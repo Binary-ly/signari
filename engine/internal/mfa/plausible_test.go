@@ -30,12 +30,12 @@ func TestPlausibleIsNeverStricterThanVerify(t *testing.T) {
 			t.Errorf("Plausible(%q) = %v, want %v", in, got, want)
 		}
 		if !Plausible(in, DefaultDigits) {
-			if _, err := Verify(secret, in, now, DefaultDigits, DefaultPeriod, DefaultSkew, 0); err == nil {
+			if _, err := def.Verify(secret, in, now, DefaultSkew, 0); err == nil {
 				t.Errorf("Verify accepted %q, which Plausible says cannot match", in)
 			}
 		}
 	}
-	if _, err := Verify(secret, " "+right+" ", now, DefaultDigits, DefaultPeriod, DefaultSkew, 0); err != nil {
+	if _, err := def.Verify(secret, " "+right+" ", now, DefaultSkew, 0); err != nil {
 		t.Errorf("the right code with surrounding space was refused: %v", err)
 	}
 }

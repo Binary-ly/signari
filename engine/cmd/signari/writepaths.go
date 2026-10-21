@@ -32,6 +32,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -50,6 +51,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
@@ -1124,6 +1126,144 @@ func instanceLoginThrottle(ctx context.Context, conn *pgx.Conn, orgID string, fr
 		gotFree, time.Duration(gotMax)*time.Second)
 	fmt.Println("\n  A delay, not a lockout: a lockout is a button that disables any account")
 	fmt.Println("  somebody can name. Each failure counts for an hour.")
+	return nil
+}
+
+// instanceTOTPPolicy sets what an organisation enrols new authenticator apps
+// with (migration 0171). Each credential keeps what it was enrolled with, so
+// this changes nothing for anybody already enrolled.
+func instanceTOTPPolicy(ctx context.Context, conn *pgx.Conn, orgID string, p mfa.Params) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org; -totp-algorithm, -totp-digits and -totp-period default to SHA1, 6 and 30s")
+	}
+	if err := p.Check(); err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetTOTPPolicy(ctx, tx, orgID, store.TOTPPolicy{Algorithm: string(p.Algorithm),
+		Digits: p.Digits, Period: p.Period}); err != nil {
+		if errors.Is(err, store.ErrOrganizationNotFound) {
+			return fmt.Errorf("no organisation %s", orgID)
+		}
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "org.totp_policy_set", OrgID: orgID,
+		Detail: map[string]any{"algorithm": string(p.Algorithm), "digits": p.Digits,
+			"period_s": int(p.Period / time.Second), "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("new authenticator apps: %s, %d digits, %s\n", p.Algorithm, p.Digits, p.Period)
+	fmt.Println("\n  Applies to apps enrolled from now on; each one already enrolled keeps what")
+	fmt.Println("  it was enrolled with. Not every app computes SHA256 or SHA512, or shows 8")
+	fmt.Println("  digits or 60s codes: one that does not shows codes that never match.")
+	return nil
+}
+
+// hotpSyncWindow is how many presses of a counter-based token assign-otp
+// searches for its codes: a token fresh from its vendor, or pressed a few
+// times in testing. Two consecutive codes are asked for, so a wrong seed
+// matching by chance is out of reach even across this many.
+const hotpSyncWindow = 1000
+
+// decodeSeed reads a token seed: base32, or hex after "hex:".
+func decodeSeed(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if rest, ok := strings.CutPrefix(s, "hex:"); ok {
+		raw, err := hex.DecodeString(strings.NewReplacer(" ", "", ":", "").Replace(strings.TrimSpace(rest)))
+		if err != nil {
+			return nil, fmt.Errorf("the seed is not hex: %w", err)
+		}
+		if len(raw) < 10 {
+			return nil, fmt.Errorf("the seed is %d bytes, too short to be safe", len(raw))
+		}
+		return raw, nil
+	}
+	return mfa.DecodeSecret(s)
+}
+
+// userAssignOTP makes a hardware OATH token a person's authenticator (4.12),
+// from the seed its vendor shipped. The codes it shows now prove the seed is
+// the token's: a mistyped or wrong seed would otherwise be stored, and the
+// person refused at their next sign-in by a factor nobody can use. For a
+// counter-based token they also say where its counter stands.
+func userAssignOTP(ctx context.Context, conn *pgx.Conn, orgID, email, seedFile string, hotp bool,
+	p mfa.Params, code, next string) error {
+
+	if email == "" || seedFile == "" || code == "" || (hotp && next == "") {
+		return fmt.Errorf("give -email, -seed-file and -code (and -next-code with -hotp)")
+	}
+	if err := p.Check(); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(seedFile) // #nosec G304 -- the operator names the file
+	if err != nil {
+		return err
+	}
+	seed, err := decodeSeed(string(raw))
+	if err != nil {
+		return err
+	}
+	userID, userOrg, err := oneInOrg(ctx, conn, "users",
+		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+	if err != nil {
+		return err
+	}
+	kind, counter := "totp", int64(0)
+	if hotp {
+		kind = "hotp"
+		// From before the first press, so counter 0 is a candidate.
+		first, err := p.VerifyHOTP(seed, code, -1, hotpSyncWindow)
+		if err == nil {
+			counter, err = p.VerifyHOTP(seed, next, first, 1)
+		}
+		if err != nil {
+			return fmt.Errorf("-code then -next-code are not two consecutive codes of this seed among its "+
+				"first %d presses (%v); check the seed, -totp-algorithm and -totp-digits", hotpSyncWindow, err)
+		}
+	} else if counter, err = p.Verify(seed, code, time.Now(), mfa.DefaultSkew, 0); err != nil {
+		return fmt.Errorf("-code is not this seed's code now (%v); check the seed, -totp-algorithm, "+
+			"-totp-digits, -totp-period and this host's clock", err)
+	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	replaced, err := store.AssignOTPToken(ctx, tx, userID, userOrg, seed, kind, string(p.Algorithm),
+		p.Digits, p.Period, counter, root)
+	if err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "mfa.otp_token_assigned", OrgID: userOrg, SubjectID: userID,
+		Detail: map[string]any{"kind": kind, "algorithm": string(p.Algorithm), "digits": p.Digits,
+			"period_s": int(p.Period / time.Second), "replaced": replaced, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the assignment: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: a %s token is now their authenticator", email, kind)
+	if replaced {
+		fmt.Print(", replacing the one they had")
+	}
+	fmt.Println()
+	fmt.Println("\n  Delete the seed file: the seed is sealed in the database now, and a copy")
+	fmt.Println("  anywhere else is a second token. The codes given here are spent.")
 	return nil
 }
 

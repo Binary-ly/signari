@@ -73,27 +73,33 @@ find out which of these two the requirement means before planning anything.
 
 ## What cannot work under `fips140=only`
 
-### TOTP — `internal/mfa`
+### SHA-1 one-time codes — `internal/mfa`
 
-RFC 6238 specifies HMAC-SHA1, and effectively every authenticator app implements
-only that. SHA-1 in HMAC is not a collision-resistance claim and is not broken in
+One-time codes default to HMAC-SHA1, the variant every authenticator app
+computes. SHA-1 in HMAC is not a collision-resistance claim and is not broken in
 the way SHA-1 signatures are, but the module does not evaluate the argument: it
-refuses HMAC with anything outside SHA-2 and SHA-3.
+refuses HMAC with anything outside SHA-2 and SHA-3, and with a key shorter than
+112 bits.
 
-RFC 6238 does define SHA-256 and SHA-512 variants. Google Authenticator, Authy
-and Microsoft Authenticator do not implement them, so enabling one enrols users
-into codes their phone cannot produce.
+RFC 6238 also defines SHA-256 and SHA-512 variants, and those run inside the
+module. An organisation that sets `signari instance totp-policy -totp-algorithm
+SHA256` enrols new authenticator apps with SHA-256, and `signari user assign-otp
+-totp-algorithm SHA256` assigns a hardware token that computes it. Not every app
+computes SHA-256: one that does not shows codes that never match, so choose apps
+or tokens that state it. Each credential keeps the algorithm it was enrolled with.
 
-**Consequence: no TOTP.** Use WebAuthn instead, which is unaffected — passkeys
-are ECDSA P-256 or RSA with SHA-256 and pass cleanly. This is not a bad trade;
-it is the direction to move anyway.
+**Consequence: no SHA-1 codes.** Use SHA-256 apps or tokens, or WebAuthn, which
+is unaffected — passkeys are ECDSA P-256 or RSA with SHA-256 and pass cleanly.
 
-`serve` refuses to start under `fips140=only` while anyone has TOTP as a second
-factor, saying how many, because none of them could finish signing in. Move them
-to a passkey and remove the factor (`DELETE /admin/users/{id}/factors/totp`)
-first. A code checked anyway is refused with an error rather than a panic. Until
-October 2026 the check panicked the request, at the moment the person typed a
-code.
+`serve` refuses to start under `fips140=only` while anyone has a SHA-1 code
+authenticator as a second factor, saying how many, because none of them could
+finish signing in. Move them to a SHA-256 authenticator or a passkey and remove
+the factor (`DELETE /admin/users/{id}/factors/totp`) first. While an
+organisation still enrols SHA-1 apps, its enrolment page says why it cannot add
+one rather than showing a secret no code could confirm, and `signari doctor`
+warns. A code checked anyway, or one from a token seed under 112 bits, is
+refused with an error rather than a panic. Until October 2026 the check panicked
+the request, at the moment the person typed a code.
 
 ### RADIUS — `internal/radius`
 

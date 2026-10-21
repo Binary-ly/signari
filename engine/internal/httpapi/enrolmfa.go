@@ -104,7 +104,11 @@ func (s *Server) handleEnrolMFAStart(w http.ResponseWriter, r *http.Request) {
 	if !ok || s.hasFactorAlready(w, r, pending) {
 		return
 	}
-	secret, encoded, err := mfa.GenerateSecret()
+	params := s.enrolmentParams(ctx, pending.OrgID)
+	if s.enrolmentRefusedUnderFIPS(w, r, params, true) {
+		return
+	}
+	secret, encoded, err := mfa.GenerateSecret(params.Algorithm)
 	if err != nil {
 		s.log.Error("generating a TOTP secret", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -117,7 +121,7 @@ func (s *Server) handleEnrolMFAStart(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := store.StartTOTPEnrolment(ctx, tx, pending.Subject, pending.OrgID, secret,
-		mfa.DefaultDigits, mfa.DefaultPeriod, s.cfg.Root); err != nil {
+		string(params.Algorithm), params.Digits, params.Period, s.cfg.Root); err != nil {
 		s.log.Error("starting a TOTP enrolment", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -135,7 +139,7 @@ func (s *Server) handleEnrolMFAStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	uri := mfa.ProvisioningURI(s.orgLabel(ctx, pending.OrgID), s.accountLabel(ctx, pending.Subject),
-		encoded, mfa.DefaultDigits, mfa.DefaultPeriod)
+		encoded, params)
 	var qrSVG string
 	if code, qerr := qr.Encode([]byte(uri)); qerr == nil {
 		qrSVG = code.SVG(4, 4)

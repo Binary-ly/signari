@@ -17,8 +17,9 @@ import (
 //
 //   - RADIUS: MD5 by specification.
 //   - The breached-password check: its corpus is keyed by SHA-1.
-//   - People with TOTP as a second factor: TOTP is HMAC-SHA1, so none of them
-//     could finish signing in.
+//   - People with a SHA-1 one-time-code authenticator, the default: HMAC-SHA1,
+//     so none of them could finish signing in. SHA-256 and SHA-512 ones are
+//     approved (migration 0171).
 func FIPSRefusals(ctx context.Context, conn *pgx.Conn, getenv func(string) string, enforced bool) ([]string, error) {
 	if !enforced {
 		return nil, nil
@@ -34,16 +35,26 @@ func FIPSRefusals(ctx context.Context, conn *pgx.Conn, getenv func(string) strin
 			"SIGNARI_PASSWORD_BREACH_LIST")
 	}
 	var totp int
-	if err := conn.QueryRow(ctx,
-		`SELECT count(*) FROM core.totp_credentials WHERE confirmed_at IS NOT NULL`).Scan(&totp); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM core.totp_credentials
+		WHERE confirmed_at IS NOT NULL AND algorithm = 'SHA1'`).Scan(&totp); err != nil {
 		return nil, err
 	}
 	if totp > 0 {
-		out = append(out, fmt.Sprintf("%d people have TOTP as a second factor, and TOTP is HMAC-SHA1, "+
-			"which the module refuses, so none of them could finish signing in. Have them enrol a "+
-			"passkey, then remove their TOTP factor (DELETE /admin/users/{id}/factors/totp)", totp))
+		out = append(out, fmt.Sprintf("%d people have a SHA-1 one-time-code authenticator as a second "+
+			"factor, and HMAC-SHA1 is refused by the module, so none of them could finish signing in. "+
+			"Set `signari instance totp-policy -totp-algorithm SHA256`, have them enrol again or enrol "+
+			"a passkey, then remove the SHA-1 factor (DELETE /admin/users/{id}/factors/totp)", totp))
 	}
 	return out, nil
+}
+
+// sha1Enrolling counts the organisations that enrol new authenticator apps
+// with SHA-1. Under fips140=only their enrolment page refuses, rather than
+// show a secret no code could confirm; not a reason to refuse to start.
+func sha1Enrolling(ctx context.Context, conn *pgx.Conn) (int, error) {
+	var n int
+	err := conn.QueryRow(ctx, `SELECT count(*) FROM core.organizations WHERE totp_algorithm = 'SHA1'`).Scan(&n)
+	return n, err
 }
 
 // checkFIPS reports the FIPS 140-3 mode this process runs in, what that mode
@@ -56,6 +67,17 @@ func checkFIPS(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	}
 	for _, x := range refusals {
 		r.add(Critical, "fips", x, "serve refuses to start under GODEBUG=fips140=only until it is resolved.")
+	}
+	if fips140.Enforced() {
+		n, err := sha1Enrolling(ctx, conn)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			r.add(Warning, "fips", fmt.Sprintf("%d organisations enrol authenticator apps with SHA-1, "+
+				"which the module refuses, so their people cannot add one", n),
+				"signari instance totp-policy -org <uuid> -totp-algorithm SHA256")
+		}
 	}
 	if !fips140.Enabled() {
 		return nil

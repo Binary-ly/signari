@@ -75,9 +75,14 @@ const TOTPEnrolmentTTL = 15 * time.Minute
 
 // TOTPCredential is an enrolled authenticator.
 type TOTPCredential struct {
-	Secret      []byte
-	Digits      int
-	Period      time.Duration
+	Secret []byte
+	// Algorithm is SHA1, SHA256 or SHA512 (migration 0171).
+	Algorithm string
+	Digits    int
+	Period    time.Duration
+	// Kind is totp, or hotp for a counter-based token, whose LastCounter is
+	// its last accepted press.
+	Kind        string
 	Confirmed   bool
 	LastCounter int64
 	LockedUntil *time.Time
@@ -95,7 +100,7 @@ type TOTPCredential struct {
 //
 // Starting again replaces an earlier unfinished enrolment, never a credential.
 func StartTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID, orgID string, secret []byte,
-	digits int, period time.Duration, root *keys.RootKey) error {
+	algorithm string, digits int, period time.Duration, root *keys.RootKey) error {
 
 	sk, err := keys.LoadOrCreateSubjectKey(ctx, tx, userID, root)
 	if err != nil {
@@ -108,15 +113,16 @@ func StartTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID, orgID string, se
 		return fmt.Errorf("sealing TOTP secret: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.totp_enrolments (user_id, org_id, secret_enc, digits, period_secs)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+		INSERT INTO core.totp_enrolments (user_id, org_id, secret_enc, algorithm, digits, period_secs)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)
 		ON CONFLICT (user_id) DO UPDATE SET
 			org_id = EXCLUDED.org_id,
 			secret_enc = EXCLUDED.secret_enc,
+			algorithm = EXCLUDED.algorithm,
 			digits = EXCLUDED.digits,
 			period_secs = EXCLUDED.period_secs,
 			created_at = now()`,
-		userID, orgID, sealed, digits, int(period.Seconds())); err != nil {
+		userID, orgID, sealed, algorithm, digits, int(period.Seconds())); err != nil {
 		return fmt.Errorf("storing the TOTP enrolment: %w", err)
 	}
 	return nil
@@ -126,12 +132,13 @@ func StartTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID, orgID string, se
 // than TOTPEnrolmentTTL.
 func LoadTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, root *keys.RootKey) (*TOTPCredential, error) {
 	var sealed []byte
+	var algorithm string
 	var digits, period int
 	var createdAt time.Time
 	err := tx.QueryRow(ctx, `
-		SELECT secret_enc, digits, period_secs, created_at
+		SELECT secret_enc, algorithm, digits, period_secs, created_at
 		FROM core.totp_enrolments WHERE user_id = $1::uuid
-		FOR UPDATE`, userID).Scan(&sealed, &digits, &period, &createdAt)
+		FOR UPDATE`, userID).Scan(&sealed, &algorithm, &digits, &period, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoTOTPEnrolment
 	}
@@ -149,7 +156,8 @@ func LoadTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, root *keys
 	if err != nil {
 		return nil, fmt.Errorf("decrypting the TOTP enrolment secret: %w", err)
 	}
-	return &TOTPCredential{Secret: secret, Digits: digits, Period: time.Duration(period) * time.Second}, nil
+	return &TOTPCredential{Secret: secret, Algorithm: algorithm, Digits: digits,
+		Period: time.Duration(period) * time.Second, Kind: "totp"}, nil
 }
 
 // CompleteTOTPEnrolment makes the enrolment the user's confirmed credential,
@@ -169,14 +177,16 @@ func CompleteTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, counte
 	}
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO core.totp_credentials
-			(user_id, org_id, secret_enc, digits, period_secs, confirmed_at, last_used_counter)
-		SELECT user_id, org_id, secret_enc, digits, period_secs, now(), $2
+			(user_id, org_id, secret_enc, algorithm, digits, period_secs, kind, confirmed_at, last_used_counter)
+		SELECT user_id, org_id, secret_enc, algorithm, digits, period_secs, 'totp', now(), $2
 		  FROM core.totp_enrolments WHERE user_id = $1::uuid
 		ON CONFLICT (user_id) DO UPDATE SET
 			org_id = EXCLUDED.org_id,
 			secret_enc = EXCLUDED.secret_enc,
+			algorithm = EXCLUDED.algorithm,
 			digits = EXCLUDED.digits,
 			period_secs = EXCLUDED.period_secs,
+			kind = EXCLUDED.kind,
 			confirmed_at = now(),
 			last_used_counter = EXCLUDED.last_used_counter,
 			failed_attempts = 0,
@@ -197,16 +207,17 @@ func CompleteTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, counte
 // LoadTOTP reads and decrypts a credential.
 func LoadTOTP(ctx context.Context, tx pgx.Tx, userID string, root *keys.RootKey) (*TOTPCredential, error) {
 	var sealed []byte
+	var algorithm, kind string
 	var digits, period int
 	var confirmedAt, lockedUntil, disabledAt *time.Time
 	var lastCounter int64
 
 	err := tx.QueryRow(ctx, `
-		SELECT secret_enc, digits, period_secs, confirmed_at, last_used_counter, locked_until,
-		       disabled_at
+		SELECT secret_enc, algorithm, digits, period_secs, kind, confirmed_at, last_used_counter,
+		       locked_until, disabled_at
 		FROM core.totp_credentials WHERE user_id = $1::uuid
 		FOR UPDATE`, userID).
-		Scan(&sealed, &digits, &period, &confirmedAt, &lastCounter, &lockedUntil, &disabledAt)
+		Scan(&sealed, &algorithm, &digits, &period, &kind, &confirmedAt, &lastCounter, &lockedUntil, &disabledAt)
 	if err == pgx.ErrNoRows {
 		return nil, ErrNoTOTP
 	}
@@ -233,9 +244,103 @@ func LoadTOTP(ctx context.Context, tx pgx.Tx, userID string, root *keys.RootKey)
 	}
 
 	return &TOTPCredential{
-		Secret: secret, Digits: digits, Period: time.Duration(period) * time.Second,
-		Confirmed: confirmedAt != nil, LastCounter: lastCounter, LockedUntil: lockedUntil,
+		Secret: secret, Algorithm: algorithm, Digits: digits, Period: time.Duration(period) * time.Second,
+		Kind: kind, Confirmed: confirmedAt != nil, LastCounter: lastCounter, LockedUntil: lockedUntil,
 	}, nil
+}
+
+// AssignOTPToken makes a hardware token the person's authenticator, confirmed,
+// replacing any previous one, as CompleteTOTPEnrolment does for an app.
+// counter is the press (hotp) or time step (totp) of the code that proved the
+// seed belongs to the token, so that code cannot be replayed. Reports whether a
+// confirmed credential was replaced. The one writer of kind 'hotp', behind
+// `signari user assign-otp`.
+func AssignOTPToken(ctx context.Context, tx pgx.Tx, userID, orgID string, secret []byte, kind, algorithm string,
+	digits int, period time.Duration, counter int64, root *keys.RootKey) (replaced bool, err error) {
+
+	sk, err := keys.LoadOrCreateSubjectKey(ctx, tx, userID, root)
+	if err != nil {
+		return false, fmt.Errorf("subject key for an OTP token: %w", err)
+	}
+	sealed, err := sk.Seal(secret, totpContext)
+	if err != nil {
+		return false, fmt.Errorf("sealing the token's seed: %w", err)
+	}
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.totp_credentials
+		                WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL)`,
+		userID).Scan(&replaced); err != nil {
+		return false, fmt.Errorf("checking for an existing TOTP credential: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.totp_credentials
+			(user_id, org_id, secret_enc, algorithm, digits, period_secs, kind, confirmed_at, last_used_counter)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, now(), $8)
+		ON CONFLICT (user_id) DO UPDATE SET
+			org_id = EXCLUDED.org_id,
+			secret_enc = EXCLUDED.secret_enc,
+			algorithm = EXCLUDED.algorithm,
+			digits = EXCLUDED.digits,
+			period_secs = EXCLUDED.period_secs,
+			kind = EXCLUDED.kind,
+			confirmed_at = now(),
+			last_used_counter = EXCLUDED.last_used_counter,
+			failed_attempts = 0,
+			locked_until = NULL,
+			disabled_at = NULL`,
+		userID, orgID, sealed, algorithm, digits, int(period.Seconds()), kind, counter); err != nil {
+		return false, fmt.Errorf("assigning the OTP token: %w", err)
+	}
+	// An enrolment begun for an app would replace the token when finished.
+	if _, err := tx.Exec(ctx, `DELETE FROM core.totp_enrolments WHERE user_id = $1::uuid`, userID); err != nil {
+		return false, fmt.Errorf("clearing a TOTP enrolment: %w", err)
+	}
+	return replaced, nil
+}
+
+// TOTPPolicy is what an organisation enrols new authenticator apps with
+// (migration 0171).
+type TOTPPolicy struct {
+	Algorithm string
+	Digits    int
+	Period    time.Duration
+}
+
+// DefaultTOTPPolicy is SHA-1, six digits, thirty seconds: every app.
+var DefaultTOTPPolicy = TOTPPolicy{Algorithm: "SHA1", Digits: 6, Period: 30 * time.Second}
+
+// LoadTOTPPolicy reads an organisation's choice; no organisation is the default.
+func LoadTOTPPolicy(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID string) (TOTPPolicy, error) {
+	p := DefaultTOTPPolicy
+	if orgID == "" {
+		return p, nil
+	}
+	var period int
+	err := q.QueryRow(ctx, `
+		SELECT totp_algorithm, totp_digits, totp_period_s FROM core.organizations
+		 WHERE id = $1::uuid`, orgID).Scan(&p.Algorithm, &p.Digits, &period)
+	if err != nil {
+		return DefaultTOTPPolicy, fmt.Errorf("loading the TOTP policy: %w", err)
+	}
+	p.Period = time.Duration(period) * time.Second
+	return p, nil
+}
+
+// SetTOTPPolicy stores an organisation's choice, which the schema bounds. The
+// one writer, behind `signari instance totp-policy`.
+func SetTOTPPolicy(ctx context.Context, tx pgx.Tx, orgID string, p TOTPPolicy) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE core.organizations SET totp_algorithm = $2, totp_digits = $3, totp_period_s = $4
+		 WHERE id = $1::uuid`, orgID, p.Algorithm, p.Digits, int(p.Period/time.Second))
+	if err != nil {
+		return fmt.Errorf("setting the TOTP policy: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrOrganizationNotFound
+	}
+	return nil
 }
 
 // RecordTOTPSuccess advances the counter and clears the failure state.

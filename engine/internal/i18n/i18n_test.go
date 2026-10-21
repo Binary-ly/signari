@@ -1,6 +1,7 @@
 package i18n
 
 import (
+	"html/template"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,6 +229,18 @@ func TestAURLInAMessageCannotCarryAScheme(t *testing.T) {
 	}))
 	if !strings.Contains(ok, "otpauth://totp/Example:amelia") {
 		t.Errorf("a legitimate otpauth URI was mangled: %s", ok)
+	}
+
+	// As the enrolment page passes it, a template.URL: substituted, and held
+	// to the same schemes. It once rendered as {URI}.
+	typed := string(b.For("en").T("enrol.openlink", map[string]any{
+		"URI": template.URL("otpauth://totp/Example:amelia?secret=ABC"),
+	}))
+	if !strings.Contains(typed, `href="otpauth://totp/Example:amelia`) {
+		t.Errorf("a template.URL was not substituted: %s", typed)
+	}
+	if got := string(b.For("en").T("enrol.openlink", map[string]any{"URI": template.URL("javascript:alert(1)")})); !strings.Contains(got, `href="#"`) {
+		t.Errorf("a template.URL escaped the scheme check: %s", got)
 	}
 }
 

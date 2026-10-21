@@ -105,17 +105,16 @@ func Estimate(password, identity string) Strength {
 		// `abcabcabc` costs roughly what `abc` costs, plus the repeat count.
 		consider(bruteForce([]rune(lower[:n]))*float64(len(lower)/n), "a repeated block")
 	}
-	if runLength(lower) >= 3 {
-		// `aaaaaa`, `111111`. Cost is the alphabet times the length, not the
-		// alphabet TO the length.
-		consider(float64(len(rs))*26, "one character repeated")
+
+	// Runs, sequences and keyboard walks, each priced for the part of the
+	// password it covers (structural). Folded rune by rune, so a position in
+	// folded is a position in the password.
+	folded := make([]rune, len(rs))
+	for i, r := range rs {
+		folded[i] = unicode.ToLower(r)
 	}
-	if sequenceRun(lower) >= 4 {
-		// `abcdef`, `123456`, `zyxwvu`.
-		consider(float64(len(rs))*100, "a sequence like abcdef or 123456")
-	}
-	if keyboardWalk(lower) >= 4 {
-		consider(float64(len(rs))*200, "a keyboard pattern like qwerty")
+	if cost, name := structural(rs, folded); name != "" {
+		consider(cost, name)
 	}
 	if looksLikeDate(lower) {
 		// A date has at most a few hundred thousand plausible values.
@@ -145,11 +144,12 @@ func Estimate(password, identity string) Strength {
 		}
 	}
 
-	// Leetspeak is not strength. `p@ssw0rd` is `password` with three
-	// substitutions -- a factor of eight, not a new password.
-	if de := deleet(lower); de != lower {
-		if runLength(de) >= 3 || sequenceRun(de) >= 4 || keyboardWalk(de) >= 4 {
-			consider(best/8, "a common word with letters swapped for symbols")
+	// Leetspeak is not strength. `@4a` is `aaa` with two substitutions -- a
+	// factor of eight on the structure underneath, not a new password. Every
+	// substitution is one character for one, so positions still line up.
+	if de := []rune(deleet(string(folded))); string(de) != string(folded) {
+		if cost, name := structural(rs, de); name != "" {
+			consider(cost*8, "a common word with letters swapped for symbols")
 		}
 	}
 
@@ -212,69 +212,84 @@ func bruteForce(rs []rune) float64 {
 	return math.Pow(2, e)
 }
 
-// runLength is the longest run of one repeated character.
-func runLength(s string) int {
-	rs := []rune(s)
-	best, cur := 0, 1
-	for i := 1; i < len(rs); i++ {
-		if rs[i] == rs[i-1] {
-			cur++
-		} else {
-			cur = 1
-		}
-		if cur > best {
-			best = cur
+// structural prices a password read as runs, sequences and keyboard walks with
+// whatever lies between them. The longest such stretch costs what its pattern
+// costs, and the parts either side are priced the same way, down to brute
+// force: `qwertyuiopasdfgh` is two walks, not one walk and six random letters,
+// and three equal letters inside a random password cost only those three.
+// Pricing the whole password as its pattern refused one random 32-character
+// password in about forty. det is rs folded, and perhaps de-leeted, position
+// for position: patterns are found in det and the rest is priced from rs.
+func structural(rs, det []rune) (cost float64, name string) {
+	cost = bruteForce(rs)
+	at, n, unit, found := 0, 0, 0.0, ""
+	for _, p := range []struct {
+		find func([]rune) (int, int)
+		min  int
+		// unit is the cost per character: an alphabet's worth of choices for
+		// the whole stretch, not the alphabet TO its length.
+		unit float64
+		name string
+	}{
+		{longestRun, 3, 26, "one character repeated"},                 // `aaaaaa`, `111111`
+		{longestSequence, 4, 100, "a sequence like abcdef or 123456"}, // `abcdef`, `zyxwvu`
+		{longestWalk, 4, 200, "a keyboard pattern like qwerty"},
+	} {
+		if a, m := p.find(det); m >= p.min && m > n {
+			at, n, unit, found = a, m, p.unit, p.name
 		}
 	}
-	if len(rs) == 1 {
-		return 1
+	if found == "" {
+		return cost, ""
 	}
-	return best
+	left, _ := structural(rs[:at], det[:at])
+	right, _ := structural(rs[at+n:], det[at+n:])
+	if c := float64(n) * unit * left * right; c < cost {
+		return c, found
+	}
+	return cost, ""
 }
 
-// sequenceRun is the longest ascending or descending run by code point.
-func sequenceRun(s string) int {
-	rs := []rune(s)
-	if len(rs) < 2 {
-		return 0
+// longest finds the longest stretch in which each rune follows the one before
+// it by link, returning where it starts and how long it is.
+func longest(rs []rune, link func(prev, cur rune) bool) (at, n int) {
+	if len(rs) == 0 {
+		return 0, 0
 	}
-	best, cur, dir := 1, 1, 0
+	at, n = 0, 1
+	start, cur := 0, 1
 	for i := 1; i < len(rs); i++ {
-		d := int(rs[i]) - int(rs[i-1])
-		if d != 1 && d != -1 {
-			cur, dir = 1, 0
-			continue
-		}
-		if d == dir {
+		if link(rs[i-1], rs[i]) {
 			cur++
 		} else {
-			cur, dir = 2, d
+			start, cur = i, 1
 		}
-		if cur > best {
-			best = cur
+		if cur > n {
+			at, n = start, cur
 		}
 	}
-	return best
+	return at, n
 }
 
-// keyboardWalk is the longest run of adjacent keys on a common layout.
-func keyboardWalk(s string) int {
-	rs := []rune(s)
-	if len(rs) < 2 {
-		return 0
-	}
-	best, cur := 1, 1
-	for i := 1; i < len(rs); i++ {
-		if adjacentKeys(rs[i-1], rs[i]) {
-			cur++
-		} else {
-			cur = 1
-		}
-		if cur > best {
-			best = cur
+// longestRun is the longest run of one repeated character.
+func longestRun(rs []rune) (at, n int) {
+	return longest(rs, func(prev, cur rune) bool { return cur == prev })
+}
+
+// longestSequence is the longest ascending or descending run by code point.
+func longestSequence(rs []rune) (at, n int) {
+	best, bestN := 0, 0
+	for _, dir := range []int{1, -1} {
+		if a, m := longest(rs, func(prev, cur rune) bool { return int(cur)-int(prev) == dir }); m > bestN {
+			best, bestN = a, m
 		}
 	}
-	return best
+	return best, bestN
+}
+
+// longestWalk is the longest run of adjacent keys on a common layout.
+func longestWalk(rs []rune) (at, n int) {
+	return longest(rs, adjacentKeys)
 }
 
 func adjacentKeys(a, b rune) bool {

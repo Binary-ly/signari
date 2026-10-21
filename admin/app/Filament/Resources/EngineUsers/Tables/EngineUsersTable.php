@@ -7,6 +7,7 @@ use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
+use Illuminate\Support\Carbon;
 use RuntimeException;
 
 use Filament\Tables\Columns\IconColumn;
@@ -100,6 +101,7 @@ class EngineUsersTable
                 self::toggleActiveAction(),
                 self::setPasswordAction(),
                 self::removeFactorAction(),
+                self::sendPasskeyLinkAction(),
             ])
             ->toolbarActions([])
             ->defaultSort('created_at', 'desc')
@@ -226,6 +228,38 @@ class EngineUsersTable
                 }
                 Notification::make()->title(__('Sign-in method removed'))
                     ->body(self::endedSessions((int) ($r['sessions_ended'] ?? 0)))
+                    ->success()->send();
+            });
+    }
+
+    /**
+     * Email a link that registers one passkey with no session: for somebody
+     * invited without a password, or whose only way in is lost. Offered only
+     * where the engine would send it, an active account with an address. The
+     * link's token never reaches the console; the engine mints it as it sends
+     * the email.
+     */
+    private static function sendPasskeyLinkAction(): Action
+    {
+        return Action::make('sendPasskeyLink')
+            ->label(__('Email a passkey link'))
+            ->icon('heroicon-m-envelope')
+            ->visible(fn ($record): bool => $record->status === 'active' && filled($record->email))
+            ->requiresConfirmation()
+            ->modalDescription(__('They are emailed a link that adds one passkey to their account. It works once, for a day, and any earlier link stops working.'))
+            ->action(function ($record): void {
+                try {
+                    $r = EngineAdminApi::fromConfig()->sendPasskeyLink($record->id);
+                } catch (RuntimeException $e) {
+                    Notification::make()->title(__('No link was sent'))->body($e->getMessage())
+                        ->danger()->persistent()->send();
+
+                    return;
+                }
+                Notification::make()->title(__('Passkey link on its way'))
+                    ->body(__('It works until :when UTC.', [
+                        'when' => Carbon::parse((string) ($r['expires_at'] ?? 'now'))->utc()->format('j F Y, H:i'),
+                    ]))
                     ->success()->send();
             });
     }

@@ -132,6 +132,18 @@ class EngineAdminApi
     }
 
     /**
+     * Email a person a single-use link to register a passkey, for a new starter
+     * with no password or somebody whose only way in is lost. The answer names
+     * the link and when it ends, never its token: the engine mints that as it
+     * sends the email, so whoever issues a link cannot use it. 0 is a day.
+     */
+    public function sendPasskeyLink(string $userId, int $ttlSeconds = 0): array
+    {
+        return $this->request('post', "/admin/users/{$userId}/passkey-link",
+            ['ttl_seconds' => $ttlSeconds], $this->configVersion());
+    }
+
+    /**
      * Create a client. Returns the engine's response, including `client_secret`
      * for a confidential client.
      *

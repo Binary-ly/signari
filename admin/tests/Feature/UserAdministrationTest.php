@@ -182,6 +182,60 @@ class UserAdministrationTest extends TestCase
         });
     }
 
+    /**
+     * A passkey link is sent conditionally, as every other write here is, and
+     * the console is told when it ends and nothing more: the token is in the
+     * person's email alone.
+     */
+    public function test_a_passkey_link_is_sent_conditionally(): void
+    {
+        $user = $this->plantedUser();
+        Http::fake(function (Request $r) {
+            if (str_ends_with($r->url(), '/admin/config-version')) {
+                return Http::response(['config_version' => 9], 200);
+            }
+
+            return Http::response(['user_id' => 'u', 'link_id' => 'l-1',
+                'expires_at' => '2026-10-22T18:00:00Z', 'config_version' => 10], 200);
+        });
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('sendPasskeyLink')->table($user))
+                ->assertHasNoActionErrors()
+                ->assertNotified(__('Passkey link on its way'));
+        });
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST'
+            && str_ends_with($r->url(), "/admin/users/{$user->id}/passkey-link")
+            && $r->header('If-Match') === ['"9"']
+            && $r->data() === ['ttl_seconds' => 0]);
+    }
+
+    /** One the engine refuses, an account with no address, says why. */
+    public function test_a_refused_passkey_link_is_reported(): void
+    {
+        $user = $this->plantedUser();
+        Http::fake(function (Request $r) {
+            if (str_ends_with($r->url(), '/admin/config-version')) {
+                return Http::response(['config_version' => 9], 200);
+            }
+
+            return Http::response(['error' => 'cannot_send_link',
+                'detail' => 'the account has no email address to send the link to'], 409);
+        });
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('sendPasskeyLink')->table($user))
+                ->assertNotified(__('No link was sent'));
+        });
+    }
+
     private function plantedUser(): EngineUser
     {
         $userId = $this->plantUser($this->orgId);

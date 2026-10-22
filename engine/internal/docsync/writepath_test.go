@@ -368,8 +368,6 @@ var knownUnread = map[string]string{
 	// future list or detail view can read from.
 	"webauthn_credentials.attestation_type":   "what the authenticator presented at registration; decisions read attestation_verified",
 	"refresh_tokens.successor_hash":           "the rotation chain, for tracing a reuse after the fact; reuse is detected by family",
-	"group_members.added_by":                  "who granted a membership",
-	"invitations.created_by":                  "who sent an invitation",
 	"clients.registered_at":                   "when a dynamic registration happened",
 	"rac_sessions.connection_id":              "which connection a remote-access session used",
 	"rac_sessions.guacd_id":                   "guacd's id for the session, for matching its own logs",
@@ -380,7 +378,6 @@ var knownUnread = map[string]string{
 	"ssf_sources.last_event_at":               "when a transmitter last sent anything",
 	"ssf_received.event_time":                 "when the transmitter says the event happened",
 	"uma_pending_requests.decided_at":         "when a resource owner decided",
-	"uma_pending_requests.decided_by":         "who decided",
 	"preauthorized_codes.tx_code_input_mode":  "describes the code to the wallet in the offer, which is built when minted from the same values",
 	"preauthorized_codes.tx_code_length":      "the same",
 	"preauthorized_codes.tx_code_description": "the same",

@@ -38,6 +38,11 @@ const (
 	// irreversibly, and most tokens that need the former do not need the latter.
 	// Erasure is the only operation in this API that nobody can undo.
 	ScopeSubjectsErase = "subjects:erase"
+	// ScopeSubjectsExport takes everything kept about one person at once --
+	// their sessions, what each application was given, the trail of their
+	// account -- and is its own scope for the reason audit:read is: a token
+	// that may look a person up should not thereby be able to take all of them.
+	ScopeSubjectsExport = "subjects:export"
 	// ScopeOrganizationsWrite provisions tenants, and is separate for the same
 	// reason as subjects:erase: the blast radius differs in kind.
 	//
@@ -70,7 +75,7 @@ const (
 
 // KnownScopes is what `admin-token create` will accept.
 var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
-	ScopeSubjectsErase, ScopeUsersRead, ScopeClientsRead,
+	ScopeSubjectsErase, ScopeSubjectsExport, ScopeUsersRead, ScopeClientsRead,
 	ScopeGroupsRead, ScopeGroupsWrite, ScopeOrganizationsWrite,
 	ScopeAuditRead, ScopePrivilegedUsersWrite}
 

@@ -440,6 +440,7 @@ non-unique column skips rows at every page boundary.
 | | |
 |---|---|
 | `POST /admin/subjects/{subjectID}/erase` | Erase a person: crypto-shred their key and remove their account, ending its sessions and telling the applications. Permanent, and requires the identifier repeated in `confirm_subject_id`; an active account also needs `deactivate: true`. The answer says `key_shredded`, `account_deleted`, `sessions_ended` and `notices_queued` |
+| `GET /admin/subjects/{subjectID}/export` | Everything kept about a person, as the [data-export.md](data-export.md) document: their rows from every table keyed by them, attributes unsealed, every credential's value withheld. Needs `subjects:export`. A read, so no version moves, but audited `admin.subject_exported` before it is answered. A token scoped to an organisation exports only its people, and a subject whose account is gone names no organisation, so only an unscoped token may export one. Registered only with a root key |
 
 **Erasure is not deletion, and the two are deliberately separate verbs.**
 `DELETE /admin/users/{userID}` removes the account; this makes the person

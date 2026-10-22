@@ -108,6 +108,7 @@ command or an environment variable exists in code and not on its page.
 | [social-login.md](social-login.md) | Federated sign-in providers |
 | [groups.md](groups.md) | Membership, and which clients may see it |
 | [erasure.md](erasure.md) | Crypto-shredding a subject |
+| [data-export.md](data-export.md) | Everything kept about a person, for them or for a request on their behalf |
 
 ## Access control
 

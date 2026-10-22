@@ -1,0 +1,10 @@
+{{define "title"}}{{T "accountexport.title"}}{{end}}
+{{define "content"}}
+<h1>{{T "accountexport.title"}}</h1>
+<p>{{T "accountexport.intro"}}</p>
+<p class="hint">{{T "accountexport.what"}}</p>
+<form method="POST" action="/account/export">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<button type="submit">{{T "accountexport.submit"}}</button>
+</form>
+{{end}}

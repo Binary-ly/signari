@@ -38,6 +38,7 @@ wholesale, which is exactly the situation being replaced.
 | `groups:write` | Create, rename, delete a group; add and remove members |
 | `config:read` | `GET /admin/config-version` |
 | `subjects:erase` | `POST /admin/subjects/{id}/erase` |
+| `subjects:export` | `GET /admin/subjects/{id}/export`: everything kept about one person. **Not implied by any other scope** — see below |
 | `organizations:write` | `POST /admin/organizations`. Useless to an organisation-scoped token — see below |
 | `audit:read` | `GET /admin/audit-events`. **Not implied by any write scope** — see below |
 | `privileged-users:write` | Needed as well as the route's own scope to write on a user who may impersonate, or on a group that confers it (including its membership). See [admin-api.md](admin-api.md#groups) |
@@ -55,6 +56,11 @@ password.
 
 **`subjects:erase` is separate from `users:write`** because a token that may
 rename a user should not thereby be able to destroy one irreversibly.
+
+**`subjects:export` is separate from `users:read`** for the reason `audit:read`
+is: an export is all of one person at once, their sessions, what each application
+was given and the trail of their account, and a token that may look a person up
+should not thereby be able to take all of that. See [data-export.md](data-export.md).
 
 **`privileged-users:write` is separate because the alternative is a ladder.**
 Without it, a `users:write` token could change the e-mail address of someone

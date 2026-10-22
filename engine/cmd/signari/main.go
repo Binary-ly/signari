@@ -294,7 +294,7 @@ func run(args []string) (err error) {
 	jwksURL := fs.String("jwks-url", "", "`idp add-issuer`: URL publishing the issuer's signing keys")
 	assertionIssuers := fs.String("issuers", "",
 		"`client set-assertion-issuers`: comma-separated provider slugs, or empty to permit none")
-	eraseSubject := fs.String("subject-id", "", "`erase subject`: the subject uuid to erase")
+	eraseSubject := fs.String("subject-id", "", "`erase subject`, `export subject`: the subject's uuid")
 	eraseConfirm := fs.String("confirm", "",
 		"`erase subject`: repeat the subject uuid to confirm; erasure cannot be undone. "+
 			"`restore finalize`: repeat the database's name; it signs everybody out")
@@ -1057,6 +1057,8 @@ func run(args []string) (err error) {
 		return auditArchive(ctx, conn, *toDay, *outFile, *declaredBy)
 	case "export audit":
 		return exportAudit(ctx, conn, *orgID, *fromDay, *toDay, *outFile)
+	case "export subject":
+		return exportSubjectCmd(ctx, conn, *eraseSubject, *outFile)
 	case "registration enable":
 		return registrationEnable(ctx, conn, *orgID, *regOpen, *regMax, *tokenScopes, *regConfidential)
 	case "registration token":

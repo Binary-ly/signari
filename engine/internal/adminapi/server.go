@@ -255,6 +255,9 @@ func (s *Server) Routes() http.Handler {
 		route("GET /admin/organizations/{orgID}/attributes", ScopeConfigRead, s.listAttributes)
 		route("PUT /admin/organizations/{orgID}/attributes", ScopeOrganizationsWrite, s.declareAttribute)
 		route("GET /admin/users/{userID}/attributes", ScopeUsersRead, s.getUserAttributes)
+		// Everything kept about a person, which includes their attributes
+		// unsealed; registered here for the same reason.
+		route("GET /admin/subjects/{subjectID}/export", ScopeSubjectsExport, s.exportSubject)
 		privileged("PUT /admin/users/{userID}/attributes", ScopeUsersWrite, targetUser, s.setUserAttributes)
 
 		// Claim mappers. Creating one decides that a relying party receives a

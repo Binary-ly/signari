@@ -97,6 +97,7 @@ var summaries = map[string]string{
 	"DELETE /admin/groups/{groupID}/members/{userID}":        "Remove a member.",
 	"POST /admin/organizations":                              "Provision a tenant. Requires an unscoped token.",
 	"POST /admin/subjects/{subjectID}/erase":                 "Crypto-shred a subject. Permanent.",
+	"GET /admin/subjects/{subjectID}/export":                 "Everything kept about a person, credentials withheld.",
 	"GET /admin/audit-events":                                "Read the audit trail. Does not verify the hash chain.",
 
 	// Thirteen operations shipped with no line here and the document said

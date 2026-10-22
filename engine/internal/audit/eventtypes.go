@@ -10,7 +10,7 @@ import "sort"
 // TestEveryEventTypeIsRegisteredAndCatalogued keeps it equal to the types the
 // source actually writes and to the catalogue in docs/events.md. Sorted.
 var EventTypes = []string{
-	"account.deleted", "account.migrated", "account.password_reset", "account.recovery_cancelled",
+	"account.deleted", "account.exported", "account.migrated", "account.password_reset", "account.recovery_cancelled",
 	"account.recovery_requested",
 	"admin.attribute_declared", "admin.attributes_set", "admin.claim_mapper_created",
 	"admin.claim_mapper_deleted", "admin.cli_command", "admin.client_created",
@@ -24,7 +24,7 @@ var EventTypes = []string{
 	"admin.proxy_host_set", "admin.resource_server_removed", "admin.resource_server_set",
 	"admin.scim_source_updated", "admin.scope_declared",
 	"admin.scope_deleted", "admin.session_revoked", "admin.sessions_revoked",
-	"admin.subject_erased", "admin.user_created", "admin.user_deleted", "admin.user_unlocked",
+	"admin.subject_erased", "admin.subject_exported", "admin.user_created", "admin.user_deleted", "admin.user_unlocked",
 	"admin.user_updated",
 	"admin.webauthn_policy_set",
 	"audit.archived", "audit.checkpoint", "audit.head_signed",

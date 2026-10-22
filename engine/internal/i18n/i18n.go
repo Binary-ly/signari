@@ -233,6 +233,9 @@ func (b *Bundle) index() {
 }
 
 func parse(raw []byte) (map[string]*entry, error) {
+	if key, err := firstDuplicateKey(raw); err == nil && key != "" {
+		return nil, fmt.Errorf("%q is defined twice, and only the second would ever be shown", key)
+	}
 	var out map[string]*entry
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
@@ -240,6 +243,36 @@ func parse(raw []byte) (map[string]*entry, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// firstDuplicateKey returns a key the catalogue names twice. encoding/json keeps
+// the last of two and says nothing, so a message added under a key already in
+// use is silently one of the two everywhere either is rendered: the mail for an
+// emailed sign-in was once written under the second factor's key, and would
+// have gone out telling its reader that somebody had their password. Problems
+// with the shape are left for parse to report.
+func firstDuplicateKey(raw []byte) (string, error) {
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return "", err
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return "", err
+		}
+		key, _ := t.(string)
+		if seen[key] {
+			return key, nil
+		}
+		seen[key] = true
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return "", err
+		}
+	}
+	return "", nil
 }
 
 // Languages lists what was loaded, default first.

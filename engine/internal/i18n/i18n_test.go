@@ -389,6 +389,30 @@ func TestABrokenCatalogueIsRefusedRatherThanFatal(t *testing.T) {
 	}
 }
 
+// A key written twice is refused, naming it: kept, one of the two wordings is
+// silently the one shown, and which is an accident of the decoder. The built-in
+// catalogues go through the same parse, so a shipped duplicate fails every test
+// that loads them.
+func TestAKeyDefinedTwiceIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "en.json", `{"login.heading": "Sign in to Example", "login.title": "Hello",
+		"login.heading": {"other": "Sign in to Example Corporation"}}`)
+
+	b, problems, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0].Error(), `"login.heading" is defined twice`) {
+		t.Fatalf("want one problem naming the key, got %v", problems)
+	}
+	if got := string(b.For("en").T("login.heading")); got != "Sign in" {
+		t.Errorf("the built-in message should still render, got %q", got)
+	}
+	if _, err := parse([]byte(`{"a": {"one": "x", "other": "xs"}, "b": {"one": "y", "other": "ys"}}`)); err != nil {
+		t.Errorf("two messages with the same plural forms are not a duplicate: %v", err)
+	}
+}
+
 // A plural message without "other" is refused.
 func TestAPluralMessageMustDefineOther(t *testing.T) {
 	dir := t.TempDir()

@@ -841,47 +841,13 @@ func clientSetCIBA(ctx context.Context, conn *pgx.Conn, clientID, mode, endpoint
 	if clientID == "" {
 		return fmt.Errorf("give -client-id")
 	}
-	switch mode {
-	case "poll", "ping", "push":
-	default:
-		return fmt.Errorf("-delivery must be poll, ping or push, not %q", mode)
-	}
-
+	// The rules are store.SetClientCIBA's, which the Admin API shares (6.03).
 	endpoint = strings.TrimSpace(endpoint)
-	if mode == "poll" && endpoint != "" {
-		return fmt.Errorf("poll mode has the client collect the result itself, so a " +
-			"notification endpoint would never be called. Drop -notification-endpoint, " +
-			"or choose ping or push")
-	}
-	if mode != "poll" {
-		if endpoint == "" {
-			return fmt.Errorf("%s mode needs -notification-endpoint. Without one this "+
-				"issuer would accept a backchannel request and have nowhere to deliver "+
-				"the result, which is a success nobody receives", mode)
+	if err := store.SetClientCIBA(ctx, conn, clientID, mode, endpoint); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
 		}
-		if !strings.HasPrefix(endpoint, "https://") {
-			// CIBA Core 1.0 §7.3 requires an https endpoint. Push carries the
-			// tokens themselves, so plaintext here would put them on the wire.
-			return fmt.Errorf("the notification endpoint must be https. In push mode it " +
-				"receives the tokens themselves, and over plaintext that is the whole " +
-				"credential handed to anyone on the path")
-		}
-	}
-
-	var stored any
-	if endpoint != "" {
-		stored = endpoint
-	}
-	tp, err := conn.Exec(ctx, `
-		UPDATE core.clients
-		   SET backchannel_token_delivery_mode = $2,
-		       backchannel_client_notification_endpoint = $3
-		 WHERE client_id = $1`, clientID, mode, stored)
-	if err != nil {
 		return err
-	}
-	if tp.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
 	}
 
 	fmt.Printf("%s delivers backchannel results by %s\n", clientID, mode)

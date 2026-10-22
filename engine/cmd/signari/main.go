@@ -3841,64 +3841,27 @@ func clientSetAssertionIssuers(ctx context.Context, conn *pgx.Conn, clientID, li
 		return fmt.Errorf("-client-id is required")
 	}
 
-	// Non-nil, and that is load-bearing rather than style. A nil slice is
-	// encoded as SQL NULL, and the column is NOT NULL -- so clearing the list,
-	// which is the one operation an operator reaches for in a hurry, failed with
-	// a constraint violation. The unit tests never saw it because they set the
-	// column through SQL directly; only running the command did.
-	slugs := []string{}
-	for _, sl := range strings.Split(list, ",") {
-		if sl = strings.TrimSpace(sl); sl != "" {
-			slugs = append(slugs, sl)
-		}
-	}
-
-	// The client's organisation, so the slugs can be checked against providers
-	// that actually exist in it. A typo here produces a client that is refused at
-	// runtime with a message that deliberately explains nothing -- the grant's
-	// refusals are uniform so they cannot be used to enumerate issuers -- so the
-	// mistake has to be caught here or not at all.
-	var orgID string
-	if err := conn.QueryRow(ctx,
-		`SELECT org_id::text FROM core.clients WHERE client_id = $1`, clientID).Scan(&orgID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no client %q", clientID)
-		}
-		return err
-	}
-
-	for _, sl := range slugs {
-		var enabled, allowed bool
-		err := conn.QueryRow(ctx, `
-			SELECT enabled, allow_jwt_bearer FROM core.identity_providers
-			WHERE org_id = $1::uuid AND slug = $2`, orgID, sl).Scan(&enabled, &allowed)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no identity provider %q in this client's organisation; "+
-				"`signari idp list` shows the registered ones", sl)
-		}
-		if err != nil {
-			return err
-		}
-		// Reported, not refused. The operator may legitimately be pairing ahead
-		// of enabling, and refusing would force them to do it in an order the
-		// tool chose.
-		if !allowed {
-			fmt.Printf("NOTE: %s does not accept assertions yet. Allow it with:\n"+
-				"  signari idp assertions -slug %s -allow-assertions\n", sl, sl)
-		}
-		if !enabled {
-			fmt.Printf("NOTE: %s is disabled, so nothing from it will be accepted.\n", sl)
-		}
-	}
-
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients SET jwt_bearer_providers = $2, updated_at = now()
-		WHERE client_id = $1`, clientID, slugs)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
+	// Each slug checked against the providers of the client's organisation, and
+	// the list stored empty rather than NULL when cleared, by
+	// store.SetClientAssertionIssuers, which the Admin API shares (6.03).
+	slugs := splitList(list)
+	notes, err := store.SetClientAssertionIssuers(ctx, conn, clientID, slugs)
+	if errors.Is(err, store.ErrClientNotFound) {
 		return fmt.Errorf("no client %q", clientID)
+	}
+	if err != nil {
+		return fmt.Errorf("%w; `signari idp list` shows the registered ones", err)
+	}
+	// Reported, not refused. The operator may legitimately be pairing ahead of
+	// enabling, and refusing would force them to do it in an order the tool chose.
+	for _, n := range notes {
+		if n.NotAllow {
+			fmt.Printf("NOTE: %s does not accept assertions yet. Allow it with:\n"+
+				"  signari idp assertions -slug %s -allow-assertions\n", n.Slug, n.Slug)
+		}
+		if n.Disabled {
+			fmt.Printf("NOTE: %s is disabled, so nothing from it will be accepted.\n", n.Slug)
+		}
 	}
 
 	if len(slugs) == 0 {
@@ -7453,25 +7416,13 @@ func clientSetHybrid(ctx context.Context, conn *pgx.Conn, clientID, reviewBy str
 			"Hybrid exists here for applications being migrated in; an exemption " +
 			"with no date on it is a permanent one that nobody decided to make")
 	}
-	if _, err := time.Parse("2006-01-02", reviewBy); err != nil {
-		return fmt.Errorf("-review-by must be YYYY-MM-DD (got %q)", reviewBy)
-	}
 	// response_types is updated alongside the flag rather than left to disagree
-	// with it. Two switches for one decision means an operator turns on the one
-	// they found and gets refused by the one they did not.
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients
-		   SET allow_hybrid = true,
-		       hybrid_review_by = $2::date,
-		       response_types = (
-		           SELECT array_agg(DISTINCT rt)
-		             FROM unnest(response_types || ARRAY['code id_token']) AS rt)
-		 WHERE client_id = $1`, clientID, reviewBy)
-	if err != nil {
+	// with it, by store.SetClientHybrid, which the Admin API shares (6.03).
+	if err := store.SetClientHybrid(ctx, conn, clientID, true, reviewBy); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
 	}
 	fmt.Printf("%s may now use response_type \"code id_token\"\n", clientID)
 	fmt.Printf("  review by %s\n", reviewBy)
@@ -8891,33 +8842,18 @@ func clientSetGrants(ctx context.Context, conn *pgx.Conn, clientID, grants strin
 		return fmt.Errorf("give -client-id")
 	}
 	wanted := splitList(grants)
-	if len(wanted) == 0 {
-		return fmt.Errorf("give -grant-types, comma separated. A client with no "+
-			"grant types can obtain no tokens at all; if that is what you mean, "+
-			"disable the client instead.\n  known: %s",
-			strings.Join(knownGrantTypes, ", "))
-	}
-	for _, g := range wanted {
-		if !slices.Contains(knownGrantTypes, g) {
-			return fmt.Errorf("%q is not a grant type this server dispatches. "+
-				"Recording it would look like a registration and do nothing.\n"+
-				"  known: %s", g, strings.Join(knownGrantTypes, ", "))
+	// The rules are store.SetClientGrants', which the Admin API shares (6.03).
+	if err := store.SetClientGrants(ctx, conn, clientID, wanted); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
 		}
+		return err
 	}
 	// Token exchange is authorised by its own column, because the grant type
 	// alone cannot say which audiences a client may exchange for.
 	if slices.Contains(wanted, oauth.GrantTypeTokenExchange) {
 		fmt.Printf("note: token exchange is authorised by its own permission and audience\n" +
 			"      list, not by this one; grant it with `signari client set-exchange`.\n")
-	}
-	tag, err := conn.Exec(ctx,
-		`UPDATE core.clients SET grant_types = $2 WHERE client_id = $1`,
-		clientID, wanted)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
 	}
 	fmt.Printf("client %s\n  grant types: %s\n", clientID, strings.Join(wanted, ", "))
 	return nil
@@ -9421,14 +9357,11 @@ func clientSetDPoP(ctx context.Context, conn *pgx.Conn, clientID string, require
 	if clientID == "" {
 		return fmt.Errorf("give -client-id")
 	}
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients SET dpop_bound_access_tokens = $2, updated_at = now()
-		WHERE client_id = $1`, clientID, required)
-	if err != nil {
+	if err := store.SetClientDPoP(ctx, conn, clientID, required); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
 	}
 	if required {
 		fmt.Printf("%s now requires a DPoP proof on every token request\n", clientID)
@@ -9753,14 +9686,11 @@ func clientSetExchangeContainment(ctx context.Context, conn *pgx.Conn, clientID 
 	if clientID == "" {
 		return fmt.Errorf("give -client-id")
 	}
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients SET exchange_requires_audience_match = $2, updated_at = now()
-		WHERE client_id = $1`, clientID, on)
-	if err != nil {
+	if err := store.SetClientExchangeContainment(ctx, conn, clientID, on); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
 	}
 	if on {
 		fmt.Printf("%s may now only exchange subject tokens it holds or is named in the audience of\n", clientID)

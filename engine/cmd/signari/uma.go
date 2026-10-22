@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -260,38 +259,14 @@ func clientSetClaimsRedirects(ctx context.Context, conn *pgx.Conn, clientID, uri
 	if clientID == "" {
 		return fmt.Errorf("-client-id is required")
 	}
-	// A non-nil empty slice, NOT nil. A nil slice reaches PostgreSQL as NULL,
-	// and clearing the list is exactly what an operator does in a hurry when a
-	// URI is wrong. (This is the same bug the jwt-bearer provider list had, and
-	// it was found by running the command rather than by reading it.)
-	list := []string{}
-	for _, u := range strings.Split(uris, ",") {
-		u = strings.TrimSpace(u)
-		if u == "" {
-			continue
+	// The rules, and the empty-not-NULL clear, are store.SetClientClaimsRedirects',
+	// which the Admin API shares (6.03).
+	list := splitList(uris)
+	if err := store.SetClientClaimsRedirects(ctx, conn, clientID, list); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
 		}
-		parsed, err := url.Parse(u)
-		if err != nil {
-			return fmt.Errorf("%q does not parse as a URL: %w", u, err)
-		}
-		if parsed.Scheme != "https" {
-			return fmt.Errorf("%q must use https: this URI receives a permission "+
-				"ticket bound to whoever just signed in, and a plaintext hop hands "+
-				"it to the network", u)
-		}
-		if parsed.Fragment != "" || strings.Contains(u, "#") {
-			return fmt.Errorf("%q must not contain a fragment (UMA 2.0 section 3.3.2)", u)
-		}
-		list = append(list, u)
-	}
-	tag, err := conn.Exec(ctx,
-		`UPDATE core.clients SET claims_redirect_uris = $2 WHERE client_id = $1`,
-		clientID, list)
-	if err != nil {
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
 	}
 	if len(list) == 0 {
 		fmt.Printf("%s has no claims redirection URIs\n", clientID)

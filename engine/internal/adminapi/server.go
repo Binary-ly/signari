@@ -480,6 +480,86 @@ type patchClientRequest struct {
 	// ConsentLifetimeSeconds is how long a person's consent to the client lasts
 	// before they are asked again; 0 for never (0188).
 	ConsentLifetimeSeconds *int `json:"consent_lifetime_s"`
+
+	// The settings the CLI's `client set-*` verbs write, through the same
+	// store writers, so the two refuse alike (6.03). Each by its column name,
+	// as GET returns it; each left alone when absent.
+	GrantTypes                            *[]string `json:"grant_types"`
+	BackchannelTokenDeliveryMode          *string   `json:"backchannel_token_delivery_mode"`
+	BackchannelClientNotificationEndpoint *string   `json:"backchannel_client_notification_endpoint"`
+	AllowHybrid                           *bool     `json:"allow_hybrid"`
+	HybridReviewBy                        *string   `json:"hybrid_review_by"`
+	ClaimsRedirectURIs                    *[]string `json:"claims_redirect_uris"`
+	DPoPBoundAccessTokens                 *bool     `json:"dpop_bound_access_tokens"`
+	ExchangeRequiresAudienceMatch         *bool     `json:"exchange_requires_audience_match"`
+	JWTBearerProviders                    *[]string `json:"jwt_bearer_providers"`
+}
+
+// setsShared reports whether the request sets any of the settings the CLI's
+// verbs share.
+func (req patchClientRequest) setsShared() bool {
+	return req.GrantTypes != nil || req.BackchannelTokenDeliveryMode != nil ||
+		req.BackchannelClientNotificationEndpoint != nil || req.AllowHybrid != nil ||
+		req.HybridReviewBy != nil || req.ClaimsRedirectURIs != nil || req.DPoPBoundAccessTokens != nil ||
+		req.ExchangeRequiresAudienceMatch != nil || req.JWTBearerProviders != nil
+}
+
+// applySharedSettings writes what the request sets of the settings the CLI's
+// verbs share, holding each unset half of a pair at what it was.
+func (req patchClientRequest) applySharedSettings(ctx context.Context, tx pgx.Tx, clientID string,
+	before map[string]any) error {
+	if req.GrantTypes != nil {
+		if err := store.SetClientGrants(ctx, tx, clientID, *req.GrantTypes); err != nil {
+			return err
+		}
+	}
+	if req.BackchannelTokenDeliveryMode != nil || req.BackchannelClientNotificationEndpoint != nil {
+		mode, _ := before["backchannel_token_delivery_mode"].(string)
+		endpoint, _ := before["backchannel_client_notification_endpoint"].(string)
+		if req.BackchannelTokenDeliveryMode != nil {
+			mode = *req.BackchannelTokenDeliveryMode
+		}
+		if req.BackchannelClientNotificationEndpoint != nil {
+			endpoint = *req.BackchannelClientNotificationEndpoint
+		}
+		if err := store.SetClientCIBA(ctx, tx, clientID, mode, endpoint); err != nil {
+			return err
+		}
+	}
+	if req.AllowHybrid != nil || req.HybridReviewBy != nil {
+		allow, _ := before["allow_hybrid"].(bool)
+		review, _ := before["hybrid_review_by"].(string)
+		if req.AllowHybrid != nil {
+			allow = *req.AllowHybrid
+		}
+		if req.HybridReviewBy != nil {
+			review = *req.HybridReviewBy
+		}
+		if err := store.SetClientHybrid(ctx, tx, clientID, allow, review); err != nil {
+			return err
+		}
+	}
+	if req.ClaimsRedirectURIs != nil {
+		if err := store.SetClientClaimsRedirects(ctx, tx, clientID, *req.ClaimsRedirectURIs); err != nil {
+			return err
+		}
+	}
+	if req.DPoPBoundAccessTokens != nil {
+		if err := store.SetClientDPoP(ctx, tx, clientID, *req.DPoPBoundAccessTokens); err != nil {
+			return err
+		}
+	}
+	if req.ExchangeRequiresAudienceMatch != nil {
+		if err := store.SetClientExchangeContainment(ctx, tx, clientID, *req.ExchangeRequiresAudienceMatch); err != nil {
+			return err
+		}
+	}
+	if req.JWTBearerProviders != nil {
+		if _, err := store.SetClientAssertionIssuers(ctx, tx, clientID, *req.JWTBearerProviders); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r patchClientRequest) setsLogout() bool {
@@ -525,7 +605,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, setsSettings := req.settings()
 	if req.Enabled == nil && req.RequirePKCE == nil && req.MayExchange == nil && req.ExchangeAudiences == nil &&
-		!req.setsLogout() && !setsSettings {
+		!req.setsLogout() && !setsSettings && !req.setsShared() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
@@ -650,6 +730,9 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 			for k, v := range lifetimes {
 				detail[k] = v
 			}
+		}
+		if err := req.applySharedSettings(ctx, tx, clientID, before); err != nil {
+			return err
 		}
 		after, err := clientState(ctx, tx, clientID)
 		if err != nil {

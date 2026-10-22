@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"signari.dev/engine/internal/audit"
 )
@@ -187,6 +189,18 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	if req.OrgID == "" {
 		req.OrgID = p.OrgID
 	}
+	// Stored as uuids. One that is not reached the cast and came back as
+	// PostgreSQL's own message (0.23); another spelling of one is stored as
+	// the one the width check compares.
+	for i, g := range req.GroupIDs {
+		id, err := uuid.Parse(g)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_token_request",
+				"detail": fmt.Sprintf("group_ids[%d] is not a uuid", i)})
+			return
+		}
+		req.GroupIDs[i] = id.String()
+	}
 	expires := time.Now().Add(life)
 	terms := tokenTerms{OrgID: req.OrgID, Scopes: req.Scopes, ClientIDs: nilIfEmpty(req.ClientIDs),
 		GroupIDs: nilIfEmpty(req.GroupIDs), ExpiresAt: &expires}
@@ -201,11 +215,16 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	}
 	var secret, id string
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if req.OrgID != "" {
+			if err := requireNamedOrg(ctx, tx, req.OrgID); err != nil {
+				return err
+			}
+		}
 		var err error
 		secret, id, err = NewToken(ctx, tx, req.Name, req.OrgID, req.Scopes, &expires,
 			terms.ClientIDs, terms.GroupIDs)
 		if err != nil {
-			return &badTokenRequest{err}
+			return asTokenRequestError(err)
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.token_created", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: req.OrgID, Detail: map[string]any{"token_id": id, "scopes": req.Scopes,
@@ -304,7 +323,7 @@ func (s *Server) rotateToken(w http.ResponseWriter, r *http.Request) {
 		}
 		secret, newID, err = NewToken(ctx, tx, name, t.OrgID, t.Scopes, &expires, t.ClientIDs, t.GroupIDs)
 		if err != nil {
-			return &badTokenRequest{err}
+			return asTokenRequestError(err)
 		}
 		if t.ExpiresAt == nil || oldUntil.Before(*t.ExpiresAt) {
 			if _, err := tx.Exec(ctx, `UPDATE core.admin_tokens SET expires_at = $2 WHERE id::text = $1`,
@@ -361,6 +380,17 @@ type badTokenRequest struct{ err error }
 
 func (e *badTokenRequest) Error() string { return e.err.Error() }
 
+// asTokenRequestError is NewToken's refusal of the terms as the caller's
+// mistake, and a database failure as the server's: the second was answered 400
+// with PostgreSQL's message, naming a table and a constraint to the caller.
+func asTokenRequestError(err error) error {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		return err
+	}
+	return &badTokenRequest{err}
+}
+
 // tokenWriteFailed answers a failed token write and reports whether it did.
 func (s *Server) tokenWriteFailed(w http.ResponseWriter, err error, doing string) bool {
 	var wide *widerError
@@ -369,6 +399,7 @@ func (s *Server) tokenWriteFailed(w http.ResponseWriter, err error, doing string
 	case err == nil:
 		return false
 	case writePreconditionFailure(w, err):
+	case writeOrgRefusal(w, err):
 	case errors.As(err, &wide):
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "wider_than_caller", "detail": wide.Error()})
 	case errors.As(err, &bad):

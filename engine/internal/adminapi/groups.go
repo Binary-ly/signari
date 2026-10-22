@@ -155,7 +155,7 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		// The boundary, before the insert: a token scoped to one organisation
 		// must not create a group in another.
-		if err := requireOrg(ctx, req.OrgID); err != nil {
+		if err := requireNamedOrg(ctx, tx, req.OrgID); err != nil {
 			return err
 		}
 		if err := requireUnrestricted(ctx, "group"); err != nil {
@@ -177,8 +177,7 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
 		return
-	case errors.Is(err, errCrossOrg):
-		writeCrossOrg(w, err)
+	case writeOrgRefusal(w, err):
 		return
 	case err != nil && strings.Contains(err.Error(), "groups_org_name"):
 		writeJSON(w, http.StatusConflict, map[string]string{

@@ -57,7 +57,7 @@ func (s *Server) putResourceServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
-		if err := requireOrg(ctx, orgID); err != nil {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
 			return err
 		}
 		if err := store.SetResourceServer(ctx, tx, orgID, req.Resource, req.Name); err != nil {
@@ -71,8 +71,7 @@ func (s *Server) putResourceServer(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
 		return
-	case errors.Is(err, errCrossOrg):
-		writeCrossOrg(w, err)
+	case writeOrgRefusal(w, err):
 		return
 	case err != nil:
 		s.log.Error("registering a resource server", "org_id", orgID, "err", err)

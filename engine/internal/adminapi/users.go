@@ -109,6 +109,9 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 
 	var userID string
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, req.OrgID); err != nil {
+			return err
+		}
 		// The 64-byte user_handle is generated HERE and never derived from the
 		// email. WebAuthn requires it to be opaque: a handle derived from an
 		// address would leak that address to any authenticator holding a
@@ -141,6 +144,8 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
+		return
+	case writeOrgRefusal(w, err):
 		return
 	case err != nil && strings.Contains(err.Error(), "users_org_email_key"),
 		err != nil && strings.Contains(err.Error(), "users_org_username_key"):

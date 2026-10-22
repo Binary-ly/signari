@@ -78,7 +78,7 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	var id, token, issuer string
 	var expires time.Time
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
-		if err := requireOrg(ctx, req.OrgID); err != nil {
+		if err := requireNamedOrg(ctx, tx, req.OrgID); err != nil {
 			return err
 		}
 		for _, name := range req.Groups {
@@ -125,8 +125,7 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
 		return
-	case errors.Is(err, errCrossOrg):
-		writeCrossOrg(w, err)
+	case writeOrgRefusal(w, err):
 		return
 	case errors.As(err, &group):
 		writeJSON(w, group.status, map[string]string{"error": group.code, "detail": group.detail})

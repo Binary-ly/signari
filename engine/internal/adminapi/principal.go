@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/store"
@@ -320,12 +321,16 @@ func (s *Server) touch(tokenID string) {
 // saying "not found" would be a lie that costs an operator an hour.
 var errCrossOrg = errors.New("outside this token's organisation")
 
-// requireOrg enforces the organisation boundary for a request.
-//
-// Called at BOTH points an organisation is decided: the request body on a
-// create, and the existing row on an update. Enforcing it in only one leaves a
-// boundary that holds for new records and not for edits -- worse than none,
-// because it reads as enforced.
+// errUnknownOrg and errMalformedOrg are an organisation the caller named that
+// does not exist, or an id that is not one (0.23). Both are the caller's
+// mistake; before them each reached the database and came back as a foreign
+// key or a cast failure answered 500, or for a token, 400 with PostgreSQL's
+// own message.
+var (
+	errUnknownOrg   = errors.New("no organisation has that id")
+	errMalformedOrg = errors.New("org_id must be a uuid in its canonical form, lower case 8-4-4-4-12")
+)
+
 // requireClient narrows a request to the clients this token may act on.
 //
 // Called ALONGSIDE requireOrg, never instead of it: the organisation check
@@ -350,6 +355,12 @@ func requireGroup(ctx context.Context, groupID string) error {
 	return p.MayActOnGroup(groupID)
 }
 
+// requireOrg enforces the organisation boundary for a request.
+//
+// Called at BOTH points an organisation is decided: the request body on a
+// create, and the existing row on an update. Enforcing it in only one leaves a
+// boundary that holds for new records and not for edits -- worse than none,
+// because it reads as enforced.
 func requireOrg(ctx context.Context, orgID string) error {
 	p, ok := principalFrom(ctx)
 	if !ok {
@@ -362,6 +373,30 @@ func requireOrg(ctx context.Context, orgID string) error {
 		return fmt.Errorf("%w: %s", errCrossOrg, err)
 	}
 	return nil
+}
+
+// requireNamedOrg is requireOrg for an organisation the caller names, in a
+// body or a path, rather than one read from an existing row: the id must be a
+// uuid as canonicalIDs requires of a path, the token must reach it, and it must
+// exist. Answered by writeOrgRefusal.
+//
+// The boundary is checked before existence, so a token held to one
+// organisation is refused every other id alike and cannot use the difference
+// to learn which exist. Existence is read in the write's own transaction, so an
+// organisation an earlier operation of the same batch created is found.
+func requireNamedOrg(ctx context.Context, tx pgx.Tx, orgID string) error {
+	if id, err := uuid.Parse(orgID); err != nil || id.String() != orgID {
+		return errMalformedOrg
+	}
+	if err := requireOrg(ctx, orgID); err != nil {
+		return err
+	}
+	var exists bool
+	err := tx.QueryRow(ctx, `SELECT true FROM core.organizations WHERE id = $1::uuid`, orgID).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errUnknownOrg
+	}
+	return err
 }
 
 // orgFilter is the organisation a LIST must be restricted to, or nil for a

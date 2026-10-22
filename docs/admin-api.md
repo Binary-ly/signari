@@ -119,7 +119,10 @@ must be a uuid in its canonical form, lower case `8-4-4-4-12`, or the request is
 or with a hyphen after every four digits, and a check that read an id more strictly
 than the write it guarded once let a `users:write` token take over an administrator.
 One spelling at the boundary means every check, write and audit record names the
-row the same way.
+row the same way. An `org_id` in a body is held to the same rule, and a write
+naming an organisation that does not exist, in a body or a path, is
+`404 organization_not_found`. A token held to one organisation is refused every
+other id with `403` alike, so it cannot learn which exist.
 
 ### Configuration
 

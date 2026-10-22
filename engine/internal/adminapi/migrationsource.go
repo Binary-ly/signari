@@ -67,7 +67,7 @@ func (s *Server) putMigrationSource(w http.ResponseWriter, r *http.Request) {
 	}
 	var src *store.MigrationSourceStatus
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
-		if err := requireOrg(ctx, orgID); err != nil {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
 			return err
 		}
 		if _, err := store.SetMigrationSource(ctx, tx, s.root, orgID, store.MigrationSourceConfig{
@@ -95,8 +95,7 @@ func (s *Server) putMigrationSource(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
 		return
-	case errors.Is(err, errCrossOrg):
-		writeCrossOrg(w, err)
+	case writeOrgRefusal(w, err):
 		return
 	case errors.Is(err, store.ErrInvalidMigrationSource):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_migration_source", "detail": err.Error()})

@@ -68,7 +68,7 @@ func (s *Server) putProxyHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
-		if err := requireOrg(ctx, orgID); err != nil {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
@@ -86,8 +86,7 @@ func (s *Server) putProxyHost(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
 		return
-	case errors.Is(err, errCrossOrg):
-		writeCrossOrg(w, err)
+	case writeOrgRefusal(w, err):
 		return
 	case errors.As(err, &pg) && pg.ConstraintName == "proxy_hosts_host_key":
 		// Held by another organisation (or by this one in other letters). A

@@ -131,6 +131,9 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 	}
 
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, req.OrgID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 			                          client_secret_hash, enabled, grant_types, scopes,
@@ -157,6 +160,8 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
+		return
+	case writeOrgRefusal(w, err):
 		return
 	case err != nil && strings.Contains(err.Error(), "clients_pkey"):
 		writeJSON(w, http.StatusConflict, map[string]string{

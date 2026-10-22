@@ -62,7 +62,7 @@ func (s *Server) declareScope(w http.ResponseWriter, r *http.Request) {
 	}
 
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
-		if err := requireOrg(ctx, orgID); err != nil {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
 			return err
 		}
 		if err := store.DeclareScope(ctx, tx, orgID, store.Scope{
@@ -83,8 +83,7 @@ func (s *Server) declareScope(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
 		return
-	case errors.Is(err, errCrossOrg):
-		writeCrossOrg(w, err)
+	case writeOrgRefusal(w, err):
 		return
 	case err != nil && isConstraintViolation(err, "scopes_not_a_standard_scope"),
 		err != nil && strings.Contains(err.Error(), "is a standard scope"):

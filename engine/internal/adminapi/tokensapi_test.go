@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // A token cannot mint, rotate or revoke one wider than itself (6.04).
@@ -146,5 +149,41 @@ func TestATokenRotatesAndRevokesOnlyWhatItCouldHaveMinted(t *testing.T) {
 	}
 	if rec := call(t, s, http.MethodGet, "/admin/tokens", wide, nil); rec.Code != http.StatusUnauthorized {
 		t.Errorf("a revoked token still works: %d", rec.Code)
+	}
+}
+
+// A group id that is not a uuid is the caller's mistake, said in the API's own
+// words, and another spelling of one is read as the one the width check
+// compares (0.23). The first came back 400 carrying PostgreSQL's cast error;
+// the second refused a token narrowed to a group the one its own group named
+// in braces, which PostgreSQL stores as the same group.
+func TestATokensGroupIDsAreUUIDs(t *testing.T) {
+	s, _ := newTestServer(t)
+	org := newDriftMigrationOrg(t, s, false)
+	group := uuid.NewString()
+	minterName := fmt.Sprintf("group-minter-%d", time.Now().UnixNano())
+	name := fmt.Sprintf("groups-%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.admin_tokens WHERE name IN ($1, $2)`,
+			name, minterName)
+	})
+	expires := time.Now().Add(48 * time.Hour)
+	minter, _, err := NewToken(context.Background(), s.db, minterName, org,
+		[]string{ScopeTokensWrite, ScopeUsersRead}, &expires, nil, []string{group})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := call(t, s, http.MethodPost, "/admin/tokens", testToken, map[string]any{"name": name,
+		"scopes": []string{ScopeUsersRead}, "org_id": org, "group_ids": []string{"not-a-group"}})
+	if rec.Code != http.StatusBadRequest || strings.Contains(rec.Body.String(), "SQLSTATE") {
+		t.Errorf("a group id that is not a uuid answered %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = call(t, s, http.MethodPost, "/admin/tokens", minter, map[string]any{"name": name,
+		"scopes": []string{ScopeUsersRead}, "group_ids": []string{"{" + group + "}"}, "expires_in_s": 3600})
+	if rec.Code != http.StatusCreated {
+		t.Errorf("a token narrowed to a group minting one for the same group, braced, answered %d %s",
+			rec.Code, rec.Body.String())
 	}
 }

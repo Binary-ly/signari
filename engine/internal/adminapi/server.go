@@ -985,6 +985,26 @@ func writeCrossOrg(w http.ResponseWriter, err error) {
 	})
 }
 
+// writeOrgRefusal answers a refusal from requireNamedOrg, or from requireOrg,
+// and reports whether err was one.
+func writeOrgRefusal(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, errCrossOrg):
+		writeCrossOrg(w, err)
+	case errors.Is(err, errUnknownOrg):
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": "organization_not_found", "detail": err.Error(),
+		})
+	case errors.Is(err, errMalformedOrg):
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid_request", "detail": err.Error(),
+		})
+	default:
+		return false
+	}
+	return true
+}
+
 // mutate runs fn inside a transaction and bumps config_version with it.
 //
 // This is the ONLY way a handler should write. The bump is not appended after

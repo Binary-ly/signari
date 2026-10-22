@@ -134,6 +134,14 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "POST /admin/batch", method: http.MethodPost,
+			path: func(*testing.T, *Server) string { return "/admin/batch" },
+			body: func(t *testing.T, s *Server, _ string) string {
+				return fmt.Sprintf(`{"operations":[{"method":"PATCH","path":"/admin/clients/%s","body":{"enabled":false}}]}`,
+					newPreconditionClient(t, s))
+			},
+		},
+		{
 			name: "POST /admin/tokens", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/tokens" },
 			body: func(t *testing.T, s *Server, _ string) string {
@@ -775,9 +783,10 @@ func TestEveryMutatingRouteHonoursPreconditions(t *testing.T) {
 
 			// The version is global, and other packages' tests move it while
 			// this runs, so one move proves nothing about this route. A
-			// refused write that commits moves it every time; up to three
-			// tries, and a move on every one is the failure (4.19).
-			const tries = 3
+			// refused write that commits moves it every time; up to eight
+			// tries, and a move on every one is the failure (4.19). Three
+			// were once all moved by other packages in a parallel run (0.22).
+			const tries = 8
 			moved := 0
 			var before, got int64
 			for i := 0; i < tries; i++ {

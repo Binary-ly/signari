@@ -310,6 +310,11 @@ is the one outcome §4.6 promises cannot happen.
 The MUST attributes are checked on the **result**, not per change — a request that
 deletes `sn` and adds it back is legal; one that only deletes it is not.
 
+Deleting `userPassword` removes the credential and keeps the account, and is
+refused with `constraintViolation` unless the entry holds at least two passkeys.
+Otherwise nothing would be left to sign in with (see
+[passkey-signals.md](passkey-signals.md#signing-in-without-a-password)).
+
 ### `delete` deletes
 
 It does not deactivate. A directory `delete` that quietly deactivates is the

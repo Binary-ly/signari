@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/store"
 )
@@ -34,6 +35,10 @@ type securityState struct {
 	RecoveryDisabled   bool
 	Duo                bool
 	HasSecondFactor    bool
+	// Password is whether one is set; OrgID is the organisation whose sign-in
+	// flow decides whether a passkey alone can sign them in (5.15).
+	Password bool
+	OrgID    string
 }
 
 func (s *Server) securityState(ctx context.Context, userID string) (securityState, error) {
@@ -47,9 +52,11 @@ func (s *Server) securityState(ctx context.Context, userID string) (securityStat
 		       (SELECT count(*) FROM core.webauthn_credentials WHERE user_id = $1::uuid),
 		       (SELECT count(*) FROM core.recovery_codes WHERE user_id = $1::uuid AND used_at IS NULL),
 		       EXISTS (SELECT 1 FROM core.recovery_code_failures WHERE user_id = $1::uuid AND disabled_at IS NOT NULL),
-		       EXISTS (SELECT 1 FROM core.duo_enrollments WHERE user_id = $1::uuid)`, userID).
+		       EXISTS (SELECT 1 FROM core.duo_enrollments WHERE user_id = $1::uuid),
+		       EXISTS (SELECT 1 FROM core.password_credentials WHERE user_id = $1::uuid),
+		       (SELECT org_id::text FROM core.users WHERE id = $1::uuid)`, userID).
 		Scan(&st.TOTP, &st.TOTPDisabled, &email, &st.EmailDisabled, &st.Passkeys, &st.Recovery,
-			&st.RecoveryDisabled, &st.Duo); err != nil {
+			&st.RecoveryDisabled, &st.Duo, &st.Password, &st.OrgID); err != nil {
 		return st, err
 	}
 	if email != nil {
@@ -92,6 +99,8 @@ func (s *Server) renderSecurity(w http.ResponseWriter, r *http.Request, userID, 
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
+	removable := s.passwordRemovable(r.Context(), st)
+	needsPasskeys := st.Password && !removable && st.Passkeys < store.MinCredentialsForPasswordless
 	// Flat, under the names the page validator's probes fill (pages/validate.go),
 	// so an operator's override of this page is held to its forms' CSRF fields.
 	s.renderPage(w, r, "security", map[string]any{
@@ -100,8 +109,90 @@ func (s *Server) renderSecurity(w http.ResponseWriter, r *http.Request, userID, 
 		"Number": st.SMS, "Hashed": st.SMS == "hashed", "Configured": st.SMSAvailable,
 		"Passkeys": st.Passkeys, "Recovery": st.Recovery, "RecoveryDisabled": st.RecoveryDisabled,
 		"HasSecondFactor": st.HasSecondFactor, "Duo": st.Duo,
+		"Password": st.Password, "PasswordRemovable": removable, "PasswordNeedsPasskeys": needsPasskeys,
 		"Message": message, "CSRF": csrf, "CSRFField": csrfFormField,
 	})
+}
+
+// passwordRemovable reports whether the person may sign in without a password
+// (5.15): two passkeys, so losing one device is not the end of the account, and
+// a sign-in flow that admits a passkey alone, or the password's removal would
+// leave them a way in that their organisation's flow refuses.
+func (s *Server) passwordRemovable(ctx context.Context, st securityState) bool {
+	if !st.Password || st.Passkeys < store.MinCredentialsForPasswordless {
+		return false
+	}
+	fl := s.flowFor(ctx, s.db, st.OrgID, flow.Authentication)
+	return fl == nil || fl.AdmitsProof(flow.StagePasskey)
+}
+
+// handlePasswordRemove takes the password away from somebody who signs in with
+// passkeys (5.15): behind a recent sign-in, never in an impersonation, through
+// the guard every removal passes, audited, and told on every channel.
+func (s *Server) handlePasswordRemove(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	sid, userID, orgID, ok := s.currentSession(r)
+	if !ok {
+		http.Redirect(w, r, parkLogin("/account/security"), http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
+		writeError(w, http.StatusForbidden, "forbidden", "that form has expired; reload and try again")
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account/security", false) {
+		return
+	}
+	st, err := s.securityState(ctx, userID)
+	if err != nil {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	if !s.passwordRemovable(ctx, st) {
+		s.renderSecurity(w, r, userID, s.tr(r).Text("security.password.kept"))
+		return
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	removed, err := store.RemovePassword(ctx, tx, userID)
+	switch {
+	case errors.Is(err, store.ErrPasswordNeeded):
+		_ = tx.Rollback(ctx)
+		s.renderSecurity(w, r, userID, s.tr(r).Text("security.password.kept"))
+		return
+	case err != nil:
+		s.log.Error("removing a password", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	case !removed:
+		_ = tx.Rollback(ctx)
+		s.renderSecurity(w, r, userID, "")
+		return
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "user.password_removed", OrgID: orgID, SubjectID: userID, CorrelationID: correlationID(ctx),
+		Detail: map[string]any{"by": "owner", "passkeys": st.Passkeys},
+	}); err != nil {
+		s.log.Error("auditing a password removal", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	// Every channel: somebody holding the session should not be able to make an
+	// account passwordless without the holder hearing of it.
+	tr := s.notifierFor(ctx, userID)
+	if err := s.notifyAccount(ctx, userID, tr.Text("mail.password.removed.subject"),
+		tr.Text("mail.password.removed.body"), tr.Text("sms.password.removed")); err != nil {
+		s.log.Error("telling the holder their password was removed", "err", err, "user_id", userID)
+	}
+	s.renderSecurity(w, r, userID, s.tr(r).Text("security.password.removed"))
 }
 
 // handleSecurityRemove removes one of the person's own methods: behind a

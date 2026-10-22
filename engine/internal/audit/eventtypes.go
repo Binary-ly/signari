@@ -71,6 +71,7 @@ var EventTypes = []string{
 	"txntoken.issued",
 	"uma.claims_gathered", "uma.denied", "uma.granted", "uma.submitted",
 	"user.attributes_updated", "user.created", "user.email_changed", "user.email_verified",
+	"user.password_removed",
 	"wsfed.token_issued",
 }
 

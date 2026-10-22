@@ -630,6 +630,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /account/sessions/revoke", s.handleSessionsRevoke)
 	mux.HandleFunc("GET /account/password", s.handleAccountPassword)
 	mux.HandleFunc("POST /account/password", s.handleAccountPasswordPost)
+	mux.HandleFunc("POST /account/password/remove", s.handlePasswordRemove)
 	mux.HandleFunc("GET /account/recovery", s.handleRecoveryCodes)
 	mux.HandleFunc("POST /account/recovery", s.handleRecoveryCodesRegenerate)
 	mux.HandleFunc("GET /account/link/{slug}", s.handleFederatedLink)

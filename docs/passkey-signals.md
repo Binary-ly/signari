@@ -316,3 +316,21 @@ cannot produce a well-formed packed attestation for a hardware vendor's AAGUID.
 It does not stop somebody who obtains a genuine attestation key. That is a real
 control with a stated ceiling, and the ceiling is written here so nobody builds a
 compliance claim on top of more than it delivers.
+
+## Signing in without a password
+
+Somebody with **two** passkeys can remove their password at `/account/security`,
+behind a recent sign-in, never in an impersonation, audited
+`user.password_removed` and told on every channel. One passkey is not enough,
+because losing that device would end the account: a passkey cannot be copied off
+its authenticator, and with no password left nothing else would let them in. The
+page says so rather than hiding the button without a reason.
+
+Two are still not enough where the organisation's sign-in flow takes no passkey
+alone, such as a flow that asks for the password on every sign-in. Removing the
+password there would leave the person a way in that the flow refuses.
+
+The directory's `delete userPassword` passes the same rule. It used to delete the
+password of somebody with no passkey at all, leaving an account nobody could sign
+in to. A person without a password sets one through account recovery. Signing up
+with a passkey in place of a password is not built yet.

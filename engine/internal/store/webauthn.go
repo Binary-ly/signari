@@ -248,6 +248,33 @@ func HasWebAuthnKey(ctx context.Context, db interface {
 	return held, nil
 }
 
+// ErrPasswordNeeded is a password removal that would leave its holder with
+// fewer passkeys than MinCredentialsForPasswordless.
+var ErrPasswordNeeded = errors.New("the password is needed: fewer than two passkeys would be left to sign in with")
+
+// RemovePassword removes a person's password, which every path that removes
+// one goes through (5.15): only while they hold MinCredentialsForPasswordless
+// passkeys, counted with the passkeys locked, so a removal racing this one
+// counts after it. Reports whether there was a password to remove.
+func RemovePassword(ctx context.Context, tx pgx.Tx, userID string) (bool, error) {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM core.webauthn_credentials WHERE user_id = $1::uuid FOR UPDATE`,
+		userID); err != nil {
+		return false, fmt.Errorf("locking the passkeys: %w", err)
+	}
+	ok, err := CanGoPasswordless(ctx, tx, userID)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, ErrPasswordNeeded
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM core.password_credentials WHERE user_id = $1::uuid`, userID)
+	if err != nil {
+		return false, fmt.Errorf("removing the password: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // CanGoPasswordless reports whether it is safe to let this user remove their
 // password. See MinCredentialsForPasswordless for why the answer is not one.
 func CanGoPasswordless(ctx context.Context, tx pgx.Tx, userID string) (bool, error) {

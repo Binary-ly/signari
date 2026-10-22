@@ -287,11 +287,15 @@ func (w *LDAPWriter) Update(ctx context.Context, actor, username string, u *ldap
 		if *u.Password == "" {
 			// `delete userPassword` -- the credential goes, the account stays. Not
 			// the same as a password of zero length, which would be an account
-			// anybody can bind to.
-			if _, err := tx.Exec(ctx,
-				`DELETE FROM core.password_credentials WHERE user_id = $1::uuid`,
-				userID); err != nil {
-				return fmt.Errorf("removing the password: %w", err)
+			// anybody can bind to. Through the guard every removal passes (5.15):
+			// it deleted the password of somebody with no passkey at all, leaving
+			// an account nobody could sign in to.
+			if _, err := store.RemovePassword(ctx, tx, userID); errors.Is(err, store.ErrPasswordNeeded) {
+				return fmt.Errorf("%w: the entry's password cannot be removed while it has fewer than "+
+					"%d passkeys, or nothing would be left to sign in with", ldapd.ErrConstraint,
+					store.MinCredentialsForPasswordless)
+			} else if err != nil {
+				return err
 			}
 		} else {
 			email := currentEmail

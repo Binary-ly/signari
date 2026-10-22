@@ -32,6 +32,12 @@ td form{display:inline;margin:0}
 {{else}}<a class="btn" href="/account/mfa/sms">{{T "security.setup"}}</a>{{end}}</td>
 </tr>{{end}}
 <tr>
+<td>{{T "security.password"}}</td>
+<td>{{if .Password}}{{T "security.inuse"}}{{else}}<span class="muted">{{T "security.password.none"}}</span>{{end}}</td>
+<td>{{if .Password}}<a class="btn" href="/account/password">{{T "security.change"}}</a>
+{{if .PasswordRemovable}}<form method="POST" action="/account/password/remove"><input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}"><button type="submit">{{T "account.remove"}}</button></form>{{end}}{{end}}</td>
+</tr>
+<tr>
 <td>{{T "security.passkeys"}}</td>
 <td>{{with .Passkeys}}{{N "security.passkeys.count" .}}{{else}}<span class="muted">{{T "security.notsetup"}}</span>{{end}}</td>
 <td><a class="btn" href="/account">{{T "security.manage"}}</a></td>
@@ -47,5 +53,6 @@ td form{display:inline;margin:0}
 <td><span class="muted">{{T "security.duo"}}</span></td>
 </tr>{{end}}
 </table>
+{{if .PasswordNeedsPasskeys}}<p class="hint">{{T "security.password.needpasskeys"}}</p>{{end}}
 <p class="hint">{{T "security.hint"}}</p>
 {{end}}

@@ -29,10 +29,9 @@ import (
 	"signari.dev/engine/internal/txntoken"
 )
 
-const (
-	codeTTL    = 60 * time.Second // RFC 6749 recommends <= 10 minutes; short is free here
-	sessionTTL = 12 * time.Hour
-)
+// A session's lifetime is its organisation's (store.SessionLifetimesOf), no
+// longer a constant here.
+const codeTTL = 60 * time.Second // RFC 6749 recommends <= 10 minutes; short is free here
 
 // handleAuthorize implements /oauth2/authorize.
 //
@@ -1522,6 +1521,16 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	// An application refreshing is a use of the session it holds the token
+	// under, as a browser presenting the cookie is: somebody working in the
+	// application is not idle. In this transaction, so a refresh refused below
+	// moves nothing.
+	if err := store.TouchSession(ctx, tx, grant.SessionID); err != nil {
+		s.log.Error("recording a refresh as a use of its session", "err", err)
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+
 	// The client's floor (clientacr.go), against the session the lineage was
 	// authorized from, so raising it reaches the refresh tokens already issued.
 	// Refused, not revoked: the token is not spent, and signing in again with a
@@ -2153,14 +2162,19 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 			"count", len(evicted), "correlation_id", correlationID(ctx))
 	}
 
+	// The organisation's lifetime, and its idle limit, from sign-in (0180): the
+	// session ends at the sooner of the two unless it is used.
 	userAgent, ipHash := s.sessionDevice(r)
-	if _, err := tx.Exec(ctx, `
+	if tag, err := tx.Exec(ctx, `
 		INSERT INTO core.sessions (sid, cookie_hash, org_id, user_id, acr, amr, auth_time, not_after,
-		                           user_agent, ip_hash)
-		VALUES ($1, $2, $3, $4, $5, $6, now(), now() + $7::interval, $8, $9)`,
-		sid, store.HashToken(cookieToken), orgID, userID, acr, amr, sessionTTL.String(),
-		userAgent, ipHash); err != nil {
-		s.log.Error("creating session", "err", err)
+		                           absolute_not_after, last_seen_at, user_agent, ip_hash)
+		SELECT $1, $2, o.id, $4, $5, $6, now(),
+		       now() + make_interval(secs => least(o.session_lifetime_s, coalesce(o.session_idle_s, o.session_lifetime_s))),
+		       now() + make_interval(secs => o.session_lifetime_s), now(), $7, $8
+		  FROM core.organizations o WHERE o.id = $3::uuid`,
+		sid, store.HashToken(cookieToken), orgID, userID, acr, amr,
+		userAgent, ipHash); err != nil || tag.RowsAffected() != 1 {
+		s.log.Error("creating session", "err", err, "rows", tag.RowsAffected())
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

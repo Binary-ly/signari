@@ -233,25 +233,29 @@ and made while writing the section that records them.
 | | Overall timeout | Inactivity timeout | Signari |
 |---|---|---|---|
 | AAL1 | SHALL exist; SHOULD ≤ 30 days | optional | met |
-| AAL2 | SHALL exist; SHOULD ≤ 24 hours | SHOULD ≤ 1 hour | **overall met; inactivity absent** |
-| AAL3 | **SHALL** ≤ 12 hours | SHOULD ≤ 15 minutes | **overall met exactly; inactivity absent** |
+| AAL2 | SHALL exist; SHOULD ≤ 24 hours | SHOULD ≤ 1 hour | **overall met; inactivity met when configured** |
+| AAL3 | **SHALL** ≤ 12 hours | SHOULD ≤ 15 minutes | **overall met exactly by default; inactivity met when configured** |
 
-`sessionTTL = 12 * time.Hour` (`flow.go:34`), written to `sessions.not_after` at
-creation and — as established in the V10.4.8 work — **never extended anywhere**.
-So the overall timeout is a real ceiling rather than a sliding window: it satisfies
-AAL2's SHOULD comfortably and lands exactly on AAL3's SHALL.
+*Updated October 2026.* The overall timeout is the organisation's
+`session_lifetime_s`, 12 hours unless changed (`signari instance
+session-lifetime`). It is written to `sessions.absolute_not_after` at sign-in and
+never moves later: a CHECK constraint holds the deadline every check reads,
+`not_after`, inside it, so use cannot extend a session past it. It is a real
+ceiling, not a sliding window. At the default it meets AAL2's SHOULD comfortably
+and lands exactly on AAL3's SHALL. An organisation that sets a longer lifetime
+gives up the AAL3 figure, and the command says nothing to stop it.
 
-**There is no inactivity timeout.** A session idle for eleven hours is as good as
-one used a minute ago. That misses AAL2's and AAL3's SHOULD — both are SHOULDs,
-not SHALLs, so this is a deviation rather than a violation, but it was previously
-unrecorded either way.
+**The inactivity timeout exists, and is off until it is set.** `-idle` ends a
+session that long after its last use, where a use is the browser presenting the
+cookie or an application refreshing a token under it. Until October 2026 there
+was none, and a session idle for eleven hours was as good as one used a minute
+ago. A deployment that wants AAL2's or AAL3's inactivity figure has to set it;
+the default keeps the earlier behaviour, so an upgrade signs nobody out.
 
-Worth being precise about what it would cost. An inactivity timeout needs a
-`last_seen_at` written on each authenticated request, which is a write on the hot
-path for every request — the reason it is usually implemented as a coarse
-throttled update rather than a true one. That is a design with a performance
-consequence, not a constant to change, which is why it is recorded here rather
-than added quietly.
+The cost is what this section said it would be. The use is written at most once
+a minute rather than on every request, folded into the statement that already
+resolves the cookie. That throttle is why the smallest idle limit is five
+minutes: a session in use always has minutes in hand.
 
 ### Phishing resistance
 

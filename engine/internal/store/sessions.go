@@ -300,12 +300,21 @@ func ListUserSessions(ctx context.Context, q interface {
 func ResolveSessionCookie(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, cookieHash []byte) (sid string, live bool, err error) {
+	// A browser presenting its cookie is a use of the session, recorded in the
+	// same statement (see sessionlifetime.go): liveness is decided from the
+	// row as it was, and the deadline moves for a live one only.
 	err = q.QueryRow(ctx, `
-		SELECT s.sid,
-		       s.revoked_at IS NULL AND s.not_after > now() AND u.status = 'active'
-		FROM core.sessions s
-		JOIN core.users u ON u.id = s.user_id
-		WHERE s.cookie_hash = $1`, cookieHash).Scan(&sid, &live)
+		WITH found AS (
+			SELECT s.sid,
+			       s.revoked_at IS NULL AND s.not_after > now() AND u.status = 'active' AS live
+			FROM core.sessions s
+			JOIN core.users u ON u.id = s.user_id
+			WHERE s.cookie_hash = $1),
+		touched AS (
+			UPDATE core.sessions t SET `+touchSet+`
+			  FROM core.organizations o, found f
+			 WHERE t.sid = f.sid AND f.live AND o.id = t.org_id AND `+touchDue+`)
+		SELECT sid, live FROM found`, cookieHash).Scan(&sid, &live)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}

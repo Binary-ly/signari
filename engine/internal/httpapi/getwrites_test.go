@@ -28,6 +28,13 @@ import (
 // person's rows on a GET by design, each with the reason it is safe.
 var knownWritesOnGET = map[string]string{}
 
+// activityColumns are left out of the fingerprint: every request a session's
+// cookie comes with is a use of it, which moves its idle deadline (5.09). That
+// is what the visit is for, and it changes nothing the person decided. The
+// sweep below makes each visit write them, so their absence from the
+// fingerprint is what lets it pass, not a session too young to touch.
+var activityColumns = map[string][]string{"sessions": {"last_seen_at", "not_after"}}
+
 func TestNoGETChangesTheSignedInPersonsRows(t *testing.T) {
 	if os.Getenv("SIGNARI_TEST_DSN") == "" {
 		t.Skip("SIGNARI_TEST_DSN not set")
@@ -90,9 +97,13 @@ func TestNoGETChangesTheSignedInPersonsRows(t *testing.T) {
 		}
 		out["users"] = self
 		for _, tbl := range tables {
+			row := "to_jsonb(t)"
+			for _, c := range activityColumns[tbl] {
+				row += " - '" + c + "'"
+			}
 			var h *string
-			if err := f.pool.QueryRow(ctx, `SELECT md5(string_agg(t::text, '|' ORDER BY t::text))
-				FROM core.`+tbl+` t WHERE user_id = $1::uuid`, f.userID).Scan(&h); err != nil {
+			if err := f.pool.QueryRow(ctx, `SELECT md5(string_agg(r::text, '|' ORDER BY r::text))
+				FROM (SELECT `+row+` AS r FROM core.`+tbl+` t WHERE user_id = $1::uuid) x`, f.userID).Scan(&h); err != nil {
 				t.Fatalf("fingerprinting core.%s: %v", tbl, err)
 			}
 			if h != nil {
@@ -105,6 +116,10 @@ func TestNoGETChangesTheSignedInPersonsRows(t *testing.T) {
 	for _, p := range paths {
 		if knownWritesOnGET[p] != "" {
 			continue
+		}
+		if _, err := f.pool.Exec(ctx, `UPDATE core.sessions SET last_seen_at = now() - interval '2 minutes'
+			WHERE user_id = $1::uuid`, f.userID); err != nil {
+			t.Fatal(err)
 		}
 		before := fingerprint()
 		accountGET(f, cookie, p)

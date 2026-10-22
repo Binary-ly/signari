@@ -701,6 +701,12 @@ func run(args []string) (err error) {
 	reauthWindow := fs.Duration("window", 0,
 		"`instance reauth-window`: how recently a session must have been signed in to change "+
 			"the account from /account, 1m to 24h (default 10m)")
+	sessionLifetime := fs.Duration("lifetime", 0,
+		"`instance session-lifetime`: how long a session lasts from sign-in, 5m to 720h (default 12h); "+
+			"omit to keep the current one")
+	sessionIdle := fs.Duration("idle", -1,
+		"`instance session-lifetime`: how long a session lasts unused, 5m to the lifetime, or 0 for "+
+			"no limit; omit to keep the current one")
 	setEnabled := fs.Bool("enabled", true, "whether the object is in service")
 	onMissing := fs.String("on-missing", "",
 		"what a directory sync does with somebody the directory no longer returns: "+
@@ -940,6 +946,8 @@ func run(args []string) (err error) {
 		return instancePasswordBinds(ctx, conn, *orgID, *passwordBinds)
 	case "instance reauth-window":
 		return instanceReauthWindow(ctx, conn, *orgID, *reauthWindow)
+	case "instance session-lifetime":
+		return instanceSessionLifetime(ctx, conn, *orgID, *sessionLifetime, *sessionIdle)
 	case "instance remember-device":
 		return instanceRememberDevice(ctx, conn, *orgID, *rememberDays)
 	case "webauthn policy":

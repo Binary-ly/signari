@@ -53,12 +53,13 @@ func NewRefreshFamily(ctx context.Context, tx pgx.Tx, orgID, clientID, userID, s
 	//
 	// Ours is satisfied indirectly and the chain is worth stating, because every
 	// link is load-bearing: RotateRefreshToken requires the family's session to
-	// be live, `sessions.not_after` is fixed when the session is created and is
-	// never updated anywhere, and rotation issues a new token but cannot move
-	// that deadline. So a lineage cannot outlive the authorization that started
-	// it, however many times it rotates -- which is a stronger bound than a cap
-	// on the credential, because it expires the AUTHORIZATION rather than the
-	// token that represents it.
+	// be live (`sessions.not_after`), and `not_after` may move with use but a
+	// CHECK holds it inside `absolute_not_after`, which is fixed when the session
+	// is created and is never moved later (migration 0180). Rotation issues a
+	// new token but cannot move that ceiling. So a lineage cannot outlive the
+	// authorization that started it, however many times it rotates -- which is
+	// a stronger bound than a cap on the credential, because it expires the
+	// AUTHORIZATION rather than the token that represents it.
 	//
 	// The one way that chain breaks is a family with no `sid`: the rotation
 	// query's `s.sid IS NULL OR ...` branch is then vacuously true and the
@@ -67,7 +68,7 @@ func NewRefreshFamily(ctx context.Context, tx pgx.Tx, orgID, clientID, userID, s
 	// property of the code as it stands and not of the code as it will be.
 	if sid == "" {
 		return "", fmt.Errorf("a refresh token family must name the session that " +
-			"authorized it: the session's fixed not_after is what gives the lineage " +
+			"authorized it: the session's fixed absolute deadline is what gives the lineage " +
 			"an absolute expiration, and a family without one would rotate forever")
 	}
 	var id string

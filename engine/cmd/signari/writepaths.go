@@ -1478,6 +1478,70 @@ func instanceReauthWindow(ctx context.Context, conn *pgx.Conn, orgID string, win
 	return nil
 }
 
+// instanceSessionLifetime sets how long an organisation's sessions last, and
+// how long unused (5.09). Either flag left out keeps what is there.
+func instanceSessionLifetime(ctx context.Context, conn *pgx.Conn, orgID string, lifetime, idle time.Duration) error {
+	if orgID == "" || (lifetime == 0 && idle < 0) {
+		return fmt.Errorf("give -org and -lifetime, -idle or both, e.g. -lifetime 12h -idle 30m")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	current, err := store.SessionLifetimesOf(ctx, tx, orgID)
+	if errors.Is(err, store.ErrOrganizationNotFound) {
+		return fmt.Errorf("no organisation %s", orgID)
+	}
+	if err != nil {
+		return err
+	}
+	if lifetime == 0 {
+		lifetime = current.Lifetime
+	}
+	if idle < 0 {
+		idle = current.Idle
+	}
+	previous, sooner, ended, err := store.SetSessionLifetimes(ctx, tx, orgID, lifetime, idle)
+	if errors.Is(err, store.ErrSessionLifetime) {
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "org.session_lifetime_set", OrgID: orgID,
+		Detail: map[string]any{
+			"lifetime_from_s": int(previous.Lifetime.Seconds()), "lifetime_to_s": int(lifetime.Seconds()),
+			"idle_from_s": int(previous.Idle.Seconds()), "idle_to_s": int(idle.Seconds()),
+			"sessions_sooner": sooner, "sessions_ended": ended, "via": "cli",
+		},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("sessions: %s (was %s)\n", sessionLimits{lifetime, idle}, sessionLimits{previous.Lifetime, previous.Idle})
+	if sooner > 0 {
+		fmt.Printf("\n  %d live session(s) now end sooner, %d of them already: those are refused from\n"+
+			"  now on, and the janitor's next sweep ends them and tells their applications.\n", sooner, ended)
+	}
+	fmt.Println("\n  A session already signed in keeps the lifetime it was signed in with as its")
+	fmt.Println("  ceiling; a shorter one, or an idle limit, applies to it at once.")
+	return nil
+}
+
+// sessionLimits prints a lifetime and an idle limit.
+type sessionLimits struct{ Lifetime, Idle time.Duration }
+
+func (v sessionLimits) String() string {
+	if v.Idle == 0 {
+		return v.Lifetime.String() + " from sign-in, no idle limit"
+	}
+	return v.Lifetime.String() + " from sign-in, " + v.Idle.String() + " unused"
+}
+
 // The forward-auth hosts: which applications behind a reverse proxy this
 // deployment protects.
 //

@@ -146,52 +146,64 @@ func TestAConcurrentEditIsRefusedRatherThanSilentlyOverwriting(t *testing.T) {
 	s, _ := newTestServer(t)
 	clientID := newPreconditionClient(t, s)
 
-	// Both administrators read the same version.
-	shared := currentVersion(t, s)
-	tag := fmt.Sprintf(`"%d"`, shared)
-
-	// Administrator A disables the client. Administrator B, from the same read,
-	// enables it. Run genuinely concurrently.
 	type outcome struct {
 		code int
 		body string
 	}
-	var mu sync.Mutex
-	results := map[string]outcome{}
-
 	// One handler, as the server builds one. Routes() records the operation
 	// table as it registers, so two goroutines each building their own raced on
 	// that slice and once panicked mid-append.
 	h := s.Routes()
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for name, enabled := range map[string]bool{"A": false, "B": true} {
-		wg.Add(1)
-		go func(name string, enabled bool) {
-			defer wg.Done()
-			<-start // release both at once
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, adminReq(t, http.MethodPatch,
-				"/admin/clients/"+clientID,
-				fmt.Sprintf(`{"enabled":%t}`, enabled), tag))
-			mu.Lock()
-			results[name] = outcome{rec.Code, rec.Body.String()}
-			mu.Unlock()
-		}(name, enabled)
-	}
-	close(start)
-	wg.Wait()
 
+	// Up to three tries. Another package's test can move the global version
+	// between the read and the writes, which refuses both, and is a refusal
+	// the precondition owes them (0.21). Both succeeding is the failure, at
+	// once; only both refused is tried again.
+	var shared int64
 	var ok, refused int
-	for name, r := range results {
-		switch r.code {
-		case http.StatusOK:
-			ok++
-		case http.StatusPreconditionFailed:
-			refused++
-		default:
-			t.Errorf("administrator %s got %d, which is neither success nor a "+
-				"precondition failure: %s", name, r.code, r.body)
+	var results map[string]outcome
+	for try := 0; try < 3; try++ {
+		// Both administrators read the same version.
+		shared = currentVersion(t, s)
+		tag := fmt.Sprintf(`"%d"`, shared)
+
+		// Administrator A disables the client. Administrator B, from the same
+		// read, enables it. Run genuinely concurrently.
+		var mu sync.Mutex
+		results = map[string]outcome{}
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for name, enabled := range map[string]bool{"A": false, "B": true} {
+			wg.Add(1)
+			go func(name string, enabled bool) {
+				defer wg.Done()
+				<-start // release both at once
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, adminReq(t, http.MethodPatch,
+					"/admin/clients/"+clientID,
+					fmt.Sprintf(`{"enabled":%t}`, enabled), tag))
+				mu.Lock()
+				results[name] = outcome{rec.Code, rec.Body.String()}
+				mu.Unlock()
+			}(name, enabled)
+		}
+		close(start)
+		wg.Wait()
+
+		ok, refused = 0, 0
+		for name, r := range results {
+			switch r.code {
+			case http.StatusOK:
+				ok++
+			case http.StatusPreconditionFailed:
+				refused++
+			default:
+				t.Errorf("administrator %s got %d, which is neither success nor a "+
+					"precondition failure: %s", name, r.code, r.body)
+			}
+		}
+		if refused != 2 {
+			break
 		}
 	}
 
@@ -201,12 +213,28 @@ func TestAConcurrentEditIsRefusedRatherThanSilentlyOverwriting(t *testing.T) {
 			"prevent: %+v", ok, refused, results)
 	}
 
-	// And the surviving state must be the winner's, not a blend or the loser's.
-	final := currentVersion(t, s)
-	if final != shared+1 {
-		t.Errorf("config version = %d, want %d: exactly one mutation should have "+
-			"committed", final, shared+1)
+	// And exactly one change committed: counted on this client's own records,
+	// since the global version is moved by every other package's tests as well
+	// (0.21), so its delta measured them too.
+	if n := clientUpdateRecords(t, s, clientID); n != 1 {
+		t.Errorf("%d updates of the client were recorded, want 1: exactly one mutation "+
+			"should have committed", n)
 	}
+	if final := currentVersion(t, s); final <= shared {
+		t.Errorf("config version = %d after a committed write at %d", final, shared)
+	}
+}
+
+// clientUpdateRecords counts the committed updates of one client, which only
+// this test's own writes make.
+func clientUpdateRecords(t *testing.T, s *Server, clientID string) int {
+	t.Helper()
+	var n int
+	if err := s.db.QueryRow(context.Background(), `SELECT count(*) FROM core.audit_events
+		WHERE client_id = $1 AND event_type = 'admin.client_updated'`, clientID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 // The mirror, and the reason the test above is not measuring something else.
@@ -258,8 +286,11 @@ func TestARefusedPreconditionWritesNothing(t *testing.T) {
 	if rec.Code != http.StatusPreconditionFailed {
 		t.Fatalf("status = %d, want 412: %s", rec.Code, rec.Body.String())
 	}
-	if got := currentVersion(t, s); got != before {
-		t.Errorf("config version moved from %d to %d on a refused write", before, got)
+	// Nothing of this write committed: its record, as its change, is absent.
+	// The global version is not the measure, since other packages' tests move
+	// it meanwhile (0.21); mutationdrift's property 1 checks the bump itself.
+	if n := clientUpdateRecords(t, s, clientID); n != 0 {
+		t.Errorf("a write refused with 412 left %d update record(s)", n)
 	}
 	if clientEnabled(t, s, clientID) != enabledBefore {
 		t.Error("the client was modified by a write that returned 412")
@@ -288,14 +319,19 @@ func TestAPreconditionFailureReportsBothVersions(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decoding the failure: %v", err)
 	}
-	if body.Error != "precondition_failed" || body.Expected != 1 || body.Current != before {
-		t.Errorf("body = %+v, want precondition_failed expected=1 current=%d",
-			body, before)
+	// The version as it was when the write was refused: at least the one read
+	// before it, and no later than now, since other packages' tests move it in
+	// between (0.21).
+	after := currentVersion(t, s)
+	if body.Error != "precondition_failed" || body.Expected != 1 || body.Current < before || body.Current > after {
+		t.Errorf("body = %+v, want precondition_failed expected=1 current in [%d, %d]",
+			body, before, after)
 	}
 	// The current version also travels as an ETag, so a retry can use the
 	// response directly rather than parsing prose.
-	if got := rec.Header().Get("ETag"); got != fmt.Sprintf(`"%d"`, before) {
-		t.Errorf("ETag on the failure = %q, want %q", got, fmt.Sprintf(`"%d"`, before))
+	if got := rec.Header().Get("ETag"); got != fmt.Sprintf(`"%d"`, body.Current) {
+		t.Errorf("ETag on the failure = %q, want %q, the version the body names", got,
+			fmt.Sprintf(`"%d"`, body.Current))
 	}
 }
 

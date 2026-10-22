@@ -34,6 +34,21 @@ type Field struct {
 	Help     string    `json:"help,omitempty" yaml:"help,omitempty"`
 	Required bool      `json:"required,omitempty" yaml:"required,omitempty"`
 	Options  []string  `json:"options,omitempty" yaml:"options,omitempty"`
+	// Attribute names the user attribute the answer is written to (5.14), from
+	// which a claim mapper can release it. A field left blank leaves it as it was.
+	Attribute string `json:"attribute,omitempty" yaml:"attribute,omitempty"`
+}
+
+// Candidates are the values the field can answer with, where that is a closed
+// set: what `prompt set` checks an attribute's type against before any answer.
+func (f Field) Candidates() []string {
+	switch f.Type {
+	case Checkbox:
+		return []string{"true", "false"}
+	case Select:
+		return f.Options
+	}
+	return nil
 }
 
 // Prompt is a question asked between authentication and the session.
@@ -63,6 +78,7 @@ func (p *Prompt) Validate() error {
 		return fmt.Errorf("prompt %q has no fields", p.Slug)
 	}
 	seen := map[string]bool{}
+	attributes := map[string]bool{}
 	collects := false
 	for i, f := range p.Fields {
 		if f.Type == Notice {
@@ -70,7 +86,18 @@ func (p *Prompt) Validate() error {
 				return fmt.Errorf("prompt %q field %d: a notice needs a label, which "+
 					"is the text it displays", p.Slug, i)
 			}
+			if f.Attribute != "" {
+				return fmt.Errorf("prompt %q field %d: a notice collects nothing, so it "+
+					"has nothing to write to attribute %q", p.Slug, i, f.Attribute)
+			}
 			continue
+		}
+		if f.Attribute != "" {
+			if attributes[f.Attribute] {
+				return fmt.Errorf("prompt %q writes attribute %q from two fields; one "+
+					"answer would silently overwrite the other", p.Slug, f.Attribute)
+			}
+			attributes[f.Attribute] = true
 		}
 		collects = true
 		switch {

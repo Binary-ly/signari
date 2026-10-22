@@ -109,6 +109,35 @@ Until October 2026 an answer replaced the one before it, and editing a prompt ke
 the answers given to the old text and asked nobody again. Answers from before then
 are version 1, and what they answered was not kept.
 
+## An answer can be an attribute
+
+A field with `attribute:` writes its answer to that user attribute, in the same
+transaction as the answer, and a [claim mapper](admin-api.md#claim-mappers) releases it to
+applications from the next token on:
+
+```yaml
+fields:
+  - name: team
+    type: select
+    label: Which team are you in?
+    options: [engineering, finance, support]
+    required: true
+    attribute: department
+```
+
+`prompt set` refuses the field unless the organisation has declared the
+attribute, and unless every answer the field can give fits the attribute's type:
+a checkbox into a boolean is fine, a select offering `yes` and `no` into a boolean
+is not. That is refused when the prompt is defined, not at somebody's sign-in. A
+personal attribute is sealed under the person's key as any other write is. A
+field left blank leaves the attribute as it was, and a notice, which collects
+nothing, cannot name one; neither can two fields name the same one.
+
+The prompt writes whether or not the attribute is `user_writable`. That setting
+governs the person's own profile page; mapping a field is the operator deciding to
+collect the value. Each write is recorded as `user.attributes_updated` with
+`by: prompt`, naming the attributes and never their values.
+
 ## `once`
 
 `once: true` asks until answered, then never again — terms acceptance.

@@ -155,6 +155,40 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Answers that are attributes (5.14), in the answer's transaction, so the
+	// two commit together and a claim mapper can release them from the next
+	// token on. A field left blank leaves its attribute as it was. The operator
+	// mapped the field, so this does not ask user_writable, which governs the
+	// person's own profile page.
+	var written []string
+	for _, f := range p.Fields {
+		if f.Attribute == "" || answers[f.Name] == "" {
+			continue
+		}
+		if err := store.SetUserAttribute(ctx, tx, pending.Subject, pending.OrgID, f.Attribute,
+			answers[f.Name], s.root); errors.Is(err, store.ErrInvalidAttributeValue) {
+			_ = tx.Rollback(ctx)
+			rerender(f.Label + ": " + err.Error())
+			return
+		} else if err != nil {
+			s.log.Error("writing a prompt answer to its attribute", "err", err, "attribute", f.Attribute)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		written = append(written, f.Attribute)
+	}
+	if len(written) > 0 {
+		if err := audit.Write(ctx, tx, audit.Event{
+			Type: "user.attributes_updated", OrgID: pending.OrgID, SubjectID: pending.Subject,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"by": "prompt", "prompt": p.Slug, "attributes": written},
+		}); err != nil {
+			s.log.Error("auditing the attributes a prompt wrote", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	// Recorded in the audit trail as well as the response table. "When did they
 	// accept the terms" is asked later by somebody who does not have access to
 	// the application database and does have the audit export.

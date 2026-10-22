@@ -111,6 +111,13 @@ func TestDefinitionsAreValidated(t *testing.T) {
 		// shown on every sign-in forever.
 		{"notices only", "collects nothing", Prompt{Slug: "a", Title: "T", Fields: []Field{
 			{Type: Notice, Label: "Hello"}}}},
+		// 5.14: an answer may be an attribute, but a notice has no answer, and two
+		// fields writing one attribute would overwrite each other unseen.
+		{"a notice writing an attribute", "has nothing to write", Prompt{Slug: "a", Title: "T", Fields: []Field{
+			{Type: Notice, Label: "Hello", Attribute: "department"}, {Name: "x", Type: Text, Label: "X"}}}},
+		{"two fields writing one attribute", "from two fields", Prompt{Slug: "a", Title: "T", Fields: []Field{
+			{Name: "x", Type: Text, Label: "X", Attribute: "department"},
+			{Name: "y", Type: Text, Label: "Y", Attribute: "department"}}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

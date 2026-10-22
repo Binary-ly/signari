@@ -77,6 +77,31 @@ func checkAttributeValue(name, valueType, value string) error {
 	return nil
 }
 
+// CheckPromptAttribute reports whether a prompt field may write attribute name
+// (5.14): it is declared in the organisation, and every value the field can
+// answer with is one the attribute's type accepts. Asked when the prompt is
+// defined, so a mapping that could never be written is refused there rather
+// than at somebody's sign-in.
+func CheckPromptAttribute(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID, name string, candidates []string) error {
+	var valueType string
+	err := q.QueryRow(ctx, `SELECT value_type FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = $2`, orgID, name).Scan(&valueType)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: %q", ErrNoSuchAttribute, name)
+	}
+	if err != nil {
+		return err
+	}
+	for _, v := range candidates {
+		if err := checkAttributeValue(name, valueType, v); err != nil {
+			return fmt.Errorf("%w (the field can answer %q)", err, v)
+		}
+	}
+	return nil
+}
+
 // Attribute is one declared attribute.
 type Attribute struct {
 	ID           string

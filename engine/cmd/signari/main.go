@@ -7840,6 +7840,16 @@ func promptSet(ctx context.Context, conn *pgx.Conn, orgID, slug, path string) er
 	if err := p.Validate(); err != nil {
 		return err
 	}
+	// A field that writes an attribute must name one the organisation declared,
+	// of a type its answers fit (5.14): refused here, not at a sign-in.
+	for _, f := range d.Fields {
+		if f.Attribute == "" {
+			continue
+		}
+		if err := store.CheckPromptAttribute(ctx, conn, orgID, f.Attribute, f.Candidates()); err != nil {
+			return fmt.Errorf("prompt %q field %q: %w", d.Slug, f.Name, err)
+		}
+	}
 	once := true
 	if d.Once != nil {
 		once = *d.Once
@@ -7879,6 +7889,9 @@ func promptSet(ctx context.Context, conn *pgx.Conn, orgID, slug, path string) er
 		req := ""
 		if f.Required {
 			req = " (required)"
+		}
+		if f.Attribute != "" {
+			req += " -> attribute " + f.Attribute
 		}
 		fmt.Printf("    %-10s %s%s\n", f.Type, f.Label, req)
 	}

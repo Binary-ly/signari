@@ -259,6 +259,9 @@ func (s *Server) Routes() http.Handler {
 	// access (see privileged.go).
 	route("GET /admin/users/{userID}/sessions", ScopeUsersRead, s.listUserSessions)
 	route("DELETE /admin/users/{userID}/sessions", ScopeUsersWrite, s.revokeUserSessions)
+	// What the person sees at /account/connected, and its withdrawal (6.08).
+	route("GET /admin/users/{userID}/consents", ScopeUsersRead, s.listUserConsents)
+	route("DELETE /admin/users/{userID}/consents/{clientID}", ScopeUsersWrite, s.revokeUserConsent)
 	route("DELETE /admin/sessions/{sid}", ScopeUsersWrite, s.revokeSession)
 	privileged("POST /admin/subjects/{subjectID}/erase", ScopeSubjectsErase, targetUser, s.eraseSubject)
 

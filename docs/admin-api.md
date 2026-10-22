@@ -453,6 +453,8 @@ act on both.
 |---|---|
 | `GET /admin/users/{userID}/sessions` | Live sessions for a user, newest first, paged with `limit` and `cursor` like the other lists. Until October 2026 it stopped at 200 with no way to see the rest |
 | `DELETE /admin/users/{userID}/sessions` | End all of them |
+| `GET /admin/users/{userID}/consents` | What the person sees at `/account/connected`: each application they consented to or that holds a live grant, with its scopes, when it was granted, how many refresh grants are live and until when an offline one lasts. A token narrowed to named clients sees only those. `users:read` |
+| `DELETE /admin/users/{userID}/consents/{clientID}` | Withdraw the consent and revoke the application's refresh grants, through the same path the person's own removal takes, so the next authorization asks again and no refresh succeeds. Access tokens already issued run out on their own. Audited `admin.consent_revoked`; `users:write`; honours `If-Match` |
 | `DELETE /admin/sessions/{sid}` | End one |
 
 Revocation goes through the engine's single termination path, so every relying

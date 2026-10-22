@@ -99,6 +99,8 @@ var summaries = map[string]string{
 	"GET /admin/groups/{groupID}/members":                    "List a group's members.",
 	"PUT /admin/groups/{groupID}/members/{userID}":           "Add a member.",
 	"DELETE /admin/groups/{groupID}/members/{userID}":        "Remove a member.",
+	"GET /admin/users/{userID}/consents":                     "The applications a person consented to or that hold a grant.",
+	"DELETE /admin/users/{userID}/consents/{clientID}":       "Withdraw a consent and revoke the application's refresh grants.",
 	"GET /admin/tokens":                                      "The admin tokens this token may see; never a secret or hash.",
 	"POST /admin/tokens":                                     "Mint an admin token no wider than the caller. The secret is returned once.",
 	"POST /admin/tokens/{tokenID}/rotate":                    "Replace a token's secret, the old one working for a grace period.",

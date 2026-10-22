@@ -76,7 +76,7 @@ func TestDisconnectingAnAppWithdrawsConsentAndKillsItsTokens(t *testing.T) {
 		t.Fatalf("successor token: %v", err)
 	}
 
-	revoked, err := DisconnectApp(ctx, tx, userID, clientID)
+	revoked, err := DisconnectApp(ctx, tx, userID, clientID, "user disconnected the application")
 	if err != nil {
 		t.Fatalf("disconnecting: %v", err)
 	}

@@ -268,6 +268,14 @@ var opSchemas = map[string]opSchema{
 			"auth_time": dateTime(), "not_after": dateTime(), "user_agent": str(), "has_address": boolean(),
 			"created_at": dateTime()}))})},
 
+	"GET /admin/users/{userID}/consents": {http.StatusOK, nil, object([]string{"user_id", "consents"}, map[string]jsonSchema{
+		"user_id": uuidStr(),
+		"consents": arrayOf(object([]string{"client_id", "display_name", "scopes", "granted_at", "active_refresh_grants"},
+			map[string]jsonSchema{"client_id": str(), "display_name": str(), "scopes": arrayOf(str()),
+				"granted_at": dateTime(), "active_refresh_grants": integer(), "offline_until": nullable(dateTime())}))})},
+	"DELETE /admin/users/{userID}/consents/{clientID}": {http.StatusOK, nil, object([]string{"user_id", "client_id", "refresh_grants_revoked", "config_version"},
+		withVersion(map[string]jsonSchema{"user_id": uuidStr(), "client_id": str(), "refresh_grants_revoked": integer()}))},
+
 	"POST /admin/users": {http.StatusCreated, typeOf[createUserRequest](), object([]string{"id", "config_version"},
 		withVersion(map[string]jsonSchema{"id": uuidStr()}))},
 	"PATCH /admin/users/{userID}": {http.StatusOK, typeOf[patchUserRequest](), object([]string{"id", "config_version"},

@@ -238,7 +238,8 @@ func TestEveryWriteOnAUserOrGroupGuardsPrivilegedTargets(t *testing.T) {
 
 	// Writes on a user or group that need not be guarded, each with the reason.
 	exempt := map[string]string{
-		"delete /admin/users/{userID}/sessions": "ending sessions only withdraws access",
+		"delete /admin/users/{userID}/sessions":            "ending sessions only withdraws access",
+		"delete /admin/users/{userID}/consents/{clientID}": "withdrawing a consent only withdraws an application's access",
 	}
 
 	lesser := mintToken(t, s, "all but privileged", "", allButPrivileged(), nil)

@@ -16,7 +16,7 @@ var EventTypes = []string{
 	"admin.attribute_declared", "admin.attributes_set", "admin.claim_mapper_created",
 	"admin.claim_mapper_deleted", "admin.cli_command", "admin.client_created",
 	"admin.client_deleted", "admin.client_secret_rotated", "admin.client_updated",
-	"admin.factor_removed", "admin.group_created", "admin.group_deleted",
+	"admin.consent_revoked", "admin.factor_removed", "admin.group_created", "admin.group_deleted",
 	"admin.group_member_added", "admin.group_member_removed", "admin.group_updated",
 	"admin.identity_provider_updated", "admin.invitation_created", "admin.invitation_revoked",
 	"admin.migration_source_removed", "admin.migration_source_set",

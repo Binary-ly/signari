@@ -222,15 +222,18 @@ func ConnectedApps(ctx context.Context, db *pgxpool.Pool, userID string) ([]Conn
 // Access tokens already minted are NOT revoked here and cannot be: they are
 // self-contained and valid until they expire. That is why the count returned is
 // of refresh lineages, and why the page says minutes rather than immediately.
-func DisconnectApp(ctx context.Context, tx pgx.Tx, userID, clientID string) (int64, error) {
+//
+// reason is recorded on each grant it revokes: the person, from their account
+// page, or an administrator, from the Admin API (6.08).
+func DisconnectApp(ctx context.Context, tx pgx.Tx, userID, clientID, reason string) (int64, error) {
 	if err := WithdrawConsent(ctx, tx, userID, clientID); err != nil {
 		return 0, err
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE core.refresh_token_families
-		SET revoked_at = now(), revocation_reason = 'user disconnected the application'
+		SET revoked_at = now(), revocation_reason = $3
 		WHERE user_id = $1::uuid AND client_id = $2 AND revoked_at IS NULL`,
-		userID, clientID)
+		userID, clientID, reason)
 	if err != nil {
 		return 0, fmt.Errorf("revoking refresh tokens for %q: %w", clientID, err)
 	}

@@ -127,6 +127,13 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "DELETE /admin/users/{userID}/consents/{clientID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/users/" + newDriftUser(t, s) + "/consents/" + newPreconditionClient(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/tokens", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/tokens" },
 			body: func(t *testing.T, s *Server, _ string) string {

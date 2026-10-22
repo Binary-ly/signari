@@ -347,7 +347,7 @@ func TestAWithdrawnConsentIsHonouredByTheJWTBearerGrant(t *testing.T) {
 	})
 	consent(func(tx pgx.Tx) error { return store.RecordConsent(ctx, tx, f.userID, f.clientID, []string{"profile"}) })
 	consent(func(tx pgx.Tx) error {
-		_, err := store.DisconnectApp(ctx, tx, f.userID, f.clientID)
+		_, err := store.DisconnectApp(ctx, tx, f.userID, f.clientID, "user disconnected the application")
 		return err
 	})
 	if code, body := f.grant(t, f.assert(t, nil), nil); code == http.StatusOK || body["error"] != "invalid_grant" {

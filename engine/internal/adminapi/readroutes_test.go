@@ -52,6 +52,9 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/users/{userID}/factors", func(t *testing.T, s *Server) string {
 			return "/admin/users/" + newDriftUserWithTOTP(t, s) + "/factors"
 		}},
+		{"GET /admin/users/{userID}/consents", func(t *testing.T, s *Server) string {
+			return "/admin/users/" + newDriftUser(t, s) + "/consents"
+		}},
 		{"GET /admin/users/{userID}/sessions", func(t *testing.T, s *Server) string {
 			u := newDriftUser(t, s)
 			newDriftSession(t, s, u)

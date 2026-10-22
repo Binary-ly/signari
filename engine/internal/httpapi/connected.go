@@ -108,7 +108,7 @@ func (s *Server) handleConnectedRevoke(w http.ResponseWriter, r *http.Request) {
 	// Scoped to THIS user. The client id arrives from a form field, so the only
 	// thing stopping it naming somebody else's grant is that the query is keyed
 	// on the session's user as well.
-	revoked, err := store.DisconnectApp(ctx, tx, userID, clientID)
+	revoked, err := store.DisconnectApp(ctx, tx, userID, clientID, "user disconnected the application")
 	if err != nil {
 		s.log.Error("disconnecting an application", "err", err, "client_id", clientID)
 		http.Error(w, "unavailable", http.StatusInternalServerError)

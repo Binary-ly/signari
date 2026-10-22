@@ -45,7 +45,7 @@ type groupSummary struct {
 
 const groupColumns = `id::text, org_id::text, name, display_name,
 	coalesce(description, ''), may_impersonate,
-	to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')`
+	to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')`
 
 func scanGroup(row pgx.Row, g *groupSummary) error {
 	return row.Scan(&g.ID, &g.OrgID, &g.Name, &g.DisplayName, &g.Description,
@@ -361,7 +361,7 @@ func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.Query(ctx, `
 		SELECT u.id::text, u.org_id::text, coalesce(u.email, ''), coalesce(u.username, ''),
-		       u.status, to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')
+		       u.status, to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
 		  FROM core.group_members m
 		  JOIN core.users u ON u.id = m.user_id
 		 WHERE m.group_id = $1::uuid AND ($2 = '' OR u.id::text > $2)

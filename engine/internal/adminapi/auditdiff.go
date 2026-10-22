@@ -13,6 +13,13 @@ import (
 // what the request set, so an investigation could not tell what a setting had
 // been before somebody changed it, nor that a request had changed nothing.
 
+// rfc3339 renders a timestamp column as RFC 3339, with the offset's minutes:
+// PostgreSQL's `OF` writes "+02", which RFC 3339 does not allow and a strict
+// parser refuses, and `::text` writes a space where it wants "T" (6.02).
+func rfc3339(col string) string {
+	return `to_char(` + col + `, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')`
+}
+
 // clientValueless are the client columns a diff reports as changed and never
 // values: the certificate subject and address can name a person, which this
 // table must not (audit rule 1), and a key set or thumbprint is material whose

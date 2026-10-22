@@ -77,10 +77,10 @@ func (s *Server) listUserSessions(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.Query(ctx, `
 		SELECT sid, user_id::text, org_id::text, acr, amr,
-		       to_char(auth_time, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'),
-		       to_char(not_after, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'),
+		       to_char(auth_time, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'),
+		       to_char(not_after, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'),
 		       coalesce(user_agent, ''), (ip_hash IS NOT NULL),
-		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')
+		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
 		  FROM core.sessions
 		 WHERE user_id = $1::uuid AND revoked_at IS NULL AND not_after > now()
 		 ORDER BY created_at DESC

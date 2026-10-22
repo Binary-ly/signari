@@ -246,16 +246,19 @@ func (s *Server) targetTerms(ctx context.Context, tx pgx.Tx, p *Principal, token
 
 var errTokenRevoked = errors.New("the token is revoked")
 
+// rotateTokenRequest is the optional body of a rotation.
+type rotateTokenRequest struct {
+	GraceS     *int64 `json:"grace_s"`
+	ExpiresInS *int64 `json:"expires_in_s"`
+}
+
 // rotateToken mints a replacement with the same terms and gives the old
 // secret a grace period, so the new one can be deployed first.
 func (s *Server) rotateToken(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	p, _ := principalFrom(ctx)
 	tokenID := r.PathValue("tokenID")
-	var req struct {
-		GraceS     *int64 `json:"grace_s"`
-		ExpiresInS *int64 `json:"expires_in_s"`
-	}
+	var req rotateTokenRequest
 	if r.ContentLength != 0 {
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 		dec.DisallowUnknownFields()

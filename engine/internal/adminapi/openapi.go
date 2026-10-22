@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -30,13 +31,13 @@ import (
 // integrator most needs, since a 403 naming a scope is only useful if you can
 // find out which scope an operation wanted before you call it.
 //
-// Not derived: request and response schemas. Those live in Go structs, and
-// reflecting over them would produce a document that describes the JSON tags
-// rather than the meaning — `{"active": true}` with no hint that omitting the
-// field is different from sending false. The descriptions here are written, and
-// `TestEveryAdminAPIRouteIsDocumented` keeps the prose in `docs/admin-api.md`
-// aligned with the same route table. Two derivations from one source beats one
-// derivation and one memory.
+// Request and response schemas come from openapischema.go (6.02): requests
+// reflected from the type each handler decodes, responses declared and held to
+// what the handlers send by TestEveryResponseMatchesItsSchema. This said they
+// were not derived, since reflection describes JSON tags rather than meaning;
+// the meaning stays in the summaries here and in `docs/admin-api.md`, which
+// `TestEveryAdminAPIRouteIsDocumented` keeps aligned with the same route table,
+// and the schemas give a generated client the shapes, which it had none of.
 
 // operation is one method on one path.
 type operation struct {
@@ -158,15 +159,33 @@ func (s *Server) openAPI() map[string]any {
 			})
 		}
 
+		refusal := func(desc string) map[string]any {
+			return map[string]any{"description": desc, "content": map[string]any{
+				"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/Error"}}}}
+		}
+		sc := opSchemas[strings.ToUpper(op.method)+" "+op.path]
+		status := sc.Status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		success := map[string]any{"description": "Success."}
+		if sc.Response != nil {
+			success["content"] = map[string]any{"application/json": map[string]any{"schema": sc.Response}}
+		}
 		entry := map[string]any{
 			"summary":     op.summary,
 			"operationId": operationID(op),
 			"security":    []any{map[string]any{"bearerAuth": []any{op.scope}}},
 			"responses": map[string]any{
-				"200": map[string]any{"description": "Success."},
-				"401": map[string]any{"description": "No usable bearer token."},
-				"403": map[string]any{"description": "The token lacks " + op.scope + ", or is scoped to another organisation."},
+				strconv.Itoa(status): success,
+				"400":                refusal("The request was refused; `error` names why."),
+				"401":                refusal("No usable bearer token."),
+				"403":                refusal("The token lacks " + op.scope + ", or is scoped to another organisation."),
 			},
+		}
+		if sc.Request != nil {
+			entry["requestBody"] = map[string]any{"required": true, "content": map[string]any{
+				"application/json": map[string]any{"schema": requestSchema(sc.Request)}}}
 		}
 		if len(params) > 0 {
 			entry["parameters"] = params
@@ -183,18 +202,17 @@ func (s *Server) openAPI() map[string]any {
 				"schema": map[string]any{"type": "string"},
 			})
 			resp := entry["responses"].(map[string]any)
-			resp["412"] = map[string]any{
-				"description": "The configuration version moved; nothing was written.",
-			}
+			resp["412"] = refusal("The configuration version moved; nothing was written. " +
+				"`expected_version` and `current_version` name both.")
 		}
 		// The second scope is conditional on the target, so it cannot go in
 		// `security`: listing it there would claim every call needs it.
 		if op.privileged {
 			entry["x-privileged-scope"] = ScopePrivilegedUsersWrite
 			resp := entry["responses"].(map[string]any)
-			resp["403"] = map[string]any{"description": "The token lacks " + op.scope +
+			resp["403"] = refusal("The token lacks " + op.scope +
 				", or is scoped to another organisation, or the target may impersonate " +
-				"others and the token lacks " + ScopePrivilegedUsersWrite + "."}
+				"others and the token lacks " + ScopePrivilegedUsersWrite + ".")
 		}
 		item[op.method] = entry
 	}
@@ -209,6 +227,7 @@ func (s *Server) openAPI() map[string]any {
 			"version": "1",
 		},
 		"components": map[string]any{
+			"schemas": map[string]any{"Error": errorSchema},
 			"securitySchemes": map[string]any{
 				"bearerAuth": map[string]any{
 					"type": "http", "scheme": "bearer",

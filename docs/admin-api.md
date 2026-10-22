@@ -132,11 +132,19 @@ row the same way.
 is not registered or omit one that is, and each operation carries the scope the
 server actually enforces — taken from the same `auth(scope, …)` wrapper that
 enforces it, so a client generated from it calls the routes that exist, with the
-scopes they need, rather than those somebody last remembered to document. It
-knows nothing of the bodies: request and response *schemas* are not in the
-document, because reflecting over the Go structs would describe the JSON tags
-rather than the meaning, so a generated client has untyped bodies and those stay
-in this page.
+scopes they need, rather than those somebody last remembered to document. Each
+operation has typed schemas too. The request body's schema is taken from the type
+the handler decodes, so it cannot name a field the server does not read. The
+success response is declared field by field, closed to undeclared fields, and
+every refusal shares one `Error` schema (`error`, `detail`, and the two versions
+of a 412). A test calls every operation and holds what it answers to its schema,
+an undeclared field included, so the document and the server cannot drift apart
+unseen. The meaning of each field, what absent does, stays on this page. Until
+October 2026 the document had no bodies at all.
+
+Every timestamp is RFC 3339 with the offset's minutes (`2026-10-22T14:51:46.035024+02:00`).
+Most read endpoints wrote `+02`, which RFC 3339 does not allow and a strict parser
+refuses, and a person's factors used a space for the `T`.
 
 It needs no token. It describes the shape of the API and no data — the same facts
 you are reading here — and requiring a token to read the description of how to
@@ -251,7 +259,7 @@ be stored in them.
 
 | | |
 |---|---|
-| `GET /admin/organizations/{orgID}/attributes` | The organisation's declarations. Needs `config:read` |
+| `GET /admin/organizations/{orgID}/attributes` | The organisation's declarations: `id`, `name`, `display_name`, `value_type`, `personal`, `user_readable`, `user_writable` and `required`, the names a declaration is made with. Until October 2026 they came back as `ID`, `ValueType` and the like, unlike every other response. Needs `config:read` |
 | `PUT /admin/organizations/{orgID}/attributes` | Declare or update one. Needs `organizations:write` |
 | `GET /admin/users/{userID}/attributes` | One user's values. Needs `users:read` |
 | `PUT /admin/users/{userID}/attributes` | Set values. Needs `users:write` |

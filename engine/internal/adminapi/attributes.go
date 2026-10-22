@@ -167,7 +167,28 @@ func (s *Server) listAttributes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"attributes": attrs})
+	// By the names the declaration takes, as every other response is: the
+	// store type went out as it was, so this one route answered in Go's field
+	// names (ID, ValueType, UserReadable) where the rest say snake_case (6.02).
+	out := make([]attributeView, 0, len(attrs))
+	for _, a := range attrs {
+		out = append(out, attributeView{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
+			ValueType: a.ValueType, Personal: a.Personal, UserReadable: a.UserReadable,
+			UserWritable: a.UserWritable, Required: a.Required})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"attributes": out})
+}
+
+// attributeView is one declaration as the list returns it.
+type attributeView struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	DisplayName  string `json:"display_name"`
+	ValueType    string `json:"value_type"`
+	Personal     bool   `json:"personal"`
+	UserReadable bool   `json:"user_readable"`
+	UserWritable bool   `json:"user_writable"`
+	Required     bool   `json:"required"`
 }
 
 // getUserAttributes returns one user's attribute values.

@@ -270,6 +270,11 @@ func (s *Server) getOrganization(w http.ResponseWriter, r *http.Request) {
 	s.writeList(w, r, o)
 }
 
+// patchOrganizationRequest is the body of an organisation PATCH.
+type patchOrganizationRequest struct {
+	Status *string `json:"status"`
+}
+
 // patchOrganization suspends or reactivates an organisation (6.09).
 //
 // Suspension refuses the organisation at every entry point the engine has --
@@ -286,9 +291,7 @@ func (s *Server) patchOrganization(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := r.PathValue("orgID")
 
-	var req struct {
-		Status *string `json:"status"`
-	}
+	var req patchOrganizationRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {

@@ -18,6 +18,12 @@ type linkRefused string
 
 func (e linkRefused) Error() string { return string(e) }
 
+// passkeyLinkRequest is the body of a passkey link request.
+type passkeyLinkRequest struct {
+	// TTLSeconds is how long it works, from a minute to seven days; 0 is a day.
+	TTLSeconds int64 `json:"ttl_seconds"`
+}
+
 // issuePasskeyLink emails a person a single-use link to register a passkey
 // with no session (migration 0176): a new starter with no password, or
 // somebody whose only way in is lost. The answer names the link and when it
@@ -27,10 +33,7 @@ func (s *Server) issuePasskeyLink(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	userID := r.PathValue("userID")
 
-	var req struct {
-		// TTLSeconds is how long it works, from a minute to seven days; 0 is a day.
-		TTLSeconds int64 `json:"ttl_seconds"`
-	}
+	var req passkeyLinkRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil &&
 		!errors.Is(err, io.EOF) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_body", "detail": err.Error()})

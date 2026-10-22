@@ -110,7 +110,7 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 	var totpCreated string
 	var totpDisabled bool
 	err := s.db.QueryRow(ctx, `
-		SELECT confirmed_at::text, created_at::text, disabled_at IS NOT NULL
+		SELECT confirmed_at::text, `+rfc3339("created_at")+`, disabled_at IS NOT NULL
 		FROM core.totp_credentials WHERE user_id = $1::uuid`, userID).
 		Scan(&totpConfirmed, &totpCreated, &totpDisabled)
 	switch {
@@ -126,8 +126,8 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 	// WebAuthn. friendly_name is the label the person chose; the public key,
 	// credential id and AAGUID stay here.
 	rows, err := s.db.Query(ctx, `
-		SELECT id::text, COALESCE(friendly_name,''), created_at::text,
-		       COALESCE(last_used_at::text,'')
+		SELECT id::text, COALESCE(friendly_name,''), `+rfc3339("created_at")+`,
+		       COALESCE(`+rfc3339("last_used_at")+`,'')
 		FROM core.webauthn_credentials WHERE user_id = $1::uuid ORDER BY created_at`, userID)
 	if err != nil {
 		s.log.Error("listing webauthn credentials", "err", err)
@@ -157,7 +157,7 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 		// or number abandoned at the code screen is listed so a support desk can
 		// see it, and is not a factor (0126).
 		if err := s.db.QueryRow(ctx,
-			`SELECT created_at::text, verified_at IS NOT NULL FROM core.`+k.table+` WHERE user_id = $1::uuid`,
+			`SELECT `+rfc3339("created_at")+`, verified_at IS NOT NULL FROM core.`+k.table+` WHERE user_id = $1::uuid`,
 			userID).Scan(&created, &verified); err == nil {
 			out = append(out, factorSummary{Type: k.kind, Confirmed: verified, CreatedAt: created})
 		} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -167,7 +167,7 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 
 	var duoCreated string
 	if err := s.db.QueryRow(ctx,
-		`SELECT created_at::text FROM core.duo_enrollments WHERE user_id = $1::uuid`,
+		`SELECT `+rfc3339("created_at")+` FROM core.duo_enrollments WHERE user_id = $1::uuid`,
 		userID).Scan(&duoCreated); err == nil {
 		out = append(out, factorSummary{Type: "duo", Confirmed: true, CreatedAt: duoCreated})
 	} else if !errors.Is(err, pgx.ErrNoRows) {

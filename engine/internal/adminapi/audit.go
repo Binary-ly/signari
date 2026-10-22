@@ -148,7 +148,7 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id::text,
 		       org_id::text,
-		       to_char(occurred_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'),
+		       to_char(occurred_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'),
 		       event_type,
 		       coalesce(subject_id::text, ''),
 		       coalesce(actor_id::text, ''),

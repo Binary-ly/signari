@@ -78,7 +78,7 @@ func (s *Server) listClients(w http.ResponseWriter, r *http.Request) {
 	// query and without a COUNT over the whole table.
 	rows, err := s.db.Query(ctx, `
 		SELECT client_id, org_id::text, display_name, client_type, enabled,
-		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF') AS created
+		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM') AS created
 		  FROM core.clients
 		 WHERE ($1 = '' OR client_id > $1)
 		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
@@ -152,7 +152,7 @@ func (s *Server) getClient(w http.ResponseWriter, r *http.Request) {
 	}
 	var created string
 	if err == nil {
-		err = tx.QueryRow(ctx, `SELECT to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')
+		err = tx.QueryRow(ctx, `SELECT to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
 			FROM core.clients WHERE client_id = $1`, clientID).Scan(&created)
 	}
 	if err != nil {
@@ -194,7 +194,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.Query(ctx, `
 		SELECT id::text, org_id::text, coalesce(email, ''), coalesce(username, ''),
-		       status, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')
+		       status, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
 		  FROM core.users
 		 WHERE ($1 = '' OR id::text > $1)
 		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
@@ -240,7 +240,7 @@ func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
 	var u userSummary
 	err := s.db.QueryRow(ctx, `
 		SELECT id::text, org_id::text, coalesce(email, ''), coalesce(username, ''),
-		       status, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')
+		       status, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
 		  FROM core.users WHERE id = $1::uuid`, userID).
 		Scan(&u.ID, &u.OrgID, &u.Email, &u.Username, &u.Status, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {

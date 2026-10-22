@@ -260,8 +260,10 @@ rather than adding a second boundary that has to be kept in step.
 token and audit event in a deployment hangs off an organisation, so a one-call
 tenant deletion is irreversible destruction of everything a customer has,
 reachable by one mistyped identifier. Removing the data is a deliberate operation
-done with the database in front of you. Stopping a tenant without destroying it
-is the `PATCH` above.
+done with the database in front of you: `signari instance org-delete`, which
+says what would go and asks for a code to confirm it, on an organisation
+suspended first. Stopping a tenant without destroying it is the `PATCH` above,
+and taking its configuration elsewhere is `signari export org`.
 
 ### Scopes
 

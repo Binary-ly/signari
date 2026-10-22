@@ -302,7 +302,8 @@ func run(args []string) (err error) {
 	eraseSubject := fs.String("subject-id", "", "`erase subject`, `export subject`: the subject's uuid")
 	eraseConfirm := fs.String("confirm", "",
 		"`erase subject`: repeat the subject uuid to confirm; erasure cannot be undone. "+
-			"`restore finalize`: repeat the database's name; it signs everybody out")
+			"`restore finalize`: repeat the database's name; it signs everybody out. "+
+			"`instance org-delete`: the code its first run printed")
 	eraseDeactivate := fs.Bool("deactivate", false,
 		"`erase subject`: also deactivate the account, required when it is still active")
 	appURL := fs.String("app", "", "protected application URL, as the browser reaches it (proxy check)")
@@ -990,6 +991,8 @@ func run(args []string) (err error) {
 		return instanceNewDeviceNotice(ctx, conn, *orgID, *newDeviceNotice)
 	case "instance org-status":
 		return instanceOrgStatus(ctx, conn, *orgID, *streamStatus)
+	case "instance org-delete":
+		return instanceOrgDelete(ctx, conn, *orgID, *eraseConfirm)
 	case "instance org-budgets":
 		tokensGiven, signInsGiven := false, false
 		fs.Visit(func(f *flag.Flag) {
@@ -1130,6 +1133,8 @@ func run(args []string) (err error) {
 		return exportAudit(ctx, conn, *orgID, *fromDay, *toDay, *outFile)
 	case "export subject":
 		return exportSubjectCmd(ctx, conn, *eraseSubject, *outFile)
+	case "export org":
+		return exportOrgCmd(ctx, conn, *orgID, *outFile)
 	case "registration enable":
 		return registrationEnable(ctx, conn, *orgID, *regOpen, *regMax, *tokenScopes, *regConfidential)
 	case "registration token":

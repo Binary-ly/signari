@@ -93,6 +93,16 @@ func TestOneAccountIsProtectedFromManyAddresses(t *testing.T) {
 
 	// It must be the ACCOUNT that is protected, not the addresses used so far:
 	// an address never seen before must meet the same wall.
+	//
+	// While the wall stands. The first window past the free attempts is one
+	// second, and a refused attempt does not extend it, so on a loaded parallel
+	// run the two sign-ins before this one outlasted it and the test reported
+	// the keying as broken (0.24). The window is held open: the question here is
+	// whose window it is, not how long it lasts.
+	if _, err := f.pool.Exec(context.Background(), `UPDATE core.password_credentials
+		SET throttled_until = now() + interval '1 minute' WHERE user_id = $1::uuid`, f.userID); err != nil {
+		t.Fatal(err)
+	}
 	res := attemptFrom("192.0.2.77", "not-the-password")
 	if res.Header.Get("Retry-After") == "" && res.StatusCode != http.StatusTooManyRequests {
 		t.Errorf("an unseen address was allowed to keep guessing at the same "+

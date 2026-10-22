@@ -136,6 +136,7 @@ var exportSections = []exportSection{
 	{table: "user_attributes", by: "user_id"},
 	{table: "prompt_responses", by: "user_id"},
 	{table: "group_members", by: "user_id"},
+	{table: "admin_role_bindings", by: "user_id"},
 	{table: "relations", by: "subject_id", where: "t.subject_type = 'user' AND t.subject_id = $1"},
 	{table: "invitations", by: "used_by"},
 	{table: "scim_links", by: "user_id"},

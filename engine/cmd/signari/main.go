@@ -127,6 +127,7 @@ var twoWordCommands = map[string]bool{
 	"webauthn":   true,
 	"resource":   true,
 	"passwords":  true,
+	"role":       true,
 }
 
 func usage() error {
@@ -188,6 +189,9 @@ commands:
   admin-token create  mint a scoped, revocable admin API token
   admin-token list    show admin tokens, their scopes and when each was last used
   admin-token revoke  revoke one immediately, with no restart
+  role grant          give a person or an application an administrative role in one organisation
+  role list           who holds which role in an organisation
+  role revoke         take a role away; the holder's next request is refused
   theme eject         write the built-in HTML pages out so they can be edited
   theme check         validate a theme directory; non-zero if anything is refused
   theme list          which page is built-in and which is overridden
@@ -367,6 +371,8 @@ func run(args []string) (err error) {
 	radiusSecret := fs.String("secret", "", "shared secret configured on the RADIUS device")
 	tokenScopes := fs.String("scopes", "",
 		"comma-separated admin token scopes, e.g. users:write,clients:write")
+	roleName := fs.String("role", "", "an administrative role: org-owner, user-manager, app-manager or auditor")
+	bindingID := fs.String("binding", "", "a role binding's uuid, from `signari role list`")
 	tokenExpires := fs.Duration("expires-in", 0,
 		"how long an admin token stays valid, e.g. 2160h for 90 days (0 = never)")
 	tokenID := fs.String("token-id", "", "admin token uuid to revoke, or a registration token's (registration revoke)")
@@ -1181,6 +1187,12 @@ func run(args []string) (err error) {
 		return adminTokenList(ctx, conn)
 	case "admin-token revoke":
 		return adminTokenRevoke(ctx, conn, *tokenID)
+	case "role grant":
+		return roleGrant(ctx, conn, *orgID, *email, *clientID, *roleName, *groupName)
+	case "role list":
+		return roleList(ctx, conn, *orgID)
+	case "role revoke":
+		return roleRevoke(ctx, conn, *orgID, *bindingID)
 	case "keys list":
 		return keysList(ctx, conn)
 	case "keys rotate":

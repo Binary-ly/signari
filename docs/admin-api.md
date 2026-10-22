@@ -174,6 +174,35 @@ use a token costs an integrator an hour and an attacker nothing.
 
 See [admin-tokens.md](admin-tokens.md) for the rule and why rotation is held to it.
 
+### Administrative roles
+
+A role is a named set of the scopes above, given to a person or an application
+in one organisation by a **binding**. It grants nothing a token could not be
+given, so every check on this page applies to it unchanged.
+
+| Role | Scopes |
+|---|---|
+| `org-owner` | Every scope a stored token may hold, in the organisation: `users:write`, `clients:write`, `groups:write`, `config:read`, `subjects:erase`, `subjects:export`, `organizations:write`, `audit:read`, `privileged-users:write`, `tokens:write`. Not creating or suspending organisations, which stay with an unscoped token |
+| `user-manager` | `users:write`: accounts, factors, sessions, consents, attributes and invitations. Not groups, which decide what applications a person reaches |
+| `app-manager` | `clients:write` and `config:read` |
+| `auditor` | Every read scope and `audit:read` |
+
+A `user-manager` binding may name a group, and then reaches only that group's
+members (delegated administration): it changes and reads them and nobody else,
+and invites people only into its groups. A role is read on each of its holder's
+requests, never carried in a credential, so a binding removed refuses the next
+one. A person who holds any role is a privileged target, like a member of a group
+that may impersonate: writing on them needs `privileged-users:write`, so a user
+manager cannot reset an owner's password and become one.
+
+| | |
+|---|---|
+| `GET /admin/organizations/{orgID}/role-bindings` | Each binding: its `id`, `role`, `user_id` or `client_id`, any `group_id`, and when it was made. `config:read` |
+| `POST /admin/organizations/{orgID}/role-bindings` | `{"role", "user_id" or "client_id", "group_id"}`. The holder and the group must be in the organisation (404 otherwise, the same for one that does not exist). Refused 403 `wider_than_caller` unless the caller holds every scope of the role over everything it reaches. Audited `admin.role_granted`; `organizations:write`; honours `If-Match` |
+| `DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}` | Take one away, held to the same rule, so a narrow credential cannot remove an owner. Audited `admin.role_revoked`; `organizations:write`; honours `If-Match` |
+
+`signari role grant` makes the first owner, before anybody can grant one here.
+
 ### Organisations
 
 | | |
@@ -193,10 +222,8 @@ rather than adding a second boundary that has to be kept in step.
 token and audit event in a deployment hangs off an organisation, so a one-call
 tenant deletion is irreversible destruction of everything a customer has,
 reachable by one mistyped identifier. Removing the data is a deliberate operation
-done with the database in front of you. Suspending a tenant is not built yet:
-`organizations.status` exists, nothing sets it and nothing reads it, so stopping
-a tenant today means disabling its clients and deactivating its people. This
-page said that setting `status` to `suspended` stopped the tenant working.
+done with the database in front of you. Stopping a tenant without destroying it
+is the `PATCH` above.
 
 ### Scopes
 

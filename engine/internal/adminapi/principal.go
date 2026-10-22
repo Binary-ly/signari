@@ -125,6 +125,14 @@ type Principal struct {
 	ClientIDs []string
 	GroupIDs  []string
 
+	// UserGroups narrows a scope to the members of named groups, for a
+	// principal whose only binding granting it is a delegated user-manager
+	// (6.01): users:write -> the groups whose members it may change. A scope
+	// absent is unrestricted, and only a role principal has any; enforced by
+	// auth for a route addressing a person and by the handlers that find
+	// theirs another way (requireReach, reachFilter).
+	UserGroups map[string][]string
+
 	// ExpiresAt is when the token stops working, nil for never: a token may not
 	// mint one that outlives it (6.04).
 	ExpiresAt *time.Time

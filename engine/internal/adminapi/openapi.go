@@ -139,6 +139,11 @@ var summaries = map[string]string{
 	"GET /admin/organizations/{orgID}/claim-mappers":               "Every attribute this organisation releases as a claim.",
 	"POST /admin/organizations/{orgID}/claim-mappers":              "Release an attribute as a claim.",
 	"DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}": "Stop releasing an attribute as a claim.",
+
+	// Administrative roles (6.01).
+	"GET /admin/organizations/{orgID}/role-bindings":                "Who holds which administrative role in the organisation.",
+	"POST /admin/organizations/{orgID}/role-bindings":               "Give a person or an application a role, a user manager optionally over one group's members.",
+	"DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}": "Take a role away; the holder's next request is refused what it gave.",
 }
 
 // OpenAPI renders the document.

@@ -24,6 +24,7 @@ var EventTypes = []string{
 	"admin.passkey_link_issued", "admin.privileged_refused",
 	"admin.proxy_host_removed",
 	"admin.proxy_host_set", "admin.resource_server_removed", "admin.resource_server_set",
+	"admin.role_granted", "admin.role_revoked",
 	"admin.scim_source_updated", "admin.scope_declared",
 	"admin.scope_deleted", "admin.session_revoked", "admin.sessions_revoked",
 	"admin.subject_erased", "admin.subject_exported",

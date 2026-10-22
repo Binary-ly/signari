@@ -245,6 +245,12 @@ func (s *Server) Routes() http.Handler {
 	route("PUT /admin/organizations/{orgID}/proxy-hosts", ScopeOrganizationsWrite, s.putProxyHost)
 	route("DELETE /admin/organizations/{orgID}/proxy-hosts/{host}",
 		ScopeOrganizationsWrite, s.deleteProxyHost)
+
+	// Administrative roles (roles.go): who holds which in the organisation.
+	route("GET /admin/organizations/{orgID}/role-bindings", ScopeConfigRead, s.listRoleBindings)
+	route("POST /admin/organizations/{orgID}/role-bindings", ScopeOrganizationsWrite, s.grantRole)
+	route("DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}",
+		ScopeOrganizationsWrite, s.revokeRole)
 	route("GET /admin/audit-events", ScopeAuditRead, s.listAuditEvents)
 	route("GET /admin/config-version", ScopeConfigRead, s.configVersion)
 

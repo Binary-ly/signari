@@ -142,6 +142,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari export audit` | Export the trail |
 | `signari export subject` | `-subject-id <uuid> [-out <file>]`: write everything kept about one person as JSON, with every credential's value withheld and personal attributes unsealed, so it needs `SIGNARI_ROOT_KEY`. The file is created readable by its owner only, and the export is audited `admin.subject_exported`. See [data-export.md](data-export.md) |
 | `signari admin-token create` / `admin-token list` / `admin-token revoke` | Admin API credentials. `create -name <n> -scopes <list> [-org <uuid>] [-expires-in 2160h]`: ninety days unless `-expires-in` is given, and `-expires-in 0` for one that never expires; until October 2026 never was the default. The Admin API mints, rotates and revokes them too, each only for a token no wider than the caller; see [admin-tokens.md](admin-tokens.md) |
+| `signari role grant` / `role list` / `role revoke` | Administrative roles. `grant -org <uuid> -role <org-owner\|user-manager\|app-manager\|auditor> (-email <address> \| -client-id <id>) [-group <name>]`: a person or an application holds the role in that organisation, a user manager with `-group` over that group's members only; this is how the first owner is made. `list -org <uuid>` names each binding's id; `revoke -org <uuid> -binding <uuid>` takes one away, refused from the holder's next request. See [admin-api.md](admin-api.md#administrative-roles) |
 
 ## Federation in
 

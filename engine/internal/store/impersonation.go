@@ -271,11 +271,13 @@ func MayImpersonate(ctx context.Context, q Querier, orgID, userID string) (bool,
 // PrivilegedUser reports whether a user can act as other people, and which
 // organisation they belong to. found is false when there is no such user.
 //
-// Privileged means a member of a group that may impersonate. This is the one
-// definition. The Admin API uses it to decide which writes need
-// privileged-users:write, and BeginImpersonation uses it to refuse
-// impersonating such a person, so the two cannot disagree about who is
-// protected.
+// Privileged means a member of a group that may impersonate, or the holder of
+// an administrative role (0191, 6.01). This is the one definition. The Admin
+// API uses it to decide which writes need privileged-users:write, and
+// BeginImpersonation uses it to refuse impersonating such a person, so the two
+// cannot disagree about who is protected. A role holder is privileged because
+// otherwise a user manager could reset an owner's password, and an impersonator
+// act as one, and either would hold the owner's role.
 //
 // The id is read as PostgreSQL reads it (CanonicalUUID), so the guard and the
 // write it guards cannot disagree about which row an id names. It was checked
@@ -293,6 +295,7 @@ func PrivilegedUser(ctx context.Context, q rowQuerier, userID string) (orgID str
 			  FROM core.group_members m
 			  JOIN core.groups g ON g.id = m.group_id
 			 WHERE m.user_id = u.id AND g.org_id = u.org_id AND g.may_impersonate)
+		    OR EXISTS (SELECT 1 FROM core.admin_role_bindings b WHERE b.user_id = u.id)
 		  FROM core.users u
 		 WHERE u.id = $1::uuid`, userID).Scan(&orgID, &privileged)
 	if errors.Is(err, pgx.ErrNoRows) {

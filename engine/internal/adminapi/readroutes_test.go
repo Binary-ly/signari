@@ -38,6 +38,10 @@ func allReadRoutes() []readRoute {
 		}},
 		{"GET /admin/organizations/{orgID}/proxy-hosts", org("/proxy-hosts")},
 		{"GET /admin/organizations/{orgID}/resource-servers", org("/resource-servers")},
+		{"GET /admin/organizations/{orgID}/role-bindings", func(t *testing.T, s *Server) string {
+			newDriftBinding(t, s, "auditor")
+			return "/admin/organizations/" + anyOrgID(t, s) + "/role-bindings"
+		}},
 		{"GET /admin/organizations/{orgID}/scopes", org("/scopes")},
 		{"GET /admin/organizations/{orgID}/webauthn-policy", org("/webauthn-policy")},
 		{"GET /admin/subjects/{subjectID}/export", func(t *testing.T, s *Server) string {

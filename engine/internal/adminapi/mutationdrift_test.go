@@ -256,6 +256,24 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			// A fresh person each time: a binding is once per person and role.
+			name: "POST /admin/organizations/{orgID}/role-bindings", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + anyOrgID(t, s) + "/role-bindings"
+			},
+			body: func(t *testing.T, s *Server, _ string) string {
+				return fmt.Sprintf(`{"role":"auditor","user_id":%q}`, newDriftUser(t, s))
+			},
+		},
+		{
+			name:   "DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}",
+			method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + anyOrgID(t, s) + "/role-bindings/" + newDriftBinding(t, s, "auditor")
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name:   "DELETE /admin/organizations/{orgID}/proxy-hosts/{host}",
 			method: http.MethodDelete,
 			path: func(t *testing.T, s *Server) string {
@@ -479,6 +497,18 @@ func newDriftUser(t *testing.T, s *Server) string {
 	t.Cleanup(func() {
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.users WHERE id = $1::uuid`, id)
 	})
+	return id
+}
+
+// newDriftBinding gives a fresh person in the fixture organisation a role and
+// returns the binding's id; the person's removal takes the binding with it.
+func newDriftBinding(t *testing.T, s *Server, role string) string {
+	t.Helper()
+	id, err := store.GrantRole(context.Background(), s.db, store.RoleBinding{
+		OrgID: anyOrgID(t, s), UserID: newDriftUser(t, s), Role: role})
+	if err != nil {
+		t.Fatalf("granting the fixture role: %v", err)
+	}
 	return id
 }
 

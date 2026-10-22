@@ -127,6 +127,31 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "POST /admin/tokens", method: http.MethodPost,
+			path: func(*testing.T, *Server) string { return "/admin/tokens" },
+			body: func(t *testing.T, s *Server, _ string) string {
+				name := fmt.Sprintf("drift-mint-%d", time.Now().UnixNano())
+				t.Cleanup(func() {
+					_, _ = s.db.Exec(context.Background(), `DELETE FROM core.admin_tokens WHERE name = $1`, name)
+				})
+				return fmt.Sprintf(`{"name":%q,"scopes":["config:read"]}`, name)
+			},
+		},
+		{
+			name: "POST /admin/tokens/{tokenID}/rotate", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/tokens/" + newDriftToken(t, s) + "/rotate"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "DELETE /admin/tokens/{tokenID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/tokens/" + newDriftToken(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/attributes", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + anyOrgID(t, s) + "/attributes"
@@ -438,6 +463,22 @@ func newDriftUser(t *testing.T, s *Server) string {
 	}
 	t.Cleanup(func() {
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.users WHERE id = $1::uuid`, id)
+	})
+	return id
+}
+
+// newDriftToken makes a token for the rotate and revoke routes, removed by
+// name with whatever replacement a rotation made.
+func newDriftToken(t *testing.T, s *Server) string {
+	t.Helper()
+	name := fmt.Sprintf("drift-token-%d", time.Now().UnixNano())
+	expires := time.Now().Add(time.Hour)
+	_, id, err := NewToken(context.Background(), s.db, name, "", []string{ScopeConfigRead}, &expires, nil, nil)
+	if err != nil {
+		t.Fatalf("creating the fixture token: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.admin_tokens WHERE name = $1`, name)
 	})
 	return id
 }

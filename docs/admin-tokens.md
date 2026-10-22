@@ -42,6 +42,8 @@ wholesale, which is exactly the situation being replaced.
 | `organizations:write` | `POST /admin/organizations`. Useless to an organisation-scoped token — see below |
 | `audit:read` | `GET /admin/audit-events`. **Not implied by any write scope** — see below |
 | `privileged-users:write` | Needed as well as the route's own scope to write on a user who may impersonate, or on a group that confers it (including its membership). See [admin-api.md](admin-api.md#groups) |
+| `tokens:read` | `GET /admin/tokens` |
+| `tokens:write` | `POST /admin/tokens`, rotate and revoke, each only for a token no wider than the caller — see below |
 
 **A write scope implies the matching read scope.** `clients:write` can read a
 client without also being granted `clients:read` — a token that may change a
@@ -68,6 +70,29 @@ who may impersonate and then recover their account, and a `groups:write` token
 could add its own operator to a group that may impersonate. Either way the
 lesser credential becomes the greater one. Only a few tokens need this scope.
 Most do not, and they keep working on everyone else.
+
+## Minting, rotating and revoking over the API
+
+`POST /admin/tokens` mints a token, `POST /admin/tokens/{id}/rotate` replaces
+one's secret, and `DELETE /admin/tokens/{id}` revokes one. **A token can do this
+only for a token no wider than itself**, in every way a token can be wide. The
+scopes must be ones the caller holds. The organisation must be the caller's. The
+clients and groups must be among the caller's, so a client-narrowed caller cannot
+mint an unnarrowed token. And the token cannot outlive the caller. Rotation is
+held to the same rule, because rotating a token hands over a working secret for
+it, so a narrow token able to rotate a wide one would have become the wide one.
+Revocation is too, or a token for one client could revoke the organisation's main
+credential. Every token may rotate or revoke itself.
+
+A token minted over the API **always expires**: ninety days unless
+`expires_in_s` says otherwise, at most a year. A rotation leaves the old secret
+working for `grace_s` (a day unless told, at most a week, 0 for none) so the
+replacement can be deployed first. `signari admin-token create` now gives ninety
+days too unless `-expires-in` is given; `-expires-in 0` is the deliberate way to
+make one that never expires. Until October 2026 tokens never expired by default,
+and only the CLI could make or revoke one. Each is audited:
+`admin.token_created`, `admin.token_rotated` (naming the replacement), and
+`admin.token_revoked`.
 
 ## Narrowing a token to named objects
 

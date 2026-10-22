@@ -142,6 +142,17 @@ It needs no token. It describes the shape of the API and no data — the same fa
 you are reading here — and requiring a token to read the description of how to
 use a token costs an integrator an hour and an attacker nothing.
 
+### Admin tokens
+
+| | |
+|---|---|
+| `GET /admin/tokens` | Every admin token for an unscoped caller, its organisation's for a scoped one: name, scopes, organisation, narrowing, and when it was made, expires, was revoked and was last used. Never a secret or a hash. `tokens:read` |
+| `POST /admin/tokens` | `{"name", "scopes", "org_id", "client_ids", "group_ids", "expires_in_s"}`. Refused 403 `wider_than_caller`, naming the dimension, unless every scope is the caller's, the organisation is the caller's, the clients and groups are among the caller's, and it expires no later than the caller. Expires in ninety days unless asked, at most a year. The answer carries the `secret`, once. Audited `admin.token_created`; `tokens:write`; honours `If-Match` |
+| `POST /admin/tokens/{tokenID}/rotate` | `{"grace_s", "expires_in_s"}`, both optional: a replacement with the same terms, its `secret` returned once, the old one working until `replaced_works_until` (a day unless asked, at most a week, 0 for at once). Only a token no wider than the caller, or the caller itself, since the rotator holds the new secret. Audited `admin.token_rotated`; `tokens:write`; honours `If-Match` |
+| `DELETE /admin/tokens/{tokenID}` | Revoke, at once. Only a token no wider than the caller, or itself. Audited `admin.token_revoked`; `tokens:write`; honours `If-Match` |
+
+See [admin-tokens.md](admin-tokens.md) for the rule and why rotation is held to it.
+
 ### Organisations
 
 | | |

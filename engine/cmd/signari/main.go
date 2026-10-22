@@ -1151,7 +1151,12 @@ func run(args []string) (err error) {
 	case "proxy remove-host":
 		return proxyRemoveHost(ctx, conn, *orgID, *racHost)
 	case "admin-token create":
-		return adminTokenCreate(ctx, conn, *name, *orgID, *tokenScopes, *tokenExpires,
+		// Whether -expires-in was given, since unset is ninety days and an
+		// explicit 0 is never (6.04); the flag is shared with registration
+		// tokens, whose default it is not.
+		expiresGiven := false
+		fs.Visit(func(f *flag.Flag) { expiresGiven = expiresGiven || f.Name == "expires-in" })
+		return adminTokenCreate(ctx, conn, *name, *orgID, *tokenScopes, *tokenExpires, expiresGiven,
 			*tokenClients, *inviteGroups)
 	case "admin-token list":
 		return adminTokenList(ctx, conn)
@@ -4944,8 +4949,13 @@ func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string, asJSON bool) 
 // pushes toward that: the table holds a SHA-256, and there is no command to
 // retrieve a token, only to replace one.
 func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes string,
-	expiresIn time.Duration, clients, groups string) error {
+	expiresIn time.Duration, expiresGiven bool, clients, groups string) error {
 
+	// Ninety days unless asked; -expires-in 0 is the deliberate way to make
+	// one that never expires. Never was the default until October 2026.
+	if !expiresGiven {
+		expiresIn = 90 * 24 * time.Hour
+	}
 	if name == "" {
 		return fmt.Errorf("give -name; it appears in the audit trail, and \"which token " +
 			"was that\" is unanswerable without one")
@@ -5003,7 +5013,7 @@ func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes s
 	if expires != nil {
 		fmt.Printf("  expires: %s\n", expires.Format(time.RFC3339))
 	} else {
-		fmt.Println("  expires: never -- consider -expires-in")
+		fmt.Println("  expires: never, as -expires-in 0 asked; POST /admin/tokens/{id}/rotate replaces it")
 	}
 	fmt.Println("\n  This is the only time the token is shown. It is stored as a hash,\n" +
 		"  so it cannot be recovered -- if it is lost, revoke it and mint another.")

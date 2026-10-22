@@ -78,7 +78,15 @@ const (
 var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
 	ScopeSubjectsErase, ScopeSubjectsExport, ScopeUsersRead, ScopeClientsRead,
 	ScopeGroupsRead, ScopeGroupsWrite, ScopeOrganizationsWrite,
-	ScopeAuditRead, ScopePrivilegedUsersWrite}
+	ScopeAuditRead, ScopePrivilegedUsersWrite, ScopeTokensRead, ScopeTokensWrite}
+
+// ScopeTokensWrite mints, rotates and revokes admin tokens over the API, and
+// only tokens no wider than the caller (6.04): a token that could mint a wider
+// one would be every scope it can name. ScopeTokensRead lists them.
+const (
+	ScopeTokensRead  = "tokens:read"
+	ScopeTokensWrite = "tokens:write"
+)
 
 // impliedBy says which scope a write scope satisfies on its own.
 //
@@ -90,6 +98,7 @@ var impliedBy = map[string]string{
 	ScopeUsersRead:   ScopeUsersWrite,
 	ScopeClientsRead: ScopeClientsWrite,
 	ScopeGroupsRead:  ScopeGroupsWrite,
+	ScopeTokensRead:  ScopeTokensWrite,
 }
 
 // Principal is whoever is making an admin request.
@@ -114,6 +123,10 @@ type Principal struct {
 	// time somebody cleared a list intending to revoke access.
 	ClientIDs []string
 	GroupIDs  []string
+
+	// ExpiresAt is when the token stops working, nil for never: a token may not
+	// mint one that outlives it (6.04).
+	ExpiresAt *time.Time
 }
 
 // MayActOnClient reports whether this principal may touch a client.
@@ -265,6 +278,7 @@ func (s *Server) resolveToken(ctx context.Context, presented string) (*Principal
 	if orgID != nil {
 		p.OrgID = *orgID
 	}
+	p.ExpiresAt = expires
 	return &p, nil
 }
 

@@ -204,6 +204,11 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/invitations", ScopeUsersRead, s.listInvitations)
 	route("POST /admin/invitations", ScopeUsersWrite, s.createInvitation)
 	route("DELETE /admin/invitations/{invitationID}", ScopeUsersWrite, s.revokeInvitation)
+	// Admin tokens, each held to the caller in every dimension (tokensapi.go).
+	route("GET /admin/tokens", ScopeTokensRead, s.listTokens)
+	route("POST /admin/tokens", ScopeTokensWrite, s.createToken)
+	route("POST /admin/tokens/{tokenID}/rotate", ScopeTokensWrite, s.rotateToken)
+	route("DELETE /admin/tokens/{tokenID}", ScopeTokensWrite, s.revokeToken)
 	route("POST /admin/organizations", ScopeOrganizationsWrite, s.createOrganization)
 	route("GET /admin/organizations", ScopeConfigRead, s.listOrganizations)
 	route("GET /admin/organizations/{orgID}", ScopeConfigRead, s.getOrganization)

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,6 +184,26 @@ proxy_hosts:
 	}
 	if p := planWith(conn, fresh, seedFile); !p.Empty() {
 		t.Errorf("the deployment the export was applied to lacks what the organisation was made from:\n%s", p)
+	}
+}
+
+// A read that fails is reported as what failed (0.30). The plan's read of the
+// deployment did not look at a query's error after its rows, so a failure was
+// taken for an empty result and the next statement said only that the
+// transaction had aborted; an export through the same read would have written
+// part of an organisation.
+func TestAPlanThatCannotReadTheDeploymentSaysWhy(t *testing.T) {
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
+	if dsn == "" {
+		t.Skip("SIGNARI_TEST_DSN not set")
+	}
+	f := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(f, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := run([]string{"plan", "-dsn", dsn, "-org", "not-an-organisation", "-f", f})
+	if err == nil || !strings.Contains(err.Error(), "invalid input syntax") {
+		t.Errorf("a plan whose read failed answered %v, want the read's own error", err)
 	}
 }
 

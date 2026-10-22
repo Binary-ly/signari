@@ -55,6 +55,13 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		c.groups[g.Name] = g
 	}
 	rows.Close()
+	// A query's failure arrives here, after the rows, not from Query: unread,
+	// a failed read was taken for an empty one, so a plan diffed against part
+	// of the state and an export wrote part of it, and the next statement
+	// reported only that the transaction had aborted (0.30).
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the groups: %w", err)
+	}
 
 	rows, err = tx.Query(ctx, `
 		SELECT c.client_id, c.display_name, c.client_type, c.scopes, c.enabled,
@@ -88,6 +95,9 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		c.clients[cl.ClientID] = cl
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the clients: %w", err)
+	}
 	for id, cl := range c.clients {
 		uris, fc, sid, err := store.ClientLogoutOf(ctx, tx, id)
 		if err != nil {
@@ -125,6 +135,9 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		c.samlProviders[p.EntityID] = p
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the SAML providers: %w", err)
+	}
 
 	rows, err = tx.Query(ctx, `
 		SELECT name, network::text, enabled FROM core.radius_clients
@@ -143,6 +156,9 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		c.radiusClients[r.Network] = r
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the RADIUS clients: %w", err)
+	}
 
 	rows, err = tx.Query(ctx, `
 		SELECT host, enabled FROM core.proxy_hosts WHERE org_id = $1::uuid`, orgID)
@@ -160,6 +176,9 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		c.proxyHosts[h.Host] = h
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the protected hosts: %w", err)
+	}
 
 	return c, nil
 }

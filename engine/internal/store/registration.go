@@ -39,7 +39,9 @@ type RegistrationPolicy struct {
 //
 // Absent means closed, never open. A deployment that has never thought about
 // dynamic registration must not have it switched on by a missing row.
-func LoadRegistrationPolicy(ctx context.Context, db *pgxpool.Pool, orgID string) (*RegistrationPolicy, error) {
+func LoadRegistrationPolicy(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID string) (*RegistrationPolicy, error) {
 	p := &RegistrationPolicy{}
 	err := db.QueryRow(ctx, `
 		SELECT enabled, open, max_clients, allowed_scopes, allow_confidential

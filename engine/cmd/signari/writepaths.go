@@ -3026,8 +3026,7 @@ func registrationRevoke(ctx context.Context, conn *pgx.Conn, orgID, name, tokenI
 		return fmt.Errorf("%d unrevoked tokens are named %q (%s); choose one with -token-id",
 			len(ids), name, strings.Join(ids, ", "))
 	}
-	if _, err := conn.Exec(ctx, `UPDATE core.registration_tokens SET revoked_at = now()
-		WHERE id = $1::uuid AND revoked_at IS NULL`, ids[0]); err != nil {
+	if _, err := store.RevokeRegistrationToken(ctx, conn, orgID, ids[0]); err != nil {
 		return err
 	}
 	fmt.Printf("registration token %s is revoked: /oauth2/register refuses it from the next request\n", ids[0])

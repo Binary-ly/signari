@@ -248,6 +248,15 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/signup", ScopeConfigRead, s.getSignup)
 	route("PUT /admin/organizations/{orgID}/signup", ScopeOrganizationsWrite, s.putSignup)
 	route("DELETE /admin/organizations/{orgID}/signup", ScopeOrganizationsWrite, s.deleteSignup)
+	// Dynamic client registration and its initial access tokens, `signari
+	// registration` (registration.go).
+	route("GET /admin/organizations/{orgID}/registration", ScopeConfigRead, s.getRegistration)
+	route("PUT /admin/organizations/{orgID}/registration", ScopeOrganizationsWrite, s.putRegistration)
+	route("DELETE /admin/organizations/{orgID}/registration", ScopeOrganizationsWrite, s.deleteRegistration)
+	route("GET /admin/organizations/{orgID}/registration-tokens", ScopeConfigRead, s.listRegistrationTokens)
+	route("POST /admin/organizations/{orgID}/registration-tokens", ScopeOrganizationsWrite, s.createRegistrationToken)
+	route("DELETE /admin/organizations/{orgID}/registration-tokens/{tokenID}", ScopeOrganizationsWrite,
+		s.revokeRegistrationToken)
 
 	// The scope catalogue. Registered unconditionally — unlike attributes, a
 	// scope holds no personal data and needs no subject key.

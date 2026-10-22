@@ -149,6 +149,14 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/signup":    "Open self-sign-up or replace its rule.",
 	"DELETE /admin/organizations/{orgID}/signup": "Close self-sign-up; invitations and administrators still make accounts.",
 
+	// Dynamic client registration (6.07).
+	"GET /admin/organizations/{orgID}/registration":                     "Whether /oauth2/register is on, open, and what it allows.",
+	"PUT /admin/organizations/{orgID}/registration":                     "Turn dynamic registration on with this policy.",
+	"DELETE /admin/organizations/{orgID}/registration":                  "Turn dynamic registration off, keeping its policy and tokens.",
+	"GET /admin/organizations/{orgID}/registration-tokens":              "The organisation's initial access tokens, never their secrets.",
+	"POST /admin/organizations/{orgID}/registration-tokens":             "Mint an initial access token, shown once.",
+	"DELETE /admin/organizations/{orgID}/registration-tokens/{tokenID}": "Revoke an initial access token.",
+
 	// Which groups an application is told of (6.07).
 	"GET /admin/clients/{clientID}/group-release":    "Which groups the application is told of in the groups claim.",
 	"PUT /admin/clients/{clientID}/group-release":    "Tell the application of these groups, or every group when none is named.",

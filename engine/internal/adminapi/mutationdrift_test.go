@@ -285,6 +285,45 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return `{"allowed_domains":["drift.example"]}` },
 		},
 		{
+			// Its own organisation: registration open on the shared one would
+			// change what the registration tests see.
+			name: "PUT /admin/organizations/{orgID}/registration", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/registration"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"max_clients":5}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/registration", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if err := store.SetRegistrationPolicy(context.Background(), s.db, org, store.RegistrationPolicy{}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/registration"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/registration-tokens", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/registration-tokens"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"name":"drift","uses":1}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/registration-tokens/{tokenID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				_, id, err := store.NewRegistrationToken(context.Background(), s.db, org, "drift", 1, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/registration-tokens/" + id
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "DELETE /admin/organizations/{orgID}/signup", method: http.MethodDelete,
 			path: func(t *testing.T, s *Server) string {
 				org := newDriftMigrationOrg(t, s, false)

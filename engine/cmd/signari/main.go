@@ -5556,7 +5556,7 @@ func registrationEnable(ctx context.Context, conn *pgx.Conn, orgID string, open 
 	if orgID == "" {
 		return fmt.Errorf("give -org, the organisation to enable registration for")
 	}
-	list := []string{"openid", "profile", "email"}
+	list := store.DefaultRegistrationScopes
 	if scopes != "" {
 		list = nil
 		for _, s := range strings.Split(scopes, ",") {
@@ -5566,21 +5566,14 @@ func registrationEnable(ctx context.Context, conn *pgx.Conn, orgID string, open 
 		}
 	}
 	if maxClients <= 0 {
-		maxClients = 100
+		maxClients = store.DefaultRegistrationCeiling
 	}
 
 	// The whole policy is written each time, as the other settings are, so
 	// confidential registration is off again unless the flag is repeated: the
 	// safe direction for a setting that hands out secrets (2.30).
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.registration_policies
-			(org_id, enabled, open, max_clients, allowed_scopes, allow_confidential)
-		VALUES ($1::uuid, true, $2, $3, $4, $5)
-		ON CONFLICT (org_id) DO UPDATE SET
-			enabled = true, open = EXCLUDED.open, max_clients = EXCLUDED.max_clients,
-			allowed_scopes = EXCLUDED.allowed_scopes,
-			allow_confidential = EXCLUDED.allow_confidential, updated_at = now()`,
-		orgID, open, maxClients, list, confidential); err != nil {
+	if err := store.SetRegistrationPolicy(ctx, conn, orgID, store.RegistrationPolicy{Open: open,
+		MaxClients: maxClients, AllowedScopes: list, AllowConfidential: confidential}); err != nil {
 		return err
 	}
 
@@ -5609,34 +5602,19 @@ func registrationToken(ctx context.Context, conn *pgx.Conn, orgID, name string,
 	if orgID == "" || name == "" {
 		return fmt.Errorf("give -org and -name")
 	}
-	raw := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
-		return err
-	}
-	secret := "sgnreg_" + base64.RawURLEncoding.EncodeToString(raw)
-	sum := sha256.Sum256([]byte(secret))
-
-	var remaining *int
-	if uses > 0 {
-		remaining = &uses
-	}
 	var expires *time.Time
 	if expiresIn > 0 {
 		t := time.Now().Add(expiresIn)
 		expires = &t
 	}
-
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.registration_tokens (org_id, name, token_hash, remaining, expires_at)
-		VALUES ($1::uuid, $2, $3, $4, $5) RETURNING id::text`,
-		orgID, name, sum[:], remaining, expires).Scan(&id); err != nil {
+	secret, id, err := store.NewRegistrationToken(ctx, conn, orgID, name, uses, expires)
+	if err != nil {
 		return err
 	}
 
 	fmt.Printf("\n  %s\n\n  id   : %s\n  name : %s\n", secret, id, name)
-	if remaining != nil {
-		fmt.Printf("  uses : %d\n", *remaining)
+	if uses > 0 {
+		fmt.Printf("  uses : %d\n", uses)
 	} else {
 		fmt.Println("  uses : unlimited -- consider -uses to bound it")
 	}

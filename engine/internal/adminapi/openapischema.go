@@ -93,6 +93,14 @@ func signupProps() map[string]jsonSchema {
 		"require_approval": boolean()}
 }
 
+// registrationProps is an organisation's registration policy (6.07).
+func registrationProps() map[string]jsonSchema {
+	return map[string]jsonSchema{"org_id": uuidStr(), "enabled": boolean(), "open": boolean(),
+		"max_clients": integer(), "allowed_scopes": arrayOf(str()), "allow_confidential": boolean()}
+}
+
+var registrationFields = []string{"org_id", "enabled", "open", "max_clients", "allowed_scopes", "allow_confidential"}
+
 var signupFields = []string{"org_id", "enabled", "allowed_domains", "any_domain", "default_groups",
 	"require_verified_email", "require_approval"}
 
@@ -398,6 +406,19 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/organizations/{orgID}/signup": {http.StatusOK, typeOf[putSignupRequest](), object(
 		append(append([]string{}, signupFields...), "config_version"), withVersion(signupProps()))},
 	"DELETE /admin/organizations/{orgID}/signup": {http.StatusOK, nil, removedSchema},
+	"GET /admin/organizations/{orgID}/registration": {http.StatusOK, nil, object(registrationFields,
+		registrationProps())},
+	"PUT /admin/organizations/{orgID}/registration": {http.StatusOK, typeOf[putRegistrationRequest](), object(
+		append(append([]string{}, registrationFields...), "config_version"), withVersion(registrationProps()))},
+	"DELETE /admin/organizations/{orgID}/registration": {http.StatusOK, nil, removedSchema},
+	"GET /admin/organizations/{orgID}/registration-tokens": {http.StatusOK, nil, object(
+		[]string{"org_id", "registration_tokens"}, map[string]jsonSchema{"org_id": uuidStr(),
+			"registration_tokens": arrayOf(object([]string{"id", "name", "remaining", "expires_at", "revoked_at", "created_at"},
+				map[string]jsonSchema{"id": uuidStr(), "name": str(), "remaining": nullable(integer()),
+					"expires_at": nullable(dateTime()), "revoked_at": nullable(dateTime()), "created_at": dateTime()}))})},
+	"POST /admin/organizations/{orgID}/registration-tokens": {http.StatusCreated, typeOf[createRegistrationTokenRequest](),
+		object([]string{"id", "token", "config_version"}, withVersion(map[string]jsonSchema{"id": uuidStr(), "token": str()}))},
+	"DELETE /admin/organizations/{orgID}/registration-tokens/{tokenID}": {http.StatusOK, nil, removedSchema},
 	"PATCH /admin/organizations/{orgID}/settings": {http.StatusOK, typeOf[patchOrgSettingsRequest](), object(
 		append(orgSettingsFields(), "config_version"), withVersion(orgSettingsProps()))},
 	"GET /admin/me": {http.StatusOK, nil, object([]string{"kind", "name", "org_id", "scopes", "expires_at"}, map[string]jsonSchema{

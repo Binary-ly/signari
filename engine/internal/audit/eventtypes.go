@@ -20,6 +20,7 @@ var EventTypes = []string{
 	"admin.group_member_added", "admin.group_member_removed", "admin.group_updated",
 	"admin.identity_provider_updated", "admin.invitation_created", "admin.invitation_revoked",
 	"admin.migration_source_removed", "admin.migration_source_set",
+	"admin.organization_budgets_set",
 	"admin.organization_created", "admin.organization_reactivated", "admin.organization_suspended",
 	"admin.passkey_link_issued", "admin.privileged_refused",
 	"admin.proxy_host_removed",

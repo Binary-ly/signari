@@ -133,6 +133,7 @@ var columnClass = map[string]string{
 	"identity_providers.token_url":            "public",
 	"migration_sources.token_endpoint":        "public",
 	"organizations.password_only_binds":       "public",
+	"organizations.token_budget_per_minute":   "public",
 	"outbox.subject_key":                      "public",
 	"rate_limits.bucket_key":                  "public",
 	"webauthn_policy.resident_key":            "public",

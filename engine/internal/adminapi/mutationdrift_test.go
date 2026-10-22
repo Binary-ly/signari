@@ -256,6 +256,17 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			// An organisation of its own: a budget on the shared one would
+			// throttle every other test's sign-ins and tokens.
+			name: "PUT /admin/organizations/{orgID}/budgets", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/budgets"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"tokens_per_minute":5000,"sign_ins_per_minute":900}`
+			},
+		},
+		{
 			// A fresh person each time: a binding is once per person and role.
 			name: "POST /admin/organizations/{orgID}/role-bindings", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {

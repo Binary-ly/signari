@@ -329,7 +329,12 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// evaluation. Rate limiting in FRONT of the hash is what keeps a flood
 		// from turning into memory exhaustion, independent of the semaphore.
 		// An overload guard, not the security limit: see allowSignInAttempt.
-		login: ratelimit.New(50, 100),
+		// Nor a tenant's limit: each organisation's sign-ins are counted
+		// against its own budget (6.10, store.DefaultSignInBudget, 20 a
+		// second), so this is set at five times one, which one tenant spending
+		// all of its budget cannot fill. At 50 it was the number two busy
+		// tenants shared.
+		login: ratelimit.New(100, 200),
 		// A backstop against a distributed attempt, not the primary limit --
 		// that is per-address in handleDeviceVerification. At 3/s this bucket
 		// was the primary limit by accident, and one address could hold it

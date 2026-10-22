@@ -141,6 +141,8 @@ var summaries = map[string]string{
 	"DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}": "Stop releasing an attribute as a claim.",
 
 	"GET /admin/me": "Who the caller is, as this request was authenticated: kind, organisation, scopes and any delegation.",
+	"GET /admin/organizations/{orgID}/budgets": "The tokens and sign-ins the organisation may take a minute.",
+	"PUT /admin/organizations/{orgID}/budgets": "Set the organisation's budgets; deployment-wide tokens only.",
 
 	// Administrative roles (6.01).
 	"GET /admin/organizations/{orgID}/role-bindings":                "Who holds which administrative role in the organisation.",

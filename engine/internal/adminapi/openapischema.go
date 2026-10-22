@@ -67,6 +67,13 @@ func object(required []string, props map[string]jsonSchema) jsonSchema {
 }
 
 // with adds config_version, which every write answers with, to props.
+// budgetsProps is an organisation's budgets as read and as set (6.10), fresh
+// each call because withVersion adds to the map it is given.
+func budgetsProps() map[string]jsonSchema {
+	return map[string]jsonSchema{"org_id": uuidStr(), "tokens_per_minute": integer(),
+		"sign_ins_per_minute": integer(), "tokens_default": boolean(), "sign_ins_default": boolean()}
+}
+
 func withVersion(props map[string]jsonSchema) map[string]jsonSchema {
 	props["config_version"] = integer()
 	return props
@@ -340,6 +347,12 @@ var opSchemas = map[string]opSchema{
 	"POST /admin/organizations/{orgID}/role-bindings": {http.StatusCreated, typeOf[grantRoleRequest](), object([]string{"id", "config_version"},
 		withVersion(map[string]jsonSchema{"id": uuidStr()}))},
 	"DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}": {http.StatusOK, nil, removedSchema},
+	"GET /admin/organizations/{orgID}/budgets": {http.StatusOK, nil, object(
+		[]string{"org_id", "tokens_per_minute", "sign_ins_per_minute", "tokens_default", "sign_ins_default"},
+		budgetsProps())},
+	"PUT /admin/organizations/{orgID}/budgets": {http.StatusOK, typeOf[putBudgetsRequest](), object(
+		[]string{"org_id", "tokens_per_minute", "sign_ins_per_minute", "tokens_default", "sign_ins_default", "config_version"},
+		withVersion(budgetsProps()))},
 	"GET /admin/me": {http.StatusOK, nil, object([]string{"kind", "name", "org_id", "scopes", "expires_at"}, map[string]jsonSchema{
 		"kind": str(), "name": str(), "org_id": nullable(uuidStr()), "scopes": arrayOf(str()),
 		"delegated": openObject(), "expires_at": nullable(dateTime()), "client_id": str(),

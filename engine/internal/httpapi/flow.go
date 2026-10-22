@@ -751,6 +751,21 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The client's organisation's token budget (6.10), charged once the client
+	// is known to be its: a stranger naming somebody's client id spends
+	// nothing of theirs.
+	if spent, err := s.orgBudgetSpent(ctx, w, c.OrgID, store.BudgetTokens); err != nil || spent {
+		if err != nil {
+			writeTokenError(w, &oauth.TokenError{Code: "temporarily_unavailable",
+				Description: "please try again shortly", Status: http.StatusServiceUnavailable})
+			return
+		}
+		writeTokenError(w, &oauth.TokenError{Code: "temporarily_unavailable",
+			Description: "this organisation's token budget for the minute is spent",
+			Status:      http.StatusTooManyRequests})
+		return
+	}
+
 	if req.GrantType == "refresh_token" {
 		s.handleRefreshGrant(w, r, c, req)
 		return
@@ -1796,6 +1811,24 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID, orgID, stored := cred.userID, cred.orgID, cred.hash
+
+	// The organisation's sign-in budget (6.10), before any password is
+	// hashed: the page's organisation, or the account's on a bare page. An
+	// address nobody has, on a bare page, names none and spends nothing.
+	if budgetOrg := pageOrg; budgetOrg != "" || orgID != "" {
+		if budgetOrg == "" {
+			budgetOrg = orgID
+		}
+		if spent, berr := s.orgBudgetSpent(ctx, w, budgetOrg, store.BudgetSignIns); berr != nil || spent {
+			if berr != nil {
+				s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
+				return
+			}
+			s.renderLoginStatus(w, r, authzQuery,
+				"Too many sign-ins here right now. Please try again in a minute.", http.StatusTooManyRequests)
+			return
+		}
+	}
 
 	// One generic message for every failure -- unknown user, wrong password,
 	// deactivated account. Distinguishing them is a user-enumeration oracle.

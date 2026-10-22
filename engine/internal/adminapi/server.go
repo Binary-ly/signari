@@ -236,6 +236,9 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}", ScopeConfigRead, s.getOrganization)
 	// Suspension, deployment-wide tokens only (organizations.go).
 	route("PATCH /admin/organizations/{orgID}", ScopeOrganizationsWrite, s.patchOrganization)
+	// Each organisation's budget (budgets.go): deployment-wide tokens set it.
+	route("GET /admin/organizations/{orgID}/budgets", ScopeConfigRead, s.getBudgets)
+	route("PUT /admin/organizations/{orgID}/budgets", ScopeOrganizationsWrite, s.putBudgets)
 
 	// The scope catalogue. Registered unconditionally — unlike attributes, a
 	// scope holds no personal data and needs no subject key.

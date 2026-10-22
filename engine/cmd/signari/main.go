@@ -372,6 +372,10 @@ func run(args []string) (err error) {
 	tokenScopes := fs.String("scopes", "",
 		"comma-separated admin token scopes, e.g. users:write,clients:write")
 	roleName := fs.String("role", "", "an administrative role: org-owner, user-manager, app-manager or auditor")
+	tokensPerMinute := fs.Int("tokens-per-minute", 0,
+		"`instance org-budgets`: tokens the organisation's clients may be issued a minute (0 restores the default)")
+	signInsPerMinute := fs.Int("sign-ins-per-minute", 0,
+		"`instance org-budgets`: sign-ins the organisation's pages may take a minute (0 restores the default)")
 	bindingID := fs.String("binding", "", "a role binding's uuid, from `signari role list`")
 	tokenExpires := fs.Duration("expires-in", 0,
 		"how long an admin token stays valid, e.g. 2160h for 90 days (0 = never)")
@@ -986,6 +990,13 @@ func run(args []string) (err error) {
 		return instanceNewDeviceNotice(ctx, conn, *orgID, *newDeviceNotice)
 	case "instance org-status":
 		return instanceOrgStatus(ctx, conn, *orgID, *streamStatus)
+	case "instance org-budgets":
+		tokensGiven, signInsGiven := false, false
+		fs.Visit(func(f *flag.Flag) {
+			tokensGiven = tokensGiven || f.Name == "tokens-per-minute"
+			signInsGiven = signInsGiven || f.Name == "sign-ins-per-minute"
+		})
+		return instanceOrgBudgets(ctx, conn, *orgID, *tokensPerMinute, *signInsPerMinute, tokensGiven, signInsGiven)
 	case "webauthn policy":
 		algs, err := webauthnAlgorithms(*webauthnAlgs)
 		if err != nil {

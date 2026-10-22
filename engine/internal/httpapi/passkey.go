@@ -609,6 +609,9 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 		writeJSONContentTypeError(w, err)
 		return
 	}
+	// "Stay signed in", from the query passkey.js adds when it is ticked, kept
+	// for a stage that completes the sign-in later (5.11).
+	s.noteRemember(w, r)
 	ctx := r.Context()
 	defer s.clearCeremony(w)
 

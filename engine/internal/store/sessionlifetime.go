@@ -58,6 +58,29 @@ type SessionLifetimes struct {
 	Lifetime time.Duration
 	Idle     time.Duration
 	Offline  time.Duration
+	// Persistent is whether the sign-in page offers "stay signed in on this
+	// device", a session cookie that outlasts the browser (5.11).
+	Persistent bool
+}
+
+// SetPersistentSessions sets whether an organisation offers "stay signed in on
+// this device", and returns what it replaced. Turning it off does not end the
+// cookies already given; each still ends with its session.
+func SetPersistentSessions(ctx context.Context, tx pgx.Tx, orgID string, on bool) (bool, error) {
+	var was bool
+	err := tx.QueryRow(ctx, `SELECT persistent_sessions FROM core.organizations WHERE id = $1::uuid FOR UPDATE`,
+		orgID).Scan(&was)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrOrganizationNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE core.organizations SET persistent_sessions = $2 WHERE id = $1::uuid`,
+		orgID, on); err != nil {
+		return false, err
+	}
+	return was, nil
 }
 
 const (
@@ -115,8 +138,9 @@ func SessionLifetimesOf(ctx context.Context, q interface {
 }, orgID string) (SessionLifetimes, error) {
 	var lifetime, offline int
 	var idle *int
-	err := q.QueryRow(ctx, `SELECT session_lifetime_s, session_idle_s, offline_lifetime_s FROM core.organizations
-		WHERE id = $1::uuid`, orgID).Scan(&lifetime, &idle, &offline)
+	var persistent bool
+	err := q.QueryRow(ctx, `SELECT session_lifetime_s, session_idle_s, offline_lifetime_s, persistent_sessions
+		FROM core.organizations WHERE id = $1::uuid`, orgID).Scan(&lifetime, &idle, &offline, &persistent)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SessionLifetimes{}, ErrOrganizationNotFound
 	}
@@ -124,7 +148,7 @@ func SessionLifetimesOf(ctx context.Context, q interface {
 		return SessionLifetimes{}, err
 	}
 	out := SessionLifetimes{Lifetime: time.Duration(lifetime) * time.Second,
-		Offline: time.Duration(offline) * time.Second}
+		Offline: time.Duration(offline) * time.Second, Persistent: persistent}
 	if idle != nil {
 		out.Idle = time.Duration(*idle) * time.Second
 	}

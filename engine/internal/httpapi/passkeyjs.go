@@ -254,7 +254,10 @@ async function passkeySignIn(mediation) {
   ceremony = null;
 
   const authz = document.querySelector('input[name="authz"]');
-  const q = authz && authz.value ? "?authz=" + encodeURIComponent(authz.value) : "";
+  const params = new URLSearchParams();
+  if (authz && authz.value) params.set("authz", authz.value);
+  if (staySignedIn()) params.set("stay_signed_in", "1");
+  const q = params.toString() ? "?" + params.toString() : "";
   await postJSON("/login/passkey/finish" + q, encodeAssertion(cred));
   window.location.reload();
 }
@@ -273,6 +276,30 @@ window.signariSignInWithPasskey = function () {
 // <script> -- they would need 'unsafe-inline', which is the thing this file
 // exists to avoid. An onclick would have left a button that silently does
 // nothing, with the reason visible only in the browser console.
+// "Stay signed in on this device" (5.11) is a field of the password form, which
+// needs no JavaScript. A passkey and a provider's link leave the page without
+// submitting it, so the choice rides on their request: the finish URL above,
+// and each provider link, kept in step as the box is ticked.
+function staySignedIn() {
+  const box = document.getElementById("stay-signed-in");
+  return !!(box && box.checked);
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+  const box = document.getElementById("stay-signed-in");
+  if (!box) return;
+  const follow = function () {
+    document.querySelectorAll("a.ext").forEach(function (a) {
+      const u = new URL(a.getAttribute("href"), window.location.href);
+      if (box.checked) u.searchParams.set("stay_signed_in", "1");
+      else u.searchParams.delete("stay_signed_in");
+      a.setAttribute("href", u.pathname + u.search);
+    });
+  };
+  box.addEventListener("change", follow);
+  follow();
+});
+
 document.addEventListener("DOMContentLoaded", function () {
   const b = document.getElementById("passkey-signin");
   if (!b) return;

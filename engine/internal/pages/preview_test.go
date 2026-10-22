@@ -293,7 +293,7 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 
 	return map[string]map[string]any{
 		"login": csrf(map[string]any{
-			"Authz": authz, "Error": "", "Reference": "",
+			"Authz": authz, "Error": "", "Reference": "", "StaySignedIn": true,
 			"Providers": []map[string]any{
 				{"Name": "Okta", "Slug": "okta"},
 				{"Name": "Google Workspace", "Slug": "google"},

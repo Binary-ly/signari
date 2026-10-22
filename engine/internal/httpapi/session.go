@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const SessionCookieName = "__Host-signari_session"
@@ -112,7 +114,11 @@ func newSID() (string, error) {
 // redirect back from an external identity provider, so the user would land
 // logged-in-but-not-recognised. Lax still blocks the cross-site POST cases that
 // matter.
-func (s *Server) setSessionCookie(w http.ResponseWriter, sid string) {
+//
+// maxAge 0 is a browser-session cookie, gone when the browser closes. A
+// positive one is "stay signed in on this device" (5.11): the cookie outlasts
+// a restart, for at most what the session itself has left.
+func (s *Server) setSessionCookie(w http.ResponseWriter, sid string, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    sid,
@@ -120,8 +126,87 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, sid string) {
 		Secure:   true,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		// No Domain, no MaxAge: a session cookie, and __Host- forbids Domain anyway.
+		MaxAge:   maxAge,
+		// No Domain: __Host- forbids it.
 	})
+}
+
+// RememberCookieName carries "stay signed in on this device" from the page it
+// was ticked on to the request that completes the sign-in, which after a
+// second factor or a provider's round trip is a later one (5.11). It names
+// nobody and grants nothing: it can only make the session cookie outlast the
+// browser, and only where the organisation offers that.
+const RememberCookieName = "__Host-signari_remember"
+
+// rememberTTL is how long the choice is kept: longer than a pending sign-in,
+// because a provider's own sign-in page may take a person a while.
+const rememberTTL = 15 * time.Minute
+
+// stayField is the sign-in page's checkbox. Not "remember": the second-factor
+// page's "remember this device" has that name, and completes the sign-in in
+// the same request, so sharing it would make skipping the factor also keep the
+// session past the browser.
+const stayField = "stay_signed_in"
+
+// noteRemember keeps the person's choice for the rest of the sign-in.
+func (s *Server) noteRemember(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue(stayField) != "1" {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: RememberCookieName, Value: "1", Path: "/", Secure: true, HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, MaxAge: int(rememberTTL.Seconds()),
+	})
+}
+
+// forgetRemember drops the choice once a sign-in has used it.
+func (s *Server) forgetRemember(w http.ResponseWriter, r *http.Request) {
+	if _, err := r.Cookie(RememberCookieName); err != nil {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: RememberCookieName, Value: "", Path: "/", Secure: true, HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, MaxAge: -1,
+	})
+}
+
+// rememberAsked reports whether this sign-in asked to stay signed in: in this
+// request, or on the page it started from.
+func rememberAsked(r *http.Request) bool {
+	if r.FormValue(stayField) == "1" {
+		return true
+	}
+	c, err := r.Cookie(RememberCookieName)
+	return err == nil && c.Value == "1"
+}
+
+// persistentCookieAge is how long the cookie of a session that asked to stay
+// signed in may last: what the session has left before its absolute deadline,
+// or 0 -- a browser-session cookie -- where the organisation does not offer it.
+func (s *Server) persistentCookieAge(ctx context.Context, sid string) int {
+	var age int
+	if err := s.db.QueryRow(ctx, `
+		SELECT CASE WHEN o.persistent_sessions
+		            THEN greatest(0, floor(extract(epoch FROM s.absolute_not_after - now())))::int ELSE 0 END
+		  FROM core.sessions s JOIN core.organizations o ON o.id = s.org_id WHERE s.sid = $1`, sid).
+		Scan(&age); err != nil {
+		s.log.Error("reading whether a session may outlast the browser", "err", err)
+		return 0
+	}
+	return age
+}
+
+// persistentOffered reports whether the sign-in page offers the choice.
+func (s *Server) persistentOffered(ctx context.Context, orgID string) bool {
+	if s.db == nil || orgID == "" {
+		return false
+	}
+	var on bool
+	if err := s.db.QueryRow(ctx, `SELECT persistent_sessions FROM core.organizations WHERE id = $1::uuid`,
+		orgID).Scan(&on); err != nil {
+		return false
+	}
+	return on
 }
 
 // clearSessionCookie expires the cookie. The attributes must match the ones used

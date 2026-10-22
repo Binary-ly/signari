@@ -1482,9 +1482,13 @@ func instanceReauthWindow(ctx context.Context, conn *pgx.Conn, orgID string, win
 // long unused (5.09), and how long a grant of offline_access lasts (5.10). A
 // flag left out keeps what is there.
 func instanceSessionLifetime(ctx context.Context, conn *pgx.Conn, orgID string, lifetime, idle,
-	offline time.Duration) error {
-	if orgID == "" || (lifetime == 0 && idle < 0 && offline < 0) {
-		return fmt.Errorf("give -org and any of -lifetime, -idle and -offline, e.g. -lifetime 12h -idle 30m")
+	offline time.Duration, persistent string) error {
+	if orgID == "" || (lifetime == 0 && idle < 0 && offline < 0 && persistent == "") {
+		return fmt.Errorf("give -org and any of -lifetime, -idle, -offline and -persistent, " +
+			"e.g. -lifetime 12h -idle 30m")
+	}
+	if persistent != "" && persistent != "on" && persistent != "off" {
+		return fmt.Errorf("-persistent is on or off, not %q", persistent)
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -1515,12 +1519,20 @@ func instanceSessionLifetime(ctx context.Context, conn *pgx.Conn, orgID string, 
 	if err != nil {
 		return err
 	}
+	stay := current.Persistent
+	if persistent != "" {
+		stay = persistent == "on"
+	}
+	if _, err := store.SetPersistentSessions(ctx, tx, orgID, stay); err != nil {
+		return err
+	}
 	if err := audit.Write(ctx, tx, audit.Event{
 		Type: "org.session_lifetime_set", OrgID: orgID,
 		Detail: map[string]any{
 			"lifetime_from_s": int(previous.Lifetime.Seconds()), "lifetime_to_s": int(lifetime.Seconds()),
 			"idle_from_s": int(previous.Idle.Seconds()), "idle_to_s": int(idle.Seconds()),
 			"offline_from_s": int(previous.Offline.Seconds()), "offline_to_s": int(offline.Seconds()),
+			"persistent_from": previous.Persistent, "persistent_to": stay,
 			"sessions_sooner": sooner, "sessions_ended": ended, "offline_grants_sooner": grantsSooner,
 			"via": "cli",
 		},
@@ -1532,6 +1544,7 @@ func instanceSessionLifetime(ctx context.Context, conn *pgx.Conn, orgID string, 
 	}
 	fmt.Printf("sessions: %s (was %s)\n", sessionLimits{lifetime, idle}, sessionLimits{previous.Lifetime, previous.Idle})
 	fmt.Printf("offline access: %s (was %s)\n", offlineLimit(offline), offlineLimit(previous.Offline))
+	fmt.Printf("stay signed in on this device: %s (was %s)\n", onOff(stay), onOff(previous.Persistent))
 	if sooner > 0 {
 		fmt.Printf("\n  %d live session(s) now end sooner, %d of them already: those are refused from\n"+
 			"  now on, and the janitor's next sweep ends them and tells their applications.\n", sooner, ended)
@@ -1542,6 +1555,13 @@ func instanceSessionLifetime(ctx context.Context, conn *pgx.Conn, orgID string, 
 	fmt.Println("\n  A session already signed in keeps the lifetime it was signed in with as its")
 	fmt.Println("  ceiling; a shorter one, or an idle limit, applies to it at once.")
 	return nil
+}
+
+func onOff(b bool) string {
+	if b {
+		return "offered"
+	}
+	return "not offered"
 }
 
 // offlineLimit prints an offline lifetime.

@@ -37,6 +37,8 @@ const (
 )
 
 func (s *Server) handleFederatedStart(w http.ResponseWriter, r *http.Request) {
+	// "Stay signed in", kept across the provider's round trip (5.11).
+	s.noteRemember(w, r)
 	s.startFederation(w, r, false)
 }
 

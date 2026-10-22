@@ -2199,7 +2199,15 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	}
 
 	s.clearPending(w)
-	s.setSessionCookie(w, cookieToken)
+	// A browser-session cookie, unless this sign-in asked to stay signed in
+	// on this device and the organisation offers that (5.11). Read only then,
+	// so an ordinary sign-in pays nothing for it.
+	maxAge := 0
+	if rememberAsked(r) {
+		maxAge = s.persistentCookieAge(ctx, sid)
+		s.forgetRemember(w, r)
+	}
+	s.setSessionCookie(w, cookieToken, maxAge)
 
 	// Where this sign-in came from, for the next travel check.
 	//

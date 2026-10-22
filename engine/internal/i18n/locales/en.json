@@ -16,6 +16,7 @@
   "login.username": "Username or email",
   "login.password": "Password",
   "login.submit": "Sign in",
+  "login.staysignedin": "Stay signed in on this device, even after the browser is closed",
   "login.passkey": "Sign in with a passkey",
   "login.forgot": "Forgot your password?",
   "login.signup": "Create an account",

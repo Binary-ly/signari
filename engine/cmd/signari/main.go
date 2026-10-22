@@ -710,6 +710,9 @@ func run(args []string) (err error) {
 	offlineLifetime := fs.Duration("offline", -1,
 		"`instance session-lifetime`: how long a grant of offline_access lasts from when it is given, 1h to "+
 			"8760h (default 720h), or 0 to end it with its session; omit to keep the current one")
+	persistentSessions := fs.String("persistent", "",
+		"`instance session-lifetime`: on or off, whether the sign-in page offers \"stay signed in on this "+
+			"device\", a session cookie that outlasts the browser; omit to keep the current setting")
 	setEnabled := fs.Bool("enabled", true, "whether the object is in service")
 	onMissing := fs.String("on-missing", "",
 		"what a directory sync does with somebody the directory no longer returns: "+
@@ -950,7 +953,8 @@ func run(args []string) (err error) {
 	case "instance reauth-window":
 		return instanceReauthWindow(ctx, conn, *orgID, *reauthWindow)
 	case "instance session-lifetime":
-		return instanceSessionLifetime(ctx, conn, *orgID, *sessionLifetime, *sessionIdle, *offlineLifetime)
+		return instanceSessionLifetime(ctx, conn, *orgID, *sessionLifetime, *sessionIdle, *offlineLifetime,
+			*persistentSessions)
 	case "instance remember-device":
 		return instanceRememberDevice(ctx, conn, *orgID, *rememberDays)
 	case "webauthn policy":

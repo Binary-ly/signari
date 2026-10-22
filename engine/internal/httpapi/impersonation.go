@@ -156,7 +156,7 @@ func (s *Server) handleImpersonateStart(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.setSessionCookie(w, cookieToken)
+	s.setSessionCookie(w, cookieToken, 0)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 

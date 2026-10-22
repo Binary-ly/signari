@@ -755,6 +755,9 @@ func (s *Server) rateLimitedLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.allowSignInAttempt(w, r) {
 		return
 	}
+	// "Stay signed in", kept for a second factor that completes the sign-in
+	// in a later request (5.11).
+	s.noteRemember(w, r)
 	s.handleLoginPost(w, r)
 }
 
@@ -963,6 +966,8 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		// while the sign-up page told people to use a link this page lacked.
 		"Recover": s.recoveryOffered(r.Context()),
 		"Signup":  s.signupOffered(r.Context()),
+		// "Stay signed in on this device", where the organisation offers it.
+		"StaySignedIn": s.persistentOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
 		// Only when this request actually needs one. In adaptive mode a person
 		// signing in normally never sees a widget at all.
 		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),

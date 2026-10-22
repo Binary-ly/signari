@@ -11,6 +11,7 @@
 <input id="u" name="username" autocomplete="username webauthn" autocapitalize="none" autofocus required>
 <label for="p">{{T "login.password"}}</label>
 <input id="p" name="password" type="password" autocomplete="current-password" required>
+{{if .StaySignedIn}}<p><label><input type="checkbox" name="stay_signed_in" value="1" id="stay-signed-in"> {{T "login.staysignedin"}}</label></p>{{end}}
 {{template "captcha" .}}<button type="submit">{{T "login.submit"}}</button>
 </form>
 <p class="alt" id="passkey-row" hidden><button type="button" id="passkey-signin">{{T "login.passkey"}}</button></p>

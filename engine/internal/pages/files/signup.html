@@ -6,6 +6,7 @@
 <form method="POST" action="/signup">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 {{if .Invite}}<input type="hidden" name="invite" value="{{.Invite}}">{{end}}
+{{if .Authz}}<input type="hidden" name="authz" value="{{.Authz}}">{{end}}
 <label for="e">{{T "common.email"}}</label>
 {{if .EmailFixed}}
 <input id="e" name="email" type="email" value="{{.Email}}" readonly>

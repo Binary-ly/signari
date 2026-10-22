@@ -119,6 +119,25 @@ without that membership, the engine logs an error naming the group, and the
 An invitation names one person and is sent by an operator, so its groups are
 joined as written.
 
+### An application asking for a new account
+
+An application can send people straight to the sign-up form with
+`prompt=create` on its authorization request
+([Initiating User Registration via OpenID Connect 1.0](https://openid.net/specs/openid-connect-prompt-create-1_0.html)).
+Where the application's organisation takes self-signup, the request goes to
+`/signup` and is carried through the form. The finished page's **Sign in** link
+then leads to a sign-in for that request, and the application gets its answer
+as from any sign-in. `create` is taken out of the request at that point, so the
+sign-in does not send the person back to the form. Where the organisation takes
+no self-signup, the person is shown the sign-in form with a note that accounts
+cannot be created there.
+
+Discovery lists `prompt_values_supported`: `none`, `login`, `consent`,
+`select_account` and `create`. A prompt value outside that list is refused with
+`invalid_request`, case included, so `prompt=Login` is an error rather than a
+request that silently re-authenticates nobody. Until October 2026 `create` was
+ignored, and so was any value the server did not know.
+
 ## Rate limiting
 
 Ten signups per address per hour. This endpoint writes rows and, where mail is

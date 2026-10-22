@@ -142,6 +142,15 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// prompt=create (https://openid.net/specs/openid-connect-prompt-create-1_0.html
+	// §4.1): the client wants the person shown "the account creation UX rather
+	// than the login flow". Unconditional, like login, whether or not somebody
+	// is signed in: they may be making a second account.
+	if oauth.HasPrompt(req.Prompt, oauth.PromptCreate) {
+		s.startCreateAccount(w, r, c)
+		return
+	}
+
 	sid := ""
 	live := false
 	if cookie := sessionCookie(r); cookie != "" {
@@ -351,6 +360,25 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.issueCodeAndRedirect(w, r, req, c, sid)
+}
+
+// startCreateAccount answers prompt=create. Where this client's organisation
+// takes self-sign-up, the sign-up form, carrying the request to the sign-in
+// that completes it: §4.1 counts the flow successful only once an id_token is
+// returned. Elsewhere the sign-in form, saying why; the same section leaves
+// whether an OP makes a new identity or signs in an existing one out of scope.
+// create is consumed either way, or that sign-in would resume to here again.
+func (s *Server) startCreateAccount(w http.ResponseWriter, r *http.Request, c *clients.Client) {
+	authz := consumePrompt(r.URL.RawQuery, oauth.PromptCreate)
+	rule, err := s.signupRule(r.Context())
+	if err != nil {
+		s.log.Error("reading the sign-up rule for prompt=create", "err", err)
+	}
+	if err == nil && rule != nil && rule.OrgID == c.OrgID {
+		http.Redirect(w, r, "/signup?authz="+url.QueryEscape(authz), http.StatusSeeOther)
+		return
+	}
+	s.renderLogin(w, r, authz, s.tr(r).Text("signup.notoffered"))
 }
 
 // consentRequiredReason says WHICH unapproved thing blocked a prompt=none request.

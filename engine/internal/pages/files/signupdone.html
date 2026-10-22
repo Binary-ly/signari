@@ -3,5 +3,5 @@
 <h1>{{T "signupdone.title"}}</h1>
 <p>{{T "signupdone.body" .}}</p>
 {{if .Verify}}<p>{{T "signupdone.verify" .}}</p>{{end}}
-<p><a href="/login">{{T "common.signin"}}</a></p>
+<p><a href="{{if .SignIn}}{{.SignIn}}{{else}}/login{{end}}">{{T "common.signin"}}</a></p>
 {{end}}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"signari.dev/engine/internal/abca"
+	"slices"
 	"strings"
 
 	"signari.dev/engine/internal/keys"
@@ -113,6 +114,12 @@ type Metadata struct {
 	// messages are not present would be the same lie as advertising an endpoint
 	// that 404s, which this file already argues against at length.
 	UILocalesSupported []string `json:"ui_locales_supported,omitempty"`
+
+	// From Initiating User Registration via OpenID Connect 1.0 §4.2, which
+	// makes it a MUST for an OP supporting `prompt=create`, listing "all other
+	// prompt values which it supports" too: oauth.SupportedPrompts, the list
+	// ValidatePrompt refuses anything outside.
+	PromptValuesSupported []string `json:"prompt_values_supported"`
 
 	// RFC 9207. Cheap, and it closes the mix-up attack, so it is on by default.
 	AuthorizationResponseIssParamSupported bool `json:"authorization_response_iss_parameter_supported"`
@@ -366,6 +373,8 @@ func Build(cfg Config) (*Metadata, error) {
 		// just "en" tells a relying party nothing it did not assume, and
 		// omitempty is the honest way to say "there is no choice here".
 		UILocalesSupported: multiple(cfg.UILocalesSupported),
+
+		PromptValuesSupported: slices.Clone(oauth.SupportedPrompts),
 
 		ClaimsSupported: []string{
 			"groups",

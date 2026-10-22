@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -96,6 +97,9 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// The authorization request that sent somebody here with prompt=create,
+	// carried through to the sign-in that completes it.
+	data["Authz"] = r.URL.Query().Get("authz")
 	if len(rule.AllowedDomains) > 0 {
 		data["Domains"] = strings.Join(rule.AllowedDomains, ", ")
 	}
@@ -279,8 +283,8 @@ func (s *Server) enrolCaptcha(w http.ResponseWriter, r *http.Request) bool {
 		s.renderPage(w, r, "signup", s.captchaWidget(map[string]any{
 			"Error":  s.tr(r).T("error.captcha.incomplete"),
 			"Email":  strings.ToLower(strings.TrimSpace(r.PostFormValue("email"))),
-			"Invite": r.PostFormValue("invite"),
-			"CSRF":   csrf, "CSRFField": csrfFormField,
+			"Invite": r.PostFormValue("invite"), "Authz": r.PostFormValue("authz"),
+			"CSRF": csrf, "CSRFField": csrfFormField,
 		}))
 		return false
 	}
@@ -304,7 +308,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 		// person is refused for a reason the page does not show them. So are
 		// the attributes, with what was typed.
 		s.renderPage(w, r, "signup", s.captchaFields(r, map[string]any{
-			"Error": msg, "Email": email, "Invite": token,
+			"Error": msg, "Email": email, "Invite": token, "Authz": r.PostFormValue("authz"),
 			"Fields": s.signupFields(ctx, s.signupOrg(ctx, token), attrs),
 			"CSRF":   csrf, "CSRFField": csrfFormField,
 		}))
@@ -419,7 +423,14 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	s.renderPage(w, r, "signupdone", map[string]any{"Email": email, "Verify": verify})
+	done := map[string]any{"Email": email, "Verify": verify}
+	if authz := r.PostFormValue("authz"); authz != "" {
+		// Signed in from here, the application that asked for the account gets
+		// its answer: the prompt-create spec's §4.1 has the flow succeed only
+		// with an id_token, so creating the account is not the end of it.
+		done["SignIn"] = "/login?authz=" + url.QueryEscape(authz)
+	}
+	s.renderPage(w, r, "signupdone", done)
 }
 
 // createAccount makes the user, the password credential and the memberships.

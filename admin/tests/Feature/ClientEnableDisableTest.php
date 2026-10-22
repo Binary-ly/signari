@@ -81,13 +81,12 @@ class ClientEnableDisableTest extends TestCase
      */
     public function test_toggling_calls_the_engine_admin_api(): void
     {
-        // Two requests now, not one: the console reads the configuration
-        // version and sends it as If-Match, so the write is conditional. See
-        // EngineAdminApi::conditionalPatch -- the engine has accepted the
-        // precondition since the admin API existed and this console sent it
-        // nowhere.
+        // The write is conditional on the version the page was rendered from,
+        // read with its rows (CarriesConfigVersion), so the version endpoint is
+        // no longer asked first. See EngineAdminApi::conditionalPatch -- the
+        // engine has accepted the precondition since the admin API existed and
+        // this console sent it nowhere.
         Http::fake([
-            '*/admin/config-version' => Http::response(['config_version' => 41], 200),
             '*/admin/clients/*' => Http::response(['config_version' => 42], 200),
         ]);
 
@@ -117,10 +116,7 @@ class ClientEnableDisableTest extends TestCase
      */
     public function test_a_refused_write_is_reported_as_a_failure(): void
     {
-        // The version first, because every console write is conditional (078dd5d):
-        // unfaked, that read failed before the refusal this test is about.
         Http::fake([
-            '*/admin/config-version' => Http::response(['config_version' => 1]),
             '*/admin/clients/*' => Http::response(['error' => 'server_error'], 500),
         ]);
 

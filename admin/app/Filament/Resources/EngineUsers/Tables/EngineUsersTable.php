@@ -136,7 +136,7 @@ class EngineUsersTable
                     ->label(__('Password (optional)'))
                     ->helperText(__('Leave blank to invite them: they set their own via recovery.')),
             ])
-            ->action(function (array $data): void {
+            ->action(function (array $data, $livewire): void {
                 // The organisation comes from the OPERATOR's own record, never
                 // from the form. A tenant selector the caller can set is not a
                 // tenant boundary -- the same rule ScopeToOrganisation enforces.
@@ -149,7 +149,7 @@ class EngineUsersTable
                     return;
                 }
                 try {
-                    EngineAdminApi::fromConfig()->createUser(
+                    EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)->createUser(
                         $orgId, $data['email'] ?? null, $data['username'] ?? null,
                         filled($data['password'] ?? null) ? $data['password'] : null
                     );
@@ -187,9 +187,12 @@ class EngineUsersTable
                 'pending' => __('They signed up themselves. Approved, they can sign in, and they are told so by email.'),
                 default   => __('They will be able to sign in again. Existing sessions were already ended and do not come back.'),
             })
-            ->action(function ($record): void {
+            ->action(function ($record, $livewire): void {
                 try {
+                    // Held to the page the operator confirmed from: a person
+                    // somebody else deactivated since is not reactivated unseen.
                     $r = EngineAdminApi::fromConfig()
+                        ->asOf($livewire->renderedConfigVersion ?? null)
                         ->setUserActive($record->id, $record->status !== 'active');
                 } catch (RuntimeException $e) {
                     Notification::make()->title(__('Nothing was changed'))->body($e->getMessage())
@@ -232,10 +235,11 @@ class EngineUsersTable
                 Select::make('factor')->label(__('Sign-in method'))->required()
                     ->options(fn ($record): array => self::factorOptions($record->id)),
             ])
-            ->action(function ($record, array $data): void {
+            ->action(function ($record, array $data, $livewire): void {
                 [$kind, $id] = array_pad(explode(':', (string) $data['factor'], 2), 2, null);
                 try {
-                    $r = EngineAdminApi::fromConfig()->removeUserFactor($record->id, $kind, $id);
+                    $r = EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)
+                        ->removeUserFactor($record->id, $kind, $id);
                 } catch (RuntimeException $e) {
                     Notification::make()->title(__('Nothing was removed'))->body($e->getMessage())
                         ->danger()->persistent()->send();
@@ -263,9 +267,10 @@ class EngineUsersTable
             ->visible(fn ($record): bool => $record->status === 'active' && filled($record->email))
             ->requiresConfirmation()
             ->modalDescription(__('They are emailed a link that adds one passkey to their account. It works once, for a day, and any earlier link stops working.'))
-            ->action(function ($record): void {
+            ->action(function ($record, $livewire): void {
                 try {
-                    $r = EngineAdminApi::fromConfig()->sendPasskeyLink($record->id);
+                    $r = EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)
+                        ->sendPasskeyLink($record->id);
                 } catch (RuntimeException $e) {
                     Notification::make()->title(__('No link was sent'))->body($e->getMessage())
                         ->danger()->persistent()->send();
@@ -332,9 +337,10 @@ class EngineUsersTable
                 TextInput::make('password')->label(__('Password'))
                     ->password()->revealable()->required()->minLength(8),
             ])
-            ->action(function ($record, array $data): void {
+            ->action(function ($record, array $data, $livewire): void {
                 try {
-                    $r = EngineAdminApi::fromConfig()->setUserPassword($record->id, $data['password']);
+                    $r = EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)
+                        ->setUserPassword($record->id, $data['password']);
                 } catch (RuntimeException $e) {
                     Notification::make()->title(__('Password not changed'))->body($e->getMessage())
                         ->danger()->persistent()->send();

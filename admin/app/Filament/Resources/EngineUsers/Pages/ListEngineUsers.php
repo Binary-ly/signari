@@ -2,11 +2,14 @@
 
 namespace App\Filament\Resources\EngineUsers\Pages;
 
+use App\Filament\Concerns\CarriesConfigVersion;
 use App\Filament\Resources\EngineUsers\EngineUserResource;
 use Filament\Resources\Pages\ListRecords;
 
 class ListEngineUsers extends ListRecords
 {
+    use CarriesConfigVersion;
+
     protected static string $resource = EngineUserResource::class;
 
     protected function getHeaderActions(): array

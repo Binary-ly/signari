@@ -57,6 +57,14 @@ Three properties are worth stating because each is a decision:
 
 `If-Match: *` means "if any configuration exists", per RFC 7232 §3.1.
 
+The console sends the version each page was rendered from, read before the rows
+it shows, with every write it makes, creates included. A confirmation opened
+before somebody else's change is refused with nothing written, and the page
+then shows the change and carries its version, so trying again works. Until
+October 2026 it read the version just before each write. That caught only two
+saves in the same moment, so the scenario above still happened through the
+console.
+
 ### Why the version is global rather than per-resource
 
 `core.config_version` is a single monotonic counter that every mutation bumps in

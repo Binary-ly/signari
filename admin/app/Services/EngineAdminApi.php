@@ -17,6 +17,9 @@ use RuntimeException;
  */
 class EngineAdminApi
 {
+    /** The version the page making these writes was rendered from; see asOf. */
+    private ?int $readAt = null;
+
     public function __construct(
         private readonly string $baseUrl,
         private readonly string $token,
@@ -36,6 +39,20 @@ class EngineAdminApi
             rtrim((string) env('SIGNARI_ADMIN_URL', 'http://127.0.0.1:8090'), '/'),
             (string) env('SIGNARI_ADMIN_TOKEN', ''),
         );
+    }
+
+    /**
+     * Writes held to the configuration version a page was rendered from (the
+     * `CarriesConfigVersion` page's), sent as If-Match. Every write needs one:
+     * without it there is nothing to say what the operator saw, and a write
+     * conditional on a version read just before it would let a stale form win.
+     */
+    public function asOf(?int $renderedVersion): static
+    {
+        $held = clone $this;
+        $held->readAt = $renderedVersion;
+
+        return $held;
     }
 
     /**
@@ -70,7 +87,7 @@ class EngineAdminApi
             'password' => $password,
         ], fn ($v) => filled($v));
 
-        return (string) $this->request('post', '/admin/users', $body)['id'];
+        return (string) $this->request('post', '/admin/users', $body, $this->readAt())['id'];
     }
 
     /**
@@ -86,7 +103,7 @@ class EngineAdminApi
         // administrators deciding opposite things about the same person is
         // exactly the case worth refusing.
         return $this->request('patch', "/admin/users/{$userId}",
-            ['active' => $active], $this->configVersion());
+            ['active' => $active], $this->readAt());
     }
 
     /**
@@ -99,7 +116,7 @@ class EngineAdminApi
     public function setUserPassword(string $userId, string $password): array
     {
         return $this->request('patch', "/admin/users/{$userId}",
-            ['password' => $password], $this->configVersion());
+            ['password' => $password], $this->readAt());
     }
 
     /**
@@ -128,7 +145,7 @@ class EngineAdminApi
             $path .= '/'.rawurlencode($factorId);
         }
 
-        return $this->request('delete', $path, [], $this->configVersion());
+        return $this->request('delete', $path, [], $this->readAt());
     }
 
     /**
@@ -140,7 +157,7 @@ class EngineAdminApi
     public function sendPasskeyLink(string $userId, int $ttlSeconds = 0): array
     {
         return $this->request('post', "/admin/users/{$userId}/passkey-link",
-            ['ttl_seconds' => $ttlSeconds], $this->configVersion());
+            ['ttl_seconds' => $ttlSeconds], $this->readAt());
     }
 
     /**
@@ -160,7 +177,7 @@ class EngineAdminApi
             'redirect_uris' => $redirectUris,
             'public' => $public,
             'secret' => $importSecret,
-        ], fn ($v) => $v !== null && $v !== ''));
+        ], fn ($v) => $v !== null && $v !== ''), $this->readAt());
     }
 
     /**
@@ -170,7 +187,7 @@ class EngineAdminApi
      */
     public function rotateClientSecret(string $clientId): array
     {
-        return $this->request('post', "/admin/clients/{$clientId}/rotate-secret");
+        return $this->request('post', "/admin/clients/{$clientId}/rotate-secret", [], $this->readAt());
     }
 
     /** The engine's current config version, for showing propagation state. */
@@ -196,21 +213,23 @@ class EngineAdminApi
      * application that ships with it is the "a control nobody uses" shape this
      * project keeps finding elsewhere.
      *
-     * # Why the version is read here rather than carried from the page
+     * # Why the version comes from the page
      *
-     * Carrying it from the rendered page would be stricter and is the eventual
-     * goal: it would catch a change made while the operator was reading. Reading
-     * it immediately before the write catches a narrower window -- two
-     * administrators saving within the same moment -- and needs no change to
-     * every form in the console.
+     * It is the version the page was rendered from (asOf), not one read just
+     * before the write. Read just before, it caught only two administrators
+     * saving in the same moment: a form opened before somebody else's change
+     * still read the new version and wrote over that change, which is the case
+     * the precondition exists for. The version is global, so any configuration
+     * change since the page was rendered refuses the write, the operator's
+     * reload included; refusing too much is the side to err on.
      *
-     * The narrower guarantee is stated rather than implied, because a
+     * What it does and does not catch is stated rather than implied, because a
      * precondition that people believe is stronger than it is would be worse
      * than none. See PRECONDITION_SCOPE below.
      */
     public function conditionalPatch(string $path, array $body): int
     {
-        return (int) $this->request('patch', $path, $body, $this->configVersion())['config_version'];
+        return (int) $this->request('patch', $path, $body, $this->readAt())['config_version'];
     }
 
     /**
@@ -220,11 +239,28 @@ class EngineAdminApi
      * reads, not only in a document they may not have.
      */
     public const PRECONDITION_SCOPE =
-        'The console reads the configuration version immediately before each write '.
-        'and sends it as If-Match. That refuses a write when another change landed '.
-        'between the read and the write -- two administrators saving at the same '.
-        'moment. It does NOT catch a change made while somebody had a form open, '.
-        'which needs the version to travel with the rendered page.';
+        'Each console write sends, as If-Match, the configuration version its page '.
+        'was rendered from, read before the rows it shows. A change anywhere in the '.
+        'configuration after that, including one made while a form was open, refuses '.
+        'the write and nothing is written. It does NOT say which change moved the '.
+        'version: the version is one counter for the whole instance.';
+
+    /**
+     * The version this client's writes are held to, or a refusal when none was
+     * carried: a write with nothing to say what the operator saw is not made.
+     */
+    private function readAt(): int
+    {
+        if ($this->readAt === null) {
+            throw new RuntimeException(
+                'This page did not carry the configuration version it was shown at, '.
+                'so the change cannot be held to what you saw. Nothing was written. '.
+                'Reload and try again.'
+            );
+        }
+
+        return $this->readAt;
+    }
 
     private function patch(string $path, array $body): int
     {

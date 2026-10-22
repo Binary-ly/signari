@@ -83,11 +83,9 @@ class UserAdministrationTest extends TestCase
     public function test_deactivation_reports_sessions_ended(): void
     {
         $user = $this->plantedUser();
-        // The version read comes first: deactivating a user is a conditional
-        // write, so the console asks the engine where the configuration is
-        // before saying where it should stay. See EngineAdminApi.
+        // Deactivating a user is a conditional write, held to the version the
+        // page was rendered from. See EngineAdminApi::asOf.
         Http::fake([
-            '*/admin/config-version' => Http::response(['config_version' => 9], 200),
             '*/admin/users/*' => Http::response(
                 ['id' => $user->id, 'sessions_ended' => 3, 'config_version' => 10], 200
             ),
@@ -130,10 +128,8 @@ class UserAdministrationTest extends TestCase
     public function test_removing_a_sign_in_method_is_conditional_and_names_it(): void
     {
         $user = $this->plantedUser();
+        $rendered = $this->renderedVersion();
         Http::fake(function (Request $r) {
-            if (str_ends_with($r->url(), '/admin/config-version')) {
-                return Http::response(['config_version' => 9], 200);
-            }
             if ($r->method() === 'GET') {
                 return Http::response(['factors' => [
                     ['type' => 'totp', 'confirmed' => true],
@@ -155,7 +151,7 @@ class UserAdministrationTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'DELETE'
             && str_ends_with($r->url(), "/admin/users/{$user->id}/factors/webauthn/pk-1")
-            && $r->header('If-Match') === ['"9"']);
+            && $r->header('If-Match') === ['"'.$rendered.'"']);
     }
 
     /** A removal the engine refuses says so, not a success over a failure. */
@@ -163,9 +159,6 @@ class UserAdministrationTest extends TestCase
     {
         $user = $this->plantedUser();
         Http::fake(function (Request $r) {
-            if (str_ends_with($r->url(), '/admin/config-version')) {
-                return Http::response(['config_version' => 9], 200);
-            }
             if ($r->method() === 'GET') {
                 return Http::response(['factors' => [['type' => 'totp', 'confirmed' => true]]], 200);
             }
@@ -190,11 +183,8 @@ class UserAdministrationTest extends TestCase
     public function test_a_passkey_link_is_sent_conditionally(): void
     {
         $user = $this->plantedUser();
+        $rendered = $this->renderedVersion();
         Http::fake(function (Request $r) {
-            if (str_ends_with($r->url(), '/admin/config-version')) {
-                return Http::response(['config_version' => 9], 200);
-            }
-
             return Http::response(['user_id' => 'u', 'link_id' => 'l-1',
                 'expires_at' => '2026-10-22T18:00:00Z', 'config_version' => 10], 200);
         });
@@ -210,7 +200,7 @@ class UserAdministrationTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'POST'
             && str_ends_with($r->url(), "/admin/users/{$user->id}/passkey-link")
-            && $r->header('If-Match') === ['"9"']
+            && $r->header('If-Match') === ['"'.$rendered.'"']
             && $r->data() === ['ttl_seconds' => 0]);
     }
 
@@ -219,10 +209,6 @@ class UserAdministrationTest extends TestCase
     {
         $user = $this->plantedUser();
         Http::fake(function (Request $r) {
-            if (str_ends_with($r->url(), '/admin/config-version')) {
-                return Http::response(['config_version' => 9], 200);
-            }
-
             return Http::response(['error' => 'cannot_send_link',
                 'detail' => 'the account has no email address to send the link to'], 409);
         });
@@ -245,5 +231,11 @@ class UserAdministrationTest extends TestCase
 
             return EngineUser::query()->findOrFail($userId);
         });
+    }
+
+    /** The version a page rendered now carries, which its writes send as If-Match. */
+    private function renderedVersion(): int
+    {
+        return (int) DB::table('core_v1.config_status')->value('version');
     }
 }

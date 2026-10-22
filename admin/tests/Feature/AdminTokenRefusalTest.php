@@ -21,9 +21,10 @@ use Tests\TestCase;
  */
 class AdminTokenRefusalTest extends TestCase
 {
+    /** Held to a version, as every console write is, so the write is sent. */
     private function api(): EngineAdminApi
     {
-        return new EngineAdminApi('http://engine.test', str_repeat('t', 32), 5);
+        return (new EngineAdminApi('http://engine.test', str_repeat('t', 32), 5))->asOf(1);
     }
 
     public function test_a_missing_scope_is_reported_in_words(): void

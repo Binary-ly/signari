@@ -311,14 +311,11 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 		http.StatusSeeOther)
 }
 
-// denyToClient returns access_denied to the client's redirect_uri.
+// denyToClient returns access_denied to the client's redirect_uri, once
+// errorToClient has checked the client registered it: the query comes back
+// from the consent form, and was redirected to whatever it named.
 func (s *Server) denyToClient(w http.ResponseWriter, r *http.Request, authzQuery string) {
-	req := oauth.ParseAuthz(parseQuery(authzQuery))
-	s.writeAuthzError(w, r, req, &oauth.AuthzError{
-		Code:        "access_denied",
-		Description: "the user refused the request",
-		Disposition: oauth.DispositionRedirect,
-	})
+	s.errorToClient(w, r, authzQuery, "access_denied", "the user refused the request")
 }
 
 // parseQuery re-parses the parked authorization request.

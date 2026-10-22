@@ -30,7 +30,7 @@ func TestAStageTheJourneyCannotRunIsRefused(t *testing.T) {
 	}{
 		{Authentication, "[delegated, session]", "delegated"},
 		{Authentication, "[certificate, session]", "certificate"},
-		{Authentication, "[email_otp, session]", "email_otp"},
+		// email_otp became a sign-in proof (5.16).
 		{Authentication, "[sms_otp, session]", "sms_otp"},
 		{Enrolment, "[enrol_mfa, create_user, done]", "enrol_mfa"},
 		{Enrolment, "[identify, create_user, done]", "identify"},

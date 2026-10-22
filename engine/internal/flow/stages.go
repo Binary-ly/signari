@@ -235,6 +235,10 @@ const (
 	CondProvedByPasskey   Condition = "proved_by_passkey"
 	CondProvedByKerberos  Condition = "proved_by_kerberos"
 	CondProvedByFederated Condition = "proved_by_federated"
+	// CondProvedByEmail: a code emailed to the account's address, as the first
+	// factor (5.16). Single-factor, and weaker than a password against anybody
+	// who reads the person's mail, so it signs in only where a flow says so.
+	CondProvedByEmail Condition = "proved_by_email"
 )
 
 var allConditions = []Condition{
@@ -245,6 +249,7 @@ var allConditions = []Condition{
 	CondClientRequiresMFA, CondKerberosAvailable, CondMigrationPending,
 	CondFederatedSource, CondEmailVerificationPending,
 	CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
+	CondProvedByEmail,
 }
 
 // answered is which conditions each journey this engine drives can evaluate.
@@ -269,13 +274,15 @@ var answered = map[Designation][]Condition{
 		CondHasSecondFactor, CondHasPasskey, CondPasswordChangeRequired,
 		CondPromptsPending, CondClientRequiresMFA, CondRiskElevated, CondEmailVerificationPending,
 		CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
+		CondProvedByEmail,
 	},
 	// No account exists yet, so nothing is pending for it: false is the
 	// answer, not the absence of one.
 	Enrolment: {CondCaptchaRequired, CondPromptsPending},
 	Recovery:  {CondCaptchaRequired},
 	// Which way the person signed in to reach the page, from the session.
-	Unenrolment: {CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated},
+	Unenrolment: {CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
+		CondProvedByEmail},
 }
 
 // drivable is which stages each journey this engine drives can run.
@@ -288,12 +295,13 @@ var answered = map[Designation][]Condition{
 //
 // The sign-in set has two kinds. The walker acts on mfa, enrol_mfa, prompt,
 // password_change, verify_email and the terminals. identify, captcha, password, passkey,
-// kerberos, federated and consent are settled before the walk, by the route
-// that reached it -- the sign-in form, the passkey ceremony, the Negotiate
-// exchange, a provider's callback -- and the walker requires a proving one
-// among them to be the proof that route presented (2.49). The stages refused
-// there wait for a driver: a source pinned per flow (delegated, certificate),
-// a code as the first factor (email_otp, sms_otp).
+// kerberos, federated, email_otp and consent are settled before the walk, by
+// the route that reached it -- the sign-in form, the passkey ceremony, the
+// Negotiate exchange, a provider's callback, the emailed code's page -- and the
+// walker requires a proving one among them to be the proof that route
+// presented (2.49). The stages refused there wait for a driver: a source pinned
+// per flow (delegated, certificate), a texted code as the first factor
+// (sms_otp).
 //
 // Widen a set only in step with a driver; internal/httpapi's
 // TestEveryStageAFlowCanUseIsDriven reads the drivers and compares.
@@ -301,7 +309,7 @@ var drivable = map[Designation][]StageName{
 	Authentication: {
 		StageMFA, StagePrompt, StagePasswordChange, StageSession, StageDeny, StageDone,
 		StageIdentify, StageCaptcha, StagePassword, StagePasskey, StageKerberos, StageFederated,
-		StageConsent, StageEnrolMFA, StageVerifyEmail,
+		StageConsent, StageEnrolMFA, StageVerifyEmail, StageEmailOTP,
 	},
 	Enrolment: {StageCaptcha, StagePrompt, StageCreateUser, StageDeny, StageDone},
 	Recovery: {
@@ -310,7 +318,7 @@ var drivable = map[Designation][]StageName{
 	},
 	// The proving stages are settled by the recent sign-in the page requires,
 	// each only by its own proof, as at sign-in; done deletes the account.
-	Unenrolment: {StagePassword, StagePasskey, StageKerberos, StageFederated, StageDeny, StageDone},
+	Unenrolment: {StagePassword, StagePasskey, StageKerberos, StageFederated, StageEmailOTP, StageDeny, StageDone},
 }
 
 // signInProofs are the proving stages a sign-in settles from the route that
@@ -321,6 +329,7 @@ var signInProofs = map[StageName]Condition{
 	StagePasskey:   CondProvedByPasskey,
 	StageKerberos:  CondProvedByKerberos,
 	StageFederated: CondProvedByFederated,
+	StageEmailOTP:  CondProvedByEmail,
 }
 
 // ProofCondition is the proved_by condition for a proving stage a sign-in

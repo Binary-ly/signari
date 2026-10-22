@@ -40,6 +40,10 @@ const (
 	// its display name) can now, or can no longer, sign the person in.
 	NoticeProviderLinked   = "provider_linked"
 	NoticeProviderUnlinked = "provider_unlinked"
+	// NoticeSignInCode: a code to sign in with, emailed to the account's
+	// address (5.16). LinkID names the email_sign_in_codes row; the code is
+	// minted as it is sent, so it never sits in the outbox.
+	NoticeSignInCode = "sign_in_code"
 )
 
 // AccountNotice is one queued notice.

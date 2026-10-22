@@ -105,6 +105,51 @@ cruel.
                 sent. Set SIGNARI_SMTP_HOST and SIGNARI_MAIL_FROM
 ```
 
+## Signing in with an emailed code alone
+
+A code to the account's address can also be the whole sign-in, with no
+password. It is off unless the organisation's sign-in flow takes it, with an
+`email_otp` stage on `proved_by_email` ([sign-in flows](flows.md#signing-in-with-an-emailed-code)).
+The sign-in page then offers **Email me a code instead** under the password.
+
+```
+POST /login/email          what was typed in the name box; answers with the code page
+POST /login/email/verify   the code; answers with the sign-in
+```
+
+The code page says the same thing whether or not an account has that name, and
+the request does the same work either way. The code is queued in the outbox
+when it is asked for and made when the outbox sends it, so no mail is sent while
+the page waits for its answer. It is not the second factor's code: it has its own
+table, its own mail, and its own token between the two pages. It never gets the
+pending sign-in token, because the second-factor page accepts that token as a
+proved first factor.
+
+| | |
+|---|---|
+| lifetime | 10 minutes |
+| codes asked for, per account | one a minute and five an hour; past that, the code already sent stays the one that works |
+| codes asked for, per address | twenty an hour |
+| attempts per code | 5, and each wrong one is also charged to the account's second-factor budget |
+| stored as | SHA-256, compared in constant time, deleted when used |
+
+The session records amr `otp` and acr `1`: one factor, possession of the
+mailbox. `proved_by_password` is false for it, so
+`{stage: mfa, when: proved_by_password}` does not ask; `when: proved_by_email`
+or `when: user_has_second_factor` does. **The mailbox is one factor however many
+codes go to it.** After an emailed sign-in code, email as a second factor is not
+counted for `user_has_second_factor`, not sent, and not accepted on the code
+page, so someone whose only second factor is email gets a one-factor session
+rather than a second code to the same inbox. An authenticator app, a text
+message, a security key or Duo still count. The sessions page shows such a
+sign-in as "Signed in with a code sent by email". The built-in unenrolment flow
+accepts it, so someone who signs in no other way can still delete their own
+account.
+
+It is worth exactly what the mailbox is worth, as with the second factor. Offer
+it where the people signing in would otherwise reuse a weak password, and not as
+a step up from one.
+
 ## Verified end to end
 
 Against the running server:

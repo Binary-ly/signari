@@ -161,7 +161,24 @@ func TestEveryFactorTableIsChecked(t *testing.T) {
 	// only the proved half is a factor. Email was consulted with no predicate
 	// at all, so an address abandoned at the code screen -- or one an intruder
 	// had just pointed the account at -- counted as the second factor (0126).
-	for _, fn := range []string{"HasSecondFactor", "HasFactorOtherThanDuo"} {
+	// HasFactorOtherThanEmail stands in for HasSecondFactor after an emailed
+	// code, so it must consult every table that one does, except email's: a
+	// factor it missed would be a factor that sign-in never asked for.
+	otherThanEmail := regexp.MustCompile(`(?s)func HasFactorOtherThanEmail\(.*?(\n}\n\n|\z)`).Find(src)
+	if otherThanEmail == nil {
+		t.Fatal("HasFactorOtherThanEmail not found; this test is no longer checking it")
+	}
+	for _, tbl := range found {
+		if !factorTables[tbl] {
+			continue
+		}
+		mentioned := strings.Contains(string(otherThanEmail), "core."+tbl)
+		if want := tbl != "email_otp_credentials"; mentioned != want {
+			t.Errorf("HasFactorOtherThanEmail consults core.%s: %v, want %v", tbl, mentioned, want)
+		}
+	}
+
+	for _, fn := range []string{"HasSecondFactor", "HasFactorOtherThanDuo", "HasFactorOtherThanEmail"} {
 		fnBody := regexp.MustCompile(`(?s)func ` + fn + `\(.*?(\n}\n\n|\z)`).Find(src)
 		if fnBody == nil {
 			t.Fatalf("%s not found; this test is no longer checking it", fn)

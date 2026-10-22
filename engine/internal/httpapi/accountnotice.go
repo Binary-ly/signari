@@ -31,6 +31,8 @@ func (s *Server) DeliverAccountNotice(ctx context.Context, n store.AccountNotice
 		key = "factor.assigned"
 	case store.NoticePasskeyLink:
 		return s.deliverPasskeyLink(ctx, n)
+	case store.NoticeSignInCode:
+		return s.deliverSignInCode(ctx, n)
 	case store.NoticePasswordChanged:
 		key = "password.changed"
 	case store.NoticePasswordSet:

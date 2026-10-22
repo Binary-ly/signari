@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/mfa"
@@ -137,7 +138,12 @@ func (s *Server) challengeMFA(w http.ResponseWriter, r *http.Request, p duoProbe
 	// Failure here is logged and NOT surfaced: which factors somebody has
 	// enrolled is not something an unauthenticated form should disclose, and the
 	// challenge page is identical either way.
-	s.sendEmailOTPIfEnrolled(r.Context(), userID)
+	//
+	// Not after an emailed sign-in code: that was the mailbox, and a second code
+	// to it is no second factor (verifyCode refuses one there too).
+	if primaryProof(amr) != flow.StageEmailOTP {
+		s.sendEmailOTPIfEnrolled(r.Context(), userID)
+	}
 	s.sendSMSOTPIfEnrolled(r.Context(), userID)
 
 	s.renderMFA(w, r, userID, authzQuery, "")
@@ -281,7 +287,9 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	res, err := s.verifySecondFactor(ctx, tx, pending.Subject, code)
+	// An email code is a second factor only when the first was not an emailed
+	// code: the same mailbox twice is one factor, whatever amr would say.
+	res, err := s.verifyCode(ctx, tx, pending.Subject, code, primaryProof(pending.AMR) != flow.StageEmailOTP)
 	if err != nil {
 		// Released before rendering, which takes a connection of its own.
 		_ = tx.Rollback(ctx)

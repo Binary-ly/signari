@@ -292,8 +292,14 @@ var signInConditions = map[flow.Condition]func(f *signInFacts) bool{
 	flow.CondProvedByPasskey:   func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StagePasskey },
 	flow.CondProvedByKerberos:  func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StageKerberos },
 	flow.CondProvedByFederated: func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StageFederated },
+	flow.CondProvedByEmail:     func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StageEmailOTP },
 	flow.CondHasSecondFactor: func(f *signInFacts) bool {
-		enrolled, err := store.HasSecondFactor(f.ctx, f.db, f.userID)
+		has := store.HasSecondFactor
+		if primaryProof(f.amr) == flow.StageEmailOTP {
+			// The mailbox was the first factor; it cannot be the second too.
+			has = store.HasFactorOtherThanEmail
+		}
+		enrolled, err := has(f.ctx, f.db, f.userID)
 		if err != nil {
 			f.s.log.Error("checking second factor", "err", err)
 		}
@@ -662,6 +668,7 @@ var signInSettledStages = map[flow.StageName]string{
 	flow.StageKerberos:  "the Negotiate exchange",
 	flow.StageFederated: "an upstream provider's callback",
 	flow.StageConsent:   "the authorization endpoint, whenever a client asks for more than was granted",
+	flow.StageEmailOTP:  "the emailed sign-in code (emailsignin.go)",
 }
 
 // primaryProof is the proving stage the route that reached the walk settled,
@@ -694,6 +701,10 @@ var routeMarkers = []struct {
 	{flow.StageKerberos, []string{"krb"}},
 	{flow.StagePassword, []string{oauth.AMRPassword}},
 	{flow.StagePasskey, []string{oauth.AMRUserPresence, oauth.AMRHardwareKey, "swk"}},
+	// Last: `otp` is also what an authenticator app adds as a second factor, so
+	// it names the route only when nothing before it does -- a sign-in by an
+	// emailed code alone (5.16).
+	{flow.StageEmailOTP, []string{oauth.AMROTP}},
 }
 
 // FlowDemandsMFA reports whether the flow puts an mfa stage in this sign-in's

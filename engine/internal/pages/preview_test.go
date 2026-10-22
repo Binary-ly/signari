@@ -378,6 +378,7 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 			"Confirm": "amelia.hart@example.com", "Closed": false, "Deleted": false, "Error": "",
 		}),
 		"accountexport": csrf(map[string]any{}),
+		"emailcode":     csrf(map[string]any{"Error": ""}),
 		"emailchange": csrf(map[string]any{
 			"Address": "amelia.hart@example.com", "NewAddress": "amelia@hart.example",
 			"Closed": false, "Message": "", "Error": "",

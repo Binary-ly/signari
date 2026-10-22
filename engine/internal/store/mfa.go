@@ -636,6 +636,37 @@ func HasFactorOtherThanDuo(ctx context.Context, db interface {
 	return any, nil
 }
 
+// HasFactorOtherThanEmail is HasSecondFactor for a sign-in an emailed code
+// made (5.16). The mailbox is already the first factor there, so a second code
+// sent to it is the same factor twice: counted, an `email_otp, mfa` flow asked
+// a person whose only second factor is email for a second email and recorded
+// the session as multi-factor. TestEveryFactorTableIsChecked holds it to
+// HasSecondFactor's tables, less email.
+func HasFactorOtherThanEmail(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID string) (bool, error) {
+	var any bool
+	err := db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM core.totp_credentials
+			WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL
+		) OR EXISTS (
+			SELECT 1 FROM core.sms_otp_credentials
+			WHERE user_id = $1::uuid AND verified_at IS NOT NULL
+		) OR EXISTS (
+			SELECT 1 FROM core.duo_enrollments e
+			JOIN core.duo_integrations i ON i.org_id = e.org_id AND i.enabled
+			WHERE e.user_id = $1::uuid
+		) OR EXISTS (
+			SELECT 1 FROM core.webauthn_credentials
+			WHERE user_id = $1::uuid
+		)`, userID).Scan(&any)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, fmt.Errorf("checking for a second factor besides email: %w", err)
+	}
+	return any, nil
+}
+
 // HasSecondFactor reports whether a user has any usable second factor.
 //
 // Was HasConfirmedTOTP, and checked only TOTP while its own comment claimed to

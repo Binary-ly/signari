@@ -82,6 +82,7 @@ var columnClass = map[string]string{
 	"outposts.token_hash":                           "oneWay",
 	"passkey_links.token_hash":                      "oneWay",
 	"prompts.content_hash":                          "oneWay",
+	"email_sign_in_codes.code_hash":                 "oneWay",
 	"prompt_responses.content_hash":                 "oneWay",
 	"preauthorized_codes.code_hash":                 "oneWay",
 	"preauthorized_codes.tx_code_hash":              "oneWay",

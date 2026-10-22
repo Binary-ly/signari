@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
@@ -198,6 +199,10 @@ func describeAuth(amr []string) string {
 		return "sessions.how.mfa"
 	case multi:
 		return "sessions.how.multifactor"
+	case primaryProof(amr) == flow.StageEmailOTP:
+		// Not "a password": this list is where a person looks for a sign-in
+		// that was not theirs, and a code to their mailbox is how one would be.
+		return "sessions.how.emailcode"
 	default:
 		return "sessions.how.password"
 	}

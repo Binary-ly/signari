@@ -13,6 +13,7 @@
 <input id="p" name="password" type="password" autocomplete="current-password" required>
 {{if .StaySignedIn}}<p><label><input type="checkbox" name="stay_signed_in" value="1" id="stay-signed-in"> {{T "login.staysignedin"}}</label></p>{{end}}
 {{template "captcha" .}}<button type="submit">{{T "login.submit"}}</button>
+{{if .EmailCode}}<p class="alt"><button type="submit" formaction="/login/email" formnovalidate>{{T "login.emailcode"}}</button></p>{{end}}
 </form>
 <p class="alt" id="passkey-row" hidden><button type="button" id="passkey-signin">{{T "login.passkey"}}</button></p>
 {{if or .Recover .Signup}}<p class="alt">{{if .Recover}}<a href="/recover">{{T "login.forgot"}}</a>{{end}}{{if and .Recover .Signup}} · {{end}}{{if .Signup}}<a href="/signup">{{T "login.signup"}}</a>{{end}}</p>{{end}}

@@ -164,6 +164,10 @@ flows:
           - {stage: passkey, when: proved_by_passkey}
           - {stage: kerberos, when: proved_by_kerberos}
           - {stage: federated, when: proved_by_federated}
+          # Reached only where a sign-in flow takes an emailed code, which none
+          # does by default; without it, a person who signs in no other way
+          # could never delete their own account.
+          - {stage: email_otp, when: proved_by_email}
           - {stage: password}
       # Where the account is erased. The analysis holds an unenrolment's done
       # to the proof rule a session is held to.
@@ -177,6 +181,10 @@ flows:
       - name: signed in with a passkey
         given: {proved_by_passkey: true}
         expect: [passkey, done]
+
+      - name: signed in with an emailed code
+        given: {proved_by_email: true}
+        expect: [email_otp, done]
 
   # ---------------------------------------------------------------------------
   - name: default-sign-up

@@ -35,6 +35,7 @@ var unenrolmentSettledStages = map[flow.StageName]string{
 	flow.StagePasskey:   "a passkey sign-in",
 	flow.StageKerberos:  "a Kerberos sign-in",
 	flow.StageFederated: "a provider's sign-in",
+	flow.StageEmailOTP:  "a sign-in by emailed code",
 }
 
 // unenrolmentFacts answers what an unenrolment flow may branch on: which way
@@ -47,6 +48,7 @@ func unenrolmentFacts(amr []string) flow.State {
 		string(flow.CondProvedByPasskey):   p == flow.StagePasskey,
 		string(flow.CondProvedByKerberos):  p == flow.StageKerberos,
 		string(flow.CondProvedByFederated): p == flow.StageFederated,
+		string(flow.CondProvedByEmail):     p == flow.StageEmailOTP,
 	}
 }
 

@@ -683,6 +683,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /passkey.js", s.handlePasskeyJS)
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.rateLimitedLogin)
+	mux.HandleFunc("POST /login/email", s.handleEmailSignInStart)
+	mux.HandleFunc("POST /login/email/verify", s.handleEmailSignInVerify)
 	mux.HandleFunc("POST /login/mfa", s.handleMFAPost)
 	mux.HandleFunc("POST /login/mfa/sms", s.handleMFASMSSend)
 	mux.HandleFunc("POST /login/mfa/webauthn/begin", s.handleMFAKeyBegin)
@@ -970,6 +972,8 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		"Signup":  s.signupOffered(r.Context()),
 		// "Stay signed in on this device", where the organisation offers it.
 		"StaySignedIn": s.persistentOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
+		// An emailed code in place of the password, where the sign-in flow takes one.
+		"EmailCode": s.emailSignInOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
 		// Only when this request actually needs one. In adaptive mode a person
 		// signing in normally never sees a widget at all.
 		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),

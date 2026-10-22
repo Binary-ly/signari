@@ -185,13 +185,13 @@ stage.
 
 | `on:` | stages it runs |
 |---|---|
-| `authentication` | `mfa`, `enrol_mfa`, `verify_email`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the authorization endpoint |
+| `authentication` | `mfa`, `enrol_mfa`, `verify_email`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated`, `email_otp` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the emailed code's page, the authorization endpoint |
 | `enrolment` | `captcha`, `prompt`, `create_user`, `deny`, `done` |
 | `recovery` | `captcha`, `identify`, `email_otp`, `mfa`, `password_change`, `deny`, `done`, `session` |
-| `unenrolment` | `password`, `passkey`, `kerberos`, `federated`, settled by the recent sign-in that reached `/account/delete`, each only by its own proof; `deny`; `done`, where the account is erased |
+| `unenrolment` | `password`, `passkey`, `kerberos`, `federated`, `email_otp`, settled by the recent sign-in that reached `/account/delete`, each only by its own proof; `deny`; `done`, where the account is erased |
 
 The rest wait for a driver: `delegated` and `certificate` (a source the flow
-would have to pin), and `email_otp` and `sms_otp` as a first factor at sign-in.
+would have to pin), and `sms_otp` as a first factor at sign-in.
 The safety rules still know them, so a file naming one is refused for the right
 reason rather than read as a typo.
 
@@ -244,11 +244,12 @@ up, and straight in, as any address there.
 
 ### A sign-in's proving stage is the proof presented
 
-Somebody reaches a sign-in by exactly one of four routes, and the flow's
+Somebody reaches a sign-in by exactly one of five routes, and the flow's
 proving stage must be that route's proof: `password` for the sign-in form
 (including a password checked against the provider being migrated off),
 `passkey` for the passkey ceremony, `kerberos` for a Negotiate ticket,
-`federated` for an upstream provider. A sign-in by any other proof is refused,
+`federated` for an upstream provider, `email_otp` for a code emailed to the
+account's address. A sign-in by any other proof is refused,
 and the refusal is audited as `login.failed` with the reason
 `flow_requires_another_proof`, the stage required and the one presented.
 
@@ -269,10 +270,11 @@ stages:
   - {stage: mfa, when: proved_by_password}
 ```
 
-The `proved_by_password`, `proved_by_passkey`, `proved_by_kerberos` and
-`proved_by_federated` conditions say which route was taken. A journey asking for
-two of these proofs could only refuse whoever walks it, since nobody arrives by
-two routes, so it is refused when the file is parsed, naming both:
+The `proved_by_password`, `proved_by_passkey`, `proved_by_kerberos`,
+`proved_by_federated` and `proved_by_email` conditions say which route was
+taken. A journey asking for two of these proofs could only refuse whoever walks
+it, since nobody arrives by two routes, so it is refused when the file is
+parsed, naming both:
 `password, kerberos, session` is refused, and a second check belongs in `mfa`.
 In the example at the top of this page, a passkey holder must use their passkey,
 and Kerberos and provider sign-ins are refused, because neither is offered.
@@ -283,6 +285,30 @@ the top of this page let a passkey holder in on a password. A flow written
 before then that names only `password` now refuses passkey, Kerberos and
 provider sign-ins; add them as `one_of` alternatives to keep admitting them.
 `signari flow paths` shows every journey a file admits.
+
+### Signing in with an emailed code
+
+No built-in flow takes a code to the mailbox as the whole sign-in, because it
+is worth no more than the mailbox. A flow that names it turns it on, and the
+sign-in page then offers **Email me a code instead**:
+
+```yaml
+stages:
+  - one_of:
+      - {stage: email_otp, when: proved_by_email}
+      - {stage: password}
+  # Ask an emailed sign-in for an authenticator, when the person has one.
+  - {stage: mfa, when: user_has_second_factor}
+  - session
+```
+
+The session records amr `otp`, one factor. After an emailed code,
+`user_has_second_factor` does not count email as a second factor, and the code
+page neither sends nor accepts an email code, because the same mailbox twice is
+still one factor. [Email codes](email-otp.md#signing-in-with-an-emailed-code-alone)
+covers the pages, the pacing and what is withheld from somebody guessing names.
+Until October 2026 a flow naming `email_otp` at sign-in was refused when it was
+parsed.
 
 ### Conditions
 
@@ -295,7 +321,7 @@ A `when:` is one condition, optionally negated with `not`. There is no `and` or
 `network_trusted`, `client_requires_mfa`, `kerberos_available`,
 `migration_pending`, `federated_source`, `email_verification_pending`,
 `proved_by_password`, `proved_by_passkey`, `proved_by_kerberos`,
-`proved_by_federated`
+`proved_by_federated`, `proved_by_email`
 
 The list is closed, and a condition outside it is refused at parse. That is what
 makes a typo an error rather than a stage that silently never runs. It is also
@@ -311,10 +337,10 @@ apply` and by the engine's load alike.
 
 | `on:` | conditions it evaluates |
 |---|---|
-| `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`, `risk_elevated`, `email_verification_pending`, and the four `proved_by_*`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
+| `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`, `risk_elevated`, `email_verification_pending`, and the five `proved_by_*`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
 | `enrolment` | `captcha_required`, `prompts_pending` (always false: there is no account yet to have one) |
 | `recovery` | `captcha_required` |
-| `unenrolment` | the four `proved_by_*`: which way the person signed in to reach the page |
+| `unenrolment` | the five `proved_by_*`: which way the person signed in to reach the page |
 
 The rest of the list (`user_is_new`, `consent_required`,
 `device_managed`, `device_compliant`, `network_trusted`, `kerberos_available`,

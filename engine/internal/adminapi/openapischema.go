@@ -254,7 +254,11 @@ var opSchemas = map[string]opSchema{
 			"last_used_at": nullable(dateTime())}))})},
 	"GET /admin/users": {http.StatusOK, nil, object([]string{"users"}, map[string]jsonSchema{
 		"users": arrayOf(userSummarySchema), "next_cursor": str()})},
-	"GET /admin/users/{userID}": {http.StatusOK, nil, userSummarySchema},
+	"GET /admin/users/{userID}": {http.StatusOK, nil, object([]string{"id", "org_id", "email", "username", "status",
+		"created_at", "display_name", "given_name", "surname", "email_verified", "require_password_change", "updated_at"},
+		map[string]jsonSchema{"id": uuidStr(), "org_id": uuidStr(), "email": str(), "username": str(),
+			"status": str(), "created_at": dateTime(), "display_name": str(), "given_name": str(), "surname": str(),
+			"email_verified": boolean(), "require_password_change": boolean(), "updated_at": dateTime()})},
 	"GET /admin/users/{userID}/attributes": {http.StatusOK, nil, object([]string{"user_id", "attributes"}, map[string]jsonSchema{
 		"user_id": uuidStr(), "attributes": arrayOf(openObject())})},
 	"GET /admin/users/{userID}/factors": {http.StatusOK, nil, object([]string{"user_id", "factors"}, map[string]jsonSchema{

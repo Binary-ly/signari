@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -150,22 +151,71 @@ func TestAClientReadNeverReturnsCredentialMaterial(t *testing.T) {
 }
 
 // The same, for users: no password hash, no TOTP secret, no recovery codes.
+//
+// A planted password and the hash stored for it must appear nowhere, and no
+// field may be named for a credential unless it is a flag about one: since the
+// read shows what PATCH sets (6.08), it says require_password_change, so a
+// body that never says "password" is no longer the property.
 func TestAUserReadNeverReturnsCredentialMaterial(t *testing.T) {
 	s, _ := newTestServer(t)
-	userID := newDriftUser(t, s)
+	ctx := context.Background()
+	planted := fmt.Sprintf("planted-%d-pw", time.Now().UnixNano())
+	email := fmt.Sprintf("cred-read-%d@example.test", time.Now().UnixNano())
+	rec := call(t, s, http.MethodPost, "/admin/users", testToken, map[string]any{"org_id": anyOrgID(t, s),
+		"email": email, "password": planted})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("creating the user: %d %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	t.Cleanup(func() { _, _ = s.db.Exec(ctx, `DELETE FROM core.users WHERE id = $1::uuid`, created.ID) })
+	var stored string
+	if err := s.db.QueryRow(ctx, `SELECT hash FROM core.password_credentials WHERE user_id = $1::uuid`,
+		created.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	flags := map[string]bool{"require_password_change": true}
 
-	for _, path := range []string{"/admin/users/" + userID, "/admin/users"} {
+	for _, path := range []string{"/admin/users/" + created.ID, "/admin/users/" + newDriftUserWithTOTP(t, s),
+		"/admin/users?email=" + url.QueryEscape(email)} {
 		rec := httptest.NewRecorder()
 		s.Routes().ServeHTTP(rec, adminReq(t, http.MethodGet, path, "", ""))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s gave %d: %s", path, rec.Code, rec.Body.String())
 		}
-		body := strings.ToLower(rec.Body.String())
-		for _, forbidden := range []string{"hash", "secret", "recovery_code", "password"} {
-			if strings.Contains(body, forbidden) {
-				t.Errorf("%s leaked %q: %s", path, forbidden, rec.Body.String())
+		for _, v := range []string{planted, stored} {
+			if strings.Contains(rec.Body.String(), v) {
+				t.Errorf("%s returned a password or its stored hash: %s", path, rec.Body.String())
 			}
 		}
+		var decoded any
+		if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		var walk func(v any)
+		walk = func(v any) {
+			switch x := v.(type) {
+			case map[string]any:
+				for k, e := range x {
+					for _, forbidden := range []string{"hash", "secret", "recovery_code", "password", "totp"} {
+						if !strings.Contains(strings.ToLower(k), forbidden) {
+							continue
+						}
+						if _, isFlag := e.(bool); !flags[k] || !isFlag {
+							t.Errorf("%s returned a field %q: %v", path, k, e)
+						}
+					}
+					walk(e)
+				}
+			case []any:
+				for _, e := range x {
+					walk(e)
+				}
+			}
+		}
+		walk(decoded)
 	}
 }
 

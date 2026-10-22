@@ -279,16 +279,38 @@ func likePrefix(p string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p) + "%"
 }
 
+// userDetail is one user read: the summary and every field PATCH sets or
+// clears (6.08). The read returned the summary alone, so a caller that set a
+// person's name, or asked for a new password at the next sign-in, could not
+// read back what it wrote, and an address change that cleared the
+// verification could not be seen to have.
+type userDetail struct {
+	userSummary
+	DisplayName           string `json:"display_name"`
+	GivenName             string `json:"given_name"`
+	Surname               string `json:"surname"`
+	EmailVerified         bool   `json:"email_verified"`
+	RequirePasswordChange bool   `json:"require_password_change"`
+	UpdatedAt             string `json:"updated_at"`
+}
+
 func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	userID := r.PathValue("userID")
 
-	var u userSummary
+	var u userDetail
 	err := s.db.QueryRow(ctx, `
-		SELECT id::text, org_id::text, coalesce(email, ''), coalesce(username, ''),
-		       status, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
-		  FROM core.users WHERE id = $1::uuid`, userID).
-		Scan(&u.ID, &u.OrgID, &u.Email, &u.Username, &u.Status, &u.CreatedAt)
+		SELECT u.id::text, u.org_id::text, coalesce(u.email, ''), coalesce(u.username, ''),
+		       u.status, to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'),
+		       coalesce(u.display_name, ''), coalesce(u.given_name, ''), coalesce(u.surname, ''),
+		       u.email_verified_at IS NOT NULL, coalesce(pc.must_change, false),
+		       to_char(u.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
+		  FROM core.users u
+		  LEFT JOIN core.password_credentials pc ON pc.user_id = u.id
+		 WHERE u.id = $1::uuid`, userID).
+		Scan(&u.ID, &u.OrgID, &u.Email, &u.Username, &u.Status, &u.CreatedAt,
+			&u.DisplayName, &u.GivenName, &u.Surname, &u.EmailVerified, &u.RequirePasswordChange,
+			&u.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user_not_found"})
 		return

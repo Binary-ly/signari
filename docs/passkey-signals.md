@@ -334,3 +334,17 @@ The directory's `delete userPassword` passes the same rule. It used to delete th
 password of somebody with no passkey at all, leaving an account nobody could sign
 in to. A person without a password sets one through account recovery. Signing up
 with a passkey in place of a password is not built yet.
+
+## A passkey that stops being backed up
+
+A synced passkey reports, on each sign-in, whether it is backed up (the BS flag
+of WebAuthn §6.1.3). When it goes from backed up to not, through a backup service
+turned off or failing, losing that one device would lose the passkey. The
+specification says the relying party "SHOULD guide the user through a process
+to validate their other authentication factors". So besides
+`mfa.passkey_backup_lost`, the person is told, by mail and by text where a
+number is verified, naming the passkey and linking to their security page, where
+they can see what else signs them in and add another. They are told once per
+transition: the new state is stored with the sign-in, so the next one from it
+says nothing until the passkey is backed up again and loses it again. Until
+October 2026 only the audit record was written.

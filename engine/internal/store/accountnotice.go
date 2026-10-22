@@ -54,6 +54,9 @@ const (
 	// NoticeNewDevice: a sign-in from a browser and system none of the
 	// person's recent sessions used (5.21); Device names it.
 	NoticeNewDevice = "new_device"
+	// NoticePasskeyBackupLost: a passkey that was backed up says it no longer
+	// is (5.23); Passkey names it.
+	NoticePasskeyBackupLost = "passkey_backup_lost"
 )
 
 // ApproveUser activates a pending account in tx and queues the notice telling
@@ -86,6 +89,8 @@ type AccountNotice struct {
 	Provider string `json:"provider,omitempty"`
 	// Device is the browser and system a NoticeNewDevice names.
 	Device string `json:"device,omitempty"`
+	// Passkey is the name of the passkey a NoticePasskeyBackupLost concerns.
+	Passkey string `json:"passkey,omitempty"`
 }
 
 // EnqueueAccountNotice queues a notice in tx.

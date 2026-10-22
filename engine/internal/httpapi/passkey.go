@@ -747,8 +747,11 @@ func (s *Server) recordAssertion(ctx context.Context, tx pgx.Tx, cred *webauthn.
 	// §6.1.3: a BS transition from 1 to 0 means the credential is no longer
 	// backed up, so the user is one lost device away from losing this factor.
 	// The specification says the relying party "SHOULD guide the user through a
-	// process to validate their other authentication factors". We record it;
-	// the user-facing prompt is a product decision and is item 9k.
+	// process to validate their other authentication factors" (specs/
+	// webauthn.txt:5039). Recorded, and the person told, with the way to their
+	// other factors and to another passkey (5.23); it was recorded only. Told
+	// once per transition: the flag stored below is the new 0, so the next
+	// assertion from the same state says nothing.
 	if stored.BackupState && !cred.Flags.BackupState {
 		s.log.Warn("passkey is no longer backed up; the user may be one device loss "+
 			"from losing this credential", "user_id", resolvedUser,
@@ -759,6 +762,15 @@ func (s *Server) recordAssertion(ctx context.Context, tx pgx.Tx, cred *webauthn.
 			Detail:        map[string]any{"rp_id": stored.RPID},
 		}); aerr != nil {
 			s.log.Error("auditing a passkey backup-state change", "err", aerr)
+		}
+		name := stored.FriendlyName
+		if name == "" {
+			name = "Passkey"
+		}
+		if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: resolvedUser,
+			Notice: store.NoticePasskeyBackupLost, Passkey: name}); err != nil {
+			s.log.Error("queueing the passkey backup notice", "err", err)
+			return false, err
 		}
 	}
 

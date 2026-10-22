@@ -195,17 +195,19 @@ func passwordChangedAt(t *testing.T, f *tokenFixture) time.Time {
 // A flow naming a stage this engine cannot run must refuse the reset and leave
 // the credential untouched.
 //
-// `mfa` is the realistic case and the reason this matters: an operator demanding
-// a second factor before a password reset. Skipping it would reset the password
-// having proved strictly less than the file requires -- the original bug, one
-// level down, and in the direction that costs a real security control.
+// `mfa` was the realistic case, an operator demanding a second factor before a
+// password reset, until the reset half learned to run it (5.12). `passkey`, a
+// proof the reset page does not take, stands in for it now: skipping it would
+// reset the password having proved strictly less than the file requires -- the
+// original bug, one level down, and in the direction that costs a real
+// security control.
 //
 // Parse refuses such a flow (flow.drivable), so it can only arrive around it;
 // this is the driver's own refusal, kept as the last line.
 func TestARecoveryFlowNamingAnUndrivableStageRefusesAndChangesNothing(t *testing.T) {
 	f := newTokenFixture(t)
 	placeUnparsedFlow(t, f.srv, f.orgID, flow.Recovery,
-		flow.StageIdentify, flow.StageEmailOTP, flow.StageMFA, flow.StagePasswordChange, flow.StageDone)
+		flow.StageIdentify, flow.StageEmailOTP, flow.StagePasskey, flow.StagePasswordChange, flow.StageDone)
 	givePassword(t, f)
 	token := newResetToken(t, f)
 	before := passwordChangedAt(t, f)
@@ -228,7 +230,7 @@ func TestARecoveryFlowNamingAnUndrivableStageRefusesAndChangesNothing(t *testing
 func TestAnUndrivableRecoveryStageIsReportedBeforeThePasswordIsJudged(t *testing.T) {
 	f := newTokenFixture(t)
 	placeUnparsedFlow(t, f.srv, f.orgID, flow.Recovery,
-		flow.StageIdentify, flow.StageEmailOTP, flow.StageMFA, flow.StagePasswordChange, flow.StageDone)
+		flow.StageIdentify, flow.StageEmailOTP, flow.StagePasskey, flow.StagePasswordChange, flow.StageDone)
 	token := newResetToken(t, f)
 
 	// Deliberately too short. A driver that checked the password first would

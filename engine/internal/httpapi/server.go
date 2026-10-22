@@ -696,6 +696,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /recover/cancel", s.handleRecoverCancel)
 	mux.HandleFunc("GET /recover/reset", s.handleResetGet)
 	mux.HandleFunc("POST /recover/reset", s.handleResetPost)
+	mux.HandleFunc("POST /recover/reset/factor", s.handleResetFactor)
 	mux.HandleFunc("GET /account/mfa/totp", s.handleTOTPPage)
 	mux.HandleFunc("POST /account/mfa/totp/start", s.handleTOTPStart)
 	mux.HandleFunc("POST /account/mfa/totp", s.handleTOTPConfirm)

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/flow"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
 
@@ -320,22 +322,166 @@ func (s *Server) handleResetGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if lerr != nil && !errors.Is(lerr, store.ErrRecoveryPending) {
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
+		return
+	}
+	plan, unsupported, flowName := s.recoveryResetPlan(r.Context(), req.OrgID)
+	if unsupported != "" {
+		s.refuseRecoveryStage(w, r, unsupported, flowName)
+		return
+	}
+	s.renderReset(w, r, req, token, csrf, errors.Is(lerr, store.ErrRecoveryPending), plan, "", "")
+}
+
+// recoveryResetFallback is the reset half's plan when no recovery flow is
+// configured.
+var recoveryResetFallback = []flow.StageName{flow.StageIdentify, flow.StageEmailOTP,
+	flow.StagePasswordChange, flow.StageDone}
+
+// recoveryResetPlan is the reset half's plan, under the organisation of the
+// account the link names.
+func (s *Server) recoveryResetPlan(ctx context.Context, orgID string) ([]flow.StageName, flow.StageName, string) {
+	return s.recoveryPlan(ctx, orgID, flow.State{string(flow.CondCaptchaRequired): false}, recoveryResetFallback)
+}
+
+// renderReset shows what the link leads to now (5.12): the wait, with a second
+// factor offered to skip it; a second factor the flow's mfa stage requires; or
+// the new-password form.
+//
+// A second factor is offered only to whoever holds the link, which already
+// proved the mailbox, so saying the account has one tells them nothing the
+// account's own sign-in page would not. Email is never one of them: it is what
+// the link came by.
+func (s *Server) renderReset(w http.ResponseWriter, r *http.Request, req *store.RecoveryRequest,
+	token, csrf string, pending bool, plan []flow.StageName, msg, notice string) {
+	ctx := r.Context()
+	factors, err := store.RecoveryFactorsOf(ctx, s.db, req.UserID)
+	if err != nil {
+		s.log.Error("reading the recovering person's second factors", "err", err)
+	}
+	data := map[string]any{"Token": token, "CSRF": csrf, "CSRFField": csrfFormField,
+		"Error": msg, "Notice": notice, "SMS": factors.SMS}
+	needFactor := planHasStage(plan, flow.StageMFA) && req.WaivedBy == ""
 	switch {
-	case errors.Is(lerr, store.ErrRecoveryPending):
+	case pending:
 		// Told exactly when, because "try again later" with no time is advice
 		// nobody can act on.
-		s.renderPage(w, r, "reset", map[string]any{
-			"Pending": true,
-			"When":    req.EffectiveAt.UTC().Format("15:04 MST on 2 January"),
-			"Wait":    time.Until(req.EffectiveAt).Round(time.Minute).String(),
-		})
-	case lerr != nil:
-		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
+		data["Pending"] = true
+		data["When"] = req.EffectiveAt.UTC().Format("15:04 MST on 2 January")
+		data["Wait"] = time.Until(req.EffectiveAt).Round(time.Minute).String()
+		data["Factor"] = factors.Any()
+	case needFactor && !factors.Any():
+		data["Error"] = s.tr(r).T("error.reset.nofactor")
+	case needFactor:
+		data["Factor"], data["FactorRequired"] = true, true
 	default:
-		s.renderPage(w, r, "reset", map[string]any{
-			"Ready": true, "Token": token, "CSRF": csrf, "CSRFField": csrfFormField,
-		})
+		data["Ready"] = true
 	}
+	s.renderPage(w, r, "reset", data)
+}
+
+// handleResetFactor takes a second factor from whoever holds the link (5.12):
+// a waiver of the delay, and the proof an mfa stage before the reset needs.
+// The second-factor budget applies, keyed by the account, as at sign-in: the
+// link holder is the one guessing.
+func (s *Server) handleResetFactor(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "malformed form", http.StatusBadRequest)
+		return
+	}
+	if !checkCSRF(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	token := r.PostForm.Get("token")
+	_, hash, err := hashRecoveryToken(token)
+	if err != nil {
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.invalid")})
+		return
+	}
+	rtx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	req, lerr := store.LookupRecovery(ctx, rtx, hash, time.Now())
+	_ = rtx.Rollback(ctx)
+	if lerr != nil && !errors.Is(lerr, store.ErrRecoveryPending) {
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
+		return
+	}
+	pending := errors.Is(lerr, store.ErrRecoveryPending)
+	plan, unsupported, flowName := s.recoveryResetPlan(ctx, req.OrgID)
+	if unsupported != "" {
+		s.refuseRecoveryStage(w, r, unsupported, flowName)
+		return
+	}
+	csrf, cerr := s.csrfToken(w, r)
+	if cerr != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	if r.PostForm.Get("send") == "sms" {
+		s.sendSMSOTPIfEnrolled(ctx, req.UserID)
+		s.renderReset(w, r, req, token, csrf, pending, plan, "", s.tr(r).Text("reset.factor.smssent"))
+		return
+	}
+
+	ip := clientIP(r)
+	if ip == "" {
+		ip = "unknown"
+	}
+	if !s.allowSecondFactorAttempt(ctx, w, req.UserID, ip) {
+		return
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	res, err := s.verifyCode(ctx, tx, req.UserID, strings.TrimSpace(r.PostForm.Get("code")), false)
+	switch {
+	case err != nil:
+		_ = tx.Rollback(ctx)
+		s.log.Error("verifying a second factor during recovery", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	case res.Replayed:
+		_ = tx.Rollback(ctx)
+		s.renderReset(w, r, req, token, csrf, pending, plan, s.tr(r).Text("error.reset.factor.replayed"), "")
+		return
+	case !res.OK:
+		// Committed, as at sign-in: the failure counters must outlive the refusal.
+		if err := tx.Commit(ctx); err != nil {
+			s.log.Error("committing a failed second factor during recovery", "err", err)
+		}
+		s.recordSecondFactorFailure(ctx, req.UserID, ip)
+		s.factorsDisabled(ctx, req.OrgID, req.UserID, res.Disabled)
+		s.renderReset(w, r, req, token, csrf, pending, plan, s.tr(r).Text("error.reset.factor"), "")
+		return
+	}
+	factor := strings.Join(res.AMR, ",")
+	if err := store.WaiveRecoveryDelay(ctx, tx, req.ID, factor); err != nil {
+		_ = tx.Rollback(ctx)
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
+		return
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "account.recovery_factor_proven", OrgID: req.OrgID, SubjectID: req.UserID,
+		CorrelationID: correlationID(ctx), Detail: map[string]any{"factor": factor, "was_pending": pending},
+	}); err != nil {
+		s.log.Error("auditing a second factor proven during recovery", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	http.Redirect(w, r, "/recover/reset?token="+url.QueryEscape(token), http.StatusSeeOther)
 }
 
 // handleResetPost sets the new password.
@@ -386,10 +532,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	// Checked BEFORE the password is validated or anything is written. A flow
 	// naming a stage this engine cannot run must refuse the journey with the
 	// account untouched, not after the credential has been replaced.
-	plan, unsupported, flowName := s.recoveryPlan(ctx, req.OrgID,
-		flow.State{string(flow.CondCaptchaRequired): false},
-		[]flow.StageName{flow.StageIdentify, flow.StageEmailOTP, flow.StagePasswordChange, flow.StageDone},
-	)
+	plan, unsupported, flowName := s.recoveryResetPlan(ctx, req.OrgID)
 	if unsupported != "" {
 		s.refuseRecoveryStage(w, r, unsupported, flowName)
 		return
@@ -410,6 +553,17 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 			"account recovery is misconfigured: the recovery flow changes no credential")
 		return
 	}
+	csrf, cerr := s.csrfToken(w, r)
+	if cerr != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	// The flow's mfa stage, before the reset (5.12): a second factor proven on
+	// the link's page, or nothing is changed.
+	if planHasStage(plan, flow.StageMFA) && req.WaivedBy == "" {
+		s.renderReset(w, r, req, r.PostForm.Get("token"), csrf, false, plan, s.tr(r).Text("error.reset.factorfirst"), "")
+		return
+	}
 
 	// The full policy runs HERE rather than at the top, because reuse and
 	// context checks need to know whose password this is -- and that is only
@@ -425,8 +579,12 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	}
 	identity, _ := store.EmailForUser(ctx, s.db, req.UserID)
 	if res, cerr := s.pwPolicy.Check(ctx, password, identity, previous, s.hasher); cerr != nil {
+		// With the CSRF token: the form was re-rendered without one, so the
+		// second password a person tried after a refused first could never be
+		// submitted.
 		s.renderPage(w, r, "reset", map[string]any{
 			"Ready": true, "Token": r.PostForm.Get("token"), "Error": cerr.Error(),
+			"CSRF": csrf, "CSRFField": csrfFormField,
 		})
 		return
 	} else if s.pwPolicy.Breach != nil && !res.BreachCheckRan {
@@ -491,6 +649,28 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		trChanged.Text("mail.password.changed.subject"),
 		trChanged.Text("mail.password.changed.body"),
 		trChanged.Text("sms.password.changed"))
+
+	// Ending signed in, where the flow says `session` (5.12). After the reset
+	// has committed and in a transaction of its own, because completeSignIn
+	// abandons its transaction when a prompt is owed, and the new password
+	// must not go with it. It is the organisation's sign-in from here, so a
+	// sign-in flow that wants more -- a second factor not proven here -- asks.
+	// The person now knows the password they just chose, which is what amr says;
+	// a factor proven on the way adds itself, and two make it multi-factor.
+	if planHasStage(plan, flow.StageSession) {
+		amr := []string{"pwd"}
+		if req.WaivedBy != "" {
+			amr = append(append(amr, strings.Split(req.WaivedBy, ",")...), oauth.AMRMFA)
+		}
+		stx, err := s.db.Begin(ctx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+		defer func() { _ = stx.Rollback(ctx) }()
+		s.completeSignIn(w, r, stx, req.UserID, req.OrgID, amr, "")
+		return
+	}
 	s.renderPage(w, r, "done", map[string]any{})
 }
 

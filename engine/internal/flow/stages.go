@@ -305,7 +305,8 @@ var drivable = map[Designation][]StageName{
 	},
 	Enrolment: {StageCaptcha, StagePrompt, StageCreateUser, StageDeny, StageDone},
 	Recovery: {
-		StageCaptcha, StageIdentify, StageEmailOTP, StagePasswordChange, StageDeny, StageDone,
+		StageCaptcha, StageIdentify, StageEmailOTP, StageMFA, StagePasswordChange,
+		StageDeny, StageDone, StageSession,
 	},
 	// The proving stages are settled by the recent sign-in the page requires,
 	// each only by its own proof, as at sign-in; done deletes the account.

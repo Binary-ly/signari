@@ -104,11 +104,28 @@ nothing walked this designation, and deletion was an operator's act only.
 ### What a recovery flow governs, and what it refuses
 
 Recovery is two requests separated by an email, so the flow is consulted twice:
-`captcha` and `identify` at `/recover`, then `email_otp`, `password_change` and
-the terminal at `/recover/reset`.
+`captcha` and `identify` at `/recover`, then `email_otp`, `mfa`, `password_change`
+and the terminal at `/recover/reset`.
 
-A stage the engine cannot execute in a recovery journey — `mfa` before a reset,
-`sms_otp` as the proving channel, `passkey` recovery — **refuses the file** when
+`mfa` before `password_change` asks whoever holds the link for a second factor
+before the new-password form appears: an authenticator app's code, a recovery
+code, or a code texted to the account's phone. Never an emailed code, which goes
+to the mailbox the link already proved. Somebody with none is told to ask an
+administrator, and nothing is changed. The terminal may be `session`, which ends
+the reset signed in through the organisation's ordinary sign-in from there; a
+sign-in flow that wants more than the new password and any factor proven on the
+way asks for it.
+
+A second factor proven on the link's page also **waives the reset delay**, with
+or without an `mfa` stage. The delay is the window in which somebody who took
+over the mailbox can be stopped by the owner cancelling, and a second factor is
+what that somebody does not have. While the delay runs, the page offers the
+factor in place of waiting, and the reset is recorded as waived by it
+(`account.recovery_factor_proven`, then `account.password_reset` with
+`waived_by`). Until October 2026 the waiver existed and nothing called it.
+
+A stage the engine cannot execute in a recovery journey — `sms_otp` as the
+proving channel, `passkey` recovery — **refuses the file** when
 it is parsed, like any stage a journey does not run (see [Stages](#stages)).
 Skipping it would reset the password having proved less than the file requires,
 which is the failure the flow engine exists to prevent. A flow that reaches the
@@ -170,7 +187,7 @@ stage.
 |---|---|
 | `authentication` | `mfa`, `enrol_mfa`, `verify_email`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the authorization endpoint |
 | `enrolment` | `captcha`, `prompt`, `create_user`, `deny`, `done` |
-| `recovery` | `captcha`, `identify`, `email_otp`, `password_change`, `deny`, `done` |
+| `recovery` | `captcha`, `identify`, `email_otp`, `mfa`, `password_change`, `deny`, `done`, `session` |
 | `unenrolment` | `password`, `passkey`, `kerberos`, `federated`, settled by the recent sign-in that reached `/account/delete`, each only by its own proof; `deny`; `done`, where the account is erased |
 
 The rest wait for a driver: `delegated` and `certificate` (a source the flow

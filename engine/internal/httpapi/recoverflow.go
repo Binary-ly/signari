@@ -80,12 +80,21 @@ import (
 // reset, `sms_otp` as the proving channel, `passkey` recovery: each is a
 // coherent thing to write and none of them runs, so each stops the journey
 // rather than being skipped.
+//
+// Since 5.12 two more run in the reset half:
+//   - mfa             a second factor proven on the link's page before the
+//     reset: an authenticator, a text-message code or a recovery code, never
+//     email, which is what the link came by (handleResetFactor)
+//   - session         the other terminal: the person ends signed in, through
+//     the organisation's ordinary sign-in from there
 var recoveryDrivableStages = map[flow.StageName]bool{
 	flow.StageCaptcha:        true,
 	flow.StageIdentify:       true,
 	flow.StageEmailOTP:       true,
+	flow.StageMFA:            true,
 	flow.StagePasswordChange: true,
 	flow.StageDone:           true,
+	flow.StageSession:        true,
 }
 
 // recoveryPlan returns the stages in force, and whether every one of them can be

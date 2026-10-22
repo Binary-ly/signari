@@ -473,6 +473,13 @@ type secondFactorResult struct {
 // typing errors disable the codes kept for the day the phone is gone. Email and
 // SMS codes count their own attempts per code (store.VerifyEmailOTP).
 func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code string) (secondFactorResult, error) {
+	return s.verifyCode(ctx, tx, userID, code, true)
+}
+
+// verifyCode is verifySecondFactor with the email code optional. A recovery
+// leaves it out (5.12): the link already proved the mailbox, so a code sent to
+// a mailbox is no second factor there.
+func (s *Server) verifyCode(ctx context.Context, tx pgx.Tx, userID, code string, withEmail bool) (secondFactorResult, error) {
 	var res secondFactorResult
 	cred, err := store.LoadTOTP(ctx, tx, userID, s.cfg.Root)
 	switch {
@@ -506,11 +513,15 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 	// Email code next. Checked before recovery codes because it is the factor a
 	// user who chose it will actually be holding -- and because a recovery code
 	// is the last resort, not the second guess.
-	ok, emailGuessed, eerr := store.VerifyEmailOTP(ctx, tx, userID, strings.TrimSpace(code))
-	if eerr != nil {
-		return res, eerr
-	} else if ok {
-		return secondFactorResult{AMR: []string{"otp"}, OK: true}, nil
+	var emailGuessed bool
+	if withEmail {
+		ok, guessed, eerr := store.VerifyEmailOTP(ctx, tx, userID, strings.TrimSpace(code))
+		if eerr != nil {
+			return res, eerr
+		} else if ok {
+			return secondFactorResult{AMR: []string{"otp"}, OK: true}, nil
+		}
+		emailGuessed = guessed
 	}
 
 	// SMS. The amr value is "sms", NOT "otp".

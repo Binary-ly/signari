@@ -34,9 +34,10 @@ func TestAStageTheJourneyCannotRunIsRefused(t *testing.T) {
 		{Authentication, "[sms_otp, session]", "sms_otp"},
 		{Enrolment, "[enrol_mfa, create_user, done]", "enrol_mfa"},
 		{Enrolment, "[identify, create_user, done]", "identify"},
-		{Recovery, "[identify, email_otp, mfa, password_change, done]", "mfa"},
+		// mfa and session became drivable in recovery (5.12); these stay refused.
+		{Recovery, "[identify, email_otp, passkey, password_change, done]", "passkey"},
 		{Recovery, "[identify, sms_otp, password_change, done]", "sms_otp"},
-		{Recovery, "[identify, email_otp, password_change, session]", "session"},
+		{Recovery, "[identify, email_otp, prompt, password_change, session]", "prompt"},
 	} {
 		_, err := Parse([]byte(oneFlow(c.on, c.stages)))
 		if err == nil {

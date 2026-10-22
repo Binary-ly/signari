@@ -123,6 +123,51 @@ func LookupRecovery(ctx context.Context, tx pgx.Tx, tokenHash []byte, now time.T
 	return &r, nil
 }
 
+// WaiveRecoveryDelay records that whoever holds the link proved a second factor
+// (5.12), naming it: the request is usable at once, as one made with a proven
+// factor always was -- the delay defends against a mailbox thief, who does not
+// have the factor -- and a flow's mfa stage before the reset is satisfied.
+func WaiveRecoveryDelay(ctx context.Context, tx pgx.Tx, requestID, factor string) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE core.recovery_requests SET effective_at = least(effective_at, now()), waived_by = $2
+		 WHERE id = $1::uuid AND cancelled_at IS NULL AND consumed_at IS NULL AND expires_at > now()`,
+		requestID, factor)
+	if err != nil {
+		return fmt.Errorf("waiving the recovery delay: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrRecoveryNotFound
+	}
+	return nil
+}
+
+// RecoveryFactors are the second factors a person can prove during a recovery:
+// never email, which is what the link itself arrived by.
+type RecoveryFactors struct {
+	TOTP, SMS, RecoveryCodes bool
+}
+
+// Any reports whether there is one.
+func (f RecoveryFactors) Any() bool { return f.TOTP || f.SMS || f.RecoveryCodes }
+
+// RecoveryFactorsOf reads which a person holds.
+func RecoveryFactorsOf(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID string) (RecoveryFactors, error) {
+	var f RecoveryFactors
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.totp_credentials WHERE user_id = $1::uuid
+		                  AND confirmed_at IS NOT NULL AND disabled_at IS NULL),
+		       EXISTS (SELECT 1 FROM core.sms_otp_credentials WHERE user_id = $1::uuid
+		                  AND verified_at IS NOT NULL AND disabled_at IS NULL),
+		       EXISTS (SELECT 1 FROM core.recovery_codes WHERE user_id = $1::uuid AND used_at IS NULL)`,
+		userID).Scan(&f.TOTP, &f.SMS, &f.RecoveryCodes)
+	if err != nil {
+		return f, fmt.Errorf("reading a person's second factors: %w", err)
+	}
+	return f, nil
+}
+
 // CancelRecovery kills a pending request by its cancel token.
 //
 // Idempotent and deliberately quiet: the link is clicked from an email, possibly

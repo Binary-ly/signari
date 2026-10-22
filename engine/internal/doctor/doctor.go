@@ -161,6 +161,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkAuthorizationModels(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkGrantsToNoGroup(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	if err := checkFederationAnchor(ctx, conn, r); err != nil {
 		return nil, err
 	}
@@ -1031,6 +1034,44 @@ func checkAuthorizationModels(ctx context.Context, conn interface {
 				"request to that action, and max_risk denies none", slug, strings.Join(u, "; ")),
 				"remove those requirements and set the model again with `signari authz set-model`")
 		}
+	}
+	return rows.Err()
+}
+
+// checkGrantsToNoGroup names relations granted to a group that does not exist.
+// Since migration 0179 a group's deletion takes its relations with it. Before,
+// they stayed, and a group created later under the same name held every one.
+// A grant made ahead of the sync that will create its group looks the same,
+// so this reports rather than removes.
+func checkGrantsToNoGroup(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
+	r.ran("grants to groups")
+	rows, err := conn.Query(ctx, `
+		SELECT o.slug, count(*), array_agg(DISTINCT r.subject_id ORDER BY r.subject_id)
+		  FROM core.relations r JOIN core.organizations o ON o.id = r.org_id
+		 WHERE r.subject_type = 'group'
+		   AND NOT EXISTS (SELECT 1 FROM core.groups g WHERE g.org_id = r.org_id AND g.name = r.subject_id)
+		 GROUP BY o.slug ORDER BY o.slug`)
+	if err != nil {
+		return fmt.Errorf("reading grants to groups: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug string
+		var n int
+		var names []string
+		if err := rows.Scan(&slug, &n, &names); err != nil {
+			return err
+		}
+		shown := names
+		if len(shown) > 5 {
+			shown = append(shown[:5:5], fmt.Sprintf("and %d more", len(names)-5))
+		}
+		r.add(Warning, "authorization", fmt.Sprintf("%d relation(s) in %s are granted to groups that "+
+			"do not exist (%s): a group created under one of those names holds all of them",
+			n, slug, strings.Join(shown, ", ")),
+			"revoke each with `signari authz revoke`, unless it was granted ahead of the sync that creates the group")
 	}
 	return rows.Err()
 }

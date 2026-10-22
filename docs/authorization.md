@@ -219,6 +219,17 @@ Grants can expire (`expires_at`), and an expired grant stops working **at the
 moment it expires**, because the check is in the query rather than in a sweep. A
 janitor-swept expiry means temporary access lasts until the next pass.
 
+**Deleting a person or a group deletes their grants**, in the same statement,
+however the deletion happens: the Admin API, `signari apply`, an LDAP write, a
+directory or SCIM source, or erasure. A person's grants go whether they were made
+to their id, their address or their username, and so do grants made *on* them as
+an object. A grant names its subject by text, so nothing else would remove it.
+Until October 2026 nothing did, and a group created later under a deleted group's
+name held every grant the old one had. A grant made to a group that does not
+exist yet is kept, because that is also how access is granted ahead of the sync
+that creates the group. `signari doctor` warns about each one, since a group
+created under that name receives it.
+
 Group grants are resolved by us: the caller does not say which groups the subject
 is in. `search/subject` expands a group grant to its **members**, because "who can
 read this" is a question about people and answering `group:finance` is true and

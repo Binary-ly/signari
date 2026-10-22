@@ -160,12 +160,23 @@ func (s *Server) noteRemember(w http.ResponseWriter, r *http.Request) {
 }
 
 // forgetRemember drops the choice once a sign-in has used it: the one the
-// request brought, or the one noteRemember set in this same response when the
+// request brought, and the one noteRemember set in this same response when the
 // form that asked also completed the sign-in. Clearing only the first left the
 // second for fifteen minutes, and the next person to sign in on the browser
-// was signed in to stay without asking.
+// was signed in to stay without asking. The second is taken back out of the
+// response rather than followed by a deletion: a response that sets a cookie
+// and then clears it relies on the client applying the two in order.
 func (s *Server) forgetRemember(w http.ResponseWriter, r *http.Request) {
-	if _, err := r.Cookie(RememberCookieName); err != nil && r.FormValue(stayField) != "1" {
+	if set := w.Header()["Set-Cookie"]; len(set) > 0 {
+		kept := set[:0]
+		for _, h := range set {
+			if !strings.HasPrefix(h, RememberCookieName+"=") {
+				kept = append(kept, h)
+			}
+		}
+		w.Header()["Set-Cookie"] = kept
+	}
+	if _, err := r.Cookie(RememberCookieName); err != nil {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{

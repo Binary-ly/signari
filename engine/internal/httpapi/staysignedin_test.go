@@ -118,6 +118,15 @@ func TestStayingSignedInIsNotInheritedByTheNextSignIn(t *testing.T) {
 	if b.value(RememberCookieName) != "" {
 		t.Error("the choice outlived the sign-in it was made for")
 	}
+	// Not set and cleared in one response either, which leaves the cookie to
+	// whichever client applies them out of order.
+	page := b.get("/login")
+	rec := b.post("/login", page, url.Values{"username": {f.email}, "password": {signInTestPassword}, stayField: {"1"}})
+	for _, h := range rec.Header()["Set-Cookie"] {
+		if strings.HasPrefix(h, RememberCookieName+"=") {
+			t.Errorf("a sign-in that completed at once still says %q", h)
+		}
+	}
 	if c := signIn(url.Values{}); c == nil || c.MaxAge != 0 {
 		t.Errorf("the next sign-in, not asked: %+v, want a browser-session cookie", c)
 	}

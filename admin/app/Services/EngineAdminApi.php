@@ -24,6 +24,11 @@ class EngineAdminApi
         private readonly string $baseUrl,
         private readonly string $token,
         private readonly int $timeoutSeconds = 5,
+        // The signed-in console user, sent as Signari-Operator so the engine's
+        // audit record names who acted and not only the console's token: two
+        // people on one token were one actor in the trail. An opaque reference,
+        // never an address, because the trail is append-only.
+        private readonly ?string $operator = null,
     ) {
         if ($this->token === '') {
             throw new RuntimeException(
@@ -35,9 +40,12 @@ class EngineAdminApi
 
     public static function fromConfig(): self
     {
+        $user = auth()->id();
+
         return new self(
             rtrim((string) env('SIGNARI_ADMIN_URL', 'http://127.0.0.1:8090'), '/'),
             (string) env('SIGNARI_ADMIN_TOKEN', ''),
+            operator: $user === null ? null : 'console-user:'.$user,
         );
     }
 
@@ -282,6 +290,10 @@ class EngineAdminApi
                 // committed, and retrying it blindly would be a second mutation
                 // whose only visible effect is another config_version bump.
                 ->acceptJson();
+
+            if ($this->operator !== null) {
+                $request = $request->withHeaders(['Signari-Operator' => $this->operator]);
+            }
 
             if ($ifMatch !== null) {
                 // Quoted, because RFC 7232 does not permit a bare entity-tag and

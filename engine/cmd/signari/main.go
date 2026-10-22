@@ -404,6 +404,11 @@ func run(args []string) (err error) {
 		"`client set-logout`: https URI loaded in a frame at sign-out, OpenID front-channel logout (empty clears)")
 	frontchannelSID := fs.Bool("frontchannel-sid", true,
 		"`client set-logout`: add iss and sid to the front-channel logout URI (the stored default)")
+	backchannelURI := fs.String("backchannel-uri", "",
+		"`client set-logout`: https URI a logout token is posted to at sign-out, OpenID back-channel "+
+			"logout (empty clears; left alone when not given)")
+	backchannelSID := fs.Bool("backchannel-sid", true,
+		"`client set-logout`: put the session's sid in the logout token (left alone when not given)")
 	exchangeAudiences := fs.String("exchange-audiences", "",
 		"`client set-exchange`: comma-separated audiences this client may exchange tokens for, besides itself")
 	promptFile := fs.String("prompt-file", "", "YAML defining a sign-in prompt")
@@ -1002,7 +1007,21 @@ func run(args []string) (err error) {
 	case "client set-exchange":
 		return clientSetExchange(ctx, conn, *clientID, *mayExchange, *exchangeAudiences)
 	case "client set-logout":
-		return clientSetLogout(ctx, conn, *clientID, *postLogoutRedirects, *frontchannelURI, *frontchannelSID)
+		// The back channel only when asked: dynamic registration sets it too,
+		// and a run about the front channel must not clear it.
+		var backchannel *string
+		var backchannelSession *bool
+		// Not a switch: the dispatch's `case` labels are read as command names.
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "backchannel-uri" {
+				backchannel = backchannelURI
+			}
+			if f.Name == "backchannel-sid" {
+				backchannelSession = backchannelSID
+			}
+		})
+		return clientSetLogout(ctx, conn, *clientID, *postLogoutRedirects, *frontchannelURI, *frontchannelSID,
+			backchannel, backchannelSession)
 	case "client set-lifetimes":
 		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL, *consentTTL)
 	case "client set-alg":
@@ -4581,40 +4600,18 @@ func clientSetKeys(ctx context.Context, conn *pgx.Conn, clientID, jwksPath strin
 		return fmt.Errorf("reading %s: %w", jwksPath, err)
 	}
 
-	// Parsed and checked HERE rather than at first use. A key set that turns out
-	// to be unusable at 3am, during somebody's first token request, is a much
-	// worse discovery than one refused at the moment it is registered.
-	var set jose.JSONWebKeySet
-	if err := json.Unmarshal(raw, &set); err != nil {
-		return fmt.Errorf("%s is not a JWKS document: %w", jwksPath, err)
-	}
-	if len(set.Keys) == 0 {
-		return fmt.Errorf("%s contains no keys", jwksPath)
-	}
-	for _, k := range set.Keys {
-		if !k.IsPublic() {
-			return fmt.Errorf("%s contains PRIVATE key material. Register the public "+
-				"half only -- the whole point of private_key_jwt is that we never hold "+
-				"anything that can authenticate as this client", jwksPath)
-		}
-		if !k.Valid() {
-			return fmt.Errorf("%s contains a key that is not usable", jwksPath)
-		}
-	}
-
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients
-		SET token_endpoint_auth_method = 'private_key_jwt', jwks = $2::jsonb,
-		    client_secret_hash = NULL, updated_at = now()
-		WHERE client_id = $1`, clientID, string(raw))
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
+	// Parsed and checked by store.SetClientKeys, which the Admin API shares
+	// (6.03), rather than at first use: a key set that turns out to be unusable
+	// at somebody's first token request is a much worse discovery.
+	n, err := store.SetClientKeys(ctx, conn, clientID, raw)
+	if errors.Is(err, store.ErrClientNotFound) {
 		return fmt.Errorf("no client with id %q", clientID)
 	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", jwksPath, err)
+	}
 
-	fmt.Printf("%s now authenticates with private_key_jwt (%d key(s))\n", clientID, len(set.Keys))
+	fmt.Printf("%s now authenticates with private_key_jwt (%d key(s))\n", clientID, n)
 	// The secret is dropped, not kept. Leaving it would let an attacker who
 	// obtained it keep authenticating -- the exact thing this change retires.
 	fmt.Println("\n  The client secret has been REMOVED. It would otherwise remain a")
@@ -5714,31 +5711,19 @@ func clientSetTLS(ctx context.Context, conn *pgx.Conn, clientID, subjectDN, sanD
 		if err != nil {
 			return err
 		}
-		block, _ := pem.Decode(b)
-		if block == nil {
-			return fmt.Errorf("%s is not PEM", certPath)
+		if thumb, err = store.CertificateThumbprint(b); err != nil {
+			return fmt.Errorf("%s: %w", certPath, err)
 		}
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return fmt.Errorf("%s did not parse as a certificate: %w", certPath, err)
-		}
-		sum := sha256.Sum256(cert.Raw)
-		thumb = sum[:]
 	}
 
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients
-		SET tls_subject_dn = NULLIF($2,''), tls_san_dns = NULLIF($3,''),
-		    tls_san_uri = NULLIF($4,''), tls_san_ip = NULLIF($5,''),
-		    tls_san_email = NULLIF($6,''), tls_thumbprint = $7,
-		    tls_bound_tokens = $8, updated_at = now()
-		WHERE client_id = $1`,
-		clientID, subjectDN, sanDNS, sanURI, sanIP, sanEmail, thumb, boundTokens)
-	if err != nil {
+	// The rule, exactly one, is store.SetClientTLS's, which the Admin API
+	// shares (6.03).
+	if err := store.SetClientTLS(ctx, conn, clientID, store.ClientTLS{SubjectDN: subjectDN, SANDNS: sanDNS,
+		SANURI: sanURI, SANIP: sanIP, SANEmail: sanEmail, Thumbprint: thumb, BoundTokens: boundTokens}); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
 	}
 
 	method := "tls_client_auth"
@@ -9413,7 +9398,8 @@ func clientSetExchange(ctx context.Context, conn *pgx.Conn, clientID string, may
 // clientSetLogout registers a client's sign-out: where it may be sent after
 // RP-initiated logout, and its front-channel logout URI. All three are set
 // together, so the command's result is exactly what it was given.
-func clientSetLogout(ctx context.Context, conn *pgx.Conn, clientID, postLogout, frontchannel string, sid bool) error {
+func clientSetLogout(ctx context.Context, conn *pgx.Conn, clientID, postLogout, frontchannel string, sid bool,
+	backchannel *string, backchannelSID *bool) error {
 	if clientID == "" {
 		return fmt.Errorf("give -client-id")
 	}
@@ -9431,6 +9417,7 @@ func clientSetLogout(ctx context.Context, conn *pgx.Conn, clientID, postLogout, 
 	uris := strings.Split(postLogout, ",")
 	if err := store.SetClientLogout(ctx, tx, clientID, store.ClientLogout{
 		PostLogoutRedirectURIs: &uris, FrontchannelURI: &frontchannel, FrontchannelSessionRequired: &sid,
+		BackchannelURI: backchannel, BackchannelSessionRequired: backchannelSID,
 	}); err != nil {
 		return err
 	}
@@ -9450,6 +9437,13 @@ func clientSetLogout(ctx context.Context, conn *pgx.Conn, clientID, postLogout, 
 		fmt.Println("  no front-channel logout")
 	} else {
 		fmt.Printf("  front-channel logout %s (iss and sid added: %v)\n", fc, fcSID)
+	}
+	if backchannel != nil {
+		if *backchannel == "" {
+			fmt.Println("  no back-channel logout")
+		} else {
+			fmt.Printf("  back-channel logout %s\n", *backchannel)
+		}
 	}
 	return nil
 }

@@ -248,6 +248,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			PostLogoutRedirectURIs:      &req.PostLogoutRedirectURIs,
 			FrontchannelURI:             &req.FrontchannelLogoutURI,
 			FrontchannelSessionRequired: req.FrontchannelSessionRequired,
+			// Through the writer's check as well as the insert: a registrant's
+			// back-channel URI was stored unchecked, so plaintext or a
+			// fragment was accepted for the endpoint logout tokens are posted
+			// to (6.03).
+			BackchannelURI: &req.LogoutURI,
 		},
 	})
 	if errors.Is(err, store.ErrInvalidLogoutRegistration) || errors.Is(err, store.ErrInvalidClientSetting) {

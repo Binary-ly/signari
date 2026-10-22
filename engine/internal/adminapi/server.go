@@ -20,6 +20,7 @@ package adminapi
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -493,6 +494,67 @@ type patchClientRequest struct {
 	DPoPBoundAccessTokens                 *bool     `json:"dpop_bound_access_tokens"`
 	ExchangeRequiresAudienceMatch         *bool     `json:"exchange_requires_audience_match"`
 	JWTBearerProviders                    *[]string `json:"jwt_bearer_providers"`
+
+	// What only `signari apply` or nothing set: the name, the redirect URIs,
+	// the scopes, the portal fields and the back channel (6.03).
+	DisplayName                      *string   `json:"display_name"`
+	RedirectURIs                     *[]string `json:"redirect_uris"`
+	Scopes                           *[]string `json:"scopes"`
+	InitiateLoginURI                 *string   `json:"initiate_login_uri"`
+	LogoURI                          *string   `json:"logo_uri"`
+	PortalHidden                     *bool     `json:"portal_hidden"`
+	BackchannelLogoutURI             *string   `json:"backchannel_logout_uri"`
+	BackchannelLogoutSessionRequired *bool     `json:"backchannel_logout_session_required"`
+	// The key set moves the client to private_key_jwt and drops its secret,
+	// as `client set-keys` does.
+	JWKS *json.RawMessage `json:"jwks"`
+	// Mutual TLS, as `client set-tls`: any rule field replaces the rule, and
+	// exactly one must then be set; tls_certificate is a self-signed client's
+	// PEM certificate, kept as its thumbprint.
+	TLSSubjectDN   *string `json:"tls_subject_dn"`
+	TLSSANDNS      *string `json:"tls_san_dns"`
+	TLSSANURI      *string `json:"tls_san_uri"`
+	TLSSANIP       *string `json:"tls_san_ip"`
+	TLSSANEmail    *string `json:"tls_san_email"`
+	TLSCertificate *string `json:"tls_certificate"`
+	TLSBoundTokens *bool   `json:"tls_bound_tokens"`
+}
+
+func (req patchClientRequest) setsTLSRule() bool {
+	return req.TLSSubjectDN != nil || req.TLSSANDNS != nil || req.TLSSANURI != nil ||
+		req.TLSSANIP != nil || req.TLSSANEmail != nil || req.TLSCertificate != nil
+}
+
+// applyTLS replaces the mutual-TLS rule when one is sent, keeping the current
+// one when only tls_bound_tokens is.
+func (req patchClientRequest) applyTLS(ctx context.Context, tx pgx.Tx, clientID string, before map[string]any) error {
+	str := func(k string) string { v, _ := before[k].(string); return v }
+	t := store.ClientTLS{SubjectDN: str("tls_subject_dn"), SANDNS: str("tls_san_dns"), SANURI: str("tls_san_uri"),
+		SANIP: str("tls_san_ip"), SANEmail: str("tls_san_email")}
+	if th := strings.TrimPrefix(str("tls_thumbprint"), `\x`); th != "" {
+		t.Thumbprint, _ = hex.DecodeString(th)
+	}
+	t.BoundTokens, _ = before["tls_bound_tokens"].(bool)
+	if req.setsTLSRule() {
+		t = store.ClientTLS{BoundTokens: t.BoundTokens}
+		for dst, src := range map[*string]*string{&t.SubjectDN: req.TLSSubjectDN, &t.SANDNS: req.TLSSANDNS,
+			&t.SANURI: req.TLSSANURI, &t.SANIP: req.TLSSANIP, &t.SANEmail: req.TLSSANEmail} {
+			if src != nil {
+				*dst = strings.TrimSpace(*src)
+			}
+		}
+		if req.TLSCertificate != nil && strings.TrimSpace(*req.TLSCertificate) != "" {
+			th, err := store.CertificateThumbprint([]byte(*req.TLSCertificate))
+			if err != nil {
+				return err
+			}
+			t.Thumbprint = th
+		}
+	}
+	if req.TLSBoundTokens != nil {
+		t.BoundTokens = *req.TLSBoundTokens
+	}
+	return store.SetClientTLS(ctx, tx, clientID, t)
 }
 
 // setsShared reports whether the request sets any of the settings the CLI's
@@ -501,7 +563,10 @@ func (req patchClientRequest) setsShared() bool {
 	return req.GrantTypes != nil || req.BackchannelTokenDeliveryMode != nil ||
 		req.BackchannelClientNotificationEndpoint != nil || req.AllowHybrid != nil ||
 		req.HybridReviewBy != nil || req.ClaimsRedirectURIs != nil || req.DPoPBoundAccessTokens != nil ||
-		req.ExchangeRequiresAudienceMatch != nil || req.JWTBearerProviders != nil
+		req.ExchangeRequiresAudienceMatch != nil || req.JWTBearerProviders != nil ||
+		req.DisplayName != nil || req.RedirectURIs != nil || req.Scopes != nil ||
+		req.InitiateLoginURI != nil || req.LogoURI != nil || req.PortalHidden != nil ||
+		req.JWKS != nil || req.setsTLSRule() || req.TLSBoundTokens != nil
 }
 
 // applySharedSettings writes what the request sets of the settings the CLI's
@@ -559,11 +624,43 @@ func (req patchClientRequest) applySharedSettings(ctx context.Context, tx pgx.Tx
 			return err
 		}
 	}
+	if req.DisplayName != nil {
+		if err := store.SetClientDisplayName(ctx, tx, clientID, *req.DisplayName); err != nil {
+			return err
+		}
+	}
+	if req.RedirectURIs != nil {
+		if err := store.SetClientRedirectURIs(ctx, tx, clientID, *req.RedirectURIs); err != nil {
+			return err
+		}
+	}
+	if req.Scopes != nil {
+		if err := store.SetClientScopes(ctx, tx, clientID, *req.Scopes); err != nil {
+			return err
+		}
+	}
+	if req.InitiateLoginURI != nil || req.LogoURI != nil || req.PortalHidden != nil {
+		if err := store.SetClientPortal(ctx, tx, clientID, store.ClientPortal{
+			LaunchURL: req.InitiateLoginURI, LogoURL: req.LogoURI, Hidden: req.PortalHidden}); err != nil {
+			return err
+		}
+	}
+	if req.JWKS != nil {
+		if _, err := store.SetClientKeys(ctx, tx, clientID, *req.JWKS); err != nil {
+			return err
+		}
+	}
+	if req.setsTLSRule() || req.TLSBoundTokens != nil {
+		if err := req.applyTLS(ctx, tx, clientID, before); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (r patchClientRequest) setsLogout() bool {
-	return r.PostLogoutRedirectURIs != nil || r.FrontchannelLogoutURI != nil || r.FrontchannelSessionRequired != nil
+	return r.PostLogoutRedirectURIs != nil || r.FrontchannelLogoutURI != nil || r.FrontchannelSessionRequired != nil ||
+		r.BackchannelLogoutURI != nil || r.BackchannelLogoutSessionRequired != nil
 }
 
 // settings is the request's part for store.SetClientSettings, and whether it
@@ -695,7 +792,8 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		if req.setsLogout() {
 			if err := store.SetClientLogout(ctx, tx, clientID, store.ClientLogout{
 				PostLogoutRedirectURIs: req.PostLogoutRedirectURIs, FrontchannelURI: req.FrontchannelLogoutURI,
-				FrontchannelSessionRequired: req.FrontchannelSessionRequired,
+				FrontchannelSessionRequired: req.FrontchannelSessionRequired, BackchannelURI: req.BackchannelLogoutURI,
+				BackchannelSessionRequired: req.BackchannelLogoutSessionRequired,
 			}); err != nil {
 				return err
 			}

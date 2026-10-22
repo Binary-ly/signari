@@ -2,6 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/url"
@@ -9,9 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
 )
 
@@ -157,6 +163,219 @@ func SetClientDPoP(ctx context.Context, q clientWriter, clientID string, require
 func SetClientExchangeContainment(ctx context.Context, q clientWriter, clientID string, on bool) error {
 	return oneClient(q.Exec(ctx, `UPDATE core.clients SET exchange_requires_audience_match = $2,
 		updated_at = now() WHERE client_id = $1`, clientID, on))
+}
+
+// SetClientKeys registers a client's PUBLIC key set and moves it to
+// private_key_jwt, dropping its secret, which would otherwise remain a working
+// credential beside the keys meant to retire it. Every key must be public and
+// usable: an unusable set found at someone's first token request is a worse
+// discovery than one refused here. Returns how many keys it holds.
+func SetClientKeys(ctx context.Context, q clientWriter, clientID string, raw []byte) (int, error) {
+	var set jose.JSONWebKeySet
+	if err := json.Unmarshal(raw, &set); err != nil {
+		return 0, invalidSetting("not a JWKS document: %v", err)
+	}
+	if len(set.Keys) == 0 {
+		return 0, invalidSetting("the key set holds no keys")
+	}
+	for _, k := range set.Keys {
+		if !k.IsPublic() {
+			return 0, invalidSetting("the key set holds PRIVATE or symmetric key material; " +
+				"register the public half only, since private_key_jwt means this server holds " +
+				"nothing that can authenticate as the client")
+		}
+		if !k.Valid() {
+			return 0, invalidSetting("the key set holds a key that is not usable")
+		}
+	}
+	return len(set.Keys), oneClient(q.Exec(ctx, `UPDATE core.clients
+		SET token_endpoint_auth_method = 'private_key_jwt', jwks = $2::jsonb,
+		    client_secret_hash = NULL, updated_at = now()
+		WHERE client_id = $1`, clientID, string(raw)))
+}
+
+// ClientTLS is a client's mutual-TLS registration (RFC 8705): exactly one
+// matching rule, a PKI subject or SAN, or a self-signed certificate's
+// thumbprint.
+type ClientTLS struct {
+	SubjectDN, SANDNS, SANURI, SANIP, SANEmail string
+	Thumbprint                                 []byte
+	BoundTokens                                bool
+}
+
+// CertificateThumbprint is the SHA-256 of a PEM certificate, which a
+// self-signed client is matched by.
+func CertificateThumbprint(pemText []byte) ([]byte, error) {
+	block, _ := pem.Decode(pemText)
+	if block == nil {
+		return nil, invalidSetting("the certificate is not PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, invalidSetting("the certificate did not parse: %v", err)
+	}
+	sum := sha256.Sum256(cert.Raw)
+	return sum[:], nil
+}
+
+// SetClientTLS records how a client proves itself by certificate. Exactly one
+// rule: several would be an AND nobody expects, and any-of is weaker than it
+// looks.
+func SetClientTLS(ctx context.Context, q clientWriter, clientID string, t ClientTLS) error {
+	set := 0
+	for _, v := range []string{t.SubjectDN, t.SANDNS, t.SANURI, t.SANIP, t.SANEmail} {
+		if v != "" {
+			set++
+		}
+	}
+	if len(t.Thumbprint) > 0 {
+		set++
+	}
+	if set != 1 {
+		return invalidSetting("give exactly one mutual-TLS rule: a subject DN, a DNS, URI, IP or " +
+			"email SAN, or a self-signed certificate")
+	}
+	if len(t.Thumbprint) > 0 && len(t.Thumbprint) != sha256.Size {
+		return invalidSetting("a certificate thumbprint is a SHA-256, 32 bytes")
+	}
+	var thumb any
+	if len(t.Thumbprint) > 0 {
+		thumb = t.Thumbprint
+	}
+	return oneClient(q.Exec(ctx, `UPDATE core.clients
+		SET tls_subject_dn = NULLIF($2,''), tls_san_dns = NULLIF($3,''), tls_san_uri = NULLIF($4,''),
+		    tls_san_ip = NULLIF($5,''), tls_san_email = NULLIF($6,''), tls_thumbprint = $7,
+		    tls_bound_tokens = $8, updated_at = now()
+		WHERE client_id = $1`,
+		clientID, t.SubjectDN, t.SANDNS, t.SANURI, t.SANIP, t.SANEmail, thumb, t.BoundTokens))
+}
+
+// SetClientRedirectURIs replaces a client's redirect URIs, each held to
+// clients.ValidateRedirectURI, the one validator every registration path uses.
+// At least one: a client with none can complete no authorization.
+func SetClientRedirectURIs(ctx context.Context, q clientWriter, clientID string, uris []string) error {
+	seen := map[string]bool{}
+	var list []string
+	for _, u := range uris {
+		if u = strings.TrimSpace(u); u == "" || seen[u] {
+			continue
+		}
+		if err := clients.ValidateRedirectURI(u); err != nil {
+			return invalidSetting("%v", err)
+		}
+		seen[u] = true
+		list = append(list, u)
+	}
+	if len(list) == 0 {
+		return invalidSetting("a client needs at least one redirect URI")
+	}
+	if err := oneClient(q.Exec(ctx, `UPDATE core.clients SET updated_at = now() WHERE client_id = $1`,
+		clientID)); err != nil {
+		return err
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM core.client_redirect_uris WHERE client_id = $1`, clientID); err != nil {
+		return err
+	}
+	for _, u := range list {
+		if _, err := q.Exec(ctx, `INSERT INTO core.client_redirect_uris (client_id, redirect_uri)
+			VALUES ($1, $2)`, clientID, u); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetClientDisplayName renames a client: what the consent screen, the portal
+// and the console call it.
+func SetClientDisplayName(ctx context.Context, q clientWriter, clientID, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 200 {
+		return invalidSetting("a display name is 1 to 200 characters")
+	}
+	return oneClient(q.Exec(ctx, `UPDATE core.clients SET display_name = $2, updated_at = now()
+		WHERE client_id = $1`, clientID, name))
+}
+
+// scopeQuerier also reads, for the declared-scope check.
+type scopeQuerier interface {
+	clientWriter
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+// SetClientScopes replaces the scopes a client may request: each standard or
+// declared for its organisation, as `signari apply` holds them, so a typo is
+// refused here rather than becoming a scope nothing releases.
+func SetClientScopes(ctx context.Context, q scopeQuerier, clientID string, scopes []string) error {
+	var orgID string
+	if err := q.QueryRow(ctx, `SELECT org_id::text FROM core.clients WHERE client_id = $1`,
+		clientID).Scan(&orgID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrClientNotFound
+		}
+		return err
+	}
+	list := []string{}
+	for _, sc := range scopes {
+		if sc = strings.TrimSpace(sc); sc != "" && !slices.Contains(list, sc) {
+			if strings.ContainsAny(sc, " \t\r\n\"\\") {
+				return invalidSetting("%q is not a scope token (RFC 6749 section 3.3)", sc)
+			}
+			list = append(list, sc)
+		}
+	}
+	undeclared, err := UndeclaredScopes(ctx, q, orgID, list)
+	if err != nil {
+		return err
+	}
+	if len(undeclared) > 0 {
+		return invalidSetting("%s not declared for the client's organisation; declare it with "+
+			"PUT /admin/organizations/{orgID}/scopes first", strings.Join(undeclared, ", "))
+	}
+	return oneClient(q.Exec(ctx, `UPDATE core.clients SET scopes = $2, updated_at = now()
+		WHERE client_id = $1`, clientID, list))
+}
+
+// ClientPortal is how a client appears on the portal; a nil field is kept.
+type ClientPortal struct {
+	LaunchURL *string
+	LogoURL   *string
+	Hidden    *bool
+}
+
+// SetClientPortal sets how a client appears on people's portal, held as
+// `signari apply` holds it: a launch URL by clients.SecureLaunchURL, a logo
+// over https, and not hidden with a launch URL, which contradict each other.
+func SetClientPortal(ctx context.Context, q clientWriter, clientID string, p ClientPortal) error {
+	var launch, logo string
+	var hidden bool
+	if err := q.QueryRow(ctx, `SELECT COALESCE(initiate_login_uri, ''), COALESCE(logo_uri, ''), portal_hidden
+		FROM core.clients WHERE client_id = $1`, clientID).Scan(&launch, &logo, &hidden); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrClientNotFound
+		}
+		return err
+	}
+	if p.LaunchURL != nil {
+		launch = strings.TrimSpace(*p.LaunchURL)
+	}
+	if p.LogoURL != nil {
+		logo = strings.TrimSpace(*p.LogoURL)
+	}
+	if p.Hidden != nil {
+		hidden = *p.Hidden
+	}
+	if launch != "" && !clients.SecureLaunchURL(launch) {
+		return invalidSetting("the launch URL must be https, or http to this machine, with no user information")
+	}
+	if logo != "" && !strings.HasPrefix(logo, "https://") {
+		return invalidSetting("the logo URL must be https")
+	}
+	if hidden && launch != "" {
+		return invalidSetting("hidden from the portal and given a launch URL contradict each other")
+	}
+	return oneClient(q.Exec(ctx, `UPDATE core.clients SET initiate_login_uri = NULLIF($2, ''),
+		logo_uri = NULLIF($3, ''), portal_hidden = $4, updated_at = now() WHERE client_id = $1`,
+		clientID, launch, logo, hidden))
 }
 
 // AssertionIssuerNote is something an operator pairing a client with an

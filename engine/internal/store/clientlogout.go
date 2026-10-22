@@ -22,6 +22,27 @@ type ClientLogout struct {
 	FrontchannelURI *string
 	// FrontchannelSessionRequired adds iss and sid to that URI.
 	FrontchannelSessionRequired *bool
+	// BackchannelURI is where a logout token is posted at sign-out. Empty
+	// clears it. Until October 2026 only dynamic registration could set it,
+	// unchecked, so a statically registered client could not be told.
+	BackchannelURI *string
+	// BackchannelSessionRequired puts the session's sid in the logout token.
+	BackchannelSessionRequired *bool
+}
+
+// ValidateBackchannelLogoutURI holds a back-channel logout URI to OpenID
+// Connect Back-Channel Logout 1.0 §2.2: "The back-channel logout URI MUST NOT
+// include a fragment component", and https, which the definition says it
+// SHOULD use; http is allowed there only where the OP allows http RP URIs,
+// and this one does not, since what is posted is a logout token.
+func ValidateBackchannelLogoutURI(raw string) error {
+	p, err := url.Parse(raw)
+	if err != nil || p.Scheme != "https" || p.Host == "" || p.User != nil ||
+		p.Fragment != "" || strings.Contains(raw, "#") {
+		return fmt.Errorf("%w: backchannel_logout_uri %q must be an absolute https URL with no "+
+			"user information and no fragment", ErrInvalidLogoutRegistration, raw)
+	}
+	return nil
 }
 
 // ErrInvalidLogoutRegistration wraps every reason one is refused.
@@ -78,6 +99,24 @@ func SetClientLogout(ctx context.Context, tx pgx.Tx, clientID string, l ClientLo
 	if l.FrontchannelSessionRequired != nil {
 		if _, err := tx.Exec(ctx, `UPDATE core.clients SET frontchannel_logout_session_required = $2,
 			updated_at = now() WHERE client_id = $1`, clientID, *l.FrontchannelSessionRequired); err != nil {
+			return err
+		}
+	}
+	if l.BackchannelURI != nil {
+		u := strings.TrimSpace(*l.BackchannelURI)
+		if u != "" {
+			if err := ValidateBackchannelLogoutURI(u); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE core.clients SET backchannel_logout_uri = NULLIF($2, ''),
+			updated_at = now() WHERE client_id = $1`, clientID, u); err != nil {
+			return err
+		}
+	}
+	if l.BackchannelSessionRequired != nil {
+		if _, err := tx.Exec(ctx, `UPDATE core.clients SET backchannel_logout_session_required = $2,
+			updated_at = now() WHERE client_id = $1`, clientID, *l.BackchannelSessionRequired); err != nil {
 			return err
 		}
 	}

@@ -27,8 +27,6 @@
 package config
 
 import (
-	"net/url"
-
 	"fmt"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/radius"
@@ -194,7 +192,9 @@ func (f *File) Validate() error {
 				add("clients[%s]: %s", c.ClientID, err.Error())
 			}
 		}
-		if c.LaunchURL != "" && !secureURL(c.LaunchURL) {
+		// Redirect URIs go to clients.ValidateRedirectURI; launch URLs to the
+		// rule the client PATCH applies too.
+		if c.LaunchURL != "" && !clients.SecureLaunchURL(c.LaunchURL) {
 			add("clients[%s]: launch_url must be https", c.ClientID)
 		}
 		if c.LogoURL != "" && !strings.HasPrefix(c.LogoURL, "https://") {
@@ -313,31 +313,6 @@ func (f *File) Validate() error {
 			"somewhere in the middle", len(problems), strings.Join(problems, "\n  "))
 	}
 	return nil
-}
-
-// secureURL reports whether a URL is https, or http on a loopback host.
-//
-// Parsed rather than prefix-matched. `strings.HasPrefix(u, "http://localhost")`
-// is true for `http://localhost.evil.com`, and `strings.HasPrefix(u, "https://")`
-// is true for `https://good.example@evil.example` -- a host that reads as one
-// name and resolves to another.
-//
-// Redirect URIs no longer come through here at all; they go to
-// clients.ValidateRedirectURI. This remains for launch and logo URLs, where the
-// same two mistakes are less dangerous and still wrong.
-func secureURL(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil || !u.IsAbs() || u.User != nil {
-		return false
-	}
-	switch u.Scheme {
-	case "https":
-		return u.Host != ""
-	case "http":
-		h := u.Hostname()
-		return h == "localhost" || h == "127.0.0.1" || h == "::1"
-	}
-	return false
 }
 
 // Change is one difference between the file and the deployment.

@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/clients"
 )
 
 func TestConfigRefusesTheRedirectURIsTheSharedValidatorRefuses(t *testing.T) {
@@ -80,8 +82,8 @@ func TestSecureURLIsParsedNotPrefixMatched(t *testing.T) {
 		"javascript:alert(1)":             false,
 		"/relative":                       false,
 	} {
-		if got := secureURL(uri); got != want {
-			t.Errorf("secureURL(%q) = %v, want %v", uri, got, want)
+		if got := clients.SecureLaunchURL(uri); got != want {
+			t.Errorf("SecureLaunchURL(%q) = %v, want %v", uri, got, want)
 		}
 	}
 }

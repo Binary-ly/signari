@@ -52,6 +52,17 @@ func TestDynamicRegistrationRecordsTheSignOutMetadata(t *testing.T) {
 		out["error"] != "invalid_client_metadata" {
 		t.Errorf("a plaintext post-logout URI registered: %d %v", code, out)
 	}
+	// Nor a back channel a logout token cannot safely be posted to, which was
+	// stored unchecked (6.03).
+	for _, bcl := range []string{"http://rp.test/bcl", "https://rp.test/bcl#f"} {
+		if code, out := register(`{"redirect_uris":["https://rp.test/cb"],"backchannel_logout_uri":"` + bcl + `"}`); code != http.StatusBadRequest ||
+			out["error"] != "invalid_client_metadata" {
+			t.Errorf("a back-channel logout URI %s registered: %d %v", bcl, code, out)
+			if id, _ := out["client_id"].(string); id != "" {
+				_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.clients WHERE client_id = $1`, id)
+			}
+		}
+	}
 
 	// The signing algorithm is echoed whether or not it was asked for, and one
 	// the instance cannot sign with is refused rather than answered in another

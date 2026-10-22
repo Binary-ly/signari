@@ -13,6 +13,29 @@ var ForbiddenRedirectParams = map[string]bool{
 	"session_state": true,
 }
 
+// SecureLaunchURL reports whether a portal launch URL is safe to put on a
+// person's portal: https, or http to this machine, with no user information.
+//
+// Parsed rather than prefix-matched. `strings.HasPrefix(u, "http://localhost")`
+// is true for `http://localhost.evil.com`, and `strings.HasPrefix(u, "https://")`
+// is true for `https://good.example@evil.example` -- a host that reads as one
+// name and resolves to another. Shared by `signari apply` and the client PATCH
+// (6.03), which had a copy each to drift.
+func SecureLaunchURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || u.User != nil {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return u.Host != ""
+	case "http":
+		h := u.Hostname()
+		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	}
+	return false
+}
+
 // ValidateRedirectURI checks a URI before it is registered.
 //
 // ONE validator, called from every registration path: the CLI, the admin API,

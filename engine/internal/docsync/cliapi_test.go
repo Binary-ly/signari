@@ -74,10 +74,10 @@ var cliAPI = map[string]string{
 
 	// People.
 	"user create":        "POST /admin/users",
-	"user locale":        pending,
+	"user locale":        "PATCH /admin/users/{userID}",
 	"user remove-factor": "DELETE /admin/users/{userID}/factors/{kind}",
 	"user passkey-link":  "POST /admin/users/{userID}/passkey-link",
-	"user approve":       pending,
+	"user approve":       "PATCH /admin/users/{userID}",
 	"user unlock":        "DELETE /admin/users/{userID}/throttle",
 	"user assign-otp":    cliOnly("reads a seed file from the operator's disk, the hardware token's, which should not cross a network"),
 	"erase subject":      "POST /admin/subjects/{subjectID}/erase",

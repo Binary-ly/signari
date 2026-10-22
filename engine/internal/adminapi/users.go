@@ -196,6 +196,10 @@ type patchUserRequest struct {
 	DisplayName *string `json:"display_name"`
 	GivenName   *string `json:"given_name"`
 	Surname     *string `json:"surname"`
+	// Locale is the BCP 47 tag the person's notices are written in, and their
+	// pages once they next sign in, as `signari user locale` sets it; empty
+	// clears it to the deployment's default.
+	Locale *string `json:"locale"`
 }
 
 // nullableTrimmed maps an absent or blank field to SQL NULL.
@@ -225,7 +229,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Active == nil && req.Password == nil && req.RequirePasswordChange == nil &&
 		req.Email == nil && req.Username == nil && req.DisplayName == nil &&
-		req.GivenName == nil && req.Surname == nil {
+		req.GivenName == nil && req.Surname == nil && req.Locale == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
@@ -390,6 +394,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			{"display_name", req.DisplayName},
 			{"given_name", req.GivenName},
 			{"surname", req.Surname},
+			{"locale", req.Locale},
 		} {
 			if f.value == nil {
 				continue
@@ -489,6 +494,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 				"display_name_set":       req.DisplayName != nil,
 				"given_name_set":         req.GivenName != nil,
 				"surname_set":            req.Surname != nil,
+				"locale_set":             req.Locale != nil,
 			},
 		})
 	})
@@ -516,6 +522,13 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	// administrator can search for -- reachable only by its uuid. The database
 	// refuses it; without this case the caller is told "server_error" and left
 	// to guess, when the truthful answer is that the request was impossible.
+	// The locale column's shape constraint: a typo, and saying so costs
+	// nothing.
+	case err != nil && strings.Contains(err.Error(), "users_locale_is_a_tag"):
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid_locale", "detail": "not a BCP 47 language tag, such as en, de or pt-BR",
+		})
+		return
 	case err != nil && strings.Contains(err.Error(), "users_has_an_identifier"):
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "no_identifier_left",

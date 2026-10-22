@@ -77,4 +77,28 @@ func TestAUserReadShowsWhatAPatchWrote(t *testing.T) {
 	if u := read(); u.Email != moved || u.EmailVerified {
 		t.Errorf("after an address change the read was %+v; the verification belonged to the old address", u)
 	}
+
+	// The language, as `signari user locale` sets it (6.07): set, refused when
+	// it is not a tag, and cleared to the deployment's.
+	if rec := call(t, s, http.MethodPatch, "/admin/users/"+created.ID, testToken,
+		map[string]any{"locale": "pt-BR"}); rec.Code != http.StatusOK {
+		t.Fatalf("setting the locale: %d %s", rec.Code, rec.Body.String())
+	}
+	if u := read(); u.Locale != "pt-BR" {
+		t.Errorf("after setting the locale the read was %q", u.Locale)
+	}
+	var out map[string]any
+	rec = call(t, s, http.MethodPatch, "/admin/users/"+created.ID, testToken, map[string]any{"locale": "not a tag!"})
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusBadRequest || out["error"] != "invalid_locale" {
+		t.Errorf("a locale that is not a tag answered %d %v", rec.Code, out)
+	}
+	if rec := call(t, s, http.MethodPatch, "/admin/users/"+created.ID, testToken,
+		map[string]any{"locale": ""}); rec.Code != http.StatusOK {
+		t.Fatalf("clearing the locale: %d", rec.Code)
+	}
+	var stored *string
+	if err := s.db.QueryRow(ctx, `SELECT locale FROM core.users WHERE id = $1::uuid`, created.ID).Scan(&stored); err != nil || stored != nil {
+		t.Errorf("a cleared locale is stored as %v (%v), not as none", stored, err)
+	}
 }

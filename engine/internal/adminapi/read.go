@@ -296,6 +296,8 @@ type userDetail struct {
 	EmailVerified         bool   `json:"email_verified"`
 	RequirePasswordChange bool   `json:"require_password_change"`
 	UpdatedAt             string `json:"updated_at"`
+	// Locale is empty when the person has none and the deployment's applies.
+	Locale string `json:"locale"`
 }
 
 func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
@@ -308,13 +310,13 @@ func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
 		       u.status, to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'),
 		       coalesce(u.display_name, ''), coalesce(u.given_name, ''), coalesce(u.surname, ''),
 		       u.email_verified_at IS NOT NULL, coalesce(pc.must_change, false),
-		       to_char(u.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
+		       to_char(u.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'), coalesce(u.locale, '')
 		  FROM core.users u
 		  LEFT JOIN core.password_credentials pc ON pc.user_id = u.id
 		 WHERE u.id = $1::uuid`, userID).
 		Scan(&u.ID, &u.OrgID, &u.Email, &u.Username, &u.Status, &u.CreatedAt,
 			&u.DisplayName, &u.GivenName, &u.Surname, &u.EmailVerified, &u.RequirePasswordChange,
-			&u.UpdatedAt)
+			&u.UpdatedAt, &u.Locale)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user_not_found"})
 		return

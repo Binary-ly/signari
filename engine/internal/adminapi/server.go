@@ -406,6 +406,18 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 				"method", r.Method, "path", r.URL.Path)
 		}
 		s.touch(p.TokenID)
+		// A read is tagged with the version as it was BEFORE the handler reads
+		// anything, so a change that commits while the rows are read moves the
+		// version past the tag, and a write sent back with it is refused. Read
+		// after the rows, as writeList did until October 2026, a change landing
+		// between the two was tagged as seen and the write made over it.
+		if r.Method == http.MethodGet {
+			var v int64
+			if err := s.db.QueryRow(r.Context(),
+				`SELECT version FROM core.config_version`).Scan(&v); err == nil {
+				setETag(w, v)
+			}
+		}
 		next(w, r.WithContext(withPrincipal(r.Context(), p)))
 	}
 }

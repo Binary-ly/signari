@@ -261,11 +261,17 @@ func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
 // send it back as If-Match. Without it the caller has to make an extra request
 // to /admin/config-version between every read and its write, which is the kind
 // of friction that ends with people not using the precondition.
+//
+// auth tags every GET before its handler reads, which is the order that makes
+// the tag safe (0.20); this reads the version itself only for a read that came
+// some other way, and then the tag can be newer than the rows.
 func (s *Server) writeList(w http.ResponseWriter, r *http.Request, body any) {
-	var v int64
-	if err := s.db.QueryRow(r.Context(),
-		`SELECT version FROM core.config_version`).Scan(&v); err == nil {
-		setETag(w, v)
+	if w.Header().Get("ETag") == "" {
+		var v int64
+		if err := s.db.QueryRow(r.Context(),
+			`SELECT version FROM core.config_version`).Scan(&v); err == nil {
+			setETag(w, v)
+		}
 	}
 	writeJSON(w, http.StatusOK, body)
 }

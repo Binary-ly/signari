@@ -53,15 +53,26 @@ func SetResourceServer(ctx context.Context, q interface {
 	if err := oauth.CheckResource(resource); err != nil {
 		return err
 	}
-	if _, err := q.Exec(ctx, `
+	// Never an instance's Admin API audience (tokens.AdminAudience, 6.01):
+	// registered as an organisation's own resource, its clients' ordinary
+	// tokens would be audienced to the Admin API.
+	tag, err := q.Exec(ctx, `
 		INSERT INTO core.resource_servers (org_id, resource, name)
-		VALUES ($1::uuid, $2, $3)
+		SELECT $1::uuid, $2, $3
+		 WHERE NOT EXISTS (SELECT 1 FROM core.instances WHERE rtrim(issuer, '/') || '/admin' = $2)
 		ON CONFLICT (org_id, resource) DO UPDATE SET name = EXCLUDED.name`,
-		orgID, resource, name); err != nil {
+		orgID, resource, name)
+	if err != nil {
 		return fmt.Errorf("registering the resource server: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrResourceIsAdminAPI
 	}
 	return nil
 }
+
+// ErrResourceIsAdminAPI is a resource server named as the Admin API's audience.
+var ErrResourceIsAdminAPI = errors.New("that is this deployment's Admin API audience, which no organisation registers as a resource server")
 
 // RemoveResourceServer withdraws a resource. Tokens for it are refused from the
 // next request, including refreshes of tokens already issued.

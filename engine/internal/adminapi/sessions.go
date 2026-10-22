@@ -226,6 +226,11 @@ func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
 		if err := requireOrg(ctx, orgID); err != nil {
 			return err
 		}
+		if p, _ := principalFrom(ctx); p != nil {
+			if err := requireReach(ctx, tx, p, ScopeUsersWrite, userID); err != nil {
+				return err
+			}
+		}
 		term, err := store.TerminateSessions(ctx, tx, sid, "", store.ReasonAdminRevoke)
 		if err != nil {
 			return err

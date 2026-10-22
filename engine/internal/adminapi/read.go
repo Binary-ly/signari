@@ -209,7 +209,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sql, args := userListQuery(cursor, orgFilter(ctx), limit+1, email, prefix, status)
+	sql, args := userListQuery(cursor, orgFilter(ctx), limit+1, email, prefix, status, reachFilter(ctx, ScopeUsersRead))
 	rows, err := s.db.Query(ctx, sql, args...)
 	if err != nil {
 		s.log.Error("listing users", "err", err)
@@ -248,7 +248,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 // the same and stops using the index once the prepared statement is planned
 // generically, which pgx's are after a few calls. The plan test reads the same
 // text.
-func userListQuery(cursor string, org any, limit int, email, prefix, status string) (string, []any) {
+func userListQuery(cursor string, org any, limit int, email, prefix, status string, reach []string) (string, []any) {
 	where := []string{"($1 = '' OR id::text > $1)", "($2::uuid IS NULL OR org_id = $2::uuid)"}
 	args := []any{cursor, org, limit}
 	add := func(cond string, v any) {
@@ -263,6 +263,10 @@ func userListQuery(cursor string, org any, limit int, email, prefix, status stri
 	}
 	if status != "" {
 		add("status = $?", status)
+	}
+	// A role delegated over groups lists their members only (6.01).
+	if reach != nil {
+		add("EXISTS (SELECT 1 FROM core.group_members gm WHERE gm.user_id = core.users.id AND gm.group_id = ANY($?::uuid[]))", reach)
 	}
 	return `
 		SELECT id::text, org_id::text, coalesce(email, ''), coalesce(username, ''),

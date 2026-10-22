@@ -76,6 +76,9 @@ type Client struct {
 	TLSThumbprint      []byte
 	TLSBoundTokens     bool
 
+	// AdminAPI lets the client ask for the Admin API's audience (0192, 6.01).
+	AdminAPI bool
+
 	// DPoPBoundAccessTokens is RFC 9449 §5.2's client registration metadata:
 	// "A boolean value specifying whether the client always uses DPoP for token
 	// requests ... If the value is true, the authorization server MUST reject
@@ -235,7 +238,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       backchannel_token_delivery_mode,
 		       coalesce(backchannel_client_notification_endpoint, ''),
 		       coalesce(claims_redirect_uris, ARRAY[]::text[]),
-		       access_token_ttl_s, require_pushed_authorization, minimum_acr,
+		       access_token_ttl_s, require_pushed_authorization, minimum_acr, admin_api,
 		       -- store.OrgInService's question, which this package cannot import.
 		       NOT EXISTS (SELECT 1 FROM core.organizations o
 		                    WHERE o.id = core.clients.org_id AND o.status = 'active')
@@ -252,7 +255,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.BackchannelTokenDeliveryMode,
 			&c.BackchannelClientNotificationEndpoint,
 			&c.ClaimsRedirectURIs,
-			&c.AccessTTL, &c.RequirePAR, &c.MinimumACR, &c.OrgSuspended)
+			&c.AccessTTL, &c.RequirePAR, &c.MinimumACR, &c.AdminAPI, &c.OrgSuspended)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

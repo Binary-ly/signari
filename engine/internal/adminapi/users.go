@@ -61,6 +61,12 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		writeCrossOrg(w, err)
 		return
 	}
+	// A person made outside every group is one a delegated role would not
+	// reach the moment it had made them.
+	if reachFilter(ctx, ScopeUsersWrite) != nil {
+		writeCrossOrg(w, errDelegatedCreate)
+		return
+	}
 	if req.Email == "" && req.Username == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "identifier_required", "detail": "email or username is required",

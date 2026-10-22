@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -81,6 +82,12 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 		if err := requireNamedOrg(ctx, tx, req.OrgID); err != nil {
 			return err
 		}
+		// A role delegated over groups invites only into them, and into at
+		// least one, so it reaches who it invites (6.01).
+		reach := reachFilter(ctx, ScopeUsersWrite)
+		if reach != nil && len(req.Groups) == 0 {
+			return errDelegatedCreate
+		}
 		for _, name := range req.Groups {
 			var groupID string
 			var mayImpersonate bool
@@ -96,6 +103,9 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 			}
 			if err != nil {
 				return err
+			}
+			if reach != nil && !slices.Contains(reach, groupID) {
+				return errDelegatedCreate
 			}
 			if mayImpersonate && !p.Can(ScopePrivilegedUsersWrite) {
 				return &errInvitationGroup{http.StatusForbidden, "privileged_target",
@@ -159,8 +169,18 @@ func (s *Server) listInvitations(w http.ResponseWriter, r *http.Request) {
 		 WHERE ($1 = '' OR id::text > $1)
 		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
 		   AND ($4 = '' OR org_id::text = $4)
+		   -- A role delegated over groups sees the invitations into them (6.01),
+		   -- and a token narrowed to named groups the invitations into those,
+		   -- as it may make only those (0.26): it listed every one.
+		   AND ($5::uuid[] IS NULL OR EXISTS (SELECT 1 FROM core.groups g
+		        WHERE g.id = ANY($5::uuid[]) AND g.org_id = core.invitations.org_id
+		          AND g.name = ANY(core.invitations.grant_groups)))
+		   AND ($6::uuid[] IS NULL OR EXISTS (SELECT 1 FROM core.groups g
+		        WHERE g.id = ANY($6::uuid[]) AND g.org_id = core.invitations.org_id
+		          AND g.name = ANY(core.invitations.grant_groups)))
 		 ORDER BY id
-		 LIMIT $3`, cursor, orgFilter(ctx), limit+1, r.URL.Query().Get("org_id"))
+		 LIMIT $3`, cursor, orgFilter(ctx), limit+1, r.URL.Query().Get("org_id"),
+		reachFilter(ctx, ScopeUsersRead), groupFilter(ctx))
 	if err != nil {
 		s.log.Error("listing invitations", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -210,6 +230,22 @@ func (s *Server) revokeInvitation(w http.ResponseWriter, r *http.Request) {
 		// exist: refusing it by name would say it does.
 		if err := requireOrg(ctx, orgID); err != nil {
 			return store.ErrInvitationNotRevocable
+		}
+		// Nor one into none of a delegated role's groups (6.01), or of the
+		// groups a token is narrowed to (0.26), the invitations each may list.
+		for _, groups := range [][]string{reachFilter(ctx, ScopeUsersWrite), groupFilter(ctx)} {
+			if groups == nil {
+				continue
+			}
+			var ours bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.invitations i JOIN core.groups g
+				  ON g.org_id = i.org_id AND g.name = ANY(i.grant_groups)
+				 WHERE i.id = $1::uuid AND g.id = ANY($2::uuid[]))`, id, groups).Scan(&ours); err != nil {
+				return err
+			}
+			if !ours {
+				return store.ErrInvitationNotRevocable
+			}
 		}
 		return store.RevokeInvitationIn(ctx, tx, orgID, id, audit.Event{AdminTokenID: TokenIDFrom(ctx),
 			Detail: map[string]any{"via": "admin_api"}})

@@ -75,7 +75,7 @@ func TestAnExactAddressLookupUsesAnIndex(t *testing.T) {
 	if _, err := s.db.Exec(ctx, `ANALYZE core.users`); err != nil {
 		t.Fatal(err)
 	}
-	sql, args := userListQuery("", nil, 51, "somebody@example.test", "", "")
+	sql, args := userListQuery("", nil, 51, "somebody@example.test", "", "", nil)
 	var plan []byte
 	if err := s.db.QueryRow(ctx, "EXPLAIN (FORMAT JSON) "+sql, args...).Scan(&plan); err != nil {
 		t.Fatal(err)

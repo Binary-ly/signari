@@ -141,8 +141,8 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "invalid_target", err.Error())
 		return
 	}
-	if err := checkResources(ctx, s.db, c.OrgID, resource); err != nil {
-		if errors.Is(err, errUnregisteredResource) {
+	if err := s.checkResources(ctx, s.db, c, c.OrgID, resource); err != nil {
+		if refusedTarget(err) {
 			writeError(w, http.StatusBadRequest, "invalid_target", err.Error())
 			return
 		}

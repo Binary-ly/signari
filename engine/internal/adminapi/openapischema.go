@@ -156,7 +156,7 @@ var (
 	clientConfigSchema = object([]string{"client_id", "org_id", "display_name", "client_type", "enabled",
 		"redirect_uris", "grant_types", "scopes", "created_at"},
 		map[string]jsonSchema{
-			"access_token_ttl_s": integer(), "allow_hybrid": boolean(),
+			"access_token_ttl_s": integer(), "admin_api": boolean(), "allow_hybrid": boolean(),
 			"backchannel_client_notification_endpoint": nullable(str()),
 			"backchannel_logout_session_required":      boolean(), "backchannel_logout_uri": nullable(str()),
 			"backchannel_token_delivery_mode": str(), "claims_redirect_uris": nullable(arrayOf(str())),

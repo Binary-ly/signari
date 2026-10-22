@@ -92,6 +92,30 @@ func roleRevoke(ctx context.Context, conn *pgx.Conn, orgID, bindingID string) er
 	return nil
 }
 
+// clientSetAdminAPI designates a client for the Admin API, or withdraws it:
+// its tokens audienced there act with their holder's roles. Withdrawn, they
+// are refused from the next request.
+func clientSetAdminAPI(ctx context.Context, conn *pgx.Conn, clientID string, on bool) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client-id")
+	}
+	tag, err := conn.Exec(ctx, `UPDATE core.clients SET admin_api = $2, updated_at = now()
+		WHERE client_id = $1`, clientID, on)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no client %q", clientID)
+	}
+	if on {
+		fmt.Printf("%s may obtain tokens for the Admin API; they act with the roles of whoever holds them, "+
+			"and changing the client now needs privileged-users:write\n", clientID)
+	} else {
+		fmt.Printf("%s's tokens for the Admin API are refused from the next request\n", clientID)
+	}
+	return nil
+}
+
 func joinRoles() string {
 	out := ""
 	for i, r := range store.AdminRoles {

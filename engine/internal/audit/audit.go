@@ -119,9 +119,17 @@ type Event struct {
 // opaque reference of its own (the console sends console-user:<id>), asserted
 // by the token's holder, never an address, and never authenticated here -- the
 // token is the authenticated party, and its id is recorded beside this.
+//
+// Principal and UserID are a caller acting through an administrative role
+// (6.01), which has no token row: Principal names it (user:<id>, client:<id>)
+// in detail.admin_principal, and UserID, a person's, is the record's actor_id.
+// Both come from a verified token and the holder's live session, not from the
+// caller's say.
 type Actor struct {
 	BreakGlass bool
 	Operator   string
+	Principal  string
+	UserID     string
 }
 
 type actorKey struct{}
@@ -171,8 +179,8 @@ func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 	// Who an administrative change was made by, beyond the token (6.05), from
 	// the request: written onto every record the request makes, so no write
 	// can forget it. On a copy, since the caller owns its map.
-	if a, ok := ctx.Value(actorKey{}).(Actor); ok && (a.BreakGlass || a.Operator != "") {
-		detail := make(map[string]any, len(e.Detail)+2)
+	if a, ok := ctx.Value(actorKey{}).(Actor); ok && (a.BreakGlass || a.Operator != "" || a.Principal != "") {
+		detail := make(map[string]any, len(e.Detail)+3)
 		for k, v := range e.Detail {
 			detail[k] = v
 		}
@@ -182,7 +190,15 @@ func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 		if a.Operator != "" {
 			detail["operator"] = a.Operator
 		}
+		if a.Principal != "" {
+			detail["admin_principal"] = a.Principal
+		}
 		e.Detail = detail
+	}
+	// A person acting through their role is the record's actor, unless the
+	// write named one itself (6.01).
+	if a, ok := ctx.Value(actorKey{}).(Actor); ok && a.UserID != "" && e.ActorID == "" {
+		e.ActorID = a.UserID
 	}
 	// The subject column holds a person's id. A token's subject can be a
 	// client, acting for itself, and an exchanged or transaction token passed

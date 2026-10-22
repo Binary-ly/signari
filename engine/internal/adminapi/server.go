@@ -72,6 +72,12 @@ type Server struct {
 	// looks like a capability.
 	root *keys.RootKey
 
+	// keySet and issuer verify this deployment's own access tokens audienced to
+	// the Admin API (accesstoken.go). nil until SetAccessTokens, and then only
+	// admin tokens are accepted.
+	keySet *keys.Set
+	issuer string
+
 	// arrivals bounds work done for callers who have not authenticated yet.
 	//
 	// Every request costs a SHA-256 and an indexed database probe before it can
@@ -198,11 +204,11 @@ func (s *Server) Routes() http.Handler {
 		s.ops[len(s.ops)-1].privileged = true
 	}
 
-	route("PATCH /admin/clients/{clientID}", ScopeClientsWrite, s.patchClient)
-	route("DELETE /admin/clients/{clientID}", ScopeClientsWrite, s.deleteClient)
+	privileged("PATCH /admin/clients/{clientID}", ScopeClientsWrite, targetClient, s.patchClient)
+	privileged("DELETE /admin/clients/{clientID}", ScopeClientsWrite, targetClient, s.deleteClient)
 	route("POST /admin/users", ScopeUsersWrite, s.createUser)
 	route("POST /admin/clients", ScopeClientsWrite, s.createClient)
-	route("POST /admin/clients/{clientID}/rotate-secret", ScopeClientsWrite, s.rotateClientSecret)
+	privileged("POST /admin/clients/{clientID}/rotate-secret", ScopeClientsWrite, targetClient, s.rotateClientSecret)
 	privileged("PATCH /admin/users/{userID}", ScopeUsersWrite, targetUser, s.patchUser)
 	privileged("DELETE /admin/users/{userID}", ScopeUsersWrite, targetUser, s.deleteUser)
 	route("GET /admin/users/{userID}/factors", ScopeUsersRead, s.listUserFactors)
@@ -407,6 +413,11 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		p, err := s.resolveToken(r.Context(), h[len(prefix):])
+		if errors.Is(err, errMultiFactorRequired) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "multi_factor_required",
+				"detail": "administration needs a session that proved a second factor; sign in again with one"})
+			return
+		}
 		if errors.Is(err, errOrgSuspended) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "organisation_suspended",
 				"detail": "this token's organisation is suspended; a deployment-wide token can reactivate it"})
@@ -459,6 +470,26 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// A role delegated over groups reaches only their members (6.01): every
+		// route naming a person in its path is held to it here, so none can be
+		// registered without it. Handlers finding their person another way
+		// apply it themselves (TestEveryRouteOnAPersonIsHeldToADelegatedReach).
+		for _, name := range []string{"userID", "subjectID"} {
+			id := r.PathValue(name)
+			if id == "" {
+				continue
+			}
+			if err := requireReach(r.Context(), s.db, p, scope, id); err != nil {
+				if errors.Is(err, errCrossOrg) {
+					writeCrossOrg(w, err)
+					return
+				}
+				s.log.Error("checking a delegated role's reach", "err", err)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "unavailable"})
+				return
+			}
+		}
+
 		if p.BreakGlass {
 			// Logged every single time. A credential that bypasses revocation and
 			// expiry should never be quietly interchangeable with the others.
@@ -488,8 +519,14 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 					"it is kept in the audit trail, which nothing erases"})
 			return
 		}
-		ctx := audit.WithActor(withPrincipal(r.Context(), p),
-			audit.Actor{BreakGlass: p.BreakGlass, Operator: operator})
+		// A role principal is named on the record by who it is (6.01): the
+		// person as the actor, and either kind as the principal, since it has no
+		// admin token for admin_token_id to name.
+		actor := audit.Actor{BreakGlass: p.BreakGlass, Operator: operator, UserID: p.UserID}
+		if p.TokenID == "" && !p.BreakGlass {
+			actor.Principal = p.Name
+		}
+		ctx := audit.WithActor(withPrincipal(r.Context(), p), actor)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -528,6 +565,10 @@ type patchClientRequest struct {
 	// skips the consent screen.
 	RequirePushedAuthorizationRequests *bool `json:"require_pushed_authorization_requests"`
 	FirstParty                         *bool `json:"first_party"`
+	// AdminAPI designates the client for the Admin API (6.01): it may obtain
+	// tokens that act with their holder's roles. Needs privileged-users:write,
+	// as every later write on such a client does (targetClient).
+	AdminAPI *bool `json:"admin_api"`
 	// IssuerAlias pins the client to a live alias of its instance; "" clears.
 	IssuerAlias *string `json:"issuer_alias"`
 	// MinimumACR is the weakest authentication the client accepts, "1" to "4".
@@ -762,10 +803,16 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, setsSettings := req.settings()
 	if req.Enabled == nil && req.RequirePKCE == nil && req.MayExchange == nil && req.ExchangeAudiences == nil &&
-		!req.setsLogout() && !setsSettings && !req.setsShared() {
+		req.AdminAPI == nil && !req.setsLogout() && !setsSettings && !req.setsShared() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
+		return
+	}
+	if p, _ := principalFrom(ctx); req.AdminAPI != nil && !p.Can(ScopePrivilegedUsersWrite) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "privileged_target",
+			"detail": "designating an application for the Admin API makes it where administrators sign in; " +
+				"it needs " + ScopePrivilegedUsersWrite})
 		return
 	}
 	pre, ok := s.readPrecondition(w, r)
@@ -805,10 +852,11 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 			UPDATE core.clients
 			   SET enabled = COALESCE($2, enabled),
 			       require_pkce = COALESCE($3, require_pkce),
+			       admin_api = COALESCE($4, admin_api),
 			       updated_at = now()
 			 WHERE client_id = $1
 			RETURNING enabled, require_pkce`,
-			clientID, req.Enabled, req.RequirePKCE).Scan(&enabled, &requirePKCE)
+			clientID, req.Enabled, req.RequirePKCE, req.AdminAPI).Scan(&enabled, &requirePKCE)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errNotFound
 		}

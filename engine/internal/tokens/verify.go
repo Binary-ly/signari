@@ -293,6 +293,16 @@ func verifiedPayload(set *keys.Set, raw, wantTyp string) ([]byte, error) {
 // userinfo endpoint asks for both, which is what RFC 8707 §2 means by allowing
 // multiple `resource` parameters -- rather than getting the second for free
 // because nobody checked.
+// AdminAudience is the audience of a token for the Admin API (6.01): the
+// issuer with /admin, an identifier whether or not anything is served there.
+// Asked for alone, by a client the deployment designated, and accepted by the
+// Admin API only from such a client, read per request: an application's own
+// token carries its client id or a resource's, which the Admin API refuses,
+// and a client named with this string is refused there unless designated.
+func AdminAudience(issuer string) string {
+	return strings.TrimRight(issuer, "/") + "/admin"
+}
+
 func AudienceAccepted(c *AccessTokenClaims, issuer string) bool {
 	// No audience at all is not a pass. A token that names no recipient cannot
 	// be shown to have been meant for this one, and RFC 9068 §4 requires the

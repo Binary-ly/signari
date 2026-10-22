@@ -46,6 +46,11 @@ const (
 	// too, but they are writes on the group: adding an administrator to an
 	// ordinary group grants nothing that groups:write does not already decide.
 	targetGroup
+	// targetClient is the client named by {clientID}, privileged when it is
+	// designated for the Admin API (6.01): its redirect URIs and secret decide
+	// who receives an administrator's sign-in, so clients:write alone could
+	// take an owner's role by pointing them elsewhere.
+	targetClient
 )
 
 // requirePrivileged refuses a write on a privileged target from a token that
@@ -67,10 +72,14 @@ func (s *Server) requirePrivileged(target privilegedTarget, next http.HandlerFun
 		var id, orgID string
 		var privileged, found bool
 		var err error
-		if target == targetGroup {
+		switch target {
+		case targetClient:
+			id = r.PathValue("clientID")
+			orgID, privileged, found, err = store.PrivilegedClient(ctx, s.db, id)
+		case targetGroup:
 			id = r.PathValue("groupID")
 			orgID, privileged, found, err = store.PrivilegedGroup(ctx, s.db, id)
-		} else {
+		default:
 			id = r.PathValue("userID")
 			if id == "" {
 				id = r.PathValue("subjectID")
@@ -91,8 +100,17 @@ func (s *Server) requirePrivileged(target privilegedTarget, next http.HandlerFun
 		}
 
 		kind := "user"
-		if target == targetGroup {
+		detail := "this user may impersonate others or holds an administrative role; changing them needs " +
+			ScopePrivilegedUsersWrite
+		switch target {
+		case targetGroup:
 			kind = "group"
+			detail = "members of this group may impersonate others; changing it or " +
+				"its membership needs " + ScopePrivilegedUsersWrite
+		case targetClient:
+			kind = "client"
+			detail = "this application is where administrators sign in to the Admin API; changing it needs " +
+				ScopePrivilegedUsersWrite
 		}
 		s.log.Info("admin request refused: privileged target", "token", p.Name,
 			"method", r.Method, "path", r.URL.Path)
@@ -101,12 +119,6 @@ func (s *Server) requirePrivileged(target privilegedTarget, next http.HandlerFun
 			Detail: map[string]any{"target": kind, "id": id, "method": r.Method,
 				"route": r.Pattern},
 		})
-		detail := "this user may impersonate others; changing them needs " +
-			ScopePrivilegedUsersWrite
-		if target == targetGroup {
-			detail = "members of this group may impersonate others; changing it or " +
-				"its membership needs " + ScopePrivilegedUsersWrite
-		}
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "privileged_target", "detail": detail,
 		})

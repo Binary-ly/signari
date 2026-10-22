@@ -73,6 +73,9 @@ func (s *Server) putResourceServer(w http.ResponseWriter, r *http.Request) {
 		return
 	case writeOrgRefusal(w, err):
 		return
+	case errors.Is(err, store.ErrResourceIsAdminAPI):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_resource", "detail": err.Error()})
+		return
 	case err != nil:
 		s.log.Error("registering a resource server", "org_id", orgID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})

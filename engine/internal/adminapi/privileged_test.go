@@ -249,7 +249,10 @@ func TestEveryWriteOnAUserOrGroupGuardsPrivilegedTargets(t *testing.T) {
 		key := op.method + " " + op.path
 		onGroup := strings.Contains(op.path, "{groupID}")
 		onUser := strings.Contains(op.path, "{userID}") || strings.Contains(op.path, "{subjectID}")
-		if op.method == "get" || (!onGroup && !onUser) {
+		// A client designated for the Admin API (6.01): where administrators
+		// sign in, so its redirect URIs and secret are an owner's role.
+		onClient := strings.Contains(op.path, "{clientID}") && !onUser && !onGroup
+		if op.method == "get" || (!onGroup && !onUser && !onClient) {
 			continue
 		}
 		if _, ok := exempt[key]; ok {
@@ -269,10 +272,18 @@ func TestEveryWriteOnAUserOrGroupGuardsPrivilegedTargets(t *testing.T) {
 			// A membership route names a user too; an ordinary one, so the
 			// refusal has to come from the group.
 			path := op.path
-			if onGroup {
+			switch {
+			case onClient:
+				client := newPreconditionClient(t, s)
+				if _, err := s.db.Exec(context.Background(),
+					`UPDATE core.clients SET admin_api = true WHERE client_id = $1`, client); err != nil {
+					t.Fatal(err)
+				}
+				path = strings.ReplaceAll(path, "{clientID}", client)
+			case onGroup:
 				path = strings.ReplaceAll(path, "{groupID}", newFlaggedGroup(t, s))
 				path = strings.ReplaceAll(path, "{userID}", newDriftUser(t, s))
-			} else {
+			default:
 				admin := newPrivilegedUser(t, s)
 				path = strings.ReplaceAll(path, "{userID}", admin)
 				path = strings.ReplaceAll(path, "{subjectID}", admin)

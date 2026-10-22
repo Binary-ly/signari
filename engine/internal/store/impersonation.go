@@ -307,6 +307,23 @@ func PrivilegedUser(ctx context.Context, q rowQuerier, userID string) (orgID str
 	return orgID, privileged, true, nil
 }
 
+// PrivilegedClient reports whether a client is designated for the Admin API
+// (0192, 6.01), and which organisation it belongs to. Such a client is where an
+// administrator signs in to administer, so whoever could change its redirect
+// URIs or secret could take that sign-in, and with it the administrator's role.
+func PrivilegedClient(ctx context.Context, q rowQuerier, clientID string) (orgID string, privileged, found bool, err error) {
+	err = q.QueryRow(ctx,
+		`SELECT org_id::text, admin_api FROM core.clients WHERE client_id = $1`,
+		clientID).Scan(&orgID, &privileged)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, false, nil
+	}
+	if err != nil {
+		return "", false, false, err
+	}
+	return orgID, privileged, true, nil
+}
+
 // PrivilegedGroup reports whether membership of a group makes a person
 // privileged (see PrivilegedUser), and which organisation the group belongs to.
 func PrivilegedGroup(ctx context.Context, q rowQuerier, groupID string) (orgID string, privileged, found bool, err error) {

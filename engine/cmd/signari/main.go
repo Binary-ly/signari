@@ -401,6 +401,8 @@ func run(args []string) (err error) {
 		"`client set-par`: refuse any authorization the client did not push first (false lifts it)")
 	firstParty := fs.Bool("first-party", true,
 		"`client set-first-party`: skip the consent screen for this client (false restores it)")
+	adminAPI := fs.Bool("admin-api", true,
+		"`client set-admin-api`: let this client obtain tokens for the Admin API, which act with their holder's roles (false withdraws it)")
 	minimumACR := fs.String("minimum-acr", "",
 		"`client set-acr`: the weakest authentication the client accepts: 1 (a single factor), 2 "+
 			"(multi-factor), 3 (multi-factor with a passkey or security key) or 4 (with a key bound to its device)")
@@ -1040,6 +1042,8 @@ func run(args []string) (err error) {
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RequirePAR: requirePAR},
 			map[bool]string{true: "authorization must be pushed first (RFC 9126)",
 				false: "authorization may start without pushing"}[*requirePAR])
+	case "client set-admin-api":
+		return clientSetAdminAPI(ctx, conn, *clientID, *adminAPI)
 	case "client set-first-party":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{FirstParty: firstParty},
 			map[bool]string{true: "first-party: the consent screen is skipped",
@@ -2275,6 +2279,10 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		// attribute routes need the key that unwraps subject keys. Without it
 		// they are not registered at all.
 		adminSrv.SetRootKey(root)
+		// This deployment's own access tokens for the Admin API's audience,
+		// from a designated application, act with their holder's roles (6.01),
+		// verified against the same key set the protocol endpoints use.
+		adminSrv.SetAccessTokens(set, issuer)
 
 		// Refused at startup, not warned about at runtime.
 		//

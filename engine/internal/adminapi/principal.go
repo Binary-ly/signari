@@ -133,6 +133,10 @@ type Principal struct {
 	// theirs another way (requireReach, reachFilter).
 	UserGroups map[string][]string
 
+	// UserID is the person a role principal acts as, recorded as the actor of
+	// what they change; empty for a token or an application.
+	UserID string
+
 	// ExpiresAt is when the token stops working, nil for never: a token may not
 	// mint one that outlives it (6.04).
 	ExpiresAt *time.Time
@@ -249,6 +253,9 @@ func (s *Server) resolveToken(ctx context.Context, presented string) (*Principal
 	if s.token != "" && subtle.ConstantTimeCompare([]byte(presented), []byte(s.token)) == 1 {
 		return &Principal{Name: "break-glass environment token",
 			Scopes: []string{ScopeAll}, BreakGlass: true}, nil
+	}
+	if looksLikeAccessToken(presented) {
+		return s.resolveAccessToken(ctx, presented)
 	}
 
 	sum := sha256.Sum256([]byte(presented))
@@ -406,6 +413,46 @@ func requireNamedOrg(ctx context.Context, tx pgx.Tx, orgID string) error {
 	}
 	return err
 }
+
+// requireReach refuses a person a role delegated over groups does not reach
+// for scope (6.01): one who is a member of none of its groups. auth applies it
+// to every route that names a person in its path; a handler that finds its
+// person another way calls it itself. A person who does not exist is refused
+// alike, so a delegate cannot tell the two apart.
+func requireReach(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, p *Principal, scope, userID string) error {
+	groups, narrowed := p.UserGroups[scope]
+	if !narrowed {
+		return nil
+	}
+	var member bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.group_members
+		WHERE user_id::text = $1 AND group_id = ANY($2::uuid[]))`, userID, groups).Scan(&member); err != nil {
+		return err
+	}
+	if !member {
+		return fmt.Errorf("%w: this role reaches only the members of its groups, and %s is not one",
+			errCrossOrg, userID)
+	}
+	return nil
+}
+
+// reachFilter is the groups a list of people is narrowed to for scope, as
+// requireReach narrows one person, or nil for everyone. Passed to the query
+// as a nullable uuid[], so the narrowing is in the WHERE clause.
+func reachFilter(ctx context.Context, scope string) []string {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return []string{}
+	}
+	return p.UserGroups[scope]
+}
+
+// errDelegatedCreate refuses a role delegated over groups a person it would
+// not reach: one made outside any group, or invited into one not its own.
+var errDelegatedCreate = fmt.Errorf("%w: a role delegated over groups adds people by invitation "+
+	"into its own groups, so that it reaches who it adds", errCrossOrg)
 
 // orgFilter is the organisation a LIST must be restricted to, or nil for a
 // principal that may see every organisation.

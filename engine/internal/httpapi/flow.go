@@ -98,10 +98,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	// Redirected like the shape check: the redirect_uri is validated by now.
 	if c != nil {
-		if err := checkResources(ctx, s.db, c.OrgID, req.Resources); err != nil {
+		if err := s.checkResources(ctx, s.db, c, c.OrgID, req.Resources); err != nil {
 			aerr := &oauth.AuthzError{Code: "invalid_target", Description: err.Error(),
 				Disposition: oauth.DispositionRedirect}
-			if !errors.Is(err, errUnregisteredResource) {
+			if !refusedTarget(err) {
 				s.log.Error("checking resource indicators", "err", err, "correlation_id", correlationID(ctx))
 				aerr.Code, aerr.Description = "temporarily_unavailable", "please try again shortly"
 			}
@@ -988,8 +988,9 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	}
 
 	// The audience, checked as it is minted: whatever accepted the resource
-	// earlier, the organisation may have removed it since.
-	if err := checkResources(ctx, tx, orgID, resources); err != nil {
+	// earlier, the organisation may have removed it since, or the client may
+	// no longer be designated for the Admin API.
+	if err := s.checkResources(ctx, tx, c, orgID, resources); err != nil {
 		return nil, nil, err
 	}
 
@@ -1405,6 +1406,18 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 			Status:      http.StatusBadRequest})
 		return
 	}
+	// The Admin API's audience (6.01), for a client the deployment designated,
+	// asked for alone: the token acts at the Admin API with the client's own
+	// roles. Any other resource is still not read by this grant, whose token is
+	// audienced to the client.
+	audience := []string{c.ClientID}
+	if admin := tokens.AdminAudience(s.cfg.Issuer); slices.Contains(req.Resources, admin) {
+		if err := s.checkResources(r.Context(), s.db, c, c.OrgID, req.Resources); err != nil {
+			writeMintError(w, err)
+			return
+		}
+		audience = []string{admin}
+	}
 	// The subject is the client itself.
 	hookCtx, ok := s.consultTokenHook(r.Context(), w, store.TokenHookRequest{
 		Subject: c.ClientID, ClientID: c.ClientID, Scopes: scopes, Grant: req.GrantType, OrgID: c.OrgID})
@@ -1455,7 +1468,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 	at, err := signAccessToken(hookCtx, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
 		Subject:  c.ClientID,
-		Audience: []string{c.ClientID},
+		Audience: audience,
 		Expiry:   now.Add(c.AccessTokenTTL()).Unix(),
 		IssuedAt: now.Unix(),
 		JTI:      jti,

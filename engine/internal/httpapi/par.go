@@ -199,8 +199,8 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, aerr.Code, aerr.Description)
 		return
 	}
-	if err := checkResources(ctx, s.db, c.OrgID, req.Resources); err != nil {
-		if errors.Is(err, errUnregisteredResource) {
+	if err := s.checkResources(ctx, s.db, c, c.OrgID, req.Resources); err != nil {
+		if refusedTarget(err) {
 			writeError(w, http.StatusBadRequest, "invalid_target", err.Error())
 			return
 		}

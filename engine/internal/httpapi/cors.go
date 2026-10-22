@@ -169,6 +169,12 @@ func (s *Server) registeredOrigins(ctx context.Context) []string {
 			out = append(out, o)
 		}
 	}
+	// As a query that failed outright, above: the previous answer, not a
+	// short one taken for the list (0.31).
+	if err := rows.Err(); err != nil {
+		s.log.Error("loading registered origins for CORS", "err", err)
+		return s.originsCache
+	}
 
 	s.originsCache = out
 	s.originsExpire = time.Now().Add(time.Minute)

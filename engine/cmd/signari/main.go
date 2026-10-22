@@ -3248,6 +3248,11 @@ func selectInstance(ctx context.Context, conn *pgx.Conn, want string) (id, issue
 		}
 		found = append(found, i)
 	}
+	// A read that failed after one row would look like a deployment with one
+	// instance, and the command would act on it whichever was meant (0.31).
+	if err := rows.Err(); err != nil {
+		return "", "", err
+	}
 
 	switch len(found) {
 	case 0:

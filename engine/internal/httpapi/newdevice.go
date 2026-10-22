@@ -101,6 +101,12 @@ func (s *Server) newDeviceSignIn(ctx context.Context, r *http.Request, tx pgx.Tx
 		}
 	}
 	rows.Close()
+	// As a query that failed outright: no notice decided on part of the
+	// devices, which could call a known one new (0.31).
+	if err := rows.Err(); err != nil {
+		s.log.Error("reading the devices a person has signed in from", "err", err)
+		return family, false
+	}
 	if seen == 0 || known {
 		return family, false
 	}

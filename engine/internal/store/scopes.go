@@ -90,6 +90,11 @@ func AdvertisedScopes(ctx context.Context, q interface {
 		}
 		out = append(out, name)
 	}
+	// Best effort, as when the query fails: discovery advertises what is
+	// known, the standard scopes at least (0.31).
+	if rows.Err() != nil {
+		return out
+	}
 	return out
 }
 
@@ -122,6 +127,11 @@ func DescribeScopes(ctx context.Context, q interface {
 			return out
 		}
 		out[s.Name] = s
+	}
+	// Best effort, as when the query fails: every requested scope is still
+	// shown, some without their description, never one dropped (0.31).
+	if rows.Err() != nil {
+		return out
 	}
 	return out
 }

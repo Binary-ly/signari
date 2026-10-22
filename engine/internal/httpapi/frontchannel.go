@@ -84,6 +84,14 @@ func (s *Server) frontChannelTargets(ctx context.Context, sid, issuer string) []
 		}
 		out = append(out, frontChannelTarget{ClientID: clientID, URL: u.String()})
 	}
+	// A read that failed partway leaves applications that will not be told
+	// the session ended. The ones read are still told, which is what a logout
+	// can do now, and the failure is said rather than taken for the whole list
+	// (0.31).
+	if err := rows.Err(); err != nil {
+		s.log.Error("listing front-channel logout targets; some applications will not be told",
+			"err", err, "told", len(out))
+	}
 	return out
 }
 

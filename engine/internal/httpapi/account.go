@@ -127,6 +127,9 @@ func (s *Server) externalProviders(ctx context.Context, orgID, authzQuery string
 		}
 		out = append(out, p)
 	}
+	if err := rows.Err(); err != nil {
+		s.log.Error("listing external providers for the sign-in page", "err", err)
+	}
 	return out
 }
 
@@ -180,6 +183,13 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		providers = append(providers, p)
+	}
+	// As the query's own failure above: a page listing some of the person's
+	// linked providers would read as the whole of them (0.31).
+	if err := rows.Err(); err != nil {
+		s.log.Error("listing linked providers", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
 	}
 
 	// The person's passkeys, to list and remove, beside the control that adds

@@ -151,7 +151,9 @@ func (s *Server) reloadFlowsFrom(ctx context.Context, q dbReader) {
 	for rows.Next() {
 		var orgID, doc string
 		if err := rows.Scan(&orgID, &doc); err != nil {
-			continue
+			// As a failed read below: keep every flow already loaded.
+			s.log.Error("loading sign-in flows; keeping the flows already loaded", "err", err)
+			return
 		}
 		f, perr := flow.Parse([]byte(doc))
 		if perr != nil {
@@ -179,6 +181,14 @@ func (s *Server) reloadFlowsFrom(ctx context.Context, q dbReader) {
 			continue
 		}
 		loaded[orgID] = f
+	}
+	// A read that failed partway is not the set of flows: taken for it, every
+	// organisation whose row went unread was served the built-in journey, the
+	// one its operator replaced, perhaps to require a second factor (0.31).
+	// The flows already loaded are kept, and the next reload tries again.
+	if err := rows.Err(); err != nil {
+		s.log.Error("loading sign-in flows; keeping the flows already loaded", "err", err)
+		return
 	}
 
 	s.flows.mu.Lock()

@@ -131,16 +131,25 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 		FROM core.webauthn_credentials WHERE user_id = $1::uuid ORDER BY created_at`, userID)
 	if err != nil {
 		s.log.Error("listing webauthn credentials", "err", err)
-	} else {
-		defer rows.Close()
-		for rows.Next() {
-			var f factorSummary
-			if err := rows.Scan(&f.ID, &f.Label, &f.CreatedAt, &f.LastUsed); err != nil {
-				continue
-			}
-			f.Type, f.Confirmed = "webauthn", true
-			out = append(out, f)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var f factorSummary
+		if err := rows.Scan(&f.ID, &f.Label, &f.CreatedAt, &f.LastUsed); err != nil {
+			continue
 		}
+		f.Type, f.Confirmed = "webauthn", true
+		out = append(out, f)
+	}
+	// A support desk decides from this whether a person still has a passkey;
+	// one listed without theirs, because the read failed, is told they have
+	// none (0.31). A failed read is the server's, as anywhere else.
+	if err := rows.Err(); err != nil {
+		s.log.Error("listing webauthn credentials", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
 	}
 
 	// Email and SMS one-time codes. The address and the number are NOT returned:

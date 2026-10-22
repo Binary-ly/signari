@@ -93,6 +93,18 @@ func signupProps() map[string]jsonSchema {
 		"require_approval": boolean()}
 }
 
+// webauthnProps is an instance's Relying Party identity (6.07).
+func webauthnProps() map[string]jsonSchema {
+	return map[string]jsonSchema{"instance_id": uuidStr(), "rp_id": str(), "rp_display_name": str(),
+		"related_origins": arrayOf(str())}
+}
+
+// withProp adds one property to props.
+func withProp(props map[string]jsonSchema, name string, s jsonSchema) map[string]jsonSchema {
+	props[name] = s
+	return props
+}
+
 // brandProps is an instance's appearance (6.07).
 func brandProps() map[string]jsonSchema {
 	return map[string]jsonSchema{"instance_id": uuidStr(), "branded": boolean(), "product_name": str(),
@@ -423,6 +435,19 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/instances/{instanceID}/brand": {http.StatusOK, typeOf[putBrandRequest](), object(
 		append(append([]string{}, brandFields...), "config_version"), withVersion(brandProps()))},
 	"DELETE /admin/instances/{instanceID}/brand": {http.StatusOK, nil, removedSchema},
+	"GET /admin/instances/{instanceID}/webauthn": {http.StatusOK, nil, object(
+		[]string{"instance_id", "rp_id", "rp_display_name", "related_origins"}, webauthnProps())},
+	"PUT /admin/instances/{instanceID}/webauthn": {http.StatusOK, typeOf[putWebAuthnRequest](), object(
+		[]string{"instance_id", "rp_id", "rp_display_name", "related_origins", "replaced_rp_id", "config_version"},
+		withVersion(withProp(webauthnProps(), "replaced_rp_id", str())))},
+	"GET /admin/instances/{instanceID}/issuer-aliases": {http.StatusOK, nil, object([]string{"instance_id", "issuer_aliases"},
+		map[string]jsonSchema{"instance_id": uuidStr(), "issuer_aliases": arrayOf(object(
+			[]string{"issuer", "retire_after", "pinned_clients"}, map[string]jsonSchema{"issuer": str(),
+				"retire_after": nullable(dateTime()), "pinned_clients": integer()}))})},
+	"POST /admin/instances/{instanceID}/issuer-aliases": {http.StatusCreated, typeOf[issuerAliasRequest](), object(
+		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
+	"PATCH /admin/instances/{instanceID}/issuer-aliases": {http.StatusOK, typeOf[issuerAliasRequest](), object(
+		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
 	"GET /admin/organizations/{orgID}/prompts": {http.StatusOK, nil, object([]string{"org_id", "prompts"},
 		map[string]jsonSchema{"org_id": uuidStr(), "prompts": arrayOf(object(
 			[]string{"slug", "title", "body", "once", "order", "fields", "enabled", "version", "answered"},

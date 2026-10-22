@@ -305,6 +305,36 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/instances/{instanceID}/webauthn", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftInstance(t, s) + "/webauthn"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"rp_id":"drift.example"}` },
+		},
+		{
+			name: "POST /admin/instances/{instanceID}/issuer-aliases", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftInstance(t, s) + "/issuer-aliases"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return fmt.Sprintf(`{"alias":"https://legacy-%d.test"}`, time.Now().UnixNano())
+			},
+		},
+		{
+			name: "PATCH /admin/instances/{instanceID}/issuer-aliases", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftInstanceWithAlias(t, s) + "/issuer-aliases"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				var alias string
+				if err := s.db.QueryRow(context.Background(), `SELECT issuer FROM core.instance_issuer_aliases
+					WHERE instance_id::text = split_part($1, '/', 4)`, path).Scan(&alias); err != nil {
+					t.Fatal(err)
+				}
+				return `{"alias":"` + alias + `"}`
+			},
+		},
+		{
 			// Its own organisation: a prompt on the shared one is asked at
 			// every other test's sign-in.
 			name: "PUT /admin/organizations/{orgID}/prompts/{slug}", method: http.MethodPut,
@@ -617,7 +647,31 @@ func newDriftInstance(t *testing.T, s *Server) string {
 	}
 	t.Cleanup(func() {
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.brands WHERE instance_id = $1::uuid`, id)
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.instance_issuer_aliases WHERE instance_id = $1::uuid`, id)
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.instances WHERE id = $1::uuid`, id)
+	})
+	return id
+}
+
+// newDriftInstanceWithAlias is newDriftInstance claiming one legacy issuer.
+func newDriftInstanceWithAlias(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	id := newDriftInstance(t, s)
+	alias := fmt.Sprintf("https://legacy-%d.test", time.Now().UnixNano())
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.AddIssuerAlias(ctx, tx, id, alias, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.instance_issuer_aliases WHERE issuer = $1`, alias)
 	})
 	return id
 }

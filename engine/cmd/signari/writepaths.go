@@ -2391,22 +2391,19 @@ func instanceRelatedOrigins(ctx context.Context, conn *pgx.Conn, issuer string, 
 	if issuer == "" {
 		return fmt.Errorf("give -issuer; -related-origins lists the origins, and empty clears them")
 	}
-	for _, o := range origins {
-		if err := passkeys.CheckRelatedOrigin(o); err != nil {
-			return err
-		}
-	}
 	var rpID *string
-	var host string
-	if err := conn.QueryRow(ctx, `SELECT rp_id, issuer FROM core.instances WHERE issuer = $1`,
-		issuer).Scan(&rpID, &host); err != nil {
+	var host, instanceID string
+	if err := conn.QueryRow(ctx, `SELECT id::text, rp_id, issuer FROM core.instances WHERE issuer = $1`,
+		issuer).Scan(&instanceID, &rpID, &host); err != nil {
 		return fmt.Errorf("no instance with issuer %q", issuer)
 	}
-	if rpID == nil || *rpID == "" {
+	// Each origin checked, and the RP ID required, by the writer the Admin API
+	// shares.
+	err := store.SetRelatedOrigins(ctx, conn, instanceID, origins, passkeys.CheckRelatedOrigin)
+	if errors.Is(err, store.ErrNoRPID) {
 		return fmt.Errorf("the instance has no RP ID yet; set it with `signari instance webauthn` first")
 	}
-	if _, err := conn.Exec(ctx, `UPDATE core.instances SET webauthn_related_origins = $2 WHERE issuer = $1`,
-		issuer, origins); err != nil {
+	if err != nil {
 		return err
 	}
 	if len(origins) == 0 {
@@ -2448,29 +2445,17 @@ func instanceWebAuthn(ctx context.Context, conn *pgx.Conn, issuer, id, displayNa
 	if issuer == "" || id == "" {
 		return fmt.Errorf("give -issuer and -rp-id")
 	}
-	if strings.Contains(id, "://") || strings.ContainsAny(id, ":/?#") {
-		return fmt.Errorf("-rp-id is a bare domain: %q has a scheme, port or path. "+
-			"Use example.com, not https://example.com:8443/", id)
-	}
-	if !strings.Contains(id, ".") && id != "localhost" {
-		return fmt.Errorf("-rp-id %q is not a domain. WebAuthn allows `localhost` for "+
-			"local testing and requires a registrable domain otherwise", id)
-	}
-	// An IP address is refused by internal/passkeys when a ceremony is attempted.
-	// Checked here as well, because the first version of this command accepted
-	// 192.168.1.1 happily — it contains dots — and the operator would then have
-	// found out at the first enrolment, from a browser, with a stored value that
-	// looked correct.
-	if ip := net.ParseIP(id); ip != nil {
-		return fmt.Errorf("-rp-id %q is an IP address. WebAuthn binds a credential to a "+
-			"registrable domain, and browsers refuse a ceremony scoped to an address", id)
+	// The rules are store.CheckRPID's, which the Admin API shares: a bare
+	// registrable domain, never an address, a scheme, a port or a path.
+	if err := store.CheckRPID(id); err != nil {
+		return fmt.Errorf("-rp-id: %w", err)
 	}
 
 	var current, currentName *string
-	var host string
+	var host, instanceID string
 	if err := conn.QueryRow(ctx,
-		`SELECT rp_id, rp_display_name, issuer FROM core.instances WHERE issuer = $1`,
-		issuer).Scan(&current, &currentName, &host); err != nil {
+		`SELECT id::text, rp_id, rp_display_name, issuer FROM core.instances WHERE issuer = $1`,
+		issuer).Scan(&instanceID, &current, &currentName, &host); err != nil {
 		return fmt.Errorf("no instance with issuer %q", issuer)
 	}
 
@@ -2485,9 +2470,7 @@ func instanceWebAuthn(ctx context.Context, conn *pgx.Conn, issuer, id, displayNa
 		name = id
 	}
 
-	if _, err := conn.Exec(ctx,
-		`UPDATE core.instances SET rp_id = $2, rp_display_name = $3 WHERE issuer = $1`,
-		issuer, id, name); err != nil {
+	if err := store.SetInstanceRPID(ctx, conn, instanceID, id, name); err != nil {
 		return err
 	}
 

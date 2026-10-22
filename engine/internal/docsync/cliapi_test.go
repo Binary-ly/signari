@@ -54,8 +54,8 @@ var cliAPI = map[string]string{
 
 	// Instances and organisations.
 	"instance create":            cliOnly("a new issuer is a deployment decision, made where its root key is"),
-	"instance add-alias":         pending,
-	"instance retire-alias":      pending,
+	"instance add-alias":         "POST /admin/instances/{instanceID}/issuer-aliases",
+	"instance retire-alias":      "PATCH /admin/instances/{instanceID}/issuer-aliases",
 	"instance aliases":           reads,
 	"instance session-limit":     orgSettings,
 	"instance remember-device":   orgSettings,
@@ -66,8 +66,8 @@ var cliAPI = map[string]string{
 	"instance reauth-window":     orgSettings,
 	"instance session-lifetime":  orgSettings,
 	"instance password-binds":    orgSettings,
-	"instance related-origins":   pending,
-	"instance webauthn":          pending,
+	"instance related-origins":   "PUT /admin/instances/{instanceID}/webauthn",
+	"instance webauthn":          "PUT /admin/instances/{instanceID}/webauthn",
 	"instance sms-numbers":       orgSettings,
 	"instance totp-policy":       orgSettings,
 	"instance login-throttle":    orgSettings,

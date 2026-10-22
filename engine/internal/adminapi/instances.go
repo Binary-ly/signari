@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/brand"
+	"signari.dev/engine/internal/passkeys"
 	"signari.dev/engine/internal/store"
 )
 
@@ -207,4 +209,256 @@ func (s *Server) deleteBrand(w http.ResponseWriter, r *http.Request) {
 	}
 	setETag(w, version)
 	writeJSON(w, http.StatusOK, map[string]any{"removed": true, "config_version": version})
+}
+
+// The Relying Party identity passkeys are bound to, as `signari instance
+// webauthn|related-origins` sets it.
+
+type webauthnView struct {
+	InstanceID     string   `json:"instance_id"`
+	RPID           string   `json:"rp_id"`
+	RPDisplayName  string   `json:"rp_display_name"`
+	RelatedOrigins []string `json:"related_origins"`
+}
+
+// putWebAuthnRequest sets the identity. Changing an RP ID already set makes
+// every passkey registered under it unusable, for good, so it is refused
+// unless replace_rp_id says that is meant.
+type putWebAuthnRequest struct {
+	RPID           string   `json:"rp_id"`
+	RPDisplayName  string   `json:"rp_display_name"`
+	RelatedOrigins []string `json:"related_origins"`
+	ReplaceRPID    bool     `json:"replace_rp_id"`
+}
+
+var errRPIDChange = errors.New("an RP ID change not confirmed")
+
+// errBadOrigin is passkeys.CheckRelatedOrigin's refusal, told apart from a
+// failed write.
+type errBadOrigin struct{ error }
+
+func viewWebAuthn(instanceID string, w store.InstanceWebAuthn) webauthnView {
+	v := webauthnView{InstanceID: instanceID, RPID: w.RPID, RPDisplayName: w.DisplayName,
+		RelatedOrigins: w.RelatedOrigins}
+	if v.RelatedOrigins == nil {
+		v.RelatedOrigins = []string{}
+	}
+	return v
+}
+
+func (s *Server) getInstanceWebAuthn(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	instanceID := r.PathValue("instanceID")
+	if !deploymentWide(w, ctx) {
+		return
+	}
+	got, err := store.InstanceWebAuthnOf(ctx, s.db, instanceID)
+	switch {
+	case errors.Is(err, store.ErrInstanceUnknown):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "instance_not_found"})
+		return
+	case err != nil:
+		s.log.Error("reading an instance's RP identity", "instance_id", instanceID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	s.writeList(w, r, viewWebAuthn(instanceID, got))
+}
+
+func (s *Server) putInstanceWebAuthn(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	instanceID := r.PathValue("instanceID")
+	var req putWebAuthnRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
+		return
+	}
+	if !deploymentWide(w, ctx) {
+		return
+	}
+	req.RPID = strings.TrimSpace(req.RPID)
+	origins := cleanList(req.RelatedOrigins, false)
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	var after store.InstanceWebAuthn
+	var replaced string
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		cur, err := store.InstanceWebAuthnOf(ctx, tx, instanceID)
+		if err != nil {
+			return err
+		}
+		if cur.RPID != "" && cur.RPID != req.RPID {
+			if !req.ReplaceRPID {
+				return errRPIDChange
+			}
+			replaced = cur.RPID
+		}
+		if err := store.SetInstanceRPID(ctx, tx, instanceID, req.RPID, req.RPDisplayName); err != nil {
+			return err
+		}
+		if err := store.SetRelatedOrigins(ctx, tx, instanceID, origins, func(o string) error {
+			if err := passkeys.CheckRelatedOrigin(o); err != nil {
+				return errBadOrigin{err}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		if after, err = store.InstanceWebAuthnOf(ctx, tx, instanceID); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.instance_webauthn_set", AdminTokenID: TokenIDFrom(ctx),
+			Detail: map[string]any{"instance_id": instanceID, "rp_id": after.RPID, "replaced_rp_id": replaced,
+				"related_origins": after.RelatedOrigins}})
+	})
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case errors.Is(err, store.ErrInstanceUnknown):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "instance_not_found"})
+		return
+	case errors.Is(err, errRPIDChange):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "rp_id_change_unconfirmed",
+			"detail": "every passkey registered under the current RP ID becomes unusable for good; " +
+				"set replace_rp_id to mean it"})
+		return
+	case errors.Is(err, store.ErrInvalidRPID):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_rp_id", "detail": err.Error()})
+		return
+	case errors.As(err, &errBadOrigin{}):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_related_origin", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrNoRPID):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_rp_id", "detail": err.Error()})
+		return
+	case err != nil:
+		s.log.Error("setting an instance's RP identity", "instance_id", instanceID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, struct {
+		webauthnView
+		ReplacedRPID  string `json:"replaced_rp_id"`
+		ConfigVersion int64  `json:"config_version"`
+	}{viewWebAuthn(instanceID, after), replaced, version})
+}
+
+// Legacy issuers an instance also claims while relying parties move across,
+// as `signari instance add-alias|retire-alias` manages them.
+
+type issuerAliasView struct {
+	Issuer      string     `json:"issuer"`
+	RetireAfter *time.Time `json:"retire_after"`
+	Pinned      int        `json:"pinned_clients"`
+}
+
+// issuerAliasRequest names an alias and when it stops being accepted: for
+// POST, never when absent; for PATCH, now when absent.
+type issuerAliasRequest struct {
+	Alias       string     `json:"alias"`
+	RetireAfter *time.Time `json:"retire_after"`
+}
+
+func (s *Server) listIssuerAliases(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	instanceID := r.PathValue("instanceID")
+	if !deploymentWide(w, ctx) {
+		return
+	}
+	exists, err := store.InstanceExists(ctx, s.db, instanceID)
+	if err == nil && !exists {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "instance_not_found"})
+		return
+	}
+	var got []store.IssuerAlias
+	if err == nil {
+		got, err = store.IssuerAliases(ctx, s.db, instanceID)
+	}
+	if err != nil {
+		s.log.Error("listing issuer aliases", "instance_id", instanceID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	out := make([]issuerAliasView, 0, len(got))
+	for _, a := range got {
+		out = append(out, issuerAliasView{Issuer: a.Issuer, RetireAfter: a.RetireAfter, Pinned: a.Pinned})
+	}
+	s.writeList(w, r, map[string]any{"instance_id": instanceID, "issuer_aliases": out})
+}
+
+func (s *Server) addIssuerAlias(w http.ResponseWriter, r *http.Request) {
+	s.changeIssuerAlias(w, r, true)
+}
+
+func (s *Server) retireIssuerAlias(w http.ResponseWriter, r *http.Request) {
+	s.changeIssuerAlias(w, r, false)
+}
+
+func (s *Server) changeIssuerAlias(w http.ResponseWriter, r *http.Request, add bool) {
+	ctx := r.Context()
+	instanceID := r.PathValue("instanceID")
+	var req issuerAliasRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
+		return
+	}
+	if !deploymentWide(w, ctx) {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		exists, err := store.InstanceExists(ctx, tx, instanceID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return store.ErrInstanceUnknown
+		}
+		if add {
+			if err := store.AddIssuerAlias(ctx, tx, instanceID, req.Alias, req.RetireAfter); err != nil {
+				return err
+			}
+			return audit.Write(ctx, tx, audit.Event{Type: "admin.issuer_alias_added", AdminTokenID: TokenIDFrom(ctx),
+				Detail: map[string]any{"instance_id": instanceID, "alias": req.Alias, "retire_after": req.RetireAfter}})
+		}
+		at := time.Now()
+		if req.RetireAfter != nil {
+			at = *req.RetireAfter
+		}
+		if err := store.RetireIssuerAlias(ctx, tx, instanceID, req.Alias, at); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.issuer_alias_retired", AdminTokenID: TokenIDFrom(ctx),
+			Detail: map[string]any{"instance_id": instanceID, "alias": req.Alias, "retire_after": at}})
+	})
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case errors.Is(err, store.ErrInstanceUnknown):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "instance_not_found"})
+		return
+	case errors.Is(err, store.ErrInvalidIssuerAlias):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_issuer_alias", "detail": err.Error()})
+		return
+	case err != nil:
+		s.log.Error("changing an issuer alias", "instance_id", instanceID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	status := http.StatusOK
+	if add {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]any{"alias": req.Alias, "config_version": version})
 }

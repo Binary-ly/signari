@@ -155,6 +155,12 @@ var summaries = map[string]string{
 	"PUT /admin/instances/{instanceID}/brand":    "Brand the instance's pages, checked for contrast.",
 	"DELETE /admin/instances/{instanceID}/brand": "Return the instance's pages to the built-in appearance.",
 
+	"GET /admin/instances/{instanceID}/webauthn":         "The Relying Party ID the instance's passkeys are bound to, and its related origins.",
+	"PUT /admin/instances/{instanceID}/webauthn":         "Set the RP ID, its name and related origins; changing a set RP ID must be confirmed.",
+	"GET /admin/instances/{instanceID}/issuer-aliases":   "Legacy issuers the instance also claims, and who is pinned to each.",
+	"POST /admin/instances/{instanceID}/issuer-aliases":  "Claim a legacy issuer while relying parties move across.",
+	"PATCH /admin/instances/{instanceID}/issuer-aliases": "Retire an alias, now unless told when.",
+
 	// Interstitial prompts (6.07).
 	"GET /admin/organizations/{orgID}/prompts":          "The prompts asked between sign-in and the session, in order.",
 	"PUT /admin/organizations/{orgID}/prompts/{slug}":   "Define or replace a prompt; a change to its wording asks everyone again.",

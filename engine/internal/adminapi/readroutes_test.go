@@ -29,6 +29,12 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/instances/{instanceID}/brand", func(t *testing.T, s *Server) string {
 			return "/admin/instances/" + newDriftInstance(t, s) + "/brand"
 		}},
+		{"GET /admin/instances/{instanceID}/webauthn", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftInstance(t, s) + "/webauthn"
+		}},
+		{"GET /admin/instances/{instanceID}/issuer-aliases", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftInstance(t, s) + "/issuer-aliases"
+		}},
 		{"GET /admin/config-version", func(*testing.T, *Server) string { return "/admin/config-version" }},
 		{"GET /admin/groups", func(*testing.T, *Server) string { return "/admin/groups?limit=5" }},
 		{"GET /admin/groups/{groupID}", func(t *testing.T, s *Server) string { return "/admin/groups/" + newDriftGroup(t, s) }},

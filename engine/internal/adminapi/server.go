@@ -254,6 +254,11 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/instances/{instanceID}/brand", ScopeConfigRead, s.getBrand)
 	route("PUT /admin/instances/{instanceID}/brand", ScopeOrganizationsWrite, s.putBrand)
 	route("DELETE /admin/instances/{instanceID}/brand", ScopeOrganizationsWrite, s.deleteBrand)
+	route("GET /admin/instances/{instanceID}/webauthn", ScopeConfigRead, s.getInstanceWebAuthn)
+	route("PUT /admin/instances/{instanceID}/webauthn", ScopeOrganizationsWrite, s.putInstanceWebAuthn)
+	route("GET /admin/instances/{instanceID}/issuer-aliases", ScopeConfigRead, s.listIssuerAliases)
+	route("POST /admin/instances/{instanceID}/issuer-aliases", ScopeOrganizationsWrite, s.addIssuerAlias)
+	route("PATCH /admin/instances/{instanceID}/issuer-aliases", ScopeOrganizationsWrite, s.retireIssuerAlias)
 	// Interstitial prompts, `signari prompt` (prompts.go).
 	route("GET /admin/organizations/{orgID}/prompts", ScopeConfigRead, s.listPrompts)
 	route("PUT /admin/organizations/{orgID}/prompts/{slug}", ScopeOrganizationsWrite, s.putPrompt)

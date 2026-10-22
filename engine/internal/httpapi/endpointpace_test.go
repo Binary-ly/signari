@@ -55,6 +55,20 @@ func TestAConfidentialClientIsPacedAsItselfNotByAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := freshAddress()
+	// Measured as the change across these pushes. The address is drawn from
+	// 62,500, a bucket outlives its window, and one drawn again from an earlier
+	// run of the paced test above once read that run's 61 (0.25).
+	charged := func() int {
+		t.Helper()
+		var n int
+		if err := f.pool.QueryRow(context.Background(),
+			`SELECT COALESCE(sum(count), 0) FROM core.rate_limits WHERE bucket_key = $1`,
+			"par:ip:"+addr).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := charged()
 	for i := 0; i < 100; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/oauth2/par", strings.NewReader(url.Values{
 			"client_id": {f.clientID}, "client_secret": {secret}, "response_type": {"code"},
@@ -70,14 +84,8 @@ func TestAConfidentialClientIsPacedAsItselfNotByAddress(t *testing.T) {
 			t.Fatalf("push %d from one address answered %d: %s", i+1, rec.Code, rec.Body.String())
 		}
 	}
-	var byAddress int
-	if err := f.pool.QueryRow(context.Background(),
-		`SELECT COALESCE(sum(count), 0) FROM core.rate_limits WHERE bucket_key = $1`,
-		"par:ip:"+addr).Scan(&byAddress); err != nil {
-		t.Fatal(err)
-	}
-	if byAddress != 0 {
-		t.Errorf("an authenticated client's pushes were charged to its address (%d)", byAddress)
+	if after := charged(); after != before {
+		t.Errorf("an authenticated client's pushes were charged to its address (%d -> %d)", before, after)
 	}
 }
 

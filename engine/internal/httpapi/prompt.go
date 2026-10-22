@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"signari.dev/engine/internal/audit"
@@ -39,7 +41,7 @@ func (s *Server) beginPrompt(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	s.renderPage(w, r, "prompt", map[string]any{
-		"Slug": p.Slug, "Title": p.Title, "Body": p.Body, "Fields": p.Fields,
+		"Slug": p.Slug, "Title": p.Title, "Body": p.Body, "Fields": p.Fields, "Version": p.Version,
 		"CSRF": csrf, "CSRFField": csrfFormField,
 	})
 }
@@ -112,13 +114,23 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 			submitted[f.Name] = r.PostFormValue(f.Name)
 		}
 	}
-	answers, verr := p.ValidateAnswers(submitted)
-	if verr != nil {
+	rerender := func(msg string) {
 		csrf, _ := s.csrfToken(w, r)
 		s.renderPage(w, r, "prompt", map[string]any{
-			"Slug": p.Slug, "Title": p.Title, "Body": p.Body, "Fields": p.Fields,
-			"Error": verr.Error(), "CSRF": csrf, "CSRFField": csrfFormField,
+			"Slug": p.Slug, "Title": p.Title, "Body": p.Body, "Fields": p.Fields, "Version": p.Version,
+			"Error": msg, "CSRF": csrf, "CSRFField": csrfFormField,
 		})
+	}
+	// The version the person was shown (5.13). Edited since, the answer would be
+	// to text they did not read, so the current text is shown instead.
+	shown, _ := strconv.Atoi(r.PostFormValue("version"))
+	if shown != p.Version {
+		rerender(s.tr(r).Text("error.prompt.changed"))
+		return
+	}
+	answers, verr := p.ValidateAnswers(submitted)
+	if verr != nil {
+		rerender(verr.Error())
 		return
 	}
 
@@ -129,8 +141,15 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := store.RecordAnswer(ctx, tx, p.ID, pending.Subject, pending.OrgID,
-		answers); err != nil {
+	if err := store.RecordAnswer(ctx, tx, p.ID, p.Version, pending.Subject, pending.OrgID,
+		answers); errors.Is(err, store.ErrPromptChanged) {
+		_ = tx.Rollback(ctx)
+		if fresh, lerr := store.LoadPrompt(ctx, s.db, pending.OrgID, p.Slug); lerr == nil {
+			p = fresh
+		}
+		rerender(s.tr(r).Text("error.prompt.changed"))
+		return
+	} else if err != nil {
 		s.log.Error("recording a prompt answer", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -145,7 +164,7 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 	if aerr := audit.Write(ctx, tx, audit.Event{
 		Type: "prompt.answered", OrgID: pending.OrgID, SubjectID: pending.Subject,
 		CorrelationID: correlationID(ctx),
-		Detail:        map[string]any{"prompt": p.Slug},
+		Detail:        map[string]any{"prompt": p.Slug, "version": p.Version},
 	}); aerr != nil {
 		s.log.Error("auditing a prompt answer", "err", aerr)
 	}

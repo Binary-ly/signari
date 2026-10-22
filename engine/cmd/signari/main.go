@@ -7849,17 +7849,31 @@ func promptSet(ctx context.Context, conn *pgx.Conn, orgID, slug, path string) er
 	if err != nil {
 		return err
 	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.prompts (org_id, slug, title, body, fields, once, position)
-		VALUES ($1::uuid, $2, $3, NULLIF($4,''), $5, $6, $7)
-		ON CONFLICT (org_id, slug) DO UPDATE SET
-			title = EXCLUDED.title, body = EXCLUDED.body, fields = EXCLUDED.fields,
-			once = EXCLUDED.once, position = EXCLUDED.position, updated_at = now()`,
-		orgID, d.Slug, d.Title, d.Body, fields, once, d.Order); err != nil {
+	// The version moves when what a person reads and answers changes -- the
+	// title, the body, the fields -- and not for the order or `once` (5.13).
+	// Migration 0183's trigger decides that, for this writer and any other.
+	var version int
+	var asked int
+	if err := conn.QueryRow(ctx, `
+		WITH saved AS (
+			INSERT INTO core.prompts (org_id, slug, title, body, fields, once, position)
+			VALUES ($1::uuid, $2, $3, NULLIF($4,''), $5, $6, $7)
+			ON CONFLICT (org_id, slug) DO UPDATE SET
+				title = EXCLUDED.title, body = EXCLUDED.body, fields = EXCLUDED.fields,
+				once = EXCLUDED.once, position = EXCLUDED.position, updated_at = now()
+			RETURNING id, version)
+		SELECT s.version, (SELECT count(DISTINCT r.user_id) FROM core.prompt_responses r
+		                    WHERE r.prompt_id = s.id AND r.prompt_version < s.version)
+		  FROM saved s`,
+		orgID, d.Slug, d.Title, d.Body, fields, once, d.Order).Scan(&version, &asked); err != nil {
 		return err
 	}
 
-	fmt.Printf("prompt %s\n", d.Slug)
+	fmt.Printf("prompt %s, version %d\n", d.Slug, version)
+	if asked > 0 && once {
+		fmt.Printf("  %d person(s) who answered an earlier version will be asked again; their\n"+
+			"  earlier answers are kept\n", asked)
+	}
 	fmt.Printf("  %s\n", d.Title)
 	for _, f := range d.Fields {
 		req := ""
@@ -7882,9 +7896,12 @@ func promptList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
+	// People, not rows: answers are kept per version (5.13), so a person who
+	// answered three versions has three rows and is one person.
 	rows, err := conn.Query(ctx, `
-		SELECT p.slug, p.title, p.once, p.enabled,
-		       (SELECT count(*) FROM core.prompt_responses r WHERE r.prompt_id = p.id)
+		SELECT p.slug, p.title, p.once, p.enabled, p.version,
+		       (SELECT count(DISTINCT r.user_id) FROM core.prompt_responses r
+		         WHERE r.prompt_id = p.id AND r.prompt_version = p.version)
 		  FROM core.prompts p WHERE p.org_id = $1::uuid
 		 ORDER BY p.position, p.slug`, orgID)
 	if err != nil {
@@ -7895,10 +7912,11 @@ func promptList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	for rows.Next() {
 		var slug, title string
 		var once, enabled bool
-		var answered int
-		if err := rows.Scan(&slug, &title, &once, &enabled, &answered); err != nil {
+		var version, answered int
+		if err := rows.Scan(&slug, &title, &once, &enabled, &version, &answered); err != nil {
 			return err
 		}
+		title = fmt.Sprintf("%s (v%d)", title, version)
 		state := "enabled"
 		if !enabled {
 			state = "disabled"

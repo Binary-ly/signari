@@ -78,12 +78,36 @@ from the rendered form.
 {"accept": "true", "department": "engineering"}
 ```
 
-Not reduced to a boolean: the stored answer keeps every field. It records when the
-person last answered and what they answered, and not yet which wording they were
-shown. Answering again replaces the earlier answer, and editing a prompt keeps the
-answers given to the old text and does not ask again, so *"to what did they
-agree?"* has no answer once the terms change. This page said it had. The answer is
-also written to the audit trail, for whoever has the export and not the database.
+Not reduced to a boolean: the stored answer keeps every field. Each answer is its
+own row, with when it was given, the **version** of the prompt it answered and a
+hash of the title, body and fields exactly as they stood, so *"to what did they
+agree, and when?"* is answered by the record and not by memory. A response is
+never changed in place; the database refuses an update to one. The answer is also
+written to the audit trail with its version, for whoever has the export and not
+the database.
+
+## Editing a prompt asks again
+
+The version moves when the title, the body or the fields change, and only then:
+reordering a prompt, or switching it on or off, leaves it. A `once` prompt is
+outstanding until its **current** version is answered, so new terms are put to
+everybody at their next sign-in, and their answers to the old ones are kept.
+
+```
+signari prompt set -org <uuid> -prompt-file terms.yaml
+prompt terms, version 2
+  412 person(s) who answered an earlier version will be asked again; their
+  earlier answers are kept
+```
+
+The version is decided by the database, on every write, so no writer can change
+the terms without moving it. The page carries the version it showed: terms edited
+while somebody was reading them are shown again rather than accepted on their
+behalf. `prompt list` counts the people who have answered the current version.
+
+Until October 2026 an answer replaced the one before it, and editing a prompt kept
+the answers given to the old text and asked nobody again. Answers from before then
+are version 1, and what they answered was not kept.
 
 ## `once`
 

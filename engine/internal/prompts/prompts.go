@@ -43,6 +43,9 @@ type Prompt struct {
 	Title string
 	Body  string
 	Once  bool
+	// Version moves when the title, body or fields are edited; an answer is to
+	// one version (5.13).
+	Version int
 
 	Fields []Field
 }

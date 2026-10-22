@@ -68,6 +68,12 @@ var knownUnwritable = map[string]string{
 	"config_version.id":           "the one row's key, true by CHECK, seeded by its migration; nothing has another value to write",
 	"audit_stream_state.only_row": "the one row's key, true by CHECK, seeded by its migration; nothing has another value to write",
 
+	// Written by migration 0183's trigger on every insert and update of a
+	// prompt, from its title, body and fields, so that no writer can change the
+	// terms without moving the version, or move it without changing them.
+	"prompts.version":      "moved by the prompts_versioned trigger when the title, body or fields change; no writer sets it, by design",
+	"prompts.content_hash": "computed by the prompts_versioned trigger from the title, body and fields; no writer sets it, by design",
+
 	// Reported by the console through core_v1 and enforced NOWHERE on the request
 	// path. A command to set these would be the same defect from the other side:
 	// a suspension switch that suspends nothing is worse than an absent one,

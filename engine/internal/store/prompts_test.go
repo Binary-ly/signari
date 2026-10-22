@@ -9,6 +9,80 @@ import (
 	"signari.dev/engine/internal/prompts"
 )
 
+// An edit to what a prompt says makes it pending again, and the earlier answer
+// is kept with the version and the text it answered (5.13).
+func TestAnEditedPromptIsAskedAgainAndTheOldAnswerIsKept(t *testing.T) {
+	ctx := context.Background()
+	conn := connect(t)
+	tx, err := conn.Begin(ctx)
+	must(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var orgID, userID, promptID string
+	must(t, tx.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).Scan(&orgID))
+	must(t, tx.QueryRow(ctx, `INSERT INTO core.users (org_id, user_handle, email)
+		VALUES ($1::uuid, decode(repeat(md5(random()::text),4), 'hex'), 'prompt-v-' || md5(random()::text) || '@example.invalid')
+		RETURNING id::text`, orgID).Scan(&userID))
+	must(t, tx.QueryRow(ctx, `INSERT INTO core.prompts (org_id, slug, title, body, fields, once)
+		VALUES ($1::uuid, 'terms-' || md5(random()::text), 'Terms', 'The first terms.',
+		        '[{"name":"accept","type":"checkbox","label":"Accept","required":true}]'::jsonb, true)
+		RETURNING id::text`, orgID).Scan(&promptID))
+	pending := func() []prompts.Prompt {
+		t.Helper()
+		ps, err := PendingPrompts(ctx, tx, orgID, userID)
+		must(t, err)
+		var mine []prompts.Prompt
+		for _, p := range ps {
+			if p.ID == promptID {
+				mine = append(mine, p)
+			}
+		}
+		return mine
+	}
+	if got := pending(); len(got) != 1 || got[0].Version != 1 {
+		t.Fatalf("a new prompt: %+v, want pending at version 1", got)
+	}
+	must(t, RecordAnswer(ctx, tx, promptID, 1, userID, orgID, prompts.Answers{"accept": "true"}))
+	if got := pending(); len(got) != 0 {
+		t.Fatalf("answered, still pending: %+v", got)
+	}
+
+	// Moving it changes nothing anybody read.
+	_, err = tx.Exec(ctx, `UPDATE core.prompts SET position = position + 1 WHERE id = $1::uuid`, promptID)
+	must(t, err)
+	if got := pending(); len(got) != 0 {
+		t.Fatalf("reordering made the prompt pending again: %+v", got)
+	}
+
+	// New terms do.
+	_, err = tx.Exec(ctx, `UPDATE core.prompts SET body = 'The second terms.' WHERE id = $1::uuid`, promptID)
+	must(t, err)
+	got := pending()
+	if len(got) != 1 || got[0].Version != 2 {
+		t.Fatalf("after new terms: %+v, want pending at version 2", got)
+	}
+	if err := RecordAnswer(ctx, tx, promptID, 1, userID, orgID, prompts.Answers{"accept": "true"}); err != ErrPromptChanged {
+		t.Errorf("an answer to the replaced terms: %v, want ErrPromptChanged", err)
+	}
+	must(t, RecordAnswer(ctx, tx, promptID, 2, userID, orgID, prompts.Answers{"accept": "true"}))
+
+	var answers, versions, hashes int
+	must(t, tx.QueryRow(ctx, `SELECT count(*), count(DISTINCT prompt_version), count(DISTINCT content_hash)
+		FROM core.prompt_responses WHERE prompt_id = $1::uuid AND user_id = $2::uuid`,
+		promptID, userID).Scan(&answers, &versions, &hashes))
+	if answers != 2 || versions != 2 || hashes != 2 {
+		t.Errorf("kept %d answer(s) over %d version(s) and %d text(s); want both, each with its own", answers, versions, hashes)
+	}
+	if _, err := tx.Exec(ctx, `SAVEPOINT s`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE core.prompt_responses SET answers = '{}' WHERE prompt_id = $1::uuid`,
+		promptID); err == nil {
+		t.Error("an answer was changed in place; a response is a record")
+	}
+	_, _ = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT s`)
+}
+
 // TestPendingPromptsSeesAnUncommittedAnswer is a regression test for a bug that
 // locked every user out.
 //
@@ -69,7 +143,7 @@ func TestPendingPromptsSeesAnUncommittedAnswer(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := RecordAnswer(ctx, tx, promptID, userID, orgID,
+	if err := RecordAnswer(ctx, tx, promptID, 1, userID, orgID,
 		prompts.Answers{"accept": "true"}); err != nil {
 		t.Fatalf("recording the answer: %v", err)
 	}

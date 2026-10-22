@@ -84,7 +84,10 @@ var criticalFields = []string{
 	//	Invite     which invitation a signup is redeeming
 	//	UserCode   which device authorization is being approved
 	//	SID        which session is being ended on the self-service page
-	"Token", "ClientID", "ID", "Slug", "Address", "Invite", "UserCode", "SID",
+	//	Version    which wording of a prompt is being answered; without it every
+	//	           answer is refused as made to changed terms, and nobody with a
+	//	           prompt outstanding can finish signing in
+	"Token", "ClientID", "ID", "Slug", "Address", "Invite", "UserCode", "SID", "Version",
 }
 
 // sentinel is what a critical field is set to while probing.

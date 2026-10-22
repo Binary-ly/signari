@@ -326,6 +326,7 @@
   "umaclaims.note": "Confirming tells {ResourceServer} who you are. It does not grant access on its own: whoever owns this decides that.",
 
   "prompt.choose": "Choose&hellip;",
+  "error.prompt.changed": "This was changed while you were reading it. Please read it again before you answer.",
 
   "err.title": "Sign-in error",
   "federr.title": "Sign-in could not be completed",

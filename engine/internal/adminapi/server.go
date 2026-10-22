@@ -418,7 +418,19 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 				setETag(w, v)
 			}
 		}
-		next(w, r.WithContext(withPrincipal(r.Context(), p)))
+		// Who the caller acts for, written onto every audit record this request
+		// makes, with whether it came through the break-glass token (6.05).
+		operator := r.Header.Get(OperatorHeader)
+		if operator != "" && !operatorPattern.MatchString(operator) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_operator",
+				"detail": OperatorHeader + " is the caller's own reference for the person it acts for, " +
+					"1-128 of A-Z a-z 0-9 . _ : -, such as console-user:42; never an address, since " +
+					"it is kept in the audit trail, which nothing erases"})
+			return
+		}
+		ctx := audit.WithActor(withPrincipal(r.Context(), p),
+			audit.Actor{BreakGlass: p.BreakGlass, Operator: operator})
+		next(w, r.WithContext(ctx))
 	}
 }
 
@@ -541,8 +553,13 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		if kind == "public" && req.RequirePKCE != nil && !*req.RequirePKCE {
 			return errPublicClientNeedsPKCE
 		}
+		// What the client was, for the record's before-and-after (6.05).
+		before, err := clientState(ctx, tx, clientID)
+		if err != nil {
+			return err
+		}
 
-		err := tx.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			UPDATE core.clients
 			   SET enabled = COALESCE($2, enabled),
 			       require_pkce = COALESCE($3, require_pkce),
@@ -629,6 +646,11 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				detail[k] = v
 			}
 		}
+		after, err := clientState(ctx, tx, clientID)
+		if err != nil {
+			return err
+		}
+		detail["changes"] = stateChanges(before, after, clientValueless)
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.client_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, ClientID: clientID, Detail: detail,

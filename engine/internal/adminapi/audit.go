@@ -75,6 +75,7 @@ type auditEvent struct {
 	ClientID       string          `json:"client_id,omitempty"`
 	CorrelationID  string          `json:"correlation_id,omitempty"`
 	RetentionClass string          `json:"retention_class,omitempty"`
+	AdminTokenID   string          `json:"admin_token_id,omitempty"` // the break-glass token, which has no row, is detail.break_glass
 	Detail         json.RawMessage `json:"detail,omitempty"`
 }
 
@@ -159,6 +160,7 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		       -- parameter problem and is not.
 		       coalesce(correlation_id::text, ''),
 		       coalesce(retention_class, ''),
+		       coalesce(admin_token_id::text, ''),
 		       detail
 		  FROM core.audit_events
 		 WHERE ($1::uuid IS NULL OR org_id = $1::uuid)
@@ -173,6 +175,9 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		   AND ($6 = '' OR client_id = $6)
 		   AND ($7::timestamptz IS NULL OR occurred_at >= $7::timestamptz)
 		   AND ($8::timestamptz IS NULL OR occurred_at <= $8::timestamptz)
+		   -- What one admin token did, which an investigation of a leaked one
+		   -- starts from (6.05).
+		   AND ($13 = '' OR admin_token_id::text = $13)
 		   -- A token restricted to named clients or groups reads only the
 		   -- events about them: reads are narrowed as writes are
 		   -- (docs/admin-tokens.md). It read the whole organisation's trail,
@@ -189,7 +194,8 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		orgFilter(ctx), cursorTime, cursorID,
 		q.Get("event_type"), q.Get("subject_id"), q.Get("client_id"),
 		since, until, limit+1,
-		clientFilter(ctx) != nil || groupFilter(ctx) != nil, clientFilter(ctx), groupFilter(ctx))
+		clientFilter(ctx) != nil || groupFilter(ctx) != nil, clientFilter(ctx), groupFilter(ctx),
+		q.Get("admin_token_id"))
 	if err != nil {
 		s.log.Error("listing audit events", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -203,7 +209,7 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		var detail []byte
 		if err := rows.Scan(&e.ID, &e.OrgID, &e.OccurredAt, &e.EventType,
 			&e.SubjectID, &e.ActorID, &e.ClientID, &e.CorrelationID,
-			&e.RetentionClass, &detail); err != nil {
+			&e.RetentionClass, &e.AdminTokenID, &detail); err != nil {
 			s.log.Error("scanning an audit event", "err", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 			return

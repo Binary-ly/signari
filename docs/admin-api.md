@@ -87,6 +87,28 @@ reload signal. For an administrative API — low-volume and bursty — a retry a
 re-reading is the right trade. If per-resource versions are ever wanted, this
 counter stays the reload signal and the per-resource one is added beside it.
 
+## Who made a change
+
+Every audit record a request writes names the admin token that made it in
+`admin_token_id`. A request made with the break-glass environment token, which
+has no row to name, is marked `break_glass: true` in its detail. A caller acting
+for a person can say which with `Signari-Operator`, and every record of the
+request carries it as `detail.operator`:
+
+```sh
+curl -X PATCH https://admin.internal/admin/clients/wiki \
+     -H 'Authorization: Bearer $TOKEN' -H 'Signari-Operator: console-user:42' \
+     -H 'If-Match: "417"' -d '{"enabled": false}'
+```
+
+The console sends its signed-in user's reference this way, so two people using
+one console token are two operators in the trail. The value is the caller's own
+reference, 1 to 128 of `A-Z a-z 0-9 . _ : -`, asserted by the token's holder
+and not checked here: the token is the authenticated party. An address is
+refused (no `@`), because the trail is append-only and nothing erases it. A
+client update records each setting it changed with what it was and what it
+became; a person's fields are named, never recorded.
+
 ## Endpoints
 
 Every mutation returns `config_version` in its body and `ETag` in its headers.
@@ -433,7 +455,7 @@ key records no address hash.
 
 | | |
 |---|---|
-| `GET /admin/audit-events` | The trail, newest first. Cursor-paged. Filters: `event_type`, `subject_id`, `client_id`, `since`, `until` (RFC 3339). Needs `audit:read` |
+| `GET /admin/audit-events` | The trail, newest first. Cursor-paged. Filters: `event_type`, `subject_id`, `client_id`, `admin_token_id` (what one admin token did), `since`, `until` (RFC 3339). Each event carries the `admin_token_id` that made it, when one did; a change through the break-glass environment token, which has no row, carries `detail.break_glass: true`, and one made for a person the caller named in `Signari-Operator` carries `detail.operator`. Needs `audit:read` |
 
 **`audit:read` is its own scope and is not implied by `users:write`.** The trail
 says when each person authenticated, from what, and what an administrator did to

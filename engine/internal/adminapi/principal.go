@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -269,6 +270,15 @@ func (s *Server) resolveToken(ctx context.Context, presented string) (*Principal
 
 // errOrgSuspended refuses a good token of a suspended organisation.
 var errOrgSuspended = errors.New("organisation suspended")
+
+// OperatorHeader names the person a caller acts for, recorded with its token
+// on every audit record the request makes (6.05). The console sends its own
+// user's reference; the token is still the authenticated party.
+const OperatorHeader = "Signari-Operator"
+
+// operatorPattern holds the header to an opaque reference: no "@", so an
+// address cannot be put into the append-only trail by way of it.
+var operatorPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 // touch records that a token was used, best-effort and out of band.
 //

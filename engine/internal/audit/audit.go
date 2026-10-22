@@ -99,14 +99,36 @@ type Event struct {
 	// one did. Empty for actions taken by a user, by the engine itself, or
 	// through the break-glass environment token, which has no row to point at.
 	AdminTokenID string
-	// Detail is NON-personal context: reason codes, counts, scope names. Anything
-	// identifying a person belongs in the encrypted column, not here.
+	// Detail is NON-personal context: reason codes, counts, scope names. Nothing
+	// identifying a person belongs here or anywhere in this table, which has no
+	// encrypted column since migration 0165 (rule 2 above); a personal field is
+	// named, never recorded.
 	Detail map[string]any
 	// OccurredAt is when it happened; the zero value is now. Set here and
 	// hashed (hash version 2, 3.19): the column defaulted to the database's
 	// clock and sat outside the hash, so a row's time could be rewritten and
 	// the chain still verified.
 	OccurredAt time.Time
+}
+
+// Actor is what the Admin API knows of who made a change beyond its token.
+//
+// BreakGlass marks a change made with the environment token, which has no row
+// for admin_token_id to name; without it such a write read as unattributed.
+// Operator is the person a caller such as the console says it acts for: an
+// opaque reference of its own (the console sends console-user:<id>), asserted
+// by the token's holder, never an address, and never authenticated here -- the
+// token is the authenticated party, and its id is recorded beside this.
+type Actor struct {
+	BreakGlass bool
+	Operator   string
+}
+
+type actorKey struct{}
+
+// WithActor carries an Actor to every Write the request makes.
+func WithActor(ctx context.Context, a Actor) context.Context {
+	return context.WithValue(ctx, actorKey{}, a)
 }
 
 // hashVersion is what Write hashes. Version 1 left occurred_at out; rows
@@ -145,6 +167,22 @@ func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 	}
 	if e.Detail == nil {
 		e.Detail = map[string]any{}
+	}
+	// Who an administrative change was made by, beyond the token (6.05), from
+	// the request: written onto every record the request makes, so no write
+	// can forget it. On a copy, since the caller owns its map.
+	if a, ok := ctx.Value(actorKey{}).(Actor); ok && (a.BreakGlass || a.Operator != "") {
+		detail := make(map[string]any, len(e.Detail)+2)
+		for k, v := range e.Detail {
+			detail[k] = v
+		}
+		if a.BreakGlass {
+			detail["break_glass"] = true
+		}
+		if a.Operator != "" {
+			detail["operator"] = a.Operator
+		}
+		e.Detail = detail
 	}
 	// The subject column holds a person's id. A token's subject can be a
 	// client, acting for itself, and an exchanged or transaction token passed

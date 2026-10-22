@@ -268,6 +268,13 @@ var opSchemas = map[string]opSchema{
 			"auth_time": dateTime(), "not_after": dateTime(), "user_agent": str(), "has_address": boolean(),
 			"created_at": dateTime()}))})},
 
+	"GET /admin/system": {http.StatusOK, nil, object([]string{"release", "schema", "organizations", "rate_limits"}, map[string]jsonSchema{
+		"release": str(), "commit": str(), "go": str(), "instances": integer(), "organizations": integer(),
+		"suspended_organizations": integer(),
+		"schema": object([]string{"applied", "binary", "fingerprint_pinned"}, map[string]jsonSchema{
+			"applied": integer(), "binary": integer(), "fingerprint_pinned": boolean()}),
+		"rate_limits": object([]string{"arrivals_per_second", "per_token_per_second"}, map[string]jsonSchema{
+			"arrivals_per_second": integer(), "per_token_per_second": integer()})})},
 	"GET /admin/users/{userID}/consents": {http.StatusOK, nil, object([]string{"user_id", "consents"}, map[string]jsonSchema{
 		"user_id": uuidStr(),
 		"consents": arrayOf(object([]string{"client_id", "display_name", "scopes", "granted_at", "active_refresh_grants"},

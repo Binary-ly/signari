@@ -2258,6 +2258,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			return fmt.Errorf("admin API: %w", err)
 		}
 		adminSrv.SetMetrics(met)
+		adminSrv.SetRelease(version)
 		// Personal user attributes are sealed under the subject's key, so the
 		// attribute routes need the key that unwraps subject keys. Without it
 		// they are not registered at all.

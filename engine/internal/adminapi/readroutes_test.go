@@ -43,6 +43,7 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/subjects/{subjectID}/export", func(t *testing.T, s *Server) string {
 			return "/admin/subjects/" + newDriftUser(t, s) + "/export"
 		}},
+		{"GET /admin/system", func(*testing.T, *Server) string { return "/admin/system" }},
 		{"GET /admin/tokens", func(*testing.T, *Server) string { return "/admin/tokens" }},
 		{"GET /admin/users", func(*testing.T, *Server) string { return "/admin/users?limit=5" }},
 		{"GET /admin/users/{userID}", func(t *testing.T, s *Server) string { return "/admin/users/" + newDriftUser(t, s) }},

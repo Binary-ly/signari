@@ -126,7 +126,16 @@ row the same way.
 | | |
 |---|---|
 | `GET /admin/config-version` | The current version. The read half of the conditional-write protocol |
+| `GET /admin/system` | What the deployment is: the `release` and `commit` serving the API and the Go toolchain, the schema version `applied` and the one the `binary` carries, whether the binary is `fingerprint_pinned`, how many `instances`, `organizations` and suspended ones it holds, and the `rate_limits` in force. `config:read` **and an unscoped token**, since the count of tenants is not one tenant's to read |
 | `GET /admin/openapi.json` | An OpenAPI 3.1 description of this API, **generated from the router**. Unauthenticated |
+
+**Versioning.** Every route is also served under `/admin/v1/`, the same route
+table under both. This API is version 1. A change that breaks a caller (a field
+removed or renamed, a meaning changed) would come as `/admin/v2/` beside it,
+with `/admin/v1/` and `/admin/` kept as they are. Adding a route, an optional
+request field or a response field is not a break, so a caller should ignore
+response fields it does not know, though the documented schemas name every one
+there is. Pin `/admin/v1/` to be held to that.
 
 **The OpenAPI document is derived, not written.** It cannot describe a route that
 is not registered or omit one that is, and each operation carries the scope the

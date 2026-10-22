@@ -99,6 +99,7 @@ var summaries = map[string]string{
 	"GET /admin/groups/{groupID}/members":                    "List a group's members.",
 	"PUT /admin/groups/{groupID}/members/{userID}":           "Add a member.",
 	"DELETE /admin/groups/{groupID}/members/{userID}":        "Remove a member.",
+	"GET /admin/system":                                      "The release, schema and size of the deployment. Requires an unscoped token.",
 	"GET /admin/users/{userID}/consents":                     "The applications a person consented to or that hold a grant.",
 	"DELETE /admin/users/{userID}/consents/{clientID}":       "Withdraw a consent and revoke the application's refresh grants.",
 	"GET /admin/tokens":                                      "The admin tokens this token may see; never a secret or hash.",

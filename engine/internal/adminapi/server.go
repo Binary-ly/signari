@@ -89,6 +89,11 @@ type Server struct {
 	// the authenticated token, which is safe to evict from because the key had
 	// to exist and be unrevoked before the limiter is ever consulted.
 	perToken *ratelimit.Keyed
+
+	// limits are the rates the two limiters were built with, reported by
+	// /admin/system; release names the build there.
+	limits  adminLimits
+	release string
 }
 
 func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
@@ -99,6 +104,10 @@ func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
 	if token != "" && len(token) < 32 {
 		return nil, fmt.Errorf("admin API token must be at least 32 characters (got %d)", len(token))
 	}
+	limits, err := limitsFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	return &Server{db: db, log: log, token: token,
 		hasher:   passwords.Shared(),
 		pwPolicy: passwords.PolicyFromEnv(),
@@ -106,19 +115,20 @@ func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
 		// operator paging through clients, a provisioning run creating a batch --
 		// so these bound the damage without being something a real deployment
 		// ever notices. A limit tight enough to interfere is a limit somebody
-		// raises to infinity during an incident.
-		arrivals: ratelimit.New(adminArrivalsPerSecond, adminArrivalsBurst),
-		perToken: ratelimit.NewKeyed(adminPerTokenPerSecond, adminPerTokenBurst,
+		// raises to infinity during an incident. SIGNARI_ADMIN_RATE and
+		// SIGNARI_ADMIN_TOKEN_RATE move them (6.08); the bursts are twice.
+		limits:   limits,
+		arrivals: ratelimit.New(float64(limits.arrivals), float64(2*limits.arrivals)),
+		perToken: ratelimit.NewKeyed(float64(limits.perToken), float64(2*limits.perToken),
 			adminTrackedTokens),
 	}, nil
 }
 
-// Rate limits for the administrative interface.
+// Rate limits for the administrative interface, by default; the bursts are
+// twice the rate.
 const (
 	adminArrivalsPerSecond = 100
-	adminArrivalsBurst     = 200
 	adminPerTokenPerSecond = 50
-	adminPerTokenBurst     = 100
 	// adminTrackedTokens bounds the per-token map. Far above the number of
 	// credentials any deployment issues, because the map is only a memory bound
 	// and evicting an entry hands its key a fresh allowance.
@@ -301,6 +311,7 @@ func (s *Server) Routes() http.Handler {
 	// describes the shape of the API and no data, and the same facts are already
 	// public in docs/admin-api.md.
 	handle("GET /admin/openapi.json", s.handleOpenAPI)
+	route("GET /admin/system", ScopeConfigRead, s.getSystem)
 
 	var inner http.Handler = mux
 	if s.metrics != nil {
@@ -308,7 +319,29 @@ func (s *Server) Routes() http.Handler {
 		// pattern is known (see the same choice in httpapi.Routes).
 		inner = s.metrics.Middleware(mux)
 	}
-	return s.limitArrivals(inner)
+	return s.limitArrivals(versioned(inner))
+}
+
+// versioned serves /admin/v1/... as /admin/..., one route table under both
+// (6.08). The version is in the path so a caller can pin it: this API is v1,
+// a change that breaks a caller would come as /admin/v2 beside it, and
+// /admin/... stays v1's. Rewritten before the router rather than registered
+// twice, so the OpenAPI document and the route guards see each route once.
+func versioned(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rest, ok := strings.CutPrefix(r.URL.Path, "/admin/v1/"); ok {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/admin/" + rest
+			if r.URL.RawPath != "" {
+				if raw, ok := strings.CutPrefix(r.URL.RawPath, "/admin/v1/"); ok {
+					r2.URL.RawPath = "/admin/" + raw
+				}
+			}
+			next.ServeHTTP(w, r2)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // limitArrivals is the outermost wrapper: it runs before authentication, because

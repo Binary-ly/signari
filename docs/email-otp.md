@@ -117,13 +117,22 @@ POST /login/email          what was typed in the name box; answers with the code
 POST /login/email/verify   the code; answers with the sign-in
 ```
 
-The code page says the same thing whether or not an account has that name, and
-the request does the same work either way. The code is queued in the outbox
-when it is asked for and made when the outbox sends it, so no mail is sent while
-the page waits for its answer. It is not the second factor's code: it has its own
-table, its own mail, and its own token between the two pages. It never gets the
-pending sign-in token, because the second-factor page accepts that token as a
-proved first factor.
+The code page says the same thing whether or not an account has that name. The
+code is queued in the outbox when it is asked for and made when the outbox sends
+it, so the page never waits on mail, which would make an account's answer slower
+than a stranger's. What the page keeps between its two steps is a cookie sealed
+under the root key, holding random ids of the same length for a name nobody
+has, so it tells its holder nothing either; a signed token would have shown the
+account's id. That is also why the emailed code is never offered without a root
+key. It is not the second factor's code: it has its own table, its own mail, and
+its own cookie, never the pending sign-in token, which the second-factor page
+accepts as a proved first factor.
+
+A sign-in page that names no organisation, such as the account page's in a
+deployment with several, offers the code when some organisation's flow takes
+it. The name then decides: the one account it holds, if that account's
+organisation takes emailed codes. A name held in more than one organisation gets
+no code from such a page, as the password form will not choose between them.
 
 | | |
 |---|---|

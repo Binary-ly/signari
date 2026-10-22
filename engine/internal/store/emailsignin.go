@@ -15,10 +15,9 @@ import (
 // A code emailed to the account's address as the first factor (5.16).
 //
 // Asking makes the row and queues the notice in one transaction; the code is
-// minted only when the outbox delivers it, so the page that asked does the
-// same work whether or not the account exists and sends nothing while it
-// waits. Only the hash is kept, a code lasts ten minutes, and five wrong codes
-// end it.
+// minted only when the outbox delivers it, so the page that asked never waits
+// on mail, which would have made an account's answer slower than a stranger's.
+// Only the hash is kept, a code lasts ten minutes, and five wrong codes end it.
 
 const (
 	EmailSignInTTL      = 10 * time.Minute

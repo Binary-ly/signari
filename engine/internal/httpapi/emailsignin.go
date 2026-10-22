@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,11 +14,9 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/flow"
-	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
-	"signari.dev/engine/internal/tokens"
 )
 
 // An emailed code as the first factor (5.16).
@@ -31,69 +30,83 @@ import (
 // (`email_otp` with `proved_by_email`), because a code to a mailbox is weaker
 // than a password against anybody who reads that mailbox.
 //
-// What the page holds between the two is its own token type in its own
-// cookie, never the pending sign-in token. A pending token says the first
-// factor is proven, and the second-factor page accepts any; one issued here,
-// naming the account before any code came back, would have let a second factor
-// alone sign in.
+// What the page holds between the two is its own cookie, never the pending
+// sign-in token. A pending token says the first factor is proven, and the
+// second-factor page accepts any; one issued here, naming the account before
+// any code came back, would have let a second factor alone sign in.
+//
+// And it is sealed under the root key, not signed. A signed token is readable
+// by whoever holds it, and this one is handed to anybody who types a name: the
+// account's id, the same on every request, against a fresh random one for a
+// name nobody has, told them which names were accounts however alike the pages
+// read. Sealed, with random ids of the same length for nobody, two requests
+// differ the same way whatever was typed.
 
 const (
-	typEmailCode        = "email-code+jwt"
+	emailCodeContext    = "signari email sign-in page"
 	EmailCodeCookieName = "__Host-signari_emailcode"
 	emailCodeStep       = 15 * time.Minute
 )
 
 type emailCodeClaims struct {
-	Issuer   string `json:"iss"`
-	Subject  string `json:"sub"`
-	OrgID    string `json:"org"`
-	Authz    string `json:"authz,omitempty"`
-	IssuedAt int64  `json:"iat"`
-	Expiry   int64  `json:"exp"`
+	Subject string `json:"sub"`
+	OrgID   string `json:"org"`
+	Authz   string `json:"authz,omitempty"`
+	Expiry  int64  `json:"exp"`
 }
 
 // emailSignInOffered reports whether the organisation's sign-in flow takes an
-// emailed code alone.
+// emailed code alone. orgID is empty for a page that names no organisation in
+// a deployment with several, and then it is offered where some organisation's
+// flow takes it: which account a name is decides which flow applies, as for a
+// password. Never without the root key, which the page's cookie is sealed by.
 func (s *Server) emailSignInOffered(ctx context.Context, orgID string) bool {
-	if s.db == nil || orgID == "" {
+	if s.db == nil || s.cfg.Root == nil {
 		return false
 	}
-	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
-	return fl != nil && fl.AdmitsProof(flow.StageEmailOTP)
+	if orgID != "" {
+		fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
+		return fl != nil && fl.AdmitsProof(flow.StageEmailOTP)
+	}
+	// Loads the organisations' documents, once per process. One with none is
+	// served the built-in flow, which takes no emailed code.
+	_ = s.flowFor(ctx, s.db, "", flow.Authentication)
+	s.flows.mu.RLock()
+	defer s.flows.mu.RUnlock()
+	for _, doc := range s.flows.byOrg {
+		if fl, ok := doc.For(flow.Authentication); ok && fl.AdmitsProof(flow.StageEmailOTP) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) setEmailCodeCookie(w http.ResponseWriter, subject, orgID, authz string) error {
-	key, err := s.cfg.Keys.Active(keys.ES256)
-	if err != nil {
-		for _, alg := range s.cfg.Keys.Algorithms() {
-			if k, e := s.cfg.Keys.Active(alg); e == nil {
-				key, err = k, nil
-				break
-			}
-		}
-	}
+	raw, err := json.Marshal(emailCodeClaims{
+		Subject: subject, OrgID: orgID, Authz: authz, Expiry: time.Now().Add(emailCodeStep).Unix(),
+	})
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	tok, err := tokens.NewSigner(key).SignJSON(emailCodeClaims{
-		Issuer: s.cfg.Issuer, Subject: subject, OrgID: orgID, Authz: authz,
-		IssuedAt: now.Unix(), Expiry: now.Add(emailCodeStep).Unix(),
-	}, typEmailCode)
+	sealed, err := s.cfg.Root.Seal(raw, emailCodeContext)
 	if err != nil {
 		return err
 	}
-	http.SetCookie(w, &http.Cookie{Name: EmailCodeCookieName, Value: tok, Path: "/",
-		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(emailCodeStep.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: EmailCodeCookieName, Value: base64.RawURLEncoding.EncodeToString(sealed),
+		Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(emailCodeStep.Seconds())})
 	return nil
 }
 
 func (s *Server) readEmailCode(r *http.Request) (*emailCodeClaims, error) {
 	c, err := r.Cookie(EmailCodeCookieName)
-	if err != nil || c.Value == "" {
+	if err != nil || c.Value == "" || s.cfg.Root == nil {
 		return nil, errors.New("no emailed sign-in in progress")
 	}
-	raw, err := tokens.VerifyTyped(s.cfg.Keys, s.cfg.Issuer, c.Value, typEmailCode)
+	sealed, err := base64.RawURLEncoding.DecodeString(c.Value)
+	if err != nil {
+		return nil, fmt.Errorf("malformed emailed sign-in: %w", err)
+	}
+	raw, err := s.cfg.Root.Open(sealed, emailCodeContext)
 	if err != nil {
 		return nil, err
 	}
@@ -132,31 +145,58 @@ func (s *Server) handleEmailSignInStart(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	identifier := strings.TrimSpace(r.PostForm.Get("username"))
-	subject := uuid.NewString() // nobody, unless the name is somebody's
+	// Nobody, unless the name is somebody's: ids of the same shape either way.
+	subject, subjectOrg := uuid.NewString(), uuid.NewString()
 	if identifier != "" && s.allowRecovery(ctx, "emailsignin:ip:"+budgetIP(clientIP(r)), 20, time.Hour) {
-		var userID string
-		err := s.db.QueryRow(ctx, `
-			SELECT id::text FROM core.users
-			 WHERE org_id = $1::uuid AND status = 'active' AND email IS NOT NULL
-			   AND (lower(email) = lower($2) OR lower(username) = lower($2))`, orgID, identifier).Scan(&userID)
-		if err == nil {
-			subject = userID
+		if userID, userOrg, ok := s.emailSignInAccount(ctx, identifier, orgID); ok {
+			subject, subjectOrg = userID, userOrg
 			// One a minute and five an hour per account, as recovery is paced:
 			// over the pace the code already sent stays the one that works.
 			if s.allowRecovery(ctx, "emailsignin:user:min:"+userID, 1, time.Minute) &&
 				s.allowRecovery(ctx, "emailsignin:user:hour:"+userID, 5, time.Hour) {
-				if err := s.startEmailSignIn(ctx, userID, orgID); err != nil {
+				if err := s.startEmailSignIn(ctx, userID, userOrg); err != nil {
 					s.log.Error("starting an emailed sign-in", "err", err, "correlation_id", correlationID(ctx))
 				}
 			}
 		}
 	}
-	if err := s.setEmailCodeCookie(w, subject, orgID, authz); err != nil {
+	if err := s.setEmailCodeCookie(w, subject, subjectOrg, authz); err != nil {
 		s.log.Error("issuing the emailed sign-in's token", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 	s.renderEmailCode(w, r, "")
+}
+
+// emailSignInAccount is the one account a name holds whose organisation's flow
+// takes an emailed code: in orgID, or in every organisation when it is empty.
+// A name held in several is nobody's here, as on the password form
+// (lookupCredential): the page cannot say which is meant.
+func (s *Server) emailSignInAccount(ctx context.Context, identifier, orgID string) (userID, userOrg string, ok bool) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id::text, org_id::text FROM core.users
+		 WHERE ($1 = '' OR org_id::text = $1) AND status = 'active' AND email IS NOT NULL
+		   AND (lower(email) = lower($2) OR lower(username) = lower($2))
+		 ORDER BY org_id LIMIT 2`, orgID, identifier)
+	if err != nil {
+		s.log.Error("looking up an emailed sign-in's account", "err", err)
+		return "", "", false
+	}
+	var found [][2]string
+	for rows.Next() {
+		var id, org string
+		if err := rows.Scan(&id, &org); err != nil {
+			rows.Close()
+			s.log.Error("looking up an emailed sign-in's account", "err", err)
+			return "", "", false
+		}
+		found = append(found, [2]string{id, org})
+	}
+	rows.Close()
+	if rows.Err() != nil || len(found) != 1 || !s.emailSignInOffered(ctx, found[0][1]) {
+		return "", "", false
+	}
+	return found[0][0], found[0][1], true
 }
 
 func (s *Server) startEmailSignIn(ctx context.Context, userID, orgID string) error {

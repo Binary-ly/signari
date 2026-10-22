@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -32,10 +33,30 @@ flows:
       - {name: by password, given: {}, expect: [password, session]}
 `
 
-// emailStart submits the sign-in form's "Email me a code" for identifier.
+// emailFixture is a sign-in fixture with the root key the code page's cookie
+// is sealed under, without which no emailed sign-in is offered.
+func emailFixture(t *testing.T) *signInFixture {
+	t.Helper()
+	f := newSignInFixture(t)
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.cfg.Root = root
+	return f
+}
+
+// emailStart submits the sign-in form's "Email me a code" for identifier, on
+// the page an authorization request from the fixture's client parked.
 func (f *signInFixture) emailStart(t *testing.T, identifier string) *httptest.ResponseRecorder {
 	t.Helper()
-	authz := "client_id=" + f.clientID + "&response_type=code"
+	return f.emailStartOn(t, identifier, "client_id="+f.clientID+"&response_type=code")
+}
+
+// emailStartOn is emailStart on the sign-in page authz parks, or on a bare one
+// when authz is empty.
+func (f *signInFixture) emailStartOn(t *testing.T, identifier, authz string) *httptest.ResponseRecorder {
+	t.Helper()
 	get := httptest.NewRecorder()
 	f.srv.handleLoginGet(get, httptest.NewRequest(http.MethodGet, "/login?authz="+url.QueryEscape(authz), nil))
 	m := csrfValue.FindStringSubmatch(get.Body.String())
@@ -95,7 +116,7 @@ func (f *signInFixture) signInCodeNotices(t *testing.T) []store.AccountNotice {
 }
 
 func TestAnEmailedCodeSignsInWhereTheFlowTakesIt(t *testing.T) {
-	f := newSignInFixture(t)
+	f := emailFixture(t)
 	ctx := context.Background()
 	mailer := &captureMailer{}
 	f.srv.mailer = mailer
@@ -170,7 +191,7 @@ func TestAnEmailedCodeSignsInWhereTheFlowTakesIt(t *testing.T) {
 // The offer is not the guard: a code asked for while the flow took one, typed
 // after the operator stopped taking it, is refused by the flow itself.
 func TestAnEmailedCodeIsRefusedOnceTheFlowStopsTakingIt(t *testing.T) {
-	f := newSignInFixture(t)
+	f := emailFixture(t)
 	ctx := context.Background()
 	mailer := &captureMailer{}
 	f.srv.mailer = mailer
@@ -207,7 +228,7 @@ flows:
 // Somebody who signs in only by emailed code can delete their own account under
 // the built-in unenrolment flow, as somebody signed in any other way can.
 func TestAnEmailedCodeSignInMayDeleteTheAccount(t *testing.T) {
-	f := newSignInFixture(t)
+	f := emailFixture(t)
 	ctx := context.Background()
 	mailer := &captureMailer{}
 	f.srv.mailer = mailer
@@ -299,12 +320,7 @@ func TestTheMailboxIsNotBothFactors(t *testing.T) {
 		return amr
 	}
 	setup := func(t *testing.T) (*signInFixture, *captureMailer) {
-		f := newSignInFixture(t)
-		root, err := keys.NewRootKey("test", make([]byte, 32))
-		if err != nil {
-			t.Fatal(err)
-		}
-		f.srv.cfg.Root = root // an authenticator's secret is sealed under it
+		f := emailFixture(t)
 		mailer := &captureMailer{}
 		f.srv.mailer = mailer
 		t.Cleanup(func() {
@@ -373,7 +389,7 @@ func TestTheMailboxIsNotBothFactors(t *testing.T) {
 
 // The page is the same for a name nobody has, and nothing is queued.
 func TestAnEmailedCodeForNobodyLooksTheSameAndSendsNothing(t *testing.T) {
-	f := newSignInFixture(t)
+	f := emailFixture(t)
 	f.applyFlow(t, emailOrPasswordFlow)
 	clearSignInBucket(t, f.pool)
 	page := f.emailStart(t, "nobody-"+f.email)
@@ -386,10 +402,12 @@ func TestAnEmailedCodeForNobodyLooksTheSameAndSendsNothing(t *testing.T) {
 	}
 }
 
-// The code page's token is not a pending sign-in: the second-factor page
-// refuses it, or a second factor alone would sign in.
+// The code page's cookie is not a pending sign-in: the second-factor page
+// refuses it, or a second factor alone would sign in. (It was a token of its
+// own type before it was sealed; this went red when that type was the
+// pending one.)
 func TestTheEmailedCodesTokenIsNotAPendingSignIn(t *testing.T) {
-	f := newSignInFixture(t)
+	f := emailFixture(t)
 	f.applyFlow(t, emailOrPasswordFlow)
 	clearSignInBucket(t, f.pool)
 	page := f.emailStart(t, f.email)
@@ -410,6 +428,121 @@ func TestTheEmailedCodesTokenIsNotAPendingSignIn(t *testing.T) {
 	// ("not valid"); refused, there is no sign-in to continue ("expired").
 	if body := rec.Body.String(); !strings.Contains(body, "sign-in session expired") || strings.Contains(body, "not valid") {
 		t.Errorf("the second-factor page took the code page's token: %d %s", rec.Code, truncate(body, 300))
+	}
+}
+
+// The code page's cookie goes to whoever types a name, so it must not say
+// whether the name was an account. Signed rather than sealed, it carried the
+// account's id in the clear, the same on every request, against a fresh random
+// id for a name nobody has.
+func TestTheCodePagesCookieSaysNothingAboutTheName(t *testing.T) {
+	f := emailFixture(t)
+	f.applyFlow(t, emailOrPasswordFlow)
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.outbox WHERE topic = $1 AND payload->>'user_id' = $2`,
+			store.AccountNoticeTopic, f.userID)
+	})
+	clearSignInBucket(t, f.pool)
+	var values []string
+	for _, name := range []string{f.email, f.email, "nobody-" + f.email, "nobody-" + f.email} {
+		c := cookieFrom(f.emailStart(t, name), EmailCodeCookieName)
+		if c == nil {
+			t.Fatalf("no cookie for %q", name)
+		}
+		values = append(values, c.Value)
+	}
+	seen := map[string]bool{}
+	for i, v := range values {
+		if len(v) != len(values[0]) {
+			t.Errorf("cookie %d is %d long and the first %d: the length tells them apart", i, len(v), len(values[0]))
+		}
+		if seen[v] {
+			t.Errorf("cookie %d repeats an earlier one: a name's cookie must not be recognisable", i)
+		}
+		seen[v] = true
+		for _, part := range strings.Split(v, ".") {
+			raw, _ := base64.RawURLEncoding.DecodeString(part)
+			if strings.Contains(string(raw), f.userID) || strings.Contains(string(raw), f.orgID) {
+				t.Errorf("cookie %d carries the account's or organisation's id in the clear", i)
+			}
+		}
+	}
+	// And a code typed on a nobody's page is a wrong code, as on anybody's.
+	if body := f.emailVerify(t, f.emailStart(t, "nobody-"+f.email), "123456").Body.String(); !strings.Contains(body, "That code is not right") {
+		t.Errorf("a code on a nobody's page: %s", truncate(body, 300))
+	}
+}
+
+// Signing in from the account page, with no application asking: a bare
+// sign-in page in a deployment of several organisations, where the account the
+// name holds decides which flow applies.
+func TestAnEmailedCodeSignsInWithNoApplicationAsking(t *testing.T) {
+	f := emailFixture(t)
+	mailer := &captureMailer{}
+	f.srv.mailer = mailer
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.outbox WHERE topic = $1 AND payload->>'user_id' = $2`,
+			store.AccountNoticeTopic, f.userID)
+	})
+	var orgs int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM core.organizations`).Scan(&orgs); err != nil || orgs < 2 {
+		t.Fatalf("this needs a deployment of several organisations: %d, %v", orgs, err)
+	}
+	f.applyFlow(t, emailOrPasswordFlow)
+	clearSignInBucket(t, f.pool)
+	bare := httptest.NewRecorder()
+	f.srv.handleLoginGet(bare, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if !strings.Contains(bare.Body.String(), `formaction="/login/email"`) {
+		t.Fatal("the bare sign-in page does not offer the emailed code an organisation's flow takes")
+	}
+	page := f.emailStartOn(t, f.email, "")
+	notices := f.signInCodeNotices(t)
+	if len(notices) != 1 {
+		t.Fatalf("queued %d code(s) from the bare page, want 1", len(notices))
+	}
+	if err := f.srv.DeliverAccountNotice(context.Background(), notices[0]); err != nil {
+		t.Fatal(err)
+	}
+	rec := f.emailVerify(t, page, sixDigits.FindString(mailer.messages()[0].Body))
+	c := cookieFrom(rec, SessionCookieName)
+	if c == nil {
+		t.Fatalf("the code from the bare page did not sign in: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	var org string
+	if err := f.pool.QueryRow(context.Background(), `SELECT org_id::text FROM core.sessions WHERE cookie_hash = $1`,
+		store.HashToken(c.Value)).Scan(&org); err != nil || org != f.orgID {
+		t.Errorf("signed in to organisation %q, want the account's %q (%v)", org, f.orgID, err)
+	}
+}
+
+// A name two organisations hold is nobody's on a page that names neither: no
+// code goes to either, as the password form refuses to choose between them.
+func TestAnEmailedCodeIsNotSentWhereTheNameIsAmbiguous(t *testing.T) {
+	f := emailFixture(t)
+	ctx := context.Background()
+	f.applyFlow(t, emailOrPasswordFlow)
+	// The same name in a second organisation whose flow takes a code too, so
+	// that only the ambiguity stands between the page and a code.
+	g := emailFixture(t)
+	g.applyFlow(t, emailOrPasswordFlow)
+	if _, err := g.pool.Exec(ctx, `UPDATE core.users SET email = $1 WHERE id = $2::uuid`, f.email, g.userID); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.reloadFlows(ctx)
+	clearSignInBucket(t, f.pool)
+	twin := g.userID
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.outbox WHERE topic = $1 AND payload->>'user_id' = ANY($2)`,
+			store.AccountNoticeTopic, []string{f.userID, twin})
+	})
+	f.emailStartOn(t, f.email, "")
+	var queued int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM core.outbox WHERE topic = $1 AND payload->>'user_id' = ANY($2)
+		AND payload->>'notice' = $3`, store.AccountNoticeTopic, []string{f.userID, twin}, store.NoticeSignInCode).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 0 {
+		t.Errorf("%d code(s) sent for a name two organisations hold, from a page naming neither", queued)
 	}
 }
 

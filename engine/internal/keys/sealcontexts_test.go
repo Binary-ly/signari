@@ -102,6 +102,12 @@ func TestEveryRootSealContextIsRotated(t *testing.T) {
 	for _, f := range rootSealedFields {
 		rotated[f.context] = true
 	}
+	for c := range rootSealedOutsideTheDatabase {
+		if len(sealed[c]) == 0 {
+			t.Errorf("rootSealedOutsideTheDatabase names %q, which nothing seals under any more; remove it", c)
+		}
+		rotated[c] = true
+	}
 	var missing []string
 	for ctxName, where := range sealed {
 		if !rotated[ctxName] {
@@ -115,6 +121,16 @@ func TestEveryRootSealContextIsRotated(t *testing.T) {
 			"that context: after one, those values open with no key. Add the column "+
 			"to rootSealedColumns or the JSON field to rootSealedFields", m)
 	}
+}
+
+// rootSealedOutsideTheDatabase are the contexts the root key seals values under
+// that are never stored, so a rotation has nothing to re-seal. Each says where
+// the value lives and why one sealed before a rotation costs nobody more than
+// starting again.
+var rootSealedOutsideTheDatabase = map[string]string{
+	"signari email sign-in page": "the emailed sign-in's code page cookie (httpapi/emailsignin.go), " +
+		"fifteen minutes long: an online rotation's accepted key opens one sealed before it, " +
+		"and after an offline one the person asks for the code again",
 }
 
 // callArgs splits the arguments of a call whose opening parenthesis has just

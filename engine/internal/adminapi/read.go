@@ -133,33 +133,41 @@ func (s *Server) getClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The redirect URIs too, so a caller holding a desired list can compare it
-	// with the server's. The Terraform provider could not, and reported a change
-	// to them as applied while it sent nothing. Sorted: they are a set.
-	var c struct {
-		clientSummary
-		RedirectURIs []string `json:"redirect_uris"`
+	// The whole configuration (6.03): every column but the two secret hashes,
+	// with the redirect URIs sorted as the set they are, so a caller holding a
+	// desired configuration can compare all of it with the server's. This
+	// returned six fields, and the Terraform provider once reported a
+	// redirect-URI change as applied while it sent nothing, for want of one.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		s.log.Error("reading a client", "client_id", clientID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
 	}
-	err := s.db.QueryRow(ctx, `
-		SELECT client_id, org_id::text, display_name, client_type, enabled,
-		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'),
-		       ARRAY(SELECT redirect_uri FROM core.client_redirect_uris r
-		              WHERE r.client_id = c.client_id ORDER BY redirect_uri)
-		  FROM core.clients c WHERE client_id = $1`, clientID).
-		Scan(&c.ClientID, &c.OrgID, &c.DisplayName, &c.ClientType, &c.Enabled, &c.CreatedAt, &c.RedirectURIs)
+	defer func() { _ = tx.Rollback(ctx) }()
+	c, err := clientState(ctx, tx, clientID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client_not_found"})
 		return
+	}
+	var created string
+	if err == nil {
+		err = tx.QueryRow(ctx, `SELECT to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')
+			FROM core.clients WHERE client_id = $1`, clientID).Scan(&created)
 	}
 	if err != nil {
 		s.log.Error("reading a client", "client_id", clientID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
+	c["created_at"] = created
+	// Read, so released before anything else takes a connection.
+	_ = tx.Rollback(ctx)
 	// The boundary applies to reads exactly as to writes. Answering 403 rather
 	// than 404 matches the write paths: the record exists, this credential may
 	// not see it, and pretending otherwise sends an operator hunting.
-	if err := requireOrg(ctx, c.OrgID); err != nil {
+	orgID, _ := c["org_id"].(string)
+	if err := requireOrg(ctx, orgID); err != nil {
 		writeCrossOrg(w, err)
 		return
 	}

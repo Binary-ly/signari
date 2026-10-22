@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -95,6 +96,15 @@ func TestAClientReadGivesItsRedirectURIs(t *testing.T) {
 func TestAClientReadNeverReturnsCredentialMaterial(t *testing.T) {
 	s, _ := newTestServer(t)
 	clientID := newPreconditionClient(t, s)
+	// Verifiers worth searching for: the fixture's one-letter hash could not
+	// be told apart from any other text.
+	planted := fmt.Sprintf("planted-verifier-%d", time.Now().UnixNano())
+	registration := sha256.Sum256([]byte(planted))
+	if _, err := s.db.Exec(context.Background(), `UPDATE core.clients
+		SET client_secret_hash = $2, registration_token_hash = $3
+		WHERE client_id = $1`, clientID, planted, registration[:]); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, path := range []string{"/admin/clients/" + clientID, "/admin/clients"} {
 		rec := httptest.NewRecorder()
@@ -102,12 +112,40 @@ func TestAClientReadNeverReturnsCredentialMaterial(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s gave %d", path, rec.Code)
 		}
-		body := strings.ToLower(rec.Body.String())
-		for _, forbidden := range []string{"secret", "hash", "password"} {
-			if strings.Contains(body, forbidden) {
-				t.Errorf("%s returned a body containing %q: %s", path, forbidden, rec.Body.String())
+		// No verifier, as text or as the hex a bytea column reads back as.
+		body := rec.Body.String()
+		for _, v := range []string{planted, fmt.Sprintf("%x", registration)} {
+			if strings.Contains(body, v) {
+				t.Errorf("%s returned a stored verifier: %s", path, body)
 			}
 		}
+		// And no field for one, at any depth. The words may appear in a value
+		// that names a method (client_secret_post) and holds nothing; since the
+		// whole configuration is returned (6.03), a body that merely never says
+		// "secret" is no longer the property.
+		var decoded any
+		if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		var walk func(v any)
+		walk = func(v any) {
+			switch x := v.(type) {
+			case map[string]any:
+				for k, e := range x {
+					for _, forbidden := range []string{"secret", "hash", "password"} {
+						if strings.Contains(strings.ToLower(k), forbidden) {
+							t.Errorf("%s returned a field %q", path, k)
+						}
+					}
+					walk(e)
+				}
+			case []any:
+				for _, e := range x {
+					walk(e)
+				}
+			}
+		}
+		walk(decoded)
 	}
 }
 

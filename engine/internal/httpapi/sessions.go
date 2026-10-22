@@ -199,13 +199,20 @@ func describeAuth(amr []string) string {
 		return "sessions.how.mfa"
 	case multi:
 		return "sessions.how.multifactor"
-	case primaryProof(amr) == flow.StageEmailOTP:
-		// Not "a password": this list is where a person looks for a sign-in
-		// that was not theirs, and a code to their mailbox is how one would be.
-		return "sessions.how.emailcode"
-	default:
-		return "sessions.how.password"
 	}
+	// The route, not "a password" for whatever was not one: this list is where
+	// a person looks for a sign-in that was not theirs, and a code to their
+	// mailbox or a provider's account is how one would be. Kerberos and
+	// provider sign-ins read as a password until October 2026.
+	switch primaryProof(amr) {
+	case flow.StageEmailOTP:
+		return "sessions.how.emailcode"
+	case flow.StageKerberos:
+		return "sessions.how.kerberos"
+	case flow.StageFederated:
+		return "sessions.how.federated"
+	}
+	return "sessions.how.password"
 }
 
 // maxSessionUserAgent bounds what a session row keeps of the User-Agent header,

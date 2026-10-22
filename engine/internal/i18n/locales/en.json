@@ -213,6 +213,8 @@
   "sessions.how.multifactor": "Signed in with more than one factor",
   "sessions.how.password": "Signed in with a password",
   "sessions.how.emailcode": "Signed in with a code sent by email",
+  "sessions.how.kerberos": "Signed in with your organisation's network sign-in (Kerberos)",
+  "sessions.how.federated": "Signed in with an external sign-in provider",
   "sessions.end": "End this session",
   "sessions.endcurrent": "End this session (signs you out here)",
   "sessions.endall": "Sign out everywhere, including here",

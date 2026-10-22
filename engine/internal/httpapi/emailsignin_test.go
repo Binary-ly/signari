@@ -567,13 +567,15 @@ func TestTheEmailedCodesAMRAndACR(t *testing.T) {
 	}
 }
 
-// The sessions page says how each sign-in was made, and a code to the mailbox
-// is not a password: that page is where somebody looks for a sign-in that was
-// not theirs.
+// The sessions page says how each sign-in was made, and a code to the mailbox,
+// a Kerberos ticket or a provider is not a password: that page is where
+// somebody looks for a sign-in that was not theirs.
 func TestASessionSignedInByEmailedCodeSaysSo(t *testing.T) {
 	for amr, want := range map[string]string{
 		oauth.AMROTP:      "sessions.how.emailcode",
 		oauth.AMRPassword: "sessions.how.password",
+		"krb":             "sessions.how.kerberos",
+		"fed":             "sessions.how.federated",
 	} {
 		if got := describeAuth([]string{amr}); got != want {
 			t.Errorf("describeAuth([%s]) = %q, want %q", amr, got, want)

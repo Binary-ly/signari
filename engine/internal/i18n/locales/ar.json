@@ -220,6 +220,8 @@
   "sessions.how.multifactor": "تم تسجيل الدخول بأكثر من عامل واحد",
   "sessions.how.password": "تم تسجيل الدخول بكلمة مرور",
   "sessions.how.emailcode": "تم تسجيل الدخول برمز أُرسل بالبريد",
+  "sessions.how.kerberos": "تم تسجيل الدخول عبر تسجيل الدخول في شبكة مؤسستك (Kerberos)",
+  "sessions.how.federated": "تم تسجيل الدخول عبر مزوّد تسجيل دخول خارجي",
   "sessions.end": "إنهاء هذه الجلسة",
   "sessions.endcurrent": "إنهاء هذه الجلسة (سيتم تسجيل خروجك هنا)",
   "sessions.endall": "تسجيل الخروج من كل مكان، بما في ذلك هنا",

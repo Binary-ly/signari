@@ -248,6 +248,7 @@ func IsSessionLive(ctx context.Context, q interface {
 		SELECT s.revoked_at IS NULL
 		   AND s.not_after > now()
 		   AND u.status = 'active'
+		   AND `+OrgInService("u.org_id")+`
 		FROM core.sessions s
 		JOIN core.users u ON u.id = s.user_id
 		WHERE s.sid = $1`, sid).Scan(&live)
@@ -312,7 +313,8 @@ func ResolveSessionCookie(ctx context.Context, q interface {
 	err = q.QueryRow(ctx, `
 		WITH found AS (
 			SELECT s.sid,
-			       s.revoked_at IS NULL AND s.not_after > now() AND u.status = 'active' AS live
+			       s.revoked_at IS NULL AND s.not_after > now() AND u.status = 'active'
+			       AND `+OrgInService("u.org_id")+` AS live
 			FROM core.sessions s
 			JOIN core.users u ON u.id = s.user_id
 			WHERE s.cookie_hash = $1),

@@ -161,6 +161,9 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	if !c.Enabled {
 		return direct("unauthorized_client", "client is disabled")
 	}
+	if c.OrgSuspended {
+		return direct("unauthorized_client", "this organisation is suspended")
+	}
 
 	// 4. Exact match against the registered set. No default-if-only-one-registered
 	// shortcut: that convenience has produced redirect bypasses elsewhere, and it

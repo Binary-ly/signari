@@ -577,8 +577,8 @@ func (s *Server) releaseCIBAPing(ctx context.Context, requestID string) {
 // would not.
 func (s *Server) releaseCIBAPush(ctx context.Context, d *store.DeviceAuthorization) {
 	c, err := s.lookupClient(ctx, d.ClientID)
-	if errors.Is(err, clients.ErrDisabled) {
-		// Disabled since it asked: nothing is pushed, and lookupClient said so.
+	if errors.Is(err, clients.ErrDisabled) || errors.Is(err, clients.ErrOrgSuspended) {
+		// Refused since it asked: nothing is pushed, and lookupClient said so.
 		return
 	}
 	if err != nil || c == nil {

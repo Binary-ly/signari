@@ -60,8 +60,11 @@ func LoadRegistrationPolicy(ctx context.Context, db *pgxpool.Pool, orgID string)
 // organisation, and picking one would put a stranger's client in somebody's
 // tenant on the strength of a guess.
 func SingleOpenRegistrationOrg(ctx context.Context, db *pgxpool.Pool) (string, error) {
+	// Counted whether or not each is in service, so suspending one of two does
+	// not quietly send the strangers to the other; the one found must be in
+	// service (6.09).
 	rows, err := db.Query(ctx, `
-		SELECT org_id::text FROM core.registration_policies
+		SELECT org_id::text, `+OrgInService("org_id")+` FROM core.registration_policies
 		WHERE enabled AND open LIMIT 2`)
 	if err != nil {
 		return "", err
@@ -69,9 +72,10 @@ func SingleOpenRegistrationOrg(ctx context.Context, db *pgxpool.Pool) (string, e
 	defer rows.Close()
 
 	var found []string
+	var serving bool
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		if err := rows.Scan(&id, &serving); err != nil {
 			return "", err
 		}
 		found = append(found, id)
@@ -79,7 +83,7 @@ func SingleOpenRegistrationOrg(ctx context.Context, db *pgxpool.Pool) (string, e
 	if err := rows.Err(); err != nil {
 		return "", err
 	}
-	if len(found) != 1 {
+	if len(found) != 1 || !serving {
 		return "", ErrRegistrationClosed
 	}
 	return found[0], nil
@@ -102,6 +106,7 @@ func RedeemRegistrationToken(ctx context.Context, db *pgxpool.Pool, hash []byte)
 		  AND t.revoked_at IS NULL
 		  AND (t.expires_at IS NULL OR t.expires_at > now())
 		  AND p.enabled
+		  AND `+OrgInService("t.org_id")+`
 		FOR UPDATE OF t`, hash).Scan(&tokenID, &orgID, &remaining)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

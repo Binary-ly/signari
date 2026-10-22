@@ -22,6 +22,10 @@ var ErrNotFound = errors.New("client not found")
 // client calls refuses on the next request (ADR-007).
 var ErrDisabled = errors.New("client is disabled")
 
+// ErrOrgSuspended means the client's organisation is suspended, refused as a
+// disabled client is (6.09).
+var ErrOrgSuspended = errors.New("the client's organisation is suspended")
+
 // Client is the registry view of a relying party.
 //
 // Note what is NOT here: any notion of a cached snapshot. Per ADR-007, whether a
@@ -42,6 +46,11 @@ type Client struct {
 	// FirstParty clients skip the consent screen -- see migration 0010. It
 	// suppresses only that question; every other check still applies.
 	FirstParty bool
+
+	// OrgSuspended: the client's organisation is out of service (6.09), which
+	// refuses the client wherever a disabled one is refused. Read with the row,
+	// on the request path, like Enabled.
+	OrgSuspended bool
 
 	// IssuerAlias, when set, is a REGISTERED legacy issuer this client's tokens
 	// are minted under, so an application migrated from another provider keeps
@@ -226,7 +235,10 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       backchannel_token_delivery_mode,
 		       coalesce(backchannel_client_notification_endpoint, ''),
 		       coalesce(claims_redirect_uris, ARRAY[]::text[]),
-		       access_token_ttl_s, require_pushed_authorization, minimum_acr
+		       access_token_ttl_s, require_pushed_authorization, minimum_acr,
+		       -- store.OrgInService's question, which this package cannot import.
+		       NOT EXISTS (SELECT 1 FROM core.organizations o
+		                    WHERE o.id = core.clients.org_id AND o.status = 'active')
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -240,7 +252,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.BackchannelTokenDeliveryMode,
 			&c.BackchannelClientNotificationEndpoint,
 			&c.ClaimsRedirectURIs,
-			&c.AccessTTL, &c.RequirePAR, &c.MinimumACR)
+			&c.AccessTTL, &c.RequirePAR, &c.MinimumACR, &c.OrgSuspended)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

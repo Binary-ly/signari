@@ -411,6 +411,18 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 		orgID, groups, verify, pending = rule.OrgID, rule.DefaultGroups, rule.RequireVerify, rule.RequireApproval
 	}
 
+	// Nobody joins a suspended organisation (6.09), by invitation or rule.
+	if serving, err := store.OrgServing(ctx, s.db, orgID); err != nil || !serving {
+		if invitationID != "" {
+			_ = store.ReleaseInvitation(ctx, s.db, invitationID)
+		}
+		if err != nil {
+			s.log.Error("reading whether the organisation is in service", "err", err)
+		}
+		fail(s.tr(r).Text("signup.suspended"))
+		return
+	}
+
 	// Every attribute the person may set is written, so a required one left
 	// off the form is refused by name rather than skipped.
 	for _, f := range s.signupFields(ctx, orgID, nil) {

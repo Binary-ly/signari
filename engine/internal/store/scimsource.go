@@ -122,14 +122,15 @@ func SetSCIMSourceEnabled(ctx context.Context, db interface {
 	return tx.Commit(ctx)
 }
 
-// FindSCIMSourceByToken resolves a bearer token hash to its source.
+// FindSCIMSourceByToken resolves a bearer token hash to its source, of an
+// organisation in service: a suspended one is provisioned into by nobody.
 func FindSCIMSourceByToken(ctx context.Context, db *pgxpool.Pool, hash []byte) (
 	*SCIMSource, error) {
 
 	s := &SCIMSource{}
 	err := db.QueryRow(ctx, `
 		UPDATE core.scim_sources SET last_seen_at = now()
-		WHERE token_hash = $1 AND enabled
+		WHERE token_hash = $1 AND enabled AND `+OrgInService("org_id")+`
 		RETURNING id::text, org_id::text, slug, display_name, token_hash, on_delete`,
 		hash).Scan(&s.ID, &s.OrgID, &s.Slug, &s.DisplayName, &s.TokenHash, &s.OnDelete)
 	if err != nil {

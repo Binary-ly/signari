@@ -11,6 +11,7 @@ import (
 
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/radius"
+	"signari.dev/engine/internal/store"
 )
 
 // RADIUSAuthenticator verifies a network login against the same credential path
@@ -89,7 +90,7 @@ func (a *RADIUSAuthenticator) Authorize(ctx context.Context, username string) (r
 		FROM core.radius_group_authorization ra
 		JOIN core.group_members gm ON gm.group_id = ra.group_id
 		JOIN core.users u          ON u.id = gm.user_id
-		WHERE u.status = 'active'
+		WHERE u.status = 'active' AND `+store.OrgInService("u.org_id")+`
 		  AND u.org_id = $2::uuid AND ra.org_id = $2::uuid
 		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))
 		ORDER BY ra.priority DESC, ra.group_id

@@ -129,7 +129,8 @@ func (s *Server) outpostCall(w http.ResponseWriter, r *http.Request) (*outpostCa
 	var c outpostCaller
 	err := s.db.QueryRow(r.Context(), `
 		SELECT id::text, org_id::text, kind, name, COALESCE(search_group, '')
-		  FROM core.outposts WHERE token_hash = $1 AND enabled`, sum[:]).
+		  FROM core.outposts WHERE token_hash = $1 AND enabled
+		   AND `+store.OrgInService("org_id"), sum[:]).
 		Scan(&c.ID, &c.OrgID, &c.Kind, &c.Name, &c.SearchGroup)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {

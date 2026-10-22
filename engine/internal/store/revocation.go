@@ -120,10 +120,11 @@ func TokenSessionLive(ctx context.Context, q interface {
 	err := q.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM core.sessions s JOIN core.users u ON u.id = s.user_id
 		                WHERE s.sid = $1 AND s.revoked_at IS NULL AND s.not_after > now()
-		                  AND u.status = 'active')
+		                  AND u.status = 'active' AND `+OrgInService("u.org_id")+`)
 		    OR EXISTS (SELECT 1 FROM core.refresh_token_families f JOIN core.users u ON u.id = f.user_id
 		                WHERE f.id = NULLIF($2, '')::uuid AND f.sid = $1 AND f.revoked_at IS NULL
-		                  AND f.offline_not_after > now() AND u.status = 'active')`,
+		                  AND f.offline_not_after > now() AND u.status = 'active'
+		                  AND `+OrgInService("u.org_id")+`)`,
 		sid, grantID).Scan(&live)
 	if err != nil {
 		return false, fmt.Errorf("checking a token's session: %w", err)
@@ -238,7 +239,9 @@ func GrantRevoked(ctx context.Context, db *pgxpool.Pool, grantID string) (bool, 
 // disabled or deleted, or its person deactivated or deleted.
 //
 // A subject shaped like a UUID that names a person is held to that person, so a
-// client registered under somebody's id cannot stand in for them. Fails CLOSED.
+// client registered under somebody's id cannot stand in for them. The client's
+// organisation must be in service too (6.09), which is the subject's as well.
+// Fails CLOSED.
 func TokenHolderLive(ctx context.Context, db interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, clientID, subject string) (bool, error) {
@@ -249,10 +252,12 @@ func TokenHolderLive(ctx context.Context, db interface {
 	}
 	var live bool
 	err := db.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM core.clients WHERE client_id = $1 AND enabled)
+		SELECT EXISTS (SELECT 1 FROM core.clients c WHERE c.client_id = $1 AND c.enabled
+		                  AND `+OrgInService("c.org_id")+`)
 		   AND CASE
 		         WHEN EXISTS (SELECT 1 FROM core.users WHERE id = $2::uuid)
-		           THEN EXISTS (SELECT 1 FROM core.users WHERE id = $2::uuid AND status = 'active')
+		           THEN EXISTS (SELECT 1 FROM core.users u WHERE u.id = $2::uuid AND u.status = 'active'
+		                           AND `+OrgInService("u.org_id")+`)
 		         ELSE EXISTS (SELECT 1 FROM core.clients WHERE client_id = $3 AND enabled)
 		       END`,
 		clientID, person, subject).Scan(&live)

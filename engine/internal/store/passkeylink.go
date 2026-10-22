@@ -96,7 +96,8 @@ func FindPasskeyLink(ctx context.Context, db interface {
 	err := db.QueryRow(ctx, `
 		SELECT l.id::text, l.user_id::text, l.org_id::text, l.expires_at
 		  FROM core.passkey_links l JOIN core.users u ON u.id = l.user_id AND u.status = 'active'
-		 WHERE l.token_hash = $1 AND l.used_at IS NULL AND l.expires_at > now()`, HashToken(token)).
+		 WHERE l.token_hash = $1 AND l.used_at IS NULL AND l.expires_at > now()
+		   AND `+OrgInService("u.org_id"), HashToken(token)).
 		Scan(&l.ID, &l.UserID, &l.OrgID, &l.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return l, ErrPasskeyLinkInvalid

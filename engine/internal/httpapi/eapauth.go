@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/store"
 )
 
 // Turning a verified client certificate into a user.
@@ -81,7 +82,11 @@ func (a *EAPCertAuthenticator) AuthenticateCertificate(cert *x509.Certificate) (
 
 	var userID, status string
 	err = a.db.QueryRow(ctx, `
-		SELECT id::text, status FROM core.users
+		SELECT id::text,
+		       -- An account of a suspended organisation is refused as an
+		       -- inactive one is (6.09).
+		       CASE WHEN `+store.OrgInService("org_id")+` THEN status ELSE 'org_suspended' END
+		FROM core.users
 		WHERE org_id = $1::uuid
 		  AND (lower(email) = lower($2) OR lower(username) = lower($2))`,
 		a.orgID, identity).Scan(&userID, &status)

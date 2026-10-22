@@ -264,6 +264,7 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 		FROM core.users u
 		JOIN core.password_credentials pc ON pc.user_id = u.id
 		WHERE u.status = 'active'
+		  AND `+store.OrgInService("u.org_id")+`
 		  AND ($2 = '' OR u.org_id::text = $2)
 		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))`,
 		username, a.orgID).Scan(&userID, &orgID, &hash)
@@ -334,7 +335,7 @@ func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd
 		FROM core.users u
 		WHERE u.org_id = $1::uuid
 		  AND (lower(u.username) = lower($2) OR lower(u.email) = lower($2))
-		  AND u.status = 'active'`, a.orgID, username).
+		  AND u.status = 'active' AND `+store.OrgInService("u.org_id"), a.orgID, username).
 		Scan(&id.Username, &id.Email, &id.Active,
 			&id.DisplayName, &id.Surname, &id.GivenName)
 	if err != nil {
@@ -376,7 +377,7 @@ func (a *LDAPAuthenticator) List(ctx context.Context, limit int) ([]*ldapd.Ident
 		FROM core.users u
 		LEFT JOIN core.group_members m ON m.user_id = u.id
 		LEFT JOIN core.groups g ON g.id = m.group_id
-		WHERE u.org_id = $1::uuid AND u.status = 'active'
+		WHERE u.org_id = $1::uuid AND u.status = 'active' AND `+store.OrgInService("u.org_id")+`
 		GROUP BY u.id, u.username, u.email, u.display_name, u.surname,
 		         u.given_name, u.created_at
 		ORDER BY u.created_at

@@ -131,6 +131,7 @@ func RotateRefreshToken(ctx context.Context, tx pgx.Tx, hash []byte) (*RefreshGr
 		  AND rt.family_id   = f.id
 		  AND f.revoked_at IS NULL
 		  AND u.status = 'active'
+		  AND `+OrgInService("f.org_id")+`
 		  -- An offline grant within its own lifetime, or one bound to a session
 		  -- that is still live (5.10).
 		  AND (f.offline_not_after > now() OR (s.revoked_at IS NULL AND s.not_after > now()))

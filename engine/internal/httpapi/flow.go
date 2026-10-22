@@ -2067,9 +2067,13 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	// account by the link alone and came here for a deactivated one, which
 	// wrote a session and a login.succeeded that the per-request check then
 	// treated as nobody (ADR-007). A self-sign-up waiting for approval (5.19)
-	// has proved its own credential, so it is told why.
+	// has proved its own credential, so it is told why. An account of a
+	// suspended organisation is refused the same way (6.09), recorded as such.
 	var status, locale string
-	if err := tx.QueryRow(ctx, `SELECT status, COALESCE(locale, '') FROM core.users WHERE id = $1::uuid`,
+	if err := tx.QueryRow(ctx, `
+		SELECT CASE WHEN `+store.OrgInService("u.org_id")+` THEN u.status ELSE 'org_suspended' END,
+		       COALESCE(u.locale, '')
+		  FROM core.users u WHERE u.id = $1::uuid`,
 		userID).Scan(&status, &locale); err != nil {
 		s.log.Error("reading the account's status at sign-in", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -2358,9 +2362,11 @@ func (s *Server) lookupCredentials(ctx context.Context, identifier, orgID string
 	// The status check is in the query: a deactivated user must not be able to
 	// sign in, and doing it here means there is no window where a caller forgets.
 	// A pending one is found, and refused by completeSignIn once its password
-	// is right, with the reason (5.19); recovery passes over it.
+	// is right, with the reason (5.19); recovery passes over it. So is one of a
+	// suspended organisation (6.09), its status read as org_suspended.
 	rows, err := s.db.Query(ctx, `
-		SELECT u.id::text, u.org_id::text, pc.hash, u.status
+		SELECT u.id::text, u.org_id::text, pc.hash,
+		       CASE WHEN `+store.OrgInService("u.org_id")+` THEN u.status ELSE 'org_suspended' END
 		FROM core.users u
 		JOIN core.password_credentials pc ON pc.user_id = u.id
 		WHERE u.status IN ('active', 'pending')
@@ -2441,6 +2447,12 @@ func (s *Server) lookupClient(ctx context.Context, clientID string) (*clients.Cl
 		s.log.Info("a disabled client was refused", "client_id", clientID,
 			"correlation_id", correlationID(ctx))
 		return nil, clients.ErrDisabled
+	}
+	// And a client of a suspended organisation, the same way (6.09).
+	if c.OrgSuspended {
+		s.log.Info("a client of a suspended organisation was refused", "client_id", clientID,
+			"org_id", c.OrgID, "correlation_id", correlationID(ctx))
+		return nil, clients.ErrOrgSuspended
 	}
 	return c, nil
 }

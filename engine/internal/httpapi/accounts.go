@@ -328,7 +328,8 @@ func (s *Server) handleAccountsPost(w http.ResponseWriter, r *http.Request) {
 // change, and a redirect taken from it unchecked goes wherever it says.
 func (s *Server) errorToClient(w http.ResponseWriter, r *http.Request, authz, code, description string) {
 	req := oauth.ParseAuthz(parseQuery(authz))
-	c, lookupErr := s.lookupClient(r.Context(), req.ClientID)
+	// In any state: ValidateAuthz refuses a disabled client, saying so.
+	c, lookupErr := s.lookupClientAnyState(r.Context(), req.ClientID)
 	if aerr := oauth.ValidateAuthz(req, c, lookupErr); aerr != nil && aerr.Disposition != oauth.DispositionRedirect {
 		s.writeAuthzError(w, r, req, aerr)
 		return

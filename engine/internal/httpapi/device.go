@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
@@ -576,6 +577,10 @@ func (s *Server) releaseCIBAPing(ctx context.Context, requestID string) {
 // would not.
 func (s *Server) releaseCIBAPush(ctx context.Context, d *store.DeviceAuthorization) {
 	c, err := s.lookupClient(ctx, d.ClientID)
+	if errors.Is(err, clients.ErrDisabled) {
+		// Disabled since it asked: nothing is pushed, and lookupClient said so.
+		return
+	}
 	if err != nil || c == nil {
 		s.log.Error("looking up a client for a CIBA push", "err", err,
 			"client_id", d.ClientID)

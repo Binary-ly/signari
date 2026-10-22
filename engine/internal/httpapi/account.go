@@ -44,7 +44,9 @@ func (s *Server) loginOrg(ctx context.Context, authzQuery string) string {
 		}
 	}
 	if clientID != "" {
-		if c, err := s.lookupClient(ctx, clientID); err == nil && c != nil {
+		// Only which organisation's page to show; the authorization it came
+		// from refuses a disabled client.
+		if c, err := s.lookupClientAnyState(ctx, clientID); err == nil && c != nil {
 			return c.OrgID
 		}
 	}

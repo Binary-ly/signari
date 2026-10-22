@@ -18,6 +18,10 @@ import (
 // ErrNotFound means no such client_id.
 var ErrNotFound = errors.New("client not found")
 
+// ErrDisabled means the client exists and is disabled, which every endpoint a
+// client calls refuses on the next request (ADR-007).
+var ErrDisabled = errors.New("client is disabled")
+
 // Client is the registry view of a relying party.
 //
 // Note what is NOT here: any notion of a cached snapshot. Per ADR-007, whether a

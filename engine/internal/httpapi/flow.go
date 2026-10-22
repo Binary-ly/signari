@@ -89,7 +89,9 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	req := oauth.ParseAuthz(query)
 
-	c, lookupErr := s.lookupClient(ctx, req.ClientID)
+	// In any state, so ValidateAuthz can tell the person the client is
+	// disabled; it refuses one before anything else is read.
+	c, lookupErr := s.lookupClientAnyState(ctx, req.ClientID)
 	if authzErr := oauth.ValidateAuthz(req, c, lookupErr); authzErr != nil {
 		s.writeAuthzError(w, r, req, authzErr)
 		return
@@ -2422,7 +2424,32 @@ func (s *Server) verifyClientSecret(ctx context.Context, c *clients.Client, pres
 	return true, nil
 }
 
+// lookupClient loads a client for a request it makes or that is made in its
+// name, and refuses a disabled one: this is the one place every endpoint a
+// client calls loads it, so a disabled client stops working on the next
+// request at all of them (ADR-007). Until October 2026 it returned the row and
+// left the check to each caller; three made it, so a disabled client still
+// refreshed its tokens, started device flows and revoked and introspected.
+// The answer is the unknown client's, so nobody unauthenticated learns that
+// the client exists; the log says which.
 func (s *Server) lookupClient(ctx context.Context, clientID string) (*clients.Client, error) {
+	c, err := s.lookupClientAnyState(ctx, clientID)
+	if err != nil {
+		return nil, err
+	}
+	if !c.Enabled {
+		s.log.Info("a disabled client was refused", "client_id", clientID,
+			"correlation_id", correlationID(ctx))
+		return nil, clients.ErrDisabled
+	}
+	return c, nil
+}
+
+// lookupClientAnyState loads a client whether or not it is enabled, for the
+// few callers that say why it is refused or only show it; nothing that grants,
+// answers or acts for a client uses it, and
+// TestEveryClientLookupThatAdmitsADisabledClientIsDeclared holds the list.
+func (s *Server) lookupClientAnyState(ctx context.Context, clientID string) (*clients.Client, error) {
 	if clientID == "" {
 		return nil, clients.ErrNotFound
 	}

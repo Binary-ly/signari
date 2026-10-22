@@ -6945,20 +6945,8 @@ func brandSet(ctx context.Context, conn *pgx.Conn, issuer, name, logo, support,
 		`SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&instanceID); err != nil {
 		return fmt.Errorf("no instance is registered with issuer %q", issuer)
 	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.brands (instance_id, product_name, logo_url, support_url,
-		                         colour_primary, colour_on_primary,
-		                         colour_background, colour_text)
-		VALUES ($1::uuid, NULLIF($2,''), NULLIF($3,''), NULLIF($4,''),
-		        NULLIF($5,''), NULLIF($6,''), NULLIF($7,''), NULLIF($8,''))
-		ON CONFLICT (instance_id) DO UPDATE SET
-			product_name = EXCLUDED.product_name, logo_url = EXCLUDED.logo_url,
-			support_url = EXCLUDED.support_url,
-			colour_primary = EXCLUDED.colour_primary,
-			colour_on_primary = EXCLUDED.colour_on_primary,
-			colour_background = EXCLUDED.colour_background,
-			colour_text = EXCLUDED.colour_text, updated_at = now()`,
-		instanceID, name, logo, support, primary, onPrimary, background, text); err != nil {
+	// The writer the Admin API shares.
+	if err := store.SaveBrand(ctx, conn, instanceID, b); err != nil {
 		return err
 	}
 	fmt.Printf("branded %s\n", issuer)

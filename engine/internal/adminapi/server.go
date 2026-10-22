@@ -248,6 +248,12 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/signup", ScopeConfigRead, s.getSignup)
 	route("PUT /admin/organizations/{orgID}/signup", ScopeOrganizationsWrite, s.putSignup)
 	route("DELETE /admin/organizations/{orgID}/signup", ScopeOrganizationsWrite, s.deleteSignup)
+	// Instances and their appearance, deployment-wide tokens only
+	// (instances.go).
+	route("GET /admin/instances", ScopeConfigRead, s.listInstances)
+	route("GET /admin/instances/{instanceID}/brand", ScopeConfigRead, s.getBrand)
+	route("PUT /admin/instances/{instanceID}/brand", ScopeOrganizationsWrite, s.putBrand)
+	route("DELETE /admin/instances/{instanceID}/brand", ScopeOrganizationsWrite, s.deleteBrand)
 	// Interstitial prompts, `signari prompt` (prompts.go).
 	route("GET /admin/organizations/{orgID}/prompts", ScopeConfigRead, s.listPrompts)
 	route("PUT /admin/organizations/{orgID}/prompts/{slug}", ScopeOrganizationsWrite, s.putPrompt)

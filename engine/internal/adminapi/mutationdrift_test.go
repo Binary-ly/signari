@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"signari.dev/engine/internal/brand"
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/store"
 )
@@ -284,6 +285,24 @@ func allMutatingRoutes() []mutatingRoute {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/signup"
 			},
 			body: func(*testing.T, *Server, string) string { return `{"allowed_domains":["drift.example"]}` },
+		},
+		{
+			name: "PUT /admin/instances/{instanceID}/brand", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftInstance(t, s) + "/brand"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"product_name":"Drift"}` },
+		},
+		{
+			name: "DELETE /admin/instances/{instanceID}/brand", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftInstance(t, s)
+				if err := store.SaveBrand(context.Background(), s.db, id, &brand.Brand{ProductName: "Drift"}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/instances/" + id + "/brand"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
 			// Its own organisation: a prompt on the shared one is asked at
@@ -583,6 +602,22 @@ func newDriftGroup(t *testing.T, s *Server) string {
 	t.Cleanup(func() {
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.group_members WHERE group_id = $1::uuid`, id)
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.groups WHERE id = $1::uuid`, id)
+	})
+	return id
+}
+
+// newDriftInstance is an instance of the test's own, so a brand put on it is
+// seen by no other test's pages.
+func newDriftInstance(t *testing.T, s *Server) string {
+	t.Helper()
+	var id string
+	if err := s.db.QueryRow(context.Background(), `INSERT INTO core.instances (issuer, display_name)
+		VALUES ('https://drift-' || gen_random_uuid() || '.test', 'Drift') RETURNING id::text`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.brands WHERE instance_id = $1::uuid`, id)
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.instances WHERE id = $1::uuid`, id)
 	})
 	return id
 }

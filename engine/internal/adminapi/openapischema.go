@@ -93,6 +93,16 @@ func signupProps() map[string]jsonSchema {
 		"require_approval": boolean()}
 }
 
+// brandProps is an instance's appearance (6.07).
+func brandProps() map[string]jsonSchema {
+	return map[string]jsonSchema{"instance_id": uuidStr(), "branded": boolean(), "product_name": str(),
+		"logo_url": str(), "support_url": str(), "colour_primary": str(), "colour_on_primary": str(),
+		"colour_background": str(), "colour_text": str()}
+}
+
+var brandFields = []string{"instance_id", "branded", "product_name", "logo_url", "support_url",
+	"colour_primary", "colour_on_primary", "colour_background", "colour_text"}
+
 // registrationProps is an organisation's registration policy (6.07).
 func registrationProps() map[string]jsonSchema {
 	return map[string]jsonSchema{"org_id": uuidStr(), "enabled": boolean(), "open": boolean(),
@@ -406,6 +416,13 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/organizations/{orgID}/signup": {http.StatusOK, typeOf[putSignupRequest](), object(
 		append(append([]string{}, signupFields...), "config_version"), withVersion(signupProps()))},
 	"DELETE /admin/organizations/{orgID}/signup": {http.StatusOK, nil, removedSchema},
+	"GET /admin/instances": {http.StatusOK, nil, object([]string{"instances"}, map[string]jsonSchema{
+		"instances": arrayOf(object([]string{"id", "issuer", "display_name", "created_at"}, map[string]jsonSchema{
+			"id": uuidStr(), "issuer": str(), "display_name": str(), "created_at": dateTime()}))})},
+	"GET /admin/instances/{instanceID}/brand": {http.StatusOK, nil, object(brandFields, brandProps())},
+	"PUT /admin/instances/{instanceID}/brand": {http.StatusOK, typeOf[putBrandRequest](), object(
+		append(append([]string{}, brandFields...), "config_version"), withVersion(brandProps()))},
+	"DELETE /admin/instances/{instanceID}/brand": {http.StatusOK, nil, removedSchema},
 	"GET /admin/organizations/{orgID}/prompts": {http.StatusOK, nil, object([]string{"org_id", "prompts"},
 		map[string]jsonSchema{"org_id": uuidStr(), "prompts": arrayOf(object(
 			[]string{"slug", "title", "body", "once", "order", "fields", "enabled", "version", "answered"},

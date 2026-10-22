@@ -288,7 +288,7 @@ var cliAPI = map[string]string{
 	"prompt list":     reads,
 	"prompt enable":   "PATCH /admin/organizations/{orgID}/prompts/{slug}",
 	"prompt disable":  "PATCH /admin/organizations/{orgID}/prompts/{slug}",
-	"brand set":       pending,
+	"brand set":       "PUT /admin/instances/{instanceID}/brand",
 	"brand show":      reads,
 	"brand check":     reads,
 	"theme eject":     cliOnly("writes the built-in pages to the operator's disk"),

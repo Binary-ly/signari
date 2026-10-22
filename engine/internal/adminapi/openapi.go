@@ -149,6 +149,12 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/signup":    "Open self-sign-up or replace its rule.",
 	"DELETE /admin/organizations/{orgID}/signup": "Close self-sign-up; invitations and administrators still make accounts.",
 
+	// Instances and their appearance (6.07).
+	"GET /admin/instances":                       "The issuers this deployment has; deployment-wide tokens only.",
+	"GET /admin/instances/{instanceID}/brand":    "The instance's name, logo, support link and colours.",
+	"PUT /admin/instances/{instanceID}/brand":    "Brand the instance's pages, checked for contrast.",
+	"DELETE /admin/instances/{instanceID}/brand": "Return the instance's pages to the built-in appearance.",
+
 	// Interstitial prompts (6.07).
 	"GET /admin/organizations/{orgID}/prompts":          "The prompts asked between sign-in and the session, in order.",
 	"PUT /admin/organizations/{orgID}/prompts/{slug}":   "Define or replace a prompt; a change to its wording asks everyone again.",

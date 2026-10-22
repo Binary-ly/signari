@@ -144,6 +144,9 @@ func (s *Server) handleEmailSignInStart(w http.ResponseWriter, r *http.Request) 
 		s.renderLogin(w, r, authz, s.tr(r).Text("emailcode.unavailable"))
 		return
 	}
+	// "Stay signed in", ticked on the form this button belongs to, for the
+	// code's own page to complete with.
+	s.noteRemember(w, r)
 	identifier := strings.TrimSpace(r.PostForm.Get("username"))
 	// Nobody, unless the name is somebody's: ids of the same shape either way.
 	subject, subjectOrg := uuid.NewString(), uuid.NewString()

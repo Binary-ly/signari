@@ -95,6 +95,65 @@ func TestStayingSignedInOutlastsTheBrowserOnlyWhenOfferedAndAsked(t *testing.T) 
 	}
 }
 
+// The choice is spent by the sign-in it was made for. Made on a form that
+// completes in the same request, it was kept for fifteen minutes afterwards,
+// because the sign-in cleared only a choice the request had brought with it:
+// the next person to sign in on that browser was signed in to stay, without
+// asking, and closing the browser left them signed in.
+func TestStayingSignedInIsNotInheritedByTheNextSignIn(t *testing.T) {
+	f := newSignInFixture(t)
+	f.offerStaySignedIn(t, true)
+	clearSignInBucket(t, f.pool)
+	b := newTestBrowser(t, f.srv.Routes())
+	signIn := func(form url.Values) *http.Cookie {
+		t.Helper()
+		form.Set("username", f.email)
+		form.Set("password", signInTestPassword)
+		b.post("/login", b.get("/login"), form)
+		return b.jar[SessionCookieName]
+	}
+	if c := signIn(url.Values{stayField: {"1"}}); c == nil || c.MaxAge <= 0 {
+		t.Fatalf("asked and offered: %+v, want a lasting cookie", c)
+	}
+	if b.value(RememberCookieName) != "" {
+		t.Error("the choice outlived the sign-in it was made for")
+	}
+	if c := signIn(url.Values{}); c == nil || c.MaxAge != 0 {
+		t.Errorf("the next sign-in, not asked: %+v, want a browser-session cookie", c)
+	}
+}
+
+// And an emailed code, whose button posts the same form and completes on its
+// own page: the choice was dropped there.
+func TestStayingSignedInCarriesThroughAnEmailedCode(t *testing.T) {
+	f := emailFixture(t)
+	f.offerStaySignedIn(t, true)
+	f.applyFlow(t, emailOrPasswordFlow)
+	mailer := &captureMailer{}
+	f.srv.mailer = mailer
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.outbox WHERE topic = $1 AND payload->>'user_id' = $2`,
+			store.AccountNoticeTopic, f.userID)
+	})
+	clearSignInBucket(t, f.pool)
+	b := newTestBrowser(t, f.srv.Routes())
+	page := b.post("/login/email", b.get("/login"), url.Values{"username": {f.email}, stayField: {"1"}})
+	notices := f.signInCodeNotices(t)
+	if len(notices) != 1 {
+		t.Fatalf("queued %d code(s)", len(notices))
+	}
+	if err := f.srv.DeliverAccountNotice(context.Background(), notices[0]); err != nil {
+		t.Fatal(err)
+	}
+	b.post("/login/email/verify", page, url.Values{"code": {sixDigits.FindString(mailer.messages()[0].Body)}})
+	if c := b.jar[SessionCookieName]; c == nil || c.MaxAge <= 0 {
+		t.Errorf("asked on the sign-in form, through an emailed code: %+v, want a lasting cookie", c)
+	}
+	if b.value(RememberCookieName) != "" {
+		t.Error("the choice outlived the sign-in it was made for")
+	}
+}
+
 // Through a second factor, which completes the sign-in in a later request: the
 // choice made on the password page carries over, and the code page's own
 // "remember this device" is not mistaken for it.

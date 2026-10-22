@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -191,16 +192,25 @@ type userSummary struct {
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	limit, cursor := pageParams(r)
+	// Filters (6.08), each in the WHERE clause beside the organisation, and
+	// each served by an index (0189): ?email= exactly, ?q= a prefix of the
+	// address or the user name, ?status= one of the statuses. Case does not
+	// matter, as it does not at sign-in. A support desk paged through every
+	// person to find one.
+	q := r.URL.Query()
+	email := strings.ToLower(strings.TrimSpace(q.Get("email")))
+	prefix := strings.ToLower(strings.TrimSpace(q.Get("q")))
+	status := q.Get("status")
+	switch status {
+	case "", "active", "deactivated", "locked", "pending":
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_status",
+			"detail": "status is active, deactivated, locked or pending"})
+		return
+	}
 
-	rows, err := s.db.Query(ctx, `
-		SELECT id::text, org_id::text, coalesce(email, ''), coalesce(username, ''),
-		       status, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
-		  FROM core.users
-		 WHERE ($1 = '' OR id::text > $1)
-		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
-		 ORDER BY id
-		 LIMIT $3`,
-		cursor, orgFilter(ctx), limit+1)
+	sql, args := userListQuery(cursor, orgFilter(ctx), limit+1, email, prefix, status)
+	rows, err := s.db.Query(ctx, sql, args...)
 	if err != nil {
 		s.log.Error("listing users", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -231,6 +241,42 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		next = out[len(out)-1].ID
 	}
 	s.writeList(w, r, map[string]any{"users": out, "next_cursor": next})
+}
+
+// userListQuery is the user list's query with only the filters given, each its
+// own condition. A condition that also holds when its parameter is empty reads
+// the same and stops using the index once the prepared statement is planned
+// generically, which pgx's are after a few calls. The plan test reads the same
+// text.
+func userListQuery(cursor string, org any, limit int, email, prefix, status string) (string, []any) {
+	where := []string{"($1 = '' OR id::text > $1)", "($2::uuid IS NULL OR org_id = $2::uuid)"}
+	args := []any{cursor, org, limit}
+	add := func(cond string, v any) {
+		args = append(args, v)
+		where = append(where, strings.ReplaceAll(cond, "$?", "$"+strconv.Itoa(len(args))))
+	}
+	if email != "" {
+		add("lower(email) = $?", email)
+	}
+	if prefix != "" {
+		add("(lower(email) LIKE $? OR lower(username) LIKE $?)", likePrefix(prefix))
+	}
+	if status != "" {
+		add("status = $?", status)
+	}
+	return `
+		SELECT id::text, org_id::text, coalesce(email, ''), coalesce(username, ''),
+		       status, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
+		  FROM core.users
+		 WHERE ` + strings.Join(where, " AND ") + `
+		 ORDER BY id
+		 LIMIT $3`, args
+}
+
+// likePrefix is a LIKE pattern matching what starts with p, with p's own %, _
+// and \ taken literally: a name containing an underscore is not a wildcard.
+func likePrefix(p string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p) + "%"
 }
 
 func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {

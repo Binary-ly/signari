@@ -1,8 +1,10 @@
 package adminapi
 
 import (
+	"encoding/base64"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -75,6 +77,22 @@ func (s *Server) listUserSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Paged, newest first, by (created_at, sid), which is unique, so a page
+	// boundary skips nobody (6.08). This stopped at 200 with no way to see the
+	// rest, so a person signed in from more places than that could not be shown
+	// whole to whoever was ending their sessions.
+	limit, cursor := pageParams(r)
+	var afterTime, afterSID any
+	if cursor != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(cursor)
+		at, sid, ok := strings.Cut(string(raw), "_")
+		if err != nil || !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_cursor",
+				"detail": "a cursor is the value returned by the previous page, not a value to construct"})
+			return
+		}
+		afterTime, afterSID = at, sid
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT sid, user_id::text, org_id::text, acr, amr,
 		       to_char(auth_time, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'),
@@ -83,8 +101,9 @@ func (s *Server) listUserSessions(w http.ResponseWriter, r *http.Request) {
 		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
 		  FROM core.sessions
 		 WHERE user_id = $1::uuid AND revoked_at IS NULL AND not_after > now()
-		 ORDER BY created_at DESC
-		 LIMIT $2`, userID, maxPageSize)
+		   AND ($3::timestamptz IS NULL OR (created_at, sid) < ($3::timestamptz, $4::text))
+		 ORDER BY created_at DESC, sid DESC
+		 LIMIT $2`, userID, limit+1, afterTime, afterSID)
 	if err != nil {
 		s.log.Error("listing sessions", "user_id", userID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -109,7 +128,13 @@ func (s *Server) listUserSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
-	s.writeList(w, r, map[string]any{"sessions": out})
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = base64.RawURLEncoding.EncodeToString([]byte(last.CreatedAt + "_" + last.SID))
+	}
+	s.writeList(w, r, map[string]any{"sessions": out, "next_cursor": next})
 }
 
 // revokeUserSessions ends every live session for one user.

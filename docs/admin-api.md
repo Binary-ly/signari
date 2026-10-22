@@ -238,7 +238,7 @@ to redefine one would be a setting that changes nothing.
 
 | | |
 |---|---|
-| `GET /admin/users` | List, paged |
+| `GET /admin/users` | List, paged. Filters, any together: `email` (the exact address, whatever its case), `q` (a prefix of the address or the user name; `%` and `_` in it are characters, not wildcards) and `status` (`active`, `deactivated`, `locked` or `pending`). Each is served by an index, an exact address across organisations included |
 | `GET /admin/users/{userID}` | One user |
 | `POST /admin/users` | Create |
 | `PATCH /admin/users/{userID}` | Activate (which approves a self-sign-up waiting, `pending`, for approval and tells the person they can sign in; audited with `approved: true`), deactivate, set a password, require a change, and edit identity: `email`, `username`, `display_name`, `given_name`, `surname`. An empty string clears a field; both identifiers cannot be cleared at once (400 `no_identifier_left`), and a taken address or name is 409 `already_exists`. A password set, or an address changed, is told to the person on every channel, queued with the change; an address change goes to the old address too, naming neither |
@@ -451,7 +451,7 @@ act on both.
 
 | | |
 |---|---|
-| `GET /admin/users/{userID}/sessions` | Live sessions for a user |
+| `GET /admin/users/{userID}/sessions` | Live sessions for a user, newest first, paged with `limit` and `cursor` like the other lists. Until October 2026 it stopped at 200 with no way to see the rest |
 | `DELETE /admin/users/{userID}/sessions` | End all of them |
 | `DELETE /admin/sessions/{sid}` | End one |
 

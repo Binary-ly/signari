@@ -29,6 +29,7 @@ func allReadRoutes() []readRoute {
 			return "/admin/groups/" + newDriftGroup(t, s) + "/members"
 		}},
 		{"GET /admin/invitations", func(*testing.T, *Server) string { return "/admin/invitations" }},
+		{"GET /admin/me", func(*testing.T, *Server) string { return "/admin/me" }},
 		{"GET /admin/organizations", func(*testing.T, *Server) string { return "/admin/organizations" }},
 		{"GET /admin/organizations/{orgID}", org("")},
 		{"GET /admin/organizations/{orgID}/attributes", org("/attributes")},

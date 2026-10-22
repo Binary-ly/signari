@@ -205,6 +205,7 @@ manager cannot reset an owner's password and become one.
 | `GET /admin/organizations/{orgID}/role-bindings` | Each binding: its `id`, `role`, `user_id` or `client_id`, any `group_id`, and when it was made. `config:read` |
 | `POST /admin/organizations/{orgID}/role-bindings` | `{"role", "user_id" or "client_id", "group_id"}`. The holder and the group must be in the organisation (404 otherwise, the same for one that does not exist). Refused 403 `wider_than_caller` unless the caller holds every scope of the role over everything it reaches. Audited `admin.role_granted`; `organizations:write`; honours `If-Match` |
 | `DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}` | Take one away, held to the same rule, so a narrow credential cannot remove an owner. Audited `admin.role_revoked`; `organizations:write`; honours `If-Match` |
+| `GET /admin/me` | Who the caller is, as this request was authenticated: `kind` (`person`, `application`, `token` or `break_glass`), `name`, `org_id` (null for a deployment-wide caller), `scopes`, `delegated` (each scope a delegated role narrows, with its groups), `expires_at`, and for a person their `user` (`id`, `email`, `display_name`). Any authenticated caller, no scope of its own. The console asks it on each of its requests, and a `401` is how it learns a person's session or role has ended |
 
 `signari role grant` makes the first owner, before anybody can grant one here.
 

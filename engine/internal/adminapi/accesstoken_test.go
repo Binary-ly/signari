@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -230,6 +231,47 @@ func TestAPersonActsWithTheirRolesFromAMultiFactorSession(t *testing.T) {
 	// A person's token without a session is not a sign-in to administer with.
 	if rec := call(t, a.s, http.MethodGet, "/admin/users/"+target, a.sign(t, a.claims(target, "")), nil); rec.Code != http.StatusUnauthorized {
 		t.Errorf("a person's token with no session answered %d", rec.Code)
+	}
+}
+
+// GET /admin/me says who the caller is (6.06): the console asks it on each
+// request and signs out a person it no longer answers for.
+func TestMeSaysWhoTheCallerIs(t *testing.T) {
+	a := newAdminTokens(t)
+	person := newDriftUser(t, a.s)
+	group := newDriftGroup(t, a.s)
+	a.grant(t, store.RoleBinding{UserID: person, Role: "user-manager", GroupID: group})
+	a.grant(t, store.RoleBinding{UserID: person, Role: "auditor"})
+	sid := a.session(t, person, "pwd", "otp")
+	tok := a.sign(t, a.claims(person, sid))
+
+	var me meView
+	rec := call(t, a.s, http.MethodGet, "/admin/me", tok, nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &me)
+	if rec.Code != http.StatusOK || me.Kind != "person" || me.User == nil || me.User.ID != person ||
+		me.OrgID == nil || *me.OrgID != a.org || !slices.Contains(me.Scopes, ScopeAuditRead) ||
+		len(me.Delegated[ScopeUsersWrite]) != 1 || me.Delegated[ScopeUsersRead] != nil || me.ExpiresAt == nil {
+		t.Errorf("a person: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The session ended, the answer is 401, which is the console's cue.
+	if _, err := a.s.db.Exec(context.Background(), `UPDATE core.sessions
+		SET revoked_at = now(), revocation_reason = 'logout' WHERE sid = $1`, sid); err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(t, a.s, http.MethodGet, "/admin/me", tok, nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("after the session ended: %d", rec.Code)
+	}
+
+	stored := mintToken(t, a.s, fmt.Sprintf("me-%d", time.Now().UnixNano()), a.org, []string{ScopeConfigRead}, nil)
+	rec = call(t, a.s, http.MethodGet, "/admin/me", stored, nil)
+	me = meView{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &me)
+	if rec.Code != http.StatusOK || me.Kind != "token" || me.User != nil || !slices.Equal(me.Scopes, []string{ScopeConfigRead}) {
+		t.Errorf("a stored token: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(t, a.s, http.MethodGet, "/admin/me", "", nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("nobody: %d", rec.Code)
 	}
 }
 

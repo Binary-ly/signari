@@ -340,6 +340,11 @@ var opSchemas = map[string]opSchema{
 	"POST /admin/organizations/{orgID}/role-bindings": {http.StatusCreated, typeOf[grantRoleRequest](), object([]string{"id", "config_version"},
 		withVersion(map[string]jsonSchema{"id": uuidStr()}))},
 	"DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}": {http.StatusOK, nil, removedSchema},
+	"GET /admin/me": {http.StatusOK, nil, object([]string{"kind", "name", "org_id", "scopes", "expires_at"}, map[string]jsonSchema{
+		"kind": str(), "name": str(), "org_id": nullable(uuidStr()), "scopes": arrayOf(str()),
+		"delegated": openObject(), "expires_at": nullable(dateTime()), "client_id": str(),
+		"user": object([]string{"id", "email", "display_name"}, map[string]jsonSchema{
+			"id": uuidStr(), "email": str(), "display_name": str()})})},
 
 	"PUT /admin/organizations/{orgID}/migration-source":    {http.StatusOK, typeOf[migrationSourceRequest](), migrationSourceSchema},
 	"DELETE /admin/organizations/{orgID}/migration-source": {http.StatusOK, nil, removedSchema},

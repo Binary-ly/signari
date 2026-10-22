@@ -140,6 +140,8 @@ var summaries = map[string]string{
 	"POST /admin/organizations/{orgID}/claim-mappers":              "Release an attribute as a claim.",
 	"DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}": "Stop releasing an attribute as a claim.",
 
+	"GET /admin/me": "Who the caller is, as this request was authenticated: kind, organisation, scopes and any delegation.",
+
 	// Administrative roles (6.01).
 	"GET /admin/organizations/{orgID}/role-bindings":                "Who holds which administrative role in the organisation.",
 	"POST /admin/organizations/{orgID}/role-bindings":               "Give a person or an application a role, a user manager optionally over one group's members.",

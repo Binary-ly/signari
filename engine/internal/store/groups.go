@@ -181,8 +181,10 @@ func RemoveGroupMember(ctx context.Context, conn *pgx.Conn, orgID, groupName, us
 	return tag.RowsAffected() > 0, nil
 }
 
-// ReleaseGroupsToClient records that a client may see group membership.
-func ReleaseGroupsToClient(ctx context.Context, conn *pgx.Conn, orgID, clientID string, only []string) error {
+// ReleaseGroupsToClient records that a client may see group membership: of
+// only those groups, or of every group when only is empty. conn is the
+// command's connection or the Admin API's transaction.
+func ReleaseGroupsToClient(ctx context.Context, conn Execer, orgID, clientID string, only []string) error {
 	// A nil slice encodes as SQL NULL, not as an empty array, and the column is
 	// NOT NULL -- so "release every group" (the nil case) failed outright while
 	// "release these two" worked. The empty array is the meaningful value here:
@@ -196,4 +198,30 @@ func ReleaseGroupsToClient(ctx context.Context, conn *pgx.Conn, orgID, clientID 
 		ON CONFLICT (client_id) DO UPDATE SET only_groups = EXCLUDED.only_groups`,
 		clientID, orgID, only)
 	return err
+}
+
+// GroupReleaseOf is what a client is told of group membership: released false
+// for nothing, and otherwise the groups, every one when only is empty.
+func GroupReleaseOf(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, clientID string) (only []string, released bool, err error) {
+	err = q.QueryRow(ctx, `SELECT only_groups FROM core.client_group_release WHERE client_id = $1`,
+		clientID).Scan(&only)
+	if err == pgx.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("reading the group release: %w", err)
+	}
+	return only, true, nil
+}
+
+// StopGroupRelease tells a client of no group membership from its next token,
+// reporting whether it was told of any.
+func StopGroupRelease(ctx context.Context, tx Execer, clientID string) (bool, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.client_group_release WHERE client_id = $1`, clientID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }

@@ -208,6 +208,9 @@ func (s *Server) Routes() http.Handler {
 	route("POST /admin/users", ScopeUsersWrite, s.createUser)
 	route("POST /admin/clients", ScopeClientsWrite, s.createClient)
 	privileged("POST /admin/clients/{clientID}/rotate-secret", ScopeClientsWrite, targetClient, s.rotateClientSecret)
+	// Which groups it is told of (grouprelease.go).
+	privileged("PUT /admin/clients/{clientID}/group-release", ScopeClientsWrite, targetClient, s.putGroupRelease)
+	privileged("DELETE /admin/clients/{clientID}/group-release", ScopeClientsWrite, targetClient, s.deleteGroupRelease)
 	privileged("PATCH /admin/users/{userID}", ScopeUsersWrite, targetUser, s.patchUser)
 	privileged("DELETE /admin/users/{userID}", ScopeUsersWrite, targetUser, s.deleteUser)
 	route("GET /admin/users/{userID}/factors", ScopeUsersRead, s.listUserFactors)
@@ -274,6 +277,7 @@ func (s *Server) Routes() http.Handler {
 	// precondition had nothing to be a precondition ON.
 	route("GET /admin/clients", ScopeClientsRead, s.listClients)
 	route("GET /admin/clients/{clientID}", ScopeClientsRead, s.getClient)
+	route("GET /admin/clients/{clientID}/group-release", ScopeClientsRead, s.getGroupRelease)
 	route("GET /admin/users", ScopeUsersRead, s.listUsers)
 	route("GET /admin/users/{userID}", ScopeUsersRead, s.getUser)
 

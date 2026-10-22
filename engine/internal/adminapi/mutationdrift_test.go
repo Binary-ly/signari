@@ -398,6 +398,27 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/clients/{clientID}/group-release", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/clients/" + newPreconditionClient(t, s) + "/group-release"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"only_groups":[]}` },
+		},
+		{
+			// A client already told of every group, so there is a release to stop.
+			name: "DELETE /admin/clients/{clientID}/group-release", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				client := newPreconditionClient(t, s)
+				if _, err := s.db.Exec(context.Background(), `INSERT INTO core.client_group_release
+					(client_id, org_id, only_groups) SELECT client_id, org_id, '{}' FROM core.clients
+					WHERE client_id = $1`, client); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/clients/" + client + "/group-release"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/subjects/{subjectID}/erase", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/subjects/" + newDriftSubject(t, s) + "/erase"

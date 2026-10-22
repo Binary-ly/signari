@@ -98,13 +98,13 @@ var cliAPI = map[string]string{
 	"group create":        "POST /admin/groups",
 	"group list":          reads,
 	"group member":        "PUT /admin/groups/{groupID}/members/{userID}",
-	"group release":       pending,
+	"group release":       "PUT /admin/clients/{clientID}/group-release",
 	"group impersonation": cliOnly("deliberately not in the Admin API: a groups:write token must not be able to make anyone able to act as anyone"),
 
 	// Applications.
 	"client create":                   "POST /admin/clients",
-	"client set-keys":                 pending,
-	"client set-tls":                  pending,
+	"client set-keys":                 "PATCH /admin/clients/{clientID}",
+	"client set-tls":                  "PATCH /admin/clients/{clientID}",
 	"client set-dpop":                 "PATCH /admin/clients/{clientID}",
 	"client set-pkce":                 "PATCH /admin/clients/{clientID}",
 	"client set-logout":               "PATCH /admin/clients/{clientID}",

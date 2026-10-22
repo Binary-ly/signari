@@ -22,6 +22,9 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/clients/{clientID}", func(t *testing.T, s *Server) string {
 			return "/admin/clients/" + url.PathEscape(newPreconditionClient(t, s))
 		}},
+		{"GET /admin/clients/{clientID}/group-release", func(t *testing.T, s *Server) string {
+			return "/admin/clients/" + url.PathEscape(newPreconditionClient(t, s)) + "/group-release"
+		}},
 		{"GET /admin/config-version", func(*testing.T, *Server) string { return "/admin/config-version" }},
 		{"GET /admin/groups", func(*testing.T, *Server) string { return "/admin/groups?limit=5" }},
 		{"GET /admin/groups/{groupID}", func(t *testing.T, s *Server) string { return "/admin/groups/" + newDriftGroup(t, s) }},

@@ -144,6 +144,11 @@ var summaries = map[string]string{
 	"GET /admin/organizations/{orgID}/budgets": "The tokens and sign-ins the organisation may take a minute.",
 	"PUT /admin/organizations/{orgID}/budgets": "Set the organisation's budgets; deployment-wide tokens only.",
 
+	// Which groups an application is told of (6.07).
+	"GET /admin/clients/{clientID}/group-release":    "Which groups the application is told of in the groups claim.",
+	"PUT /admin/clients/{clientID}/group-release":    "Tell the application of these groups, or every group when none is named.",
+	"DELETE /admin/clients/{clientID}/group-release": "Tell the application of no group.",
+
 	// Its settings, the `instance` commands' (6.07).
 	"GET /admin/organizations/{orgID}/settings":   "The organisation's sign-in and session policy.",
 	"PATCH /admin/organizations/{orgID}/settings": "Change the settings named; the rest are left as they are.",

@@ -378,6 +378,12 @@ var opSchemas = map[string]opSchema{
 		[]string{"org_id", "tokens_per_minute", "sign_ins_per_minute", "tokens_default", "sign_ins_default", "config_version"},
 		withVersion(budgetsProps()))},
 	"GET /admin/organizations/{orgID}/settings": {http.StatusOK, nil, object(orgSettingsFields(), orgSettingsProps())},
+	"GET /admin/clients/{clientID}/group-release": {http.StatusOK, nil, object([]string{"client_id", "released", "only_groups"},
+		map[string]jsonSchema{"client_id": str(), "released": boolean(), "only_groups": arrayOf(str())})},
+	"PUT /admin/clients/{clientID}/group-release": {http.StatusOK, typeOf[putGroupReleaseRequest](), object(
+		[]string{"client_id", "released", "only_groups", "config_version"},
+		withVersion(map[string]jsonSchema{"client_id": str(), "released": boolean(), "only_groups": arrayOf(str())}))},
+	"DELETE /admin/clients/{clientID}/group-release": {http.StatusOK, nil, removedSchema},
 	"PATCH /admin/organizations/{orgID}/settings": {http.StatusOK, typeOf[patchOrgSettingsRequest](), object(
 		append(orgSettingsFields(), "config_version"), withVersion(orgSettingsProps()))},
 	"GET /admin/me": {http.StatusOK, nil, object([]string{"kind", "name", "org_id", "scopes", "expires_at"}, map[string]jsonSchema{

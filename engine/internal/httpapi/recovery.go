@@ -155,6 +155,11 @@ func (s *Server) beginRecovery(ctx context.Context, identifier string) error {
 	}
 	var first error
 	for _, c := range found {
+		if c.status != "active" {
+			// Waiting for approval: a reset could sign nobody in, and the page
+			// answers the same whatever is found.
+			continue
+		}
 		// Paced per account, both windows charged, before the earlier request is
 		// superseded: an account over the pace keeps the link it already has.
 		minute := s.allowRecovery(ctx, "recover:user:min:"+c.userID, recoveryPerAccountMinute, time.Minute)

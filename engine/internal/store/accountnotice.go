@@ -48,7 +48,25 @@ const (
 	// bound to (5.18). There is no account yet, so UserID is empty; LinkID
 	// names the invitation, and the token is minted as the mail goes out.
 	NoticeInvitation = "invitation"
+	// NoticeAccountApproved: a self-sign-up an administrator approved can now
+	// sign in (5.19); its sign-up page said a message would come.
+	NoticeAccountApproved = "account_approved"
 )
+
+// ApproveUser activates a pending account in tx and queues the notice telling
+// its holder, reporting whether it was pending. Any other status is left for
+// the caller: approving is only ever of a self-sign-up waiting for it.
+func ApproveUser(ctx context.Context, tx pgx.Tx, userID string) (bool, error) {
+	tag, err := tx.Exec(ctx, `UPDATE core.users SET status = 'active', updated_at = now()
+		WHERE id = $1::uuid AND status = 'pending'`, userID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	return true, EnqueueAccountNotice(ctx, tx, AccountNotice{UserID: userID, Notice: NoticeAccountApproved})
+}
 
 // AccountNotice is one queued notice.
 type AccountNotice struct {

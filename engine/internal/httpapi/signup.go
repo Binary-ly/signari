@@ -340,6 +340,9 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 	// Nothing consulted the rule's flag before, so its default of true
 	// meant nothing.
 	var verify bool
+	// And under a rule that wants an administrator to look first, pending:
+	// made, and signing nobody in until activated (5.19).
+	var pending bool
 
 	if token != "" {
 		inv, err := store.ClaimInvitation(ctx, s.db, token)
@@ -375,7 +378,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 				strings.Join(rule.AllowedDomains, ", "))
 			return
 		}
-		orgID, groups, verify = rule.OrgID, rule.DefaultGroups, rule.RequireVerify
+		orgID, groups, verify, pending = rule.OrgID, rule.DefaultGroups, rule.RequireVerify, rule.RequireApproval
 	}
 
 	// Every attribute the person may set is written, so a required one left
@@ -385,7 +388,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 			attrs[f.Name] = ""
 		}
 	}
-	userID, groups, err := s.createAccount(ctx, orgID, email, password, groups, invitationID == "", verify, attrs)
+	userID, groups, err := s.createAccount(ctx, orgID, email, password, groups, invitationID == "", verify, pending, attrs)
 	if err != nil {
 		if invitationID != "" {
 			// Give it back. A duplicate address or a refused password should not
@@ -417,13 +420,14 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 		Type: "user.created", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx),
 		Detail: map[string]any{
-			"route":  map[bool]string{true: "invitation", false: "self-signup"}[invitationID != ""],
-			"groups": groups,
-			"verify": verify,
+			"route":   map[bool]string{true: "invitation", false: "self-signup"}[invitationID != ""],
+			"groups":  groups,
+			"verify":  verify,
+			"pending": pending,
 		},
 	})
 
-	done := map[string]any{"Email": email, "Verify": verify}
+	done := map[string]any{"Email": email, "Verify": verify, "Pending": pending}
 	if authz := r.PostFormValue("authz"); authz != "" {
 		// Signed in from here, the application that asked for the account gets
 		// its answer: the prompt-create spec's §4.1 has the flow succeed only
@@ -446,10 +450,11 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 // That is the same reason directory and SCIM sync may not reach such a group.
 // An invitation names one person and comes from the operator, so it is left to
 // the operator. verify records that the address must be proved before the
-// account is signed in (store.RequireEmailVerification). attrs are the
-// attributes the person set on the form (store.SetOwnAttributes).
+// account is signed in (store.RequireEmailVerification). pending makes it wait
+// for an administrator to activate it (5.19). attrs are the attributes the
+// person set on the form (store.SetOwnAttributes).
 func (s *Server) createAccount(ctx context.Context, orgID, email, password string,
-	groups []string, selfSignup, verify bool, attrs map[string]string) (string, []string, error) {
+	groups []string, selfSignup, verify, pending bool, attrs map[string]string) (string, []string, error) {
 
 	handle := make([]byte, 64)
 	if _, err := io.ReadFull(rand.Reader, handle); err != nil {
@@ -469,8 +474,9 @@ func (s *Server) createAccount(ctx context.Context, orgID, email, password strin
 
 	var userID string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO core.users (org_id, user_handle, email)
-		VALUES ($1::uuid, $2, $3) RETURNING id::text`, orgID, handle, email).Scan(&userID)
+		INSERT INTO core.users (org_id, user_handle, email, status)
+		VALUES ($1::uuid, $2, $3, CASE WHEN $4 THEN 'pending' ELSE 'active' END) RETURNING id::text`,
+		orgID, handle, email, pending).Scan(&userID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return "", nil, errAddressTaken

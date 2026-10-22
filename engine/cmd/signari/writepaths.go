@@ -1093,6 +1093,42 @@ func userUnlock(ctx context.Context, conn *pgx.Conn, orgID, email string) error 
 	return nil
 }
 
+// userApprove activates a self-sign-up waiting for approval (0186), and the
+// engine tells the person they can sign in.
+func userApprove(ctx context.Context, conn *pgx.Conn, orgID, email string) error {
+	if email == "" {
+		return fmt.Errorf("give -email (and -org where the address is in more than one)")
+	}
+	userID, userOrg, err := oneInOrg(ctx, conn, "users",
+		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	approved, err := store.ApproveUser(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	if !approved {
+		return fmt.Errorf("%s is not waiting for approval; only a pending self-sign-up can be approved", email)
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "admin.user_approved", OrgID: userOrg, SubjectID: userID,
+		Detail: map[string]any{"via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the approval: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: approved; they can sign in now, and the engine's outbox tells them so\n", email)
+	return nil
+}
+
 // instanceLoginThrottle sets an organisation's sign-in backoff (0169).
 func instanceLoginThrottle(ctx context.Context, conn *pgx.Conn, orgID string, free int, max time.Duration) error {
 	if orgID == "" || (free == 0 && max == 0) {

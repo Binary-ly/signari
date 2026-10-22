@@ -142,6 +142,7 @@ commands:
   version             print the release, commit, toolchain, schema and its pin
   instance create     create an instance and its first signing keys
   user create         create a user with a password
+  user approve        let a self-sign-up waiting for approval sign in
   client create       register an OAuth client
   client set-keys     switch a client to private_key_jwt with its public JWKS
   client set-tls      authenticate a client by TLS certificate (RFC 8705)
@@ -501,6 +502,8 @@ func run(args []string) (err error) {
 	signupVerify := fs.Bool("verify-email", true,
 		"`signup enable`: a new account proves its address with a code before its first sign-in; "+
 			"-verify-email=false lets it in on an address nobody has proved")
+	signupApproval := fs.Bool("require-approval", false,
+		"`signup enable`: a new account waits, pending, for an administrator to approve it")
 	brandName := fs.String("brand-name", "", "product name shown on sign-in pages")
 	brandLogo := fs.String("brand-logo", "", "https URL of the logo shown above the sign-in form")
 	brandSupport := fs.String("brand-support", "", "https URL offered when someone cannot get in")
@@ -924,6 +927,8 @@ func run(args []string) (err error) {
 		return userRemoveFactor(ctx, conn, *orgID, *email, *factorKind, *factorID)
 	case "user unlock":
 		return userUnlock(ctx, conn, *orgID, *email)
+	case "user approve":
+		return userApprove(ctx, conn, *orgID, *email)
 	case "user passkey-link":
 		return userPasskeyLink(ctx, conn, *orgID, *email, *linkExpires)
 	case "instance login-throttle":
@@ -1281,7 +1286,7 @@ func run(args []string) (err error) {
 	case "invite revoke":
 		return inviteRevoke(ctx, conn, *orgID, *inviteID)
 	case "signup enable":
-		return signupEnable(ctx, conn, *orgID, *signupDomains, *inviteGroups, *signupVerify)
+		return signupEnable(ctx, conn, *orgID, *signupDomains, *inviteGroups, *signupVerify, *signupApproval)
 	case "signup disable":
 		return signupDisable(ctx, conn, *orgID)
 	case "signup show":
@@ -7087,8 +7092,9 @@ func inviteList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 }
 
 // signupEnable turns on open self-signup for an organisation. verify is
-// whether a new account proves its address before its first sign-in (0177).
-func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups string, verify bool) error {
+// whether a new account proves its address before its first sign-in (0177);
+// approval, whether it waits for an administrator to activate it (0186).
+func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups string, verify, approval bool) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
@@ -7103,13 +7109,15 @@ func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups st
 		d = []string{}
 	}
 	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.signup_rules (org_id, allowed_domains, default_groups, require_verified_email)
-		VALUES ($1::uuid, $2, $3, $4)
+		INSERT INTO core.signup_rules (org_id, allowed_domains, default_groups, require_verified_email,
+		                               require_approval)
+		VALUES ($1::uuid, $2, $3, $4, $5)
 		ON CONFLICT (org_id) DO UPDATE SET
 			allowed_domains = EXCLUDED.allowed_domains,
 			default_groups = EXCLUDED.default_groups,
 			require_verified_email = EXCLUDED.require_verified_email,
-			updated_at = now()`, orgID, d, splitList(groups), verify); err != nil {
+			require_approval = EXCLUDED.require_approval,
+			updated_at = now()`, orgID, d, splitList(groups), verify, approval); err != nil {
 		return err
 	}
 	if len(d) == 0 {
@@ -7121,7 +7129,16 @@ func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups st
 		fmt.Printf("  new accounts join: %s\n", strings.Join(g, ", "))
 	}
 	printSignupVerify(verify)
+	printSignupApproval(approval)
 	return nil
+}
+
+// printSignupApproval says whether a new account waits for an administrator.
+func printSignupApproval(approval bool) {
+	if approval {
+		fmt.Println("  a new account waits, pending, until an administrator approves it with " +
+			"`signari user approve` or the Admin API")
+	}
 }
 
 // printSignupVerify says what the rule asks of a new account's address.
@@ -7155,11 +7172,11 @@ func signupShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		return fmt.Errorf("give -org")
 	}
 	var domains, groups []string
-	var verify bool
+	var verify, approval bool
 	err := conn.QueryRow(ctx, `
-		SELECT allowed_domains, default_groups, require_verified_email
+		SELECT allowed_domains, default_groups, require_verified_email, require_approval
 		  FROM core.signup_rules WHERE org_id = $1::uuid`, orgID).
-		Scan(&domains, &groups, &verify)
+		Scan(&domains, &groups, &verify, &approval)
 	if err != nil {
 		fmt.Println("self-signup is off; accounts are created by invitation or by an administrator")
 		return nil
@@ -7173,6 +7190,7 @@ func signupShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		fmt.Printf("  new accounts join: %s\n", strings.Join(groups, ", "))
 	}
 	printSignupVerify(verify)
+	printSignupApproval(approval)
 	return nil
 }
 

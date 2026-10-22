@@ -32,11 +32,13 @@ class EngineUsersTable
                 TextColumn::make('status')
                     ->label(__('Status'))
                     ->badge()
-                    ->formatStateUsing(fn (string $state): string => __($state))
+                    ->formatStateUsing(fn (string $state): string => $state === 'pending'
+                        ? __('Waiting for approval') : __($state))
                     ->color(fn (string $state): string => match ($state) {
                         'active'      => 'success',
                         'deactivated' => 'danger',
                         'locked'      => 'warning',
+                        'pending'     => 'warning',
                         default       => 'gray',
                     })
                     ->sortable(),
@@ -81,6 +83,8 @@ class EngineUsersTable
                     'active'      => __('Active'),
                     'deactivated' => __('Deactivated'),
                     'locked'      => __('Locked'),
+                    // A self-sign-up under a rule that requires approval.
+                    'pending'     => __('Waiting for approval'),
                 ]),
 
                 Filter::make('needs_rehash')
@@ -166,15 +170,23 @@ class EngineUsersTable
      */
     private static function toggleActiveAction(): Action
     {
+        // A pending account is a self-sign-up waiting for approval: activating
+        // it approves it, and the engine emails the person that they can sign in.
         return Action::make('toggleActive')
-            ->label(fn ($record): string => $record->status === 'active' ? __('Deactivate') : __('Reactivate'))
+            ->label(fn ($record): string => match ($record->status) {
+                'active'  => __('Deactivate'),
+                'pending' => __('Approve'),
+                default   => __('Reactivate'),
+            })
             ->icon(fn ($record): string => $record->status === 'active'
                 ? 'heroicon-m-no-symbol' : 'heroicon-m-check-circle')
             ->color(fn ($record): string => $record->status === 'active' ? 'danger' : 'success')
             ->requiresConfirmation()
-            ->modalDescription(fn ($record): string => $record->status === 'active'
-                ? __('They will be signed out of every application immediately, not just prevented from signing in again.')
-                : __('They will be able to sign in again. Existing sessions were already ended and do not come back.'))
+            ->modalDescription(fn ($record): string => match ($record->status) {
+                'active'  => __('They will be signed out of every application immediately, not just prevented from signing in again.'),
+                'pending' => __('They signed up themselves. Approved, they can sign in, and they are told so by email.'),
+                default   => __('They will be able to sign in again. Existing sessions were already ended and do not come back.'),
+            })
             ->action(function ($record): void {
                 try {
                     $r = EngineAdminApi::fromConfig()
@@ -187,7 +199,11 @@ class EngineUsersTable
                 }
                 $ended = (int) ($r['sessions_ended'] ?? 0);
                 Notification::make()
-                    ->title($record->status === 'active' ? __('User deactivated') : __('User reactivated'))
+                    ->title(match ($record->status) {
+                        'active'  => __('User deactivated'),
+                        'pending' => __('User approved'),
+                        default   => __('User reactivated'),
+                    })
                     // trans_choice, not "session(s)": the same defect the
                     // front-channel logout page had, and wrong in English at one.
                     ->body($ended > 0 ? self::endedSessions($ended) : __('No sessions were open.'))

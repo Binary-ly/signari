@@ -1,7 +1,8 @@
 {{define "title"}}{{T "signupdone.title"}}{{end}}
 {{define "content"}}
 <h1>{{T "signupdone.title"}}</h1>
+{{if .Pending}}<p>{{T "signupdone.pending" .}}</p>{{else}}
 <p>{{T "signupdone.body" .}}</p>
 {{if .Verify}}<p>{{T "signupdone.verify" .}}</p>{{end}}
-<p><a href="{{if .SignIn}}{{.SignIn}}{{else}}/login{{end}}">{{T "common.signin"}}</a></p>
+<p><a href="{{if .SignIn}}{{.SignIn}}{{else}}/login{{end}}">{{T "common.signin"}}</a></p>{{end}}
 {{end}}

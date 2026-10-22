@@ -2060,6 +2060,33 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 
 	ctx := r.Context()
 
+	// Only an active account is signed in, decided here for every way in
+	// rather than by each lookup remembering. A provider's sign-in found its
+	// account by the link alone and came here for a deactivated one, which
+	// wrote a session and a login.succeeded that the per-request check then
+	// treated as nobody (ADR-007). A self-sign-up waiting for approval (5.19)
+	// has proved its own credential, so it is told why.
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM core.users WHERE id = $1::uuid`, userID).Scan(&status); err != nil {
+		s.log.Error("reading the account's status at sign-in", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if status != "active" {
+		_ = tx.Rollback(ctx)
+		s.clearPending(w)
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx), Detail: map[string]any{"reason": "account_" + status},
+		})
+		msg := "You cannot sign in at the moment. Please contact your administrator."
+		if status == "pending" {
+			msg = s.tr(r).Text("login.pending")
+		}
+		s.renderLogin(w, r, authzQuery, msg)
+		return
+	}
+
 	// Prompts, before the session exists.
 	//
 	// The check lives HERE rather than at each of the eight places that sign
@@ -2294,6 +2321,10 @@ const dummyHash = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHR2YWx1ZQ$RdescudvJCs
 // credential is one account a sign-in name could mean.
 type credential struct {
 	userID, orgID, hash string
+	// status is active or pending: a self-sign-up waiting for approval is
+	// found, so that its own correct password is answered by why it cannot
+	// sign in yet (completeSignIn) rather than by "wrong password".
+	status string
 }
 
 // lookupCredentials finds the accounts an identifier names: in orgID when it is
@@ -2307,11 +2338,13 @@ type credential struct {
 func (s *Server) lookupCredentials(ctx context.Context, identifier, orgID string) ([]credential, error) {
 	// The status check is in the query: a deactivated user must not be able to
 	// sign in, and doing it here means there is no window where a caller forgets.
+	// A pending one is found, and refused by completeSignIn once its password
+	// is right, with the reason (5.19); recovery passes over it.
 	rows, err := s.db.Query(ctx, `
-		SELECT u.id::text, u.org_id::text, pc.hash
+		SELECT u.id::text, u.org_id::text, pc.hash, u.status
 		FROM core.users u
 		JOIN core.password_credentials pc ON pc.user_id = u.id
-		WHERE u.status = 'active'
+		WHERE u.status IN ('active', 'pending')
 		  AND ($2 = '' OR u.org_id::text = $2)
 		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))
 		ORDER BY u.org_id
@@ -2323,7 +2356,7 @@ func (s *Server) lookupCredentials(ctx context.Context, identifier, orgID string
 	var out []credential
 	for rows.Next() {
 		var c credential
-		if err := rows.Scan(&c.userID, &c.orgID, &c.hash); err != nil {
+		if err := rows.Scan(&c.userID, &c.orgID, &c.hash, &c.status); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

@@ -313,6 +313,9 @@ type SignupRule struct {
 	AllowedDomains []string
 	DefaultGroups  []string
 	RequireVerify  bool
+	// RequireApproval makes a self-sign-up pending until an administrator
+	// activates it (0186).
+	RequireApproval bool
 }
 
 // LoadSignupRule returns the rule, or nil when the organisation does not accept
@@ -321,9 +324,9 @@ func LoadSignupRule(ctx context.Context, db *pgxpool.Pool, orgID string) (*Signu
 	var r SignupRule
 	r.OrgID = orgID
 	err := db.QueryRow(ctx, `
-		SELECT allowed_domains, default_groups, require_verified_email
+		SELECT allowed_domains, default_groups, require_verified_email, require_approval
 		  FROM core.signup_rules WHERE org_id = $1::uuid`, orgID).
-		Scan(&r.AllowedDomains, &r.DefaultGroups, &r.RequireVerify)
+		Scan(&r.AllowedDomains, &r.DefaultGroups, &r.RequireVerify, &r.RequireApproval)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil

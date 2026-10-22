@@ -81,6 +81,21 @@ want, so it appears in the shell history of whoever did it.
 "Anyone may sign up" is almost never what an organisation means. "Anyone with an
 `@acme.com` address" usually is, and a checkbox cannot express the difference.
 
+### Approval before the first sign-in
+
+`signup enable -require-approval` keeps every account self-signup makes
+**pending** until an administrator lets it in. The account exists and holds its
+password, and signs nobody in: every way in (the sign-in form, an emailed code,
+a passkey, LDAP and RADIUS binds, a reset link) reads `status = 'active'`. The
+sign-up page says the account waits for approval, and offers no sign-in. An
+administrator approves it with `signari user approve -email <addr>`, with the
+Admin API's `PATCH /admin/users/{userID}` and `active: true`, or with the
+console's **Approve**. The person is then told by mail that they can sign in.
+Accounts made by invitation or by an administrator are never pending: somebody
+already chose them. `user.created` records `pending`, so a subscription to it
+([events](events.md)) can tell whoever approves. Until October 2026 an
+organisation that wanted to look first could only turn self-signup off.
+
 ### The address is proved before the first sign-in
 
 A domain in the rule is only what somebody typed until a message sent to the

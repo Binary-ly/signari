@@ -50,6 +50,8 @@ func (s *Server) DeliverAccountNotice(ctx context.Context, n store.AccountNotice
 		key = "federation.linked"
 	case store.NoticeProviderUnlinked:
 		key = "federation.unlinked"
+	case store.NoticeAccountApproved:
+		key = "account.approved"
 	default:
 		return fmt.Errorf("an account notice of no known kind %q", n.Notice)
 	}

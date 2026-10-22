@@ -260,6 +260,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 
 	var orgID string
 	var sessionsEnded int
+	var approved bool
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
 			`SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID); err != nil {
@@ -273,6 +274,14 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.Active != nil {
+			// Activating a self-sign-up that waits for approval approves it,
+			// and tells the person, as the sign-up page said it would (5.19).
+			if *req.Active {
+				var err error
+				if approved, err = store.ApproveUser(ctx, tx, userID); err != nil {
+					return err
+				}
+			}
 			status := "active"
 			if !*req.Active {
 				status = "deactivated"
@@ -459,6 +468,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			// verified address and when.
 			Detail: map[string]any{
 				"active_set":             req.Active != nil,
+				"approved":               approved,
 				"password_set":           req.Password != nil,
 				"must_change":            req.RequirePasswordChange != nil && *req.RequirePasswordChange,
 				"sessions_ended":         sessionsEnded,

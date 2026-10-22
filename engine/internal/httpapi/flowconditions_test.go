@@ -23,7 +23,7 @@ func TestEveryConditionAFlowCanUseIsAnswered(t *testing.T) {
 
 	s := &Server{}
 	ctx := context.Background()
-	compare(t, flow.Enrolment, stateKeys(s.enrolmentFacts(ctx, "192.0.2.1:1")))
+	compare(t, flow.Enrolment, stateKeys(s.enrolmentFacts(ctx, "192.0.2.1:1", "")))
 	compare(t, flow.Recovery, stateKeys(s.recoveryFacts(ctx, "192.0.2.1:1")))
 	compare(t, flow.Unenrolment, stateKeys(unenrolmentFacts(nil)))
 }

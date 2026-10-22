@@ -143,6 +143,7 @@
   "signup.domains": "Addresses at: {Domains}",
   "signup.passwordhint": "At least 8 characters. You can add a passkey once you are in.",
   "signup.submit": "Create account",
+  "signup.invitationonly": "Accounts here are created by invitation. Open the link in the invitation you were sent.",
   "signup.notoffered": "This application asked to create an account, and accounts cannot be created here. Sign in with the account you have.",
 
   "signupdone.title": "Account created",

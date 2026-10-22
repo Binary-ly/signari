@@ -84,6 +84,17 @@ const (
 	// StageCreateUser writes a new account. Enrolment only.
 	StageCreateUser StageName = "create_user"
 
+	// StageInvitation, in an enrolment flow, lets a sign-up through only with
+	// an invitation that is still good (5.24): sign-up by invitation alone,
+	// whatever self-sign-up rule the organisation has. Not proving: holding a
+	// link proves nobody's identity.
+	StageInvitation StageName = "invitation"
+
+	// StageRedirect ends an enrolment or a recovery by sending the browser to
+	// the step's `to`, an https URL or a path on this server checked when the
+	// file is read (5.24). Terminal, like done: it signs nobody in.
+	StageRedirect StageName = "redirect"
+
 	// StageSession issues the session. Terminal.
 	StageSession StageName = "session"
 
@@ -105,7 +116,8 @@ var allStages = []StageName{
 	StagePassword, StagePasskey, StageMFA, StageEmailOTP, StageSMSOTP,
 	StageCertificate, StageKerberos, StageFederated, StageDelegated,
 	StageConsent, StagePrompt, StagePasswordChange, StageEnrolMFA, StageVerifyEmail, StageCreateUser,
-	StageSession, StageDeny, StageDone,
+	StageInvitation,
+	StageSession, StageDeny, StageDone, StageRedirect,
 }
 
 // provingStages establish an authenticated subject.
@@ -158,7 +170,7 @@ func (s StageName) known() bool {
 }
 
 func (s StageName) terminal() bool {
-	return s == StageSession || s == StageDeny || s == StageDone
+	return s == StageSession || s == StageDeny || s == StageDone || s == StageRedirect
 }
 
 // proves reports whether this stage establishes a subject for a given flow.
@@ -239,6 +251,10 @@ const (
 	// factor (5.16). Single-factor, and weaker than a password against anybody
 	// who reads the person's mail, so it signs in only where a flow says so.
 	CondProvedByEmail Condition = "proved_by_email"
+
+	// CondInvited: the sign-up carries an invitation that is still good
+	// (5.24), so a flow can ask less of invited people than of anybody.
+	CondInvited Condition = "invited"
 )
 
 var allConditions = []Condition{
@@ -249,7 +265,7 @@ var allConditions = []Condition{
 	CondClientRequiresMFA, CondKerberosAvailable, CondMigrationPending,
 	CondFederatedSource, CondEmailVerificationPending,
 	CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
-	CondProvedByEmail,
+	CondProvedByEmail, CondInvited,
 }
 
 // answered is which conditions each journey this engine drives can evaluate.
@@ -278,7 +294,7 @@ var answered = map[Designation][]Condition{
 	},
 	// No account exists yet, so nothing is pending for it: false is the
 	// answer, not the absence of one.
-	Enrolment: {CondCaptchaRequired, CondPromptsPending},
+	Enrolment: {CondCaptchaRequired, CondPromptsPending, CondInvited},
 	Recovery:  {CondCaptchaRequired},
 	// Which way the person signed in to reach the page, from the session.
 	Unenrolment: {CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
@@ -311,10 +327,10 @@ var drivable = map[Designation][]StageName{
 		StageIdentify, StageCaptcha, StagePassword, StagePasskey, StageKerberos, StageFederated,
 		StageConsent, StageEnrolMFA, StageVerifyEmail, StageEmailOTP,
 	},
-	Enrolment: {StageCaptcha, StagePrompt, StageCreateUser, StageDeny, StageDone},
+	Enrolment: {StageCaptcha, StagePrompt, StageInvitation, StageCreateUser, StageDeny, StageDone, StageRedirect},
 	Recovery: {
 		StageCaptcha, StageIdentify, StageEmailOTP, StageMFA, StagePasswordChange,
-		StageDeny, StageDone, StageSession,
+		StageDeny, StageDone, StageSession, StageRedirect,
 	},
 	// The proving stages are settled by the recent sign-in the page requires,
 	// each only by its own proof, as at sign-in; done deletes the account.

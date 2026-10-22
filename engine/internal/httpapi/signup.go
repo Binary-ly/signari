@@ -141,8 +141,16 @@ func (s *Server) signupOrg(ctx context.Context, token string) string {
 // enrolmentFacts answers the conditions an enrolment flow may branch on:
 // flow.Answered(flow.Enrolment), which TestEveryConditionAFlowCanUseIsAnswered
 // holds this to.
-func (s *Server) enrolmentFacts(ctx context.Context, remoteAddr string) flow.State {
+func (s *Server) enrolmentFacts(ctx context.Context, remoteAddr, invite string) flow.State {
+	// invited: a token that would still open its invitation, read without
+	// spending it (create_user claims it, or the invitation stage refuses).
+	invited := false
+	if invite != "" && s.db != nil {
+		_, err := store.PeekInvitation(ctx, s.db, invite)
+		invited = err == nil
+	}
 	return flow.State{
+		string(flow.CondInvited): invited,
 		// Presence of the captcha stage in the plan already encodes "a challenge is
 		// required": the default stage is `{stage: captcha, when: captcha_required}`,
 		// so Plan includes it exactly when it would have run before.
@@ -195,14 +203,17 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 	// sequence below runs so a configuration read cannot stop anyone signing up.
 	orgID, _ := s.defaultOrg(ctx)
 	fl := s.flowFor(ctx, s.db, orgID, flow.Enrolment)
-	state := s.enrolmentFacts(ctx, r.RemoteAddr)
+	state := s.enrolmentFacts(ctx, r.RemoteAddr, r.PostFormValue("invite"))
 
 	plan := []flow.StageName{flow.StageCaptcha, flow.StageCreateUser, flow.StageDone}
 	if fl != nil {
 		plan = fl.Plan(state)
 	}
 
-	created := false
+	// done is the finished page create_user leaves for the terminal to show;
+	// nil until an account is made. The terminal writes the response, so a
+	// flow can end a sign-up somewhere other than that page (5.24).
+	var done map[string]any
 	for _, stage := range plan {
 		switch stage {
 		case flow.StageCaptcha:
@@ -216,17 +227,38 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 			// Nothing to put to a subject who does not exist yet. Passing is honest:
 			// the walk visited the stage and found nothing outstanding.
 			continue
+		case flow.StageInvitation:
+			// Sign-up by invitation only (5.24): a good invitation, or no further.
+			// What the stage reads is what enrolmentFacts answered `invited` from.
+			if !state.Holds(string(flow.CondInvited)) {
+				csrf, _ := s.csrfToken(w, r)
+				s.renderPageStatus(w, r, http.StatusForbidden, "signup", s.captchaFields(r, map[string]any{
+					"Error": s.tr(r).T("signup.invitationonly"), "CSRF": csrf, "CSRFField": csrfFormField,
+				}))
+				return
+			}
 		case flow.StageCreateUser:
-			s.enrolCreateUser(w, r) // writes the terminal response, success or failure
-			created = true
+			var ok bool
+			if done, ok = s.enrolCreateUser(w, r); !ok {
+				return // refused, and the form re-rendered saying why
+			}
 		case flow.StageDeny:
 			// An operator closing sign-up through their flow. Refused plainly.
 			writeError(w, http.StatusForbidden, "signup_closed",
 				"sign-up is not open here")
 			return
-		case flow.StageDone:
-			// The ordinary terminal. When it follows create_user the response is
-			// already written; reaching it with nothing created is caught below.
+		case flow.StageDone, flow.StageRedirect:
+			if done == nil {
+				break // nothing created: caught below
+			}
+			// A sign-up an application asked for (prompt=create) still ends on
+			// the page that leads back to it: the application is owed its answer.
+			if target := fl.RedirectTarget(); stage == flow.StageRedirect && done["SignIn"] == nil {
+				http.Redirect(w, r, target, http.StatusSeeOther)
+				return
+			}
+			s.renderPage(w, r, "signupdone", done)
+			return
 		default:
 			// A stage this engine cannot execute at enrolment. enrol_mfa -- forced
 			// second-factor enrolment, 9q option 3 -- is the realistic one. Refusing
@@ -241,11 +273,8 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 					"engine cannot yet run")
 			return
 		}
-		if created {
-			return
-		}
 	}
-	if !created {
+	if done == nil {
 		// A flow that never reaches create_user makes no account. Safety permits it,
 		// but it is not a sign-up, and silently returning the form would loop.
 		s.log.Error("the enrolment flow has no create_user stage", "flow", flowNameOf(fl),
@@ -292,9 +321,10 @@ func (s *Server) enrolCaptcha(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // enrolCreateUser runs the create_user stage: it validates the submission,
-// resolves the invitation or signup rule, creates the account, and writes the
-// terminal response.
-func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
+// resolves the invitation or signup rule, and creates the account. Made, it
+// returns the finished page's data for the flow's terminal to show or go past
+// (5.24); refused, it has written the form back with why, and ok is false.
+func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done map[string]any, ok bool) {
 	ctx := r.Context()
 	email := strings.ToLower(strings.TrimSpace(r.PostFormValue("email")))
 	password := r.PostFormValue("password")
@@ -427,14 +457,14 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	done := map[string]any{"Email": email, "Verify": verify, "Pending": pending}
+	done = map[string]any{"Email": email, "Verify": verify, "Pending": pending}
 	if authz := r.PostFormValue("authz"); authz != "" {
 		// Signed in from here, the application that asked for the account gets
 		// its answer: the prompt-create spec's §4.1 has the flow succeed only
 		// with an id_token, so creating the account is not the end of it.
 		done["SignIn"] = "/login?authz=" + url.QueryEscape(authz)
 	}
-	s.renderPage(w, r, "signupdone", done)
+	return done, true
 }
 
 // createAccount makes the user, the password credential and the memberships.

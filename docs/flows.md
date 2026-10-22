@@ -166,11 +166,12 @@ Proving — establish the subject:
 Not proving:
 
 `identify`, `captcha`, `consent`, `prompt`, `password_change`, `enrol_mfa`,
-`verify_email`, `create_user`
+`verify_email`, `create_user`, `invitation`
 
 Terminal — a flow ends in exactly one, and it must be last:
 
-`session` (issues one), `done` (finished, no session), `deny` (refused)
+`session` (issues one), `done` (finished, no session), `redirect` (finished, no
+session, and the browser sent to the step's `to`), `deny` (refused)
 
 `identify` sitting in the second list is the whole design. `password_change` is
 there too, and for a reason worth stating: it takes a password, but it *sets* a
@@ -186,14 +187,44 @@ stage.
 | `on:` | stages it runs |
 |---|---|
 | `authentication` | `mfa`, `enrol_mfa`, `verify_email`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated`, `email_otp` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the emailed code's page, the authorization endpoint |
-| `enrolment` | `captcha`, `prompt`, `create_user`, `deny`, `done` |
-| `recovery` | `captcha`, `identify`, `email_otp`, `mfa`, `password_change`, `deny`, `done`, `session` |
+| `enrolment` | `captcha`, `prompt`, `invitation`, `create_user`, `deny`, `done`, `redirect` |
+| `recovery` | `captcha`, `identify`, `email_otp`, `mfa`, `password_change`, `deny`, `done`, `session`, `redirect` |
 | `unenrolment` | `password`, `passkey`, `kerberos`, `federated`, `email_otp`, settled by the recent sign-in that reached `/account/delete`, each only by its own proof; `deny`; `done`, where the account is erased |
 
 The rest wait for a driver: `delegated` and `certificate` (a source the flow
 would have to pin), and `sms_otp` as a first factor at sign-in.
 The safety rules still know them, so a file naming one is refused for the right
 reason rather than read as a typo.
+
+### Sign-up by invitation, and ending somewhere else
+
+`invitation` lets a sign-up through only with an invitation that is still good,
+whatever self-signup rule the organisation has. The `invited` condition says
+whether this one carries one, so invited people can be asked less:
+
+```yaml
+on: enrolment
+stages:
+  - invitation          # sign-up by invitation alone
+  - create_user
+  - {stage: redirect, to: "https://intranet.example.com/welcome"}
+```
+
+```yaml
+  - {stage: captcha, when: not invited}
+```
+
+`redirect` ends an enrolment or a recovery by sending the browser to `to`
+instead of the built-in page: after a sign-up, to an onboarding page; after a
+reset, back to the application. `to` is checked when the file is read. It must
+be an `https` URL with no user information, or a path on this server starting
+with a single slash. Another scheme, `//elsewhere`, and `to` on any stage but a
+redirect are refused by name. A sign-up an application asked for with
+`prompt=create` still ends on the page that leads back to that application,
+which is owed its answer. A sign-in may not end in a redirect, since its end is
+the session the parked request resumes from. Nor may an unenrolment, whose
+`done` is where the account is erased; that `done` is also the stage that
+deletes a user, so the language has no second one.
 
 ### Requiring somebody to enrol a second factor
 
@@ -321,7 +352,7 @@ A `when:` is one condition, optionally negated with `not`. There is no `and` or
 `network_trusted`, `client_requires_mfa`, `kerberos_available`,
 `migration_pending`, `federated_source`, `email_verification_pending`,
 `proved_by_password`, `proved_by_passkey`, `proved_by_kerberos`,
-`proved_by_federated`, `proved_by_email`
+`proved_by_federated`, `proved_by_email`, `invited`
 
 The list is closed, and a condition outside it is refused at parse. That is what
 makes a typo an error rather than a stage that silently never runs. It is also
@@ -338,7 +369,7 @@ apply` and by the engine's load alike.
 | `on:` | conditions it evaluates |
 |---|---|
 | `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`, `risk_elevated`, `email_verification_pending`, and the five `proved_by_*`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
-| `enrolment` | `captcha_required`, `prompts_pending` (always false: there is no account yet to have one) |
+| `enrolment` | `captcha_required`, `invited` (the sign-up carries an invitation that is still good), `prompts_pending` (always false: there is no account yet to have one) |
 | `recovery` | `captcha_required` |
 | `unenrolment` | the five `proved_by_*`: which way the person signed in to reach the page |
 

@@ -676,6 +676,13 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		s.completeSignIn(w, r, stx, req.UserID, req.OrgID, amr, "")
 		return
 	}
+	// Or to the operator's page (5.24), where the flow ends in a redirect.
+	if planHasStage(plan, flow.StageRedirect) {
+		if target := s.flowFor(ctx, s.db, req.OrgID, flow.Recovery).RedirectTarget(); target != "" {
+			http.Redirect(w, r, target, http.StatusSeeOther)
+			return
+		}
+	}
 	s.renderPage(w, r, "done", map[string]any{})
 }
 

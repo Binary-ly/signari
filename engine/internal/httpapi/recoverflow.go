@@ -95,6 +95,9 @@ var recoveryDrivableStages = map[flow.StageName]bool{
 	flow.StagePasswordChange: true,
 	flow.StageDone:           true,
 	flow.StageSession:        true,
+	// Since 5.24 the third terminal: after the reset, the browser goes to the
+	// flow's `to` instead of the built-in page.
+	flow.StageRedirect: true,
 }
 
 // recoveryPlan returns the stages in force, and whether every one of them can be
@@ -186,7 +189,7 @@ func recoveryDenied(plan []flow.StageName) bool {
 		switch stage {
 		case flow.StageDeny:
 			return true
-		case flow.StageDone, flow.StageSession:
+		case flow.StageDone, flow.StageSession, flow.StageRedirect:
 			// A terminal was reached first, so the deny belongs to a branch this
 			// walk did not take.
 			return false

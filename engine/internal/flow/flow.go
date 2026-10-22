@@ -2,6 +2,7 @@ package flow
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -108,6 +109,10 @@ type Flow struct {
 type Step struct {
 	Stage StageName `yaml:"stage,omitempty"`
 	When  string    `yaml:"when,omitempty"`
+	// To is where a redirect stage sends the browser, and only a redirect
+	// takes one: an https URL with no user information, or a path on this
+	// server. Read from the operator's file, never from a request.
+	To string `yaml:"to,omitempty"`
 	// OneOf is a set of branches of which exactly one runs. The engine takes the
 	// first whose condition holds; the last branch must be unconditional, so
 	// that "exactly one" is a fact rather than a hope.
@@ -163,7 +168,7 @@ func (s *Step) UnmarshalYAML(n *yaml.Node) error {
 		s.Stage = StageName(name)
 		return nil
 	}
-	if err := checkKeys(n, "stage", "when", "one_of"); err != nil {
+	if err := checkKeys(n, "stage", "when", "one_of", "to"); err != nil {
 		return err
 	}
 	// A named type, so decoding the mapping does not re-enter this method.
@@ -287,9 +292,14 @@ func (fl *Flow) validate() error {
 			return fmt.Errorf("step %d sets both `stage` and `one_of`; it can be one or the other", i+1)
 		case st.Stage == "" && len(st.OneOf) == 0:
 			return fmt.Errorf("step %d names no stage", i+1)
+		case st.Stage == "" && st.To != "":
+			return fmt.Errorf("step %d gives `to` to a one_of; only a redirect stage takes one", i+1)
 		case st.Stage != "":
 			if !st.Stage.known() {
 				return fmt.Errorf("step %d: %q is not a stage (%s)", i+1, st.Stage, knownStages())
+			}
+			if err := checkRedirectTarget(st); err != nil {
+				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
 			}
 			if err := checkCondition(st.When); err != nil {
 				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
@@ -331,8 +341,8 @@ func (fl *Flow) validate() error {
 	for _, name := range last.stageNames() {
 		if !name.terminal() {
 			return fmt.Errorf("ends with %s, which is not a terminal stage; a flow must "+
-				"end in %s, %s or %s so that every path has a stated outcome",
-				name, StageSession, StageDone, StageDeny)
+				"end in %s, %s, %s or %s so that every path has a stated outcome",
+				name, StageSession, StageDone, StageRedirect, StageDeny)
 		}
 	}
 
@@ -350,6 +360,48 @@ func (fl *Flow) validate() error {
 		return err
 	}
 	return fl.checkOneProof()
+}
+
+// checkRedirectTarget holds a redirect to a `to` the browser can be sent to
+// safely, and every other stage to none. Https only, so the person is not sent
+// to a page anybody on the path can rewrite; no user information, which is
+// how a link reads as one site and goes to another; or a path on this server,
+// starting with one slash, since two are another host.
+func checkRedirectTarget(st Step) error {
+	if st.Stage != StageRedirect {
+		if st.To != "" {
+			return fmt.Errorf("`to` is for a redirect stage, and %s takes none", st.Stage)
+		}
+		return nil
+	}
+	to := strings.TrimSpace(st.To)
+	if to == "" {
+		return fmt.Errorf("a redirect needs `to`, the https URL or path to send the browser to")
+	}
+	if strings.HasPrefix(to, "/") {
+		if strings.HasPrefix(to, "//") || strings.HasPrefix(to, "/\\") || strings.ContainsAny(to, "\r\n") {
+			return fmt.Errorf("`to: %s` would leave this server; a path starts with a single slash", to)
+		}
+		return nil
+	}
+	u, err := url.Parse(to)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return fmt.Errorf("`to: %s` must be an https URL with no user information, or a path on "+
+			"this server", to)
+	}
+	return nil
+}
+
+// RedirectTarget is where the flow's redirect sends the browser, or "" when it
+// ends otherwise.
+func (fl *Flow) RedirectTarget() string {
+	if fl == nil || len(fl.Stages) == 0 {
+		return ""
+	}
+	if last := fl.Stages[len(fl.Stages)-1]; last.Stage == StageRedirect {
+		return strings.TrimSpace(last.To)
+	}
+	return ""
 }
 
 func validateGroup(bs []Branch) error {

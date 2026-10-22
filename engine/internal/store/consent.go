@@ -36,10 +36,14 @@ type ConsentDecision struct {
 
 // CheckConsent reports whether a user has already agreed to these scopes.
 func CheckConsent(ctx context.Context, db *pgxpool.Pool, userID, clientID string, requested []string) (ConsentDecision, error) {
+	// A consent past its client's lifetime (0188) counts for nothing: the
+	// person is asked again, for what is requested now.
 	var granted []string
 	err := db.QueryRow(ctx, `
-		SELECT scopes FROM core.consents
-		WHERE user_id = $1::uuid AND client_id = $2 AND withdrawn_at IS NULL`,
+		SELECT c.scopes FROM core.consents c JOIN core.clients k ON k.client_id = c.client_id
+		WHERE c.user_id = $1::uuid AND c.client_id = $2 AND c.withdrawn_at IS NULL
+		  AND (k.consent_lifetime_s IS NULL
+		       OR c.granted_at > now() - make_interval(secs => k.consent_lifetime_s))`,
 		userID, clientID).Scan(&granted)
 	if err != nil && err != pgx.ErrNoRows {
 		return ConsentDecision{}, fmt.Errorf("checking consent: %w", err)
@@ -71,15 +75,24 @@ func CheckConsent(ctx context.Context, db *pgxpool.Pool, userID, clientID string
 // Merged rather than replaced: a client asking for one extra scope must not
 // silently lose the ones the user granted last week, which would make every
 // incremental request look like a fresh full grant.
+//
+// Merged only into a consent that still stands. One withdrawn, or past its
+// client's lifetime (0188), was replaced by nothing the person saw: merging
+// into it brought back every scope of the old grant behind the screen that
+// showed only what was asked for now.
 func RecordConsent(ctx context.Context, tx pgx.Tx, userID, clientID string, scopes []string) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO core.consents (user_id, client_id, scopes)
 		VALUES ($1::uuid, $2, $3)
 		ON CONFLICT (user_id, client_id) DO UPDATE SET
-			scopes = (
-				SELECT array_agg(DISTINCT s ORDER BY s)
-				FROM unnest(core.consents.scopes || EXCLUDED.scopes) AS s
-			),
+			scopes = CASE
+				WHEN core.consents.withdrawn_at IS NULL
+				 AND NOT EXISTS (SELECT 1 FROM core.clients k WHERE k.client_id = EXCLUDED.client_id
+				                    AND core.consents.granted_at <= now() - make_interval(secs => k.consent_lifetime_s))
+				THEN (SELECT array_agg(DISTINCT s ORDER BY s)
+				        FROM unnest(core.consents.scopes || EXCLUDED.scopes) AS s)
+				ELSE EXCLUDED.scopes
+			END,
 			granted_at = now(),
 			-- Re-granting revives a withdrawn consent rather than leaving a row
 			-- that says "withdrawn" while access works.

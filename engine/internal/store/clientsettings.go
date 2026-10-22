@@ -41,7 +41,17 @@ type ClientSettings struct {
 	// single factor, "2" multi-factor (migration 0166), "3" multi-factor with
 	// a WebAuthn assertion, "4" with a device-bound key (0174).
 	MinimumACR *string
+	// ConsentLifetime is how long a person's consent to the client lasts
+	// before they are asked again (0188): an hour to ten years, or 0 for a
+	// consent that does not expire.
+	ConsentLifetime *time.Duration
 }
+
+// Bounds of a consent's lifetime, the schema's own CHECK.
+const (
+	MinConsentLifetime = time.Hour
+	MaxConsentLifetime = 3650 * 24 * time.Hour
+)
 
 // ClientACRs are the floors a client may be given, the schema's own CHECK.
 var ClientACRs = []string{"1", "2", "3", "4"}
@@ -148,6 +158,12 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
+	if d := s.ConsentLifetime; d != nil {
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET consent_lifetime_s = NULLIF($2, 0),
+			updated_at = now() WHERE client_id = $1`, clientID, int(d.Seconds()))); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -168,6 +184,11 @@ func CheckClientSettings(s ClientSettings) error {
 	if a := s.IDTokenAlg; a != nil && !slices.Contains(ClientAlgorithms, *a) {
 		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
 			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
+	}
+	if d := s.ConsentLifetime; d != nil && *d != 0 &&
+		(*d < MinConsentLifetime || *d > MaxConsentLifetime || *d%time.Second != 0) {
+		return fmt.Errorf("%w: a consent lifetime must be whole seconds from %s to %s, or 0 for "+
+			"a consent that does not expire", ErrInvalidClientSetting, MinConsentLifetime, MaxConsentLifetime)
 	}
 	if a := s.MinimumACR; a != nil && !slices.Contains(ClientACRs, *a) {
 		return fmt.Errorf("%w: %q is not an acr a client may require: 1, a single factor; 2, "+
@@ -197,6 +218,8 @@ type ClientSettingsView struct {
 	FirstParty      bool
 	IssuerAlias     string
 	MinimumACR      string
+	// ConsentLifetime is 0 for a consent that does not expire.
+	ConsentLifetime time.Duration
 }
 
 // ClientSettingsOf reads a client's token settings.
@@ -204,16 +227,18 @@ func ClientSettingsOf(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, clientID string) (ClientSettingsView, error) {
 	var v ClientSettingsView
-	var access, refresh int
+	var access, refresh, consent int
 	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, id_token_signed_alg,
-		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr
+		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr,
+		       COALESCE(consent_lifetime_s, 0)
 		FROM core.clients WHERE client_id = $1`, clientID).
 		Scan(&access, &refresh, &v.IDTokenAlg, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias,
-			&v.MinimumACR)
+			&v.MinimumACR, &consent)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}
 	v.AccessTokenTTL = time.Duration(access) * time.Second
 	v.RefreshTokenTTL = time.Duration(refresh) * time.Second
+	v.ConsentLifetime = time.Duration(consent) * time.Second
 	return v, err
 }

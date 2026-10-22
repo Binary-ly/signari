@@ -382,6 +382,9 @@ func run(args []string) (err error) {
 	accessTTL := fs.Duration("access-ttl", 0,
 		"`client set-lifetimes`: access-token lifetime, 1m to 1h; it is also how long a revoked token keeps working")
 	refreshTTL := fs.Duration("refresh-ttl", 0, "`client set-lifetimes`: refresh-token lifetime, 5m to 8760h")
+	consentTTL := fs.String("consent-ttl", "",
+		"`client set-lifetimes`: how long a person's consent lasts before they are asked again, 1h to 87600h, "+
+			"or never")
 	issuerAlias := fs.String("alias", "",
 		"`instance add-alias` / `retire-alias`: a legacy issuer URL this instance also claims; "+
 			"`client set-issuer-alias`: the alias to mint the client's tokens under (empty clears)")
@@ -998,7 +1001,7 @@ func run(args []string) (err error) {
 	case "client set-logout":
 		return clientSetLogout(ctx, conn, *clientID, *postLogoutRedirects, *frontchannelURI, *frontchannelSID)
 	case "client set-lifetimes":
-		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL)
+		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL, *consentTTL)
 	case "client set-alg":
 		return clientSetAlg(ctx, conn, *clientID, *alg)
 	case "client set-issuer-alias":
@@ -9506,10 +9509,25 @@ func clientSetLogout(ctx context.Context, conn *pgx.Conn, clientID, postLogout, 
 }
 
 // clientSetLifetimes sets how long a client's access and refresh tokens live.
-// Either may be given alone; the other keeps its value.
-func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, access, refresh time.Duration) error {
-	if clientID == "" || (access == 0 && refresh == 0) {
-		return fmt.Errorf("give -client-id and -access-ttl, -refresh-ttl or both")
+// Any may be given alone; the others keep their values. consent is a duration,
+// "never", or "" to leave it.
+func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, access, refresh time.Duration,
+	consent string) error {
+	if clientID == "" || (access == 0 && refresh == 0 && consent == "") {
+		return fmt.Errorf("give -client-id and any of -access-ttl, -refresh-ttl and -consent-ttl")
+	}
+	var consentTTL *time.Duration
+	switch consent {
+	case "":
+	case "never":
+		zero := time.Duration(0)
+		consentTTL = &zero
+	default:
+		d, err := time.ParseDuration(consent)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("-consent-ttl is a duration such as 2160h, or never, not %q", consent)
+		}
+		consentTTL = &d
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -9530,6 +9548,7 @@ func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, ac
 	if refresh != 0 {
 		s.RefreshTokenTTL = &refresh
 	}
+	s.ConsentLifetime = consentTTL
 	if err := store.SetClientSettings(ctx, tx, clientID, s); err != nil {
 		return err
 	}
@@ -9541,6 +9560,11 @@ func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, ac
 		return err
 	}
 	fmt.Printf("%s: access tokens live %s, refresh tokens %s\n", clientID, after.AccessTokenTTL, after.RefreshTokenTTL)
+	if after.ConsentLifetime == 0 {
+		fmt.Println("  a person's consent to it does not expire")
+	} else {
+		fmt.Printf("  a person's consent to it lasts %s, then they are asked again\n", after.ConsentLifetime)
+	}
 	if after.AccessTokenTTL < before.AccessTokenTTL {
 		// The window a revocation leaves open is what tokens already issued were
 		// minted with, and this does not reach them.

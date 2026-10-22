@@ -439,6 +439,9 @@ type patchClientRequest struct {
 	IssuerAlias *string `json:"issuer_alias"`
 	// MinimumACR is the weakest authentication the client accepts, "1" to "4".
 	MinimumACR *string `json:"minimum_acr"`
+	// ConsentLifetimeSeconds is how long a person's consent to the client lasts
+	// before they are asked again; 0 for never (0188).
+	ConsentLifetimeSeconds *int `json:"consent_lifetime_s"`
 }
 
 func (r patchClientRequest) setsLogout() bool {
@@ -460,9 +463,13 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 	s.IDTokenAlg = r.IDTokenSignedResponseAlg
 	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
 	s.MinimumACR = r.MinimumACR
+	if r.ConsentLifetimeSeconds != nil {
+		d := time.Duration(*r.ConsentLifetimeSeconds) * time.Second
+		s.ConsentLifetime = &d
+	}
 	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil ||
 		r.IDTokenSignedResponseAlg != nil || r.RequirePushedAuthorizationRequests != nil ||
-		r.FirstParty != nil || r.IssuerAlias != nil || r.MinimumACR != nil
+		r.FirstParty != nil || r.IssuerAlias != nil || r.MinimumACR != nil || r.ConsentLifetimeSeconds != nil
 }
 
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
@@ -595,6 +602,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				"first_party":                           got.FirstParty,
 				"issuer_alias":                          got.IssuerAlias,
 				"minimum_acr":                           got.MinimumACR,
+				"consent_lifetime_s":                    int(got.ConsentLifetime.Seconds()),
 			}
 			for k, v := range lifetimes {
 				detail[k] = v

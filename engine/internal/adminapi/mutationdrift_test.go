@@ -779,10 +779,15 @@ func TestEveryMutatingRouteBumpsTheConfigVersion(t *testing.T) {
 					before, after)
 			}
 			// And the caller is told, so it can confirm propagation without polling.
-			if tag := rec.Header().Get("ETag"); tag != fmt.Sprintf(`"%d"`, after) {
-				t.Errorf("ETag = %q, want %q: a mutation that does not return its "+
-					"version forces a second round trip before the next conditional "+
-					"write", tag, fmt.Sprintf(`"%d"`, after))
+			// Another package's test can move the global version between the
+			// response and the read of after, so the tag must name a version
+			// this write could have committed: past before, not past after.
+			var tagged int64
+			tag := rec.Header().Get("ETag")
+			if _, err := fmt.Sscanf(tag, `"%d"`, &tagged); err != nil || tagged <= before || tagged > after {
+				t.Errorf("ETag = %q, want a version in (%d, %d]: a mutation that does "+
+					"not return its version forces a second round trip before the "+
+					"next conditional write", tag, before, after)
 			}
 		})
 	}

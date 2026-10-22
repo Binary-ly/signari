@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -94,6 +95,10 @@ type Server struct {
 	// /admin/system; release names the build there.
 	limits  adminLimits
 	release string
+
+	// mux is the router Routes last built, which a batch dispatches its
+	// operations through.
+	mux atomic.Pointer[http.ServeMux]
 }
 
 func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
@@ -312,6 +317,10 @@ func (s *Server) Routes() http.Handler {
 	// public in docs/admin-api.md.
 	handle("GET /admin/openapi.json", s.handleOpenAPI)
 	route("GET /admin/system", ScopeConfigRead, s.getSystem)
+	// No scope of its own: each operation it carries is held to its own
+	// (batch.go).
+	route("POST /admin/batch", "", s.handleBatch)
+	s.mux.Store(mux)
 
 	var inner http.Handler = mux
 	if s.metrics != nil {
@@ -421,7 +430,9 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 		// Its purpose is fairness, not defence: the global limiter above already
 		// bounds total work. This stops one integration's bulk run from consuming
 		// the whole allowance while an operator is trying to use the console.
-		if s.perToken != nil && !s.perToken.Allow(p.Name) {
+		// An operation inside a batch was counted with its batch.
+		_, batched := inBatch(r.Context())
+		if s.perToken != nil && !batched && !s.perToken.Allow(p.Name) {
 			s.log.Info("admin request throttled", "token", p.Name,
 				"method", r.Method, "path", r.URL.Path)
 			tooManyRequests(w)
@@ -430,8 +441,9 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 
 		// Authenticated but not permitted is 403, and says which scope was
 		// missing. This is an operator-facing API: "forbidden" with no detail
-		// turns a one-line fix into an afternoon.
-		if !p.Can(scope) {
+		// turns a one-line fix into an afternoon. No scope is the batch, whose
+		// operations are each held to their own.
+		if scope != "" && !p.Can(scope) {
 			s.log.Info("admin request refused: missing scope", "token", p.Name,
 				"required", scope, "held", p.Scopes)
 			writeJSON(w, http.StatusForbidden, map[string]string{
@@ -993,6 +1005,16 @@ func (s *Server) mutate(ctx context.Context, fn func(pgx.Tx) error) (int64, erro
 // write leaves the database exactly as it was -- which is the property that makes
 // it worth offering rather than a status code that arrives too late.
 func (s *Server) mutateIf(ctx context.Context, p precondition, fn func(pgx.Tx) error) (int64, error) {
+	// Inside a batch (batch.go), into the batch's transaction: it holds the
+	// version lock and checked the batch's precondition, and bumps and commits
+	// once, after every operation has written.
+	if b, ok := inBatch(ctx); ok {
+		if err := fn(b.tx); err != nil {
+			return 0, err
+		}
+		b.wrote = true
+		return b.version, nil
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return 0, err

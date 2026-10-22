@@ -181,7 +181,9 @@ var (
 
 // errorSchema is every refusal's body: a code to branch on and words to read.
 var errorSchema = object([]string{"error"}, map[string]jsonSchema{
-	"error": str(), "detail": str(), "expected_version": integer(), "current_version": integer()})
+	"error": str(), "detail": str(), "expected_version": integer(), "current_version": integer(),
+	// A refused batch: which operation, what it answered.
+	"failed_index": integer(), "status": integer(), "response": anyValue()})
 
 func merge(maps ...map[string]jsonSchema) map[string]jsonSchema {
 	out := map[string]jsonSchema{}
@@ -275,6 +277,9 @@ var opSchemas = map[string]opSchema{
 			"applied": integer(), "binary": integer(), "fingerprint_pinned": boolean()}),
 		"rate_limits": object([]string{"arrivals_per_second", "per_token_per_second"}, map[string]jsonSchema{
 			"arrivals_per_second": integer(), "per_token_per_second": integer()})})},
+	"POST /admin/batch": {http.StatusOK, typeOf[batchRequest](), object([]string{"config_version", "results"},
+		withVersion(map[string]jsonSchema{"results": arrayOf(object([]string{"status"},
+			map[string]jsonSchema{"status": integer(), "body": anyValue()}))}))},
 	"GET /admin/users/{userID}/consents": {http.StatusOK, nil, object([]string{"user_id", "consents"}, map[string]jsonSchema{
 		"user_id": uuidStr(),
 		"consents": arrayOf(object([]string{"client_id", "display_name", "scopes", "granted_at", "active_refresh_grants"},

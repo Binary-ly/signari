@@ -94,12 +94,20 @@ func TestEveryOperationDeclaresItsScope(t *testing.T) {
 				continue
 			}
 			scopes, _ := sec[0].(map[string]any)["bearerAuth"].([]any)
+			key := strings.ToUpper(method) + " " + path
+			// None only where the router enforces none: the batch, whose
+			// operations are each held to their own.
+			if want[key] == "" {
+				if len(scopes) != 0 {
+					t.Errorf("%s declares %v; the router enforces no scope of its own", key, scopes)
+				}
+				continue
+			}
 			if len(scopes) != 1 {
 				t.Errorf("%s %s declares %d scopes, want 1", strings.ToUpper(method), path, len(scopes))
 				continue
 			}
 			got, _ := scopes[0].(string)
-			key := strings.ToUpper(method) + " " + path
 			if got != want[key] {
 				t.Errorf("%s declares scope %q; the router enforces %q",
 					key, got, want[key])

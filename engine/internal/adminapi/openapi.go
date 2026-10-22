@@ -100,6 +100,7 @@ var summaries = map[string]string{
 	"PUT /admin/groups/{groupID}/members/{userID}":           "Add a member.",
 	"DELETE /admin/groups/{groupID}/members/{userID}":        "Remove a member.",
 	"GET /admin/system":                                      "The release, schema and size of the deployment. Requires an unscoped token.",
+	"POST /admin/batch":                                      "Up to 100 writes in one transaction, all or none, one version bump.",
 	"GET /admin/users/{userID}/consents":                     "The applications a person consented to or that hold a grant.",
 	"DELETE /admin/users/{userID}/consents/{clientID}":       "Withdraw a consent and revoke the application's refresh grants.",
 	"GET /admin/tokens":                                      "The admin tokens this token may see; never a secret or hash.",
@@ -175,15 +176,20 @@ func (s *Server) openAPI() map[string]any {
 		if sc.Response != nil {
 			success["content"] = map[string]any{"application/json": map[string]any{"schema": sc.Response}}
 		}
+		scopes, lacks := []any{op.scope}, "The token lacks "+op.scope+", or is scoped to another organisation."
+		if op.scope == "" {
+			// The batch: any token, each operation held to its own scope.
+			scopes, lacks = []any{}, "An operation was refused; `failed_index` names which, and nothing was written."
+		}
 		entry := map[string]any{
 			"summary":     op.summary,
 			"operationId": operationID(op),
-			"security":    []any{map[string]any{"bearerAuth": []any{op.scope}}},
+			"security":    []any{map[string]any{"bearerAuth": scopes}},
 			"responses": map[string]any{
 				strconv.Itoa(status): success,
 				"400":                refusal("The request was refused; `error` names why."),
 				"401":                refusal("No usable bearer token."),
-				"403":                refusal("The token lacks " + op.scope + ", or is scoped to another organisation."),
+				"403":                refusal(lacks),
 			},
 		}
 		if sc.Request != nil {

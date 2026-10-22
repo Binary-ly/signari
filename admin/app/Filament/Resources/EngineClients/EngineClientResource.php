@@ -5,6 +5,7 @@ namespace App\Filament\Resources\EngineClients;
 use App\Filament\Resources\EngineClients\Pages\ListEngineClients;
 use App\Filament\Resources\EngineClients\Tables\EngineClientsTable;
 use App\Models\EngineClient;
+use App\Services\SignariSignIn;
 use BackedEnum;
 use Filament\Resources\Resource;
 use Filament\Support\Icons\Heroicon;
@@ -13,6 +14,12 @@ use Filament\Tables\Table;
 class EngineClientResource extends Resource
 {
     protected static ?string $model = EngineClient::class;
+
+    /** What an operator signed in through Signari needs to see this screen (6.06). */
+    public static function canViewAny(): bool
+    {
+        return SignariSignIn::may('clients:read');
+    }
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedCubeTransparent;
 

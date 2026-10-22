@@ -40,13 +40,32 @@ class EngineAdminApi
 
     public static function fromConfig(): self
     {
-        $user = auth()->id();
+        $user = auth()->user();
+
+        // An operator signed in through Signari writes as themselves, with the
+        // roles they hold there, read by the engine on each request (6.06).
+        // The environment token is a break-glass account's, or every
+        // operator's on a console with no Signari sign-in: handing it to a
+        // person who signed in through Signari would give them everything.
+        $token = (string) env('SIGNARI_ADMIN_TOKEN', '');
+        if ($user !== null && SignariSignIn::configured() && ! $user->break_glass) {
+            $token = app(SignariSignIn::class)->accessToken();
+            if ($token === null) {
+                throw new RuntimeException('Your Signari sign-in has ended. Sign in again; nothing was written.');
+            }
+        }
 
         return new self(
-            rtrim((string) env('SIGNARI_ADMIN_URL', 'http://127.0.0.1:8090'), '/'),
-            (string) env('SIGNARI_ADMIN_TOKEN', ''),
-            operator: $user === null ? null : 'console-user:'.$user,
+            self::baseUrl(),
+            $token,
+            operator: $user === null ? null : 'console-user:'.$user->getKey(),
         );
+    }
+
+    /** Where the engine's Admin API listens. */
+    public static function baseUrl(): string
+    {
+        return rtrim((string) env('SIGNARI_ADMIN_URL', 'http://127.0.0.1:8090'), '/');
     }
 
     /**

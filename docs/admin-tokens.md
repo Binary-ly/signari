@@ -285,3 +285,60 @@ names the missing scope on purpose, and burying that in a JSON dump wastes it:
 | `403 insufficient_scope` | "this token does not hold users:write" |
 | `403 outside_token_organisation` | "this token may only act on organisation …" |
 | `401` | "…may have been revoked or expired — run `signari admin-token list`" |
+
+## Signing in to the console through Signari
+
+The console can sign its operators in through Signari itself, and each then acts
+with their own [administrative role](admin-api.md#administrative-roles) instead of
+a token every operator shares. Once it is configured, a password admits only the
+break-glass account.
+
+Set it up with the engine's CLI and the console's environment:
+
+```sh
+# the console's own client, designated for the Admin API
+signari client create -org <org-uuid> -client-id console -name Console \
+  -redirect https://console.example.com/signari/callback
+signari client set-grants -client-id console -grant-types authorization_code,refresh_token
+signari client set-admin-api -client-id console
+# the people who administer, and what each may do
+signari role grant -org <org-uuid> -email owner@example.com -role org-owner
+# the account that works when Signari is down
+php artisan signari:operator-create glass@example.com --break-glass
+```
+
+| console setting | |
+|---|---|
+| `SIGNARI_ISSUER` | The issuer operators sign in at, as its discovery document names it |
+| `SIGNARI_CONSOLE_CLIENT_ID`, `SIGNARI_CONSOLE_CLIENT_SECRET` | The console's client. Both unset, the console signs in with its local accounts as before |
+| `SIGNARI_CONSOLE_REDIRECT_URI` | Where Signari returns to; `<console>/signari/callback` unless set |
+
+The sign-in is the authorization code flow with PKCE, asking for a second factor
+(`acr_values=2`) and the Admin API's audience (`resource=<issuer>/admin`). The
+console then asks the engine who signed in (`GET /admin/me`) rather than reading a
+token itself, and makes the operator's console account from the answer, found by
+their id in Signari and never by address. It asks again on **every** console
+request, Livewire's included, and the engine reads the session, the person, the
+client's designation and the roles each time, so revoking the person's session in
+Signari, deactivating them or taking their role away signs them out of the console
+on their next click. The console's organisation is the one the engine names.
+Signari unreachable, the request is refused rather than served on a sign-in
+nothing can confirm.
+
+What they see follows their roles, as the engine names them on that request: a
+screen needs the read scope for what it shows (`users:read` for people,
+`clients:read` for applications, `groups:read`, `tokens:read`, and `config:read`
+for the configuration screens), and a person who holds no role is not an
+operator at all. The console reads its screens from the database views under its
+own role, so this is what keeps an app manager out of the people screen; every
+write is the engine's to refuse besides. A user manager delegated over a group is
+not offered the people screen, which lists everyone in the organisation: they
+administer their members through the Admin API, which holds them to the group.
+
+An operator signed in this way is not asked to enrol a console TOTP as well:
+Signari required the second factor, and the engine refuses their token unless the
+session proved one. The break-glass account signs in with its password and the
+console's own second factor, writes with the console's `SIGNARI_ADMIN_TOKEN`, and
+every change it makes is recorded as break-glass. A local account made before
+Signari sign-in was configured is refused the panel (403); give the person a role
+and they sign in through Signari instead.

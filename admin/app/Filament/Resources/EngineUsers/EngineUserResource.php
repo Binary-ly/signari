@@ -5,6 +5,7 @@ namespace App\Filament\Resources\EngineUsers;
 use App\Filament\Resources\EngineUsers\Pages\ListEngineUsers;
 use App\Filament\Resources\EngineUsers\Tables\EngineUsersTable;
 use App\Models\EngineUser;
+use App\Services\SignariSignIn;
 use BackedEnum;
 use Filament\Resources\Resource;
 use Filament\Support\Icons\Heroicon;
@@ -25,6 +26,16 @@ use Filament\Tables\Table;
 class EngineUserResource extends Resource
 {
     protected static ?string $model = EngineUser::class;
+
+    /**
+     * What an operator signed in through Signari needs to see this screen
+     * (6.06). Not offered to a user manager delegated over groups: it reads
+     * every person of the organisation, and they reach only their members.
+     */
+    public static function canViewAny(): bool
+    {
+        return SignariSignIn::may('users:read') && ! SignariSignIn::delegated('users:read');
+    }
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedUsers;
 

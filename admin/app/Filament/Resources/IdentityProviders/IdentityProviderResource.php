@@ -5,6 +5,7 @@ namespace App\Filament\Resources\IdentityProviders;
 use App\Filament\Resources\IdentityProviders\Pages\ListIdentityProviders;
 use App\Filament\Resources\IdentityProviders\Tables\IdentityProvidersTable;
 use App\Models\IdentityProvider;
+use App\Services\SignariSignIn;
 use BackedEnum;
 use Filament\Resources\Resource;
 use Filament\Support\Icons\Heroicon;
@@ -20,6 +21,12 @@ use Filament\Tables\Table;
 class IdentityProviderResource extends Resource
 {
     protected static ?string $model = IdentityProvider::class;
+
+    /** What an operator signed in through Signari needs to see this screen (6.06). */
+    public static function canViewAny(): bool
+    {
+        return SignariSignIn::may('config:read');
+    }
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedGlobeAlt;
 

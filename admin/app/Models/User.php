@@ -3,6 +3,7 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Services\SignariSignIn;
 use Database\Factories\UserFactory;
 use Filament\Auth\MultiFactor\App\Concerns\InteractsWithAppAuthentication;
 use Filament\Auth\MultiFactor\App\Concerns\InteractsWithAppAuthenticationRecovery;
@@ -85,10 +86,21 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
      * ScopeToOrganisation and enforced by row-level security in PostgreSQL. An
      * operator with no organisation assigned gets in and sees nothing, which is
      * the intended fail-closed shape.
+     *
+     * Once Signari sign-in is configured (6.06), only two kinds of operator
+     * reach it: one signed in through Signari, whose sign-in
+     * EnsureSignariSession confirms with the engine on every request, and a
+     * break-glass account. A local account from before is neither, and a
+     * password no longer admits it.
      */
     public function canAccessPanel(Panel $panel): bool
     {
-        return true;
+        if (! SignariSignIn::configured()) {
+            return true;
+        }
+
+        return $this->break_glass
+            || ($this->signari_user_id !== null && session()->has(SignariSignIn::SESSION));
     }
 
     /**
@@ -101,6 +113,7 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'break_glass' => 'boolean',
         ];
     }
 }

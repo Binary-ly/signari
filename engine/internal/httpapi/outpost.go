@@ -126,11 +126,14 @@ func (s *Server) outpostCall(w http.ResponseWriter, r *http.Request) (*outpostCa
 	}
 	sum := sha256.Sum256([]byte(h[len(prefix):]))
 
+	// This instance's outposts (6.12): another's is answered here as a token
+	// that is not valid.
 	var c outpostCaller
 	err := s.db.QueryRow(r.Context(), `
 		SELECT id::text, org_id::text, kind, name, COALESCE(search_group, '')
 		  FROM core.outposts WHERE token_hash = $1 AND enabled
-		   AND `+store.OrgInService("org_id"), sum[:]).
+		   AND `+store.OrgInService("org_id")+`
+		   AND `+store.InInstance("org_id", "$2"), sum[:], s.instanceID).
 		Scan(&c.ID, &c.OrgID, &c.Kind, &c.Name, &c.SearchGroup)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {

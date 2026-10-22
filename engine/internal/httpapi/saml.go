@@ -57,7 +57,7 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 	var wantSigned bool
 	signatureAlg := saml.SignatureAlgRSASHA256
 	if sp := r.URL.Query().Get("sp"); sp != "" {
-		if p, perr := store.LoadSAMLProvider(ctx, s.db, sp); perr == nil {
+		if p, perr := s.loadSAMLProvider(ctx, sp); perr == nil {
 			wantSigned = p.WantAuthnRequestsSigned
 			signatureAlg = p.SignatureAlg
 		} else if !errors.Is(perr, store.ErrSAMLProviderUnknown) {
@@ -166,7 +166,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := store.LoadSAMLProvider(ctx, s.db, req.Issuer)
+	provider, err := s.loadSAMLProvider(ctx, req.Issuer)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			// Deliberately NOT a SAML error response. Answering an unknown entity

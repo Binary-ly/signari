@@ -36,7 +36,7 @@ const ceremonyLinkRegister = "link-register"
 func (s *Server) handlePasskeyLinkPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	token := r.URL.Query().Get("token")
-	link, err := store.FindPasskeyLink(ctx, s.db, token)
+	link, err := s.findPasskeyLink(ctx, token)
 	var account string
 	if err == nil {
 		err = s.db.QueryRow(ctx, `SELECT COALESCE(email, username, '') FROM core.users
@@ -73,7 +73,7 @@ func (s *Server) handlePasskeyLinkBegin(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid_request", "a JSON body with the link's token")
 		return
 	}
-	link, err := store.FindPasskeyLink(r.Context(), s.db, body.Token)
+	link, err := s.findPasskeyLink(r.Context(), body.Token)
 	if err != nil {
 		if !errors.Is(err, store.ErrPasskeyLinkInvalid) {
 			s.log.Error("reading a passkey link", "err", err)

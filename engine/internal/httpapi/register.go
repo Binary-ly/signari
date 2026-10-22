@@ -326,7 +326,7 @@ func (s *Server) handleRegisteredClient(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	c, err := store.LoadRegisteredClient(ctx, s.db, clientID, sha256Sum(token))
+	c, err := store.LoadRegisteredClient(ctx, s.db, clientID, sha256Sum(token), s.instanceID)
 	if err != nil {
 		// Wrong token, wrong client, or a client that was never dynamically
 		// registered: one answer, so this cannot be used to discover which
@@ -363,14 +363,14 @@ func (s *Server) handleRegisteredClient(w http.ResponseWriter, r *http.Request) 
 // authorizeRegistration decides whether this caller may register, and where.
 func (s *Server) authorizeRegistration(ctx context.Context, r *http.Request) (orgID, tokenID string, err error) {
 	if token := bearerToken(r); token != "" {
-		return store.RedeemRegistrationToken(ctx, s.db, sha256Sum(token))
+		return store.RedeemRegistrationToken(ctx, s.db, sha256Sum(token), s.instanceID)
 	}
 
 	// No token. Only an organisation that has explicitly opened registration
 	// accepts this, and only when exactly one has -- "open" plus several
 	// organisations has no answer to which one a stranger meant, and guessing
 	// would put a client in the wrong tenant.
-	org, err := store.SingleOpenRegistrationOrg(ctx, s.db)
+	org, err := store.SingleOpenRegistrationOrg(ctx, s.db, s.instanceID)
 	if err != nil {
 		return "", "", err
 	}

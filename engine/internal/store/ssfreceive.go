@@ -32,8 +32,9 @@ var ErrAmbiguousSource = errors.New("the token's audiences name more than one " 
 //
 // The pair is unique across organisations (migration 0138), so one audience
 // finds at most one source. A token naming several audiences could still name
-// two organisations' sources, and that is refused rather than resolved.
-func SourceFor(ctx context.Context, q Querier, issuer string, audiences []string) (ssf.Source, bool, error) {
+// two organisations' sources, and that is refused rather than resolved. Only
+// instanceID's sources are looked at (6.12).
+func SourceFor(ctx context.Context, q Querier, issuer string, audiences []string, instanceID string) (ssf.Source, bool, error) {
 	var s ssf.Source
 	lowered := make([]string, 0, len(audiences))
 	for _, a := range audiences {
@@ -44,7 +45,8 @@ func SourceFor(ctx context.Context, q Querier, issuer string, audiences []string
 		       critical_subject_members
 		  FROM core.ssf_sources
 		 WHERE issuer = $1 AND lower(audience) = ANY($2::text[]) AND enabled
-		 LIMIT 2`, issuer, lowered)
+		   AND `+InInstance("org_id", "$3")+`
+		 LIMIT 2`, issuer, lowered, instanceID)
 	if err != nil {
 		return s, false, err
 	}
@@ -71,8 +73,8 @@ func SourceFor(ctx context.Context, q Querier, issuer string, audiences []string
 // Only for choosing the registered error code when SourceFor finds nothing: a
 // token addressed to a recipient here carries an issuer that recipient does not
 // accept (`invalid_issuer`), and one addressed elsewhere is not for us at all
-// (`invalid_audience`). It selects no source.
-func AudienceIsReceived(ctx context.Context, q rowQuerier, audiences []string) (bool, error) {
+// (`invalid_audience`). It selects no source. "Here" is instanceID (6.12).
+func AudienceIsReceived(ctx context.Context, q rowQuerier, audiences []string, instanceID string) (bool, error) {
 	lowered := make([]string, 0, len(audiences))
 	for _, a := range audiences {
 		lowered = append(lowered, strings.ToLower(a))
@@ -80,8 +82,9 @@ func AudienceIsReceived(ctx context.Context, q rowQuerier, audiences []string) (
 	var ok bool
 	err := q.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM core.ssf_sources
-		                WHERE lower(audience) = ANY($1::text[]) AND enabled)`,
-		lowered).Scan(&ok)
+		                WHERE lower(audience) = ANY($1::text[]) AND enabled
+		                  AND `+InInstance("org_id", "$2")+`)`,
+		lowered, instanceID).Scan(&ok)
 	return ok, err
 }
 

@@ -174,7 +174,7 @@ func TestAnEmailedCodeSignsInWhereTheFlowTakesIt(t *testing.T) {
 	if c == nil || c.Value == "" {
 		t.Fatalf("the right code did not sign in: %d %s", rec.Code, truncate(rec.Body.String(), 300))
 	}
-	sid, _, err := store.ResolveSessionCookie(ctx, f.pool, store.HashToken(c.Value))
+	sid, _, err := store.ResolveSessionCookie(ctx, f.pool, store.HashToken(c.Value), "")
 	if err != nil || sid == "" {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestTheMailboxIsNotBothFactors(t *testing.T) {
 		if c == nil || c.Value == "" {
 			t.Fatalf("no session: %d %s", rec.Code, truncate(rec.Body.String(), 300))
 		}
-		sid, _, err := store.ResolveSessionCookie(context.Background(), f.pool, store.HashToken(c.Value))
+		sid, _, err := store.ResolveSessionCookie(context.Background(), f.pool, store.HashToken(c.Value), "")
 		if err != nil || sid == "" {
 			t.Fatal(err)
 		}

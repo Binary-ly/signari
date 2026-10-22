@@ -75,7 +75,7 @@ func (ta *twoAccounts) signIn(t *testing.T, email string, extra url.Values) (sid
 	if rec.Code != http.StatusSeeOther || token == "" {
 		t.Fatalf("signing in as %s: %d %s", email, rec.Code, truncate(rec.Body.String(), 300))
 	}
-	sid, _, err := store.ResolveSessionCookie(context.Background(), ta.pool, store.HashToken(token))
+	sid, _, err := store.ResolveSessionCookie(context.Background(), ta.pool, store.HashToken(token), "")
 	if err != nil || sid == "" {
 		t.Fatalf("the session for %s: %v", email, err)
 	}

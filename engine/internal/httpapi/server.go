@@ -1090,7 +1090,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	// naming one that answers 401 to every possible caller is the "advertised
 	// before it works" mistake this project refuses elsewhere -- and a client
 	// that reads it will try, fail, and blame its own configuration.
-	if on, cerr := store.AnyRegistrationEnabled(r.Context(), s.db); cerr != nil {
+	if on, cerr := store.AnyRegistrationEnabled(r.Context(), s.db, s.instanceID); cerr != nil {
 		s.log.Error("checking whether dynamic registration is enabled", "err", cerr)
 	} else if on {
 		md.RegistrationEndpoint = s.cfg.Issuer + "/oauth2/register"
@@ -1116,7 +1116,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	// only those. The same rule this file already applies to
 	// registration_endpoint -- a type named here that no client may request is a
 	// capability advertised before it works.
-	if types, terr := store.AllAuthorizationDetailTypes(r.Context(), s.db); terr != nil {
+	if types, terr := store.AllAuthorizationDetailTypes(r.Context(), s.db, s.instanceID); terr != nil {
 		s.log.Error("listing authorization detail types", "err", terr)
 	} else if len(types) > 0 {
 		md.AuthorizationDetailsTypesSupported = types

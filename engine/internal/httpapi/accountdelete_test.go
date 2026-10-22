@@ -30,7 +30,7 @@ func TestAPersonDeletesTheirOwnAccount(t *testing.T) {
 	ctx := context.Background()
 	mailer := &captureMailer{}
 	f.srv.mailer = mailer
-	sid, _, err := store.ResolveSessionCookie(ctx, f.pool, store.HashToken(cookie))
+	sid, _, err := store.ResolveSessionCookie(ctx, f.pool, store.HashToken(cookie), "")
 	if err != nil || sid == "" {
 		t.Fatalf("the fixture's session: %v", err)
 	}

@@ -65,7 +65,7 @@ func signedIn(t *testing.T, f *signInFixture, cookie string) bool {
 func TestAnUnusedSessionEndsAndAUsedOneDoesNot(t *testing.T) {
 	f, cookie := enrolFixture(t)
 	ctx := context.Background()
-	sid, _, err := store.ResolveSessionCookie(ctx, f.pool, store.HashToken(cookie))
+	sid, _, err := store.ResolveSessionCookie(ctx, f.pool, store.HashToken(cookie), "")
 	if err != nil || sid == "" {
 		t.Fatalf("the fixture's session: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestAnUnusedSessionEndsAndAUsedOneDoesNot(t *testing.T) {
 	// A sign-in under the limits starts with them.
 	clearSignInBucket(t, f.pool)
 	fresh := f.signInAndReturnCookie(t)
-	sid, _, err = store.ResolveSessionCookie(ctx, f.pool, store.HashToken(fresh))
+	sid, _, err = store.ResolveSessionCookie(ctx, f.pool, store.HashToken(fresh), "")
 	if err != nil || sid == "" {
 		t.Fatalf("signing in again: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestAnUnusedSessionEndsAndAUsedOneDoesNot(t *testing.T) {
 func TestUseNeverExtendsASessionPastItsLifetime(t *testing.T) {
 	f, cookie := enrolFixture(t)
 	ctx := context.Background()
-	sid, _, err := store.ResolveSessionCookie(ctx, f.pool, store.HashToken(cookie))
+	sid, _, err := store.ResolveSessionCookie(ctx, f.pool, store.HashToken(cookie), "")
 	if err != nil || sid == "" {
 		t.Fatalf("the fixture's session: %v", err)
 	}

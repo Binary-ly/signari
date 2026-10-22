@@ -304,9 +304,13 @@ func ListUserSessions(ctx context.Context, q interface {
 	return out, rows.Err()
 }
 
+// ResolveSessionCookie finds the session a browser's cookie names, among the
+// sessions of instanceID's organisations (6.12): another instance's session is
+// no session here, as its cookie is never sent here by a browser that was not
+// handed it by someone else.
 func ResolveSessionCookie(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, cookieHash []byte) (sid string, live bool, err error) {
+}, cookieHash []byte, instanceID string) (sid string, live bool, err error) {
 	// A browser presenting its cookie is a use of the session, recorded in the
 	// same statement (see sessionlifetime.go): liveness is decided from the
 	// row as it was, and the deadline moves for a live one only.
@@ -317,12 +321,12 @@ func ResolveSessionCookie(ctx context.Context, q interface {
 			       AND `+OrgInService("u.org_id")+` AS live
 			FROM core.sessions s
 			JOIN core.users u ON u.id = s.user_id
-			WHERE s.cookie_hash = $1),
+			WHERE s.cookie_hash = $1 AND `+InInstance("s.org_id", "$2")+`),
 		touched AS (
 			UPDATE core.sessions t SET `+touchSet+`
 			  FROM core.organizations o, found f
 			 WHERE t.sid = f.sid AND f.live AND o.id = t.org_id AND `+touchDue+`)
-		SELECT sid, live FROM found`, cookieHash).Scan(&sid, &live)
+		SELECT sid, live FROM found`, cookieHash, instanceID).Scan(&sid, &live)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}

@@ -109,7 +109,8 @@ func (s *Server) heldAccounts(ctx context.Context, r *http.Request, orgID string
 		  JOIN core.organizations o ON o.id = s.org_id
 		 WHERE s.cookie_hash = ANY($1) AND s.revoked_at IS NULL AND s.not_after > now()
 		   AND u.status = 'active' AND s.impersonator_id IS NULL
-		   AND ($2 = '' OR s.org_id::text = $2)`, hashes, orgID)
+		   AND ($2 = '' OR s.org_id::text = $2)
+		   AND ($3::text = '' OR o.instance_id::text = $3)`, hashes, orgID, s.instanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +296,7 @@ func (s *Server) handleAccountsPost(w http.ResponseWriter, r *http.Request) {
 	pick := held[chosen]
 	// Choosing is using: recorded on the session, and refused if it ended in
 	// between.
-	if _, live, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(pick.token)); err != nil || !live {
+	if _, live, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(pick.token), s.instanceID); err != nil || !live {
 		s.renderAccounts(w, r, authz, held, s.tr(r).Text("accounts.gone"))
 		return
 	}

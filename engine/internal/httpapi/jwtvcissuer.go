@@ -37,7 +37,7 @@ func (s *Server) handleJWTVCIssuerMetadata(w http.ResponseWriter, r *http.Reques
 	// credential issuer metadata follows: a document naming a capability is one a
 	// verifier will act on, and an issuer with no configurations has no
 	// credentials for anybody to verify.
-	configs, err := store.AllCredentialConfigurations(r.Context(), s.db)
+	configs, err := store.AllCredentialConfigurations(r.Context(), s.db, s.instanceID)
 	if err != nil {
 		s.log.Error("loading credential configurations", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")

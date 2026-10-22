@@ -223,11 +223,13 @@ func (s *Server) writeAttestationError(w http.ResponseWriter, r *http.Request,
 		Description: err.Error(), Status: http.StatusUnauthorized})
 }
 
-// defaultOrgID resolves the organisation a challenge belongs to.
+// defaultOrgID resolves the organisation a challenge belongs to: this
+// instance's oldest (6.12), not the deployment's.
 func (s *Server) defaultOrgID(ctx context.Context) (string, error) {
 	var id string
 	err := s.db.QueryRow(ctx,
-		`SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).Scan(&id)
+		`SELECT id::text FROM core.organizations WHERE $1::text = '' OR instance_id::text = $1
+		  ORDER BY created_at LIMIT 1`, s.instanceID).Scan(&id)
 	return id, err
 }
 

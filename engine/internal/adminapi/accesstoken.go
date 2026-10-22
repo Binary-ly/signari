@@ -26,11 +26,19 @@ import (
 // do, so a role taken away or an application undesignated is refused from the
 // next request with nothing to revoke.
 
-// SetAccessTokens lets the Admin API accept access tokens verified against set
-// and audienced to issuer's Admin API audience. Unset, it accepts admin
-// tokens only.
-func (s *Server) SetAccessTokens(set *keys.Set, issuer string) {
-	s.keySet, s.issuer = set, issuer
+// AcceptAccessTokens lets the Admin API accept access tokens verified against
+// set and audienced to issuer's Admin API audience, from the designated
+// applications of instanceID's organisations. Called once for each instance
+// the process serves (6.12); never called, it accepts admin tokens only.
+func (s *Server) AcceptAccessTokens(instanceID string, set *keys.Set, issuer string) {
+	s.accessIssuers = append(s.accessIssuers, accessIssuer{instanceID: instanceID, keys: set, issuer: issuer})
+}
+
+// accessIssuer is one instance whose access tokens the Admin API accepts.
+type accessIssuer struct {
+	instanceID string
+	keys       *keys.Set
+	issuer     string
 }
 
 // errMultiFactorRequired is a person's token from a session that did not prove
@@ -44,17 +52,24 @@ func looksLikeAccessToken(v string) bool {
 }
 
 func (s *Server) resolveAccessToken(ctx context.Context, raw string) (*Principal, error) {
-	if s.keySet == nil {
-		return nil, errTokenRejected
+	// Verified by the instance that signed it, and by no other: each checks
+	// its own keys and its own issuer.
+	var claims *tokens.AccessTokenClaims
+	var from accessIssuer
+	var err error
+	for _, ai := range s.accessIssuers {
+		if claims, err = tokens.VerifyAccessTokenAny(ai.keys, []string{ai.issuer}, raw); err == nil {
+			from = ai
+			break
+		}
 	}
-	claims, err := tokens.VerifyAccessTokenAny(s.keySet, []string{s.issuer}, raw)
-	if err != nil {
+	if claims == nil || err != nil {
 		return nil, errTokenRejected
 	}
 	// Exactly the Admin API's audience: tokens.AudienceAccepted's rule, the
 	// client's own id or the issuer, would make every application's token an
 	// administrator's.
-	if !slices.Contains(claims.Audience, tokens.AdminAudience(s.issuer)) {
+	if !slices.Contains(claims.Audience, tokens.AdminAudience(from.issuer)) {
 		return nil, errTokenRejected
 	}
 	// A sender-constrained token is refused rather than taken as a bearer one:
@@ -75,10 +90,15 @@ func (s *Server) resolveAccessToken(ctx context.Context, raw string) (*Principal
 	if live, err := store.TokenHolderLive(ctx, s.db, claims.ClientID, claims.Subject); err != nil || !live {
 		return nil, rejectedOr(err)
 	}
+	// And of the instance that signed (6.12): an application of another
+	// instance never had a token from this issuer to present.
 	var orgID string
 	var designated bool
-	if err := s.db.QueryRow(ctx, `SELECT org_id::text, admin_api FROM core.clients WHERE client_id = $1`,
-		claims.ClientID).Scan(&orgID, &designated); err != nil || !designated {
+	if err := s.db.QueryRow(ctx, `
+		SELECT c.org_id::text, c.admin_api FROM core.clients c
+		  JOIN core.organizations o ON o.id = c.org_id
+		 WHERE c.client_id = $1 AND ($2::text = '' OR o.instance_id::text = $2)`,
+		claims.ClientID, from.instanceID).Scan(&orgID, &designated); err != nil || !designated {
 		if errors.Is(err, pgx.ErrNoRows) {
 			err = nil
 		}

@@ -49,7 +49,7 @@ func (s *Server) currentSession(r *http.Request) (sid, userID, orgID string, ok 
 		return "", "", "", false
 	}
 	ctx := r.Context()
-	sid, live, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
+	sid, live, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie), s.instanceID)
 	if err != nil || !live || sid == "" {
 		return "", "", "", false
 	}

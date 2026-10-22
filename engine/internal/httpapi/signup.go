@@ -69,7 +69,7 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 	data := s.captchaFields(r, map[string]any{"CSRF": csrf, "CSRFField": csrfFormField})
 
 	if token := r.URL.Query().Get("invite"); token != "" {
-		inv, err := store.PeekInvitation(ctx, s.db, token)
+		inv, err := s.peekInvitation(ctx, token)
 		if err != nil {
 			// Said now rather than after a password has been chosen. Refusing on
 			// submission means filling in a form to be told the link was dead
@@ -127,7 +127,7 @@ func (s *Server) signupFields(ctx context.Context, orgID string, posted map[stri
 // signup rule's.
 func (s *Server) signupOrg(ctx context.Context, token string) string {
 	if token != "" {
-		if inv, err := store.PeekInvitation(ctx, s.db, token); err == nil {
+		if inv, err := s.peekInvitation(ctx, token); err == nil {
 			return inv.OrgID
 		}
 		return ""
@@ -146,7 +146,7 @@ func (s *Server) enrolmentFacts(ctx context.Context, remoteAddr, invite string) 
 	// spending it (create_user claims it, or the invitation stage refuses).
 	invited := false
 	if invite != "" && s.db != nil {
-		_, err := store.PeekInvitation(ctx, s.db, invite)
+		_, err := s.peekInvitation(ctx, invite)
 		invited = err == nil
 	}
 	return flow.State{
@@ -375,7 +375,12 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 	var pending bool
 
 	if token != "" {
-		inv, err := store.ClaimInvitation(ctx, s.db, token)
+		// Another instance's invitation is refused before it is spent (6.12).
+		_, err := s.peekInvitation(ctx, token)
+		var inv *store.Invitation
+		if err == nil {
+			inv, err = store.ClaimInvitation(ctx, s.db, token)
+		}
 		if err != nil {
 			// A link that is genuinely spent and a database that refused the
 			// write are the same message to the user and must not be the same

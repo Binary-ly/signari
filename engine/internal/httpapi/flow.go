@@ -175,7 +175,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		var err error
 		// The cookie is a bearer secret; the sid it maps to is the public
 		// identifier. Never treat the cookie value as the sid.
-		sid, live, err = store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
+		sid, live, err = store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie), s.instanceID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			s.log.Error("checking session", "err", err)
 			s.writeAuthzError(w, r, req,
@@ -2115,12 +2115,15 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	// treated as nobody (ADR-007). A self-sign-up waiting for approval (5.19)
 	// has proved its own credential, so it is told why. An account of a
 	// suspended organisation is refused the same way (6.09), recorded as such.
+	// And an account of another instance (6.12), which no way in should have
+	// found here; this is where one that did is stopped.
 	var status, locale string
 	if err := tx.QueryRow(ctx, `
-		SELECT CASE WHEN `+store.OrgInService("u.org_id")+` THEN u.status ELSE 'org_suspended' END,
+		SELECT CASE WHEN NOT `+store.InInstance("u.org_id", "$2")+` THEN 'other_instance'
+		            WHEN `+store.OrgInService("u.org_id")+` THEN u.status ELSE 'org_suspended' END,
 		       COALESCE(u.locale, '')
 		  FROM core.users u WHERE u.id = $1::uuid`,
-		userID).Scan(&status, &locale); err != nil {
+		userID, s.instanceID).Scan(&status, &locale); err != nil {
 		s.log.Error("reading the account's status at sign-in", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -2410,6 +2413,8 @@ func (s *Server) lookupCredentials(ctx context.Context, identifier, orgID string
 	// A pending one is found, and refused by completeSignIn once its password
 	// is right, with the reason (5.19); recovery passes over it. So is one of a
 	// suspended organisation (6.09), its status read as org_suspended.
+	// "Every organisation" is this instance's (6.12): a name held in another
+	// is neither found nor counted against the one held here.
 	rows, err := s.db.Query(ctx, `
 		SELECT u.id::text, u.org_id::text, pc.hash,
 		       CASE WHEN `+store.OrgInService("u.org_id")+` THEN u.status ELSE 'org_suspended' END
@@ -2417,9 +2422,10 @@ func (s *Server) lookupCredentials(ctx context.Context, identifier, orgID string
 		JOIN core.password_credentials pc ON pc.user_id = u.id
 		WHERE u.status IN ('active', 'pending')
 		  AND ($2 = '' OR u.org_id::text = $2)
+		  AND `+store.InInstance("u.org_id", "$3")+`
 		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))
 		ORDER BY u.org_id
-		LIMIT 5`, identifier, orgID)
+		LIMIT 5`, identifier, orgID, s.instanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -2511,7 +2517,19 @@ func (s *Server) lookupClientAnyState(ctx context.Context, clientID string) (*cl
 	if clientID == "" {
 		return nil, clients.ErrNotFound
 	}
-	return clients.Lookup(ctx, s.db, clientID)
+	c, err := clients.Lookup(ctx, s.db, clientID)
+	if err != nil {
+		return nil, err
+	}
+	// Another instance's client is not one this issuer has (6.12): it was
+	// registered with the other issuer, and its relying parties verify that
+	// issuer's tokens. Answered as unknown, so nobody learns it exists there.
+	if !s.serves(c.InstanceID) {
+		s.log.Info("a client of another instance was refused", "client_id", clientID,
+			"correlation_id", correlationID(ctx))
+		return nil, clients.ErrNotFound
+	}
+	return c, nil
 }
 
 // writeAuthzError delivers an authorization error by whichever route its
@@ -2667,11 +2685,14 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 		if clientID == "" {
 			clientID = s.clientFromIDTokenHint(q.Get("id_token_hint"))
 		}
+		// And a client of this instance (6.12), as a client_id names here.
 		var ok bool
 		if err := s.db.QueryRow(ctx, `
-			SELECT true FROM core.client_post_logout_redirect_uris
-			WHERE redirect_uri = $1 AND client_id = $2`,
-			target, clientID).Scan(&ok); err != nil || !ok {
+			SELECT true FROM core.client_post_logout_redirect_uris p
+			  JOIN core.clients c ON c.client_id = p.client_id
+			WHERE p.redirect_uri = $1 AND p.client_id = $2
+			  AND `+store.InInstance("c.org_id", "$3"),
+			target, clientID, s.instanceID).Scan(&ok); err != nil || !ok {
 			writeError(w, http.StatusBadRequest, "invalid_request",
 				"post_logout_redirect_uri is not registered")
 			return
@@ -2723,7 +2744,7 @@ func (s *Server) terminateOwnSession(ctx context.Context, cookie string) error {
 	if cookie == "" {
 		return nil
 	}
-	sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
+	sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie), s.instanceID)
 	if err != nil {
 		return fmt.Errorf("resolving session cookie: %w", err)
 	}
@@ -2859,7 +2880,7 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 	if s.cfg.Root == nil {
 		return false
 	}
-	pending, ok, err := store.LookupMigrationCandidate(ctx, s.db, pageOrg, identifier, s.cfg.Root)
+	pending, ok, err := store.LookupMigrationCandidate(ctx, s.db, pageOrg, s.instanceID, identifier, s.cfg.Root)
 	if err != nil {
 		s.log.Error("looking up migration candidate", "err", err)
 		return false
@@ -3460,7 +3481,7 @@ func (s *Server) sessionIdentity(ctx context.Context, cookie string) (sid, userI
 	if cookie == "" {
 		return "", "", ""
 	}
-	sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
+	sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie), s.instanceID)
 	if err != nil || sid == "" {
 		return "", "", ""
 	}

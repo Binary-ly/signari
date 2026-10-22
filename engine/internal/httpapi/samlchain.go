@@ -118,7 +118,7 @@ func (s *Server) logoutRedirectFor(ctx context.Context, step store.LogoutStep, t
 	// logout was under way is still sent a signature it can check. One that has
 	// since been removed is sent RSA, the default.
 	signatureAlg := saml.SignatureAlgRSASHA256
-	if p, err := store.LoadSAMLProvider(ctx, s.db, step.EntityID); err == nil {
+	if p, err := s.loadSAMLProvider(ctx, step.EntityID); err == nil {
 		signatureAlg = p.SignatureAlg
 	} else if !errors.Is(err, store.ErrSAMLProviderUnknown) {
 		return "", err

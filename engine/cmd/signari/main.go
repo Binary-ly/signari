@@ -2030,11 +2030,20 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	if err != nil {
 		return err
 	}
-
-	set, err := keys.LoadSet(ctx, conn, instanceID, root)
+	// And any others named to be served beside it, each its own issuer behind
+	// its own host, with its own keys (6.12). The first is the primary: it
+	// answers a host no issuer names, and signs what belongs to no instance.
+	extra, err := additionalInstances(ctx, conn, os.Getenv("SIGNARI_ADDITIONAL_ISSUERS"), issuer)
 	if err != nil {
-		return fmt.Errorf("loading signing keys: %w", err)
+		return err
 	}
+	served := append([]servedInstance{{id: instanceID, issuer: issuer}}, extra...)
+	for i := range served {
+		if served[i].keys, err = keys.LoadSet(ctx, conn, served[i].id, root); err != nil {
+			return fmt.Errorf("loading signing keys for %s: %w", served[i].issuer, err)
+		}
+	}
+	set := served[0].keys
 
 	// Both pools say which root key this node seals with, so a rotation can
 	// see every running node (3.13).
@@ -2056,10 +2065,8 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// restarted -- and the publish-then-promote design that makes rotation safe
 	// never actually published anything. Through the pool, which replaces a
 	// connection a failover killed; the startup connection never came back.
-	keyRefresher := &keys.Refresher{DB: workerPool, InstanceID: instanceID, Root: root, Live: set,
-		Interval: keys.KeyRefreshInterval, Log: log}
-	go keyRefresher.Run(ctx)
-
+	// One for each instance served, as each has its own keys.
+	//
 	// Unattended rotation, when a period is given (3.16). Off by default: a
 	// deployment that has never rotated should choose to start, not find new
 	// keys in its JWKS after an upgrade.
@@ -2067,8 +2074,14 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	if err != nil {
 		return err
 	}
-	go (&keys.Rotator{DB: workerPool, InstanceID: instanceID, Root: root, Every: rotateEvery,
-		Interval: time.Hour, Log: log}).Run(ctx)
+	for i := range served {
+		keyRefresher := &keys.Refresher{DB: workerPool, InstanceID: served[i].id, Root: root,
+			Live: served[i].keys, Interval: keys.KeyRefreshInterval, Log: log}
+		served[i].refresher = keyRefresher
+		go keyRefresher.Run(ctx)
+		go (&keys.Rotator{DB: workerPool, InstanceID: served[i].id, Root: root, Every: rotateEvery,
+			Interval: time.Hour, Log: log}).Run(ctx)
+	}
 
 	// Mail is optional to START but never optional to HAVE: without SMTP the log
 	// driver keeps account recovery working locally and warns on every send, which
@@ -2116,24 +2129,6 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			"country, including high-cost ranges, can be enrolled and sent codes")
 	}
 
-	srv, err := httpapi.New(oidc.Config{
-		Issuer:              issuer,
-		ProxyCookieDomain:   os.Getenv("SIGNARI_PROXY_COOKIE_DOMAIN"),
-		Keys:                set,
-		Root:                root,
-		AllowInsecureIssuer: insecureIssuer,
-	}, pool, log, mailer, texter)
-	if err != nil {
-		return err
-	}
-	// The authorities that may issue client certificates, for RFC 8705. Supplied
-	// here because this is where TLS is configured; nil is a valid answer and
-	// means tls_client_auth is refused.
-	srv.SetClientCAs(clientCAPool())
-	srv.SetInstance(instanceID)
-	// Needed to unseal personal user attributes for operator-defined claims.
-	srv.SetRootKey(root)
-
 	// Consecutive wrong codes before a second factor is switched off. Fatal when
 	// malformed or out of range, like the SMS gateway above: a deployment that
 	// asked for a stricter limit and silently got the default has a weaker
@@ -2150,9 +2145,6 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	if err != nil {
 		return fmt.Errorf("SIGNARI_MFA_FAILURE_LIMIT: %w", err)
 	}
-	srv.SetFactorFailureLimit(failureLimit)
-	srv.SetSMSPolicy(smsPolicy)
-	srv.SetSMSVerifier(smsVerifier)
 
 	// The client address behind a reverse proxy. Fatal when inconsistent, for
 	// the same reason as the limit above: a deployment that named its proxies
@@ -2171,34 +2163,68 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	if err != nil {
 		return err
 	}
-	srv.SetClientIPResolver(ips)
-	// An instance that can no longer refresh its signing keys keeps signing
-	// with the last ones it saw. After MaxMissedRefreshes in a row it leaves
-	// the load balancer rather than go on doing that unnoticed.
-	srv.AddReadinessCheck("signing_keys", keyRefresher.Healthy)
-
-	// OpenID Federation keys, loaded only if this instance has any.
-	//
-	// A deployment that is not in a federation has none, and that is the
-	// ordinary case: SetFederationKeys(nil) leaves the configuration endpoint
-	// unregistered rather than serving an Entity Configuration nobody asked for.
-	if fedSet, ferr := keys.LoadSetFor(ctx, conn, instanceID, keys.PurposeFederation, root); ferr == nil &&
-		len(fedSet.JWKS().Keys) > 0 {
-		srv.SetFederationKeys(fedSet)
-		log.Info("openid federation enabled", "keys", len(fedSet.JWKS().Keys))
-	}
 	pst, perr := postureFromEnv()
 	if perr != nil {
 		return perr
 	}
-	srv.SetPosture(pst)
+	accessLog := false
 	switch v := os.Getenv("SIGNARI_ACCESS_LOG"); v {
 	case "", "0":
 	case "1":
-		srv.SetAccessLog(true)
+		accessLog = true
 	default:
 		return fmt.Errorf("SIGNARI_ACCESS_LOG=%q: want 1 or 0", v)
 	}
+
+	// One server for each instance, configured alike but for its issuer, its
+	// keys and its id (6.12); HostRouter below chooses between them.
+	servers := make([]*httpapi.Server, 0, len(served))
+	byInstance := map[string]*httpapi.Server{}
+	for _, inst := range served {
+		srv, err := httpapi.New(oidc.Config{
+			Issuer:              inst.issuer,
+			ProxyCookieDomain:   os.Getenv("SIGNARI_PROXY_COOKIE_DOMAIN"),
+			Keys:                inst.keys,
+			Root:                root,
+			AllowInsecureIssuer: insecureIssuer,
+		}, pool, log, mailer, texter)
+		if err != nil {
+			return err
+		}
+		// The authorities that may issue client certificates, for RFC 8705.
+		// Supplied here because this is where TLS is configured; nil is a valid
+		// answer and means tls_client_auth is refused.
+		srv.SetClientCAs(clientCAPool())
+		// Which instance's clients, sessions and accounts it serves: every
+		// lookup without a token asks.
+		srv.SetInstance(inst.id)
+		// Needed to unseal personal user attributes for operator-defined claims.
+		srv.SetRootKey(root)
+		srv.SetFactorFailureLimit(failureLimit)
+		srv.SetSMSPolicy(smsPolicy)
+		srv.SetSMSVerifier(smsVerifier)
+		srv.SetClientIPResolver(ips)
+		// An instance that can no longer refresh its signing keys keeps signing
+		// with the last ones it saw. After MaxMissedRefreshes in a row it
+		// leaves the load balancer rather than go on doing that unnoticed.
+		srv.AddReadinessCheck("signing_keys", inst.refresher.Healthy)
+
+		// OpenID Federation keys, loaded only if this instance has any.
+		//
+		// A deployment that is not in a federation has none, and that is the
+		// ordinary case: SetFederationKeys(nil) leaves the configuration endpoint
+		// unregistered rather than serving an Entity Configuration nobody asked for.
+		if fedSet, ferr := keys.LoadSetFor(ctx, conn, inst.id, keys.PurposeFederation, root); ferr == nil &&
+			len(fedSet.JWKS().Keys) > 0 {
+			srv.SetFederationKeys(fedSet)
+			log.Info("openid federation enabled", "issuer", inst.issuer, "keys", len(fedSet.JWKS().Keys))
+		}
+		srv.SetPosture(pst)
+		srv.SetAccessLog(accessLog)
+		servers = append(servers, srv)
+		byInstance[inst.id] = srv
+	}
+	srv := servers[0]
 
 	// The outbox worker is a SINGLETON: running it on every node would deliver
 	// each logout notice once per node. It claims rows FOR UPDATE SKIP LOCKED so
@@ -2212,9 +2238,14 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	audit.SetPublisher(store.AuditPublisher)
 
 	worker := outbox.New(workerPool, set, issuer, root, log)
+	// Each message signed as its client's instance, and one for an instance
+	// this process does not serve left for a process that does (6.12).
+	for _, inst := range served {
+		worker.AddInstance(inst.id, inst.keys, inst.issuer)
+	}
 	// Notices to account holders the Admin API and the CLI queued, told through
-	// this server's channels.
-	worker.SetAccountNotifier(srv.DeliverAccountNotice)
+	// the channels, and with the links, of the server of the holder's instance.
+	worker.SetAccountNotifier(accountNotifier(workerPool, byInstance))
 	go worker.Run(workerCtx, 2*time.Second)
 
 	// The janitor is likewise a singleton, but it enforces that itself with an
@@ -2297,8 +2328,11 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		adminSrv.SetRootKey(root)
 		// This deployment's own access tokens for the Admin API's audience,
 		// from a designated application, act with their holder's roles (6.01),
-		// verified against the same key set the protocol endpoints use.
-		adminSrv.SetAccessTokens(set, issuer)
+		// verified against the key set of the instance that signed them, the
+		// one its protocol endpoints use (6.12).
+		for _, inst := range served {
+			adminSrv.AcceptAccessTokens(inst.id, inst.keys, inst.issuer)
+		}
 
 		// Refused at startup, not warned about at runtime.
 		//
@@ -2598,12 +2632,21 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		met.Registry.NewGauge("signari_password_hash_slots",
 			"How many password hashes may run at once.",
 			func() float64 { return float64(passwords.Shared().Concurrency()) })
+		// The worst of the instances served: any one at five fails readiness.
 		met.Registry.NewGauge("signari_key_refresh_failures",
 			"Signing-key refreshes that have failed in a row; readiness fails at five.",
-			func() float64 { return float64(keyRefresher.Missed()) })
+			func() float64 {
+				var worst int64
+				for _, inst := range served {
+					worst = max(worst, inst.refresher.Missed())
+				}
+				return float64(worst)
+			})
 		registerOperationalGauges(met.Registry, workerPool, set, auditStreaming)
 
-		srv.SetMetrics(met)
+		for _, s := range servers {
+			s.SetMetrics(met)
+		}
 		go func() {
 			mm := http.NewServeMux()
 			mm.Handle("GET /metrics", met.Handler())
@@ -2629,7 +2672,20 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	}
 
 	// Read, write, header and idle timeouts: see httpapi.NewPublicServer.
-	h := httpapi.NewPublicServer(addr, srv.Routes())
+	// Each request to the server of the instance whose issuer names its host
+	// (6.12); with one instance, that one's routes as they always were.
+	handlers := make([]http.Handler, len(servers))
+	for i, s := range servers {
+		handlers[i] = s.Routes()
+	}
+	routes, err := httpapi.HostRouter(servers, handlers)
+	if err != nil {
+		return err
+	}
+	for _, inst := range served[1:] {
+		log.Info("also serving", "issuer", inst.issuer, "algs", inst.keys.Algorithms())
+	}
+	h := httpapi.NewPublicServer(addr, routes)
 
 	// Ordered shutdown. The sequence is the whole point, and getting it wrong is
 	// invisible until a deploy drops requests:
@@ -2650,7 +2706,9 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	go func() {
 		<-ctx.Done()
 		log.Info("shutting down", "drain", shutdownDrain(), "timeout", shutdownTimeout())
-		srv.BeginDraining()
+		for _, s := range servers {
+			s.BeginDraining()
+		}
 
 		// Never drain for longer than the whole budget. A deployment that sets
 		// the drain above the timeout means to wait a long time, not to spend

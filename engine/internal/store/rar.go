@@ -73,10 +73,11 @@ func UnmarshalDetails(raw []byte) ([]rar.Detail, error) {
 // the metadata document, and one that reorders between requests looks like it
 // changed. Not scoped to an organisation because discovery is not either — the
 // document is served per issuer, and an organisation-specific list would leak
-// which tenants exist.
-func AllAuthorizationDetailTypes(ctx context.Context, db Querier) ([]string, error) {
+// which tenants exist. Scoped to the issuer's instance, instanceID (6.12).
+func AllAuthorizationDetailTypes(ctx context.Context, db Querier, instanceID string) ([]string, error) {
 	rows, err := db.Query(ctx,
-		`SELECT DISTINCT type FROM core.authorization_detail_types ORDER BY type`)
+		`SELECT DISTINCT type FROM core.authorization_detail_types
+		  WHERE `+InInstance("org_id", "$1")+` ORDER BY type`, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("listing authorization detail types: %w", err)
 	}

@@ -315,7 +315,7 @@ func (s *Server) handleResetGet(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
-	req, lerr := store.LookupRecovery(r.Context(), tx, hash, time.Now())
+	req, lerr := s.lookupRecovery(r.Context(), tx, hash)
 	// Released before anything is rendered. Rendering reads the brand from the
 	// pool, and this page is reached with no account, no CSRF token and no
 	// limit: a few dozen requests each holding one connection and waiting for
@@ -411,7 +411,7 @@ func (s *Server) handleResetFactor(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	req, lerr := store.LookupRecovery(ctx, rtx, hash, time.Now())
+	req, lerr := s.lookupRecovery(ctx, rtx, hash)
 	_ = rtx.Rollback(ctx)
 	if lerr != nil && !errors.Is(lerr, store.ErrRecoveryPending) {
 		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
@@ -520,7 +520,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	req, err := store.LookupRecovery(ctx, rtx, hash, time.Now())
+	req, err := s.lookupRecovery(ctx, rtx, hash)
 	_ = rtx.Rollback(ctx)
 	if err != nil {
 		// Pending and invalid are shown the same way here. By the time a form is

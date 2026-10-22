@@ -9,7 +9,6 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/saml"
-	"signari.dev/engine/internal/store"
 )
 
 // WS-Federation, passive requestor profile.
@@ -72,7 +71,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request) {
 
 	// The realm is the SAML entity id. Reusing the registry means a WS-Federation
 	// application is configured, audited and released exactly like a SAML one.
-	p, err := store.LoadSAMLProvider(ctx, s.db, realm)
+	p, err := s.loadSAMLProvider(ctx, realm)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found",
 			"no application is registered with that wtrealm")

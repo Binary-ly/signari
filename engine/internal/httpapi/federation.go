@@ -52,7 +52,7 @@ func (s *Server) startFederation(w http.ResponseWriter, r *http.Request, linking
 	ctx := r.Context()
 	slug := r.PathValue("slug")
 
-	provider, err := store.LoadIdentityProvider(ctx, s.db, s.cfg.Root, slug)
+	provider, err := s.loadIdentityProvider(ctx, slug)
 	if err != nil {
 		if errors.Is(err, store.ErrProviderUnknown) {
 			s.federationError(w, r, "That sign-in method is not available.")
@@ -164,7 +164,7 @@ func (s *Server) handleFederatedCallback(w http.ResponseWriter, r *http.Request)
 	// failed attempt be retried with a fresh state.
 	s.clearFederationCookie(w)
 
-	provider, err := store.LoadIdentityProvider(ctx, s.db, s.cfg.Root, slug)
+	provider, err := s.loadIdentityProvider(ctx, slug)
 	if err != nil {
 		s.federationError(w, r, "That sign-in method is not available.")
 		return

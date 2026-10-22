@@ -172,15 +172,16 @@ func (s *Server) handleEmailSignInStart(w http.ResponseWriter, r *http.Request) 
 }
 
 // emailSignInAccount is the one account a name holds whose organisation's flow
-// takes an emailed code: in orgID, or in every organisation when it is empty.
-// A name held in several is nobody's here, as on the password form
-// (lookupCredential): the page cannot say which is meant.
+// takes an emailed code: in orgID, or in every organisation of this instance
+// when it is empty (6.12). A name held in several is nobody's here, as on the
+// password form (lookupCredential): the page cannot say which is meant.
 func (s *Server) emailSignInAccount(ctx context.Context, identifier, orgID string) (userID, userOrg string, ok bool) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id::text, org_id::text FROM core.users
 		 WHERE ($1 = '' OR org_id::text = $1) AND status = 'active' AND email IS NOT NULL
+		   AND `+store.InInstance("org_id", "$3")+`
 		   AND (lower(email) = lower($2) OR lower(username) = lower($2))
-		 ORDER BY org_id LIMIT 2`, orgID, identifier)
+		 ORDER BY org_id LIMIT 2`, orgID, identifier, s.instanceID)
 	if err != nil {
 		s.log.Error("looking up an emailed sign-in's account", "err", err)
 		return "", "", false

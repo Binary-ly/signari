@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/oidc"
+	"signari.dev/engine/internal/store"
 )
 
 // corsMode describes how much latitude an endpoint gets.
@@ -135,8 +136,11 @@ func (s *Server) registeredOrigins(ctx context.Context) []string {
 		return s.originsCache
 	}
 
+	// This instance's clients' (6.12): another's are another issuer's callers.
 	rows, err := s.db.Query(ctx,
-		`SELECT DISTINCT redirect_uri FROM core.client_redirect_uris`)
+		`SELECT DISTINCT u.redirect_uri FROM core.client_redirect_uris u
+		   JOIN core.clients c ON c.client_id = u.client_id
+		  WHERE `+store.InInstance("c.org_id", "$1"), s.instanceID)
 	if err != nil {
 		s.log.Error("loading registered origins for CORS", "err", err)
 		// Serve the previous answer rather than an empty one. Returning nothing

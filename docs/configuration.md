@@ -147,6 +147,35 @@ hold a connection for as long as it liked. The remote-access tunnel is a
 WebSocket, and upgrading to one clears these deadlines for that connection, so
 a remote desktop is bounded by its session checks instead.
 
+## Several instances in one process
+
+| | |
+|---|---|
+| `SIGNARI_ADDITIONAL_ISSUERS` | Further instances to serve beside the one `SIGNARI_ISSUER` names, as a comma-separated list of their issuers. Each must already exist (`signari instance create`) and be named once. Absent, one instance is served |
+
+Each instance is its own issuer with its own signing keys, and a request goes to
+the instance whose issuer names the host it was made to. A host that no issuer
+names is answered by the instance `SIGNARI_ISSUER` names. Instances are told
+apart by host alone, so each needs a host of its own, and `serve` refuses to
+start with two on one.
+
+A token one instance signs is refused by the others. So is anything found
+without a token: a client, a session cookie, an account found by its name, a
+provider found by its slug, a recovery or passkey link, an invitation, an
+outpost or SCIM token, a dynamic registration. Each is treated as unknown
+outside its own instance. Logout tokens and security events are signed as the
+instance of the client they go to. Account notices carry the links of their
+holder's instance. The Admin API accepts each instance's access tokens only
+from that instance's designated applications.
+
+Some things stay with the process rather than an instance:
+
+- **TLS.** The certificate must cover every host, or TLS is terminated in front.
+- **LDAP and RADIUS.** Each listener serves one organisation, as it always has.
+- **The audit chain's head.** It is signed with the first instance's keys.
+- **Metrics.** The signing-key age is the first instance's, and the refresh
+  failure count is the worst of all the instances.
+
 ## Retention
 
 The janitor deletes, every pass and up to a thousand rows a table at a time,

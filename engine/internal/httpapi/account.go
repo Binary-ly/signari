@@ -50,10 +50,14 @@ func (s *Server) loginOrg(ctx context.Context, authzQuery string) string {
 			return c.OrgID
 		}
 	}
+	// The only organisation of this instance (6.12): another instance's are
+	// another issuer's, and counting them made a page of a one-organisation
+	// instance ask whose it was.
 	var n int
 	var only string
 	if err := s.db.QueryRow(ctx,
-		`SELECT count(*), COALESCE(min(id::text), '') FROM core.organizations`).Scan(&n, &only); err != nil {
+		`SELECT count(*), COALESCE(min(id::text), '') FROM core.organizations
+		  WHERE $1::text = '' OR instance_id::text = $1`, s.instanceID).Scan(&n, &only); err != nil {
 		s.log.Error("counting organisations for the sign-in page", "err", err)
 		return ""
 	}

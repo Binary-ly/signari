@@ -80,7 +80,8 @@ means guessing which one a visitor should see before they have identified
 themselves — and guessing wrong shows one customer another customer's logo.
 
 To brand separately, run an instance per hostname. That is what the instance
-model is for.
+model is for. One process can serve several, each on its own hostname
+([`SIGNARI_ADDITIONAL_ISSUERS`](configuration.md#several-instances-in-one-process)).
 
 ## What it touches
 

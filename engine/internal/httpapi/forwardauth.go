@@ -290,7 +290,7 @@ func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sid, _, _ := store.ResolveSessionCookie(ctx, s.db, store.HashToken(sessionCookie(r)))
+	sid, _, _ := store.ResolveSessionCookie(ctx, s.db, store.HashToken(sessionCookie(r)), s.instanceID)
 	if sid == "" {
 		// A proxy token with no session behind it could not be revoked by
 		// signing out, and verify refuses one.

@@ -43,8 +43,8 @@ type PendingMigration struct {
 // lookup is (1.13b). Empty means the page belongs to no organisation in
 // particular, and then the identifier must name exactly one candidate: two
 // would mean sending this password to whichever tenant's old provider the
-// database returned first.
-func LookupMigrationCandidate(ctx context.Context, db *pgxpool.Pool, orgID, identifier string,
+// database returned first. Every organisation is instanceID's (6.12).
+func LookupMigrationCandidate(ctx context.Context, db *pgxpool.Pool, orgID, instanceID, identifier string,
 	root *keys.RootKey) (*PendingMigration, bool, error) {
 
 	var p PendingMigration
@@ -67,7 +67,8 @@ func LookupMigrationCandidate(ctx context.Context, db *pgxpool.Pool, orgID, iden
 		  AND pc.user_id IS NULL
 		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))
 		  AND ($2 = '' OR u.org_id = $2::uuid)
-		LIMIT 2`, identifier, orgID)
+		  AND `+InInstance("u.org_id", "$3")+`
+		LIMIT 2`, identifier, orgID, instanceID)
 	if err != nil {
 		return nil, false, fmt.Errorf("looking up migration candidate: %w", err)
 	}

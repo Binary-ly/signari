@@ -28,7 +28,7 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	src, err := store.LoadSAMLSource(ctx, s.db, slug, s.cfg.Issuer)
+	src, err := s.loadSAMLSource(ctx, slug)
 	if err != nil {
 		s.log.Info("unknown SAML source", "slug", slug, "err", err)
 		http.NotFound(w, r)
@@ -78,7 +78,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	src, err := store.LoadSAMLSource(ctx, s.db, slug, s.cfg.Issuer)
+	src, err := s.loadSAMLSource(ctx, slug)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -197,7 +197,7 @@ func (s *Server) handleSAMLSourceMetadata(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	src, err := store.LoadSAMLSource(r.Context(), s.db, slug, s.cfg.Issuer)
+	src, err := s.loadSAMLSource(r.Context(), slug)
 	if err != nil {
 		http.NotFound(w, r)
 		return

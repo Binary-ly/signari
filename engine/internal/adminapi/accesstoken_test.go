@@ -42,7 +42,7 @@ func newAdminTokens(t *testing.T) *adminTokens {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.SetAccessTokens(set, testIssuer)
+	s.AcceptAccessTokens("", set, testIssuer)
 	client := newPreconditionClient(t, s)
 	if _, err := s.db.Exec(context.Background(),
 		`UPDATE core.clients SET admin_api = true WHERE client_id = $1`, client); err != nil {
@@ -168,6 +168,59 @@ func TestOnlyATokenForTheAdminAPIFromThisIssuerIsAccepted(t *testing.T) {
 	}
 	if rec := call(t, a.s, http.MethodGet, "/admin/clients?limit=1", a.sign(t, revoked), nil); rec.Code != http.StatusUnauthorized {
 		t.Errorf("a revoked token answered %d", rec.Code)
+	}
+}
+
+// With several instances served (6.12), a token is verified by the instance
+// that signed it and accepted from that instance's applications alone: another
+// instance's issuer and keys vouch for nobody here.
+func TestEachInstancesTokensAreAcceptedFromItsOwnApplicationsOnly(t *testing.T) {
+	a := newAdminTokens(t)
+	a.grant(t, store.RoleBinding{ClientID: a.client, Role: "auditor"})
+	ctx := context.Background()
+	var own string
+	if err := a.s.db.QueryRow(ctx, `SELECT o.instance_id::text FROM core.clients c
+		JOIN core.organizations o ON o.id = c.org_id WHERE c.client_id = $1`, a.client).Scan(&own); err != nil {
+		t.Fatal(err)
+	}
+	var other string
+	if err := a.s.db.QueryRow(ctx, `INSERT INTO core.instances (issuer, display_name)
+		VALUES ('https://adm-' || gen_random_uuid() || '.test', 'T') RETURNING id::text`).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = a.s.db.Exec(context.Background(), `DELETE FROM core.instances WHERE id = $1::uuid`, other)
+	})
+	const otherIssuer = "https://second-instance.test"
+	k, err := keys.Generate(keys.NewKID(), keys.ES256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSet, err := keys.NewSet(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownSet := a.s.accessIssuers[0].keys
+	a.s.accessIssuers = nil
+	a.s.AcceptAccessTokens(own, ownSet, testIssuer)
+	a.s.AcceptAccessTokens(other, otherSet, otherIssuer)
+
+	if rec := call(t, a.s, http.MethodGet, "/admin/clients?limit=1", a.sign(t, a.claims(a.client, "")), nil); rec.Code != http.StatusOK {
+		t.Fatalf("a token from the application's own instance was refused: %d %s", rec.Code, rec.Body.String())
+	}
+	fromOther := a.claims(a.client, "")
+	fromOther.Issuer = otherIssuer
+	fromOther.Audience = []string{tokens.AdminAudience(otherIssuer)}
+	raw, err := tokens.NewSigner(k).SignJSON(fromOther, tokens.TypAccessToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(t, a.s, http.MethodGet, "/admin/clients?limit=1", raw, nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("another instance's token for this instance's application answered %d", rec.Code)
+	}
+	// Nor its issuer with this one's keys.
+	if rec := call(t, a.s, http.MethodGet, "/admin/clients?limit=1", a.sign(t, fromOther), nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("another instance's issuer signed with this one's key answered %d", rec.Code)
 	}
 }
 

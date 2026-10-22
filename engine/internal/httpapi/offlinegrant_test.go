@@ -183,7 +183,7 @@ func TestAnOfflineGrantsSessionIsKeptAndItsLifetimeTightens(t *testing.T) {
 func TestConnectedApplicationsSayHowLongOfflineAccessLasts(t *testing.T) {
 	f, cookie := enrolFixture(t)
 	ctx := context.Background()
-	sid, _, err := store.ResolveSessionCookie(ctx, f.pool, store.HashToken(cookie))
+	sid, _, err := store.ResolveSessionCookie(ctx, f.pool, store.HashToken(cookie), "")
 	if err != nil || sid == "" {
 		t.Fatalf("the fixture's session: %v", err)
 	}

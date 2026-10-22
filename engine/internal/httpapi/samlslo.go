@@ -102,7 +102,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := store.LoadSAMLProvider(ctx, s.db, req.Issuer)
+	provider, err := s.loadSAMLProvider(ctx, req.Issuer)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			s.samlRefuse(w, r, "no service provider is registered with that entity id")

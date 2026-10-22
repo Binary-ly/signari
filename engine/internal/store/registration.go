@@ -58,14 +58,15 @@ func LoadRegistrationPolicy(ctx context.Context, db *pgxpool.Pool, orgID string)
 //
 // Exactly one, or nothing. With several, a request carrying no token names no
 // organisation, and picking one would put a stranger's client in somebody's
-// tenant on the strength of a guess.
-func SingleOpenRegistrationOrg(ctx context.Context, db *pgxpool.Pool) (string, error) {
+// tenant on the strength of a guess. Among instanceID's organisations (6.12):
+// another instance's open registration is that issuer's.
+func SingleOpenRegistrationOrg(ctx context.Context, db *pgxpool.Pool, instanceID string) (string, error) {
 	// Counted whether or not each is in service, so suspending one of two does
 	// not quietly send the strangers to the other; the one found must be in
 	// service (6.09).
 	rows, err := db.Query(ctx, `
 		SELECT org_id::text, `+OrgInService("org_id")+` FROM core.registration_policies
-		WHERE enabled AND open LIMIT 2`)
+		WHERE enabled AND open AND `+InInstance("org_id", "$1")+` LIMIT 2`, instanceID)
 	if err != nil {
 		return "", err
 	}
@@ -89,8 +90,9 @@ func SingleOpenRegistrationOrg(ctx context.Context, db *pgxpool.Pool) (string, e
 	return found[0], nil
 }
 
-// RedeemRegistrationToken checks an initial access token and spends one use.
-func RedeemRegistrationToken(ctx context.Context, db *pgxpool.Pool, hash []byte) (orgID, tokenID string, err error) {
+// RedeemRegistrationToken checks an initial access token of one of
+// instanceID's organisations and spends one use.
+func RedeemRegistrationToken(ctx context.Context, db *pgxpool.Pool, hash []byte, instanceID string) (orgID, tokenID string, err error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return "", "", err
@@ -107,7 +109,8 @@ func RedeemRegistrationToken(ctx context.Context, db *pgxpool.Pool, hash []byte)
 		  AND (t.expires_at IS NULL OR t.expires_at > now())
 		  AND p.enabled
 		  AND `+OrgInService("t.org_id")+`
-		FOR UPDATE OF t`, hash).Scan(&tokenID, &orgID, &remaining)
+		  AND `+InInstance("t.org_id", "$2")+`
+		FOR UPDATE OF t`, hash, instanceID).Scan(&tokenID, &orgID, &remaining)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", "", ErrRegistrationClosed
@@ -276,14 +279,17 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 //
 // Both conditions matter: the token must match AND the client must be
 // dynamically registered. Without the second, a leaked registration token could
-// be pointed at an operator-created client id and read it back.
-func LoadRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID string, tokenHash []byte) (*RegisteredClient, error) {
+// be pointed at an operator-created client id and read it back. And the client
+// must be one of instanceID's (6.12).
+func LoadRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID string, tokenHash []byte,
+	instanceID string) (*RegisteredClient, error) {
 	c := &RegisteredClient{}
 	err := db.QueryRow(ctx, `
 		SELECT client_id, display_name, scopes
 		FROM core.clients
 		WHERE client_id = $1 AND dynamically_registered
-		  AND registration_token_hash = $2`, clientID, tokenHash).
+		  AND registration_token_hash = $2
+		  AND `+InInstance("org_id", "$3"), clientID, tokenHash, instanceID).
 		Scan(&c.ClientID, &c.DisplayName, &c.Scopes)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -314,14 +320,16 @@ func randomToken(n int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// AnyRegistrationEnabled reports whether dynamic registration is on anywhere.
+// AnyRegistrationEnabled reports whether dynamic registration is on anywhere
+// in instanceID.
 //
 // Discovery uses it to decide whether to advertise registration_endpoint. A
 // document naming an endpoint that answers 401 to every possible caller is
 // worse than one that omits it: the client tries, fails, and blames itself.
-func AnyRegistrationEnabled(ctx context.Context, db *pgxpool.Pool) (bool, error) {
+func AnyRegistrationEnabled(ctx context.Context, db *pgxpool.Pool, instanceID string) (bool, error) {
 	var on bool
 	err := db.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM core.registration_policies WHERE enabled)`).Scan(&on)
+		`SELECT EXISTS (SELECT 1 FROM core.registration_policies
+		  WHERE enabled AND `+InInstance("org_id", "$1")+`)`, instanceID).Scan(&on)
 	return on, err
 }

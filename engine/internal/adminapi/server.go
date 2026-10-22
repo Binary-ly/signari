@@ -72,11 +72,10 @@ type Server struct {
 	// looks like a capability.
 	root *keys.RootKey
 
-	// keySet and issuer verify this deployment's own access tokens audienced to
-	// the Admin API (accesstoken.go). nil until SetAccessTokens, and then only
-	// admin tokens are accepted.
-	keySet *keys.Set
-	issuer string
+	// accessIssuers verify this deployment's own access tokens audienced to
+	// the Admin API (accesstoken.go), one for each instance served. Empty until
+	// AcceptAccessTokens, and then only admin tokens are accepted.
+	accessIssuers []accessIssuer
 
 	// arrivals bounds work done for callers who have not authenticated yet.
 	//

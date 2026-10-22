@@ -43,7 +43,7 @@ func (s *Server) handleSSFReceive(w http.ResponseWriter, r *http.Request) {
 			"the request body could not be parsed as a SET")
 		return
 	}
-	src, found, err := store.SourceFor(ctx, s.db, issuer, audiences)
+	src, found, err := store.SourceFor(ctx, s.db, issuer, audiences, s.instanceID)
 	if errors.Is(err, store.ErrAmbiguousSource) {
 		// Unreachable by one audience since migration 0138. A token listing
 		// several can still name two tenants' sources, and acting for either
@@ -65,7 +65,7 @@ func (s *Server) handleSSFReceive(w http.ResponseWriter, r *http.Request) {
 		// recipient here, which does not accept this issuer. invalid_audience is
 		// "The SET Audience does not correspond to the SET Recipient": it names
 		// nobody here. 400 either way, per §2.3.
-		received, aerr := store.AudienceIsReceived(ctx, s.db, audiences)
+		received, aerr := store.AudienceIsReceived(ctx, s.db, audiences, s.instanceID)
 		if aerr != nil {
 			s.log.Error("looking up a shared-signals audience", "err", aerr)
 			writeSSFError(w, http.StatusInternalServerError, errInvalidRequest, "")

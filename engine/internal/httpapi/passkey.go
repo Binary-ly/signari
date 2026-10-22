@@ -851,10 +851,13 @@ func ceremonyFor(p store.WebAuthnPolicy) passkeys.Ceremony {
 
 // userByHandle resolves the 64-byte user handle from a signed assertion.
 func (s *Server) userByHandle(ctx context.Context, handle []byte) (*passkeys.User, string, string, error) {
+	// This instance's users only (6.12): two instances may share a relying
+	// party id, and then a passkey made at one verifies at the other.
 	var userID, orgID, email, username string
 	if err := s.db.QueryRow(ctx, `
 		SELECT id::text, org_id::text, COALESCE(email,''), COALESCE(username,'')
-		FROM core.users WHERE user_handle = $1 AND status = 'active'`, handle).
+		FROM core.users WHERE user_handle = $1 AND status = 'active'
+		  AND `+store.InInstance("org_id", "$2"), handle, s.instanceID).
 		Scan(&userID, &orgID, &email, &username); err != nil {
 		return nil, "", "", fmt.Errorf("no active user for that credential: %w", err)
 	}

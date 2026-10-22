@@ -132,7 +132,7 @@ func TestARegistrationTokenIsSpentOnce(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, _, err := RedeemRegistrationToken(context.Background(), pool, hash)
+			_, _, err := RedeemRegistrationToken(context.Background(), pool, hash, "")
 			ok[i] = err == nil
 		}(i)
 	}
@@ -152,7 +152,7 @@ func TestARegistrationTokenIsSpentOnce(t *testing.T) {
 	}
 
 	// And the token is now spent.
-	if _, _, err := RedeemRegistrationToken(context.Background(), pool, hash); !errors.Is(err, ErrRegistrationClosed) {
+	if _, _, err := RedeemRegistrationToken(context.Background(), pool, hash, ""); !errors.Is(err, ErrRegistrationClosed) {
 		t.Errorf("an exhausted token was not refused: %v", err)
 	}
 }
@@ -181,14 +181,14 @@ func TestRegistrationTokensRespectPolicyAndLifecycle(t *testing.T) {
 		},
 	} {
 		raw := plant()
-		if _, _, err := RedeemRegistrationToken(ctx, pool, HashToken(string(raw))); err == nil {
+		if _, _, err := RedeemRegistrationToken(ctx, pool, HashToken(string(raw)), ""); err == nil {
 			t.Errorf("%s: the token was still redeemed", name)
 		}
 	}
 
 	// The positive case, so the negatives cannot pass by refusing everything.
 	_, raw := plantRegistrationToken(t, pool, true, &one, nil, false)
-	if _, _, err := RedeemRegistrationToken(ctx, pool, HashToken(string(raw))); err != nil {
+	if _, _, err := RedeemRegistrationToken(ctx, pool, HashToken(string(raw)), ""); err != nil {
 		t.Fatalf("a live token against an enabled policy was refused: %v", err)
 	}
 }

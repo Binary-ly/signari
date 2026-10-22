@@ -103,11 +103,16 @@ func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
 		}
 	}
 
-	key, err := w.keys.Active(keys.ES256)
+	// As the issuer of the stream's client's instance (6.12).
+	as, err := w.signerFor(ctx, p.ClientID)
+	if err != nil {
+		return err
+	}
+	key, err := as.keys.Active(keys.ES256)
 	if err != nil {
 		// Any active key will do; the receiver resolves it from our JWKS.
-		for _, alg := range w.keys.Algorithms() {
-			if k, kerr := w.keys.Active(alg); kerr == nil {
+		for _, alg := range as.keys.Algorithms() {
+			if k, kerr := as.keys.Active(alg); kerr == nil {
 				key, err = k, nil
 				break
 			}
@@ -127,12 +132,12 @@ func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
 	// time instead -- see the shared builder.
 	var token string
 	if p.Event == ssf.StreamUpdated {
-		token, err = ssf.MintStreamUpdated(tokens.NewSigner(key), w.issuer, p.ClientID, jti,
+		token, err = ssf.MintStreamUpdated(tokens.NewSigner(key), as.issuer, p.ClientID, jti,
 			p.StreamID, p.Status, p.Reason, time.Now())
 	} else {
-		event := ssf.RevocationEvent(w.issuer, p.Subject, p.Reason, time.Now())
+		event := ssf.RevocationEvent(as.issuer, p.Subject, p.Reason, time.Now())
 		event.Type = p.Event
-		token, err = ssf.Mint(tokens.NewSigner(key), w.issuer, p.ClientID, jti, event, time.Now())
+		token, err = ssf.Mint(tokens.NewSigner(key), as.issuer, p.ClientID, jti, event, time.Now())
 	}
 	if err != nil {
 		return err

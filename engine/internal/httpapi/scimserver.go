@@ -41,6 +41,11 @@ func (s *Server) scimAuth(r *http.Request) (*store.SCIMSource, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Another instance's source provisions that instance's directory, at its
+	// own host (6.12).
+	if !s.ownedBy(r.Context(), s.db, src.OrgID, "scim source") {
+		return nil, errors.New("the token belongs to another instance")
+	}
 	// Belt and braces: the lookup is already by hash, and comparing again means
 	// a future change to that query cannot quietly turn it into a prefix match.
 	if subtle.ConstantTimeCompare(src.TokenHash, sum[:]) != 1 {

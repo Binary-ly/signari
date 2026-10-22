@@ -56,6 +56,9 @@ type Worker struct {
 	root *keys.RootKey
 	// notify delivers account notices (accountnotice.go); nil leaves them queued.
 	notify AccountNotifier
+	// instances are what each served instance signs with (instances.go); empty
+	// signs everything with keys and issuer.
+	instances map[string]signer
 }
 
 func New(db *pgxpool.Pool, keySet *keys.Set, issuer string, root *keys.RootKey,
@@ -199,7 +202,11 @@ func (w *Worker) drainOnce(ctx context.Context) (int, error) {
 
 // deliver POSTs a signed logout token to one relying party.
 func (w *Worker) deliver(ctx context.Context, n store.LogoutNotice) error {
-	token, err := w.mintLogoutToken(n)
+	as, err := w.signerFor(ctx, n.ClientID)
+	if err != nil {
+		return err
+	}
+	token, err := signLogoutToken(as, n)
 	if err != nil {
 		return fmt.Errorf("minting logout token: %w", err)
 	}
@@ -246,7 +253,14 @@ type logoutClaims struct {
 	Extra    map[string]string `json:"-"`
 }
 
+// mintLogoutToken is signLogoutToken as the set and issuer the worker was
+// built with.
 func (w *Worker) mintLogoutToken(n store.LogoutNotice) (string, error) {
+	return signLogoutToken(signer{keys: w.keys, issuer: w.issuer}, n)
+}
+
+// signLogoutToken is the logout token for a notice, signed as one instance.
+func signLogoutToken(as signer, n store.LogoutNotice) (string, error) {
 	// A notice naming neither a session nor a subject produces a valid, signed
 	// instruction to end NOTHING. The relying party has no way to act on it, and
 	// no way to tell it apart from a logout it handled correctly -- so the
@@ -264,9 +278,9 @@ func (w *Worker) mintLogoutToken(n store.LogoutNotice) (string, error) {
 	// Sign with whatever is active. RS256 first: it is the universal floor, and a
 	// logout endpoint is exactly the kind of lightly-maintained code path most
 	// likely to support only RS256.
-	key, err := w.keys.Active(keys.RS256)
+	key, err := as.keys.Active(keys.RS256)
 	if err != nil {
-		if key, err = w.keys.Active(keys.ES256); err != nil {
+		if key, err = as.keys.Active(keys.ES256); err != nil {
 			return "", fmt.Errorf("no active signing key: %w", err)
 		}
 	}
@@ -278,7 +292,7 @@ func (w *Worker) mintLogoutToken(n store.LogoutNotice) (string, error) {
 	now := time.Now()
 
 	c := logoutClaims{
-		Issuer:   w.issuer,
+		Issuer:   as.issuer,
 		Audience: n.ClientID,
 		IssuedAt: now.Unix(),
 		// Short-lived: a logout token is consumed immediately or not at all, and

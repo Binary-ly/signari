@@ -125,10 +125,11 @@ func CredentialSubject(ctx context.Context, db *pgxpool.Pool, userID string) (ma
 //
 // Not scoped to an organisation, for the same reason the discovery document's
 // `authorization_details_types_supported` is not: metadata is published per
-// ISSUER, and a deployment serves one. Scoping it would mean the unauthenticated
-// metadata endpoint guessing which tenant is asking, and a wallet reading a
-// document that describes only some of what the issuer offers.
-func AllCredentialConfigurations(ctx context.Context, db Querier) (map[string]oid4vci.Configuration, error) {
+// ISSUER. Scoping it would mean the unauthenticated metadata endpoint guessing
+// which tenant is asking, and a wallet reading a document that describes only
+// some of what the issuer offers. So it is scoped to the issuer's instance,
+// instanceID, and no further (6.12).
+func AllCredentialConfigurations(ctx context.Context, db Querier, instanceID string) (map[string]oid4vci.Configuration, error) {
 	rows, err := db.Query(ctx, `
 		SELECT DISTINCT ON (config_id)
 		       config_id, format, vct, always_claims, selective_claims,
@@ -139,9 +140,11 @@ func AllCredentialConfigurations(ctx context.Context, db Querier) (map[string]oi
 		       -- tenant accepts, and one told otherwise is refused by the
 		       -- tenant that does.
 		       EXISTS (SELECT 1 FROM core.credential_configurations r
-		               WHERE r.config_id = c.config_id AND r.require_key_attestation)
+		               WHERE r.config_id = c.config_id AND r.require_key_attestation
+		                 AND `+InInstance("r.org_id", "$1")+`)
 		FROM core.credential_configurations c
-		ORDER BY config_id`)
+		WHERE `+InInstance("c.org_id", "$1")+`
+		ORDER BY config_id`, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("listing credential configurations: %w", err)
 	}

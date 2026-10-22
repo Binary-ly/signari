@@ -52,6 +52,11 @@ type Client struct {
 	// on the request path, like Enabled.
 	OrgSuspended bool
 
+	// InstanceID is the instance the client's organisation belongs to: a
+	// server serving another instance answers as if the client did not exist
+	// (6.12).
+	InstanceID string
+
 	// IssuerAlias, when set, is a REGISTERED legacy issuer this client's tokens
 	// are minted under, so an application migrated from another provider keeps
 	// working without being reconfigured. Cutover only -- see migration 0015.
@@ -241,7 +246,9 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       access_token_ttl_s, require_pushed_authorization, minimum_acr, admin_api,
 		       -- store.OrgInService's question, which this package cannot import.
 		       NOT EXISTS (SELECT 1 FROM core.organizations o
-		                    WHERE o.id = core.clients.org_id AND o.status = 'active')
+		                    WHERE o.id = core.clients.org_id AND o.status = 'active'),
+		       (SELECT o.instance_id::text FROM core.organizations o
+		         WHERE o.id = core.clients.org_id)
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -255,7 +262,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.BackchannelTokenDeliveryMode,
 			&c.BackchannelClientNotificationEndpoint,
 			&c.ClaimsRedirectURIs,
-			&c.AccessTTL, &c.RequirePAR, &c.MinimumACR, &c.AdminAPI, &c.OrgSuspended)
+			&c.AccessTTL, &c.RequirePAR, &c.MinimumACR, &c.AdminAPI, &c.OrgSuspended, &c.InstanceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

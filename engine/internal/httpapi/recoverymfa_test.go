@@ -267,7 +267,7 @@ flows:
 	if c == nil || c.Value == "" {
 		t.Fatalf("the reset did not end signed in: %d %s", rec.Code, truncate(rec.Body.String(), 300))
 	}
-	sid, live, err := store.ResolveSessionCookie(context.Background(), f.pool, store.HashToken(c.Value))
+	sid, live, err := store.ResolveSessionCookie(context.Background(), f.pool, store.HashToken(c.Value), "")
 	if err != nil || !live || sid == "" {
 		t.Fatalf("the session is not live: %v", err)
 	}

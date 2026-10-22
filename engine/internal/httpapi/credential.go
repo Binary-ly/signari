@@ -381,7 +381,7 @@ func writeCredentialError(w http.ResponseWriter, status int, code, description s
 func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	configs, err := store.AllCredentialConfigurations(ctx, s.db)
+	configs, err := store.AllCredentialConfigurations(ctx, s.db, s.instanceID)
 	if err != nil {
 		s.log.Error("loading credential configurations", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")

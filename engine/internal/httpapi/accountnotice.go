@@ -52,11 +52,13 @@ func (s *Server) DeliverAccountNotice(ctx context.Context, n store.AccountNotice
 		key = "federation.unlinked"
 	case store.NoticeAccountApproved:
 		key = "account.approved"
+	case store.NoticeNewDevice:
+		key = "newdevice"
 	default:
 		return fmt.Errorf("an account notice of no known kind %q", n.Notice)
 	}
 	tr := s.notifierFor(ctx, n.UserID)
-	data := map[string]any{"Factor": tr.Text("factor.kind." + n.Factor), "Provider": n.Provider}
+	data := map[string]any{"Factor": tr.Text("factor.kind." + n.Factor), "Provider": n.Provider, "Device": n.Device}
 	subject, body := tr.Text("mail."+key+".subject", data), tr.Text("mail."+key+".body", data)
 	err := s.notifyAccount(ctx, n.UserID, subject, body, tr.Text("sms."+key, data))
 	if n.Notice == store.NoticeEmailChanged && n.OldAddress != "" {

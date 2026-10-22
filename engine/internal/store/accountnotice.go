@@ -51,6 +51,9 @@ const (
 	// NoticeAccountApproved: a self-sign-up an administrator approved can now
 	// sign in (5.19); its sign-up page said a message would come.
 	NoticeAccountApproved = "account_approved"
+	// NoticeNewDevice: a sign-in from a browser and system none of the
+	// person's recent sessions used (5.21); Device names it.
+	NoticeNewDevice = "new_device"
 )
 
 // ApproveUser activates a pending account in tx and queues the notice telling
@@ -81,6 +84,8 @@ type AccountNotice struct {
 	OldAddress string `json:"old_address,omitempty"`
 	// Provider is the provider a NoticeProviderLinked or Unlinked names.
 	Provider string `json:"provider,omitempty"`
+	// Device is the browser and system a NoticeNewDevice names.
+	Device string `json:"device,omitempty"`
 }
 
 // EnqueueAccountNotice queues a notice in tx.

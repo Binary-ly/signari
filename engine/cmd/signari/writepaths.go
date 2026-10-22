@@ -1480,6 +1480,47 @@ func instanceRememberDevice(ctx context.Context, conn *pgx.Conn, orgID string, d
 	return nil
 }
 
+// instanceNewDeviceNotice turns on or off the mail a sign-in from a new device
+// sends its person (0187).
+func instanceNewDeviceNotice(ctx context.Context, conn *pgx.Conn, orgID, notice string) error {
+	if orgID == "" || (notice != "on" && notice != "off") {
+		return fmt.Errorf("give -org and -notice on or off")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var previous bool
+	if err := tx.QueryRow(ctx, `SELECT new_device_notice FROM core.organizations WHERE id = $1::uuid FOR UPDATE`,
+		orgID).Scan(&previous); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no organisation %s", orgID)
+		}
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE core.organizations SET new_device_notice = $2 WHERE id = $1::uuid`,
+		orgID, notice == "on"); err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "org.new_device_notice_set", OrgID: orgID,
+		Detail: map[string]any{"from": previous, "to": notice == "on", "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if notice == "on" {
+		fmt.Println("new-device notices: on\n\n  A sign-in from a browser and system none of the person's sessions of the")
+		fmt.Println("  last 90 days came from is mailed to them, with how to act if it was not them.")
+		return nil
+	}
+	fmt.Println("new-device notices: off")
+	return nil
+}
+
 // instanceReauthWindow sets how recently a session must have been signed in to
 // change the account from /account (migration 0167).
 func instanceReauthWindow(ctx context.Context, conn *pgx.Conn, orgID string, window time.Duration) error {

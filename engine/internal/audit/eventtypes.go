@@ -52,7 +52,7 @@ var EventTypes = []string{
 	"oauth.code_reused", "oauth.consent_denied", "oauth.consent_granted",
 	"oauth.refresh_reused", "oauth.token_exchanged", "oauth.token_revoked",
 	"oid4vci.credential_issued",
-	"org.login_throttle_set", "org.password_only_binds_set", "org.reauth_window_set",
+	"org.login_throttle_set", "org.new_device_notice_set", "org.password_only_binds_set", "org.reauth_window_set",
 	"org.remember_device_set", "org.session_lifetime_set", "org.sms_numbers_set", "org.totp_policy_set",
 	"password.breached", "password.changed",
 	"prompt.answered",

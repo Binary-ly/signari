@@ -2245,6 +2245,18 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 
 	// The organisation's lifetime, and its idle limit, from sign-in (0180): the
 	// session ends at the sooner of the two unless it is used.
+	// A device none of this person's recent sessions came from is told to
+	// them (newdevice.go), read before this session is written and queued
+	// with it, so a sign-in that does not hold tells nobody.
+	if device, isNew := s.newDeviceSignIn(ctx, r, tx, userID, orgID); isNew {
+		if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+			Notice: store.NoticeNewDevice, Device: device}); err != nil {
+			s.log.Error("queueing the new-device notice", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	// persistent records "stay signed in", where it was asked and is offered,
 	// for whichever of this browser's cookies holds the session later (0185).
 	userAgent, ipHash := s.sessionDevice(r)

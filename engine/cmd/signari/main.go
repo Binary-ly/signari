@@ -717,6 +717,8 @@ func run(args []string) (err error) {
 	persistentSessions := fs.String("persistent", "",
 		"`instance session-lifetime`: on or off, whether the sign-in page offers \"stay signed in on this "+
 			"device\", a session cookie that outlasts the browser; omit to keep the current setting")
+	newDeviceNotice := fs.String("notice", "",
+		"`instance new-device-notice`: on or off, whether a sign-in from a new device is mailed to the person")
 	setEnabled := fs.Bool("enabled", true, "whether the object is in service")
 	onMissing := fs.String("on-missing", "",
 		"what a directory sync does with somebody the directory no longer returns: "+
@@ -963,6 +965,8 @@ func run(args []string) (err error) {
 			*persistentSessions)
 	case "instance remember-device":
 		return instanceRememberDevice(ctx, conn, *orgID, *rememberDays)
+	case "instance new-device-notice":
+		return instanceNewDeviceNotice(ctx, conn, *orgID, *newDeviceNotice)
 	case "webauthn policy":
 		algs, err := webauthnAlgorithms(*webauthnAlgs)
 		if err != nil {

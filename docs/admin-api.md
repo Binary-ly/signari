@@ -125,6 +125,9 @@ use a token costs an integrator an hour and an attacker nothing.
 | | |
 |---|---|
 | `POST /admin/organizations` | Provision a tenant. `slug`, `display_name`, and `instance_id` — the last required only when the deployment has more than one instance. Needs `organizations:write` **and an unscoped token** |
+| `GET /admin/organizations` | Every organisation, with its `status`, for an unscoped token; its own for a scoped one. `config:read` |
+| `GET /admin/organizations/{orgID}` | One organisation and its `status`. `config:read` |
+| `PATCH /admin/organizations/{orgID}` | `{"status": "suspended"}` or `"active"`. Suspended, the organisation is refused at every entry point from the next request: sign-in by any method, the sessions it has, its clients at every OAuth and OIDC endpoint, its tokens at userinfo and introspection, LDAP binds, RADIUS, SCIM provisioning, its outposts (AuthZEN and LDAP), sign-up, recovery and passkey links, and its own admin tokens, which get 403 `organisation_suspended`. **Nothing is ended**: reactivated, a session or grant with time left resumes, so end them as well if that is what you mean. Audited `admin.organization_suspended` / `admin.organization_reactivated`. Needs `organizations:write` **and an unscoped token**, since a tenant that could lift its own suspension would not be suspended; honours `If-Match`. `signari instance org-status` does the same |
 
 **Only an unscoped token may create an organisation.** A token scoped to one
 organisation is refused, because a tenant that can provision tenants has escaped

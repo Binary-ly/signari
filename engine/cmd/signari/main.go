@@ -601,7 +601,8 @@ func run(args []string) (err error) {
 		"the DN a migrating user binds as, with {username} once, e.g. uid={username},ou=people,dc=example,dc=com "+
 			"(migration-source add -kind ldap)")
 	streamStatus := fs.String("status", "",
-		"a Shared Signals stream's status: enabled, paused or disabled (ssf set-status)")
+		"a Shared Signals stream's status: enabled, paused or disabled (ssf set-status); "+
+			"an organisation's: active or suspended (instance org-status)")
 	racParams := fs.String("rac-params", "",
 		"comma-separated name=value guacd parameters for a remote-access connection, e.g. "+
 			"security=nla,ignore-cert=true; empty clears them (rac set-parameters)")
@@ -970,6 +971,8 @@ func run(args []string) (err error) {
 		return instanceRememberDevice(ctx, conn, *orgID, *rememberDays)
 	case "instance new-device-notice":
 		return instanceNewDeviceNotice(ctx, conn, *orgID, *newDeviceNotice)
+	case "instance org-status":
+		return instanceOrgStatus(ctx, conn, *orgID, *streamStatus)
 	case "webauthn policy":
 		algs, err := webauthnAlgorithms(*webauthnAlgs)
 		if err != nil {

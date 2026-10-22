@@ -46,10 +46,10 @@ import (
 // one-call tenant deletion is an irreversible destruction of everything a
 // customer has, reachable by a single mistyped identifier, and no confirmation
 // parameter makes that a good shape for an HTTP API. Removing the data is a
-// deliberate operation with the database in front of you. Suspension would be
-// `status = 'suspended'`, and nothing sets or reads it yet (6.09): enforcement at
-// every entry point comes first, then the writer. This said it stopped the
-// tenant working.
+// deliberate operation with the database in front of you. Suspension is
+// `status = 'suspended'`, set by PATCH below (6.09) and read at every entry
+// point; the enforcement shipped first, then this writer, because for years
+// this paragraph said it stopped the tenant working while nothing read it.
 
 // slugPattern is what may appear in a URL and a configuration file without
 // quoting.
@@ -198,3 +198,152 @@ func (s *Server) createOrganization(w http.ResponseWriter, r *http.Request) {
 }
 
 var errAmbiguousInstance = errors.New("the instance is ambiguous")
+
+// organization is what the reads return: what a tenant is, never what it holds.
+type organization struct {
+	ID          string `json:"id"`
+	InstanceID  string `json:"instance_id"`
+	Slug        string `json:"slug"`
+	DisplayName string `json:"display_name"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at"`
+}
+
+const organizationColumns = `id::text, instance_id::text, slug, display_name, status,
+	to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`
+
+// listOrganizations is every organisation for a deployment-wide token, and its
+// own for one scoped to an organisation.
+func (s *Server) listOrganizations(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	p, ok := principalFrom(ctx)
+	if !ok {
+		writeCrossOrg(w, requireOrg(ctx, ""))
+		return
+	}
+	rows, err := s.db.Query(ctx, `SELECT `+organizationColumns+` FROM core.organizations
+		WHERE $1 = '' OR id::text = $1 ORDER BY created_at, id`, p.OrgID)
+	if err != nil {
+		s.log.Error("listing organisations", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	defer rows.Close()
+	out := []organization{}
+	for rows.Next() {
+		var o organization
+		if err := rows.Scan(&o.ID, &o.InstanceID, &o.Slug, &o.DisplayName, &o.Status, &o.CreatedAt); err != nil {
+			s.log.Error("listing organisations", "err", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+			return
+		}
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		s.log.Error("listing organisations", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	s.writeList(w, r, map[string]any{"organizations": out})
+}
+
+func (s *Server) getOrganization(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.PathValue("orgID")
+	if err := requireOrg(ctx, orgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	var o organization
+	err := s.db.QueryRow(ctx, `SELECT `+organizationColumns+` FROM core.organizations
+		WHERE id::text = $1`, orgID).
+		Scan(&o.ID, &o.InstanceID, &o.Slug, &o.DisplayName, &o.Status, &o.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+		return
+	}
+	if err != nil {
+		s.log.Error("reading an organisation", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	s.writeList(w, r, o)
+}
+
+// patchOrganization suspends or reactivates an organisation (6.09).
+//
+// Suspension refuses the organisation at every entry point the engine has --
+// sign-in, its sessions, its clients at every endpoint, its tokens at
+// userinfo and introspection, directory binds, SCIM, its outposts, sign-up,
+// recovery and its own admin tokens -- from the next request, and ends
+// nothing: reactivated, a session or grant with time left resumes. Ending
+// them is a separate, deliberate act.
+//
+// Deployment-wide tokens only. A tenant that could reactivate itself would be
+// a suspension it lifts at will, and its own tokens are refused while it is
+// suspended anyway.
+func (s *Server) patchOrganization(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.PathValue("orgID")
+
+	var req struct {
+		Status *string `json:"status"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
+		return
+	}
+	if req.Status == nil || (*req.Status != "active" && *req.Status != "suspended") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_status",
+			"detail": `status is "active" or "suspended"`})
+		return
+	}
+	if err := requireOrg(ctx, ""); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "outside_token_organisation",
+			"detail": "only a deployment-wide token may suspend or reactivate an organisation"})
+		return
+	}
+
+	pre, preOK := s.readPrecondition(w, r)
+	if !preOK {
+		return
+	}
+	var was string
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `SELECT status FROM core.organizations WHERE id::text = $1 FOR UPDATE`,
+			orgID).Scan(&was); err != nil {
+			return err
+		}
+		if was == *req.Status {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `UPDATE core.organizations SET status = $2, updated_at = now()
+			WHERE id::text = $1`, orgID, *req.Status); err != nil {
+			return err
+		}
+		typ := "admin.organization_suspended"
+		if *req.Status == "active" {
+			typ = "admin.organization_reactivated"
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: typ, AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
+			Detail: map[string]any{"was": was}})
+	})
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case errors.Is(err, pgx.ErrNoRows):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+		return
+	case err != nil:
+		s.log.Error("setting an organisation's status", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	s.log.Warn("organisation status set", "org_id", orgID, "status", *req.Status, "was", was,
+		"config_version", version)
+	writeJSON(w, http.StatusOK, map[string]any{"id": orgID, "status": *req.Status, "was": was,
+		"config_version": version})
+}

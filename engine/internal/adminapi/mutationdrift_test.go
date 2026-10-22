@@ -281,6 +281,15 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			// An organisation of its own: suspending a shared one would refuse
+			// every other test's sign-ins in it.
+			name: "PATCH /admin/organizations/{orgID}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false)
+			},
+			body: func(*testing.T, *Server, string) string { return `{"status":"suspended"}` },
+		},
+		{
 			name: "POST /admin/clients", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/clients" },
 			body: func(t *testing.T, s *Server, _ string) string {

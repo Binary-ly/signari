@@ -205,6 +205,10 @@ func (s *Server) Routes() http.Handler {
 	route("POST /admin/invitations", ScopeUsersWrite, s.createInvitation)
 	route("DELETE /admin/invitations/{invitationID}", ScopeUsersWrite, s.revokeInvitation)
 	route("POST /admin/organizations", ScopeOrganizationsWrite, s.createOrganization)
+	route("GET /admin/organizations", ScopeConfigRead, s.listOrganizations)
+	route("GET /admin/organizations/{orgID}", ScopeConfigRead, s.getOrganization)
+	// Suspension, deployment-wide tokens only (organizations.go).
+	route("PATCH /admin/organizations/{orgID}", ScopeOrganizationsWrite, s.patchOrganization)
 
 	// The scope catalogue. Registered unconditionally — unlike attributes, a
 	// scope holds no personal data and needs no subject key.
@@ -346,6 +350,11 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		p, err := s.resolveToken(r.Context(), h[len(prefix):])
+		if errors.Is(err, errOrgSuspended) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "organisation_suspended",
+				"detail": "this token's organisation is suspended; a deployment-wide token can reactivate it"})
+			return
+		}
 		if err != nil {
 			if !errors.Is(err, errTokenRejected) {
 				s.log.Error("resolving an admin token", "err", err)

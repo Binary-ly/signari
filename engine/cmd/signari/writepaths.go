@@ -1521,6 +1521,57 @@ func instanceNewDeviceNotice(ctx context.Context, conn *pgx.Conn, orgID, notice 
 	return nil
 }
 
+// instanceOrgStatus suspends or reactivates an organisation (6.09), as PATCH
+// /admin/organizations/{orgID} does: refused at every entry point from the
+// next request, nothing ended.
+func instanceOrgStatus(ctx context.Context, conn *pgx.Conn, orgID, status string) error {
+	if orgID == "" || (status != "active" && status != "suspended") {
+		return fmt.Errorf("give -org and -status active or suspended")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var was string
+	if err := tx.QueryRow(ctx, `SELECT status FROM core.organizations WHERE id = $1::uuid FOR UPDATE`,
+		orgID).Scan(&was); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no organisation %s", orgID)
+		}
+		return err
+	}
+	if was == status {
+		fmt.Println("organisation status: " + status + " (unchanged)")
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE core.organizations SET status = $2, updated_at = now() WHERE id = $1::uuid`,
+		orgID, status); err != nil {
+		return err
+	}
+	typ := "admin.organization_suspended"
+	if status == "active" {
+		typ = "admin.organization_reactivated"
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: typ, OrgID: orgID, Detail: map[string]any{"was": was, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if status == "suspended" {
+		fmt.Println("organisation status: suspended\n\n  Refused from the next request: sign-in, its sessions, its clients at every")
+		fmt.Println("  endpoint, its tokens at userinfo and introspection, LDAP and RADIUS, SCIM, its")
+		fmt.Println("  outposts, sign-up, recovery and its own admin tokens. Nothing is ended; a")
+		fmt.Println("  session or grant with time left resumes when it is reactivated.")
+		return nil
+	}
+	fmt.Println("organisation status: active")
+	return nil
+}
+
 // instanceReauthWindow sets how recently a session must have been signed in to
 // change the account from /account (migration 0167).
 func instanceReauthWindow(ctx context.Context, conn *pgx.Conn, orgID string, window time.Duration) error {

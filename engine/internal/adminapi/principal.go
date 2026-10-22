@@ -233,13 +233,15 @@ func (s *Server) resolveToken(ctx context.Context, presented string) (*Principal
 	var p Principal
 	var orgID *string
 	var expires, revoked *time.Time
+	var serving bool
 	err := s.db.QueryRow(ctx, `
 		SELECT id::text, name, org_id::text, scopes, expires_at, revoked_at,
-		       client_ids, group_ids
+		       client_ids, group_ids,
+		       org_id IS NULL OR `+store.OrgInService("org_id")+`
 		FROM core.admin_tokens
 		WHERE token_hash = $1`, sum[:]).
 		Scan(&p.TokenID, &p.Name, &orgID, &p.Scopes, &expires, &revoked,
-			&p.ClientIDs, &p.GroupIDs)
+			&p.ClientIDs, &p.GroupIDs, &serving)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, errTokenRejected
@@ -252,11 +254,21 @@ func (s *Server) resolveToken(ctx context.Context, presented string) (*Principal
 	if expires != nil && time.Now().After(*expires) {
 		return nil, errTokenRejected
 	}
+	// A suspended organisation's own tokens are refused, so its automation stops
+	// with the rest of it (6.09); a deployment-wide token still reaches it, which
+	// is how it is reactivated. Told apart from a bad token, since the holder of
+	// a good one is owed the reason.
+	if !serving {
+		return nil, errOrgSuspended
+	}
 	if orgID != nil {
 		p.OrgID = *orgID
 	}
 	return &p, nil
 }
+
+// errOrgSuspended refuses a good token of a suspended organisation.
+var errOrgSuspended = errors.New("organisation suspended")
 
 // touch records that a token was used, best-effort and out of band.
 //

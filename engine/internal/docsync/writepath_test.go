@@ -75,13 +75,12 @@ var knownUnwritable = map[string]string{
 	"prompts.content_hash": "computed by the prompts_versioned trigger from the title, body and fields; no writer sets it, by design",
 
 	// Reported by the console through core_v1 and enforced NOWHERE on the request
-	// path. A command to set these would be the same defect from the other side:
-	// a suspension switch that suspends nothing is worse than an absent one,
-	// because an operator would believe the organisation was out of service.
-	// Closing this means enforcement first, at every sign-in and token path, then
-	// the command.
-	"organizations.status": "a suspended organisation is still served; nothing on the request path reads it",
-	"instances.status":     "the same for an issuer",
+	// path. A command to set it would be the same defect from the other side: a
+	// suspension switch that suspends nothing is worse than an absent one,
+	// because an operator would believe the issuer was out of service. Closing
+	// this means enforcement first, then the command, as organizations.status
+	// did in October 2026 (6.09).
+	"instances.status": "a suspended issuer is still served; nothing on the request path reads it",
 }
 
 var (

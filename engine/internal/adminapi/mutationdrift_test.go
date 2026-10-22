@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/store"
 )
 
@@ -283,6 +284,30 @@ func allMutatingRoutes() []mutatingRoute {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/signup"
 			},
 			body: func(*testing.T, *Server, string) string { return `{"allowed_domains":["drift.example"]}` },
+		},
+		{
+			// Its own organisation: a prompt on the shared one is asked at
+			// every other test's sign-in.
+			name: "PUT /admin/organizations/{orgID}/prompts/{slug}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/prompts/drift"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"title":"Drift","fields":[{"name":"ok","type":"checkbox","label":"OK","required":true}]}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/prompts/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, _, err := store.SavePrompt(context.Background(), s.db, org, store.PromptDefinition{
+					Slug: "drift", Title: "Drift", Once: true, Fields: []prompts.Field{
+						{Name: "ok", Type: prompts.Checkbox, Label: "OK", Required: true}}}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/prompts/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
 		},
 		{
 			// Its own organisation: registration open on the shared one would

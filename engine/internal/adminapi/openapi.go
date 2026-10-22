@@ -149,6 +149,11 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/signup":    "Open self-sign-up or replace its rule.",
 	"DELETE /admin/organizations/{orgID}/signup": "Close self-sign-up; invitations and administrators still make accounts.",
 
+	// Interstitial prompts (6.07).
+	"GET /admin/organizations/{orgID}/prompts":          "The prompts asked between sign-in and the session, in order.",
+	"PUT /admin/organizations/{orgID}/prompts/{slug}":   "Define or replace a prompt; a change to its wording asks everyone again.",
+	"PATCH /admin/organizations/{orgID}/prompts/{slug}": "Enable or disable a prompt, keeping its answers.",
+
 	// Dynamic client registration (6.07).
 	"GET /admin/organizations/{orgID}/registration":                     "Whether /oauth2/register is on, open, and what it allows.",
 	"PUT /admin/organizations/{orgID}/registration":                     "Turn dynamic registration on with this policy.",

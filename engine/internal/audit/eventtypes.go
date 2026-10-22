@@ -24,7 +24,7 @@ var EventTypes = []string{
 	"admin.organization_budgets_set",
 	"admin.organization_created", "admin.organization_deleted",
 	"admin.organization_reactivated", "admin.organization_suspended",
-	"admin.passkey_link_issued", "admin.privileged_refused",
+	"admin.passkey_link_issued", "admin.privileged_refused", "admin.prompt_set", "admin.prompt_updated",
 	"admin.proxy_host_removed",
 	"admin.proxy_host_set", "admin.registration_disabled", "admin.registration_policy_set",
 	"admin.registration_token_created", "admin.registration_token_revoked",

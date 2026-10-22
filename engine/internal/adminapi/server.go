@@ -248,6 +248,10 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/signup", ScopeConfigRead, s.getSignup)
 	route("PUT /admin/organizations/{orgID}/signup", ScopeOrganizationsWrite, s.putSignup)
 	route("DELETE /admin/organizations/{orgID}/signup", ScopeOrganizationsWrite, s.deleteSignup)
+	// Interstitial prompts, `signari prompt` (prompts.go).
+	route("GET /admin/organizations/{orgID}/prompts", ScopeConfigRead, s.listPrompts)
+	route("PUT /admin/organizations/{orgID}/prompts/{slug}", ScopeOrganizationsWrite, s.putPrompt)
+	route("PATCH /admin/organizations/{orgID}/prompts/{slug}", ScopeOrganizationsWrite, s.patchPrompt)
 	// Dynamic client registration and its initial access tokens, `signari
 	// registration` (registration.go).
 	route("GET /admin/organizations/{orgID}/registration", ScopeConfigRead, s.getRegistration)

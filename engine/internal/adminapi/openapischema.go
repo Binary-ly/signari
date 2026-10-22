@@ -406,6 +406,19 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/organizations/{orgID}/signup": {http.StatusOK, typeOf[putSignupRequest](), object(
 		append(append([]string{}, signupFields...), "config_version"), withVersion(signupProps()))},
 	"DELETE /admin/organizations/{orgID}/signup": {http.StatusOK, nil, removedSchema},
+	"GET /admin/organizations/{orgID}/prompts": {http.StatusOK, nil, object([]string{"org_id", "prompts"},
+		map[string]jsonSchema{"org_id": uuidStr(), "prompts": arrayOf(object(
+			[]string{"slug", "title", "body", "once", "order", "fields", "enabled", "version", "answered"},
+			map[string]jsonSchema{"slug": str(), "title": str(), "body": str(), "once": boolean(), "order": integer(),
+				"fields": arrayOf(object([]string{"name", "type", "label"}, map[string]jsonSchema{"name": str(),
+					"type": str(), "label": str(), "help": str(), "required": boolean(), "options": arrayOf(str()),
+					"attribute": str()})),
+				"enabled": boolean(), "version": integer(), "answered": integer()}))})},
+	"PUT /admin/organizations/{orgID}/prompts/{slug}": {http.StatusOK, typeOf[putPromptRequest](), object(
+		[]string{"slug", "version", "asked_again", "config_version"}, withVersion(map[string]jsonSchema{
+			"slug": str(), "version": integer(), "asked_again": integer()}))},
+	"PATCH /admin/organizations/{orgID}/prompts/{slug}": {http.StatusOK, typeOf[patchPromptRequest](), object(
+		[]string{"slug", "enabled", "config_version"}, withVersion(map[string]jsonSchema{"slug": str(), "enabled": boolean()}))},
 	"GET /admin/organizations/{orgID}/registration": {http.StatusOK, nil, object(registrationFields,
 		registrationProps())},
 	"PUT /admin/organizations/{orgID}/registration": {http.StatusOK, typeOf[putRegistrationRequest](), object(

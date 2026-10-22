@@ -2724,12 +2724,11 @@ func promptSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, e
 	if orgID == "" || slug == "" {
 		return fmt.Errorf("give -org and -slug")
 	}
-	tp, err := conn.Exec(ctx, `UPDATE core.prompts SET enabled = $3
-		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, enabled)
+	found, err := store.SetPromptEnabled(ctx, conn, orgID, slug, enabled)
 	if err != nil {
 		return err
 	}
-	if tp.RowsAffected() == 0 {
+	if !found {
 		return fmt.Errorf("no prompt %q in that organisation; `signari prompt list` shows them", slug)
 	}
 	if enabled {

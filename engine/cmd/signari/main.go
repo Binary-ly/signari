@@ -7894,48 +7894,16 @@ func promptSet(ctx context.Context, conn *pgx.Conn, orgID, slug, path string) er
 		d.Slug = slug
 	}
 
-	p := prompts.Prompt{Slug: d.Slug, Title: d.Title, Body: d.Body, Fields: d.Fields}
-	// Validated before it is stored. A prompt that cannot be answered is shown
-	// on every sign-in forever, and the person who notices is every user.
-	if err := p.Validate(); err != nil {
-		return err
-	}
-	// A field that writes an attribute must name one the organisation declared,
-	// of a type its answers fit (5.14): refused here, not at a sign-in.
-	for _, f := range d.Fields {
-		if f.Attribute == "" {
-			continue
-		}
-		if err := store.CheckPromptAttribute(ctx, conn, orgID, f.Attribute, f.Candidates()); err != nil {
-			return fmt.Errorf("prompt %q field %q: %w", d.Slug, f.Name, err)
-		}
-	}
 	once := true
 	if d.Once != nil {
 		once = *d.Once
 	}
-
-	fields, err := json.Marshal(d.Fields)
+	// Validated before it is stored, by the writer the Admin API shares: a
+	// prompt that cannot be answered is shown on every sign-in forever, and the
+	// person who notices is every user.
+	version, asked, err := store.SavePrompt(ctx, conn, orgID, store.PromptDefinition{Slug: d.Slug,
+		Title: d.Title, Body: d.Body, Once: once, Order: d.Order, Fields: d.Fields})
 	if err != nil {
-		return err
-	}
-	// The version moves when what a person reads and answers changes -- the
-	// title, the body, the fields -- and not for the order or `once` (5.13).
-	// Migration 0183's trigger decides that, for this writer and any other.
-	var version int
-	var asked int
-	if err := conn.QueryRow(ctx, `
-		WITH saved AS (
-			INSERT INTO core.prompts (org_id, slug, title, body, fields, once, position)
-			VALUES ($1::uuid, $2, $3, NULLIF($4,''), $5, $6, $7)
-			ON CONFLICT (org_id, slug) DO UPDATE SET
-				title = EXCLUDED.title, body = EXCLUDED.body, fields = EXCLUDED.fields,
-				once = EXCLUDED.once, position = EXCLUDED.position, updated_at = now()
-			RETURNING id, version)
-		SELECT s.version, (SELECT count(DISTINCT r.user_id) FROM core.prompt_responses r
-		                    WHERE r.prompt_id = s.id AND r.prompt_version < s.version)
-		  FROM saved s`,
-		orgID, d.Slug, d.Title, d.Body, fields, once, d.Order).Scan(&version, &asked); err != nil {
 		return err
 	}
 

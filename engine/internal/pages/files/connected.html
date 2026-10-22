@@ -33,6 +33,7 @@
       {{/* N, not "session(s)": the same defect front-channel logout had. */}}
       {{N "connected.sessions" .ActiveTokens .}}
     </div>
+    {{if .OfflineUntil}}<div class="meta">{{T "connected.offline" .}}</div>{{end}}
     <form method="post" action="/account/connected/revoke" style="margin-top:.6rem">
       <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
       <input type="hidden" name="client_id" value="{{.ClientID}}">

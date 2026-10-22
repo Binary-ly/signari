@@ -210,7 +210,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 			return
 		}
 		if subject.SessionID != "" {
-			live, serr := store.SessionLive(ctx, s.db, subject.SessionID)
+			live, serr := store.TokenSessionLive(ctx, s.db, subject.SessionID, subject.GrantID)
 			if serr != nil || !live {
 				writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 					Description: "the session behind the subject token has ended",

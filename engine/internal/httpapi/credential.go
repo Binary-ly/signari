@@ -130,7 +130,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if claims.SessionID != "" {
-		if live, lerr := store.IsSessionLive(ctx, s.db, claims.SessionID); lerr != nil || !live {
+		if live, lerr := store.TokenSessionLive(ctx, s.db, claims.SessionID, claims.GrantID); lerr != nil || !live {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
 				`error_description="The session has ended"`)
 			w.WriteHeader(http.StatusUnauthorized)

@@ -12,6 +12,17 @@ everything:
 Each is reported separately rather than summed into a single "signed out",
 because they succeed and fail independently.
 
+**Signing out does not end a grant of `offline_access`.** That grant is access
+for an application while the person is *not* signed in, so it outlives the
+session it was given in, for the organisation's offline lifetime (`signari
+instance session-lifetime -offline`, thirty days unless changed). It ends when
+the person removes the application at `/account/connected`, or when every
+session they have is ended: a password changed or reset, a factor reset,
+deactivation, "sign out everywhere". An application that wants a sign-out to
+end its own access revokes its refresh token (RFC 7009). Until October 2026
+every grant ended with its session, so `offline_access` lasted only while the
+person stayed signed in.
+
 ## Registering a client's sign-out
 
 ```sh

@@ -103,22 +103,29 @@ The requirement is *"refresh tokens have an absolute expiration, including if
 sliding refresh token expiration is applied"*.
 
 Rotation mints a new token with a fresh expiry, so the **token-level** deadline
-does slide. What does not slide is `sessions.not_after`: it is fixed when the
-session is created and updated **nowhere** in the codebase — verified by
-searching, not assumed. `RotateRefreshToken` requires that session to be live:
+does slide. What does not slide are the two deadlines a lineage rotates within,
+both fixed when the authorization is given. `RotateRefreshToken` requires one of
+them to be ahead:
 
 ```sql
-AND (s.sid IS NULL OR (s.revoked_at IS NULL AND s.not_after > now()))
+AND (f.offline_not_after > now() OR (s.revoked_at IS NULL AND s.not_after > now()))
 ```
 
-So a lineage cannot outlive the sign-in that authorized it, however many times it
-rotates. That is a stronger property than a cap on the credential, because it
-expires the **authorization** rather than the token representing it.
+A grant of `offline_access` carries its own `offline_not_after`, the
+organisation's offline lifetime from the moment it was given (thirty days
+unless changed), set once and never moved. Otherwise the lineage lives while its
+session does. A session's `not_after` moves with use since the idle limit was
+added in October 2026, but a CHECK constraint holds it inside
+`absolute_not_after`, which is fixed at sign-in. So a lineage cannot outlive the
+authorization that started it, however many times it rotates. That is a
+stronger property than a cap on the credential, because it expires the
+**authorization** rather than the token representing it.
 
-But read that SQL again: `s.sid IS NULL OR …`. A family with no session is
-vacuously live forever. No caller created one — which is a fact about the code as
-it stands, not about the code as it will be. `NewRefreshFamily` now refuses an
-empty `sid`, and `TestARefreshFamilyMustNameASession` keeps it that way.
+Until October 2026 the clause read `s.sid IS NULL OR (…)`, and a family with no
+session was vacuously live forever. No caller created one, which is a fact
+about the code as it stood, not about the code as it would be. `NewRefreshFamily`
+refuses an empty `sid`, `TestARefreshFamilyMustNameASession` keeps it that way,
+and the clause no longer has the branch.
 
 ## V10.6 — OpenID Provider, and the requirement that was not met
 

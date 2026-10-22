@@ -52,31 +52,40 @@ func NewRefreshFamily(ctx context.Context, tx pgx.Tx, orgID, clientID, userID, s
 	// expiration, including if sliding refresh token expiration is applied."
 	//
 	// Ours is satisfied indirectly and the chain is worth stating, because every
-	// link is load-bearing: RotateRefreshToken requires the family's session to
-	// be live (`sessions.not_after`), and `not_after` may move with use but a
-	// CHECK holds it inside `absolute_not_after`, which is fixed when the session
-	// is created and is never moved later (migration 0180). Rotation issues a
-	// new token but cannot move that ceiling. So a lineage cannot outlive the
+	// link is load-bearing. RotateRefreshToken requires one of two deadlines to
+	// be ahead, and both are fixed when the authorization is given: the family's
+	// own `offline_not_after`, set below and never moved, or the session's
+	// `not_after`, which may move with use but which a CHECK holds inside
+	// `absolute_not_after`, fixed at sign-in (migration 0180). Rotation issues a
+	// new token but can move neither. So a lineage cannot outlive the
 	// authorization that started it, however many times it rotates -- which is
 	// a stronger bound than a cap on the credential, because it expires the
 	// AUTHORIZATION rather than the token that represents it.
 	//
-	// The one way that chain breaks is a family with no `sid`: the rotation
-	// query's `s.sid IS NULL OR ...` branch is then vacuously true and the
-	// lineage never expires at all. No caller does that today. This makes it
-	// impossible rather than merely untrue, because "no caller does that" is a
-	// property of the code as it stands and not of the code as it will be.
+	// A family must name its session even when it is offline: the offline
+	// deadline is computed from it, and a refresh checks the client's floor
+	// against how that session signed in. This refuses one without, rather than
+	// relying on no caller passing one.
 	if sid == "" {
 		return "", fmt.Errorf("a refresh token family must name the session that " +
-			"authorized it: the session's fixed absolute deadline is what gives the lineage " +
-			"an absolute expiration, and a family without one would rotate forever")
+			"authorized it: its deadlines are what give the lineage an absolute expiration")
 	}
+	// Offline (5.10): every family is started by a grant of offline_access, and
+	// lasts the organisation's offline lifetime from now, whatever its session
+	// does -- unless that lifetime is 0, or the session is an impersonation,
+	// whose support access must end with the episode. Fixed here and never
+	// moved, so an offline lineage has its own absolute expiration.
 	var id string
 	err := tx.QueryRow(ctx, `
 		INSERT INTO core.refresh_token_families (org_id, client_id, user_id, sid,
 		                                         authorization_details, dpop_jkt,
-		                                         cert_thumbprint)
-		VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,'')) RETURNING id::text`,
+		                                         cert_thumbprint, offline_not_after)
+		SELECT o.id, $2, $3, s.sid, $5, NULLIF($6,''), NULLIF($7,''),
+		       CASE WHEN o.offline_lifetime_s > 0 AND s.impersonator_id IS NULL
+		            THEN now() + make_interval(secs => o.offline_lifetime_s) END
+		  FROM core.organizations o, core.sessions s
+		 WHERE o.id = $1::uuid AND s.sid = $4
+		RETURNING id::text`,
 		orgID, clientID, userID, sid, details, dpopJKT, certThumb).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("creating refresh family: %w", err)
@@ -122,7 +131,9 @@ func RotateRefreshToken(ctx context.Context, tx pgx.Tx, hash []byte) (*RefreshGr
 		  AND rt.family_id   = f.id
 		  AND f.revoked_at IS NULL
 		  AND u.status = 'active'
-		  AND (s.sid IS NULL OR (s.revoked_at IS NULL AND s.not_after > now()))
+		  -- An offline grant within its own lifetime, or one bound to a session
+		  -- that is still live (5.10).
+		  AND (f.offline_not_after > now() OR (s.revoked_at IS NULL AND s.not_after > now()))
 		RETURNING f.id::text, f.client_id, f.user_id::text,
 		          COALESCE(f.sid, ''), f.org_id::text, rt.scopes, rt.resources,
 		          f.authorization_details, COALESCE(f.dpop_jkt, ''),

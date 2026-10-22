@@ -27,6 +27,8 @@ type connectedApp struct {
 	Scopes       []string
 	Granted      string
 	ActiveTokens int
+	// OfflineUntil is the date its offline access ends, empty for none.
+	OfflineUntil string
 }
 
 // handleConnectedApps lists what the user has granted.
@@ -47,10 +49,14 @@ func (s *Server) handleConnectedApps(w http.ResponseWriter, r *http.Request) {
 
 	view := make([]connectedApp, 0, len(apps))
 	for _, a := range apps {
-		view = append(view, connectedApp{
+		app := connectedApp{
 			ClientID: a.ClientID, Name: a.DisplayName, Scopes: a.Scopes,
 			Granted: a.GrantedAt.Format("2 January 2006"), ActiveTokens: a.ActiveTokens,
-		})
+		}
+		if a.OfflineUntil != nil {
+			app.OfflineUntil = a.OfflineUntil.Format("2 January 2006")
+		}
+		view = append(view, app)
 	}
 
 	csrf, err := s.csrfToken(w, r)

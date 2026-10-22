@@ -14,9 +14,9 @@ import (
 // database grew with every sign-in it had ever served.
 type Retention struct {
 	// Sessions is how long an ended session is kept. Deleting it deletes its
-	// applications list and its refresh families with it, all of them ended
-	// with the session. A forgotten or expired remembered device is kept as
-	// long.
+	// applications list and its refresh families with it, so one that a live
+	// offline grant was given in is kept until the grant ends. A forgotten or
+	// expired remembered device is kept as long.
 	Sessions time.Duration
 	// Families is how long a refresh-token family is kept once it was revoked
 	// or its newest token expired, its tokens with it. A token of a live
@@ -68,10 +68,16 @@ func PurgeRetained(ctx context.Context, tx pgx.Tx, r Retention, batch int) (map[
 		table, sql string
 		args       []any
 	}{
+		// An ended session an offline grant was given in is kept while the grant
+		// lives: deleting it would cascade to the grant, and a refresh checks the
+		// client's floor against how that session signed in (5.10).
 		{"sessions", `
 			DELETE FROM core.sessions WHERE sid IN (
-				SELECT sid FROM core.sessions
-				WHERE revoked_at < now() - $1::interval LIMIT $2)`,
+				SELECT s.sid FROM core.sessions s
+				WHERE s.revoked_at < now() - $1::interval
+				  AND NOT EXISTS (SELECT 1 FROM core.refresh_token_families f
+				                   WHERE f.sid = s.sid AND f.revoked_at IS NULL AND f.offline_not_after > now())
+				LIMIT $2)`,
 			[]any{interval(r.Sessions), batch}},
 		// A remembered device that was forgotten or ran out, kept as long as
 		// an ended session: either is history once nothing can present it.

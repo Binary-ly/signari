@@ -99,8 +99,36 @@ type RefreshTokenState struct {
 	OrgID     string
 	UserID    string
 	SID       string
+	FamilyID  string
 	Scopes    []string
 	ExpiresAt time.Time
+}
+
+// TokenSessionLive reports whether a token minted under session sid may still
+// be used: the session is live, or the grant the token was minted from is an
+// offline grant within its own lifetime, of somebody still active (5.10).
+//
+// Every check of a token's session asks this rather than SessionLive, or an
+// offline grant would mint tokens that its own userinfo, introspection and
+// token exchange refuse the moment the person signs out -- the access
+// offline_access is for. TestEveryTokenSessionCheckHonoursOfflineGrants holds
+// them to it.
+func TokenSessionLive(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, sid, grantID string) (bool, error) {
+	var live bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.sessions s JOIN core.users u ON u.id = s.user_id
+		                WHERE s.sid = $1 AND s.revoked_at IS NULL AND s.not_after > now()
+		                  AND u.status = 'active')
+		    OR EXISTS (SELECT 1 FROM core.refresh_token_families f JOIN core.users u ON u.id = f.user_id
+		                WHERE f.id = NULLIF($2, '')::uuid AND f.sid = $1 AND f.revoked_at IS NULL
+		                  AND f.offline_not_after > now() AND u.status = 'active')`,
+		sid, grantID).Scan(&live)
+	if err != nil {
+		return false, fmt.Errorf("checking a token's session: %w", err)
+	}
+	return live, nil
 }
 
 // LookupRefreshToken reads a refresh token's state for introspection.
@@ -116,12 +144,12 @@ func LookupRefreshToken(ctx context.Context, db *pgxpool.Pool, tokenHash []byte)
 	var sid *string
 
 	err := db.QueryRow(ctx, `
-		SELECT f.client_id, f.org_id::text, f.user_id::text, f.sid, t.scopes, t.expires_at,
+		SELECT f.client_id, f.org_id::text, f.user_id::text, f.sid, f.id::text, t.scopes, t.expires_at,
 		       t.consumed_at, f.revoked_at
 		FROM core.refresh_tokens t
 		JOIN core.refresh_token_families f ON f.id = t.family_id
 		WHERE t.token_hash = $1`, tokenHash).
-		Scan(&st.ClientID, &st.OrgID, &st.UserID, &sid, &st.Scopes, &st.ExpiresAt, &consumed, &familyRevoked)
+		Scan(&st.ClientID, &st.OrgID, &st.UserID, &sid, &st.FamilyID, &st.Scopes, &st.ExpiresAt, &consumed, &familyRevoked)
 	if err == pgx.ErrNoRows {
 		return st, nil
 	}

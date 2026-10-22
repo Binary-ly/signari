@@ -2859,7 +2859,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		return
 	}
 	if subject.SessionID != "" {
-		live, serr := store.SessionLive(ctx, s.db, subject.SessionID)
+		live, serr := store.TokenSessionLive(ctx, s.db, subject.SessionID, subject.GrantID)
 		if serr != nil || !live {
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 				Description: "the session behind the subject token has ended",
@@ -2917,7 +2917,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 			return
 		}
 		if actor.SessionID != "" {
-			live, serr := store.SessionLive(ctx, s.db, actor.SessionID)
+			live, serr := store.TokenSessionLive(ctx, s.db, actor.SessionID, actor.GrantID)
 			if serr != nil || !live {
 				writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 					Description: "the session behind the actor token has ended",

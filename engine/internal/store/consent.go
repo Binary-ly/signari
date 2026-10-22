@@ -135,6 +135,10 @@ type ConnectedApp struct {
 	// number a user actually cares about: "does this app still have access
 	// right now", as distinct from "did I agree to it once".
 	ActiveTokens int
+	// OfflineUntil is when the last offline grant to the application ends, nil
+	// when it has none: until then it can act for the person while they are
+	// signed out (5.10), and they should be able to see that it can.
+	OfflineUntil *time.Time
 }
 
 // ConnectedApps lists what a user has granted, with the client's real name.
@@ -142,17 +146,37 @@ type ConnectedApp struct {
 // GrantedScopes returns the raw map; this is what a person can read. A screen
 // that says client_id `a7f3-crm-prod` is a screen nobody uses to make a
 // decision.
+//
+// An application holding a live grant with no consent on record is listed too:
+// a first-party client skips the consent screen, so it never had one, and an
+// offline grant to it can act for the person while they are signed out
+// (5.10). Unlisted, they could neither see that nor remove it. Its scopes are
+// those of its newest refresh token.
 func ConnectedApps(ctx context.Context, db *pgxpool.Pool, userID string) ([]ConnectedApp, error) {
 	rows, err := db.Query(ctx, `
-		SELECT c.client_id, COALESCE(cl.display_name, c.client_id), c.scopes,
-		       c.granted_at,
+		WITH apps AS (
+			SELECT c.client_id, c.scopes, c.granted_at FROM core.consents c
+			 WHERE c.user_id = $1::uuid AND c.withdrawn_at IS NULL
+			UNION ALL
+			(SELECT DISTINCT ON (f.client_id) f.client_id,
+			        COALESCE((SELECT t.scopes FROM core.refresh_tokens t WHERE t.family_id = f.id
+			                   ORDER BY t.created_at DESC LIMIT 1), '{}'),
+			        f.created_at
+			   FROM core.refresh_token_families f
+			  WHERE f.user_id = $1::uuid AND f.revoked_at IS NULL
+			    AND NOT EXISTS (SELECT 1 FROM core.consents c WHERE c.user_id = f.user_id
+			                      AND c.client_id = f.client_id AND c.withdrawn_at IS NULL)
+			  ORDER BY f.client_id, f.created_at DESC))
+		SELECT a.client_id, COALESCE(cl.display_name, a.client_id), a.scopes, a.granted_at,
 		       (SELECT count(*) FROM core.refresh_token_families f
-		         WHERE f.user_id = c.user_id AND f.client_id = c.client_id
-		           AND f.revoked_at IS NULL)
-		FROM core.consents c
-		LEFT JOIN core.clients cl ON cl.client_id = c.client_id
-		WHERE c.user_id = $1::uuid AND c.withdrawn_at IS NULL
-		ORDER BY c.granted_at DESC`, userID)
+		         WHERE f.user_id = $1::uuid AND f.client_id = a.client_id
+		           AND f.revoked_at IS NULL),
+		       (SELECT max(f.offline_not_after) FROM core.refresh_token_families f
+		         WHERE f.user_id = $1::uuid AND f.client_id = a.client_id
+		           AND f.revoked_at IS NULL AND f.offline_not_after > now())
+		FROM apps a
+		LEFT JOIN core.clients cl ON cl.client_id = a.client_id
+		ORDER BY a.granted_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("listing connected applications: %w", err)
 	}
@@ -162,7 +186,7 @@ func ConnectedApps(ctx context.Context, db *pgxpool.Pool, userID string) ([]Conn
 	for rows.Next() {
 		var a ConnectedApp
 		if err := rows.Scan(&a.ClientID, &a.DisplayName, &a.Scopes, &a.GrantedAt,
-			&a.ActiveTokens); err != nil {
+			&a.ActiveTokens, &a.OfflineUntil); err != nil {
 			return nil, err
 		}
 		sort.Strings(a.Scopes)

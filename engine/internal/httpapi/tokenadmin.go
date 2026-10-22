@@ -376,10 +376,11 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 		return inactive
 	}
 
-	// A token minted from a session is only as live as that session. A token
-	// from client_credentials has no session and is not subject to this.
+	// A token minted from a session is only as live as that session, or the
+	// offline grant it came from. A token from client_credentials has no session
+	// and is not subject to this.
 	if claims.SessionID != "" {
-		live, err := store.SessionLive(ctx, s.db, claims.SessionID)
+		live, err := store.TokenSessionLive(ctx, s.db, claims.SessionID, claims.GrantID)
 		if err != nil {
 			s.log.Error("introspection session check failed", "err", err)
 			return inactive
@@ -427,10 +428,11 @@ func (s *Server) introspectRefreshToken(ctx context.Context, c *clients.Client, 
 	if !st.Found || st.ClientID != c.ClientID || !st.Active {
 		return inactive
 	}
-	// A live refresh token whose session has ended is not usable, and saying
-	// otherwise would contradict what the refresh grant itself would do.
+	// A live refresh token whose session has ended is not usable unless it is
+	// an offline grant, and saying otherwise would contradict what the refresh
+	// grant itself would do.
 	if st.SID != "" {
-		live, err := store.SessionLive(ctx, s.db, st.SID)
+		live, err := store.TokenSessionLive(ctx, s.db, st.SID, st.FamilyID)
 		if err != nil || !live {
 			return inactive
 		}

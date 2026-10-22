@@ -52,27 +52,79 @@ func TouchSession(ctx context.Context, e Execer, sid string) error {
 	return err
 }
 
-// SessionLifetimes are an organisation's two limits. Idle 0 is none.
+// SessionLifetimes are an organisation's limits. Idle 0 is none; Offline 0
+// ends a grant of offline_access with its session (5.10).
 type SessionLifetimes struct {
 	Lifetime time.Duration
 	Idle     time.Duration
+	Offline  time.Duration
+}
+
+const (
+	// DefaultOfflineLifetime is how long a grant of offline_access lasts until
+	// an organisation says otherwise.
+	DefaultOfflineLifetime = 30 * 24 * time.Hour
+	MinOfflineLifetime     = time.Hour
+	MaxOfflineLifetime     = 365 * 24 * time.Hour
+)
+
+// ErrOfflineLifetime is an offline lifetime outside the bounds.
+var ErrOfflineLifetime = fmt.Errorf("an offline lifetime must be whole seconds from %s to %s, or 0 to "+
+	"end each grant with its session", MinOfflineLifetime, MaxOfflineLifetime)
+
+// SetOfflineLifetime sets how long an organisation's grants of offline_access
+// last from when each was given, and returns the lifetime it replaced and how
+// many live grants now end sooner. Like a session's lifetime, a shorter one
+// applies to live grants at once and a longer one lengthens none; 0 makes every
+// live grant end with its session, which for most has already ended.
+func SetOfflineLifetime(ctx context.Context, tx pgx.Tx, orgID string, d time.Duration) (
+	previous time.Duration, sooner int, err error) {
+
+	if d != 0 && (d < MinOfflineLifetime || d > MaxOfflineLifetime || d%time.Second != 0) {
+		return 0, 0, ErrOfflineLifetime
+	}
+	var was int
+	err = tx.QueryRow(ctx, `SELECT offline_lifetime_s FROM core.organizations WHERE id = $1::uuid FOR UPDATE`,
+		orgID).Scan(&was)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, 0, ErrOrganizationNotFound
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	secs := int(d.Seconds())
+	if _, err := tx.Exec(ctx, `UPDATE core.organizations SET offline_lifetime_s = $2 WHERE id = $1::uuid`,
+		orgID, secs); err != nil {
+		return 0, 0, err
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE core.refresh_token_families
+		   SET offline_not_after = CASE WHEN $2::int = 0 THEN NULL
+		                                ELSE least(offline_not_after, created_at + make_interval(secs => $2::int)) END
+		 WHERE org_id = $1::uuid AND revoked_at IS NULL AND offline_not_after > now()
+		   AND ($2::int = 0 OR offline_not_after > created_at + make_interval(secs => $2::int))`, orgID, secs)
+	if err != nil {
+		return 0, 0, fmt.Errorf("applying the offline lifetime to live grants: %w", err)
+	}
+	return time.Duration(was) * time.Second, int(tag.RowsAffected()), nil
 }
 
 // SessionLifetimesOf reads an organisation's.
 func SessionLifetimesOf(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, orgID string) (SessionLifetimes, error) {
-	var lifetime int
+	var lifetime, offline int
 	var idle *int
-	err := q.QueryRow(ctx, `SELECT session_lifetime_s, session_idle_s FROM core.organizations
-		WHERE id = $1::uuid`, orgID).Scan(&lifetime, &idle)
+	err := q.QueryRow(ctx, `SELECT session_lifetime_s, session_idle_s, offline_lifetime_s FROM core.organizations
+		WHERE id = $1::uuid`, orgID).Scan(&lifetime, &idle, &offline)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SessionLifetimes{}, ErrOrganizationNotFound
 	}
 	if err != nil {
 		return SessionLifetimes{}, err
 	}
-	out := SessionLifetimes{Lifetime: time.Duration(lifetime) * time.Second}
+	out := SessionLifetimes{Lifetime: time.Duration(lifetime) * time.Second,
+		Offline: time.Duration(offline) * time.Second}
 	if idle != nil {
 		out.Idle = time.Duration(*idle) * time.Second
 	}

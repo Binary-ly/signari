@@ -1478,11 +1478,13 @@ func instanceReauthWindow(ctx context.Context, conn *pgx.Conn, orgID string, win
 	return nil
 }
 
-// instanceSessionLifetime sets how long an organisation's sessions last, and
-// how long unused (5.09). Either flag left out keeps what is there.
-func instanceSessionLifetime(ctx context.Context, conn *pgx.Conn, orgID string, lifetime, idle time.Duration) error {
-	if orgID == "" || (lifetime == 0 && idle < 0) {
-		return fmt.Errorf("give -org and -lifetime, -idle or both, e.g. -lifetime 12h -idle 30m")
+// instanceSessionLifetime sets how long an organisation's sessions last, how
+// long unused (5.09), and how long a grant of offline_access lasts (5.10). A
+// flag left out keeps what is there.
+func instanceSessionLifetime(ctx context.Context, conn *pgx.Conn, orgID string, lifetime, idle,
+	offline time.Duration) error {
+	if orgID == "" || (lifetime == 0 && idle < 0 && offline < 0) {
+		return fmt.Errorf("give -org and any of -lifetime, -idle and -offline, e.g. -lifetime 12h -idle 30m")
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -1502,10 +1504,14 @@ func instanceSessionLifetime(ctx context.Context, conn *pgx.Conn, orgID string, 
 	if idle < 0 {
 		idle = current.Idle
 	}
+	if offline < 0 {
+		offline = current.Offline
+	}
 	previous, sooner, ended, err := store.SetSessionLifetimes(ctx, tx, orgID, lifetime, idle)
-	if errors.Is(err, store.ErrSessionLifetime) {
+	if err != nil {
 		return err
 	}
+	_, grantsSooner, err := store.SetOfflineLifetime(ctx, tx, orgID, offline)
 	if err != nil {
 		return err
 	}
@@ -1514,7 +1520,9 @@ func instanceSessionLifetime(ctx context.Context, conn *pgx.Conn, orgID string, 
 		Detail: map[string]any{
 			"lifetime_from_s": int(previous.Lifetime.Seconds()), "lifetime_to_s": int(lifetime.Seconds()),
 			"idle_from_s": int(previous.Idle.Seconds()), "idle_to_s": int(idle.Seconds()),
-			"sessions_sooner": sooner, "sessions_ended": ended, "via": "cli",
+			"offline_from_s": int(previous.Offline.Seconds()), "offline_to_s": int(offline.Seconds()),
+			"sessions_sooner": sooner, "sessions_ended": ended, "offline_grants_sooner": grantsSooner,
+			"via": "cli",
 		},
 	}); err != nil {
 		return fmt.Errorf("auditing the change: %w", err)
@@ -1523,13 +1531,25 @@ func instanceSessionLifetime(ctx context.Context, conn *pgx.Conn, orgID string, 
 		return err
 	}
 	fmt.Printf("sessions: %s (was %s)\n", sessionLimits{lifetime, idle}, sessionLimits{previous.Lifetime, previous.Idle})
+	fmt.Printf("offline access: %s (was %s)\n", offlineLimit(offline), offlineLimit(previous.Offline))
 	if sooner > 0 {
 		fmt.Printf("\n  %d live session(s) now end sooner, %d of them already: those are refused from\n"+
 			"  now on, and the janitor's next sweep ends them and tells their applications.\n", sooner, ended)
 	}
+	if grantsSooner > 0 {
+		fmt.Printf("\n  %d live offline grant(s) now end sooner.\n", grantsSooner)
+	}
 	fmt.Println("\n  A session already signed in keeps the lifetime it was signed in with as its")
 	fmt.Println("  ceiling; a shorter one, or an idle limit, applies to it at once.")
 	return nil
+}
+
+// offlineLimit prints an offline lifetime.
+func offlineLimit(d time.Duration) string {
+	if d == 0 {
+		return "ends with the session it was given in"
+	}
+	return d.String() + " from when it is given, whether or not the person stays signed in"
 }
 
 // sessionLimits prints a lifetime and an idle limit.

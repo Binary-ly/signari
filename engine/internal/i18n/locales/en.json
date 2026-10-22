@@ -180,6 +180,7 @@
     "other": "{n} active sessions."
   },
   "connected.remove": "Remove access",
+  "connected.offline": "It can go on acting for you while you are signed out, until {OfflineUntil}, unless you remove its access.",
 
   "sessions.title": "Your sessions",
   "sessions.none": "You have no other active sessions.",

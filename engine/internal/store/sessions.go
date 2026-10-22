@@ -208,15 +208,21 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 		return nil, fmt.Errorf("revoking sessions: %w", err)
 	}
 
-	// Refresh families follow their session. Leaving them live would let a
-	// refresh token outlive the session it was minted under.
+	// Refresh families follow their session, except an offline grant (5.10),
+	// which outlives the one session it was given in -- that is what offline
+	// means -- and ends with all of them: ending every session somebody has is
+	// what is done when the account may be in the wrong hands (a password
+	// changed or reset, a factor reset, deactivation, "sign out everywhere"),
+	// for the same reason it forgets their remembered devices below. Ending
+	// one session is a logout, an expiry, an eviction.
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.refresh_token_families f
 		SET revoked_at = now(), revocation_reason = $3
 		FROM core.sessions s
 		WHERE f.sid = s.sid AND f.revoked_at IS NULL
 		  AND ($1::text IS NULL OR s.sid = $1)
-		  AND ($2::uuid IS NULL OR s.user_id = $2)`,
+		  AND ($2::uuid IS NULL OR s.user_id = $2)
+		  AND (f.offline_not_after IS NULL OR $2::uuid IS NOT NULL)`,
 		nullIf(sid), nullIf(userID), string(reason)); err != nil {
 		return nil, fmt.Errorf("revoking refresh families: %w", err)
 	}

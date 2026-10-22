@@ -430,7 +430,7 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 			"Apps": []map[string]any{
 				{"Name": "Northwind Analytics", "ClientID": "northwind-analytics",
 					"Scopes":  []string{"openid", "profile", "invoices.read"},
-					"Granted": "14 March 2026", "ActiveTokens": 2},
+					"Granted": "14 March 2026", "ActiveTokens": 2, "OfflineUntil": "13 April 2026"},
 				{"Name": "Contoso Expenses", "ClientID": "contoso-expenses",
 					"Scopes":  []string{"openid", "email"},
 					"Granted": "2 January 2026", "ActiveTokens": 0},

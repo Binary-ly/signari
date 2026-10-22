@@ -89,7 +89,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 
 	// The session must still be live. See (1) above.
 	if claims.SessionID != "" {
-		live, err := store.IsSessionLive(ctx, s.db, claims.SessionID)
+		live, err := store.TokenSessionLive(ctx, s.db, claims.SessionID, claims.GrantID)
 		if err != nil || !live {
 			w.Header().Set("WWW-Authenticate",
 				`Bearer realm="signari", error="invalid_token", error_description="The session has ended"`)

@@ -918,7 +918,7 @@ func instanceSessionLimit(ctx context.Context, conn *pgx.Conn, orgID string,
 		return fmt.Errorf("give -org")
 	}
 	switch behaviour {
-	case "deny", "evict_oldest":
+	case store.SessionLimitDeny, store.SessionLimitEvictOldest:
 	default:
 		return fmt.Errorf("-when-exceeded must be deny or evict_oldest, not %q", behaviour)
 	}
@@ -926,15 +926,28 @@ func instanceSessionLimit(ctx context.Context, conn *pgx.Conn, orgID string,
 		return fmt.Errorf("-max-sessions cannot be negative; 0 means unlimited")
 	}
 
-	tp, err := conn.Exec(ctx, `
-		UPDATE core.organizations
-		   SET max_concurrent_sessions = $2, session_limit_behaviour = $3
-		 WHERE id = $1::uuid`, orgID, max, behaviour)
+	// Through the setter the Admin API uses, audited like the other settings.
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tp.RowsAffected() == 0 {
+	defer func() { _ = tx.Rollback(ctx) }()
+	wasMax, was, err := store.SetSessionLimit(ctx, tx, orgID, max, behaviour)
+	if errors.Is(err, store.ErrOrganizationNotFound) {
 		return fmt.Errorf("no organisation %s", orgID)
+	}
+	if err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "org.session_limit_set", OrgID: orgID,
+		Detail: map[string]any{"max_from": wasMax, "max_to": max, "behaviour_from": was,
+			"behaviour_to": behaviour, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
 	}
 
 	if max == 0 {
@@ -979,18 +992,11 @@ func instancePasswordBinds(ctx context.Context, conn *pgx.Conn, orgID, policy st
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var previous string
-	if err := tx.QueryRow(ctx, `
-		SELECT password_only_binds FROM core.organizations WHERE id = $1::uuid FOR UPDATE`,
-		orgID).Scan(&previous); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no organisation %s", orgID)
-		}
-		return err
+	previous, err := store.SetPasswordBinds(ctx, tx, orgID, policy)
+	if errors.Is(err, store.ErrOrganizationNotFound) {
+		return fmt.Errorf("no organisation %s", orgID)
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE core.organizations SET password_only_binds = $2 WHERE id = $1::uuid`,
-		orgID, policy); err != nil {
+	if err != nil {
 		return err
 	}
 	if err := audit.Write(ctx, tx, audit.Event{
@@ -1457,16 +1463,11 @@ func instanceNewDeviceNotice(ctx context.Context, conn *pgx.Conn, orgID, notice 
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var previous bool
-	if err := tx.QueryRow(ctx, `SELECT new_device_notice FROM core.organizations WHERE id = $1::uuid FOR UPDATE`,
-		orgID).Scan(&previous); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no organisation %s", orgID)
-		}
-		return err
+	previous, err := store.SetNewDeviceNotice(ctx, tx, orgID, notice == "on")
+	if errors.Is(err, store.ErrOrganizationNotFound) {
+		return fmt.Errorf("no organisation %s", orgID)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE core.organizations SET new_device_notice = $2 WHERE id = $1::uuid`,
-		orgID, notice == "on"); err != nil {
+	if err != nil {
 		return err
 	}
 	if err := audit.Write(ctx, tx, audit.Event{

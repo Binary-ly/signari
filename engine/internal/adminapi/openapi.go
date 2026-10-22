@@ -144,6 +144,10 @@ var summaries = map[string]string{
 	"GET /admin/organizations/{orgID}/budgets": "The tokens and sign-ins the organisation may take a minute.",
 	"PUT /admin/organizations/{orgID}/budgets": "Set the organisation's budgets; deployment-wide tokens only.",
 
+	// Its settings, the `instance` commands' (6.07).
+	"GET /admin/organizations/{orgID}/settings":   "The organisation's sign-in and session policy.",
+	"PATCH /admin/organizations/{orgID}/settings": "Change the settings named; the rest are left as they are.",
+
 	// Administrative roles (6.01).
 	"GET /admin/organizations/{orgID}/role-bindings":                "Who holds which administrative role in the organisation.",
 	"POST /admin/organizations/{orgID}/role-bindings":               "Give a person or an application a role, a user manager optionally over one group's members.",

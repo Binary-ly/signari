@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -72,6 +73,27 @@ func object(required []string, props map[string]jsonSchema) jsonSchema {
 func budgetsProps() map[string]jsonSchema {
 	return map[string]jsonSchema{"org_id": uuidStr(), "tokens_per_minute": integer(),
 		"sign_ins_per_minute": integer(), "tokens_default": boolean(), "sign_ins_default": boolean()}
+}
+
+// orgSettingsProps is an organisation's settings as read and as changed
+// (6.07), fresh each call for the same reason.
+func orgSettingsProps() map[string]jsonSchema {
+	return map[string]jsonSchema{"org_id": uuidStr(), "max_concurrent_sessions": integer(),
+		"session_limit_behaviour": str(), "password_only_binds": str(), "remember_device_days": integer(),
+		"new_device_notice": boolean(), "reauth_window_s": integer(), "session_lifetime_s": integer(),
+		"session_idle_s": integer(), "offline_lifetime_s": integer(), "persistent_sessions": boolean(),
+		"sms_numbers": str(), "totp_algorithm": str(), "totp_digits": integer(), "totp_period_s": integer(),
+		"login_free_attempts": integer(), "login_max_delay_s": integer()}
+}
+
+// orgSettingsFields is every one of them, each always present.
+func orgSettingsFields() []string {
+	var out []string
+	for k := range orgSettingsProps() {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func withVersion(props map[string]jsonSchema) map[string]jsonSchema {
@@ -353,6 +375,9 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/organizations/{orgID}/budgets": {http.StatusOK, typeOf[putBudgetsRequest](), object(
 		[]string{"org_id", "tokens_per_minute", "sign_ins_per_minute", "tokens_default", "sign_ins_default", "config_version"},
 		withVersion(budgetsProps()))},
+	"GET /admin/organizations/{orgID}/settings": {http.StatusOK, nil, object(orgSettingsFields(), orgSettingsProps())},
+	"PATCH /admin/organizations/{orgID}/settings": {http.StatusOK, typeOf[patchOrgSettingsRequest](), object(
+		append(orgSettingsFields(), "config_version"), withVersion(orgSettingsProps()))},
 	"GET /admin/me": {http.StatusOK, nil, object([]string{"kind", "name", "org_id", "scopes", "expires_at"}, map[string]jsonSchema{
 		"kind": str(), "name": str(), "org_id": nullable(uuidStr()), "scopes": arrayOf(str()),
 		"delegated": openObject(), "expires_at": nullable(dateTime()), "client_id": str(),

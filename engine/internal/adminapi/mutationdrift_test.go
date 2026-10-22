@@ -267,6 +267,15 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			// An organisation of its own, for the same reason: a setting on the
+			// shared one changes every other test's sign-ins.
+			name: "PATCH /admin/organizations/{orgID}/settings", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/settings"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"remember_device_days":7}` },
+		},
+		{
 			// A fresh person each time: a binding is once per person and role.
 			name: "POST /admin/organizations/{orgID}/role-bindings", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {

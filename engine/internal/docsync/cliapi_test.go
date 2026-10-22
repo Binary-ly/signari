@@ -25,6 +25,10 @@ const (
 	pending = "pending"
 )
 
+// orgSettings is where every organisation-wide sign-in and session setting is
+// changed.
+const orgSettings = "PATCH /admin/organizations/{orgID}/settings"
+
 // cliOnly is a write that stays a command, and why.
 func cliOnly(why string) string { return "command only: " + why }
 
@@ -53,20 +57,20 @@ var cliAPI = map[string]string{
 	"instance add-alias":         pending,
 	"instance retire-alias":      pending,
 	"instance aliases":           reads,
-	"instance session-limit":     pending,
-	"instance remember-device":   pending,
+	"instance session-limit":     orgSettings,
+	"instance remember-device":   orgSettings,
 	"instance org-status":        "PATCH /admin/organizations/{orgID}",
 	"instance org-delete":        cliOnly("deleting an organisation is done with the database in front of you, two-phase, as admin-api.md says"),
 	"instance org-budgets":       "PUT /admin/organizations/{orgID}/budgets",
-	"instance new-device-notice": pending,
-	"instance reauth-window":     pending,
-	"instance session-lifetime":  pending,
-	"instance password-binds":    pending,
+	"instance new-device-notice": orgSettings,
+	"instance reauth-window":     orgSettings,
+	"instance session-lifetime":  orgSettings,
+	"instance password-binds":    orgSettings,
 	"instance related-origins":   pending,
 	"instance webauthn":          pending,
-	"instance sms-numbers":       pending,
-	"instance totp-policy":       pending,
-	"instance login-throttle":    pending,
+	"instance sms-numbers":       orgSettings,
+	"instance totp-policy":       orgSettings,
+	"instance login-throttle":    orgSettings,
 
 	// People.
 	"user create":        "POST /admin/users",

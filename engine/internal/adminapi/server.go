@@ -199,6 +199,11 @@ func (s *Server) Routes() http.Handler {
 	// A passkey is a way into the account, so a privileged target needs the
 	// privileged scope as a password reset does.
 	privileged("POST /admin/users/{userID}/passkey-link", ScopeUsersWrite, targetUser, s.issuePasskeyLink)
+	// Invitations. users:write, because an accepted one makes an account; a
+	// group it names is checked as adding a member is (invitations.go).
+	route("GET /admin/invitations", ScopeUsersRead, s.listInvitations)
+	route("POST /admin/invitations", ScopeUsersWrite, s.createInvitation)
+	route("DELETE /admin/invitations/{invitationID}", ScopeUsersWrite, s.revokeInvitation)
 	route("POST /admin/organizations", ScopeOrganizationsWrite, s.createOrganization)
 
 	// The scope catalogue. Registered unconditionally — unlike attributes, a

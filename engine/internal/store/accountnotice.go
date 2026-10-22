@@ -44,6 +44,10 @@ const (
 	// address (5.16). LinkID names the email_sign_in_codes row; the code is
 	// minted as it is sent, so it never sits in the outbox.
 	NoticeSignInCode = "sign_in_code"
+	// NoticeInvitation: an invitation's link, mailed to the address it is
+	// bound to (5.18). There is no account yet, so UserID is empty; LinkID
+	// names the invitation, and the token is minted as the mail goes out.
+	NoticeInvitation = "invitation"
 )
 
 // AccountNotice is one queued notice.

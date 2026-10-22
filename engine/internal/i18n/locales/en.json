@@ -458,6 +458,8 @@
   "mail.factor.assigned.body": "An administrator made a hardware token the second step of your sign-in. It replaces any authenticator app you had.\n\nIf you did not ask for this, contact your administrator.",
   "mail.verifyemail.subject": "Your code to confirm this address",
   "mail.verifyemail.body": "Your code is {Code}. Enter it on the sign-in page to confirm this address is yours. It works for ten minutes.\n\nIf you did not create an account, you can ignore this message: nobody can sign in to it until the code is entered.",
+  "mail.invitation.subject": "You are invited to {Org}",
+  "mail.invitation.body": "You have been invited to create an account at {Org}:\n\n  {URL}\n\nThe link works once, until {Date}. Do not forward it: whoever opens it can create the account.\n\nIf you were not expecting this, you can ignore it.",
   "mail.passkeylink.subject": "Add a passkey to your account",
   "mail.passkeylink.body": "An administrator sent you a link to add a passkey to your account, so you can sign in with your device's screen lock:\n\n  {URL}\n\nIt works once, until {Until}. Do not forward it: whoever opens it can add a passkey to your account.\n\nIf you did not expect this, do not open it, and contact your administrator.",
   "sms.factor.assigned": "An administrator added a hardware token to your account. If you did not ask for this, contact them.",

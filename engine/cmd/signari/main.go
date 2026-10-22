@@ -495,6 +495,7 @@ func run(args []string) (err error) {
 	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins")
 	inviteTTL := fs.Duration("expires", 7*24*time.Hour, "how long the invitation lasts")
 	inviteID := fs.String("invitation", "", "`invite revoke`: the invitation's id, from `invite list`")
+	inviteSend := fs.Bool("send", false, "`invite create`: mail the link to -email instead of printing it")
 	signupDomains := fs.String("domains", "",
 		"comma-separated email domains permitted to self-sign-up")
 	signupVerify := fs.Bool("verify-email", true,
@@ -1274,7 +1275,7 @@ func run(args []string) (err error) {
 	case "outpost enable":
 		return outpostSetEnabled(ctx, conn, *orgID, *name, true)
 	case "invite create":
-		return inviteCreate(ctx, conn, *orgID, *email, *inviteGroups, *inviteTTL, *issuer)
+		return inviteCreate(ctx, conn, *orgID, *email, *inviteGroups, *inviteTTL, *issuer, *inviteSend)
 	case "invite list":
 		return inviteList(ctx, conn, *orgID)
 	case "invite revoke":
@@ -6961,14 +6962,19 @@ func splitList(s string) []string {
 	return out
 }
 
-// inviteCreate mints one invitation and prints the link ONCE.
+// inviteCreate mints one invitation and prints the link ONCE, or, with send,
+// has the engine mail it to the bound address and prints nothing to pass on.
 func inviteCreate(ctx context.Context, conn *pgx.Conn, orgID, email, groups string,
-	ttl time.Duration, issuer string) error {
+	ttl time.Duration, issuer string, send bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org, the organisation the new account joins")
 	}
-	if ttl <= 0 || ttl > 90*24*time.Hour {
+	if send && strings.TrimSpace(email) == "" {
+		return fmt.Errorf("-send needs -email: an unbound link goes to whoever is handed it, " +
+			"so there is nobody to mail it to")
+	}
+	if ttl <= 0 || ttl > store.MaxInvitationTTL {
 		return fmt.Errorf("-expires must be between a moment and 90 days; an "+
 			"invitation that outlives the reason it was sent is a standing way in "+
 			"(got %s)", ttl)
@@ -6988,19 +6994,29 @@ func inviteCreate(ctx context.Context, conn *pgx.Conn, orgID, email, groups stri
 		}
 	}
 
-	token, hash, err := store.NewInvitationToken()
+	// The same writer as the Admin API's (store.NewInvitation), so the two
+	// cannot come to disagree about what an invitation is.
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.invitations
-			(org_id, token_hash, email, grant_groups, expires_at)
-		VALUES ($1::uuid, $2, NULLIF($3,''), $4, now() + $5::interval)
-		RETURNING id::text`,
-		orgID, hash, strings.ToLower(strings.TrimSpace(email)), wanted,
-		fmt.Sprintf("%d seconds", int(ttl.Seconds()))).Scan(&id); err != nil {
+	defer func() { _ = tx.Rollback(ctx) }()
+	id, token, _, err := store.NewInvitation(ctx, tx, store.InvitationSpec{
+		OrgID: orgID, Email: email, Groups: wanted, TTL: ttl, Send: send,
+	})
+	if err != nil {
 		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if send {
+		fmt.Printf("invitation %s\n  mailed to %s by the engine's outbox; expires in %s\n", id,
+			strings.ToLower(strings.TrimSpace(email)), ttl)
+		if len(wanted) > 0 {
+			fmt.Printf("  joins: %s\n", strings.Join(wanted, ", "))
+		}
+		return nil
 	}
 
 	base := issuer

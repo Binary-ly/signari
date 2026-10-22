@@ -114,7 +114,7 @@ func (s *Server) requirePrivileged(target privilegedTarget, next http.HandlerFun
 }
 
 // uuidPathValues are the path parameters that name a row by its uuid.
-var uuidPathValues = []string{"userID", "groupID", "subjectID", "orgID", "mapperID"}
+var uuidPathValues = []string{"userID", "groupID", "subjectID", "orgID", "mapperID", "invitationID"}
 
 // canonicalIDs refuses a uuid path parameter not written in its canonical
 // form (lower case, 8-4-4-4-12).

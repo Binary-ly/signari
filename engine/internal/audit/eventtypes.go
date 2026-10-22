@@ -18,7 +18,7 @@ var EventTypes = []string{
 	"admin.client_deleted", "admin.client_secret_rotated", "admin.client_updated",
 	"admin.factor_removed", "admin.group_created", "admin.group_deleted",
 	"admin.group_member_added", "admin.group_member_removed", "admin.group_updated",
-	"admin.identity_provider_updated", "admin.invitation_revoked",
+	"admin.identity_provider_updated", "admin.invitation_created", "admin.invitation_revoked",
 	"admin.migration_source_removed", "admin.migration_source_set",
 	"admin.organization_created", "admin.passkey_link_issued", "admin.privileged_refused",
 	"admin.proxy_host_removed",

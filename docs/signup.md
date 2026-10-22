@@ -38,7 +38,16 @@ could not reach something.
 sent is a standing way in.
 
 `signari invite list -org <uuid>` shows what is outstanding, used, expired or
-revoked.
+revoked, and `signari invite revoke` closes one.
+
+**Or have the engine mail it.** `-send`, with `-email`, prints no link. The
+engine's outbox mails it to the bound address instead, in the deployment's
+language, and makes the token only as the mail goes out, so the link exists
+nowhere but in that mail. A retried delivery makes a new one, and only the
+newest mail's link works. The same invitations can be made, listed and revoked
+through the Admin API (`/admin/invitations`, [admin-api](admin-api.md)), held to
+what adding a member to each named group is held to. Until October 2026 they
+were the CLI's alone, and every link was printed for an operator to pass on.
 
 ## Claiming is atomic, and reversible on failure
 

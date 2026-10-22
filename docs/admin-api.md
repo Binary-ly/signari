@@ -192,6 +192,14 @@ to redefine one would be a setting that changes nothing.
 | `PATCH /admin/users/{userID}` | Activate, deactivate, set a password, require a change, and edit identity: `email`, `username`, `display_name`, `given_name`, `surname`. An empty string clears a field; both identifiers cannot be cleared at once (400 `no_identifier_left`), and a taken address or name is 409 `already_exists`. A password set, or an address changed, is told to the person on every channel, queued with the change; an address change goes to the old address too, naming neither |
 | `DELETE /admin/users/{userID}` | Remove the person and everything they hold. Real deletion, not a flag (ADR-005). Their sessions are **terminated before the row goes**, so every relying party they reached receives a back-channel logout — letting the rows cascade away would destroy the list of who to notify before anyone was notified, and leave them signed in everywhere with an account that no longer exists. Returns `sessions_ended`, `notices_queued` and `refresh_families_revoked`, the refresh token families that could still be redeemed, whether or not a session held them. The audit trail keeps its records: `audit_events` has no foreign key to `users`, so what a person did outlives their account |
 
+### Invitations
+
+| | |
+|---|---|
+| `GET /admin/invitations` | List, paged, each `open`, `used`, `revoked` or `expired`; `?org_id=` narrows it. `users:read` |
+| `POST /admin/invitations` | `org_id`, and optionally `email` (bind it to one address), `groups` (names the new account joins), `expires_in_seconds` (seven days by default, at most ninety) and `send`. Without `send` the response carries the `link`, once: only its hash is kept. With `send` it needs `email`, and the engine mails the link through the outbox, so the response has no link and neither does the outbox: the token is made as the mail goes out, again for each retry, so the newest mail is the one that works. Every group must exist and be one the token may act on (400 `no_such_group` otherwise, the same for a group outside a narrowed token), and a group whose members may impersonate needs `privileged-users:write` (403 `privileged_target`), as adding a member does. `users:write`. Audited `admin.invitation_created` |
+| `DELETE /admin/invitations/{invitationID}` | Revoke an open one, so its link stops working at once; 404 for one used, revoked, expired or in another organisation. Audited `admin.invitation_revoked`, `via: admin_api` |
+
 ### User attributes
 
 Operator-defined fields on a user, declared per organisation before anything can

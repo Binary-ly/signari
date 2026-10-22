@@ -109,6 +109,24 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return `{}` },
 		},
 		{
+			name: "POST /admin/invitations", method: http.MethodPost,
+			path: func(*testing.T, *Server) string { return "/admin/invitations" },
+			body: func(t *testing.T, s *Server, _ string) string {
+				return fmt.Sprintf(`{"org_id":%q,"email":"drift-invite-%d@example.test"}`,
+					anyOrgID(t, s), time.Now().UnixNano())
+			},
+		},
+		{
+			// A fresh open one each time: the route revokes what it is pointed
+			// at, and a second revoke is a 404 rather than the precondition
+			// failure being checked for.
+			name: "DELETE /admin/invitations/{invitationID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/invitations/" + newDriftInvitation(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/attributes", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + anyOrgID(t, s) + "/attributes"
@@ -411,6 +429,28 @@ func newDriftUser(t *testing.T, s *Server) string {
 	}
 	t.Cleanup(func() {
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.users WHERE id = $1::uuid`, id)
+	})
+	return id
+}
+
+// newDriftInvitation makes an open invitation for the revoke route to close.
+func newDriftInvitation(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	id, _, _, err := store.NewInvitation(ctx, tx, store.InvitationSpec{OrgID: anyOrgID(t, s), TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("creating the fixture invitation: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.invitations WHERE id = $1::uuid`, id)
 	})
 	return id
 }

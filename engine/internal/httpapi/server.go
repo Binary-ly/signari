@@ -683,6 +683,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /passkey.js", s.handlePasskeyJS)
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.rateLimitedLogin)
+	mux.HandleFunc("GET /login/accounts", s.handleAccountsGet)
+	mux.HandleFunc("POST /login/accounts", s.handleAccountsPost)
 	mux.HandleFunc("POST /login/email", s.handleEmailSignInStart)
 	mux.HandleFunc("POST /login/email/verify", s.handleEmailSignInVerify)
 	mux.HandleFunc("POST /login/mfa", s.handleMFAPost)
@@ -974,6 +976,8 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		"StaySignedIn": s.persistentOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
 		// An emailed code in place of the password, where the sign-in flow takes one.
 		"EmailCode": s.emailSignInOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
+		// Other accounts this browser is signed in with, to choose instead.
+		"Accounts": s.holdsAccounts(r, s.loginOrg(r.Context(), authzQuery)),
 		// Only when this request actually needs one. In adaptive mode a person
 		// signing in normally never sees a widget at all.
 		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),

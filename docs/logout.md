@@ -12,6 +12,11 @@ everything:
 Each is reported separately rather than summed into a single "signed out",
 because they succeed and fail independently.
 
+**A sign-out ends every account the browser holds**, not only the one in use
+([several accounts](accounts.md)). Each one's relying parties are told by back
+channel. The front channel and the SAML chain run for the account that was in
+use.
+
 **Signing out does not end a grant of `offline_access`.** That grant is access
 for an application while the person is *not* signed in, so it outlives the
 session it was given in, for the organisation's offline lifetime (`signari

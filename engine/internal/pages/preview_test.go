@@ -379,6 +379,13 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 		}),
 		"accountexport": csrf(map[string]any{}),
 		"emailcode":     csrf(map[string]any{"Error": ""}),
+		"accounts": csrf(map[string]any{
+			"Accounts": []map[string]any{
+				{"SID": "s-1", "Name": "Amelia Hart", "Active": true},
+				{"SID": "s-2", "Name": "amelia@hart.example", "Active": false},
+			},
+			"Authz": "client_id=web-app&response_type=code", "Another": "/login", "Error": "",
+		}),
 		"emailchange": csrf(map[string]any{
 			"Address": "amelia.hart@example.com", "NewAddress": "amelia@hart.example",
 			"Closed": false, "Message": "", "Error": "",

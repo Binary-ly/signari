@@ -239,6 +239,9 @@ const (
 func SessionSufficient(sessionAMR []string, authTime time.Time, now time.Time,
 	acrValues string, maxAge *int, prompt string) (StepUpReason, string) {
 
+	// select_account arrives here only when the browser holds no account to
+	// choose in the client's organisation: httpapi's picker answers it first,
+	// and consumes it. With nothing to choose, a sign-in is the choice.
 	if HasPrompt(prompt, PromptLogin) || HasPrompt(prompt, PromptSelectAccount) {
 		return StepUpForced, "the client requested re-authentication"
 	}

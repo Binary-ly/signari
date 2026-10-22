@@ -1,0 +1,14 @@
+{{define "title"}}{{T "accounts.title"}}{{end}}
+{{define "content"}}
+<h1>{{T "accounts.title"}}</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+<p>{{T "accounts.intro"}}</p>
+<form method="POST" action="/login/accounts">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+{{if .Authz}}<input type="hidden" name="authz" value="{{.Authz}}">{{end}}
+{{range .Accounts}}<p><button type="submit" name="account" value="{{.SID}}">{{.Name}}{{if .Active}} · {{T "accounts.inuse"}}{{end}}</button></p>
+{{end}}
+<p class="alt"><a href="{{.Another}}">{{T "accounts.another"}}</a></p>
+{{if .Authz}}<p class="alt"><button type="submit" name="cancel" value="1" formnovalidate>{{T "accounts.cancel"}}</button></p>{{end}}
+</form>
+{{end}}

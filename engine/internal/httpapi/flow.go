@@ -151,6 +151,22 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// prompt=select_account: OIDC Core §3.1.2.1, the OP "SHOULD prompt the
+	// End-User to select a user account". The accounts this browser holds in
+	// the client's organisation, to choose from (accounts.go); choosing one
+	// resumes here with select_account consumed. With none, a sign-in is the
+	// choice, below. It used to force a fresh sign-in whatever was held.
+	if oauth.HasPrompt(req.Prompt, oauth.PromptSelectAccount) {
+		held, herr := s.heldAccounts(ctx, r, c.OrgID)
+		if herr != nil {
+			s.log.Error("reading the accounts this browser holds", "err", herr)
+		}
+		if len(held) > 0 {
+			s.renderAccounts(w, r, r.URL.RawQuery, held, "")
+			return
+		}
+	}
+
 	sid := ""
 	live := false
 	if cookie := sessionCookie(r); cookie != "" {
@@ -2121,15 +2137,24 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	// session-revoked notices, so relying parties holding tokens from the old
 	// session learn it ended rather than discovering it at expiry.
 	//
-	// The session presented by THIS browser, and only that one. A user signed in
+	// The sessions presented by THIS browser, and only those. A user signed in
 	// on a phone and a laptop who re-authenticates on the laptop has not asked to
 	// be signed out of the phone.
-	if old := sessionCookie(r); old != "" {
+	//
+	// And only this person's: another account this browser holds is not this
+	// sign-in's to end, and is kept beside it (accounts.go, 5.17). Ending every
+	// session the browser presented is what made a second account a sign-out of
+	// the first. A parked session of this person's goes too, or it would stay
+	// live with no cookie left to end it.
+	for _, old := range append([]string{sessionCookie(r)}, parkedTokens(r)...) {
+		if old == "" {
+			continue
+		}
 		var oldSID string
 		if err := tx.QueryRow(ctx, `
 			SELECT sid FROM core.sessions
-			WHERE cookie_hash = $1 AND revoked_at IS NULL`,
-			store.HashToken(old)).Scan(&oldSID); err == nil && oldSID != "" {
+			WHERE cookie_hash = $1 AND revoked_at IS NULL AND user_id = $2::uuid`,
+			store.HashToken(old), userID).Scan(&oldSID); err == nil && oldSID != "" {
 			if _, terr := store.TerminateSessions(ctx, tx, oldSID, "",
 				store.ReasonReauthenticated); terr != nil {
 				s.log.Error("terminating the superseded session", "err", terr,
@@ -2192,16 +2217,18 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 
 	// The organisation's lifetime, and its idle limit, from sign-in (0180): the
 	// session ends at the sooner of the two unless it is used.
+	// persistent records "stay signed in", where it was asked and is offered,
+	// for whichever of this browser's cookies holds the session later (0185).
 	userAgent, ipHash := s.sessionDevice(r)
 	if tag, err := tx.Exec(ctx, `
 		INSERT INTO core.sessions (sid, cookie_hash, org_id, user_id, acr, amr, auth_time, not_after,
-		                           absolute_not_after, last_seen_at, user_agent, ip_hash)
+		                           absolute_not_after, last_seen_at, user_agent, ip_hash, persistent)
 		SELECT $1, $2, o.id, $4, $5, $6, now(),
 		       now() + make_interval(secs => least(o.session_lifetime_s, coalesce(o.session_idle_s, o.session_lifetime_s))),
-		       now() + make_interval(secs => o.session_lifetime_s), now(), $7, $8
+		       now() + make_interval(secs => o.session_lifetime_s), now(), $7, $8, $9 AND o.persistent_sessions
 		  FROM core.organizations o WHERE o.id = $3::uuid`,
 		sid, store.HashToken(cookieToken), orgID, userID, acr, amr,
-		userAgent, ipHash); err != nil || tag.RowsAffected() != 1 {
+		userAgent, ipHash, rememberAsked(r)); err != nil || tag.RowsAffected() != 1 {
 		s.log.Error("creating session", "err", err, "rows", tag.RowsAffected())
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -2235,6 +2262,9 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 		maxAge = s.persistentCookieAge(ctx, sid)
 		s.forgetRemember(w, r)
 	}
+	// Whoever else this browser was signed in as stays signed in, parked
+	// beside this one (accounts.go), unless it was this person.
+	s.parkOthers(ctx, w, r, userID)
 	s.setSessionCookie(w, cookieToken, maxAge)
 
 	// Where this sign-in came from, for the next travel check.
@@ -2465,20 +2495,26 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	// and with it the record of which relying parties to notify.
 	frontChannel := s.frontChannelTargets(ctx, chainSID, s.cfg.Issuer)
 
-	if err := s.terminateOwnSession(ctx, sessionCookie(r)); err != nil {
-		s.log.Error("ending session", "err", err)
-		// The cookie is still cleared: it is defence in depth for THIS browser,
-		// and withholding it would leave the user with neither outcome. But we
-		// do not redirect and do not claim success.
-		s.clearSessionCookie(w)
-		writeError(w, http.StatusInternalServerError, "server_error",
-			"sign-out could not be completed; your session may still be active")
-		return
+	// The account in use, then every other this browser holds (accounts.go):
+	// signing out of a shared computer leaves nobody signed in on it.
+	for _, cookie := range append([]string{sessionCookie(r)}, parkedTokens(r)...) {
+		if err := s.terminateOwnSession(ctx, cookie); err != nil {
+			s.log.Error("ending session", "err", err)
+			// The cookies are still cleared: they are defence in depth for THIS
+			// browser, and withholding them would leave the user with neither
+			// outcome. But we do not redirect and do not claim success.
+			s.clearSessionCookie(w)
+			s.clearParked(w, r)
+			writeError(w, http.StatusInternalServerError, "server_error",
+				"sign-out could not be completed; your session may still be active")
+			return
+		}
 	}
 
 	// Clear the cookie even if there was no live session: the user asked to be
 	// signed out, and leaving a stale cookie behind is confusing.
 	s.clearSessionCookie(w)
+	s.clearParked(w, r)
 
 	// post_logout_redirect_uri must be REGISTERED before we redirect to it.
 	// An unvalidated post-logout redirect is an open redirector reached from a
@@ -2638,7 +2674,7 @@ func (s *Server) logoutConfirmed(w http.ResponseWriter, r *http.Request) bool {
 
 	// No session to end means nothing to confirm, and rendering a page that
 	// says "sign out?" to somebody who is not signed in is worse than useless.
-	if sessionCookie(r) == "" {
+	if sessionCookie(r) == "" && len(parkedTokens(r)) == 0 {
 		return true
 	}
 

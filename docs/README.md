@@ -71,6 +71,7 @@ command or an environment variable exists in code and not on its page.
 | [mcp-authorization.md](mcp-authorization.md) | Acting as an authorization server for MCP |
 | [key-rotation.md](key-rotation.md) | next → active → passive → retired |
 | [logout.md](logout.md) | Three mechanisms, because none reaches everything |
+| [accounts.md](accounts.md) | Several accounts in one browser, and `prompt=select_account` |
 | [logout-conformance.md](logout-conformance.md) | Proving a relying party actually honours it |
 | [cors.md](cors.md) | Which endpoints, and the one that must never have it |
 | [emerging-standards.md](emerging-standards.md) | Every non-settled specification implemented, with its draft status |

@@ -11,7 +11,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
@@ -85,10 +84,9 @@ func (r *clientResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				Optional: true,
 				Computed: true,
 				MarkdownDescription: "Human-readable name; omitted, the server uses the client " +
-					"id. Changing it replaces the client, because the Admin API cannot rename one.",
+					"id. Changed in place.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
-					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"public": schema.BoolAttribute{
@@ -104,13 +102,9 @@ func (r *clientResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			// A set, because the server holds one: a reordered list is the same
 			// registration, and must not read as a change.
 			"redirect_uris": schema.SetAttribute{
-				Required:    true,
-				ElementType: types.StringType,
-				MarkdownDescription: "Registered redirect URIs, at least one. Changing them " +
-					"replaces the client, because the Admin API cannot change them in place.",
-				PlanModifiers: []planmodifier.Set{
-					setplanmodifier.RequiresReplace(),
-				},
+				Required:            true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "Registered redirect URIs, at least one. Changed in place.",
 			},
 			"enabled": schema.BoolAttribute{
 				Optional:            true,
@@ -278,10 +272,17 @@ func (r *clientResource) Update(ctx context.Context, req resource.UpdateRequest,
 		ifMatch = state.ConfigVersion.ValueInt64()
 	}
 
-	// `enabled` is the one field that changes in place; every other one
-	// replaces the client, so there is nothing else for this request to carry.
-	_, err := r.data.client.SetClientEnabled(ctx,
-		plan.ClientID.ValueString(), plan.Enabled.ValueBool(), ifMatch)
+	// `enabled`, the name and the redirect URIs change in place, in one
+	// conditional request; the id, organisation and client type replace the
+	// client. Replacing it for a rename or a new redirect URI used to delete
+	// every token issued under it and mint a new secret.
+	uris := setToStrings(ctx, plan.RedirectURIs, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	_, err := r.data.client.UpdateClient(ctx, plan.ClientID.ValueString(), signari.ClientUpdate{
+		Enabled: plan.Enabled.ValueBool(), DisplayName: plan.DisplayName.ValueString(), RedirectURIs: uris,
+	}, ifMatch)
 
 	var conflict *signari.ErrConflict
 	if errors.As(err, &conflict) {

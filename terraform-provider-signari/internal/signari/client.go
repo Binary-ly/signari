@@ -212,6 +212,9 @@ type ClientState struct {
 	// older than this field does not. A caller then has nothing to compare, and
 	// must not read the absence as "none".
 	RedirectURIs *[]string `json:"redirect_uris"`
+	// CreatedAt is when the client was registered, which an update leaves and
+	// a replacement does not.
+	CreatedAt string `json:"created_at"`
 }
 
 // GetClient reads one, returning the version it was read at.
@@ -235,6 +238,24 @@ func (c *Client) GetClient(ctx context.Context, clientID string) (*ClientState, 
 func (c *Client) SetClientEnabled(ctx context.Context, clientID string, enabled bool, ifMatch int64) (*Result, error) {
 	return c.do(ctx, http.MethodPatch, "/admin/clients/"+clientID,
 		map[string]any{"enabled": enabled}, ifMatch)
+}
+
+// ClientUpdate is what an update changes in place: the server's PATCH has
+// taken the name and the redirect URIs since 6.03, so changing them no longer
+// replaces the client, which deleted every token issued under it and minted a
+// new secret.
+type ClientUpdate struct {
+	Enabled      bool
+	DisplayName  string
+	RedirectURIs []string
+}
+
+// UpdateClient writes an update in one request, conditional on the version it
+// was read at, as SetClientEnabled is.
+func (c *Client) UpdateClient(ctx context.Context, clientID string, u ClientUpdate, ifMatch int64) (*Result, error) {
+	return c.do(ctx, http.MethodPatch, "/admin/clients/"+clientID, map[string]any{
+		"enabled": u.Enabled, "display_name": u.DisplayName, "redirect_uris": u.RedirectURIs,
+	}, ifMatch)
 }
 
 // DeleteClient removes a client and everything issued under it, conditional on

@@ -696,8 +696,14 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req patchClientRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+	// A field this cannot set is refused by name rather than dropped. Dropped,
+	// a caller sending the name or redirect URIs before 6.03, or a typo, got
+	// 200 with nothing written, which is how the Terraform provider came to
+	// replace a client rather than update it.
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
 		return
 	}
 	settings, setsSettings := req.settings()

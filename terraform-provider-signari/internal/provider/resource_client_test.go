@@ -233,8 +233,9 @@ func TestDeleteDeletesTheClient(t *testing.T) {
 	}
 }
 
-// Update can carry only `enabled`, so every other attribute an operator can set
-// must replace the client (2.17). Changing the redirect URIs was an in-place
+// Update carries `enabled`, the name and the redirect URIs (6.03), so every
+// other attribute an operator can set must replace the client (2.17). Changing
+// the redirect URIs was once an in-place
 // update that sent `enabled` alone and wrote the new URIs into state: the
 // apply reported success and the server kept the old ones. Derived from the
 // schema, so an attribute added later fails here until it is either sent by
@@ -245,7 +246,7 @@ func TestEveryAttributeUpdateCannotSendRequiresReplacement(t *testing.T) {
 	resp := &resource.SchemaResponse{}
 	r.Schema(ctx, resource.SchemaRequest{}, resp)
 
-	inPlace := map[string]bool{"enabled": true}
+	inPlace := map[string]bool{"enabled": true, "display_name": true, "redirect_uris": true}
 	replaces := func(descs []string) bool {
 		for _, d := range descs {
 			if strings.Contains(d, "destroy and recreate") {

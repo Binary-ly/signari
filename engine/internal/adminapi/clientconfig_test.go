@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -192,6 +193,21 @@ func TestTheAPIRefusesWhatApplyAndTheVerbsRefuse(t *testing.T) {
 		}
 		if after := readClient(t, s, client); fmt.Sprint(after) != fmt.Sprint(before) {
 			t.Errorf("%s was refused and still changed the client", why)
+		}
+	}
+}
+
+// A field PATCH cannot set is refused by name, not dropped with a 200.
+func TestAClientPatchRefusesAFieldItCannotSet(t *testing.T) {
+	s, _ := newTestServer(t)
+	client := newPreconditionClient(t, s)
+	for _, field := range []string{"client_type", "org_id", "created_at", "redirect_uri"} {
+		rec := call(t, s, http.MethodPatch, "/admin/clients/"+client, testToken, map[string]any{field: "x", "enabled": true})
+		var refused map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &refused)
+		if rec.Code != http.StatusBadRequest || refused["error"] != "invalid_json" ||
+			!strings.Contains(fmt.Sprint(refused["detail"]), field) {
+			t.Errorf("%s: %d %s", field, rec.Code, rec.Body.String())
 		}
 	}
 }

@@ -94,28 +94,54 @@ func TestE2EARedirectURIChangeReachesTheServer(t *testing.T) {
 	first := create(want("https://a.example/cb", true))
 	same("after create", refresh(first), want("https://a.example/cb", true))
 
-	// The replacement Terraform plans for a changed redirect URI.
-	del := &resource.DeleteResponse{State: first}
-	r.Delete(ctx, resource.DeleteRequest{State: first}, del)
-	if del.Diagnostics.HasError() {
-		t.Fatalf("delete: %v", del.Diagnostics)
+	// A changed redirect URI and name are an in-place update (6.03), not the
+	// replacement they were, which deleted every token under the client and
+	// minted a new secret: the same client, with its secret, after.
+	update := func(st tfsdk.State, m clientModel) tfsdk.State {
+		up := &resource.UpdateResponse{State: st}
+		r.Update(ctx, resource.UpdateRequest{Plan: asPlan(m), State: st}, up)
+		if up.Diagnostics.HasError() {
+			t.Fatalf("update: %v", up.Diagnostics)
+		}
+		return up.State
 	}
-	second := create(want("https://b.example/cb", true))
-	if got := server(); got.RedirectURIs == nil || fmt.Sprint(*got.RedirectURIs) != "[https://b.example/cb]" {
-		t.Fatalf("after the replacement the server holds %v, want the new URI", got.RedirectURIs)
+	renamed := want("https://b.example/cb", true)
+	renamed.DisplayName = types.StringValue("Terraform e2e, renamed")
+	born := server().CreatedAt
+	second := update(first, renamed)
+	if got := server(); got.RedirectURIs == nil || fmt.Sprint(*got.RedirectURIs) != "[https://b.example/cb]" ||
+		got.DisplayName != "Terraform e2e, renamed" {
+		t.Fatalf("after the update the server holds %v %q", got.RedirectURIs, got.DisplayName)
 	}
-	same("after the replacement", refresh(second), want("https://b.example/cb", true))
+	if got := server().CreatedAt; born == "" || got != born {
+		t.Errorf("the update replaced the client: registered %q, now %q", born, got)
+	}
+	same("after the in-place update", refresh(second), renamed)
 
-	// The one in-place change.
-	up := &resource.UpdateResponse{State: second}
-	r.Update(ctx, resource.UpdateRequest{Plan: asPlan(want("https://b.example/cb", false)), State: second}, up)
-	if up.Diagnostics.HasError() {
-		t.Fatalf("update: %v", up.Diagnostics)
+	// Drift: a change made outside Terraform shows in the next refresh, so the
+	// plan after it offers to put the configuration back.
+	if _, err := api.UpdateClient(ctx, id, signari.ClientUpdate{Enabled: true,
+		DisplayName: "Terraform e2e, renamed", RedirectURIs: []string{"https://drifted.example/cb"}}, 0); err != nil {
+		t.Fatalf("the out-of-band change: %v", err)
 	}
-	if server().Enabled {
-		t.Error("an update to enabled = false left the client enabled on the server")
+	drifted := refresh(second)
+	if fmt.Sprint(drifted.RedirectURIs) == fmt.Sprint(renamed.RedirectURIs) {
+		t.Errorf("a redirect URI changed outside Terraform did not show in the refresh: %v", drifted.RedirectURIs)
 	}
-	same("after the update", refresh(up.State), want("https://b.example/cb", false))
+
+	// Back to the configuration, and disabled, in place.
+	disabled := renamed
+	disabled.Enabled = types.BoolValue(false)
+	driftedState := tfsdk.State{Schema: sch.Schema}
+	if d := driftedState.Set(ctx, drifted); d.HasError() {
+		t.Fatal(d)
+	}
+	upState := update(driftedState, disabled)
+	if got := server(); got.Enabled || got.RedirectURIs == nil || fmt.Sprint(*got.RedirectURIs) != "[https://b.example/cb]" {
+		t.Errorf("an update back to the configuration left the server at enabled=%v %v", got.Enabled, got.RedirectURIs)
+	}
+	same("after the update", refresh(upState), disabled)
+	up := &resource.UpdateResponse{State: upState}
 
 	gone := &resource.DeleteResponse{State: up.State}
 	r.Delete(ctx, resource.DeleteRequest{State: up.State}, gone)

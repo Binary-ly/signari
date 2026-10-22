@@ -97,18 +97,21 @@ next write, not a property of the client.
 
 ## What an apply changes in place, and what replaces the client
 
-Only `enabled` changes in place. The Admin API cannot yet rename a client or
-change its redirect URIs, so a change to `display_name` or `redirect_uris`
+`enabled`, `display_name` and `redirect_uris` change in place, in one
+conditional request. A change to `client_id`, `org_id` or `public`
 **replaces** the client, and the plan says so: the client is deleted and
 created again, with a new secret, and every token issued under the old one
-stops working. Read the plan before applying a change to either.
+stops working. Until October 2026 the Admin API could not rename a client or
+change its redirect URIs, so a change to either replaced it too.
 
-This used to be an in-place update that sent `enabled` alone and wrote the new
-values into state. The apply reported success, the next plan was empty, and
-the server still held the old redirect URIs. Every create and update is now
-read back, so state records what the server holds rather than what was asked
-for. `redirect_uris` is a set, because the server holds one: reordering it is
-not a change.
+Before that, there was a time when this was an in-place update that sent
+`enabled` alone and wrote the new values into state. The apply reported
+success, the next plan was empty, and the server still held the old redirect
+URIs. Every create and update is read back, so state records what the server
+holds rather than what was asked for, and the server now refuses a field it
+cannot set rather than dropping it. `redirect_uris` is a set, because the server
+holds one: reordering it is not a change. A change made outside Terraform shows
+in the next refresh, and the plan after it puts the configuration back.
 
 ## Destroying a client
 

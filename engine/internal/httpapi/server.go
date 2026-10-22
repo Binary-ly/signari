@@ -624,6 +624,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /account/email", s.handleEmailChangePost)
 	mux.HandleFunc("GET /account/profile", s.handleProfile)
 	mux.HandleFunc("POST /account/profile", s.handleProfilePost)
+	mux.HandleFunc("POST /account/language", s.handleAccountLanguage)
 	mux.HandleFunc("GET /account/security", s.handleSecurity)
 	mux.HandleFunc("POST /account/security/remove", s.handleSecurityRemove)
 	mux.HandleFunc("POST /account/devices/forget", s.handleDevicesForget)

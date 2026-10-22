@@ -24,6 +24,9 @@ var accountWritesExempt = map[string]string{
 		"uses may do, as the consent screen does, which no window holds; it changes nothing " +
 		"about how the account signs in, and the approval is held to the client's own acr " +
 		"and floor",
+	"/account/language": "the language changes no way into the account; the notices it " +
+		"rewords are of changes that each need a recent sign-in themselves, so a stolen " +
+		"session could hide nothing it could also cause",
 }
 
 // Every route under /account that is not a GET calls credentialChangeRefused

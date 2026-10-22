@@ -189,6 +189,12 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
+	// The language the person chose, if they chose one (language.go).
+	var locale string
+	if err := s.db.QueryRow(ctx, `SELECT COALESCE(locale, '') FROM core.users WHERE id = $1::uuid`,
+		userID).Scan(&locale); err != nil {
+		s.log.Error("reading the chosen language", "err", err)
+	}
 
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
@@ -200,7 +206,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	// 'self' for /passkey.js and the ceremony's requests. Nothing inline.
 	s.renderPage(w, r, "account", map[string]any{
 		"Providers": providers, "Passkeys": passkeys, "CSRF": csrf, "CSRFField": csrfFormField,
-		"PasskeyScript": true,
+		"PasskeyScript": true, "Languages": s.languageChoices(locale), "LanguageChosen": locale != "",
 	})
 }
 

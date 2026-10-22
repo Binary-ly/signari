@@ -48,6 +48,16 @@ td:last-child{text-align:right;white-space:nowrap}
 </div>
 <p id="passkey-status" class="muted" role="status"></p>
 <script src="/passkey.js"></script>
+{{if .Languages}}<h2 style="margin-top:1.5rem">{{T "account.language"}}</h2>
+<form method="POST" action="/account/language">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="language">{{T "account.language.label"}}</label>
+<select id="language" name="language">
+<option value=""{{if not .LanguageChosen}} selected{{end}}>{{T "account.language.browser"}}</option>
+{{range .Languages}}<option value="{{.Tag}}" lang="{{.Tag}}"{{if .Selected}} selected{{end}}>{{.Name}}</option>
+{{end}}</select>
+<button type="submit">{{T "account.language.save"}}</button>
+</form>{{end}}
 <h2 style="margin-top:1.5rem">{{T "account.manage"}}</h2>
 <ul class="links">
 <li><a href="/account/profile">{{T "profile.title"}}</a></li>

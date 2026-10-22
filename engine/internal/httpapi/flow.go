@@ -2066,8 +2066,9 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	// wrote a session and a login.succeeded that the per-request check then
 	// treated as nobody (ADR-007). A self-sign-up waiting for approval (5.19)
 	// has proved its own credential, so it is told why.
-	var status string
-	if err := tx.QueryRow(ctx, `SELECT status FROM core.users WHERE id = $1::uuid`, userID).Scan(&status); err != nil {
+	var status, locale string
+	if err := tx.QueryRow(ctx, `SELECT status, COALESCE(locale, '') FROM core.users WHERE id = $1::uuid`,
+		userID).Scan(&status, &locale); err != nil {
 		s.log.Error("reading the account's status at sign-in", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -2293,6 +2294,10 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	// beside this one (accounts.go), unless it was this person.
 	s.parkOthers(ctx, w, r, userID)
 	s.setSessionCookie(w, cookieToken, maxAge)
+	// The language this person chose, in whatever browser they chose it.
+	if locale != "" && s.pageSet().Bundle().Has(locale) {
+		setLanguageCookie(w, locale)
+	}
 
 	// Where this sign-in came from, for the next travel check.
 	//

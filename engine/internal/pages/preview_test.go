@@ -425,6 +425,11 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 					"Email": "amelia@users.noreply.github.com", "Verified": false},
 				{"Name": "Google Workspace", "Slug": "google", "Linked": false},
 			},
+			"Languages": []map[string]any{
+				{"Tag": "en", "Name": "English", "Selected": true},
+				{"Tag": "ar", "Name": "العربية", "Selected": false},
+			},
+			"LanguageChosen": true,
 		}),
 		"devices": csrf(map[string]any{
 			"Devices": []map[string]any{

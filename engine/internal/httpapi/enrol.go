@@ -497,7 +497,17 @@ func (s *Server) langFor(r *http.Request) string {
 	if bundle == nil || r == nil {
 		return i18n.Default
 	}
-	return bundle.Negotiate(uiLocalesFrom(r), r.Header.Get("Accept-Language")).Lang()
+	ui := uiLocalesFrom(r)
+	// The language the person chose (language.go), after what an application
+	// asks for and before what the browser says: Accept-Language is a
+	// browser's setting, and a shared or borrowed one says nothing of who is
+	// reading.
+	if ui == "" {
+		if lang := chosenLanguage(r); lang != "" && bundle.Has(lang) {
+			return lang
+		}
+	}
+	return bundle.Negotiate(ui, r.Header.Get("Accept-Language")).Lang()
 }
 
 // tr is a message printer for the language this request is being answered in.

@@ -30,6 +30,7 @@ var EventTypes = []string{
 	"admin.role_granted", "admin.role_revoked",
 	"admin.scim_source_updated", "admin.scope_declared",
 	"admin.scope_deleted", "admin.session_revoked", "admin.sessions_revoked",
+	"admin.signup_rule_removed", "admin.signup_rule_set",
 	"admin.subject_erased", "admin.subject_exported",
 	"admin.token_created", "admin.token_revoked", "admin.token_rotated",
 	"admin.user_approved", "admin.user_created",

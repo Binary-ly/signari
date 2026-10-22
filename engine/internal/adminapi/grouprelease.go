@@ -36,7 +36,7 @@ type putGroupReleaseRequest struct {
 type errUnknownGroups struct{ names []string }
 
 func (e errUnknownGroups) Error() string {
-	return "no group named " + strings.Join(e.names, ", ") + " in the application's organisation"
+	return "no group named " + strings.Join(e.names, ", ") + " in the organisation"
 }
 
 func (s *Server) getGroupRelease(w http.ResponseWriter, r *http.Request) {

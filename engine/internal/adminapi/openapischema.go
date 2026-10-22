@@ -86,6 +86,16 @@ func orgSettingsProps() map[string]jsonSchema {
 		"login_free_attempts": integer(), "login_max_delay_s": integer()}
 }
 
+// signupProps is an organisation's self-sign-up rule as read and set (6.07).
+func signupProps() map[string]jsonSchema {
+	return map[string]jsonSchema{"org_id": uuidStr(), "enabled": boolean(), "allowed_domains": arrayOf(str()),
+		"any_domain": boolean(), "default_groups": arrayOf(str()), "require_verified_email": boolean(),
+		"require_approval": boolean()}
+}
+
+var signupFields = []string{"org_id", "enabled", "allowed_domains", "any_domain", "default_groups",
+	"require_verified_email", "require_approval"}
+
 // orgSettingsFields is every one of them, each always present.
 func orgSettingsFields() []string {
 	var out []string
@@ -384,6 +394,10 @@ var opSchemas = map[string]opSchema{
 		[]string{"client_id", "released", "only_groups", "config_version"},
 		withVersion(map[string]jsonSchema{"client_id": str(), "released": boolean(), "only_groups": arrayOf(str())}))},
 	"DELETE /admin/clients/{clientID}/group-release": {http.StatusOK, nil, removedSchema},
+	"GET /admin/organizations/{orgID}/signup":        {http.StatusOK, nil, object(signupFields, signupProps())},
+	"PUT /admin/organizations/{orgID}/signup": {http.StatusOK, typeOf[putSignupRequest](), object(
+		append(append([]string{}, signupFields...), "config_version"), withVersion(signupProps()))},
+	"DELETE /admin/organizations/{orgID}/signup": {http.StatusOK, nil, removedSchema},
 	"PATCH /admin/organizations/{orgID}/settings": {http.StatusOK, typeOf[patchOrgSettingsRequest](), object(
 		append(orgSettingsFields(), "config_version"), withVersion(orgSettingsProps()))},
 	"GET /admin/me": {http.StatusOK, nil, object([]string{"kind", "name", "org_id", "scopes", "expires_at"}, map[string]jsonSchema{

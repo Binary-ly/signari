@@ -276,6 +276,27 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return `{"remember_device_days":7}` },
 		},
 		{
+			// Its own organisation: an open sign-up on the shared one would let
+			// other tests' addresses make accounts.
+			name: "PUT /admin/organizations/{orgID}/signup", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/signup"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"allowed_domains":["drift.example"]}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/signup", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if err := store.SetSignupRule(context.Background(), s.db, store.SignupRule{OrgID: org,
+					AllowedDomains: []string{"drift.example"}}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/signup"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			// A fresh person each time: a binding is once per person and role.
 			name: "POST /admin/organizations/{orgID}/role-bindings", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {

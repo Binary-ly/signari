@@ -244,6 +244,10 @@ func (s *Server) Routes() http.Handler {
 	// Its sign-in and session policy, the `instance` commands' (orgsettings.go).
 	route("GET /admin/organizations/{orgID}/settings", ScopeConfigRead, s.getOrgSettings)
 	route("PATCH /admin/organizations/{orgID}/settings", ScopeOrganizationsWrite, s.patchOrgSettings)
+	// Self-sign-up, `signari signup` (signup.go).
+	route("GET /admin/organizations/{orgID}/signup", ScopeConfigRead, s.getSignup)
+	route("PUT /admin/organizations/{orgID}/signup", ScopeOrganizationsWrite, s.putSignup)
+	route("DELETE /admin/organizations/{orgID}/signup", ScopeOrganizationsWrite, s.deleteSignup)
 
 	// The scope catalogue. Registered unconditionally — unlike attributes, a
 	// scope holds no personal data and needs no subject key.

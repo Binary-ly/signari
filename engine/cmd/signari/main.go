@@ -7176,16 +7176,8 @@ func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups st
 	if len(d) == 1 && d[0] == "*" {
 		d = []string{}
 	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.signup_rules (org_id, allowed_domains, default_groups, require_verified_email,
-		                               require_approval)
-		VALUES ($1::uuid, $2, $3, $4, $5)
-		ON CONFLICT (org_id) DO UPDATE SET
-			allowed_domains = EXCLUDED.allowed_domains,
-			default_groups = EXCLUDED.default_groups,
-			require_verified_email = EXCLUDED.require_verified_email,
-			require_approval = EXCLUDED.require_approval,
-			updated_at = now()`, orgID, d, splitList(groups), verify, approval); err != nil {
+	if err := store.SetSignupRule(ctx, conn, store.SignupRule{OrgID: orgID, AllowedDomains: d,
+		DefaultGroups: splitList(groups), RequireVerify: verify, RequireApproval: approval}); err != nil {
 		return err
 	}
 	if len(d) == 0 {
@@ -7223,11 +7215,11 @@ func signupDisable(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
-	tag, err := conn.Exec(ctx, `DELETE FROM core.signup_rules WHERE org_id = $1::uuid`, orgID)
+	was, err := store.RemoveSignupRule(ctx, conn, orgID)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if !was {
 		fmt.Println("self-signup was already off")
 		return nil
 	}

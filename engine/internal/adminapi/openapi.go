@@ -144,6 +144,11 @@ var summaries = map[string]string{
 	"GET /admin/organizations/{orgID}/budgets": "The tokens and sign-ins the organisation may take a minute.",
 	"PUT /admin/organizations/{orgID}/budgets": "Set the organisation's budgets; deployment-wide tokens only.",
 
+	// Self-sign-up (6.07).
+	"GET /admin/organizations/{orgID}/signup":    "Whether people may make their own accounts, from which addresses, and into which groups.",
+	"PUT /admin/organizations/{orgID}/signup":    "Open self-sign-up or replace its rule.",
+	"DELETE /admin/organizations/{orgID}/signup": "Close self-sign-up; invitations and administrators still make accounts.",
+
 	// Which groups an application is told of (6.07).
 	"GET /admin/clients/{clientID}/group-release":    "Which groups the application is told of in the groups claim.",
 	"PUT /admin/clients/{clientID}/group-release":    "Tell the application of these groups, or every group when none is named.",

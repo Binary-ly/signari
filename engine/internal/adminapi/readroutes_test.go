@@ -38,6 +38,7 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/organizations/{orgID}/attributes", org("/attributes")},
 		{"GET /admin/organizations/{orgID}/budgets", org("/budgets")},
 		{"GET /admin/organizations/{orgID}/settings", org("/settings")},
+		{"GET /admin/organizations/{orgID}/signup", org("/signup")},
 		{"GET /admin/organizations/{orgID}/claim-mappers", org("/claim-mappers")},
 		{"GET /admin/organizations/{orgID}/migration-source", func(t *testing.T, s *Server) string {
 			return "/admin/organizations/" + newDriftMigrationOrg(t, s, true) + "/migration-source"

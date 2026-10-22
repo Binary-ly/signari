@@ -318,9 +318,42 @@ type SignupRule struct {
 	RequireApproval bool
 }
 
+// SetSignupRule opens self-sign-up for an organisation, or replaces its rule.
+// No allowed domain is any address, which the callers ask for by name.
+func SetSignupRule(ctx context.Context, tx Execer, r SignupRule) error {
+	if r.AllowedDomains == nil {
+		r.AllowedDomains = []string{}
+	}
+	if r.DefaultGroups == nil {
+		r.DefaultGroups = []string{}
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO core.signup_rules (org_id, allowed_domains, default_groups, require_verified_email,
+		                               require_approval)
+		VALUES ($1::uuid, $2, $3, $4, $5)
+		ON CONFLICT (org_id) DO UPDATE SET
+			allowed_domains = EXCLUDED.allowed_domains,
+			default_groups = EXCLUDED.default_groups,
+			require_verified_email = EXCLUDED.require_verified_email,
+			require_approval = EXCLUDED.require_approval,
+			updated_at = now()`, r.OrgID, r.AllowedDomains, r.DefaultGroups, r.RequireVerify, r.RequireApproval)
+	return err
+}
+
+// RemoveSignupRule closes self-sign-up, reporting whether it was open.
+func RemoveSignupRule(ctx context.Context, tx Execer, orgID string) (bool, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.signup_rules WHERE org_id = $1::uuid`, orgID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // LoadSignupRule returns the rule, or nil when the organisation does not accept
 // self-signup. Nil is the default and the safe answer.
-func LoadSignupRule(ctx context.Context, db *pgxpool.Pool, orgID string) (*SignupRule, error) {
+func LoadSignupRule(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID string) (*SignupRule, error) {
 	var r SignupRule
 	r.OrgID = orgID
 	err := db.QueryRow(ctx, `

@@ -1721,20 +1721,24 @@ func orgWithDriftAttribute(t *testing.T, s *Server) string {
 // the delete case would race the create case above.
 func newDriftMapper(t *testing.T, s *Server, orgID string) string {
 	t.Helper()
+	// An attribute of its own: one every-client mapper per attribute and
+	// destination is all there may be (0.39), and fixtures sharing the drift
+	// attribute would collide.
+	attr := fmt.Sprintf("drift_mapped_%d", time.Now().UnixNano())
 	var id string
 	if err := s.db.QueryRow(context.Background(), `
+		WITH a AS (INSERT INTO core.user_attribute_schema (org_id, name) VALUES ($1::uuid, $3) RETURNING id)
 		INSERT INTO core.claim_mappers
 			(org_id, client_id, attribute_id, claim_name, destination, required_scope)
-		SELECT $1::uuid, NULL, id, $2, 'id_token', ''
-		FROM core.user_attribute_schema WHERE org_id = $1::uuid AND name = $3
+		SELECT $1::uuid, NULL, a.id, $2, 'id_token', '' FROM a
 		RETURNING id::text`,
-		orgID, fmt.Sprintf("drift_del_%d", time.Now().UnixNano()), driftAttributeName).
+		orgID, fmt.Sprintf("drift_del_%d", time.Now().UnixNano()), attr).
 		Scan(&id); err != nil {
 		t.Fatalf("creating the fixture mapper: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = s.db.Exec(context.Background(),
-			`DELETE FROM core.claim_mappers WHERE id = $1::uuid`, id)
+			`DELETE FROM core.user_attribute_schema WHERE org_id = $1::uuid AND name = $2`, orgID, attr)
 	})
 	return id
 }

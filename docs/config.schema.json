@@ -1,0 +1,776 @@
+{
+  "$defs": {
+    "Attribute": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "personal": {
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "user_readable": {
+          "type": "boolean"
+        },
+        "user_writable": {
+          "type": "boolean"
+        },
+        "value_type": {
+          "enum": [
+            "",
+            "string",
+            "number",
+            "boolean",
+            "date"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ClaimMapper": {
+      "additionalProperties": false,
+      "properties": {
+        "all_clients": {
+          "type": "boolean"
+        },
+        "attribute": {
+          "type": "string"
+        },
+        "claim": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "destination": {
+          "enum": [
+            "id_token",
+            "userinfo",
+            "access_token"
+          ],
+          "type": "string"
+        },
+        "required_scope": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Client": {
+      "additionalProperties": false,
+      "properties": {
+        "access_token_ttl": {
+          "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "first_party": {
+          "type": "boolean"
+        },
+        "frontchannel_logout_session_required": {
+          "type": "boolean"
+        },
+        "frontchannel_logout_uri": {
+          "type": "string"
+        },
+        "id_token_signed_response_alg": {
+          "type": "string"
+        },
+        "issuer_alias": {
+          "type": "string"
+        },
+        "launch_url": {
+          "type": "string"
+        },
+        "logo_url": {
+          "type": "string"
+        },
+        "minimum_acr": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "portal_hidden": {
+          "type": "boolean"
+        },
+        "post_logout_redirect_uris": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "public": {
+          "type": "boolean"
+        },
+        "redirect_uris": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refresh_token_ttl": {
+          "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
+          "type": "string"
+        },
+        "require_pushed_authorization_requests": {
+          "type": "boolean"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "token_exchange": {
+          "$ref": "#/$defs/TokenExchange"
+        }
+      },
+      "type": "object"
+    },
+    "Field": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute": {
+          "type": "string"
+        },
+        "help": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Group": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "IdPMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute": {
+          "type": "string"
+        },
+        "claim": {
+          "type": "string"
+        },
+        "max_length": {
+          "type": "integer"
+        },
+        "overwrite": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "IdentityProvider": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_assertions": {
+          "type": "boolean"
+        },
+        "allow_linking": {
+          "type": "boolean"
+        },
+        "allow_signup": {
+          "type": "boolean"
+        },
+        "attribute_map": {
+          "items": {
+            "$ref": "#/$defs/IdPMapping"
+          },
+          "type": "array"
+        },
+        "authorize_url": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "client_secret": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "jwks_url": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "apple",
+            "assertion",
+            "atlassian",
+            "discord",
+            "github",
+            "gitlab",
+            "google",
+            "linkedin",
+            "microsoft",
+            "oidc",
+            "saml",
+            "slack",
+            "twitch"
+          ],
+          "type": "string"
+        },
+        "mfa_acr": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mfa_amr": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "require_verified_email": {
+          "type": "boolean"
+        },
+        "saml": {
+          "$ref": "#/$defs/SAMLUpstream"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "token_url": {
+          "type": "string"
+        },
+        "trust_email_verification": {
+          "type": "boolean"
+        },
+        "userinfo_url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/Field"
+          },
+          "type": "array"
+        },
+        "once": {
+          "type": "boolean"
+        },
+        "order": {
+          "type": "integer"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Provider": {
+      "additionalProperties": false,
+      "properties": {
+        "claims": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hook": {
+          "enum": [
+            "authorize",
+            "token_issue"
+          ],
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "fail_closed",
+            "fail_open"
+          ],
+          "type": "string"
+        },
+        "secret": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "timeout": {
+          "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ProxyHost": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "host": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "RACConnection": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "host": {
+          "type": "string"
+        },
+        "login": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "password": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "protocol": {
+          "enum": [
+            "rdp",
+            "vnc",
+            "ssh"
+          ],
+          "type": "string"
+        },
+        "recording_path": {
+          "type": "string"
+        },
+        "require_group": {
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "RADIUSClient": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "network": {
+          "type": "string"
+        },
+        "secret": false
+      },
+      "type": "object"
+    },
+    "Resource": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SAMLProvider": {
+      "additionalProperties": false,
+      "properties": {
+        "acs_urls": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "name_id_format": {
+          "enum": [
+            "",
+            "persistent",
+            "emailAddress",
+            "transient"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SAMLUpstream": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_unsolicited": {
+          "type": "boolean"
+        },
+        "certificate": {
+          "type": "string"
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "force_authn": {
+          "type": "boolean"
+        },
+        "name_id_format": {
+          "enum": [
+            "persistent",
+            "emailAddress",
+            "unspecified"
+          ],
+          "type": "string"
+        },
+        "skew_seconds": {
+          "type": "integer"
+        },
+        "sso_url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SCIMTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "type": "string"
+        },
+        "credentials": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "impersonate": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "scim",
+            "google",
+            "entra"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "on_deactivate": {
+          "enum": [
+            "deactivate",
+            "delete",
+            "nothing"
+          ],
+          "type": "string"
+        },
+        "scope_group": {
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "target_domain": {
+          "type": "string"
+        },
+        "token": {
+          "$ref": "#/$defs/SecretRef"
+        }
+      },
+      "type": "object"
+    },
+    "Scope": {
+      "additionalProperties": false,
+      "properties": {
+        "advertise": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SecretRef": {
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Signup": {
+      "additionalProperties": false,
+      "properties": {
+        "any_domain": {
+          "type": "boolean"
+        },
+        "domains": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "groups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "require_approval": {
+          "type": "boolean"
+        },
+        "verify_email": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Subscription": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "event_types": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "secret": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "TokenExchange": {
+      "additionalProperties": false,
+      "properties": {
+        "audiences": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "What `signari plan` and `signari apply` take; see docs/config-as-code.md.",
+  "properties": {
+    "access_policy": {
+      "type": "string"
+    },
+    "attributes": {
+      "items": {
+        "$ref": "#/$defs/Attribute"
+      },
+      "type": "array"
+    },
+    "claim_mappers": {
+      "items": {
+        "$ref": "#/$defs/ClaimMapper"
+      },
+      "type": "array"
+    },
+    "clients": {
+      "items": {
+        "$ref": "#/$defs/Client"
+      },
+      "type": "array"
+    },
+    "event_subscriptions": {
+      "items": {
+        "$ref": "#/$defs/Subscription"
+      },
+      "type": "array"
+    },
+    "groups": {
+      "items": {
+        "$ref": "#/$defs/Group"
+      },
+      "type": "array"
+    },
+    "identity_providers": {
+      "items": {
+        "$ref": "#/$defs/IdentityProvider"
+      },
+      "type": "array"
+    },
+    "org": {
+      "type": "string"
+    },
+    "prompts": {
+      "items": {
+        "$ref": "#/$defs/Prompt"
+      },
+      "type": "array"
+    },
+    "providers": {
+      "items": {
+        "$ref": "#/$defs/Provider"
+      },
+      "type": "array"
+    },
+    "proxy_hosts": {
+      "items": {
+        "$ref": "#/$defs/ProxyHost"
+      },
+      "type": "array"
+    },
+    "rac_connections": {
+      "items": {
+        "$ref": "#/$defs/RACConnection"
+      },
+      "type": "array"
+    },
+    "radius_clients": {
+      "items": {
+        "$ref": "#/$defs/RADIUSClient"
+      },
+      "type": "array"
+    },
+    "resources": {
+      "items": {
+        "$ref": "#/$defs/Resource"
+      },
+      "type": "array"
+    },
+    "saml_providers": {
+      "items": {
+        "$ref": "#/$defs/SAMLProvider"
+      },
+      "type": "array"
+    },
+    "scim_targets": {
+      "items": {
+        "$ref": "#/$defs/SCIMTarget"
+      },
+      "type": "array"
+    },
+    "scopes": {
+      "items": {
+        "$ref": "#/$defs/Scope"
+      },
+      "type": "array"
+    },
+    "sign_in_flow": {
+      "type": "string"
+    },
+    "signup": {
+      "$ref": "#/$defs/Signup"
+    },
+    "version": {
+      "const": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "title": "Signari configuration",
+  "type": "object"
+}

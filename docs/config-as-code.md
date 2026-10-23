@@ -172,6 +172,23 @@ identity_providers:           # where people sign in from
         ...
 ```
 
+## Editors check it as you type
+
+[config.schema.json](config.schema.json) is the file's JSON Schema. It is
+generated from the types `signari plan` decodes into, and a test fails if the
+two drift apart. With an editor that uses the YAML language server, start the
+file with
+
+```yaml
+# yaml-language-server: $schema=./config.schema.json
+```
+
+pointing at a copy of the schema, and a misspelled key, a wrong type or a value
+outside a closed set (a mapper's `destination`, a provider's `mode`) is flagged
+as you write it. The plan is still the authority. A schema cannot see a name
+given twice, a group the deployment lacks or an expired certificate. The
+schema accepts those, and the plan refuses them.
+
 ## It plans before it applies
 
 The comparable feature elsewhere in this field applies YAML at startup. You

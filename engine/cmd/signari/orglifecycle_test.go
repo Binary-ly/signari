@@ -2,7 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,6 +24,23 @@ import (
 )
 
 // An organisation's export and deletion (6.11).
+
+// lifecycleCertificate is a SAML upstream's signing certificate, valid for a
+// day: registration refuses one that has expired.
+func lifecycleCertificate(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "upstream"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
 
 // newLifecycleOrg makes an organisation of its own in the shared database.
 func newLifecycleOrg(t *testing.T, db *pgx.Conn) (org, slug string) {
@@ -50,6 +74,12 @@ func TestAnExportedOrganisationAppliedToAnEmptyDeploymentPlansNothing(t *testing
 	t.Cleanup(func() { _ = db.Close(context.Background()) })
 	org, _ := newLifecycleOrg(t, db)
 	n := time.Now().UnixNano()
+	// The kinds holding a secret seal it, here and in the empty deployment.
+	if os.Getenv("SIGNARI_ROOT_KEY") == "" {
+		t.Setenv("SIGNARI_ROOT_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	}
+	t.Setenv("LIFECYCLE_SCIM_TOKEN", fmt.Sprintf("scim-token-%d", n))
+	cert := lifecycleCertificate(t)
 
 	dir := t.TempDir()
 	seed := filepath.Join(dir, "seed.yaml")
@@ -148,7 +178,28 @@ sign_in_flow: |
         - name: password only
           given: {}
           expect: [password, session]
-`, n, n%250)), 0o600); err != nil {
+providers:
+  - {hook: authorize, url: 'https://pdp-%[1]d.example.test/', mode: fail_closed, timeout: 3s}
+event_subscriptions:
+  - {name: siem-%[1]d, url: 'https://siem-%[1]d.example.test/in', event_types: [login.failed]}
+scim_targets:
+  - {slug: slack-%[1]d, base_url: 'https://scim-%[1]d.example.test/v2', token: {env: LIFECYCLE_SCIM_TOKEN},
+     scope_group: staff-%[1]d, dry_run: true}
+rac_connections:
+  - {slug: build-%[1]d, protocol: ssh, host: build-%[1]d.internal, require_group: staff-%[1]d,
+     parameters: {font-size: '12'}}
+identity_providers:
+  - {slug: gh-%[1]d, kind: github, client_id: gh, attribute_map: [{claim: company, attribute: department}]}
+  - {slug: corp-%[1]d, kind: oidc, client_id: corp, issuer: 'https://corp-%[1]d.example.test',
+     authorize_url: 'https://corp-%[1]d.example.test/authorize', token_url: 'https://corp-%[1]d.example.test/token',
+     jwks_url: 'https://corp-%[1]d.example.test/jwks', mfa_amr: [mfa]}
+  - slug: adfs-%[1]d
+    kind: saml
+    saml:
+      entity_id: https://adfs-%[1]d.example.test/trust
+      sso_url: https://adfs-%[1]d.example.test/ls
+      certificate: %[3]q
+`, n, n%250, cert)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := run([]string{"apply", "-dsn", dsn, "-org", org, "-f", seed}); err != nil {
@@ -167,14 +218,23 @@ sign_in_flow: |
 	if err != nil {
 		t.Fatalf("the export does not parse as a configuration: %v\n%s", err, raw)
 	}
+	// Planned as `signari plan` plans: the secrets a file names read here, and
+	// compared under the root key.
+	root, err := rootKey()
+	if err != nil {
+		t.Fatal(err)
+	}
 	planWith := func(conn *pgx.Conn, orgID string, file *config.File) *config.Plan {
 		t.Helper()
+		if err := file.ResolveSecrets(localSecret(seed)); err != nil {
+			t.Fatal(err)
+		}
 		tx, err := conn.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
-		p, err := config.BuildPlan(ctx, tx, orgID, file, true)
+		p, err := config.BuildPlanWith(ctx, tx, orgID, file, true, config.Options{Root: root})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -229,13 +289,30 @@ sign_in_flow: |
 		SELECT id, 'fresh', 'Fresh' FROM core.instances RETURNING id::text`).Scan(&fresh); err != nil {
 		t.Fatal(err)
 	}
-	if p := planOf(conn, fresh); p.Empty() {
+	// The export carries no secret; a provisioning target's token, which the
+	// target issued, is named by reference before it applies, as an operator
+	// names it, and the plan refuses it otherwise.
+	if err := run([]string{"apply", "-dsn", scratch, "-org", fresh, "-f", out}); err == nil ||
+		!strings.Contains(err.Error(), "name it by reference") {
+		t.Fatalf("the export applied with no token for its target answered %v", err)
+	}
+	givenRaw := []byte(strings.Replace(string(raw), "      base_url: ",
+		"      token: {env: LIFECYCLE_SCIM_TOKEN}\n      base_url: ", 1))
+	given := filepath.Join(dir, "export-given.yaml")
+	if err := os.WriteFile(given, givenRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fGiven, err := config.Parse(givenRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := planWith(conn, fresh, fGiven); p.Empty() {
 		t.Fatal("the export plans nothing against an empty organisation, so it carries nothing")
 	}
-	if err := run([]string{"apply", "-dsn", scratch, "-org", fresh, "-f", out}); err != nil {
+	if err := run([]string{"apply", "-dsn", scratch, "-org", fresh, "-f", given}); err != nil {
 		t.Fatalf("applying the export to an empty deployment: %v", err)
 	}
-	if p := planOf(conn, fresh); !p.Empty() {
+	if p := planWith(conn, fresh, fGiven); !p.Empty() {
 		t.Errorf("after applying the export, the empty deployment still plans:\n%s", p)
 	}
 	// And it holds what the organisation was made from: an export that left a

@@ -1,5 +1,21 @@
 {
   "$defs": {
+    "Attester": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "jwks": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Attribute": {
       "additionalProperties": false,
       "properties": {
@@ -136,6 +152,70 @@
         },
         "token_exchange": {
           "$ref": "#/$defs/TokenExchange"
+        }
+      },
+      "type": "object"
+    },
+    "Credential": {
+      "additionalProperties": false,
+      "properties": {
+        "always_claims": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "config_id": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "lifetime": {
+          "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
+          "type": "string"
+        },
+        "require_key_attestation": {
+          "type": "boolean"
+        },
+        "selective_claims": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "vct": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "DetailType": {
+      "additionalProperties": false,
+      "properties": {
+        "clients": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "fields": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "type": {
+          "type": "string"
         }
       },
       "type": "object"
@@ -342,6 +422,18 @@
           "type": "string"
         },
         "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ProofRoot": {
+      "additionalProperties": false,
+      "properties": {
+        "certificate": {
+          "type": "string"
+        },
+        "name": {
           "type": "string"
         }
       },
@@ -810,15 +902,39 @@
       },
       "type": "array"
     },
+    "authorization_detail_types": {
+      "items": {
+        "$ref": "#/$defs/DetailType"
+      },
+      "type": "array"
+    },
     "claim_mappers": {
       "items": {
         "$ref": "#/$defs/ClaimMapper"
       },
       "type": "array"
     },
+    "client_attesters": {
+      "items": {
+        "$ref": "#/$defs/Attester"
+      },
+      "type": "array"
+    },
     "clients": {
       "items": {
         "$ref": "#/$defs/Client"
+      },
+      "type": "array"
+    },
+    "credential_configurations": {
+      "items": {
+        "$ref": "#/$defs/Credential"
+      },
+      "type": "array"
+    },
+    "credential_proof_roots": {
+      "items": {
+        "$ref": "#/$defs/ProofRoot"
       },
       "type": "array"
     },

@@ -40,6 +40,23 @@ func SetAttester(ctx context.Context, tx Execer, orgID, name string, jwks []byte
 	if name == "" {
 		return 0, fmt.Errorf("%w: it needs a name", ErrInvalidAttester)
 	}
+	keys, err := CheckAttesterKeys(jwks)
+	if err != nil {
+		return 0, err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO core.client_attesters (org_id, name, jwks, description)
+		VALUES ($1::uuid, $2, $3, NULLIF($4, ''))
+		ON CONFLICT (org_id, name) DO UPDATE SET jwks = EXCLUDED.jwks,
+			description = COALESCE(EXCLUDED.description, client_attesters.description)`,
+		orgID, name, jwks, strings.TrimSpace(description))
+	return keys, err
+}
+
+// CheckAttesterKeys is what SetAttester refuses of a key set: one that does
+// not parse, holds no keys, holds a private one or an unusable one. It
+// answers how many keys it holds.
+func CheckAttesterKeys(jwks []byte) (int, error) {
 	var set jose.JSONWebKeySet
 	if err := json.Unmarshal(jwks, &set); err != nil {
 		return 0, fmt.Errorf("%w: the key set is not a JSON Web Key Set: %v", ErrInvalidAttester, err)
@@ -56,13 +73,36 @@ func SetAttester(ctx context.Context, tx Execer, orgID, name string, jwks []byte
 			return 0, fmt.Errorf("%w: key %d is not usable", ErrInvalidAttester, i)
 		}
 	}
-	_, err := tx.Exec(ctx, `
-		INSERT INTO core.client_attesters (org_id, name, jwks, description)
-		VALUES ($1::uuid, $2, $3, NULLIF($4, ''))
-		ON CONFLICT (org_id, name) DO UPDATE SET jwks = EXCLUDED.jwks,
-			description = COALESCE(EXCLUDED.description, client_attesters.description)`,
-		orgID, name, jwks, strings.TrimSpace(description))
-	return len(set.Keys), err
+	return len(set.Keys), nil
+}
+
+// AttesterKeySet is one attester's key set and description, as stored.
+type AttesterKeySet struct {
+	JWKS        []byte
+	Description string
+}
+
+// AttesterKeySets reads every attester's key set, by name, for a plan to
+// compare and an export to write; the keys are public.
+func AttesterKeySets(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, orgID string) (map[string]AttesterKeySet, error) {
+	rows, err := q.Query(ctx, `SELECT name, jwks, COALESCE(description, '') FROM core.client_attesters
+		WHERE org_id = $1::uuid`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]AttesterKeySet{}
+	for rows.Next() {
+		var name string
+		var s AttesterKeySet
+		if err := rows.Scan(&name, &s.JWKS, &s.Description); err != nil {
+			return nil, err
+		}
+		out[name] = s
+	}
+	return out, rows.Err()
 }
 
 // RemoveAttester stops trusting an attester, reporting whether it was.

@@ -34,36 +34,46 @@ type DetailType struct {
 
 // RegisterDetailType records a type, or replaces its fields.
 func RegisterDetailType(ctx context.Context, tx Execer, orgID string, t DetailType) error {
-	t.Type = strings.TrimSpace(t.Type)
-	if t.Type == "" {
-		return fmt.Errorf("%w: a type needs the identifier clients send in authorization_details", ErrInvalidDetailType)
+	t, err := CheckDetailType(t)
+	if err != nil {
+		return err
 	}
-	if len(t.Fields) == 0 {
-		return fmt.Errorf("%w: a type with no fields carries no permission and could only ever "+
-			"authorise nothing; name some of %s", ErrInvalidDetailType, strings.Join(RARCommonFields, ", "))
-	}
-	for _, f := range append(append([]string{}, t.Fields...), t.Required...) {
-		if !slices.Contains(RARCommonFields, f) {
-			return fmt.Errorf("%w: %q is not one of RFC 9396 section 2.2's common data fields (%s)",
-				ErrInvalidDetailType, f, strings.Join(RARCommonFields, ", "))
-		}
-	}
-	for _, f := range t.Required {
-		if !slices.Contains(t.Fields, f) {
-			return fmt.Errorf("%w: %q is required and not one of the fields, so the type could never "+
-				"be satisfied", ErrInvalidDetailType, f)
-		}
-	}
-	if t.Required == nil {
-		t.Required = []string{}
-	}
-	_, err := tx.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		INSERT INTO core.authorization_detail_types (org_id, type, fields, required, description)
 		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''))
 		ON CONFLICT (org_id, type) DO UPDATE
 		SET fields = EXCLUDED.fields, required = EXCLUDED.required, description = EXCLUDED.description`,
 		orgID, t.Type, t.Fields, t.Required, t.Description)
 	return err
+}
+
+// CheckDetailType is what RegisterDetailType refuses, answering the type as
+// it would be stored.
+func CheckDetailType(t DetailType) (DetailType, error) {
+	t.Type = strings.TrimSpace(t.Type)
+	if t.Type == "" {
+		return t, fmt.Errorf("%w: a type needs the identifier clients send in authorization_details", ErrInvalidDetailType)
+	}
+	if len(t.Fields) == 0 {
+		return t, fmt.Errorf("%w: a type with no fields carries no permission and could only ever "+
+			"authorise nothing; name some of %s", ErrInvalidDetailType, strings.Join(RARCommonFields, ", "))
+	}
+	for _, f := range append(append([]string{}, t.Fields...), t.Required...) {
+		if !slices.Contains(RARCommonFields, f) {
+			return t, fmt.Errorf("%w: %q is not one of RFC 9396 section 2.2's common data fields (%s)",
+				ErrInvalidDetailType, f, strings.Join(RARCommonFields, ", "))
+		}
+	}
+	for _, f := range t.Required {
+		if !slices.Contains(t.Fields, f) {
+			return t, fmt.Errorf("%w: %q is required and not one of the fields, so the type could never "+
+				"be satisfied", ErrInvalidDetailType, f)
+		}
+	}
+	if t.Required == nil {
+		t.Required = []string{}
+	}
+	return t, nil
 }
 
 // RemoveDetailType forgets a type and every client's leave to ask for it,

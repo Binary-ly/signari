@@ -22,7 +22,9 @@ var declaredBy = map[string]string{
 	"scim_targets": "scim_target", "scopes": "scope", "sign_in_flows": "sign_in_flow", "signup_rules": "signup",
 	"user_attribute_schema": "attribute", "registration_policies": "registration", "webauthn_policy": "webauthn_policy",
 	"uma_settings": "uma", "client_group_release": "group_release", "saml_group_release": "group_release",
-	"radius_group_authorization": "radius_authorization",
+	"radius_group_authorization": "radius_authorization", "authorization_detail_types": "authorization_detail_type",
+	"client_authorization_detail_types": "authorization_detail_type", "client_attesters": "client_attester",
+	"credential_configurations": "credential_configuration", "credential_proof_roots": "credential_proof_root",
 }
 
 const (
@@ -68,9 +70,7 @@ var notConfiguration = map[string]string{
 // notYet is configuration a file does not declare yet, each set by its own
 // command and Admin API route meanwhile: ROADMAP 6.25.
 var notYet = map[string]bool{
-	"authorization_detail_types": true, "authorization_models": true, "client_attesters": true,
-	"client_authorization_detail_types": true, "credential_configurations": true,
-	"credential_proof_roots": true, "directory_group_map": true, "directory_sources": true,
+	"authorization_models": true, "directory_group_map": true, "directory_sources": true,
 	"duo_integrations": true, "migration_sources": true, "outposts": true,
 	"scim_sources": true, "ssf_sources": true, "ssf_streams": true,
 }

@@ -119,6 +119,36 @@ func DefineCredential(ctx context.Context, q outpostDB, orgID string, c Credenti
 	return required, nil
 }
 
+// RemoveCredentialConfiguration stops a credential being issued, as a pruned
+// configuration file asks (6.25). A credential already issued is the
+// holder's, and stays as valid as its own expiry says.
+func RemoveCredentialConfiguration(ctx context.Context, q outpostDB, orgID, configID string) error {
+	_, err := q.Exec(ctx, `DELETE FROM core.credential_configurations WHERE org_id = $1::uuid AND config_id = $2`,
+		orgID, configID)
+	return err
+}
+
+// ProofRootCertificates is each registered root's certificate, by name, for
+// a plan to compare and an export to write; a root's certificate is public.
+func ProofRootCertificates(ctx context.Context, q Querier, orgID string) (map[string][]byte, error) {
+	rows, err := q.Query(ctx, `SELECT name, certificate FROM core.credential_proof_roots WHERE org_id = $1::uuid`,
+		orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]byte{}
+	for rows.Next() {
+		var name string
+		var der []byte
+		if err := rows.Scan(&name, &der); err != nil {
+			return nil, err
+		}
+		out[name] = der
+	}
+	return out, rows.Err()
+}
+
 // ParseProofRootPEM is the one certificate a PEM file names, refusing a file
 // with none, with several, or with a private key: a server holding the CA's
 // key could mint the chains it is meant to be checking.

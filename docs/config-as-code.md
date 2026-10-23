@@ -137,6 +137,29 @@ radius_authorizations:        # what a network device puts a group's members on
     vlan: 20                  # 1 to 4094, and/or filter_id
     priority: 10              # for someone in several groups, highest first
 
+authorization_detail_types:   # RFC 9396 types the organisation accepts
+  - type: payment_initiation
+    fields: [actions, locations]
+    required: [actions]
+    clients: [bank-app]       # exactly these may ask; omit to leave the grants
+
+client_attesters:             # attestation-based client authentication
+  - name: android
+    jwks: {keys: [{kty: EC, crv: P-256, x: "...", y: "...", kid: a1}]}   # public keys only
+
+credential_configurations:    # what this issuer offers wallets (OID4VCI)
+  - config_id: employee
+    vct: https://example.com/employee
+    always_claims: [sub]
+    selective_claims: [email]
+    lifetime: 720h            # left out: no expiry
+
+credential_proof_roots:       # CAs a wallet's key attestation must chain to
+  - name: wallet-ca
+    certificate: |
+      -----BEGIN CERTIFICATE-----
+      ...
+
 providers:                    # your own service consulted at a hook, one per hook
   - hook: token_issue         # or authorize
     url: https://hooks.example.com/claims
@@ -375,7 +398,9 @@ their ACS URLs, RADIUS clients, protected hosts, declared scopes, user
 attributes, resource servers, the sign-up rule, claim mappers, prompts, the
 access policy, the sign-in flows, dynamic registration, the WebAuthn policy,
 UMA's owner intervention, group releases to clients and SAML providers, RADIUS
-group authorizations, extension providers, event subscriptions,
+group authorizations, authorization details types and their clients, client
+attesters, credential configurations and proof roots, extension providers,
+event subscriptions,
 provisioning targets, remote-access connections and identity providers.
 `signari export org` writes all of them, so a
 deployment's export applied to an empty one, with each target's token named by
@@ -410,6 +435,15 @@ the file does not have. With `-prune`, only the file's own groups count,
 because the others are about to be deleted, and a release, sign-up rule,
 provisioning scope or remote-access group naming one of them would point at
 nothing.
+
+An authorization details type's `clients` are exactly the clients that may
+ask for it. Moving a type from one client to another takes it from the first,
+and keeps each client's other types. A client named there must be the
+organisation's own: a grant is written by client id, and another
+organisation's client is refused rather than granted. An attester's key set
+and a proof root's certificate are public, so the file holds them. Each is
+checked as its command checks it: a private key, a certificate that is not a
+CA or has expired, a field RFC 9396 does not define.
 
 An event subscription's `enabled` is left as it is when the file leaves it out.
 When deliveries keep failing, the deployment gives up on a subscription and

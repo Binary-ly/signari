@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/config"
@@ -26,8 +28,9 @@ import (
 // An organisation's export and deletion (6.11).
 
 // lifecycleCertificate is a SAML upstream's signing certificate, valid for a
-// day: registration refuses one that has expired.
-func lifecycleCertificate(t *testing.T) string {
+// day: registration refuses one that has expired. ca makes it a CA, as a
+// credential proof root must be.
+func lifecycleCertificate(t *testing.T, ca ...bool) string {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -35,6 +38,9 @@ func lifecycleCertificate(t *testing.T) string {
 	}
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "upstream"},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour)}
+	if len(ca) > 0 && ca[0] {
+		tmpl.IsCA, tmpl.BasicConstraintsValid, tmpl.KeyUsage = true, true, x509.KeyUsageCertSign
+	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +85,16 @@ func TestAnExportedOrganisationAppliedToAnEmptyDeploymentPlansNothing(t *testing
 		t.Setenv("SIGNARI_ROOT_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	}
 	t.Setenv("LIFECYCLE_SCIM_TOKEN", fmt.Sprintf("scim-token-%d", n))
-	cert := lifecycleCertificate(t)
+	cert, ca := lifecycleCertificate(t), lifecycleCertificate(t, true)
+	attesterKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwks, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &attesterKey.PublicKey, KeyID: "k1",
+		Algorithm: "ES256"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	dir := t.TempDir()
 	seed := filepath.Join(dir, "seed.yaml")
@@ -185,6 +200,12 @@ group_releases:
   - {client_id: web-%[1]d, groups: [staff-%[1]d]}
   - {saml_provider: 'https://sp-%[1]d.example.test/metadata', all_groups: true}
 radius_authorizations: [{group: staff-%[1]d, vlan: 20}]
+authorization_detail_types:
+  - {type: payment, fields: [actions, locations], required: [actions], clients: [web-%[1]d]}
+client_attesters: [{name: android, jwks: %[4]s, description: Play}]
+credential_configurations:
+  - {config_id: employee, vct: 'https://example.test/employee', always_claims: [sub], lifetime: 720h}
+credential_proof_roots: [{name: wallet-ca, certificate: %[5]q}]
 providers:
   - {hook: authorize, url: 'https://pdp-%[1]d.example.test/', mode: fail_closed, timeout: 3s}
 event_subscriptions:
@@ -206,7 +227,7 @@ identity_providers:
       entity_id: https://adfs-%[1]d.example.test/trust
       sso_url: https://adfs-%[1]d.example.test/ls
       certificate: %[3]q
-`, n, n%250, cert)), 0o600); err != nil {
+`, n, n%250, cert, jwks, ca)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := run([]string{"apply", "-dsn", dsn, "-org", org, "-f", seed}); err != nil {

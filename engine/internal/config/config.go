@@ -71,6 +71,12 @@ type File struct {
 	GroupReleases        []GroupRelease        `yaml:"group_releases,omitempty"`
 	RADIUSAuthorizations []RADIUSAuthorization `yaml:"radius_authorizations,omitempty"`
 
+	// The kinds whose material is public (publickinds.go).
+	DetailTypes []DetailType `yaml:"authorization_detail_types,omitempty"`
+	Attesters   []Attester   `yaml:"client_attesters,omitempty"`
+	Credentials []Credential `yaml:"credential_configurations,omitempty"`
+	ProofRoots  []ProofRoot  `yaml:"credential_proof_roots,omitempty"`
+
 	// The kinds holding a secret, which the file names by reference or the
 	// engine mints (secrets.go).
 	Providers         []Provider         `yaml:"providers,omitempty"`

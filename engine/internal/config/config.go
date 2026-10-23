@@ -63,6 +63,15 @@ type Group struct {
 	Description string `yaml:"description"`
 }
 
+// shownAs is the group's display name, its name when the file gives none, as
+// `signari group create` names one (0.34).
+func (g Group) shownAs() string {
+	if g.DisplayName == "" {
+		return g.Name
+	}
+	return g.DisplayName
+}
+
 // Client is an OAuth/OIDC application.
 type Client struct {
 	ClientID     string   `yaml:"client_id"`

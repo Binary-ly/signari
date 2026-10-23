@@ -202,7 +202,7 @@ func BuildPlan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool
 		switch {
 		case !ok:
 			p.Add(Change{Action: "create", Kind: "group", Name: g.Name})
-		case have.DisplayName != g.DisplayName || have.Description != g.Description:
+		case have.DisplayName != g.shownAs() || have.Description != g.Description:
 			p.Add(Change{Action: "update", Kind: "group", Name: g.Name,
 				Detail: "display name or description"})
 		}
@@ -468,12 +468,12 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.groups (org_id, name, display_name, description)
-			VALUES ($1::uuid, $2, NULLIF($3,''), NULLIF($4,''))
+			VALUES ($1::uuid, $2, $3, NULLIF($4,''))
 			ON CONFLICT (org_id, name) DO UPDATE SET
 				display_name = EXCLUDED.display_name,
 				description = EXCLUDED.description,
 				updated_at = now()`,
-			orgID, g.Name, g.DisplayName, g.Description); err != nil {
+			orgID, g.Name, g.shownAs(), g.Description); err != nil {
 			return fmt.Errorf("group %q: %w", g.Name, err)
 		}
 	}

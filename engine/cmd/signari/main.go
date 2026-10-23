@@ -5184,82 +5184,29 @@ func ssfAddStream(ctx context.Context, conn *pgx.Conn, orgID, clientID, endpoint
 	case clientID == "":
 		return fmt.Errorf("give -client-id, the relying party this stream is for")
 	}
-	// A poll stream is pulled, not pushed: it has no endpoint of ours to POST to,
-	// and the receiver authenticates to us as its OAuth client rather than with a
-	// token we would push. So the two push-only flags are refused here rather than
-	// silently ignored -- a stored endpoint nobody reads is a misconfiguration
-	// waiting to look like a delivery bug.
-	if poll {
-		if endpoint != "" {
-			return fmt.Errorf("a -poll stream has no -endpoint: the receiver pulls from " +
-				"POST /ssf/poll, authenticating as its client. Drop -endpoint")
-		}
-		if token != "" {
-			return fmt.Errorf("a -poll stream has no -receiver-token: the receiver " +
-				"authenticates to us with its client credentials when it polls. Drop " +
-				"-receiver-token")
-		}
-	} else {
-		if endpoint == "" {
-			return fmt.Errorf("give -endpoint, the https URL to push Security Event " +
-				"Tokens to (or -poll for a stream the receiver pulls from)")
-		}
-		if !strings.HasPrefix(endpoint, "https://") {
-			return fmt.Errorf("the endpoint must be https: %q would carry security events "+
-				"about real users across the network in the clear", endpoint)
-		}
+	spec := store.StreamSpec{ClientID: clientID, Endpoint: endpoint, ReceiverToken: token, Poll: poll,
+		Events: splitList(events)}
+	// Refused before the root key is asked for (store.StreamSpec.Validate).
+	if err := spec.Validate(); err != nil {
+		return err
 	}
-
-	// The events a receiver actually asked for. An allow-list, because sending
-	// one it did not request is at best noise and at worst a disclosure.
-	list := []string{"https://schemas.openid.net/secevent/caep/event-type/session-revoked"}
-	if events != "" {
-		list = nil
-		for _, e := range strings.Split(events, ",") {
-			if e = strings.TrimSpace(e); e != "" {
-				list = append(list, e)
-			}
-		}
-	}
-	for _, e := range list {
-		if !slices.Contains(ssf.SupportedEvents(), e) {
-			return fmt.Errorf("event %q is not one this engine emits. Supported: %s",
-				e, strings.Join(ssf.SupportedEvents(), ", "))
-		}
-	}
-
-	// The bearer token the receiver issued US. Sealed with the root key: it is a
-	// third party's credential and a database backup must not hand it over.
-	var sealed []byte
+	list := spec.Events
+	var root *keys.RootKey
 	if token != "" {
-		root, err := rootKey()
-		if err != nil {
+		var err error
+		if root, err = rootKey(); err != nil {
 			return err
 		}
-		sealed, err = root.Seal([]byte(token), "ssf-stream-token")
-		if err != nil {
-			return fmt.Errorf("sealing the receiver's token: %w", err)
-		}
 	}
-
-	method := "push"
-	var endpointCol any = endpoint
-	if poll {
-		method = "poll"
-		endpointCol = nil
-	}
-
-	var id string
-	err := conn.QueryRow(ctx, `
-		INSERT INTO core.ssf_streams (org_id, client_id, delivery_method, endpoint_url,
-		                              auth_token, events_requested)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6)
-		RETURNING id::text`, orgID, clientID, method, endpointCol, sealed, list).Scan(&id)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("client %q already has a stream; one receiver per relying "+
-				"party", clientID)
-		}
+	switch _, err := store.AddStream(ctx, conn, root, orgID, spec); {
+	case errors.Is(err, store.ErrStreamExists):
+		return fmt.Errorf("client %q already has a stream; one receiver per relying "+
+			"party", clientID)
+	case errors.Is(err, store.ErrStreamClientElsewhere):
+		return fmt.Errorf("that organisation has no client %q; a stream carries events about "+
+			"the people who signed in to its client, so it is registered in the client's own "+
+			"organisation", clientID)
+	case err != nil:
 		return err
 	}
 

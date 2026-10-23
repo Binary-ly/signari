@@ -441,6 +441,19 @@ func (s *Server) Routes() http.Handler {
 		route("POST /admin/instances/{instanceID}/keys/rotate", ScopeOrganizationsWrite, s.rotateSigningKeys)
 		route("POST /admin/instances/{instanceID}/keys/retire", ScopeOrganizationsWrite, s.retireSigningKeys)
 
+		// OpenID Federation and Trust Marks (federation.go), signed with the
+		// instance's federation key, which is sealed with the root key;
+		// deployment-wide tokens only.
+		route("GET /admin/instances/{instanceID}/federation", ScopeConfigRead, s.getFederation)
+		route("PUT /admin/instances/{instanceID}/federation", ScopeOrganizationsWrite, s.putFederation)
+		route("GET /admin/instances/{instanceID}/trust-marks", ScopeConfigRead, s.listTrustMarks)
+		route("POST /admin/instances/{instanceID}/trust-marks", ScopeOrganizationsWrite, s.issueTrustMark)
+		route("POST /admin/instances/{instanceID}/trust-marks/revoke", ScopeOrganizationsWrite, s.revokeTrustMark)
+		route("PUT /admin/instances/{instanceID}/held-trust-marks", ScopeOrganizationsWrite, s.acceptTrustMark)
+		route("DELETE /admin/instances/{instanceID}/held-trust-marks", ScopeOrganizationsWrite, s.dropTrustMark)
+		route("POST /admin/instances/{instanceID}/trust-mark-delegations", ScopeOrganizationsWrite,
+			s.delegateTrustMark)
+
 		// Duo as a second factor (duo.go), under the root key its secret is
 		// sealed with.
 		route("GET /admin/organizations/{orgID}/duo", ScopeConfigRead, s.getDuo)

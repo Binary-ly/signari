@@ -63,6 +63,11 @@ which a caller could then present as evidence that we had considered it.
 
 ## Issuing
 
+The Admin API issues, revokes, accepts, drops and delegates Trust Marks the same
+way, under `/admin/instances/{instanceID}/trust-marks`,
+`/held-trust-marks` and `/trust-mark-delegations`, with a deployment-wide
+token; see [admin-api.md](admin-api.md).
+
     signari trust-mark issue \
       -trust-mark-type https://federation.example/profile/privacy-v2 \
       -trust-mark-sub  https://rp.example.org \

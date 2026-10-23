@@ -65,6 +65,11 @@ flag is not given, so a re-run to change the name does not wipe them:
 `federation show` prints all three. Until October 2026 they were read and
 published and nothing could set them.
 
+The Admin API enables federation and changes these settings the same way at
+`/admin/instances/{instanceID}/federation`, with a deployment-wide token. Its
+answer says `restart_required` when it generated the federation key, since the
+endpoint is registered when `serve` starts. See [admin-api.md](admin-api.md).
+
 ## The federation key is separate, and that is the point
 
 §3.1.1, of the `jwks` claim:

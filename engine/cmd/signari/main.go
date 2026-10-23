@@ -8284,35 +8284,35 @@ func ssfReceived(ctx context.Context, conn *pgx.Conn, orgID string) error {
 // used in other protocols". Reusing them would tie two independent trust
 // decisions together: a relying party trusting our OIDC key to say who a user
 // is, and a federation trusting our federation key to say what this entity is.
-// nilIfEmpty turns an empty list into nil, which is written as NULL.
-func nilIfEmpty(l []string) []string {
-	if len(l) == 0 {
-		return nil
-	}
-	return l
-}
-
+//
 // federationEnable makes this instance a federation entity. anchors, contacts
 // and lifetime are nil when their flag was not given, which keeps what is set:
 // they were readable and published and nothing could write them (2.30), and a
 // re-run to change the homepage must not wipe them.
 func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homepage string,
 	anchors, contacts *string, lifetime *time.Duration) error {
-	var anchorList, contactList []string
-	if anchors != nil {
-		for _, h := range splitList(*anchors) {
-			if err := oidfed.ValidateEntityID(h); err != nil {
-				return fmt.Errorf("trust anchor hint %q: %w", h, err)
-			}
-			anchorList = append(anchorList, h)
+	change := store.FederationChange{OrganizationName: orgName, HomepageURI: homepage, Lifetime: lifetime}
+	// §3.1.2: authority_hints "MUST NOT be the empty array"; an empty flag
+	// is refused by store.EnableFederation rather than written as [].
+	for _, h := range strings.Split(hints, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			change.AuthorityHints = append(change.AuthorityHints, h)
 		}
 	}
-	if contacts != nil {
-		contactList = splitList(*contacts)
+	if anchors != nil {
+		l := splitList(*anchors)
+		change.TrustAnchorHints = &l
 	}
-	if lifetime != nil && (*lifetime < 5*time.Minute || *lifetime > 7*24*time.Hour) {
-		return fmt.Errorf("-entity-lifetime is between 5m and 168h; a statement a federation keeps " +
-			"trusting for longer outlives a change of mind, and a shorter one is refetched constantly")
+	if contacts != nil {
+		l := splitList(*contacts)
+		change.Contacts = &l
+	}
+	// Refused before anything is loaded, so a mistyped flag says so rather
+	// than asking for the root key.
+	if err := change.Validate(); errors.Is(err, store.ErrEntityLifetime) {
+		return fmt.Errorf("-entity-lifetime: %w", err)
+	} else if err != nil {
+		return err
 	}
 	root, err := rootKey()
 	if err != nil {
@@ -8322,109 +8322,23 @@ func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homep
 	if err != nil {
 		return err
 	}
-	if err := oidfed.ValidateEntityID(issuer); err != nil {
-		return fmt.Errorf("this instance cannot be a federation entity: %w", err)
-	}
-
-	// §3.1.2: authority_hints "MUST NOT be the empty array". Absent means "Trust
-	// Anchor with no superiors", which is a real and different thing -- so an
-	// empty flag is passed through as nil rather than as [].
-	var hintList []string
-	for _, h := range strings.Split(hints, ",") {
-		if h = strings.TrimSpace(h); h != "" {
-			if err := oidfed.ValidateEntityID(h); err != nil {
-				return fmt.Errorf("authority hint %q: %w", h, err)
-			}
-			hintList = append(hintList, h)
-		}
-	}
-	// And absent is refused for now. A Trust Anchor MUST publish a
-	// federation_fetch_endpoint (specs/oidfed.html:3451-3462) and this engine
-	// serves none, so it published itself as an anchor nobody could resolve a
-	// Subordinate Statement through. oidfed.Build refuses the same statement.
-	if len(hintList) == 0 {
-		return fmt.Errorf("give -authority-hints, the Trust Anchor or Intermediate above this " +
-			"entity: with none it would be a Trust Anchor, which MUST publish a " +
-			"federation_fetch_endpoint, and this engine does not serve one")
-	}
 
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	// One key, ES256, active immediately. Rotation uses the same machinery as
-	// the protocol keys because it is the same table.
-	var existing int
-	if err := tx.QueryRow(ctx, `
-		SELECT count(*) FROM core.signing_keys
-		WHERE instance_id = $1::uuid AND purpose = 'federation' AND state = 'active'`,
-		instanceID).Scan(&existing); err != nil {
+	generated, err := store.EnableFederation(ctx, tx, root, instanceID, issuer, change)
+	if err != nil {
 		return err
-	}
-	if existing == 0 {
-		k, err := keys.Generate(keys.NewKID(), keys.ES256)
-		if err != nil {
-			return fmt.Errorf("generating the federation key: %w", err)
-		}
-		// Active immediately, not `next`.
-		//
-		// A protocol key is published as `next` first so relying parties can
-		// fetch it before it signs anything -- that staging is what makes an OIDC
-		// rotation safe. A federation entity has no such audience yet: the very
-		// first Entity Configuration is signed by this key, and a `next` key
-		// signs nothing, so staging it would publish an endpoint that answers 500.
-		//
-		// (It did, in the first version of this command. The key was saved in
-		// whatever state Generate leaves, the endpoint asked for an ACTIVE one,
-		// and the two never met.)
-		active, err := keys.WithState(k, keys.StateActive)
-		if err != nil {
-			return err
-		}
-		if err := keys.SaveFor(ctx, tx, instanceID, keys.PurposeFederation, active, root); err != nil {
-			return err
-		}
-		k = active
-		fmt.Printf("generated federation key %s (ES256)\n", k.KID())
-	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.federation_config
-			(instance_id, authority_hints, organization_name, homepage_uri)
-		VALUES ($1::uuid, $2, NULLIF($3,''), NULLIF($4,''))
-		ON CONFLICT (instance_id) DO UPDATE SET
-			authority_hints   = EXCLUDED.authority_hints,
-			organization_name = EXCLUDED.organization_name,
-			homepage_uri      = EXCLUDED.homepage_uri,
-			updated_at        = now()`,
-		instanceID, hintList, orgName, homepage); err != nil {
-		return fmt.Errorf("saving the federation configuration: %w", err)
-	}
-	// An empty list is written as NULL: the schema refuses `[]` for the hints,
-	// which §3.1.2 forbids, and an absent claim is what "none" means.
-	if anchors != nil {
-		if _, err := tx.Exec(ctx, `UPDATE core.federation_config SET trust_anchor_hints = $2, updated_at = now()
-			WHERE instance_id = $1::uuid`, instanceID, nilIfEmpty(anchorList)); err != nil {
-			return err
-		}
-	}
-	if contacts != nil {
-		if _, err := tx.Exec(ctx, `UPDATE core.federation_config SET contacts = $2, updated_at = now()
-			WHERE instance_id = $1::uuid`, instanceID, nilIfEmpty(contactList)); err != nil {
-			return err
-		}
-	}
-	if lifetime != nil {
-		if _, err := tx.Exec(ctx, `UPDATE core.federation_config SET lifetime_seconds = $2, updated_at = now()
-			WHERE instance_id = $1::uuid`, instanceID, int(lifetime.Seconds())); err != nil {
-			return err
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
+	if generated != "" {
+		fmt.Printf("generated federation key %s (ES256)\n", generated)
+	}
+	hintList := change.AuthorityHints
 
 	url, _ := oidfed.ConfigurationURL(issuer)
 	fmt.Printf("federation enabled\n  entity id : %s\n  published : %s\n", issuer, url)

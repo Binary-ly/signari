@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"signari.dev/engine/internal/brand"
 	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/store"
@@ -403,6 +405,80 @@ func allMutatingRoutes() []mutatingRoute {
 				return "/admin/groups/" + group + "/radius"
 			},
 			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/instances/{instanceID}/federation", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftInstance(t, s)
+				t.Cleanup(func() {
+					_, _ = s.db.Exec(context.Background(), `DELETE FROM core.signing_keys WHERE instance_id = $1::uuid`, id)
+				})
+				return "/admin/instances/" + id + "/federation"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"authority_hints":["https://anchor.example.test"]}`
+			},
+		},
+		{
+			name: "POST /admin/instances/{instanceID}/trust-marks", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/trust-marks"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"type":"` + driftMarkType + `","subject":"https://rp.example.test","lifetime_s":3600}`
+			},
+		},
+		{
+			name: "POST /admin/instances/{instanceID}/trust-marks/revoke", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftFederatedInstance(t, s)
+				issuer, _, err := store.InstanceIssuer(context.Background(), s.db, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err := store.IssueSignedTrustMark(context.Background(), s.db, s.root, id, issuer,
+					oidfed.TrustMarkParams{Subject: "https://rp.example.test", Type: driftMarkType,
+						Lifetime: time.Hour}, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/instances/" + id + "/trust-marks/revoke"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"type":"` + driftMarkType + `","subject":"https://rp.example.test"}`
+			},
+		},
+		{
+			name: "PUT /admin/instances/{instanceID}/held-trust-marks", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/held-trust-marks"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				mark, _ := driftTrustMarkFor(t, s, entityOf(t, s, path))
+				return `{"trust_mark":"` + mark + `"}`
+			},
+		},
+		{
+			name: "DELETE /admin/instances/{instanceID}/held-trust-marks", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftFederatedInstance(t, s)
+				path := "/admin/instances/" + id + "/held-trust-marks"
+				mark, issuer := driftTrustMarkFor(t, s, entityOf(t, s, path))
+				if _, err := store.AcceptTrustMark(context.Background(), s.db, id, entityOf(t, s, path), mark,
+					time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				return path + "?type=" + url.QueryEscape(driftMarkType) + "&issuer=" + url.QueryEscape(issuer)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/instances/{instanceID}/trust-mark-delegations", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/trust-mark-delegations"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"type":"` + driftMarkType + `","delegate":"https://delegate.example.test","lifetime_s":3600}`
+			},
 		},
 		{
 			name: "PUT /admin/organizations/{orgID}/authorization-model", method: http.MethodPut,
@@ -980,6 +1056,66 @@ func newDriftSubscription(t *testing.T, s *Server) string {
 		t.Fatal(err)
 	}
 	return "/admin/organizations/" + org + "/event-subscriptions/drift"
+}
+
+// driftMarkType is the Trust Mark type the federation fixtures issue.
+const driftMarkType = "https://marks.example.test/certified"
+
+// newDriftFederatedInstance is an instance of its own enabled for federation,
+// with the federation key that gives it.
+func newDriftFederatedInstance(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	id := newDriftInstance(t, s)
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.signing_keys WHERE instance_id = $1::uuid`, id)
+	})
+	issuer, _, err := store.InstanceIssuer(ctx, s.db, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := store.EnableFederation(ctx, tx, s.root, id, issuer, store.FederationChange{
+		AuthorityHints: []string{"https://anchor.example.test"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// driftTrustMarkFor is a Trust Mark another federated instance issued to
+// entityID, and that issuer.
+func driftTrustMarkFor(t *testing.T, s *Server, entityID string) (mark, issuer string) {
+	t.Helper()
+	ctx := context.Background()
+	other := newDriftFederatedInstance(t, s)
+	issuer, _, err := store.InstanceIssuer(ctx, s.db, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark, _, err = store.IssueSignedTrustMark(ctx, s.db, s.root, other, issuer, oidfed.TrustMarkParams{
+		Subject: entityID, Type: driftMarkType, Lifetime: time.Hour}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mark, issuer
+}
+
+// entityOf is the Entity Identifier of the instance an /admin/instances path
+// names.
+func entityOf(t *testing.T, s *Server, path string) string {
+	t.Helper()
+	issuer, _, err := store.InstanceIssuer(context.Background(), s.db, strings.Split(path, "/")[3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return issuer
 }
 
 // driftModel is the smallest authorization model with a test, which a model

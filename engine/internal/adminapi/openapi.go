@@ -230,6 +230,16 @@ var summaries = map[string]string{
 	"GET /admin/organizations/{orgID}/sign-in-flow":  "The sign-in flows applied; none runs the built-in flows.",
 	"PUT /admin/organizations/{orgID}/sign-in-flow":  "Apply a flow document once it loads and its tests pass.",
 
+	// OpenID Federation and Trust Marks (6.07).
+	"GET /admin/instances/{instanceID}/federation":              "Whether the instance is a federation entity, and what it publishes.",
+	"PUT /admin/instances/{instanceID}/federation":              "Make the instance a federation entity, or change what it publishes.",
+	"GET /admin/instances/{instanceID}/trust-marks":             "The Trust Marks the instance issued and the ones it holds.",
+	"POST /admin/instances/{instanceID}/trust-marks":            "Issue a Trust Mark, signed with the federation key.",
+	"POST /admin/instances/{instanceID}/trust-marks/revoke":     "Revoke a Trust Mark the instance issued.",
+	"PUT /admin/instances/{instanceID}/held-trust-marks":        "Publish a Trust Mark another issuer granted the instance.",
+	"DELETE /admin/instances/{instanceID}/held-trust-marks":     "Stop publishing a Trust Mark the instance holds.",
+	"POST /admin/instances/{instanceID}/trust-mark-delegations": "Authorise another entity to issue a type of Trust Mark the instance owns.",
+
 	// Fine-grained authorization (6.07).
 	"GET /admin/organizations/{orgID}/authorization-model": "The organisation's authorization model as written; none permits nothing.",
 	"PUT /admin/organizations/{orgID}/authorization-model": "Store a model once its own tests pass.",

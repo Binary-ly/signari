@@ -492,6 +492,38 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
 		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
 			"removed": boolean()}))},
+	"GET /admin/instances/{instanceID}/federation": {http.StatusOK, nil, object([]string{"instance_id", "entity_id",
+		"enabled", "authority_hints", "trust_anchor_hints", "organization_name", "homepage_uri", "contacts",
+		"lifetime_s"}, map[string]jsonSchema{"instance_id": uuidStr(), "entity_id": str(), "enabled": boolean(),
+		"authority_hints": arrayOf(str()), "trust_anchor_hints": arrayOf(str()), "organization_name": str(),
+		"homepage_uri": str(), "contacts": arrayOf(str()), "lifetime_s": integer()})},
+	"PUT /admin/instances/{instanceID}/federation": {http.StatusOK, typeOf[putFederationRequest](), object(
+		[]string{"instance_id", "entity_id", "generated_key", "restart_required", "config_version"},
+		withVersion(map[string]jsonSchema{"instance_id": uuidStr(), "entity_id": str(), "generated_key": str(),
+			"restart_required": boolean()}))},
+	"GET /admin/instances/{instanceID}/trust-marks": {http.StatusOK, nil, object([]string{"instance_id", "entity_id",
+		"issued", "held"}, map[string]jsonSchema{"instance_id": uuidStr(), "entity_id": str(),
+		"issued": arrayOf(object([]string{"type", "subject", "status", "issued_at", "expires_at", "revoked_at",
+			"reason"}, map[string]jsonSchema{"type": str(), "subject": str(), "status": str(), "issued_at": dateTime(),
+			"expires_at": nullable(dateTime()), "revoked_at": nullable(dateTime()), "reason": str()})),
+		"held": arrayOf(object([]string{"type", "issuer", "published", "added_at", "expires_at"},
+			map[string]jsonSchema{"type": str(), "issuer": str(), "published": boolean(), "added_at": dateTime(),
+				"expires_at": nullable(dateTime())}))})},
+	"POST /admin/instances/{instanceID}/trust-marks": {http.StatusCreated, typeOf[issueTrustMarkRequest](), object(
+		[]string{"type", "subject", "trust_mark", "expires_at", "config_version"}, withVersion(map[string]jsonSchema{
+			"type": str(), "subject": str(), "trust_mark": str(), "expires_at": nullable(dateTime())}))},
+	"POST /admin/instances/{instanceID}/trust-marks/revoke": {http.StatusOK, typeOf[revokeTrustMarkRequest](), object(
+		[]string{"type", "subject", "revoked", "config_version"}, withVersion(map[string]jsonSchema{"type": str(),
+			"subject": str(), "revoked": boolean()}))},
+	"PUT /admin/instances/{instanceID}/held-trust-marks": {http.StatusOK, typeOf[acceptTrustMarkRequest](), object(
+		[]string{"type", "issuer", "published", "config_version"}, withVersion(map[string]jsonSchema{"type": str(),
+			"issuer": str(), "published": boolean()}))},
+	"DELETE /admin/instances/{instanceID}/held-trust-marks": {http.StatusOK, nil, object(
+		[]string{"type", "issuer", "removed", "config_version"}, withVersion(map[string]jsonSchema{"type": str(),
+			"issuer": str(), "removed": boolean()}))},
+	"POST /admin/instances/{instanceID}/trust-mark-delegations": {http.StatusCreated, typeOf[delegateRequest](),
+		object([]string{"type", "delegate", "delegation", "config_version"}, withVersion(map[string]jsonSchema{
+			"type": str(), "delegate": str(), "delegation": str()}))},
 	"GET /admin/organizations/{orgID}/authorization-model": {http.StatusOK, nil, object([]string{"org_id", "source"},
 		map[string]jsonSchema{"org_id": uuidStr(), "source": str()})},
 	"PUT /admin/organizations/{orgID}/authorization-model": {http.StatusOK, typeOf[putModelRequest](), object(

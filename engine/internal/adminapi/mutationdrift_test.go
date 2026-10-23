@@ -335,6 +335,25 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/authorization-detail-types", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/authorization-detail-types"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"type":"drift","fields":["actions"]}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/authorization-detail-types", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if err := store.RegisterDetailType(context.Background(), s.db, org, store.DetailType{Type: "drift",
+					Fields: []string{"actions"}}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/authorization-detail-types?type=drift"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			// Its own organisation: a prompt on the shared one is asked at
 			// every other test's sign-in.
 			name: "PUT /admin/organizations/{orgID}/prompts/{slug}", method: http.MethodPut,

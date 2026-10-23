@@ -238,8 +238,8 @@ var cliAPI = map[string]string{
 	"uma requests":        reads,
 	"uma approve":         pending,
 	"uma deny":            pending,
-	"rar register":        pending,
-	"rar allow":           pending,
+	"rar register":        "PUT /admin/organizations/{orgID}/authorization-detail-types",
+	"rar allow":           "PATCH /admin/clients/{clientID}",
 	"rar list":            reads,
 
 	// Extension hooks and outposts.

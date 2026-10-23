@@ -161,6 +161,11 @@ var summaries = map[string]string{
 	"POST /admin/instances/{instanceID}/issuer-aliases":  "Claim a legacy issuer while relying parties move across.",
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": "Retire an alias, now unless told when.",
 
+	// RFC 9396 authorization details types (6.07).
+	"GET /admin/organizations/{orgID}/authorization-detail-types":    "The authorization details types the organisation accepts, and which clients may ask for each.",
+	"PUT /admin/organizations/{orgID}/authorization-detail-types":    "Register a type, or replace its fields.",
+	"DELETE /admin/organizations/{orgID}/authorization-detail-types": "Forget a type, named by ?type=, and every client's leave to ask for it.",
+
 	// Interstitial prompts (6.07).
 	"GET /admin/organizations/{orgID}/prompts":          "The prompts asked between sign-in and the session, in order.",
 	"PUT /admin/organizations/{orgID}/prompts/{slug}":   "Define or replace a prompt; a change to its wording asks everyone again.",

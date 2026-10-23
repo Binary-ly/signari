@@ -39,6 +39,10 @@ func clientState(ctx context.Context, tx pgx.Tx, clientID string) (map[string]an
 		       || jsonb_build_object('redirect_uris', COALESCE(
 		            (SELECT jsonb_agg(u.redirect_uri ORDER BY u.redirect_uri)
 		               FROM core.client_redirect_uris u WHERE u.client_id = c.client_id), '[]'::jsonb))
+		       -- The RFC 9396 types it may ask for (6.07), as the set they are.
+		       || jsonb_build_object('authorization_detail_types', COALESCE(
+		            (SELECT jsonb_agg(t.type ORDER BY t.type)
+		               FROM core.client_authorization_detail_types t WHERE t.client_id = c.client_id), '[]'::jsonb))
 		  FROM core.clients c WHERE c.client_id = $1`, clientID).Scan(&raw); err != nil {
 		return nil, err
 	}

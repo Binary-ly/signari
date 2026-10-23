@@ -8870,11 +8870,6 @@ func clientSetGrants(ctx context.Context, conn *pgx.Conn, clientID, grants strin
 	return nil
 }
 
-// rarCommonFields are §2.2's common data fields, the only ones a type may
-// declare. A field outside this set could never be validated, and a registration
-// that cannot be validated is one that accepts anything.
-var rarCommonFields = []string{"locations", "actions", "datatypes", "identifier", "privileges"}
-
 // rarRegister records an RFC 9396 authorization details type.
 //
 // §10 says "The registration of authorization details types with the AS is
@@ -8892,34 +8887,11 @@ func rarRegister(ctx context.Context, conn *pgx.Conn, orgID, typ, fields, requir
 			"authorization_details")
 	}
 	f := splitList(fields)
-	if len(f) == 0 {
-		return fmt.Errorf("give -fields: which of %s this type uses. A type with no "+
-			"fields carries no permission and could only ever authorise nothing",
-			strings.Join(rarCommonFields, ", "))
-	}
 	req := splitList(required)
-	for _, name := range append(append([]string{}, f...), req...) {
-		if !slices.Contains(rarCommonFields, name) {
-			return fmt.Errorf("%q is not one of RFC 9396 section 2.2's common data "+
-				"fields (%s). A field outside that set cannot be validated, and this "+
-				"server refuses any field it cannot validate",
-				name, strings.Join(rarCommonFields, ", "))
-		}
-	}
-	for _, name := range req {
-		if !slices.Contains(f, name) {
-			return fmt.Errorf("-required lists %q, which is not in -fields: a type "+
-				"that requires a field it does not permit can never be satisfied", name)
-		}
-	}
-
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.authorization_detail_types (org_id, type, fields, required, description)
-		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''))
-		ON CONFLICT (org_id, type) DO UPDATE
-		SET fields = EXCLUDED.fields, required = EXCLUDED.required,
-		    description = EXCLUDED.description`,
-		orgID, typ, f, req, desc); err != nil {
+	// The rules -- §2.2's common fields only, every required one among them --
+	// are store.RegisterDetailType's, which the Admin API shares.
+	if err := store.RegisterDetailType(ctx, conn, orgID, store.DetailType{Type: typ, Fields: f,
+		Required: req, Description: desc}); err != nil {
 		return fmt.Errorf("registering the type: %w", err)
 	}
 
@@ -8942,27 +8914,15 @@ func rarAllow(ctx context.Context, conn *pgx.Conn, clientID, typ string) error {
 	if clientID == "" || typ == "" {
 		return fmt.Errorf("give -client-id and -type")
 	}
-	var orgID string
-	if err := conn.QueryRow(ctx,
-		`SELECT org_id::text FROM core.authorization_detail_types
-		 WHERE type = $1 LIMIT 1`, typ).Scan(&orgID); err != nil {
-		return fmt.Errorf("no authorization details type %q is registered; run "+
-			"`signari rar register` first", typ)
-	}
-	var clientOrg string
-	if err := conn.QueryRow(ctx,
-		`SELECT org_id::text FROM core.clients WHERE client_id = $1`,
-		clientID).Scan(&clientOrg); err != nil {
+	// The type is looked for in the client's own organisation (0.32).
+	err := store.AllowClientDetailType(ctx, conn, clientID, typ)
+	switch {
+	case errors.Is(err, store.ErrClientNotFound):
 		return fmt.Errorf("no client %q", clientID)
-	}
-	if clientOrg != orgID {
-		return fmt.Errorf("client %q belongs to a different organisation than the "+
-			"type %q was registered in", clientID, typ)
-	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.client_authorization_detail_types (client_id, org_id, type)
-		VALUES ($1, $2::uuid, $3) ON CONFLICT DO NOTHING`,
-		clientID, orgID, typ); err != nil {
+	case errors.Is(err, store.ErrInvalidDetailType):
+		return fmt.Errorf("the client's organisation has no authorization details type %q; run "+
+			"`signari rar register` first", typ)
+	case err != nil:
 		return err
 	}
 	fmt.Printf("client %s may now request authorization_details of type %s\n", clientID, typ)
@@ -8975,8 +8935,10 @@ func rarList(ctx context.Context, conn *pgx.Conn) error {
 		SELECT t.type, t.fields, t.required, COALESCE(t.description,''),
 		       COALESCE(array_agg(c.client_id) FILTER (WHERE c.client_id IS NOT NULL), '{}')
 		FROM core.authorization_detail_types t
-		LEFT JOIN core.client_authorization_detail_types c ON c.type = t.type
-		GROUP BY t.type, t.fields, t.required, t.description
+		-- The organisation's own clients only: another's that allow a type of
+		-- the same name are not this type's (0.32).
+		LEFT JOIN core.client_authorization_detail_types c ON c.org_id = t.org_id AND c.type = t.type
+		GROUP BY t.org_id, t.type, t.fields, t.required, t.description
 		ORDER BY t.type`)
 	if err != nil {
 		return err

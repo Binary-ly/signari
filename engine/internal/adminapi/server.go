@@ -259,6 +259,10 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/instances/{instanceID}/issuer-aliases", ScopeConfigRead, s.listIssuerAliases)
 	route("POST /admin/instances/{instanceID}/issuer-aliases", ScopeOrganizationsWrite, s.addIssuerAlias)
 	route("PATCH /admin/instances/{instanceID}/issuer-aliases", ScopeOrganizationsWrite, s.retireIssuerAlias)
+	// RFC 9396 authorization details types, `signari rar register` (rar.go).
+	route("GET /admin/organizations/{orgID}/authorization-detail-types", ScopeConfigRead, s.listDetailTypes)
+	route("PUT /admin/organizations/{orgID}/authorization-detail-types", ScopeOrganizationsWrite, s.putDetailType)
+	route("DELETE /admin/organizations/{orgID}/authorization-detail-types", ScopeOrganizationsWrite, s.deleteDetailType)
 	// Interstitial prompts, `signari prompt` (prompts.go).
 	route("GET /admin/organizations/{orgID}/prompts", ScopeConfigRead, s.listPrompts)
 	route("PUT /admin/organizations/{orgID}/prompts/{slug}", ScopeOrganizationsWrite, s.putPrompt)
@@ -630,6 +634,10 @@ type patchClientRequest struct {
 	ExchangeRequiresAudienceMatch         *bool     `json:"exchange_requires_audience_match"`
 	JWTBearerProviders                    *[]string `json:"jwt_bearer_providers"`
 
+	// AuthorizationDetailTypes replaces the RFC 9396 types the client may ask
+	// for, each its organisation registered, as `signari rar allow` adds one.
+	AuthorizationDetailTypes *[]string `json:"authorization_detail_types"`
+
 	// What only `signari apply` or nothing set: the name, the redirect URIs,
 	// the scopes, the portal fields and the back channel (6.03).
 	DisplayName                      *string   `json:"display_name"`
@@ -701,7 +709,8 @@ func (req patchClientRequest) setsShared() bool {
 		req.ExchangeRequiresAudienceMatch != nil || req.JWTBearerProviders != nil ||
 		req.DisplayName != nil || req.RedirectURIs != nil || req.Scopes != nil ||
 		req.InitiateLoginURI != nil || req.LogoURI != nil || req.PortalHidden != nil ||
-		req.JWKS != nil || req.setsTLSRule() || req.TLSBoundTokens != nil
+		req.JWKS != nil || req.setsTLSRule() || req.TLSBoundTokens != nil ||
+		req.AuthorizationDetailTypes != nil
 }
 
 // applySharedSettings writes what the request sets of the settings the CLI's
@@ -782,6 +791,11 @@ func (req patchClientRequest) applySharedSettings(ctx context.Context, tx pgx.Tx
 	}
 	if req.JWKS != nil {
 		if _, err := store.SetClientKeys(ctx, tx, clientID, *req.JWKS); err != nil {
+			return err
+		}
+	}
+	if req.AuthorizationDetailTypes != nil {
+		if err := store.SetClientDetailTypes(ctx, tx, clientID, *req.AuthorizationDetailTypes); err != nil {
 			return err
 		}
 	}
@@ -1017,6 +1031,10 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, store.ErrInvalidClientSetting):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_client_setting", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrInvalidDetailType):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_authorization_details_type",
+			"detail": err.Error()})
 		return
 	case err != nil:
 		s.log.Error("patching client", "client_id", clientID, "err", err)

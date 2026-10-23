@@ -226,6 +226,7 @@ var (
 		"redirect_uris", "grant_types", "scopes", "created_at"},
 		map[string]jsonSchema{
 			"access_token_ttl_s": integer(), "admin_api": boolean(), "allow_hybrid": boolean(),
+			"authorization_detail_types":               arrayOf(str()),
 			"backchannel_client_notification_endpoint": nullable(str()),
 			"backchannel_logout_session_required":      boolean(), "backchannel_logout_uri": nullable(str()),
 			"backchannel_token_delivery_mode": str(), "claims_redirect_uris": nullable(arrayOf(str())),
@@ -448,6 +449,14 @@ var opSchemas = map[string]opSchema{
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": {http.StatusOK, typeOf[issuerAliasRequest](), object(
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
+	"GET /admin/organizations/{orgID}/authorization-detail-types": {http.StatusOK, nil, object(
+		[]string{"org_id", "authorization_detail_types"}, map[string]jsonSchema{"org_id": uuidStr(),
+			"authorization_detail_types": arrayOf(object([]string{"type", "fields", "required", "description", "clients"},
+				map[string]jsonSchema{"type": str(), "fields": arrayOf(str()), "required": arrayOf(str()),
+					"description": str(), "clients": arrayOf(str())}))})},
+	"PUT /admin/organizations/{orgID}/authorization-detail-types": {http.StatusOK, typeOf[putDetailTypeRequest](),
+		object([]string{"type", "config_version"}, withVersion(map[string]jsonSchema{"type": str()}))},
+	"DELETE /admin/organizations/{orgID}/authorization-detail-types": {http.StatusOK, nil, removedSchema},
 	"GET /admin/organizations/{orgID}/prompts": {http.StatusOK, nil, object([]string{"org_id", "prompts"},
 		map[string]jsonSchema{"org_id": uuidStr(), "prompts": arrayOf(object(
 			[]string{"slug", "title", "body", "once", "order", "fields", "enabled", "version", "answered"},

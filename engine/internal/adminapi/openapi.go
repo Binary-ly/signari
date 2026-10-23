@@ -161,6 +161,11 @@ var summaries = map[string]string{
 	"POST /admin/instances/{instanceID}/issuer-aliases":  "Claim a legacy issuer while relying parties move across.",
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": "Retire an alias, now unless told when.",
 
+	// Duo as a second factor (6.07).
+	"GET /admin/organizations/{orgID}/duo": "The organisation's Duo application, without its secret, and how many people are enrolled.",
+	"PUT /admin/organizations/{orgID}/duo": "Configure Duo, checked against Duo before anything is stored.",
+	"PUT /admin/users/{userID}/duo":        "Enrol a person in Duo by the username they have there.",
+
 	// UMA resource-owner intervention (6.07).
 	"GET /admin/organizations/{orgID}/uma":                               "Whether refused UMA requests wait for a resource owner, and how often clients poll.",
 	"PUT /admin/organizations/{orgID}/uma":                               "Offer or stop offering resource-owner intervention.",

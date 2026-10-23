@@ -6514,14 +6514,7 @@ func duoSet(ctx context.Context, conn *pgx.Conn, orgID, clientID, secret, apiHos
 		return fmt.Errorf("sealing the Duo secret: %w", err)
 	}
 
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.duo_integrations (org_id, client_id, secret_enc, api_host, fail_open)
-		VALUES ($1::uuid, $2, $3, $4, $5)
-		ON CONFLICT (org_id) DO UPDATE SET
-			client_id = EXCLUDED.client_id, secret_enc = EXCLUDED.secret_enc,
-			api_host = EXCLUDED.api_host, fail_open = EXCLUDED.fail_open,
-			enabled = true, updated_at = now()`,
-		orgID, clientID, sealed, apiHost, failOpen); err != nil {
+	if err := store.SetDuoIntegration(ctx, conn, orgID, clientID, sealed, apiHost, failOpen); err != nil {
 		return err
 	}
 

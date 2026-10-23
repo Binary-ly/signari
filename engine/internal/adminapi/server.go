@@ -376,6 +376,12 @@ func (s *Server) Routes() http.Handler {
 		route("GET /admin/organizations/{orgID}/resource-servers", ScopeConfigRead, s.listResourceServers)
 		route("PUT /admin/organizations/{orgID}/resource-servers", ScopeOrganizationsWrite, s.putResourceServer)
 		route("DELETE /admin/organizations/{orgID}/resource-servers", ScopeOrganizationsWrite, s.deleteResourceServer)
+
+		// Duo as a second factor (duo.go), under the root key its secret is
+		// sealed with.
+		route("GET /admin/organizations/{orgID}/duo", ScopeConfigRead, s.getDuo)
+		route("PUT /admin/organizations/{orgID}/duo", ScopeOrganizationsWrite, s.putDuo)
+		privileged("PUT /admin/users/{userID}/duo", ScopeUsersWrite, targetUser, s.enrollDuo)
 	}
 
 	// The document itself, unauthenticated. See handleOpenAPI for why: it

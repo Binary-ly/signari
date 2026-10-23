@@ -453,6 +453,16 @@ var opSchemas = map[string]opSchema{
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": {http.StatusOK, typeOf[issuerAliasRequest](), object(
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
+	"GET /admin/organizations/{orgID}/duo": {http.StatusOK, nil, object([]string{"org_id", "configured", "enabled",
+		"client_id", "api_host", "fail_open", "enrolled"}, map[string]jsonSchema{"org_id": uuidStr(),
+		"configured": boolean(), "enabled": boolean(), "client_id": str(), "api_host": str(), "fail_open": boolean(),
+		"enrolled": integer()})},
+	"PUT /admin/organizations/{orgID}/duo": {http.StatusOK, typeOf[putDuoRequest](), object(
+		[]string{"org_id", "client_id", "api_host", "fail_open", "config_version"}, withVersion(map[string]jsonSchema{
+			"org_id": uuidStr(), "client_id": str(), "api_host": str(), "fail_open": boolean()}))},
+	"PUT /admin/users/{userID}/duo": {http.StatusOK, typeOf[enrollDuoRequest](), object(
+		[]string{"user_id", "duo_username", "config_version"}, withVersion(map[string]jsonSchema{
+			"user_id": uuidStr(), "duo_username": str()}))},
 	"GET /admin/organizations/{orgID}/uma": {http.StatusOK, nil, object([]string{"org_id", "owner_intervention", "poll_interval_s"},
 		map[string]jsonSchema{"org_id": uuidStr(), "owner_intervention": boolean(), "poll_interval_s": integer()})},
 	"PUT /admin/organizations/{orgID}/uma": {http.StatusOK, typeOf[putUMASettingsRequest](), object(

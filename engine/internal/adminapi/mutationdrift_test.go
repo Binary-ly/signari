@@ -335,6 +335,31 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			// A Duo stand-in, since the keys are checked against Duo first.
+			name: "PUT /admin/organizations/{orgID}/duo", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				healthyDuo(t)
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/duo"
+			},
+			body: func(*testing.T, *Server, string) string { return duoKeys },
+		},
+		{
+			name: "PUT /admin/users/{userID}/duo", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				sealed, err := s.root.Seal([]byte(strings.Repeat("s", 40)), "duo_secret")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.SetDuoIntegration(context.Background(), s.db, org, "DIABCDEFGHIJKLMNOPQR", sealed,
+					"api-1234abcd.duosecurity.com", false); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/users/" + personIn(t, s, org) + "/duo"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"duo_username":"drift"}` },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/uma", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/uma"

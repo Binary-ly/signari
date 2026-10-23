@@ -109,6 +109,46 @@ func EnrollDuo(ctx context.Context, q interface {
 	return err
 }
 
+// SetDuoIntegration stores an organisation's Duo application, its secret
+// already sealed, and turns it on. Behind `signari duo set` and the Admin API
+// (6.07), each of which checks the keys against Duo first.
+func SetDuoIntegration(ctx context.Context, q interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, orgID, clientID string, sealedSecret []byte, apiHost string, failOpen bool) error {
+	_, err := q.Exec(ctx, `
+		INSERT INTO core.duo_integrations (org_id, client_id, secret_enc, api_host, fail_open)
+		VALUES ($1::uuid, $2, $3, $4, $5)
+		ON CONFLICT (org_id) DO UPDATE SET
+			client_id = EXCLUDED.client_id, secret_enc = EXCLUDED.secret_enc,
+			api_host = EXCLUDED.api_host, fail_open = EXCLUDED.fail_open,
+			enabled = true, updated_at = now()`,
+		orgID, clientID, sealedSecret, apiHost, failOpen)
+	return err
+}
+
+// DuoIntegration is an organisation's Duo application as an operator sees it:
+// never its secret.
+type DuoIntegration struct {
+	Configured, Enabled, FailOpen bool
+	ClientID, APIHost             string
+	Enrolled                      int
+}
+
+// DuoIntegrationOf reads it; Configured false when there is none.
+func DuoIntegrationOf(ctx context.Context, db rowQuerier, orgID string) (DuoIntegration, error) {
+	var d DuoIntegration
+	err := db.QueryRow(ctx, `
+		SELECT client_id, api_host, fail_open, enabled,
+		       (SELECT count(*) FROM core.duo_enrollments e WHERE e.org_id = i.org_id)
+		  FROM core.duo_integrations i WHERE org_id = $1::uuid`, orgID).
+		Scan(&d.ClientID, &d.APIHost, &d.FailOpen, &d.Enabled, &d.Enrolled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DuoIntegration{}, nil
+	}
+	d.Configured = err == nil
+	return d, err
+}
+
 // BeginDuoChallenge records an in-flight prompt.
 func BeginDuoChallenge(ctx context.Context, db *pgxpool.Pool, c DuoChallenge,
 	ttl time.Duration) error {

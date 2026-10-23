@@ -299,9 +299,9 @@ var cliAPI = map[string]string{
 	"i18n keys":       reads,
 	"webauthn policy": "PUT /admin/organizations/{orgID}/webauthn-policy",
 	"webauthn show":   reads,
-	"duo set":         pending,
+	"duo set":         "PUT /admin/organizations/{orgID}/duo",
 	"duo show":        reads,
-	"duo enroll":      pending,
+	"duo enroll":      "PUT /admin/users/{userID}/duo",
 }
 
 func TestEveryCLIWriteHasAnAdminAPIRoute(t *testing.T) {

@@ -105,6 +105,11 @@ func (f *File) secretRefs() []secretAt {
 			out = append(out, secretAt{w.at() + ".password", w.Password})
 		}
 	}
+	for _, w := range f.IdentityProviders {
+		if w.ClientSecret != nil {
+			out = append(out, secretAt{w.at() + ".client_secret", w.ClientSecret})
+		}
+	}
 	return out
 }
 

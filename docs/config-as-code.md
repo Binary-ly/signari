@@ -146,6 +146,30 @@ rac_connections:              # machines reached through the browser
     require_group: platform   # "" for everybody in the organisation
     recording_path: /var/lib/guacd/recordings/build
     parameters: {font-size: "12"}
+
+identity_providers:           # where people sign in from
+  - slug: github              # the sign-in URL /login/with/github
+    kind: github              # a named provider, oidc, saml or assertion; fixed once made
+    client_id: Iv1.0123456789abcdef
+    client_secret: {env: GITHUB_CLIENT_SECRET}
+    attribute_map: [{claim: company, attribute: department}]
+  - slug: corp
+    kind: oidc                # endpoints written, not discovered
+    client_id: signari
+    client_secret: {file: corp-secret.txt}
+    issuer: https://login.corp.example.com
+    authorize_url: https://login.corp.example.com/authorize
+    token_url: https://login.corp.example.com/token
+    jwks_url: https://login.corp.example.com/jwks
+    mfa_amr: [mfa]            # upstream values that count as multi-factor
+  - slug: adfs
+    kind: saml
+    saml:
+      entity_id: https://adfs.example.com/adfs/services/trust
+      sso_url: https://adfs.example.com/adfs/ls
+      certificate: |          # public, so in the file
+        -----BEGIN CERTIFICATE-----
+        ...
 ```
 
 ## It plans before it applies
@@ -262,6 +286,12 @@ what the connection holds. A connection holding credentials moves to another
 otherwise type them into whatever answers at the new machine. A connection
 holding none moves freely.
 
+An identity provider's `client_secret` is named by reference too. It is
+compared when given and kept when left out. A provider holding one gets a new
+`client_id`, `issuer` or `token_url` only together with the secret, because
+the secret was issued with that client id for that token endpoint and would
+otherwise be sent to the new one.
+
 A reference may not name the engine's own settings or its database
 connection's (`SIGNARI_…`, `PG…`), nor a file that a `SIGNARI_…_FILE` setting
 names, under any path. Next to a URL, `{env: SIGNARI_ROOT_KEY}` would send the
@@ -300,8 +330,8 @@ Groups, OAuth/OIDC clients and their redirect URIs, SAML service providers and
 their ACS URLs, RADIUS clients, protected hosts, declared scopes, user
 attributes, resource servers, the sign-up rule, claim mappers, prompts, the
 access policy, the sign-in flows, extension providers, event subscriptions,
-provisioning targets and remote-access connections. `signari export org`
-writes all of them, so a
+provisioning targets, remote-access connections and identity providers.
+`signari export org` writes all of them, so a
 deployment's export applied to an empty one, with each target's token named by
 reference, plans nothing afterwards.
 
@@ -339,5 +369,16 @@ deleted: its sessions are the record of who reached that machine. Exported, a
 connection carries no credentials. Applied elsewhere, it holds none until the
 file names them.
 
-Not yet: identity providers, which have their own commands and Admin API
-routes.
+A generic OIDC provider's endpoints are written in the file, not discovered.
+That way the plan states exactly what sign-in will use, and planning contacts
+nothing. `signari idp add` discovers them, and `signari export org` writes
+what it found. A provider's slug is its sign-in URL, `/login/with/<slug>`,
+which names no organisation, so a slug another organisation holds is refused
+by name. A provider that a pruned file leaves out is **disabled, not
+deleted**: its links are how the people who sign in through it reach their
+accounts. A SAML upstream created by a file believes its addresses, as
+`signari idp add` does, unless the file says otherwise.
+
+**The brand is not in this file.** It belongs to the instance, and every
+organisation on the instance renders with it, so applying one organisation's
+file must not change another's sign-in page. Set it with `signari brand set`.

@@ -62,6 +62,7 @@ var sections = []section{
 	subscriptionSection{},
 	scimSection{},
 	racSection{},
+	idpSection{},
 }
 
 // sectionOf is the section a plan's Kind belongs to, nil for a built-in kind.

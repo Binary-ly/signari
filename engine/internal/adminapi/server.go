@@ -34,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/metrics"
 	"signari.dev/engine/internal/passwords"
@@ -110,6 +111,12 @@ type Server struct {
 	// the client `signari scim sync` uses, unless a test hands it a server it
 	// started.
 	targetClient func() (*http.Client, error)
+
+	// directorySync runs one directory sync: directory.Sync, which
+	// `signari dir sync` runs too, unless a test stands in for the
+	// directory it would call.
+	directorySync func(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, slug string,
+		apply bool) (directory.SyncReport, error)
 }
 
 func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
@@ -137,7 +144,8 @@ func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
 		arrivals: ratelimit.New(float64(limits.arrivals), float64(2*limits.arrivals)),
 		perToken: ratelimit.NewKeyed(float64(limits.perToken), float64(2*limits.perToken),
 			adminTrackedTokens),
-		targetClient: provision.HTTPClient,
+		targetClient:  provision.HTTPClient,
+		directorySync: directory.Sync,
 	}, nil
 }
 
@@ -445,6 +453,18 @@ func (s *Server) Routes() http.Handler {
 		route("POST /admin/organizations/{orgID}/radius-clients", ScopeOrganizationsWrite, s.addRADIUSClient)
 		route("PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}", ScopeOrganizationsWrite,
 			s.patchRADIUSClient)
+
+		// Directory sources (directories.go), whose credentials are sealed
+		// with the root key.
+		route("GET /admin/organizations/{orgID}/directories", ScopeConfigRead, s.listDirectories)
+		route("POST /admin/organizations/{orgID}/directories", ScopeOrganizationsWrite, s.addDirectory)
+		route("PATCH /admin/organizations/{orgID}/directories/{slug}", ScopeOrganizationsWrite, s.patchDirectory)
+		route("PUT /admin/organizations/{orgID}/directories/{slug}/group-map", ScopeOrganizationsWrite,
+			s.mapDirectoryGroup)
+		route("DELETE /admin/organizations/{orgID}/directories/{slug}/group-map", ScopeOrganizationsWrite,
+			s.unmapDirectoryGroup)
+		route("POST /admin/organizations/{orgID}/directories/{slug}/sync", ScopeOrganizationsWrite,
+			s.syncDirectory)
 
 		// Provisioning targets (scimtargets.go), whose tokens and credentials
 		// are sealed with the root key.

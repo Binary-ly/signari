@@ -17,6 +17,11 @@ signari dir sync -slug corp            # preview, writes nothing
 signari dir sync -slug corp -apply
 ```
 
+Through the Admin API an LDAP source is registered only by a deployment-wide
+token. The engine dials its URL from inside the deployment's network, so
+choosing it is choosing where the engine connects, and that is not a setting
+for one organisation's administrator. See [admin-api.md](admin-api.md).
+
 
 ## It reuses the Google/Entra reconciler on purpose
 

@@ -13,6 +13,10 @@ signari dir sync -slug workspace            # preview, writes nothing
 signari dir sync -slug workspace -apply
 ```
 
+The Admin API registers, tunes, maps and syncs sources the same way under
+`/admin/organizations/{orgID}/directories`, running the same sync as the
+command; see [admin-api.md](admin-api.md).
+
 
 ## Directory sync is where data loss lives
 

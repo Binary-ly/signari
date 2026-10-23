@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/brand"
+	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidfed"
@@ -407,6 +408,50 @@ func allMutatingRoutes() []mutatingRoute {
 				return "/admin/groups/" + group + "/radius"
 			},
 			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/directories", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/directories"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"kind":"ldap","slug":"drift","ldap_url":"ldaps://ldap.example.test",` +
+					`"ldap_base_dn":"dc=example,dc=test","ldap_flavour":"openldap","ldap_password":"p"}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/directories/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftDirectory(t, s) + "/directories/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"dry_run":false}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/directories/{slug}/group-map", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftDirectory(t, s) + "/directories/drift/group-map"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"remote_group":"cn=staff","group":"drift-group"}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/directories/{slug}/group-map", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftDirectory(t, s)
+				if err := directory.MapGroup(context.Background(), s.db, org, "drift", "cn=staff", "drift-group"); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/directories/drift/group-map?remote_group=cn%3Dstaff&group=drift-group"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// A stand-in for the directory, so nothing is dialled.
+			name: "POST /admin/organizations/{orgID}/directories/{slug}/sync", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				standInDirectory(s, directory.SyncReport{}, nil)
+				return "/admin/organizations/" + newDriftDirectory(t, s) + "/directories/drift/sync"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"apply":true}` },
 		},
 		{
 			name: "POST /admin/organizations/{orgID}/scim-sources", method: http.MethodPost,

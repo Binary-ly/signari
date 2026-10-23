@@ -204,6 +204,8 @@ func typeOf[T any]() reflect.Type { return reflect.TypeOf((*T)(nil)).Elem() }
 var (
 	appliedDocumentSchema = object([]string{"org_id", "document", "applied_at"}, map[string]jsonSchema{
 		"org_id": uuidStr(), "document": str(), "applied_at": nullable(dateTime())})
+	groupMapSchema = object([]string{"slug", "remote_group", "group", "mapped", "config_version"},
+		withVersion(map[string]jsonSchema{"slug": str(), "remote_group": str(), "group": str(), "mapped": boolean()}))
 	scimGroupSchema = object([]string{"slug", "group", "remote_id", "provisioned", "config_version"},
 		withVersion(map[string]jsonSchema{"slug": str(), "group": str(), "remote_id": str(), "provisioned": boolean()}))
 	relationSchema = object([]string{"subject", "relation", "object", "granted", "config_version"},
@@ -494,6 +496,27 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
 		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
 			"removed": boolean()}))},
+	"GET /admin/organizations/{orgID}/directories": {http.StatusOK, nil, object([]string{"org_id", "sources"},
+		map[string]jsonSchema{"org_id": uuidStr(), "sources": arrayOf(object([]string{"id", "slug", "name", "kind",
+			"on_missing", "enabled", "dry_run", "fetch_groups", "max_deactivate_percent", "last_sync_at",
+			"last_created", "last_updated", "last_deactivated", "last_error", "group_map"}, map[string]jsonSchema{
+			"id": uuidStr(), "slug": str(), "name": str(), "kind": str(), "on_missing": str(), "enabled": boolean(),
+			"dry_run": boolean(), "fetch_groups": boolean(), "max_deactivate_percent": integer(),
+			"last_sync_at": nullable(dateTime()), "last_created": integer(), "last_updated": integer(),
+			"last_deactivated": integer(), "last_error": str(), "group_map": arrayOf(object(
+				[]string{"remote_group", "group"}, map[string]jsonSchema{"remote_group": str(), "group": str()}))}))})},
+	"POST /admin/organizations/{orgID}/directories": {http.StatusCreated, typeOf[addDirectoryRequest](), object(
+		[]string{"id", "slug", "kind", "dry_run", "config_version"}, withVersion(map[string]jsonSchema{
+			"id": uuidStr(), "slug": str(), "kind": str(), "dry_run": boolean()}))},
+	"PATCH /admin/organizations/{orgID}/directories/{slug}": {http.StatusOK, typeOf[patchDirectoryRequest](), object(
+		[]string{"slug", "config_version"}, withVersion(map[string]jsonSchema{"slug": str()}))},
+	"PUT /admin/organizations/{orgID}/directories/{slug}/group-map":    {http.StatusOK, typeOf[groupMapRequest](), groupMapSchema},
+	"DELETE /admin/organizations/{orgID}/directories/{slug}/group-map": {http.StatusOK, nil, groupMapSchema},
+	"POST /admin/organizations/{orgID}/directories/{slug}/sync": {http.StatusOK, typeOf[syncRequest](), object(
+		[]string{"slug", "upstream", "active_before", "plan", "groups", "applied", "dry_run_configured",
+			"groups_skipped", "config_version"}, withVersion(map[string]jsonSchema{"slug": str(),
+			"upstream": integer(), "active_before": integer(), "plan": str(), "groups": str(), "applied": boolean(),
+			"dry_run_configured": boolean(), "groups_skipped": boolean(), "error": str(), "error_detail": str()}))},
 	"GET /admin/organizations/{orgID}/scim-sources": {http.StatusOK, nil, object([]string{"org_id", "sources"},
 		map[string]jsonSchema{"org_id": uuidStr(), "sources": arrayOf(object([]string{"id", "slug", "name",
 			"on_delete", "enabled", "last_seen_at", "linked"}, map[string]jsonSchema{"id": uuidStr(), "slug": str(),

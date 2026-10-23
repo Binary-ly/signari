@@ -209,6 +209,25 @@ func (s *Server) preconditionHoldsNow(ctx context.Context, pre precondition) err
 	return checkPrecondition(ctx, tx, pre)
 }
 
+// orgExists answers for an organisation that does not exist, before work done
+// outside a write's transaction; inside one, requireNamedOrg answers it.
+func (s *Server) orgExists(w http.ResponseWriter, ctx context.Context, orgID string) bool {
+	tx, err := s.db.Begin(ctx)
+	if err == nil {
+		err = requireNamedOrg(ctx, tx, orgID)
+		_ = tx.Rollback(ctx)
+	}
+	switch {
+	case writeOrgRefusal(w, err):
+		return false
+	case err != nil:
+		s.log.Error("reading an organisation", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return false
+	}
+	return true
+}
+
 func (s *Server) provisionSCIMGroup(w http.ResponseWriter, r *http.Request) {
 	s.changeSCIMGroup(w, r, true)
 }
@@ -238,6 +257,9 @@ func (s *Server) changeSCIMGroup(w http.ResponseWriter, r *http.Request, create 
 		if !writePreconditionFailure(w, err) {
 			s.writeSCIMTargetFailure(w, err, orgID)
 		}
+		return
+	}
+	if !s.orgExists(w, ctx, orgID) {
 		return
 	}
 	t, err := provision.TargetForGroups(ctx, s.db, s.root, orgID, slug)
@@ -313,6 +335,9 @@ func (s *Server) syncSCIMTarget(w http.ResponseWriter, r *http.Request) {
 		if !writePreconditionFailure(w, err) {
 			s.writeSCIMTargetFailure(w, err, orgID)
 		}
+		return
+	}
+	if !s.orgExists(w, ctx, orgID) {
 		return
 	}
 	targets, err := store.LoadSCIMTargets(ctx, s.db, s.root, orgID, slug)

@@ -240,6 +240,14 @@ var summaries = map[string]string{
 	"DELETE /admin/instances/{instanceID}/held-trust-marks":     "Stop publishing a Trust Mark the instance holds.",
 	"POST /admin/instances/{instanceID}/trust-mark-delegations": "Authorise another entity to issue a type of Trust Mark the instance owns.",
 
+	// Directory sources (6.07).
+	"GET /admin/organizations/{orgID}/directories":                     "The directories the organisation's accounts follow, and what each last sync did.",
+	"POST /admin/organizations/{orgID}/directories":                    "Register a Google, Entra or LDAP source; it starts in dry run.",
+	"PATCH /admin/organizations/{orgID}/directories/{slug}":            "Change how a source syncs; what is not given is kept.",
+	"PUT /admin/organizations/{orgID}/directories/{slug}/group-map":    "Say which local group a directory group grants.",
+	"DELETE /admin/organizations/{orgID}/directories/{slug}/group-map": "Stop a directory group granting a local group.",
+	"POST /admin/organizations/{orgID}/directories/{slug}/sync":        "Reconcile the organisation with a directory, or preview it.",
+
 	// Inbound SCIM sources (6.07).
 	"GET /admin/organizations/{orgID}/scim-sources":          "The upstreams that provision people into the organisation; never a token.",
 	"POST /admin/organizations/{orgID}/scim-sources":         "Register an upstream; its bearer token is shown once.",

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -241,10 +242,80 @@ func MapGroup(ctx context.Context, q DB, orgID, slug, remote, local string) erro
 		INSERT INTO core.directory_group_map (source_id, org_id, remote_group, group_id)
 		VALUES ($1::uuid, $2::uuid, $3, $4::uuid)
 		ON CONFLICT (source_id, remote_group, group_id) DO NOTHING`, sourceID, orgID, remote, groupID)
-	if err != nil && strings.Contains(err.Error(), "remote_group_check") {
+	switch {
+	case err != nil && strings.Contains(err.Error(), "remote_group_check"):
 		return sourceInvalid{"a remote group is 1 to 512 characters"}
+	case err != nil && strings.Contains(err.Error(), "grants impersonation"):
+		return ErrGroupImpersonates
 	}
 	return err
+}
+
+// ErrGroupImpersonates is a mapping onto a group whose members may act as
+// other users: whoever administers the directory could add themselves.
+var ErrGroupImpersonates = errors.New("that group's members may impersonate others, so no directory may grant it")
+
+// Source is one registered source and what its last sync did, without its
+// credentials.
+type Source struct {
+	ID, Slug, Name, Kind, OnMissing string
+	Enabled, DryRun, FetchGroups    bool
+	MaxDeactivate                   int
+	LastSyncAt                      *time.Time
+	LastCreated, LastUpdated        int
+	LastDeactivated                 int
+	LastError                       string
+	Mappings                        []Mapping
+}
+
+// Mapping is one remote group and the local group it grants.
+type Mapping struct{ RemoteGroup, Group string }
+
+// Sources lists an organisation's sources by slug, with their mappings.
+func Sources(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, orgID string) ([]Source, error) {
+	rows, err := q.Query(ctx, `
+		SELECT s.id::text, s.slug, s.display_name, s.kind, s.on_missing, s.enabled, s.dry_run, s.fetch_groups,
+		       s.max_deactivate_percent, s.last_sync_at, s.last_created, s.last_updated, s.last_deactivated,
+		       COALESCE(s.last_error, ''),
+		       COALESCE((SELECT array_agg(m.remote_group || E'\t' || g.name ORDER BY m.remote_group, g.name)
+		                   FROM core.directory_group_map m JOIN core.groups g ON g.id = m.group_id
+		                  WHERE m.source_id = s.id), '{}')
+		  FROM core.directory_sources s WHERE s.org_id = $1::uuid ORDER BY s.slug`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Source
+	for rows.Next() {
+		var s Source
+		var maps []string
+		if err := rows.Scan(&s.ID, &s.Slug, &s.Name, &s.Kind, &s.OnMissing, &s.Enabled, &s.DryRun, &s.FetchGroups,
+			&s.MaxDeactivate, &s.LastSyncAt, &s.LastCreated, &s.LastUpdated, &s.LastDeactivated, &s.LastError,
+			&maps); err != nil {
+			return nil, err
+		}
+		s.Mappings = []Mapping{}
+		for _, m := range maps {
+			remote, group, _ := strings.Cut(m, "\t")
+			s.Mappings = append(s.Mappings, Mapping{RemoteGroup: remote, Group: group})
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// SourceKind is the kind of the organisation's source of that slug, "" for
+// none.
+func SourceKind(ctx context.Context, q DB, orgID, slug string) (string, error) {
+	var kind string
+	err := q.QueryRow(ctx, `SELECT kind FROM core.directory_sources WHERE org_id = $1::uuid AND slug = $2`,
+		orgID, slug).Scan(&kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return kind, err
 }
 
 // UnmapGroup removes a mapping. Memberships it granted are left until the

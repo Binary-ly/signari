@@ -706,7 +706,8 @@ var opSchemas = map[string]opSchema{
 			map[string]jsonSchema{"dry_run": boolean(), "changes": arrayOf(object([]string{"action", "kind", "name",
 				"detail", "destructive"}, map[string]jsonSchema{"action": str(), "kind": str(), "name": str(),
 				"detail": str(), "destructive": boolean()})), "create": integer(), "update": integer(),
-				"delete": integer()}))},
+				"delete": integer(), "minted": arrayOf(object([]string{"kind", "name", "secret"},
+					map[string]jsonSchema{"kind": str(), "name": str(), "secret": str()}))}))},
 	"GET /admin/organizations/{orgID}/access-policy": {http.StatusOK, nil, appliedDocumentSchema},
 	"PUT /admin/organizations/{orgID}/access-policy": {http.StatusOK, typeOf[putDocumentRequest](), object(
 		[]string{"org_id", "summary", "config_version"}, withVersion(map[string]jsonSchema{"org_id": uuidStr(),

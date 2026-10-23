@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"signari.dev/engine/internal/store"
 )
 
 // A configuration file is planned and applied through the Admin API as
@@ -160,6 +162,53 @@ func TestAConfigurationFileIsPlannedAndAppliedThroughTheAPI(t *testing.T) {
 // A file the deployment cannot honour, which only the plan can see, is the
 // caller's mistake: 400 config_refused with the reason, planned or applied
 // (6.19), not a server error.
+// A file naming a secret by reference is refused here, dry run or not (6.19):
+// read by the server, the reference would be the server's environment, sent or
+// signed with to a URL the caller chose. Without one, the apply mints the
+// secret and answers it once, as the route registering a provider does.
+func TestTheAPIRefusesASecretReferenceAndAnswersAMintedSecretOnce(t *testing.T) {
+	s, _ := newTestServer(t)
+	org := newDriftMigrationOrg(t, s, false)
+	path := "/admin/organizations/" + org + "/config"
+	named := "version: 1\nproviders: [{hook: authorize, url: 'https://pdp.example.test/', mode: fail_closed, " +
+		"secret: {env: HOME}}]\n"
+	for _, dry := range []bool{true, false} {
+		rec := call(t, s, http.MethodPost, path, testToken, map[string]any{"document": named, "dry_run": dry})
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "secret_reference") ||
+			!strings.Contains(rec.Body.String(), "providers[authorize].secret") {
+			t.Errorf("dry_run %v answered %d %s", dry, rec.Code, rec.Body.String())
+		}
+	}
+	var held int
+	if err := s.db.QueryRow(context.Background(), `SELECT count(*) FROM core.providers WHERE org_id = $1::uuid`,
+		org).Scan(&held); err != nil || held != 0 {
+		t.Fatalf("a refused file registered %d provider(s) (%v)", held, err)
+	}
+
+	minted := "version: 1\nproviders: [{hook: authorize, url: 'https://pdp.example.test/', mode: fail_closed}]\n"
+	rec := call(t, s, http.MethodPost, path, testToken, map[string]any{"document": minted, "dry_run": true})
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"minted"`) {
+		t.Errorf("the dry run answered %d %s", rec.Code, rec.Body.String())
+	}
+	rec = call(t, s, http.MethodPost, path, testToken, map[string]any{"document": minted})
+	var got struct {
+		Minted []struct{ Kind, Name, Secret string } `json:"minted"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK ||
+		len(got.Minted) != 1 || got.Minted[0].Name != "authorize" {
+		t.Fatalf("the apply answered %d %s", rec.Code, rec.Body.String())
+	}
+	secret, err := store.ProviderSecret(context.Background(), s.db, s.root, org, "authorize")
+	if err != nil || secret != got.Minted[0].Secret {
+		t.Errorf("the provider holds another secret than the one answered (%v)", err)
+	}
+	// Applied again, nothing is minted or shown.
+	rec = call(t, s, http.MethodPost, path, testToken, map[string]any{"document": minted})
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"minted"`) {
+		t.Errorf("the second apply answered %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAConfigurationThePlanRefusesIsTheCallersMistake(t *testing.T) {
 	s, _ := newTestServer(t)
 	org := newDriftMigrationOrg(t, s, false)

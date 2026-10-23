@@ -59,9 +59,9 @@ func (scopeSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, 
 	return nil
 }
 
-func (scopeSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, planned plannedFunc) error {
+func (scopeSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p *Plan) error {
 	for _, s := range f.Scopes {
-		if c, ok := planned("scope", s.Name); !ok || c.Action == "delete" {
+		if c, ok := p.planned("scope", s.Name); !ok || c.Action == "delete" {
 			continue
 		}
 		if err := store.DeclareScope(ctx, tx, orgID, store.Scope{Name: s.Name, DisplayName: s.DisplayName,
@@ -192,9 +192,9 @@ func sealedOrNot(personal bool) string {
 	return "not personal, its values stored as given"
 }
 
-func (attributeSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, planned plannedFunc) error {
+func (attributeSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p *Plan) error {
 	for _, a := range f.Attributes {
-		if c, ok := planned("attribute", a.Name); !ok || c.Action == "delete" {
+		if c, ok := p.planned("attribute", a.Name); !ok || c.Action == "delete" {
 			continue
 		}
 		if _, err := store.DeclareAttribute(ctx, tx, orgID, store.Attribute{Name: a.Name, DisplayName: a.DisplayName,
@@ -265,9 +265,9 @@ func (resourceSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *Fil
 	return nil
 }
 
-func (resourceSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, planned plannedFunc) error {
+func (resourceSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p *Plan) error {
 	for _, r := range f.Resources {
-		if c, ok := planned("resource", r.Resource); !ok || c.Action == "delete" {
+		if c, ok := p.planned("resource", r.Resource); !ok || c.Action == "delete" {
 			continue
 		}
 		if err := store.SetResourceServer(ctx, tx, orgID, r.Resource, r.Name); err != nil {
@@ -388,8 +388,8 @@ func sortedCopy(l []string) []string {
 	return out
 }
 
-func (signupSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, planned plannedFunc) error {
-	c, ok := planned("signup", "rule")
+func (signupSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p *Plan) error {
+	c, ok := p.planned("signup", "rule")
 	if !ok || c.Action == "delete" || f.Signup == nil {
 		return nil
 	}

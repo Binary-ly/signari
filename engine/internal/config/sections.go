@@ -28,8 +28,8 @@ type section interface {
 	// deletions, to p. It may refuse a file the deployment cannot honour,
 	// which Validate, holding no database, could not.
 	plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool, p *Plan) error
-	// apply makes the planned creates and updates.
-	apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, planned plannedFunc) error
+	// apply makes the creates and updates p plans.
+	apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p *Plan) error
 	// remove makes one planned deletion.
 	remove(ctx context.Context, tx pgx.Tx, orgID, name string) error
 	export(ctx context.Context, tx pgx.Tx, orgID string, f *File) error
@@ -47,10 +47,6 @@ func (r refusal) Is(target error) bool { return target == ErrRefused }
 
 func refuse(format string, args ...any) error { return refusal{fmt.Sprintf(format, args...)} }
 
-// plannedFunc answers whether the plan changes the thing of that kind and
-// name, and how.
-type plannedFunc func(kind, name string) (Change, bool)
-
 // sections are applied in this order; one that names another's thing comes
 // after it, and deletions run in reverse.
 var sections = []section{
@@ -62,6 +58,8 @@ var sections = []section{
 	accessPolicySection,
 	signInFlowSection,
 	promptSection{},
+	providerSection{},
+	subscriptionSection{},
 }
 
 // sectionOf is the section a plan's Kind belongs to, nil for a built-in kind.

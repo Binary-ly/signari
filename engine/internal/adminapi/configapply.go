@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -22,6 +23,10 @@ import (
 // A dry run answers the plan and the version it was computed against. An
 // apply sent with that version as If-Match is refused if anything changed
 // since, so what is applied is what was reviewed.
+//
+// A signing secret the apply mints, for a provider or a subscription it
+// creates, is answered once under "minted". A file naming a secret by
+// reference is refused: that is read where `signari apply` runs.
 
 type applyConfigRequest struct {
 	Document string `json:"document"`
@@ -60,6 +65,15 @@ func (s *Server) applyConfig(w http.ResponseWriter, r *http.Request) {
 			"detail": "the file names organisation " + f.Org + ", not the one in the path"})
 		return
 	}
+	// A secret named by reference is read on the machine the file is applied
+	// from. Read here, it would be the server's environment and disk, sent or
+	// signed with to a URL the caller chose.
+	if refs := f.SecretReferences(); len(refs) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "secret_reference",
+			"detail": "the file names a secret by reference (" + strings.Join(refs, ", ") + "), which only " +
+				"`signari apply` reads, on the machine it runs on; leave it out and one is minted and returned once"})
+		return
+	}
 	if narrowedTokenRefused(w, r, "apply a configuration covering every application and group in the organisation") {
 		return
 	}
@@ -77,7 +91,8 @@ func (s *Server) applyConfig(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		var err error
-		if plan, err = config.BuildPlan(ctx, tx, orgID, f, req.Prune); errors.Is(err, config.ErrRefused) {
+		if plan, err = config.BuildPlanWith(ctx, tx, orgID, f, req.Prune, config.Options{Root: s.root}); errors.Is(err,
+			config.ErrRefused) {
 			return fmt.Errorf("%w: %w", errConfigRefused, err)
 		} else if err != nil {
 			return err
@@ -154,7 +169,7 @@ func (s *Server) planConfig(w http.ResponseWriter, r *http.Request, orgID string
 	}
 	var plan *config.Plan
 	if err == nil {
-		plan, err = config.BuildPlan(ctx, tx, orgID, f, prune)
+		plan, err = config.BuildPlanWith(ctx, tx, orgID, f, prune, config.Options{Root: s.root})
 	}
 	switch {
 	case writeOrgRefusal(w, err):
@@ -178,8 +193,24 @@ func planAnswer(plan *config.Plan, dryRun bool, version int64) map[string]any {
 			Destructive: c.Destructive})
 	}
 	create, update, del := plan.Counts()
-	return map[string]any{"dry_run": dryRun, "changes": changes, "create": create, "update": update, "delete": del,
+	out := map[string]any{"dry_run": dryRun, "changes": changes, "create": create, "update": update, "delete": del,
 		"config_version": version}
+	// The secrets the apply minted, the one time they are shown, as the
+	// routes that register a provider or a subscription return theirs.
+	if len(plan.Minted) > 0 {
+		minted := make([]mintedSecretView, 0, len(plan.Minted))
+		for _, m := range plan.Minted {
+			minted = append(minted, mintedSecretView{Kind: m.Kind, Name: m.Name, Secret: m.Secret})
+		}
+		out["minted"] = minted
+	}
+	return out
+}
+
+type mintedSecretView struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Secret string `json:"secret"`
 }
 
 // mayApply refuses a plan reaching past the token: clients need clients:write,

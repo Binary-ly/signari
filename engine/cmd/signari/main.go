@@ -7380,6 +7380,15 @@ func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
 	if orgID == "" {
 		return fmt.Errorf("give -org, or set `org:` in the file")
 	}
+	// Secrets the file names by reference are read here, where it is applied
+	// from; the plan compares each with the one held.
+	if err := f.ResolveSecrets(localSecret(path)); err != nil {
+		return err
+	}
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
+	}
 
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -7387,7 +7396,7 @@ func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	plan, err := config.BuildPlan(ctx, tx, orgID, f, prune)
+	plan, err := config.BuildPlanWith(ctx, tx, orgID, f, prune, config.Options{Root: root})
 	if err != nil {
 		return err
 	}
@@ -7425,6 +7434,13 @@ func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
 		return err
 	}
 	fmt.Println("\napplied")
+	if len(plan.Minted) > 0 {
+		// After the commit, so a secret shown is one that exists.
+		fmt.Println("\n  Signing secrets, shown this once; give each to the service it names:")
+		for _, m := range plan.Minted {
+			fmt.Printf("    %s %s: %s\n", m.Kind, m.Name, m.Secret)
+		}
+	}
 	return nil
 }
 

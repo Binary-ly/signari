@@ -147,7 +147,7 @@ func newSubscriptionSecret(root *keys.RootKey) (secret string, sealed []byte, er
 		return "", nil, err
 	}
 	secret = "whsec_" + base64.RawURLEncoding.EncodeToString(raw)
-	sealed, err = root.Seal([]byte(secret), "event-subscription")
+	sealed, err = root.Seal([]byte(secret), sealContextSubscriptionSecret)
 	if err != nil {
 		return "", nil, fmt.Errorf("sealing the signing secret: %w", err)
 	}
@@ -433,7 +433,7 @@ func ClaimWebhooks(ctx context.Context, tx pgx.Tx, root *keys.RootKey, limit int
 			}
 			continue
 		}
-		secret, err := root.Open(sealed, "event-subscription")
+		secret, err := root.Open(sealed, sealContextSubscriptionSecret)
 		if err != nil {
 			return nil, fmt.Errorf("unsealing a subscription secret: %w", err)
 		}

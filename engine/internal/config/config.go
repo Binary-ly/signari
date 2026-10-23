@@ -61,6 +61,11 @@ type File struct {
 	AccessPolicy *string  `yaml:"access_policy,omitempty"`
 	SignInFlow   *string  `yaml:"sign_in_flow,omitempty"`
 	Prompts      []Prompt `yaml:"prompts,omitempty"`
+
+	// The kinds holding a secret, which the file names by reference or the
+	// engine mints (secrets.go).
+	Providers     []Provider     `yaml:"providers,omitempty"`
+	Subscriptions []Subscription `yaml:"event_subscriptions,omitempty"`
 }
 
 // ProxyHost is an application protected by forward authentication.
@@ -352,10 +357,28 @@ type Change struct {
 }
 
 // Plan is everything that would change.
-type Plan struct{ Changes []Change }
+type Plan struct {
+	Changes []Change
+	// Minted is filled by Apply: the secrets it made for what it created.
+	Minted []Minted
+
+	// opts are the plan's, so it is applied with what it was computed with.
+	opts Options
+}
 
 // Add records a change.
 func (p *Plan) Add(c Change) { p.Changes = append(p.Changes, c) }
+
+// planned answers whether the plan changes the thing of that kind and name,
+// and how.
+func (p *Plan) planned(kind, name string) (Change, bool) {
+	for _, c := range p.Changes {
+		if c.Kind == kind && c.Name == name {
+			return c, true
+		}
+	}
+	return Change{}, false
+}
 
 // Empty reports whether the deployment already matches.
 func (p *Plan) Empty() bool { return len(p.Changes) == 0 }

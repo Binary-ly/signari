@@ -85,9 +85,9 @@ func (mapperSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File,
 	return nil
 }
 
-func (mapperSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, planned plannedFunc) error {
+func (mapperSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p *Plan) error {
 	for _, m := range f.ClaimMappers {
-		if c, ok := planned("claim_mapper", m.key()); !ok || c.Action == "delete" {
+		if c, ok := p.planned("claim_mapper", m.key()); !ok || c.Action == "delete" {
 			continue
 		}
 		if _, _, err := store.SetClaimMapper(ctx, tx, orgID, store.ClaimMapper{Attribute: m.Attribute,
@@ -165,8 +165,8 @@ func (d documentSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *F
 	return nil
 }
 
-func (d documentSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, planned plannedFunc) error {
-	c, ok := planned(d.name, "document")
+func (d documentSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p *Plan) error {
+	c, ok := p.planned(d.name, "document")
 	if want := *d.field(f); !ok || c.Action == "delete" || want == nil {
 		return nil
 	}
@@ -291,11 +291,11 @@ func (promptSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File,
 	return nil
 }
 
-func (promptSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, planned plannedFunc) error {
+func (promptSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p *Plan) error {
 	inFile := map[string]bool{}
 	for _, w := range f.Prompts {
 		inFile[w.Slug] = true
-		if c, ok := planned("prompt", w.Slug); !ok || c.Action == "delete" {
+		if c, ok := p.planned("prompt", w.Slug); !ok || c.Action == "delete" {
 			continue
 		}
 		if _, _, err := store.SavePrompt(ctx, tx, orgID, store.PromptDefinition{Slug: w.Slug, Title: w.Title,
@@ -313,7 +313,7 @@ func (promptSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File
 		return err
 	}
 	for _, h := range have {
-		if c, ok := planned("prompt", h.Slug); ok && !inFile[h.Slug] && strings.HasPrefix(c.Detail, "disabled") {
+		if c, ok := p.planned("prompt", h.Slug); ok && !inFile[h.Slug] && strings.HasPrefix(c.Detail, "disabled") {
 			if _, err := store.SetPromptEnabled(ctx, tx, orgID, h.Slug, false); err != nil {
 				return err
 			}

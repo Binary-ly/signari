@@ -109,6 +109,19 @@ access_policy: |              # the policy document, as `signari policy apply` t
 sign_in_flow: |               # the flows document, as `signari flow apply` takes it
   version: 1
   flows: [...]
+
+providers:                    # your own service consulted at a hook, one per hook
+  - hook: token_issue         # or authorize
+    url: https://hooks.example.com/claims
+    mode: fail_open           # or fail_closed; never assumed
+    timeout: 2s               # the default; at most 5s
+    claims: [department]      # what a token_issue provider may add
+    secret: {env: CLAIMS_HOOK_SECRET}   # or {file: path}; left out, one is minted
+
+event_subscriptions:          # where the organisation's events are delivered
+  - name: siem
+    url: https://siem.example.com/hooks/signari
+    event_types: [login.failed, admin.client_updated]   # left out: every event
 ```
 
 ## It plans before it applies
@@ -197,6 +210,39 @@ A file that names a secret is **refused**, not quietly ignored. The same applies
 to client secrets and SAML certificates: those are set by their own commands and
 this file leaves them alone.
 
+A provider and an event subscription each sign what they send with a secret,
+and the file has two ways to give them one, neither of which is writing it in:
+
+- **Leave it out**, and the engine mints one when it creates the thing. The
+  apply prints it once, as `signari provider add` does, and it is never shown
+  again. A provider or subscription that already exists keeps the one it holds.
+- **Name it by reference**: `secret: {env: NAME}`, or `{file: path}`, a relative
+  path being read from beside the configuration file. `signari plan` and
+  `signari apply` read it on the machine they run on, refuse one that is unset,
+  empty or shorter than 32 characters, and compare it with the one held, so a
+  secret changed where you keep it is planned as an update and applied.
+
+A reference may not name the engine's own settings or its database
+connection's (`SIGNARI_…`, `PG…`), nor a file that a `SIGNARI_…_FILE` setting
+names, under any path. Next to a URL, `{env: SIGNARI_ROOT_KEY}` would send the
+key that seals everything to whoever runs that URL, and it would be one
+approval in a pull request away.
+
+The Admin API refuses a file that names a secret by reference, dry run or not,
+with `400 secret_reference`. Read there, the reference would read the server's
+environment. Without one, the API's apply answers the minted secrets once.
+
+The secrets are sealed with `SIGNARI_ROOT_KEY`, so these changes need the key:
+creating either kind, changing a provider (the registration it goes through
+seals a fresh secret before it finds the provider exists and keeps the held
+one), and naming a secret by reference, which the plan opens the held secret to
+compare against. Without the key the plan refuses such a change and names it.
+A new URL or event list for an existing subscription needs no key, and neither
+does a file that touches neither kind.
+`signari export org` writes neither kind's secret. Applied to another
+deployment, the export mints new ones, and each service must then be given its
+new secret, or the file must name the secret by reference.
+
 ## Two smaller decisions
 
 **A misspelled key is an error.** `redirect_uris_typo` is a line that does
@@ -212,8 +258,9 @@ diff cry wolf, and a diff that cries wolf is a diff nobody reads.
 Groups, OAuth/OIDC clients and their redirect URIs, SAML service providers and
 their ACS URLs, RADIUS clients, protected hosts, declared scopes, user
 attributes, resource servers, the sign-up rule, claim mappers, prompts, the
-access policy and the sign-in flows. `signari export org` writes all of them, so
-a deployment's export applied to an empty one plans nothing afterwards.
+access policy, the sign-in flows, extension providers and event subscriptions.
+`signari export org` writes all of them, so a deployment's export applied to an
+empty one plans nothing afterwards.
 
 The access policy and the sign-in flows are each one document, kept as the text
 it was written in and loaded, its own tests run, before anything else in the
@@ -228,6 +275,13 @@ a file that asks otherwise is refused at the plan, before anything is written.
 Pruning an attribute erases every person's value of it, which the plan says.
 A scope a claim mapper is gated on is not pruned while the mapper stays, and the
 sign-up rule's groups must be the organisation's or the file's own.
+
+An event subscription's `enabled` is left as it is when the file leaves it out.
+When deliveries keep failing, the deployment gives up on a subscription and
+switches it off. A file that says `enabled: true` switches it back on, and one
+that says `false` stops delivery and records that a file did it. The export
+leaves `enabled` out, because which subscriptions were given up on is a fact
+about this deployment and not configuration.
 
 Not yet: identity providers, SCIM targets and RAC connections, all of which
 have their own commands and Admin API routes.

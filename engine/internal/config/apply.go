@@ -191,11 +191,17 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 // through it, and that should never be the result of an edit somebody did not
 // realise was destructive.
 func BuildPlan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool) (*Plan, error) {
+	return BuildPlanWith(ctx, tx, orgID, f, prune, Options{})
+}
+
+// BuildPlanWith is BuildPlan given what a file holding secrets needs; Apply
+// carries the plan out with the same options.
+func BuildPlanWith(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool, opts Options) (*Plan, error) {
 	cur, err := read(ctx, tx, orgID)
 	if err != nil {
 		return nil, err
 	}
-	p := &Plan{}
+	p := &Plan{opts: opts}
 
 	for _, g := range f.Groups {
 		have, ok := cur.groups[g.Name]
@@ -458,20 +464,13 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 	if err := store.LockConfigVersion(ctx, tx); err != nil {
 		return err
 	}
-	byName := map[string]Change{}
-	for _, c := range plan.Changes {
-		byName[c.Kind+"/"+c.Name] = c
-	}
-	planned := func(kind, name string) (Change, bool) {
-		c, ok := byName[kind+"/"+name]
-		return c, ok
-	}
+	planned := plan.planned
 
 	// What the built-in kinds are checked against comes first: a client's
 	// scopes must be declared by the time it is written.
 	for _, s := range sections {
 		if s.first() {
-			if err := s.apply(ctx, tx, orgID, f, planned); err != nil {
+			if err := s.apply(ctx, tx, orgID, f, plan); err != nil {
 				return fmt.Errorf("%s: %w", s.kind(), err)
 			}
 		}
@@ -677,7 +676,7 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 
 	for _, s := range sections {
 		if !s.first() {
-			if err := s.apply(ctx, tx, orgID, f, planned); err != nil {
+			if err := s.apply(ctx, tx, orgID, f, plan); err != nil {
 				return fmt.Errorf("%s: %w", s.kind(), err)
 			}
 		}
@@ -753,15 +752,23 @@ func recordApply(ctx context.Context, tx pgx.Tx, orgID string, plan *Plan) error
 	// the same edits made individually. A single "config applied" row would make
 	// the trail for fifty changes indistinguishable from the trail for one.
 	for _, c := range plan.Changes {
+		detail := map[string]any{
+			"kind":   c.Kind,
+			"name":   c.Name,
+			"action": c.Action,
+			"source": "config-as-code",
+		}
+		// That one was made, never what it is, as the routes that mint one
+		// record it.
+		for _, m := range plan.Minted {
+			if m.Kind == c.Kind && m.Name == c.Name {
+				detail["secret_minted"] = true
+			}
+		}
 		if err := audit.Write(ctx, tx, audit.Event{
-			Type:  "config.applied",
-			OrgID: orgID,
-			Detail: map[string]any{
-				"kind":   c.Kind,
-				"name":   c.Name,
-				"action": c.Action,
-				"source": "config-as-code",
-			},
+			Type:   "config.applied",
+			OrgID:  orgID,
+			Detail: detail,
 		}); err != nil {
 			return fmt.Errorf("auditing %s %q: %w", c.Kind, c.Name, err)
 		}

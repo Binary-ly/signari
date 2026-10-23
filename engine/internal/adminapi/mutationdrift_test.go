@@ -335,6 +335,24 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/attesters/{name}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/attesters/drift"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string { return `{"jwks":` + string(publicJWKS(t)) + `}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/attesters/{name}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, err := store.SetAttester(context.Background(), s.db, org, "drift", publicJWKS(t), ""); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/attesters/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/authorization-detail-types", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/authorization-detail-types"

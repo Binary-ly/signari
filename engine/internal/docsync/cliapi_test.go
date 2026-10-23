@@ -254,7 +254,7 @@ var cliAPI = map[string]string{
 	"outpost list":         reads,
 	"outpost search-group": pending,
 	"outpost run":          cliOnly("runs an outpost, which holds no database credentials"),
-	"attester add":         pending,
+	"attester add":         "PUT /admin/organizations/{orgID}/attesters/{name}",
 	"attester list":        reads,
 
 	// Network access.

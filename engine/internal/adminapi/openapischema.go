@@ -449,6 +449,13 @@ var opSchemas = map[string]opSchema{
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": {http.StatusOK, typeOf[issuerAliasRequest](), object(
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
+	"GET /admin/organizations/{orgID}/attesters": {http.StatusOK, nil, object([]string{"org_id", "attesters"},
+		map[string]jsonSchema{"org_id": uuidStr(), "attesters": arrayOf(object(
+			[]string{"name", "keys", "description", "created_at"}, map[string]jsonSchema{"name": str(),
+				"keys": integer(), "description": str(), "created_at": dateTime()}))})},
+	"PUT /admin/organizations/{orgID}/attesters/{name}": {http.StatusOK, typeOf[putAttesterRequest](), object(
+		[]string{"name", "keys", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "keys": integer()}))},
+	"DELETE /admin/organizations/{orgID}/attesters/{name}": {http.StatusOK, nil, removedSchema},
 	"GET /admin/organizations/{orgID}/authorization-detail-types": {http.StatusOK, nil, object(
 		[]string{"org_id", "authorization_detail_types"}, map[string]jsonSchema{"org_id": uuidStr(),
 			"authorization_detail_types": arrayOf(object([]string{"type", "fields", "required", "description", "clients"},

@@ -46,7 +46,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-jose/go-jose/v4"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -9210,44 +9209,15 @@ func attesterAdd(ctx context.Context, conn *pgx.Conn, orgID, name, jwksPath, des
 		return fmt.Errorf("reading the attester JWKS: %w", err)
 	}
 
-	// Parsed before storing, and checked for private keys.
-	//
-	// A JWKS that does not parse would be stored happily and then fail every
-	// authentication at run time, with an error pointing at the client rather
-	// than at this registration. And an attester "public" key file that actually
-	// contains private keys is a mistake worth catching at the moment somebody
-	// makes it: it would mean this server could mint attestations indistinguishable
-	// from the attester's own, which is the trust separation ABCA exists to create.
-	var set jose.JSONWebKeySet
-	if err := json.Unmarshal(blob, &set); err != nil {
-		return fmt.Errorf("the attester JWKS is not a JSON Web Key Set: %w", err)
-	}
-	if len(set.Keys) == 0 {
-		return fmt.Errorf("the attester JWKS contains no keys")
-	}
-	for i, k := range set.Keys {
-		if !k.IsPublic() {
-			return fmt.Errorf("key %d in the attester JWKS is a PRIVATE key; register "+
-				"only the attester's public keys, or this server could forge the "+
-				"attestations it is supposed to be verifying", i)
-		}
-		if !k.Valid() {
-			return fmt.Errorf("key %d in the attester JWKS is not usable", i)
-		}
-	}
-
-	// The description is for whoever reads `attester list` later, which is
-	// where an operator decides whether an attester still belongs (2.30).
-	// Re-registering without one keeps the old.
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.client_attesters (org_id, name, jwks, description)
-		VALUES ($1::uuid, $2, $3, NULLIF($4, ''))
-		ON CONFLICT (org_id, name) DO UPDATE SET jwks = EXCLUDED.jwks,
-			description = COALESCE(EXCLUDED.description, client_attesters.description)`,
-		orgID, name, blob, description); err != nil {
+	// Parsed before storing, and checked for private keys, by the writer the
+	// Admin API shares. The description is for whoever reads `attester list`
+	// later, which is where an operator decides whether an attester still
+	// belongs (2.30); re-registering without one keeps the old.
+	n, err := store.SetAttester(ctx, conn, orgID, name, blob, description)
+	if err != nil {
 		return fmt.Errorf("registering the client attester: %w", err)
 	}
-	fmt.Printf("registered client attester %q with %d key(s)\n", name, len(set.Keys))
+	fmt.Printf("registered client attester %q with %d key(s)\n", name, n)
 	return nil
 }
 

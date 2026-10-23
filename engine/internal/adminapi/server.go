@@ -259,6 +259,10 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/instances/{instanceID}/issuer-aliases", ScopeConfigRead, s.listIssuerAliases)
 	route("POST /admin/instances/{instanceID}/issuer-aliases", ScopeOrganizationsWrite, s.addIssuerAlias)
 	route("PATCH /admin/instances/{instanceID}/issuer-aliases", ScopeOrganizationsWrite, s.retireIssuerAlias)
+	// Trusted Client Attesters, `signari attester` (attesters.go).
+	route("GET /admin/organizations/{orgID}/attesters", ScopeConfigRead, s.listAttesters)
+	route("PUT /admin/organizations/{orgID}/attesters/{name}", ScopeOrganizationsWrite, s.putAttester)
+	route("DELETE /admin/organizations/{orgID}/attesters/{name}", ScopeOrganizationsWrite, s.deleteAttester)
 	// RFC 9396 authorization details types, `signari rar register` (rar.go).
 	route("GET /admin/organizations/{orgID}/authorization-detail-types", ScopeConfigRead, s.listDetailTypes)
 	route("PUT /admin/organizations/{orgID}/authorization-detail-types", ScopeOrganizationsWrite, s.putDetailType)

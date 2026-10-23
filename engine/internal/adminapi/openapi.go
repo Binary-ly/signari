@@ -161,6 +161,11 @@ var summaries = map[string]string{
 	"POST /admin/instances/{instanceID}/issuer-aliases":  "Claim a legacy issuer while relying parties move across.",
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": "Retire an alias, now unless told when.",
 
+	// Trusted Client Attesters (6.07).
+	"GET /admin/organizations/{orgID}/attesters":           "The attesters whose client attestations the organisation accepts.",
+	"PUT /admin/organizations/{orgID}/attesters/{name}":    "Trust an attester's public keys, or replace them.",
+	"DELETE /admin/organizations/{orgID}/attesters/{name}": "Stop trusting an attester.",
+
 	// RFC 9396 authorization details types (6.07).
 	"GET /admin/organizations/{orgID}/authorization-detail-types":    "The authorization details types the organisation accepts, and which clients may ask for each.",
 	"PUT /admin/organizations/{orgID}/authorization-detail-types":    "Register a type, or replace its fields.",

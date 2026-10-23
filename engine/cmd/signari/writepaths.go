@@ -54,6 +54,7 @@ import (
 	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/passkeys"
 	"signari.dev/engine/internal/provider"
+	"signari.dev/engine/internal/provision"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
@@ -532,34 +533,23 @@ func scimScope(ctx context.Context, conn *pgx.Conn, givenOrg, slug, group string
 		return fmt.Errorf("give -slug")
 	}
 
-	targetID, orgID, err := oneInOrg(ctx, conn, "scim_targets", "slug = $1", slug, givenOrg,
+	_, orgID, err := oneInOrg(ctx, conn, "scim_targets", "slug = $1", slug, givenOrg,
 		"SCIM target")
 	if err != nil {
 		return err
 	}
+	if err := store.SetSCIMTargetScope(ctx, conn, orgID, slug, group); err != nil {
+		if errors.Is(err, store.ErrScopeGroupUnknown) {
+			return fmt.Errorf("no group named %q in that organisation", group)
+		}
+		return err
+	}
 
 	if strings.TrimSpace(group) == "" {
-		if _, err := conn.Exec(ctx,
-			`UPDATE core.scim_targets SET scope_group_id = NULL WHERE id = $1::uuid`,
-			targetID); err != nil {
-			return err
-		}
 		fmt.Printf("%s is no longer scoped; every user in the organisation is provisioned\n", slug)
 		fmt.Println("\n  Widening a target does NOT deprovision anybody. The next sync adds the")
 		fmt.Println("  people who were previously out of scope.")
 		return nil
-	}
-
-	var groupID string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
-		orgID, group).Scan(&groupID); err != nil {
-		return fmt.Errorf("no group named %q in that organisation", group)
-	}
-	if _, err := conn.Exec(ctx,
-		`UPDATE core.scim_targets SET scope_group_id = $2::uuid WHERE id = $1::uuid`,
-		targetID, groupID); err != nil {
-		return err
 	}
 
 	fmt.Printf("%s now provisions only members of %q\n", slug, group)
@@ -581,33 +571,10 @@ func scimProvisionGroup(ctx context.Context, conn *pgx.Conn, givenOrg, slug, gro
 		return fmt.Errorf("give -slug (the SCIM target) and -group")
 	}
 
-	t, orgID, err := scimTargetForGroups(ctx, conn, givenOrg, slug)
+	t, err := scimTargetForGroups(ctx, conn, givenOrg, slug)
 	if err != nil {
 		return err
 	}
-
-	var groupID, displayName string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text, display_name FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
-		orgID, group).Scan(&groupID, &displayName); err != nil {
-		return fmt.Errorf("no group named %q in that organisation", group)
-	}
-	if displayName == "" {
-		displayName = group
-	}
-
-	var existing string
-	err = conn.QueryRow(ctx,
-		`SELECT remote_id FROM core.scim_group_links
-		 WHERE target_id = $1::uuid AND group_id = $2::uuid`, t.ID, groupID).Scan(&existing)
-	if err == nil {
-		return fmt.Errorf("%q already exists at %s as %s. Use `signari scim sync` to "+
-			"reconcile its members", group, slug, existing)
-	}
-	if err != pgx.ErrNoRows {
-		return err
-	}
-
 	// The same client `scim sync` uses, so SIGNARI_SCIM_CA_BUNDLE applies here
 	// too. Building a plain http.Client instead — which this did first — means a
 	// deployment whose target presents an internal CA can provision users and
@@ -617,31 +584,18 @@ func scimProvisionGroup(ctx context.Context, conn *pgx.Conn, givenOrg, slug, gro
 	if err != nil {
 		return err
 	}
-	client := scim.NewClient(t, hc)
-	// externalId carries OUR group id. It is what lets somebody at the far end
-	// tell which of their groups this system owns without reading our database,
-	// and it survives a rename on either side.
-	remoteID, err := client.CreateGroup(ctx, scim.Group{
-		DisplayName: displayName,
-		ExternalID:  groupID,
-	})
-	if err != nil {
-		return fmt.Errorf("creating %q at %s: %w", displayName, slug, err)
+	remoteID, err := provision.ProvisionGroup(ctx, conn, t, hc, group)
+	switch {
+	case errors.Is(err, provision.ErrGroupUnknown):
+		return fmt.Errorf("no group named %q in that organisation", group)
+	case errors.Is(err, provision.ErrGroupProvisioned):
+		return fmt.Errorf("%q already exists at %s as %s. Use `signari scim sync` to "+
+			"reconcile its members", group, slug, remoteID)
+	case err != nil:
+		return err
 	}
 
-	// Recorded after the target answered, never before. A link written first and
-	// a create that then failed would leave us claiming a group that does not
-	// exist, and every later reconciliation would fail reading it.
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.scim_group_links (target_id, group_id, org_id, remote_id)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4)`,
-		t.ID, groupID, orgID, remoteID); err != nil {
-		return fmt.Errorf("the group was created at %s as %s but the link could not be "+
-			"stored (%w). Delete it there and run this again, or the next attempt will "+
-			"create a second one", slug, remoteID, err)
-	}
-
-	fmt.Printf("created %q at %s as %s\n", displayName, slug, remoteID)
+	fmt.Printf("created %q at %s as %s\n", group, slug, remoteID)
 	fmt.Println("\n  It has no members yet. `signari scim sync -slug " + slug + " -apply`")
 	fmt.Println("  adds the members who already have an account at that target.")
 	return nil
@@ -658,39 +612,19 @@ func scimDeprovisionGroup(ctx context.Context, conn *pgx.Conn, givenOrg, slug, g
 		return fmt.Errorf("give -slug (the SCIM target) and -group")
 	}
 
-	t, orgID, err := scimTargetForGroups(ctx, conn, givenOrg, slug)
+	t, err := scimTargetForGroups(ctx, conn, givenOrg, slug)
 	if err != nil {
 		return err
 	}
-
-	var groupID, remoteID string
-	if err := conn.QueryRow(ctx, `
-		SELECT g.id::text, l.remote_id
-		FROM core.groups g
-		JOIN core.scim_group_links l ON l.group_id = g.id AND l.target_id = $1::uuid
-		WHERE g.org_id = $2::uuid AND g.name = $3`,
-		t.ID, orgID, group).Scan(&groupID, &remoteID); err != nil {
-		return fmt.Errorf("%q is not provisioned to %s", group, slug)
-	}
-
-	// The same client `scim sync` uses, so SIGNARI_SCIM_CA_BUNDLE applies here
-	// too. Building a plain http.Client instead — which this did first — means a
-	// deployment whose target presents an internal CA can provision users and
-	// not groups, and the failure arrives as a TLS error nobody connects to the
-	// setting that would have fixed it.
 	hc, err := scimHTTPClient()
 	if err != nil {
 		return err
 	}
-	client := scim.NewClient(t, hc)
-	if err := client.DeleteGroup(ctx, remoteID); err != nil {
-		return fmt.Errorf("deleting %s at %s: %w. The link is kept, so nothing here has "+
-			"forgotten the group -- fix the target and run this again", remoteID, slug, err)
+	remoteID, err := provision.DeprovisionGroup(ctx, conn, t, hc, group)
+	if errors.Is(err, provision.ErrGroupNotProvisioned) {
+		return fmt.Errorf("%q is not provisioned to %s", group, slug)
 	}
-
-	if _, err := conn.Exec(ctx, `
-		DELETE FROM core.scim_group_links
-		WHERE target_id = $1::uuid AND group_id = $2::uuid`, t.ID, groupID); err != nil {
+	if err != nil {
 		return err
 	}
 
@@ -712,38 +646,30 @@ func scimDeprovisionGroup(ctx context.Context, conn *pgx.Conn, givenOrg, slug, g
 // Dry-run is refused rather than silently skipped: `scim sync` previews and this
 // does not, so honouring the flag by doing nothing would report success for a
 // group that was never created.
-func scimTargetForGroups(ctx context.Context, conn *pgx.Conn, orgID, slug string) (scim.Target, string, error) {
+func scimTargetForGroups(ctx context.Context, conn *pgx.Conn, givenOrg, slug string) (scim.Target, error) {
 	var zero scim.Target
 	root, err := rootKey()
 	if err != nil {
-		return zero, "", err
+		return zero, err
 	}
-	// LoadSCIMTargets returns only ENABLED targets, so an empty result means
-	// either "no such slug" or "disabled". Distinguished here, because "no SCIM
-	// target with that slug" sent to somebody who disabled it last week is an
-	// hour of looking for a typo that is not there.
-	targets, err := store.LoadSCIMTargets(ctx, conn, root, orgID, slug)
+	// The organisation the slug names, when -org is not given: a slug is
+	// unique only within one.
+	_, orgID, err := oneInOrg(ctx, conn, "scim_targets", "slug = $1", slug, givenOrg, "SCIM target")
 	if err != nil {
-		return zero, "", err
+		return zero, err
 	}
-	if len(targets) == 0 {
-		if _, _, lerr := oneInOrg(ctx, conn, "scim_targets", "slug = $1", slug, orgID,
-			"SCIM target"); lerr != nil {
-			return zero, "", lerr
-		}
-		return zero, "", fmt.Errorf("%s is disabled", slug)
-	}
-	t := targets[0]
-	if t.Kind != "" && t.Kind != "scim" {
-		return zero, "", fmt.Errorf("%s is a %s target, not a SCIM one; group "+
-			"provisioning here speaks SCIM", slug, t.Kind)
-	}
-	if t.DryRun {
-		return zero, "", fmt.Errorf("%s is in dry-run mode, which records without sending. "+
+	t, err := provision.TargetForGroups(ctx, conn, root, orgID, slug)
+	switch {
+	case errors.Is(err, provision.ErrTargetDisabled):
+		return zero, fmt.Errorf("%s is disabled", slug)
+	case errors.Is(err, provision.ErrTargetNotSCIM):
+		return zero, fmt.Errorf("%s is not a SCIM target; group provisioning here speaks SCIM", slug)
+	case errors.Is(err, provision.ErrTargetDryRun):
+		return zero, fmt.Errorf("%s is in dry-run mode, which records without sending. "+
 			"A group cannot be created in a mode that sends nothing; take the target out "+
 			"of dry-run first", slug)
 	}
-	return t, t.OrgID, nil
+	return t, err
 }
 
 // clientSetPKCE decides whether a client's authorization requests must carry a
@@ -2479,12 +2405,11 @@ func scimSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, ena
 	if slug == "" {
 		return fmt.Errorf("give -slug")
 	}
-	id, _, err := oneInOrg(ctx, conn, "scim_targets", "slug = $1", slug, orgID, "SCIM target")
+	_, org, err := oneInOrg(ctx, conn, "scim_targets", "slug = $1", slug, orgID, "SCIM target")
 	if err != nil {
 		return err
 	}
-	if _, err := conn.Exec(ctx,
-		`UPDATE core.scim_targets SET enabled = $2 WHERE id = $1::uuid`, id, enabled); err != nil {
+	if err := store.SetSCIMTargetEnabled(ctx, conn, org, slug, enabled); err != nil {
 		return err
 	}
 	if enabled {

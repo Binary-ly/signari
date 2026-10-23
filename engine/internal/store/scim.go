@@ -2,10 +2,7 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/scim"
@@ -18,7 +15,7 @@ import (
 // by slug alone used to return every tenant's target of that name, and a sync
 // of "slack" provisioned all of them. Without orgID a slug must now name one
 // organisation's target, or the call refuses.
-func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, orgID, only string) ([]scim.Target, error) {
+func LoadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgID, only string) ([]scim.Target, error) {
 	rows, err := conn.Query(ctx, `
 		SELECT id::text, org_id::text, slug, display_name, base_url, token,
 		       dry_run, on_deactivate, kind,
@@ -95,7 +92,7 @@ type SCIMDesiredUser struct {
 //
 // Reconciling from desired state has no such hole. Whatever went wrong last
 // time, the next pass sees the same disagreement and fixes it.
-func SCIMDesiredState(ctx context.Context, conn *pgx.Conn, target scim.Target) ([]SCIMDesiredUser, error) {
+func SCIMDesiredState(ctx context.Context, conn Querier, target scim.Target) ([]SCIMDesiredUser, error) {
 	rows, err := conn.Query(ctx, `
 		SELECT u.id::text,
 		       COALESCE(NULLIF(u.username,''), u.email, u.id::text),
@@ -153,7 +150,7 @@ func SCIMDesiredState(ctx context.Context, conn *pgx.Conn, target scim.Target) (
 }
 
 // RecordSCIMLink stores the id a target assigned to one of our users.
-func RecordSCIMLink(ctx context.Context, conn *pgx.Conn, targetID, userID, orgID, remoteID string, active bool) error {
+func RecordSCIMLink(ctx context.Context, conn Execer, targetID, userID, orgID, remoteID string, active bool) error {
 	_, err := conn.Exec(ctx, `
 		INSERT INTO core.scim_links
 			(target_id, user_id, org_id, remote_id, should_be_active, last_synced_at)
@@ -172,7 +169,7 @@ func RecordSCIMLink(ctx context.Context, conn *pgx.Conn, targetID, userID, orgID
 // last_synced_at is deliberately not touched. The intent and the confirmation
 // are separate facts, and collapsing them is what makes a failed deprovision
 // look like a completed one.
-func MarkSCIMIntent(ctx context.Context, conn *pgx.Conn, targetID, userID string, active bool) error {
+func MarkSCIMIntent(ctx context.Context, conn Execer, targetID, userID string, active bool) error {
 	_, err := conn.Exec(ctx, `
 		UPDATE core.scim_links SET should_be_active = $3
 		WHERE target_id = $1::uuid AND user_id = $2::uuid`, targetID, userID, active)
@@ -180,7 +177,7 @@ func MarkSCIMIntent(ctx context.Context, conn *pgx.Conn, targetID, userID string
 }
 
 // ConfirmSCIMSync records that the target now agrees.
-func ConfirmSCIMSync(ctx context.Context, conn *pgx.Conn, targetID, userID string) error {
+func ConfirmSCIMSync(ctx context.Context, conn Execer, targetID, userID string) error {
 	_, err := conn.Exec(ctx, `
 		UPDATE core.scim_links SET last_synced_at = now()
 		WHERE target_id = $1::uuid AND user_id = $2::uuid`, targetID, userID)
@@ -188,28 +185,9 @@ func ConfirmSCIMSync(ctx context.Context, conn *pgx.Conn, targetID, userID strin
 }
 
 // DropSCIMLink forgets a remote account, used after a delete.
-func DropSCIMLink(ctx context.Context, conn *pgx.Conn, targetID, userID string) error {
+func DropSCIMLink(ctx context.Context, conn Execer, targetID, userID string) error {
 	_, err := conn.Exec(ctx, `
 		DELETE FROM core.scim_links WHERE target_id = $1::uuid AND user_id = $2::uuid`,
 		targetID, userID)
-	return err
-}
-
-// AddSCIMTarget registers a provisioning target.
-func AddSCIMTarget(ctx context.Context, conn *pgx.Conn, root *keys.RootKey,
-	orgID, slug, name, baseURL, token, onDeactivate string, dryRun bool) error {
-
-	sealed, err := root.Seal([]byte(token), "scim_token")
-	if err != nil {
-		return fmt.Errorf("sealing the target token: %w", err)
-	}
-	_, err = conn.Exec(ctx, `
-		INSERT INTO core.scim_targets
-			(org_id, slug, display_name, base_url, token, on_deactivate, dry_run)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)`,
-		orgID, slug, name, baseURL, sealed, onDeactivate, dryRun)
-	if err != nil && errors.Is(err, pgx.ErrNoRows) {
-		return err
-	}
 	return err
 }

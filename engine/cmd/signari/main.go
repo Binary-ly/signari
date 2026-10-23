@@ -4068,27 +4068,9 @@ func idpAssertions(ctx context.Context, conn *pgx.Conn, slug string, allow bool)
 // instead of a flag that trusts everything.
 //
 // It ADDS to the system pool rather than replacing it, so configuring an
-// internal CA does not silently stop public targets from verifying.
-func scimHTTPClient() (*http.Client, error) {
-	// safedial either way: a target's base URL is stored, and the sync sends
-	// it a bearer token that can create and delete accounts. A target inside
-	// the network is named in SIGNARI_OUTBOUND_ALLOW_PRIVATE.
-	bundle := os.Getenv("SIGNARI_SCIM_CA_BUNDLE")
-	if bundle == "" {
-		return safedial.Client(30 * time.Second), nil
-	}
-	pem, err := os.ReadFile(bundle)
-	if err != nil {
-		return nil, fmt.Errorf("reading SIGNARI_SCIM_CA_BUNDLE: %w", err)
-	}
-	// On top of SIGNARI_CA_BUNDLE, not beside it: the general roots apply to
-	// SCIM targets too, and the narrower bundle only adds to them.
-	pool := safedial.Roots()
-	if !pool.AppendCertsFromPEM(pem) {
-		return nil, fmt.Errorf("%s contains no certificates", bundle)
-	}
-	return safedial.ClientTrusting(30*time.Second, pool), nil
-}
+// internal CA does not silently stop public targets from verifying. The one
+// client the Admin API's SCIM routes use too (provision.HTTPClient).
+func scimHTTPClient() (*http.Client, error) { return provision.HTTPClient() }
 
 // scimAdd registers a provisioning target.
 func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, token,
@@ -4105,26 +4087,18 @@ func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, to
 	case token == "":
 		return fmt.Errorf("give -token, the bearer token the target issued")
 	}
-	if !strings.HasPrefix(baseURL, "https://") {
-		return fmt.Errorf("the base URL must be https: this token can create and delete " +
-			"accounts in that system, and it is sent on every request")
+	spec := provision.TargetSpec{Kind: "scim", Slug: slug, Name: name, BaseURL: baseURL, Token: token,
+		OnDeactivate: onDeactivate, DryRun: dryRun}
+	if err := spec.Validate(); err != nil {
+		return err
 	}
-	switch onDeactivate {
-	case "deactivate", "delete", "nothing":
-	default:
-		return fmt.Errorf("-on-deactivate must be deactivate, delete or nothing")
-	}
-	if name == "" {
-		name = slug
-	}
-
+	name = spec.Name
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	if err := store.AddSCIMTarget(ctx, conn, root, orgID, slug, name, baseURL, token,
-		onDeactivate, dryRun); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+	if err := provision.AddTarget(ctx, conn, root, orgID, spec); err != nil {
+		if errors.Is(err, provision.ErrTargetExists) {
 			return fmt.Errorf("a target named %q is already registered", slug)
 		}
 		return err
@@ -4237,103 +4211,31 @@ func scimSync(ctx context.Context, conn *pgx.Conn, orgID, only string, apply boo
 	}
 
 	for _, t := range targets {
-		desired, err := store.SCIMDesiredState(ctx, conn, t)
-		if err != nil {
-			return err
-		}
 		hc, err := scimHTTPClient()
 		if err != nil {
 			return err
 		}
-		client, perr := provision.ForTarget(t, hc)
-		if perr != nil {
-			return perr
+		// The same pass the Admin API's sync runs (provision.Sync).
+		r, err := provision.Sync(ctx, conn, t, hc, apply)
+		for _, f := range r.Failures {
+			fmt.Printf("    %s\n", f)
 		}
-		var created, deactivated, deleted, failed int
-
-		for _, d := range desired {
-			switch {
-			case d.RemoteID == "" && d.Active:
-				if !apply {
-					created++
-					continue
-				}
-				id, err := client.CreateUser(ctx, provision.User{
-					ExternalID:  d.UserID,
-					UserName:    d.UserName,
-					DisplayName: d.DisplayName,
-					Email:       d.Email,
-					Active:      true,
-				})
-				if err != nil {
-					// A conflict means the account is already there; find it and
-					// record its id rather than creating a duplicate or giving up.
-					var se *scim.Error
-					if errors.As(err, &se) && se.Conflict {
-						if found, ferr := client.FindByUserName(ctx, d.UserName); ferr == nil && found != nil {
-							id = found.RemoteID
-						}
-					}
-					if id == "" {
-						fmt.Printf("    create %s: %v\n", d.UserName, err)
-						failed++
-						continue
-					}
-				}
-				if err := store.RecordSCIMLink(ctx, conn, t.ID, d.UserID, t.OrgID, id, true); err != nil {
-					return err
-				}
-				created++
-
-			case d.RemoteID != "" && !d.Active:
-				if t.OnDeactivate == "nothing" {
-					continue
-				}
-				if !apply {
-					deactivated++
-					continue
-				}
-				if err := store.MarkSCIMIntent(ctx, conn, t.ID, d.UserID, false); err != nil {
-					return err
-				}
-				if t.OnDeactivate == "delete" {
-					if err := client.DeleteUser(ctx, d.RemoteID); err != nil {
-						fmt.Printf("    delete %s: %v\n", d.UserName, err)
-						failed++
-						continue
-					}
-					if err := store.DropSCIMLink(ctx, conn, t.ID, d.UserID); err != nil {
-						return err
-					}
-					deleted++
-					continue
-				}
-				if err := client.SetActive(ctx, d.RemoteID, false); err != nil {
-					fmt.Printf("    deactivate %s: %v\n", d.UserName, err)
-					failed++
-					continue
-				}
-				if err := store.ConfirmSCIMSync(ctx, conn, t.ID, d.UserID); err != nil {
-					return err
-				}
-				deactivated++
+		for _, g := range r.Groups {
+			if g.Unreadable != "" {
+				fmt.Printf("  %s: group %q could not be read (%s); skipped\n", t.Slug, g.Name, g.Unreadable)
+				continue
 			}
+			fmt.Printf("  %s: group %q -- %d to add, %d to remove\n", t.Slug, g.Name, g.Add, g.Remove)
 		}
-
-		// Groups, after the users. A membership references an account, so
-		// pushing one before the account exists at the target is a request the
-		// target refuses -- and refuses per member, which reads as a flaky
-		// integration rather than an ordering mistake.
-		if gerr := syncSCIMGroups(ctx, conn, t, hc, apply); gerr != nil {
-			return gerr
+		if err != nil {
+			return err
 		}
-
 		verb := "would"
 		if apply {
 			verb = "did"
 		}
 		fmt.Printf("  %s: %s create %d, deactivate %d, delete %d, failed %d\n",
-			t.Slug, verb, created, deactivated, deleted, failed)
+			t.Slug, verb, r.Created, r.Deactivated, r.Deleted, r.Failed)
 	}
 
 	if !apply {
@@ -4341,131 +4243,6 @@ func scimSync(ctx context.Context, conn *pgx.Conn, orgID, only string, apply boo
 		return nil
 	}
 	fmt.Println("\n  Run `signari scim verify` to confirm the targets agree.")
-	return nil
-}
-
-// syncSCIMGroups reconciles group membership at one target.
-//
-// # Only groups this deployment created there
-//
-// Driven from `core.scim_group_links`, never by matching displayName. A target's
-// own administrators may already maintain a group called "Engineering", and a
-// name match would adopt it on the first run and start removing the members they
-// put there.
-//
-// # Only groups the operator asked to provision
-//
-// A group reaches a target because it is in `core.directory_group_map`... no:
-// because an operator created a link for it. Until a link exists, nothing is
-// pushed — the same default-deny as everywhere else in this work, so adding a
-// group locally never sends it anywhere by itself.
-func syncSCIMGroups(ctx context.Context, conn *pgx.Conn, t scim.Target,
-	hc *http.Client, apply bool) error {
-
-	rows, err := conn.Query(ctx, `
-		SELECT l.group_id::text, l.remote_id, g.display_name
-		FROM core.scim_group_links l
-		JOIN core.groups g ON g.id = l.group_id
-		WHERE l.target_id = $1::uuid
-		ORDER BY g.display_name`, t.ID)
-	if err != nil {
-		return fmt.Errorf("reading provisioned groups for %s: %w", t.Slug, err)
-	}
-	type linked struct{ groupID, remoteID, name string }
-	var groups []linked
-	for rows.Next() {
-		var l linked
-		if err := rows.Scan(&l.groupID, &l.remoteID, &l.name); err != nil {
-			rows.Close()
-			return err
-		}
-		groups = append(groups, l)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if len(groups) == 0 {
-		return nil
-	}
-
-	client := scim.NewClient(t, hc)
-	for _, g := range groups {
-		// Who should be in it: our members who have an account at this target.
-		// A member with no account there is skipped rather than failing the
-		// group -- they are provisioned by the pass above, and the next run
-		// picks them up.
-		wantRows, qerr := conn.Query(ctx, `
-			SELECT sl.remote_id
-			FROM core.group_members gm
-			JOIN core.scim_links sl ON sl.user_id = gm.user_id AND sl.target_id = $1::uuid
-			WHERE gm.group_id = $2::uuid`, t.ID, g.groupID)
-		if qerr != nil {
-			return qerr
-		}
-		want := map[string]bool{}
-		for wantRows.Next() {
-			var rid string
-			if err := wantRows.Scan(&rid); err != nil {
-				wantRows.Close()
-				return err
-			}
-			want[rid] = true
-		}
-		wantRows.Close()
-		if err := wantRows.Err(); err != nil {
-			return err
-		}
-
-		remote, gerr := client.GetGroup(ctx, g.remoteID)
-		if gerr != nil {
-			fmt.Printf("  %s: group %q could not be read (%v); skipped\n",
-				t.Slug, g.name, gerr)
-			continue
-		}
-		have := map[string]bool{}
-		for _, m := range remote.Members {
-			have[m.Value] = true
-		}
-
-		var toAdd, toRemove []string
-		for id := range want {
-			if !have[id] {
-				toAdd = append(toAdd, id)
-			}
-		}
-		for id := range have {
-			if !want[id] {
-				toRemove = append(toRemove, id)
-			}
-		}
-		sort.Strings(toAdd)
-		sort.Strings(toRemove)
-
-		if len(toAdd) == 0 && len(toRemove) == 0 {
-			continue
-		}
-		fmt.Printf("  %s: group %q -- %d to add, %d to remove\n",
-			t.Slug, g.name, len(toAdd), len(toRemove))
-		if !apply {
-			continue
-		}
-		if err := client.AddMembers(ctx, g.remoteID, toAdd); err != nil {
-			return fmt.Errorf("adding members to %q at %s: %w", g.name, t.Slug, err)
-		}
-		if err := client.RemoveMembers(ctx, g.remoteID, toRemove); err != nil {
-			return fmt.Errorf("removing members from %q at %s: %w", g.name, t.Slug, err)
-		}
-		// Recorded only after both calls succeeded. A timestamp written on a
-		// failed reconciliation says the group is in sync when it is not, which
-		// is worse than no timestamp: it is the field somebody checks to decide
-		// whether to investigate.
-		if _, err := conn.Exec(ctx, `
-			UPDATE core.scim_group_links SET last_synced_at = now()
-			WHERE target_id = $1::uuid AND group_id = $2::uuid`, t.ID, g.groupID); err != nil {
-			return fmt.Errorf("recording the sync time for %q at %s: %w", g.name, t.Slug, err)
-		}
-	}
 	return nil
 }
 
@@ -7410,42 +7187,21 @@ func provisionAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind,
 	if err != nil {
 		return fmt.Errorf("reading the credentials: %w", err)
 	}
-	// Parsed now rather than at first sync, so a wrong file is a message here
-	// instead of a cron job failing quietly at 3am.
-	switch kind {
-	case "google":
-		if _, perr := directory.ParseGoogleCredentials(raw); perr != nil {
-			return perr
-		}
-	case "entra":
-		if _, perr := directory.ParseEntraCredentials(raw); perr != nil {
-			return perr
-		}
+	// Parsed now rather than at first sync (provision.TargetSpec.Validate),
+	// so a wrong file is a message here instead of a cron job failing
+	// quietly at 3am.
+	spec := provision.TargetSpec{Kind: kind, Slug: slug, Name: name, Credentials: raw, Impersonate: impersonate,
+		Domain: domain, OnDeactivate: onDeactivate, DryRun: dryRun}
+	if err := spec.Validate(); err != nil {
+		return err
 	}
-
+	onDeactivate = spec.OnDeactivate
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	sealed, err := root.Seal(raw, "provision_credentials")
-	if err != nil {
-		return err
-	}
-	if onDeactivate == "" {
-		onDeactivate = "deactivate"
-	}
-	if name == "" {
-		name = slug
-	}
-
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.scim_targets
-			(org_id, slug, display_name, kind, credentials_enc, impersonate,
-			 target_domain, base_url, token, on_deactivate, dry_run)
-		VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), '', '', $8, $9)`,
-		orgID, slug, name, kind, sealed, impersonate, domain,
-		onDeactivate, dryRun); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+	if err := provision.AddTarget(ctx, conn, root, orgID, spec); err != nil {
+		if errors.Is(err, provision.ErrTargetExists) {
 			return fmt.Errorf("a target called %q already exists", slug)
 		}
 		return err

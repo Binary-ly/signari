@@ -12,6 +12,10 @@ it runs. Two things take their place: a release before a migration can be
 allowed to keep running against it, and everything else is rolled back by
 restoring the backup taken before the upgrade.
 
+What each schema version changed, and whether the release before may keep
+serving it, is in [schema-versions.md](schema-versions.md). Read the versions
+between the one `migrate status` reports and the one the new binary expects.
+
 ## The order
 
 1. Back up: [runbook-backup-restore.md](runbook-backup-restore.md). That backup

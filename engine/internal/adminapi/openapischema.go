@@ -204,6 +204,8 @@ func typeOf[T any]() reflect.Type { return reflect.TypeOf((*T)(nil)).Elem() }
 var (
 	appliedDocumentSchema = object([]string{"org_id", "document", "applied_at"}, map[string]jsonSchema{
 		"org_id": uuidStr(), "document": str(), "applied_at": nullable(dateTime())})
+	scimGroupSchema = object([]string{"slug", "group", "remote_id", "provisioned", "config_version"},
+		withVersion(map[string]jsonSchema{"slug": str(), "group": str(), "remote_id": str(), "provisioned": boolean()}))
 	relationSchema = object([]string{"subject", "relation", "object", "granted", "config_version"},
 		withVersion(map[string]jsonSchema{"subject": str(), "relation": str(), "object": str(), "granted": boolean()}))
 	clientSummarySchema = object([]string{"client_id", "org_id", "display_name", "client_type", "enabled", "created_at"},
@@ -492,6 +494,28 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
 		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
 			"removed": boolean()}))},
+	"GET /admin/organizations/{orgID}/scim-targets": {http.StatusOK, nil, object([]string{"org_id", "targets"},
+		map[string]jsonSchema{"org_id": uuidStr(), "targets": arrayOf(object([]string{"id", "slug", "name", "kind",
+			"base_url", "on_deactivate", "scope_group", "dry_run", "enabled", "linked", "should_be_gone",
+			"created_at"}, map[string]jsonSchema{"id": uuidStr(), "slug": str(), "name": str(), "kind": str(),
+			"base_url": str(), "on_deactivate": str(), "scope_group": str(), "dry_run": boolean(), "enabled": boolean(),
+			"linked": integer(), "should_be_gone": integer(), "created_at": dateTime()}))})},
+	"POST /admin/organizations/{orgID}/scim-targets": {http.StatusCreated, typeOf[addSCIMTargetRequest](), object(
+		[]string{"slug", "kind", "dry_run", "config_version"}, withVersion(map[string]jsonSchema{"slug": str(),
+			"kind": str(), "dry_run": boolean()}))},
+	"PATCH /admin/organizations/{orgID}/scim-targets/{slug}": {http.StatusOK, typeOf[patchSCIMTargetRequest](), object(
+		[]string{"slug", "config_version"}, withVersion(map[string]jsonSchema{"slug": str(), "enabled": boolean(),
+			"scope_group": str()}))},
+	"PUT /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}":    {http.StatusOK, nil, scimGroupSchema},
+	"DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}": {http.StatusOK, nil, scimGroupSchema},
+	"POST /admin/organizations/{orgID}/scim-targets/{slug}/sync": {http.StatusOK, typeOf[syncRequest](), object(
+		[]string{"slug", "applied", "created", "deactivated", "deleted", "failed", "failures", "groups",
+			"config_version"}, withVersion(map[string]jsonSchema{"slug": str(), "applied": boolean(),
+			"created": integer(), "deactivated": integer(), "deleted": integer(), "failed": integer(),
+			"failures": arrayOf(str()), "error": str(), "error_detail": str(),
+			"groups": arrayOf(object([]string{"name", "add", "remove", "unreadable", "members_synced"},
+				map[string]jsonSchema{"name": str(), "add": integer(), "remove": integer(), "unreadable": str(),
+					"members_synced": boolean()}))}))},
 	"GET /admin/organizations/{orgID}/ssf-streams": {http.StatusOK, nil, object([]string{"org_id", "streams"},
 		map[string]jsonSchema{"org_id": uuidStr(), "streams": arrayOf(object([]string{"id", "client_id",
 			"delivery_method", "endpoint", "status", "events", "has_receiver_token"}, map[string]jsonSchema{

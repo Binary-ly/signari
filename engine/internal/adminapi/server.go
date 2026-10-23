@@ -37,6 +37,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/metrics"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/provision"
 	"signari.dev/engine/internal/ratelimit"
 	"signari.dev/engine/internal/store"
 )
@@ -104,6 +105,11 @@ type Server struct {
 	// mux is the router Routes last built, which a batch dispatches its
 	// operations through.
 	mux atomic.Pointer[http.ServeMux]
+
+	// targetClient is what calls a provisioning target: provision.HTTPClient,
+	// the client `signari scim sync` uses, unless a test hands it a server it
+	// started.
+	targetClient func() (*http.Client, error)
 }
 
 func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
@@ -131,6 +137,7 @@ func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
 		arrivals: ratelimit.New(float64(limits.arrivals), float64(2*limits.arrivals)),
 		perToken: ratelimit.NewKeyed(float64(limits.perToken), float64(2*limits.perToken),
 			adminTrackedTokens),
+		targetClient: provision.HTTPClient,
 	}, nil
 }
 
@@ -434,6 +441,18 @@ func (s *Server) Routes() http.Handler {
 		route("POST /admin/organizations/{orgID}/radius-clients", ScopeOrganizationsWrite, s.addRADIUSClient)
 		route("PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}", ScopeOrganizationsWrite,
 			s.patchRADIUSClient)
+
+		// Provisioning targets (scimtargets.go), whose tokens and credentials
+		// are sealed with the root key.
+		route("GET /admin/organizations/{orgID}/scim-targets", ScopeConfigRead, s.listSCIMTargets)
+		route("POST /admin/organizations/{orgID}/scim-targets", ScopeOrganizationsWrite, s.addSCIMTarget)
+		route("PATCH /admin/organizations/{orgID}/scim-targets/{slug}", ScopeOrganizationsWrite, s.patchSCIMTarget)
+		route("PUT /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}", ScopeOrganizationsWrite,
+			s.provisionSCIMGroup)
+		route("DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}", ScopeOrganizationsWrite,
+			s.deprovisionSCIMGroup)
+		route("POST /admin/organizations/{orgID}/scim-targets/{slug}/sync", ScopeOrganizationsWrite,
+			s.syncSCIMTarget)
 
 		// Shared Signals streams (ssf.go), whose receiver tokens are sealed
 		// with the root key.

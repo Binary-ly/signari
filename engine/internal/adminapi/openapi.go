@@ -240,6 +240,14 @@ var summaries = map[string]string{
 	"DELETE /admin/instances/{instanceID}/held-trust-marks":     "Stop publishing a Trust Mark the instance holds.",
 	"POST /admin/instances/{instanceID}/trust-mark-delegations": "Authorise another entity to issue a type of Trust Mark the instance owns.",
 
+	// Provisioning targets (6.07).
+	"GET /admin/organizations/{orgID}/scim-targets":                          "The systems the organisation's people are written out to; never a token.",
+	"POST /admin/organizations/{orgID}/scim-targets":                         "Register a SCIM, Google or Entra target; nothing is sent until it is synced.",
+	"PATCH /admin/organizations/{orgID}/scim-targets/{slug}":                 "Take a target out of service or back, or scope it to a group.",
+	"PUT /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}":    "Create a group at a SCIM target and own it there.",
+	"DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}": "Delete a group this deployment created at a target.",
+	"POST /admin/organizations/{orgID}/scim-targets/{slug}/sync":             "Converge a target on who should have an account there, or preview it.",
+
 	// Shared Signals (6.07).
 	"GET /admin/organizations/{orgID}/ssf-streams":  "The relying parties' Shared Signals streams; never a receiver token.",
 	"POST /admin/organizations/{orgID}/ssf-streams": "Register a client's stream, pushed or polled.",

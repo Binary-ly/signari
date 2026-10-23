@@ -12,6 +12,10 @@ signari scim sync -apply     # converge the target on this directory
 signari scim verify          # read the target back and check it agrees
 ```
 
+The Admin API registers targets, changes their settings, provisions groups and
+syncs the same way under `/admin/organizations/{orgID}/scim-targets`, running
+the same pass as the command; see [admin-api.md](admin-api.md).
+
 ## Which half actually matters
 
 Provisioning failing is a support ticket. Somebody cannot get into Slack and

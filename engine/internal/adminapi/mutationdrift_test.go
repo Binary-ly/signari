@@ -20,6 +20,7 @@ import (
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/provider"
+	"signari.dev/engine/internal/provision"
 	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
 )
@@ -406,6 +407,56 @@ func allMutatingRoutes() []mutatingRoute {
 				return "/admin/groups/" + group + "/radius"
 			},
 			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/scim-targets", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/scim-targets"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"slug":"drift","base_url":"https://scim.example.test/v2","token":"a-token"}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/scim-targets/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org, _ := newDriftSCIMTarget(t, s, false)
+				return "/admin/organizations/" + org + "/scim-targets/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org, _ := newDriftSCIMTarget(t, s, false)
+				return "/admin/organizations/" + org + "/scim-targets/drift/groups/drift-group"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				ctx := context.Background()
+				org, fake := newDriftSCIMTarget(t, s, false)
+				target, err := provision.TargetForGroups(ctx, s.db, s.root, org, "drift")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := provision.ProvisionGroup(ctx, s.db, target, fake.Client(), "drift-group"); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/scim-targets/drift/groups/drift-group"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// An organisation with nobody in it, so nothing is sent.
+			name: "POST /admin/organizations/{orgID}/scim-targets/{slug}/sync", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				org, _ := newDriftSCIMTarget(t, s, false)
+				return "/admin/organizations/" + org + "/scim-targets/drift/sync"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"apply":true}` },
 		},
 		{
 			// A poll stream, which needs no endpoint or token.

@@ -51,6 +51,9 @@ resource "signari_group_member" "ada_engineering" {
 | `signari_group` | `display_name`, `description` | `org_id`, `name` | the id |
 | `signari_user` | `email`, `username`, the names, `locale`, `active`, `password` | `org_id` | the id |
 | `signari_group_member` | nothing | `group_id`, `user_id` | `<group_id>/<user_id>` |
+| `signari_client_group_release` | `only_groups` (left out, every group) | `client_id` | the client id |
+| `signari_scope` | `display_name`, `description`, `advertise` | `org_id`, `name` | `<org_id>/<name>` |
+| `signari_proxy_host` | `enabled` | `org_id`, `host` (in lower case) | `<org_id>/<host>` |
 
 Data sources: `signari_organization` (by `id` or `slug`), `signari_group` (by
 `id`, or `org_id` and `name`) and `signari_user` (by `id`, or `email`, with

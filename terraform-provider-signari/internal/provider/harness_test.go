@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
 // harness drives one resource through the calls Terraform makes, with its
@@ -84,11 +85,9 @@ func (h *harness[M]) destroy(s tfsdk.State) diag.Diagnostics {
 
 // imported is `terraform import`: the id into an empty state, then a refresh.
 func (h *harness[M]) imported(id string) (tfsdk.State, diag.Diagnostics) {
-	empty := tfsdk.State{Schema: h.sch.Schema}
-	var zero M
-	if d := empty.Set(h.ctx, zero); d.HasError() {
-		h.t.Fatal(d)
-	}
+	// A null object of the schema's type, as Terraform starts an import.
+	empty := tfsdk.State{Schema: h.sch.Schema,
+		Raw: tftypes.NewValue(h.sch.Schema.Type().TerraformType(h.ctx), nil)}
 	resp := &resource.ImportStateResponse{State: empty}
 	h.r.(resource.ResourceWithImportState).ImportState(h.ctx, resource.ImportStateRequest{ID: id}, resp)
 	if resp.Diagnostics.HasError() {

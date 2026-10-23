@@ -19,6 +19,7 @@ command or an environment variable exists in code and not on its page.
 | [schema-pinning.md](schema-pinning.md) | Pinning a release binary to the schema it was built for |
 | [upgrading.md](upgrading.md) | Upgrading, rolling back, and which migrations the previous release may run against |
 | [troubleshooting.md](troubleshooting.md) | What a refusal means, quoted as the server writes it, and what to do about it |
+| [quickstart-go.md](quickstart-go.md) | A Go application signing people in, standard library only, every check it must make itself |
 | [schema-versions.md](schema-versions.md) | What each schema version changed, newest first, generated from the migrations |
 | [connection-pooling.md](connection-pooling.md) | The two pools a node opens, and running behind PgBouncer |
 | [high-availability.md](high-availability.md) | Running more than one instance |

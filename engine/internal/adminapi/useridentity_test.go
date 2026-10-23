@@ -72,6 +72,40 @@ func TestChangingAUsersEmailClearsTheVerifiedMark(t *testing.T) {
 	}
 }
 
+// Sending the address back as it is keeps its verified mark (0.46). The mark
+// went whenever the field was present, so anything that writes a whole user
+// back -- a form, a Terraform apply, a sync -- unverified a confirmed address,
+// and every relying party was told email_verified: false from then on.
+func TestResendingTheAddressKeepsItsVerifiedMark(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	userID := newDriftUser(t, s)
+	var email string
+	if err := s.db.QueryRow(ctx, `UPDATE core.users SET email_verified_at = now() WHERE id = $1::uuid
+		RETURNING email`, userID).Scan(&email); err != nil {
+		t.Fatal(err)
+	}
+	for _, same := range []string{email, strings.ToUpper(email), " " + email + " "} {
+		rec := httptest.NewRecorder()
+		s.Routes().ServeHTTP(rec, adminReq(t, http.MethodPatch, "/admin/users/"+userID,
+			fmt.Sprintf(`{"email":%q,"display_name":"Same Address"}`, same), ""))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("patch gave %d: %s", rec.Code, rec.Body.String())
+		}
+		if !emailVerified(t, s, userID) {
+			t.Fatalf("the address sent back as %q, unchanged, lost its verified mark", same)
+		}
+	}
+	var detail string
+	if err := s.db.QueryRow(ctx, `SELECT detail::text FROM core.audit_events WHERE subject_id = $1::uuid
+		AND event_type = 'admin.user_updated' ORDER BY occurred_at DESC LIMIT 1`, userID).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ReplaceAll(detail, ": ", ":"), `"email_verified_cleared":true`) {
+		t.Errorf("the trail records a cleared mark that was kept: %s", detail)
+	}
+}
+
 // The audit trail records THAT the mark was cleared, not the address.
 //
 // Both halves matter. An investigation needs to know the account stopped

@@ -275,7 +275,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 
 	var orgID string
 	var sessionsEnded int
-	var approved bool
+	var approved, moved bool
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
 			`SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID); err != nil {
@@ -365,6 +365,11 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 				userID).Scan(&oldEmail); err != nil {
 				return err
 			}
+			// Moved, compared as the unique index compares addresses. The
+			// address sent back as it is moves nothing, and once cleared the
+			// mark here, so whatever wrote a whole user back -- a form, an
+			// apply -- unverified a confirmed address (0.46).
+			moved = !strings.EqualFold(oldEmail, strings.TrimSpace(*req.Email))
 		}
 		if req.Email != nil || req.Username != nil {
 			if _, err := tx.Exec(ctx, `
@@ -373,13 +378,13 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 					-- Cleared only when the address itself moves, so an
 					-- unrelated username change does not silently unverify a
 					-- confirmed address.
-					email_verified_at = CASE WHEN $2 THEN NULL ELSE email_verified_at END,
+					email_verified_at = CASE WHEN $6 THEN NULL ELSE email_verified_at END,
 					username          = CASE WHEN $4 THEN $5 ELSE username END,
 					updated_at        = now()
 				WHERE id = $1::uuid`,
 				userID,
 				req.Email != nil, nullableTrimmed(req.Email),
-				req.Username != nil, nullableTrimmed(req.Username),
+				req.Username != nil, nullableTrimmed(req.Username), moved,
 			); err != nil {
 				return err
 			}
@@ -489,7 +494,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 				"must_change":            req.RequirePasswordChange != nil && *req.RequirePasswordChange,
 				"sessions_ended":         sessionsEnded,
 				"email_set":              req.Email != nil,
-				"email_verified_cleared": req.Email != nil,
+				"email_verified_cleared": moved,
 				"username_set":           req.Username != nil,
 				"display_name_set":       req.DisplayName != nil,
 				"given_name_set":         req.GivenName != nil,

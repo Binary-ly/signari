@@ -49,6 +49,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mfa"
@@ -375,43 +376,30 @@ func dirGroupMap(ctx context.Context, conn *pgx.Conn, givenOrg, slug, remote, lo
 		return fmt.Errorf("give -slug (the directory source), -remote-group and -group")
 	}
 
-	sourceID, orgID, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, givenOrg,
+	_, orgID, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, givenOrg,
 		"directory source")
 	if err != nil {
 		return err
 	}
-
-	var groupID string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
-		orgID, local).Scan(&groupID); err != nil {
+	change := directory.MapGroup
+	if remove {
+		change = directory.UnmapGroup
+	}
+	switch err := change(ctx, conn, orgID, slug, remote, local); {
+	case errors.Is(err, directory.ErrLocalGroupUnknown):
 		return fmt.Errorf("no group named %q in that organisation; create it with "+
 			"`signari group create`", local)
+	case errors.Is(err, directory.ErrMappingUnknown):
+		return fmt.Errorf("%s does not map %q to %q", slug, remote, local)
+	case err != nil:
+		return err
 	}
 
 	if remove {
-		tp, err := conn.Exec(ctx, `
-			DELETE FROM core.directory_group_map
-			WHERE source_id = $1::uuid AND remote_group = $2 AND group_id = $3::uuid`,
-			sourceID, remote, groupID)
-		if err != nil {
-			return err
-		}
-		if tp.RowsAffected() == 0 {
-			return fmt.Errorf("%s does not map %q to %q", slug, remote, local)
-		}
 		fmt.Printf("%s no longer grants %q from %q\n", slug, local, remote)
 		fmt.Println("\n  Existing memberships are untouched until the next sync, which will")
 		fmt.Println("  now see this group as ungoverned and leave it alone.")
 		return nil
-	}
-
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.directory_group_map (source_id, org_id, remote_group, group_id)
-		VALUES ($1::uuid, $2::uuid, $3, $4::uuid)
-		ON CONFLICT (source_id, remote_group, group_id) DO NOTHING`,
-		sourceID, orgID, remote, groupID); err != nil {
-		return err
 	}
 
 	fmt.Printf("%s: directory group %q grants %q\n", slug, remote, local)
@@ -2436,7 +2424,7 @@ func dirSet(ctx context.Context, conn *pgx.Conn, orgID, slug, onMissing string, 
 	if slug == "" {
 		return fmt.Errorf("give -slug")
 	}
-	sourceID, _, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, orgID,
+	sourceID, org, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, orgID,
 		"directory source")
 	if err != nil {
 		return err
@@ -2447,81 +2435,32 @@ func dirSet(ctx context.Context, conn *pgx.Conn, orgID, slug, onMissing string, 
 	// this particular setting means quietly widening a safety ceiling.
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-
-	var changes []string
+	var change directory.SourceChange
 	if set["on-missing"] {
-		switch onMissing {
-		case "report", "deactivate":
-		default:
-			return fmt.Errorf("-on-missing must be report or deactivate, not %q", onMissing)
-		}
-		changes = append(changes, "on-missing")
-	}
-	if set["max-deactivate"] && (maxPercent < 0 || maxPercent > 100) {
-		return fmt.Errorf("-max-deactivate is a percentage, 0 to 100")
+		change.OnMissing = &onMissing
 	}
 	if set["max-deactivate"] {
-		changes = append(changes, "max-deactivate")
+		change.MaxDeactivate = &maxPercent
 	}
 	if set["enabled"] {
-		changes = append(changes, "enabled")
+		change.Enabled = &enabled
 	}
 	if set["dry-run"] {
-		changes = append(changes, "dry-run")
+		change.DryRun = &dryRun
 	}
 	// Group sync (2.02): whether memberships are fetched, and for LDAP from
 	// which attribute; empty returns it to memberOf.
 	if set["fetch-groups"] {
-		changes = append(changes, "fetch-groups")
+		change.FetchGroups = &fetchGroups
 	}
 	if set["group-attribute"] {
-		changes = append(changes, "group-attribute")
+		change.GroupAttribute = &groupAttr
 	}
-	if len(changes) == 0 {
+	if change.Empty() {
 		return fmt.Errorf("give at least one of -on-missing, -max-deactivate, -enabled, " +
 			"-dry-run, -fetch-groups or -group-attribute")
 	}
-	if set["fetch-groups"] || set["group-attribute"] {
-		var fetchArg any
-		if set["fetch-groups"] {
-			fetchArg = fetchGroups
-		}
-		if _, err := conn.Exec(ctx, `
-			UPDATE core.directory_sources
-			   SET fetch_groups         = COALESCE($2::boolean, fetch_groups),
-			       ldap_group_attribute = CASE WHEN $3 THEN NULLIF($4::text, '') ELSE ldap_group_attribute END
-			 WHERE id = $1::uuid`, sourceID, fetchArg, set["group-attribute"], groupAttr); err != nil {
-			if strings.Contains(err.Error(), "ldap_group_attribute") {
-				return fmt.Errorf("-group-attribute is an attribute name, such as memberOf")
-			}
-			return err
-		}
-	}
-
-	var onMissingArg, maxArg, enabledArg, dryArg any
-	if set["on-missing"] {
-		onMissingArg = onMissing
-	}
-	if set["max-deactivate"] {
-		maxArg = maxPercent
-	}
-	if set["enabled"] {
-		enabledArg = enabled
-	}
-	if set["dry-run"] {
-		dryArg = dryRun
-	}
-
-	if _, err := conn.Exec(ctx, `
-		UPDATE core.directory_sources
-		   SET on_missing             = COALESCE($2::text, on_missing),
-		       max_deactivate_percent = COALESCE($3::int, max_deactivate_percent),
-		       enabled                = COALESCE($4::boolean, enabled),
-		       dry_run                = COALESCE($5::boolean, dry_run)
-		 WHERE id = $1::uuid`, sourceID, onMissingArg, maxArg, enabledArg, dryArg); err != nil {
-		if strings.Contains(err.Error(), "on_missing") {
-			return fmt.Errorf("-on-missing must be report or deactivate")
-		}
+	if err := directory.ChangeSource(ctx, conn, org, slug, change); err != nil {
 		return err
 	}
 

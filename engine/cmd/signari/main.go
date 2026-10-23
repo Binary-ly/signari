@@ -5453,95 +5453,40 @@ func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPa
 			"JSON (entra)")
 	}
 
-	var raw []byte
+	spec := directory.SourceSpec{Kind: kind, Slug: slug, Name: name, Domain: domain, Impersonate: impersonate,
+		Tenant: tenant, Filter: filter, LDAPURL: ldapURL, LDAPBindDN: ldapBindDN, LDAPPassword: ldapPassword,
+		LDAPBaseDN: ldapBaseDN, LDAPFlavour: ldapFlavour, LDAPStartTLS: ldapStartTLS,
+		FetchGroups: fetchGroups, GroupAttribute: groupAttr}
 	if credPath != "" {
-		var rerr error
-		raw, rerr = os.ReadFile(credPath)
+		raw, rerr := os.ReadFile(credPath)
 		if rerr != nil {
 			return rerr
 		}
+		spec.Credentials = raw
 	}
-	// Parsed now rather than at first sync, so a wrong file is a message here
-	// instead of a cron job failing quietly at 3am.
-	var ldapCA string
-	switch kind {
-	case "google":
-		if _, perr := directory.ParseGoogleCredentials(raw); perr != nil {
-			return perr
+	if ldapCAPath != "" {
+		pem, rerr := os.ReadFile(ldapCAPath)
+		if rerr != nil {
+			return rerr
 		}
-		if impersonate == "" {
-			return fmt.Errorf("give -impersonate: a Google service account reads " +
-				"nothing without domain-wide delegation and an administrator to act as")
-		}
-	case "entra":
-		c, perr := directory.ParseEntraCredentials(raw)
-		if perr != nil {
-			return perr
-		}
-		tenant = c.TenantID
-	case "ldap":
-		if ldapURL == "" || ldapBaseDN == "" {
-			return fmt.Errorf("give -ldap-url and -ldap-base-dn")
-		}
-		if ldapFlavour != "openldap" && ldapFlavour != "ad" && ldapFlavour != "freeipa" {
-			return fmt.Errorf("-ldap-flavour must be openldap, ad or freeipa: it decides "+
-				"which attribute is the immutable identifier, and reading the wrong one "+
-				"makes every rename look like a departure and an arrival (got %q)",
-				ldapFlavour)
-		}
-		if strings.HasPrefix(ldapURL, "ldap://") && !ldapStartTLS {
-			return fmt.Errorf("refusing a plaintext bind to %q: the bind password can "+
-				"usually read the whole directory. Use ldaps:// or leave StartTLS on",
-				ldapURL)
-		}
-		if ldapCAPath != "" {
-			pem, rerr := os.ReadFile(ldapCAPath)
-			if rerr != nil {
-				return rerr
-			}
-			// Parsed now rather than at the first sync, so a typo in the path or a
-			// file that is not a certificate is a configuration error rather than a
-			// sync that fails at 3am.
-			if p := x509.NewCertPool(); !p.AppendCertsFromPEM(pem) {
-				return fmt.Errorf("%s contains no certificates", ldapCAPath)
-			}
-			ldapCA = string(pem)
-		}
-		// The bind password is the credential, sealed like any other.
-		raw = []byte(ldapPassword)
+		spec.LDAPCAPEM = string(pem)
 	}
-
+	// Parsed now rather than at first sync (directory.SourceSpec.Validate),
+	// so a wrong file is a message here instead of a cron job failing
+	// quietly at 3am.
+	if err := spec.Validate(); err != nil {
+		return err
+	}
+	name = spec.Name
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	sealed, err := root.Seal(raw, "directory-credentials")
+	id, err := directory.AddSource(ctx, conn, root, orgID, spec)
+	if errors.Is(err, directory.ErrSourceExists) {
+		return fmt.Errorf("a source with slug %q already exists in that organisation", slug)
+	}
 	if err != nil {
-		return err
-	}
-	if name == "" {
-		name = slug
-	}
-
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.directory_sources
-			(org_id, kind, slug, display_name, credentials_enc, domain, impersonate,
-			 tenant_id, user_filter, ldap_url, ldap_bind_dn, ldap_base_dn,
-			 ldap_flavour, ldap_start_tls, ldap_ca_pem, fetch_groups, ldap_group_attribute)
-		VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), NULLIF($8,''), $9,
-		        NULLIF($10,''), NULLIF($11,''), NULLIF($12,''), NULLIF($13,''), $14,
-		        NULLIF($15,''), $16, NULLIF($17,''))
-		RETURNING id::text`,
-		orgID, kind, slug, name, sealed, domain, impersonate, tenant, filter,
-		ldapURL, ldapBindDN, ldapBaseDN, ldapFlavour, ldapStartTLS,
-		ldapCA, fetchGroups, groupAttr).Scan(&id); err != nil {
-		if strings.Contains(err.Error(), "ldap_group_attribute") {
-			return fmt.Errorf("-group-attribute is an attribute name, such as memberOf")
-		}
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a source with slug %q already exists in that organisation", slug)
-		}
 		return err
 	}
 
@@ -5556,43 +5501,15 @@ func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply b
 	if slug == "" {
 		return fmt.Errorf("give -slug")
 	}
-	sourceID, _, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, givenOrg,
+	_, orgID, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, givenOrg,
 		"directory source")
 	if err != nil {
 		return err
 	}
-
-	var id, orgID, kind, credsEnc, domain, impersonate, tenant, filter, onMissing string
-	var lURL, lBindDN, lBaseDN, lFlavour, lCA, lGroupAttr string
-	var lStartTLS, fetchGroups bool
-	var sealed []byte
-	var dryRun bool
-	var maxPct int
-	err = conn.QueryRow(ctx, `
-		SELECT id::text, org_id::text, kind, credentials_enc, COALESCE(domain,''),
-		       COALESCE(impersonate,''), COALESCE(tenant_id,''), user_filter,
-		       on_missing, dry_run, max_deactivate_percent,
-		       COALESCE(ldap_url,''), COALESCE(ldap_bind_dn,''),
-		       COALESCE(ldap_base_dn,''), COALESCE(ldap_flavour,''), ldap_start_tls,
-		       COALESCE(ldap_ca_pem,''), fetch_groups, COALESCE(ldap_group_attribute, 'memberOf')
-		FROM core.directory_sources WHERE id = $1::uuid AND enabled`, sourceID).
-		Scan(&id, &orgID, &kind, &sealed, &domain, &impersonate, &tenant, &filter,
-			&onMissing, &dryRun, &maxPct,
-			&lURL, &lBindDN, &lBaseDN, &lFlavour, &lStartTLS, &lCA, &fetchGroups, &lGroupAttr)
-	if err != nil {
-		return fmt.Errorf("no enabled directory source with slug %q: %w", slug, err)
-	}
-	_ = credsEnc
-
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	raw, err := root.Open(sealed, "directory-credentials")
-	if err != nil {
-		return fmt.Errorf("unsealing the credentials: %w", err)
-	}
-
 	// Tagged: a sync seals a new person's subject key, so a rotation must see it.
 	pool, err := openPool(ctx, conn, root.PoolTag())
 	if err != nil {
@@ -5600,162 +5517,39 @@ func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply b
 	}
 	defer pool.Close()
 
-	var remote []directory.RemoteUser
-	switch kind {
-	case "google":
-		creds, perr := directory.ParseGoogleCredentials(raw)
-		if perr != nil {
-			return perr
-		}
-		remote, err = (&directory.GoogleSource{
-			Creds: creds, Impersonate: impersonate, Domain: domain, Query: filter, Groups: fetchGroups,
-		}).Fetch(ctx)
-	case "entra":
-		creds, perr := directory.ParseEntraCredentials(raw)
-		if perr != nil {
-			return perr
-		}
-		remote, err = (&directory.EntraSource{Creds: creds, Filter: filter, Groups: fetchGroups}).Fetch(ctx)
-	case "ldap":
-		var cas *x509.CertPool
-		if lCA != "" {
-			cas = x509.NewCertPool()
-			if !cas.AppendCertsFromPEM([]byte(lCA)) {
-				return fmt.Errorf("the stored CA bundle for %q contains no certificates", slug)
-			}
-		}
-		src := &directory.LDAPSource{
-			CAs: cas,
-			URL: lURL, BindDN: lBindDN, Password: string(raw), BaseDN: lBaseDN,
-			Filter: filter, Flavour: directory.LDAPFlavour(lFlavour),
-			StartTLS: lStartTLS,
-		}
-		if fetchGroups {
-			// The attribute was never assigned, so no LDAP sync fetched a group.
-			src.GroupAttribute = lGroupAttr
-			if src.Flavour == directory.FlavourAD {
-				// The groups a mapping names, resolved through nesting.
-				mappings, merr := directory.LoadGroupMappings(ctx, pool, id)
-				if merr != nil {
-					return merr
-				}
-				for _, m := range mappings {
-					src.NestedGroups = append(src.NestedGroups, m.RemoteGroup)
-				}
-			}
-		}
-		remote, err = src.Fetch(ctx)
+	// The same pass the Admin API's sync runs (directory.Sync).
+	r, err := directory.Sync(ctx, pool, root, orgID, slug, apply)
+	if r.Plan != "" {
+		fmt.Printf("\n  %d users upstream, %d active here\n\n", r.Upstream, r.ActiveBefore)
+		fmt.Print(r.Plan)
 	}
-	if err != nil {
-		directory.RecordFailure(ctx, pool, id, err)
-		return err
-	}
-
-	local, err := directory.LoadLocal(ctx, pool, id, orgID)
-	if err != nil {
-		return err
-	}
-
-	plan := directory.BuildPlan(remote, local, onMissing, maxPct)
-	fmt.Printf("\n  %d users upstream, %d active here\n\n", len(remote), plan.ActiveBefore)
-	fmt.Print(plan.Describe())
-
-	if !plan.Safe() {
+	switch {
+	case errors.Is(err, directory.ErrSourceUnknown):
+		return fmt.Errorf("no enabled directory source with slug %q", slug)
+	case errors.Is(err, directory.ErrSyncRefused):
 		// Non-zero: this is the case a cron job must notice.
 		return fmt.Errorf("sync refused")
+	case err != nil:
+		if r.Groups != "" {
+			fmt.Printf("\n  Groups: %s\n", r.Groups)
+		}
+		return err
 	}
-	if dryRun || !apply {
+	if !r.Applied {
 		fmt.Println("\n  DRY RUN -- nothing was written. Re-run with -apply.")
-		if dryRun {
+		if r.DryRunConfigured {
 			fmt.Println("  (this source is also configured dry_run=true in the database)")
 		}
 		return nil
 	}
-	if err := directory.Apply(ctx, pool, id, orgID, plan); err != nil {
-		directory.RecordFailure(ctx, pool, id, err)
-		return err
-	}
 	fmt.Println("\n  Applied.")
-
-	if err := syncDirectoryGroups(ctx, pool, id, orgID, remote, maxPct, fetchGroups); err != nil {
-		directory.RecordFailure(ctx, pool, id, err)
-		return err
-	}
-	return nil
-}
-
-// syncDirectoryGroups reconciles group membership after the users are in place.
-//
-// # After the users, never before
-//
-// A membership references a user row. Running this first would try to add
-// somebody to a group before they exist here, so the ordering is a requirement
-// rather than a preference.
-//
-// # It does nothing unless the source actually reported groups
-//
-// This is the guard that matters. A source with no group attribute configured
-// returns every user with an empty group list, and that is NOT "everybody is in
-// no groups" -- it is "this source has nothing to say about groups". Treating
-// the two the same would propose removing every governed membership in the
-// organisation on the first run against a source that never fetched them.
-//
-// So: no mappings, or a source that does not fetch groups, means no plan at
-// all. Whether it fetches is the source's setting (`dir set -fetch-groups`),
-// not a guess from what came back: guessing from "somebody reported a group"
-// meant a sync in which everybody had left every mapped group could never
-// remove a membership, since nobody then reported any. The removal ceiling is
-// what stands between a bad fetch and those removals.
-func syncDirectoryGroups(ctx context.Context, pool *pgxpool.Pool, sourceID, orgID string,
-	remote []directory.RemoteUser, maxPct int, fetchesGroups bool) error {
-
-	mappings, err := directory.LoadGroupMappings(ctx, pool, sourceID)
-	if err != nil {
-		return err
-	}
-	if len(mappings) == 0 {
-		return nil
-	}
-	if !fetchesGroups {
+	if r.GroupsSkipped {
 		fmt.Println("\n  Group mappings are configured but this source does not fetch")
 		fmt.Println("  group memberships, so nothing was changed. `signari dir set")
 		fmt.Println("  -fetch-groups` turns it on.")
-		return nil
 	}
-
-	// Keyed by LOCAL user id, which means resolving the remote id first: the
-	// plan speaks in local ids because that is what a membership row holds.
-	byRemote, err := directory.LoadLocal(ctx, pool, sourceID, orgID)
-	if err != nil {
-		return err
-	}
-	localOf := make(map[string]string, len(byRemote))
-	for _, l := range byRemote {
-		localOf[l.RemoteID] = l.UserID
-	}
-
-	remoteGroups := map[string][]string{}
-	for _, u := range remote {
-		if local, ok := localOf[u.ID]; ok {
-			remoteGroups[local] = u.Groups
-		}
-	}
-
-	current, err := directory.LoadGroupState(ctx, pool, sourceID, orgID)
-	if err != nil {
-		return err
-	}
-
-	gp := directory.BuildGroupPlan(mappings, remoteGroups, current, maxPct)
-	fmt.Printf("\n  Groups: %s\n", gp.Describe())
-	if !gp.Safe() {
-		return fmt.Errorf("group sync refused")
-	}
-	if err := directory.ApplyGroupPlan(ctx, pool, sourceID, orgID, gp); err != nil {
-		return err
-	}
-	if len(gp.Actions) > 0 {
-		fmt.Println("  Group memberships applied.")
+	if r.Groups != "" {
+		fmt.Printf("\n  Groups: %s\n", r.Groups)
 	}
 	return nil
 }

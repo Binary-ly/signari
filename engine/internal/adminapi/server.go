@@ -283,6 +283,11 @@ func (s *Server) Routes() http.Handler {
 	route("PUT /admin/organizations/{orgID}/access-policy", ScopeOrganizationsWrite, s.putAccessPolicy)
 	route("GET /admin/organizations/{orgID}/sign-in-flow", ScopeConfigRead, s.getSignInFlow)
 	route("PUT /admin/organizations/{orgID}/sign-in-flow", ScopeOrganizationsWrite, s.putSignInFlow)
+	// Fine-grained authorization, `signari authz` (authz.go).
+	route("GET /admin/organizations/{orgID}/authorization-model", ScopeConfigRead, s.getAuthzModel)
+	route("PUT /admin/organizations/{orgID}/authorization-model", ScopeOrganizationsWrite, s.putAuthzModel)
+	route("PUT /admin/organizations/{orgID}/relations", ScopeOrganizationsWrite, s.grantRelation)
+	route("DELETE /admin/organizations/{orgID}/relations", ScopeOrganizationsWrite, s.revokeRelation)
 	// Configuration as code, `signari plan` and `signari apply`
 	// (configapply.go). Each change also needs the scope its own route takes.
 	route("POST /admin/organizations/{orgID}/config", ScopeOrganizationsWrite, s.applyConfig)

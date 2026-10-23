@@ -43,14 +43,17 @@ func GrantRelation(ctx context.Context, e Execer, orgID string, r Relation,
 	return err
 }
 
-// RevokeRelation removes one.
-func RevokeRelation(ctx context.Context, e Execer, orgID string, r Relation) error {
-	_, err := e.Exec(ctx, `
+// RevokeRelation removes one, and reports whether it was there.
+func RevokeRelation(ctx context.Context, e Execer, orgID string, r Relation) (bool, error) {
+	tag, err := e.Exec(ctx, `
 		DELETE FROM core.relations
 		 WHERE org_id = $1::uuid AND subject_type = $2 AND subject_id = $3
 		   AND relation = $4 AND object_type = $5 AND object_id = $6`,
 		orgID, r.SubjectType, r.SubjectID, r.Relation, r.ObjectType, r.ObjectID)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // HoldsAny reports whether the subject holds any of these relations on the

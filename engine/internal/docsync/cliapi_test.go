@@ -219,10 +219,10 @@ var cliAPI = map[string]string{
 	"events test":      "POST /admin/organizations/{orgID}/event-subscriptions/{name}/test",
 
 	// Authorization, federation and UMA.
-	"authz set-model":     pending,
+	"authz set-model":     "PUT /admin/organizations/{orgID}/authorization-model",
 	"authz show-model":    reads,
-	"authz grant":         pending,
-	"authz revoke":        pending,
+	"authz grant":         "PUT /admin/organizations/{orgID}/relations",
+	"authz revoke":        "DELETE /admin/organizations/{orgID}/relations",
 	"authz check":         reads,
 	"trust-mark issue":    pending,
 	"trust-mark revoke":   pending,

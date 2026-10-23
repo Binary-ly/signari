@@ -204,6 +204,8 @@ func typeOf[T any]() reflect.Type { return reflect.TypeOf((*T)(nil)).Elem() }
 var (
 	appliedDocumentSchema = object([]string{"org_id", "document", "applied_at"}, map[string]jsonSchema{
 		"org_id": uuidStr(), "document": str(), "applied_at": nullable(dateTime())})
+	relationSchema = object([]string{"subject", "relation", "object", "granted", "config_version"},
+		withVersion(map[string]jsonSchema{"subject": str(), "relation": str(), "object": str(), "granted": boolean()}))
 	clientSummarySchema = object([]string{"client_id", "org_id", "display_name", "client_type", "enabled", "created_at"},
 		map[string]jsonSchema{"client_id": str(), "org_id": uuidStr(), "display_name": str(),
 			"client_type": str(), "enabled": boolean(), "created_at": dateTime()})
@@ -490,6 +492,13 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
 		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
 			"removed": boolean()}))},
+	"GET /admin/organizations/{orgID}/authorization-model": {http.StatusOK, nil, object([]string{"org_id", "source"},
+		map[string]jsonSchema{"org_id": uuidStr(), "source": str()})},
+	"PUT /admin/organizations/{orgID}/authorization-model": {http.StatusOK, typeOf[putModelRequest](), object(
+		[]string{"org_id", "types", "actions", "tests_passed", "config_version"}, withVersion(map[string]jsonSchema{
+			"org_id": uuidStr(), "types": integer(), "actions": integer(), "tests_passed": integer()}))},
+	"PUT /admin/organizations/{orgID}/relations":    {http.StatusOK, typeOf[relationRequest](), relationSchema},
+	"DELETE /admin/organizations/{orgID}/relations": {http.StatusOK, nil, relationSchema},
 	"POST /admin/organizations/{orgID}/config": {http.StatusOK, typeOf[applyConfigRequest](), object(
 		[]string{"dry_run", "changes", "create", "update", "delete", "config_version"}, withVersion(
 			map[string]jsonSchema{"dry_run": boolean(), "changes": arrayOf(object([]string{"action", "kind", "name",

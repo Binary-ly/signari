@@ -230,6 +230,12 @@ var summaries = map[string]string{
 	"GET /admin/organizations/{orgID}/sign-in-flow":  "The sign-in flows applied; none runs the built-in flows.",
 	"PUT /admin/organizations/{orgID}/sign-in-flow":  "Apply a flow document once it loads and its tests pass.",
 
+	// Fine-grained authorization (6.07).
+	"GET /admin/organizations/{orgID}/authorization-model": "The organisation's authorization model as written; none permits nothing.",
+	"PUT /admin/organizations/{orgID}/authorization-model": "Store a model once its own tests pass.",
+	"PUT /admin/organizations/{orgID}/relations":           "Grant a subject a relation on an object.",
+	"DELETE /admin/organizations/{orgID}/relations":        "Revoke a relation named by subject, relation and object.",
+
 	// Configuration as code (6.07).
 	"POST /admin/organizations/{orgID}/config": "Plan a configuration file, or apply it in one transaction.",
 

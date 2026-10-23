@@ -8102,11 +8102,18 @@ func authzRevoke(ctx context.Context, conn *pgx.Conn, orgID, subject, relation, 
 	if err != nil {
 		return err
 	}
-	if err := store.RevokeRelation(ctx, conn, orgID, store.Relation{
+	removed, err := store.RevokeRelation(ctx, conn, orgID, store.Relation{
 		SubjectType: styp, SubjectID: sid, Relation: relation,
 		ObjectType: otyp, ObjectID: oid,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
+	}
+	if !removed {
+		// Said, rather than "no longer": a revoke that matched nothing is
+		// usually a misspelt reference, and the grant meant is still there.
+		fmt.Printf("%s was not %s of %s; nothing was changed\n", subject, relation, object)
+		return nil
 	}
 	fmt.Printf("%s is no longer %s of %s\n", subject, relation, object)
 	return nil

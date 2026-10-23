@@ -206,6 +206,10 @@ signari authz revoke -org <uuid> -principal user:alice@example.com -relation own
 signari authz show-model -org <uuid>
 ```
 
+The Admin API stores the model and grants and revokes relations the same way,
+under `/admin/organizations/{orgID}/authorization-model` and
+`/admin/organizations/{orgID}/relations`; see [admin-api.md](admin-api.md).
+
 A relation is `(subject, relation, object)`. Roles are the special case where the
 object is the whole application, and they collapse the moment somebody asks "who
 can edit **this** document" — which is the question that actually gets asked. The

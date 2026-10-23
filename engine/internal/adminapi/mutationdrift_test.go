@@ -405,6 +405,40 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/authorization-model", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/authorization-model"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				b, err := json.Marshal(map[string]string{"source": driftModel})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(b)
+			},
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/relations", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/relations"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"subject":"user:alice","relation":"owner","object":"document:1"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/relations", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if err := store.GrantRelation(context.Background(), s.db, org, store.Relation{SubjectType: "user",
+					SubjectID: "alice", Relation: "owner", ObjectType: "document", ObjectID: "1"}, ""); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/relations?subject=user:alice&relation=owner&object=document:1"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			// A group the organisation does not have, so the plan creates it.
 			name: "POST /admin/organizations/{orgID}/config", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
@@ -947,6 +981,23 @@ func newDriftSubscription(t *testing.T, s *Server) string {
 	}
 	return "/admin/organizations/" + org + "/event-subscriptions/drift"
 }
+
+// driftModel is the smallest authorization model with a test, which a model
+// must have to load.
+const driftModel = `types:
+  document:
+    relations:
+      owner: []
+    permissions:
+      read: [owner]
+tests:
+  - name: an owner may read
+    subject: user:alice
+    action: read
+    resource: document:1
+    relations: [owner]
+    allow: true
+`
 
 // newDriftProvider registers a token_issue provider for an organisation of
 // its own and returns its path.

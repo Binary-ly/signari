@@ -476,6 +476,8 @@ func run(args []string) (err error) {
 	requirePKCE := fs.Bool("require-pkce", true,
 		"refuse an authorization request from this client that carries no PKCE challenge")
 	file := fs.String("file", "", "path to a realm export (import), or an audit archive (audit verify)")
+	installID := fs.String("install-id", "", "`import authentik`: the installation ID authentik derived "+
+		"persistent NameIDs and passkey user handles from")
 	auditHead := fs.String("head", "", "a signed audit head kept outside the database, or @file holding one (audit verify)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
 	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
@@ -1362,7 +1364,7 @@ func run(args []string) (err error) {
 	case "janitor once":
 		return janitorOnce(ctx, conn)
 	case "import authentik":
-		return importAuthentik(ctx, conn, *file, *orgID, !*apply)
+		return importAuthentik(ctx, conn, *file, *orgID, *installID, !*apply)
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
 	case "import shadow":
@@ -3503,41 +3505,8 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 		return err
 	}
 
-	fmt.Printf("realm %q\n  users:   %d created, %d updated, %d skipped\n  clients: %d created, %d skipped\n",
-		realm.Realm, res.UsersCreated, res.UsersUpdated, len(res.UsersSkipped),
-		res.ClientsCreated, len(res.ClientsSkipped))
-	fmt.Printf("  groups:  %d created, %d memberships\n  OTP: %d, passkeys: %d, provider links: %d, "+
-		"attributes: %d, SAML providers: %d\n", res.GroupsCreated, res.Memberships, res.OTPImported,
-		res.PasskeysImported, res.LinksImported, res.AttributesImported, res.SAMLProvidersCreated)
-	fmt.Printf("  subjects kept: %d, SAML NameIDs kept: %d\n", res.SubjectsKept, res.NameIDsKept)
-
-	// Skipped entries are PRINTED, never merely counted. A number tells an
-	// operator something went wrong; the list tells them who cannot sign in.
-	for _, s := range res.UsersSkipped {
-		fmt.Printf("  skipped user:   %s\n", s)
-	}
-	for _, s := range res.ClientsSkipped {
-		fmt.Printf("  skipped client: %s\n", s)
-	}
-	for _, s := range res.Renamed {
-		fmt.Printf("  renamed:        %s\n", s)
-	}
-	// Everything else the realm held and this did not carry: the list of
-	// what to redo by hand, complete.
-	for _, s := range res.Dropped {
-		fmt.Printf("  not carried:    %s\n", s)
-	}
-	if len(res.BuiltIns) > 0 {
-		fmt.Printf("  Keycloak's own, left behind: %s\n", strings.Join(res.BuiltIns, ", "))
-	}
-	if len(res.ClientsNowRequiringPKCE) > 0 {
-		fmt.Printf("\nThese confidential clients now require PKCE, as every client here does.\n" +
-			"An application that sends no code_challenge is refused at its first sign-in;\n" +
-			"for one that cannot send it, run `signari client set-pkce -client-id <id> -require-pkce=false`:\n")
-		for _, id := range res.ClientsNowRequiringPKCE {
-			fmt.Printf("  %s\n", id)
-		}
-	}
+	fmt.Printf("realm %q\n", realm.Realm)
+	printImportReport(res, "Keycloak's own")
 	if !dryRun && res.UsersCreated+res.UsersUpdated > 0 {
 		fmt.Printf("\nImported users are marked migration_state=pending and keep their Keycloak\n" +
 			"password hash. Each one is upgraded to Argon2id on their first sign-in.\n")
@@ -5353,13 +5322,50 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn, format string) error {
 }
 
 // importAuthentik migrates users and groups from an authentik deployment.
-func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID string, dryRun bool) error {
-	if path == "" || orgID == "" {
-		return fmt.Errorf("-file and -org are both required.\n\n" +
-			"Export from authentik with:\n" +
-			"  ak dumpdata authentik_core.User authentik_core.Group > authentik.json")
+// printImportReport prints what an import did. Skipped entries are PRINTED,
+// never merely counted: a number tells an operator something went wrong, the
+// list tells them who cannot sign in.
+func printImportReport(res *importer.Result, builtIns string) {
+	fmt.Printf("  users:   %d created, %d updated, %d skipped\n  clients: %d created, %d skipped\n",
+		res.UsersCreated, res.UsersUpdated, len(res.UsersSkipped), res.ClientsCreated, len(res.ClientsSkipped))
+	fmt.Printf("  groups:  %d created, %d memberships\n  OTP: %d, passkeys: %d, provider links: %d, "+
+		"attributes: %d, SAML providers: %d\n", res.GroupsCreated, res.Memberships, res.OTPImported,
+		res.PasskeysImported, res.LinksImported, res.AttributesImported, res.SAMLProvidersCreated)
+	fmt.Printf("  subjects kept: %d, SAML NameIDs kept: %d\n", res.SubjectsKept, res.NameIDsKept)
+	for _, s := range res.UsersSkipped {
+		fmt.Printf("  skipped user:   %s\n", s)
 	}
-	f, err := os.Open(path)
+	for _, s := range res.ClientsSkipped {
+		fmt.Printf("  skipped client: %s\n", s)
+	}
+	for _, s := range res.Renamed {
+		fmt.Printf("  renamed:        %s\n", s)
+	}
+	// Everything else the export held and this did not carry: the list of
+	// what to redo by hand, complete.
+	for _, s := range res.Dropped {
+		fmt.Printf("  not carried:    %s\n", s)
+	}
+	if len(res.BuiltIns) > 0 {
+		fmt.Printf("  %s, left behind: %s\n", builtIns, strings.Join(res.BuiltIns, ", "))
+	}
+	if len(res.ClientsNowRequiringPKCE) > 0 {
+		fmt.Printf("\nThese confidential clients now require PKCE, as every client here does.\n" +
+			"An application that sends no code_challenge is refused at its first sign-in;\n" +
+			"for one that cannot send it, run `signari client set-pkce -client-id <id> -require-pkce=false`:\n")
+		for _, id := range res.ClientsNowRequiringPKCE {
+			fmt.Printf("  %s\n", id)
+		}
+	}
+}
+
+func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID, installID string, dryRun bool) error {
+	if path == "" || orgID == "" {
+		return fmt.Errorf("-file and -org are both required.\n\n"+
+			"Export from authentik with:\n"+
+			"  ak dumpdata %s > authentik.json", strings.Join(importer.AuthentikModels, " "))
+	}
+	f, err := os.Open(path) // #nosec G304 -- the operator names the file to import
 	if err != nil {
 		return err
 	}
@@ -5369,14 +5375,22 @@ func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID string, dr
 	if err != nil {
 		return err
 	}
-
+	// OTP seeds and personal attributes are sealed under each person's key;
+	// without the root key they are left behind, and named.
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
+	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	res, err := importer.ImportAuthentik(ctx, tx, orgID, exp, dryRun)
+	// A preview is the import itself, rolled back, so what it reports is what
+	// the import would do.
+	res, err := importer.ImportAuthentik(ctx, tx, orgID, exp,
+		importer.Options{Hasher: passwords.Shared(), Root: root, InstallID: installID})
 	if err != nil {
 		return err
 	}
@@ -5385,26 +5399,19 @@ func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID string, dr
 	// a format nothing here can check -- and that is the number which decides
 	// whether this migration needs a password reset or not.
 	fmt.Printf("\n  password formats found\n")
-	for format, n := range res.HashFormats {
-		fmt.Printf("    %-46s %d\n", format, n)
+	formats := make([]string, 0, len(res.HashFormats))
+	for format := range res.HashFormats {
+		formats = append(formats, format)
 	}
-
-	fmt.Printf("\n  users created : %d\n  users updated : %d\n  groups        : %d\n",
-		res.UsersCreated, res.UsersUpdated, res.GroupsCreated)
-
-	if len(res.UsersSkipped) > 0 {
-		fmt.Printf("\n  skipped (%d):\n", len(res.UsersSkipped))
-		for i, s := range res.UsersSkipped {
-			if i == 20 {
-				fmt.Printf("    ... and %d more\n", len(res.UsersSkipped)-20)
-				break
-			}
-			fmt.Printf("    %s\n", s)
-		}
+	slices.Sort(formats)
+	for _, format := range formats {
+		fmt.Printf("    %-46s %d\n", format, res.HashFormats[format])
 	}
+	fmt.Println()
+	printImportReport(&res.Result, "authentik's own")
 
 	if dryRun {
-		fmt.Println("\n  DRY RUN -- nothing was written. Re-run with -apply.")
+		fmt.Println("\n  PREVIEW -- nothing was written. Re-run with -apply.")
 		return nil
 	}
 	if err := tx.Commit(ctx); err != nil {

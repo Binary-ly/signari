@@ -58,7 +58,10 @@ func TestAnImportedHashCostingMoreThanSignInAllowsIsSkippedWithTheReason(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := ImportAuthentik(context.Background(), nil, "org", exp, true)
+	// Both imports read what the organisation holds, so each runs in a
+	// transaction, rolled back.
+	actx, atx, aorg := importFixture(t)
+	res, err := ImportAuthentik(actx, atx, aorg, exp, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,8 +73,6 @@ func TestAnImportedHashCostingMoreThanSignInAllowsIsSkippedWithTheReason(t *test
 		t.Errorf("the 2^21 hash was not skipped with its reason: %q", res.UsersSkipped)
 	}
 
-	// The Keycloak import reads what the organisation holds, so it runs in a
-	// transaction, rolled back.
 	ctx, tx, org := importFixture(t)
 	n := time.Now().UnixNano()
 	realm, err := Parse(strings.NewReader(fmt.Sprintf(`{"realm":"r","users":[

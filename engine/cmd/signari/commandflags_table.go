@@ -94,7 +94,7 @@ var commandFlags = map[string][]string{
 	"idp trust-mfa":                   {"slug", "upstream-acr", "upstream-amr"},
 	"idp unlink":                      {"slug", "subject"},
 	"idp verified-email":              {"require-verified-email", "slug", "trust-email-verification"},
-	"import authentik":                {"apply", "file", "org"},
+	"import authentik":                {"apply", "file", "install-id", "org"},
 	"import keycloak":                 {"dry-run", "file", "org"},
 	"import shadow":                   {"apply", "domain", "file", "org"},
 	"instance add-alias":              {"alias", "retire-after"},

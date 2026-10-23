@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -199,6 +200,10 @@ type Options struct {
 	// Root seals the OTP seeds and the personal attributes brought across,
 	// under each person's own key. Without it they are left behind, and named.
 	Root *keys.RootKey
+	// InstallID is authentik's installation ID, from which it derived the
+	// persistent NameIDs and the passkey user handles. Without it those are
+	// left behind, and named.
+	InstallID string
 }
 
 // Import is ImportWith given only the hasher.
@@ -849,7 +854,7 @@ func importKeycloakClient(ctx context.Context, tx pgx.Tx, orgID string, c keyclo
 		return nil
 	}
 	created, err := importClient(ctx, tx, orgID, c.ClientID, c.Name, c.Secret, c.PublicClient, c.Enabled, grants,
-		c.RedirectURIs, hasher, res)
+		c.RedirectURIs, keycloakPostLogout(c), hasher, res)
 	if err != nil {
 		return err
 	}
@@ -857,6 +862,29 @@ func importKeycloakClient(ctx context.Context, tx pgx.Tx, orgID string, c keyclo
 		res.ClientsCreated++
 	}
 	return nil
+}
+
+// keycloakDelimiter separates a multivalued client attribute's values
+// (Constants.java:162,167).
+var keycloakDelimiter = regexp.MustCompile(`\s*##\s*`)
+
+// keycloakPostLogout is where RP-initiated logout may return the browser, as
+// Keycloak reads it (OIDCAdvancedConfigWrapper.java:489-515): none stated is
+// the redirect URIs, "-" is none, and "+" adds them to the rest. They were
+// left behind, so every imported client's logout refused its return URI.
+func keycloakPostLogout(c keycloakClient) []string {
+	attr := strings.TrimSpace(c.Attributes["post.logout.redirect.uris"])
+	if attr == "" {
+		return c.RedirectURIs
+	}
+	values := keycloakDelimiter.Split(attr, -1)
+	if values[0] == "-" {
+		return nil
+	}
+	if i := slices.Index(values, "+"); i >= 0 {
+		return append(slices.Delete(values, i, i+1), c.RedirectURIs...)
+	}
+	return values
 }
 
 // keycloakPasswordHash extracts a usable password credential.

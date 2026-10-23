@@ -417,9 +417,10 @@ func importSAMLProvider(ctx context.Context, tx pgx.Tx, orgID, entityID, name, f
 }
 
 // importClient makes an OpenID Connect client with the secret it holds,
-// hashed, and its redirect URIs, answering whether it is new.
+// hashed, its redirect URIs and those RP-initiated logout may return to,
+// answering whether it is new.
 func importClient(ctx context.Context, tx pgx.Tx, orgID, clientID, name, secret string, public, enabled bool,
-	grants, redirects []string, hasher *passwords.Hasher, res *Result) (bool, error) {
+	grants, redirects, logouts []string, hasher *passwords.Hasher, res *Result) (bool, error) {
 	kind := "confidential"
 	if public {
 		kind = "public"
@@ -435,6 +436,9 @@ func importClient(ctx context.Context, tx pgx.Tx, orgID, clientID, name, secret 
 	// authenticate. "Verbatim import" meant "verbatim and unusable".
 	secretHash := ""
 	if secret != "" {
+		if hasher == nil {
+			hasher = passwords.Shared()
+		}
 		h, herr := hasher.Hash(ctx, secret)
 		if herr != nil {
 			return false, fmt.Errorf("importer: hashing the secret for %s: %w", clientID, herr)
@@ -479,6 +483,19 @@ func importClient(ctx context.Context, tx pgx.Tx, orgID, clientID, name, secret 
 			INSERT INTO core.client_redirect_uris (client_id, redirect_uri)
 			VALUES ($1, $2) ON CONFLICT DO NOTHING`, clientID, u); err != nil {
 			return false, fmt.Errorf("importer: redirect for %s: %w", clientID, err)
+		}
+	}
+	// Held to the same rules, as store.SetClientLogout holds them: it is
+	// where a browser is sent on this server's word.
+	for _, u := range logouts {
+		if verr := clients.ValidateRedirectURI(u); verr != nil {
+			res.ClientsSkipped = append(res.ClientsSkipped, clientID+" post-logout redirect "+u+" ("+verr.Error()+")")
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO core.client_post_logout_redirect_uris (client_id, redirect_uri)
+			VALUES ($1, $2) ON CONFLICT DO NOTHING`, clientID, u); err != nil {
+			return false, fmt.Errorf("importer: post-logout redirect for %s: %w", clientID, err)
 		}
 	}
 	return created, nil

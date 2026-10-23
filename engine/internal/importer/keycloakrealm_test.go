@@ -283,6 +283,13 @@ func TestAKeycloakRealmImportsWhatItCanAndNamesTheRest(t *testing.T) {
 	if res3.OTPImported != 0 || !strings.Contains(strings.Join(res3.Dropped, "\n"), "needs SIGNARI_ROOT_KEY") {
 		t.Errorf("without the root key: %d OTP, dropped %v", res3.OTPImported, res3.Dropped)
 	}
+	var logouts []string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(array_agg(redirect_uri), '{}') FROM core.client_post_logout_redirect_uris
+		WHERE client_id = $1`, fmt.Sprintf("portal-%d", n)).Scan(&logouts); err != nil ||
+		strings.Join(logouts, ",") != "https://portal.example.test/cb" {
+		t.Errorf("portal's logout may return to %v (%v); stating none, Keycloak returns to its redirect URIs", logouts, err)
+	}
+
 	// They are new people, holding ids and handles others here hold: made
 	// with their own, and said so. The one whose id nobody took (pre's was
 	// not, since pre kept the account they had) keeps it, and their passkey.
@@ -292,5 +299,22 @@ func TestAKeycloakRealmImportsWhatItCanAndNamesTheRest(t *testing.T) {
 		!strings.Contains(r3, "'s passkeys (another account here holds their handle") {
 		t.Errorf("people whose id and handle are held: %d subjects kept, %d passkeys:\n%s", res3.SubjectsKept,
 			res3.PasskeysImported, r3)
+	}
+}
+
+// Where RP-initiated logout may return a browser, read as Keycloak reads it.
+func TestKeycloakPostLogoutRedirectsAreReadAsKeycloakReadsThem(t *testing.T) {
+	redirects := []string{"https://a.test/cb"}
+	for attr, want := range map[string]string{
+		"":                                   "https://a.test/cb",
+		"-":                                  "",
+		"https://a.test/bye ## +":            "https://a.test/bye,https://a.test/cb",
+		"https://a.test/bye##https://b.test": "https://a.test/bye,https://b.test",
+	} {
+		got := keycloakPostLogout(keycloakClient{RedirectURIs: redirects,
+			Attributes: map[string]string{"post.logout.redirect.uris": attr}})
+		if strings.Join(got, ",") != want {
+			t.Errorf("post.logout.redirect.uris %q reads as %v, want %s", attr, got, want)
+		}
 	}
 }

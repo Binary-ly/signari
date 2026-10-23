@@ -72,19 +72,21 @@ func (s *Server) listProviders(w http.ResponseWriter, r *http.Request) {
 	s.writeList(w, r, map[string]any{"org_id": orgID, "providers": out})
 }
 
-// providerWriteRefused answers a token narrowed to named applications or
-// groups. A provider is consulted on every sign-in or token in the
-// organisation, so registering one acts on applications and people the token
-// never names.
-func providerWriteRefused(w http.ResponseWriter, r *http.Request) bool {
+// narrowedTokenRefused answers a token narrowed to named applications or
+// groups, for a change that acts on applications and people the token never
+// names: a provider is consulted on every sign-in or token in the
+// organisation, and an outpost verifies anybody's password.
+func narrowedTokenRefused(w http.ResponseWriter, r *http.Request, detail string) bool {
 	ctx := r.Context()
 	if clientFilter(ctx) == nil && groupFilter(ctx) == nil {
 		return false
 	}
 	writeJSON(w, http.StatusForbidden, map[string]string{"error": "outside_token_objects",
-		"detail": "a token limited to named applications or groups cannot change a decision every sign-in in the organisation passes through"})
+		"detail": "a token limited to named applications or groups cannot " + detail})
 	return true
 }
+
+const providerRefusal = "change a decision every sign-in in the organisation passes through"
 
 func (s *Server) putProvider(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -109,7 +111,7 @@ func (s *Server) putProvider(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_provider", "detail": err.Error()})
 		return
 	}
-	if providerWriteRefused(w, r) {
+	if narrowedTokenRefused(w, r, providerRefusal) {
 		return
 	}
 	pre, ok := s.readPrecondition(w, r)
@@ -178,7 +180,7 @@ func (s *Server) changeProvider(w http.ResponseWriter, r *http.Request, action s
 			"detail": "no hook of that name is consulted"})
 		return
 	}
-	if providerWriteRefused(w, r) {
+	if narrowedTokenRefused(w, r, providerRefusal) {
 		return
 	}
 	pre, ok := s.readPrecondition(w, r)

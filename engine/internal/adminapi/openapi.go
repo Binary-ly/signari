@@ -216,6 +216,11 @@ var summaries = map[string]string{
 	"POST /admin/organizations/{orgID}/registration-tokens":             "Mint an initial access token, shown once.",
 	"DELETE /admin/organizations/{orgID}/registration-tokens/{tokenID}": "Revoke an initial access token.",
 
+	// Outposts (6.07).
+	"GET /admin/organizations/{orgID}/outposts":          "The organisation's outposts, when each was last heard from, never a token.",
+	"POST /admin/organizations/{orgID}/outposts":         "Register an outpost; its token is shown once.",
+	"PATCH /admin/organizations/{orgID}/outposts/{name}": "Take an outpost out of service or back, or set who may search through it.",
+
 	// Which groups an application is told of (6.07).
 	"GET /admin/clients/{clientID}/group-release":    "Which groups the application is told of in the groups claim.",
 	"PUT /admin/clients/{clientID}/group-release":    "Tell the application of these groups, or every group when none is named.",

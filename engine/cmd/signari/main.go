@@ -7144,30 +7144,29 @@ func signupShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	return nil
 }
 
-// outpostCreate issues a token for a remote protocol server.
-// checkSearchGroup refuses a search group an LDAP outpost cannot use: on
-// another kind of outpost, which never searches, or naming no group in the
+// outpostError says a refused outpost write in the command's own terms: a
+// search group on an outpost that never searches, or naming no group in the
 // organisation, which would read as granted while matching nobody.
-func checkSearchGroup(ctx context.Context, conn *pgx.Conn, orgID, kind, group string) error {
-	if group == "" {
-		return nil
-	}
-	if kind != "ldap" {
-		return fmt.Errorf("-search-group applies to an LDAP outpost only; a %s outpost "+
-			"does not search the directory", kind)
-	}
-	var exists bool
-	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.groups
-		WHERE org_id = $1::uuid AND name = $2)`, orgID, group).Scan(&exists); err != nil {
-		return err
-	}
-	if !exists {
+func outpostError(err error, name, kind, group string) error {
+	switch {
+	case errors.Is(err, store.ErrOutpostKind):
+		return fmt.Errorf("give -kind-outpost: ldap, radius, proxy, desktop or pdp. The token is "+
+			"bound to one protocol, so a leaked token costs that protocol rather "+
+			"than all of them (got %q)", kind)
+	case errors.Is(err, store.ErrSearchGroupNotLDAP):
+		return fmt.Errorf("-search-group: %w", err)
+	case errors.Is(err, store.ErrSearchGroupUnknown):
 		return fmt.Errorf("no group named %q in that organisation; create it with "+
 			"`signari group create` first", group)
+	case errors.Is(err, store.ErrOutpostExists):
+		return fmt.Errorf("an outpost called %q already exists in that organisation", name)
+	case errors.Is(err, store.ErrOutpostUnknown):
+		return fmt.Errorf("no outpost called %q in that organisation; `signari outpost list` shows them", name)
 	}
-	return nil
+	return err
 }
 
+// outpostCreate issues a token for a remote protocol server.
 func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind, searchGroup string) error {
 	switch {
 	case orgID == "":
@@ -7175,30 +7174,9 @@ func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind, searc
 	case name == "":
 		return fmt.Errorf("give -name, something that identifies where this outpost runs")
 	}
-	switch kind {
-	case "ldap", "radius", "proxy", "desktop", "pdp":
-	default:
-		return fmt.Errorf("give -kind-outpost: ldap, radius, proxy, desktop or pdp. The token is "+
-			"bound to one protocol, so a leaked token costs that protocol rather "+
-			"than all of them (got %q)", kind)
-	}
-	if err := checkSearchGroup(ctx, conn, orgID, kind, searchGroup); err != nil {
-		return err
-	}
-
-	token, hash, err := store.NewInvitationToken() // same 32-byte shape
+	_, token, err := store.CreateOutpost(ctx, conn, orgID, name, kind, searchGroup)
 	if err != nil {
-		return err
-	}
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.outposts (org_id, name, kind, token_hash, search_group)
-		VALUES ($1::uuid, $2, $3, $4, NULLIF($5, '')) RETURNING id::text`,
-		orgID, name, kind, hash, searchGroup).Scan(&id); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("an outpost called %q already exists in that organisation", name)
-		}
-		return err
+		return outpostError(err, name, kind, searchGroup)
 	}
 
 	fmt.Printf("outpost %s (%s)\n\n", name, kind)
@@ -7269,20 +7247,8 @@ func outpostSetSearchGroup(ctx context.Context, conn *pgx.Conn, orgID, name, gro
 	if orgID == "" || name == "" {
 		return fmt.Errorf("give -org and -name")
 	}
-	var kind string
-	if err := conn.QueryRow(ctx, `SELECT kind FROM core.outposts
-		WHERE org_id = $1::uuid AND name = $2`, orgID, name).Scan(&kind); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no outpost called %q in that organisation", name)
-		}
-		return err
-	}
-	if err := checkSearchGroup(ctx, conn, orgID, kind, group); err != nil {
-		return err
-	}
-	if _, err := conn.Exec(ctx, `UPDATE core.outposts SET search_group = NULLIF($3, '')
-		WHERE org_id = $1::uuid AND name = $2`, orgID, name, group); err != nil {
-		return err
+	if err := store.SetOutpostSearchGroup(ctx, conn, orgID, name, group); err != nil {
+		return outpostError(err, name, "", group)
 	}
 	if group == "" {
 		fmt.Printf("outpost %s: each person sees only their own entry\n", name)

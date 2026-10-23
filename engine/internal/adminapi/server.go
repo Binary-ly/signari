@@ -277,6 +277,10 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/prompts", ScopeConfigRead, s.listPrompts)
 	route("PUT /admin/organizations/{orgID}/prompts/{slug}", ScopeOrganizationsWrite, s.putPrompt)
 	route("PATCH /admin/organizations/{orgID}/prompts/{slug}", ScopeOrganizationsWrite, s.patchPrompt)
+	// Outposts, `signari outpost` (outposts.go).
+	route("GET /admin/organizations/{orgID}/outposts", ScopeConfigRead, s.listOutposts)
+	route("POST /admin/organizations/{orgID}/outposts", ScopeOrganizationsWrite, s.createOutpost)
+	route("PATCH /admin/organizations/{orgID}/outposts/{name}", ScopeOrganizationsWrite, s.patchOutpost)
 	// Dynamic client registration and its initial access tokens, `signari
 	// registration` (registration.go).
 	route("GET /admin/organizations/{orgID}/registration", ScopeConfigRead, s.getRegistration)

@@ -60,6 +60,7 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/organizations/{orgID}/duo", org("/duo")},
 		{"GET /admin/organizations/{orgID}/event-subscriptions", org("/event-subscriptions")},
 		{"GET /admin/organizations/{orgID}/providers", org("/providers")},
+		{"GET /admin/organizations/{orgID}/outposts", org("/outposts")},
 		{"GET /admin/organizations/{orgID}/uma/requests", org("/uma/requests")},
 		{"GET /admin/organizations/{orgID}/registration-tokens", org("/registration-tokens")},
 		{"GET /admin/organizations/{orgID}/claim-mappers", org("/claim-mappers")},

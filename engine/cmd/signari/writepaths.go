@@ -2681,13 +2681,8 @@ func outpostSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, name string, 
 	if orgID == "" || name == "" {
 		return fmt.Errorf("give -org and -name")
 	}
-	tp, err := conn.Exec(ctx, `UPDATE core.outposts SET enabled = $3
-		WHERE org_id = $1::uuid AND name = $2`, orgID, name, enabled)
-	if err != nil {
-		return err
-	}
-	if tp.RowsAffected() == 0 {
-		return fmt.Errorf("no outpost called %q in that organisation; `signari outpost list` shows them", name)
+	if err := store.SetOutpostEnabled(ctx, conn, orgID, name, enabled); err != nil {
+		return outpostError(err, name, "", "")
 	}
 	if enabled {
 		fmt.Printf("outpost %s is enabled: the core answers its token again\n", name)

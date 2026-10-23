@@ -469,6 +469,17 @@ var opSchemas = map[string]opSchema{
 		[]string{"name", "enabled", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "enabled": boolean()}))},
 	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/test": {http.StatusOK, nil, object(
 		[]string{"name", "event_id", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "event_id": str()}))},
+	"GET /admin/organizations/{orgID}/outposts": {http.StatusOK, nil, object([]string{"org_id", "outposts"},
+		map[string]jsonSchema{"org_id": uuidStr(), "outposts": arrayOf(object([]string{"id", "name", "kind", "enabled",
+			"search_group", "last_seen_at", "last_seen_ip"}, map[string]jsonSchema{"id": uuidStr(), "name": str(),
+			"kind": str(), "enabled": boolean(), "search_group": str(), "last_seen_at": nullable(dateTime()),
+			"last_seen_ip": str()}))})},
+	"POST /admin/organizations/{orgID}/outposts": {http.StatusCreated, typeOf[createOutpostRequest](), object(
+		[]string{"id", "name", "kind", "token", "config_version"}, withVersion(map[string]jsonSchema{
+			"id": uuidStr(), "name": str(), "kind": str(), "token": str()}))},
+	"PATCH /admin/organizations/{orgID}/outposts/{name}": {http.StatusOK, typeOf[patchOutpostRequest](), object(
+		[]string{"name", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "enabled": boolean(),
+			"search_group": str()}))},
 	"GET /admin/organizations/{orgID}/providers": {http.StatusOK, nil, object([]string{"org_id", "providers"},
 		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "hook", "url", "mode",
 			"timeout_ms", "enabled", "signed", "called", "allowed_claims"}, map[string]jsonSchema{

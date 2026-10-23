@@ -18,6 +18,10 @@ signari outpost run -core https://auth.example.com \
   -tls-cert ldap.pem -tls-key ldap-key.pem -ldap-base-dn dc=example,dc=com
 ```
 
+The Admin API registers outposts, takes them out of service and sets their
+search group the same way under `/admin/organizations/{orgID}/outposts`; see
+[admin-api.md](admin-api.md).
+
 ## LDAPS
 
 An LDAP outpost serves LDAPS, on `:636` unless `-addr` says otherwise, and

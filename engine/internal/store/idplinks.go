@@ -83,21 +83,24 @@ func LinkSubject(ctx context.Context, q outpostDB, orgID, slug, userID, subject 
 	return false, nil
 }
 
-// UnlinkSubject removes subject's link at the organisation's provider of that
-// slug, and answers whose it was. With a userID, only that person's link is
-// removed. The next assertion naming it is refused; the grant issues no
-// refresh token, so nothing outlives it.
+// UnlinkSubject removes a link at the organisation's provider of that slug:
+// subject's, the person's, or, given both, subject's only if it is the
+// person's. It answers the subject removed. The next assertion naming it is
+// refused; the grant issues no refresh token, so nothing outlives it.
 func UnlinkSubject(ctx context.Context, q outpostDB, orgID, slug, userID, subject string) (string, error) {
-	var owner string
+	if userID == "" && subject == "" {
+		return "", errors.New("unlinking needs the subject or the person, or it would be every link")
+	}
+	var removed string
 	err := q.QueryRow(ctx, `
 		DELETE FROM core.federated_identities f USING core.identity_providers p
-		 WHERE p.id = f.provider_id AND p.org_id = $1::uuid AND p.slug = $2 AND f.subject = $3
-		   AND ($4 = '' OR f.user_id::text = $4)
-		RETURNING f.user_id::text`, orgID, slug, subject, userID).Scan(&owner)
+		 WHERE p.id = f.provider_id AND p.org_id = $1::uuid AND p.slug = $2
+		   AND ($3 = '' OR f.subject = $3) AND ($4 = '' OR f.user_id::text = $4)
+		RETURNING f.subject`, orgID, slug, subject, userID).Scan(&removed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrIdPLinkUnknown
 	}
-	return owner, err
+	return removed, err
 }
 
 // IdentityLink is one provider a person is linked to.

@@ -24,6 +24,12 @@ An assertion mints for the local account its `sub` is linked to, and a
 key-publishing issuer is never a sign-in option, so no sign-in creates that
 link: `idp link` does, `idp links` lists them and `idp unlink` removes one.
 Until October 2026 nothing could, and this set-up minted nothing without SQL.
+A subject acts as one person and a person is one subject at an issuer, so
+pointing a workload at another account is `idp unlink` and then `idp link`;
+linking it again is refused rather than taken as a move. The Admin API does the
+same under the person, at `PUT` and `DELETE /admin/users/{userID}/identity-links/{slug}`
+(see [admin-api.md](admin-api.md#users)), and registers the issuer itself at
+`POST /admin/organizations/{orgID}/identity-providers`.
 
 Two commands because they are two decisions: the first records that an issuer
 exists and where its keys are, the second grants it the power to mint tokens

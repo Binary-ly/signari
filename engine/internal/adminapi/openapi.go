@@ -246,6 +246,9 @@ var summaries = map[string]string{
 	"PATCH /admin/organizations/{orgID}/identity-providers/{slug}":                "Take a provider out of service, allow its assertions, or say what of it is trusted.",
 	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map":    "Route a provider's claim into a declared attribute.",
 	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map": "Stop a provider's claim reaching an attribute.",
+	"GET /admin/users/{userID}/identity-links":                                    "The upstream subjects a person is linked to.",
+	"PUT /admin/users/{userID}/identity-links/{slug}":                             "Make a provider's subject act as the person, so its assertions mint for them.",
+	"DELETE /admin/users/{userID}/identity-links/{slug}":                          "Detach the person from a provider.",
 
 	// SAML service providers (6.07).
 	"GET /admin/organizations/{orgID}/saml-providers":                                   "The organisation's SAML service providers and what each is told.",

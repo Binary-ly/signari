@@ -40,7 +40,7 @@ func (s *Server) consentUser(w http.ResponseWriter, r *http.Request) (string, bo
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user_not_found"})
 			return "", false
 		}
-		s.log.Error("reading a user for their consents", "err", err)
+		s.log.Error("reading a user's organisation", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return "", false
 	}

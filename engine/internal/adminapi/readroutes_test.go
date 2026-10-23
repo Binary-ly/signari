@@ -107,6 +107,10 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/users/{userID}/factors", func(t *testing.T, s *Server) string {
 			return "/admin/users/" + newDriftUserWithTOTP(t, s) + "/factors"
 		}},
+		{"GET /admin/users/{userID}/identity-links", func(t *testing.T, s *Server) string {
+			u, _, _ := newDriftLinkedUser(t, s, true)
+			return "/admin/users/" + u + "/identity-links"
+		}},
 		{"GET /admin/users/{userID}/consents", func(t *testing.T, s *Server) string {
 			return "/admin/users/" + newDriftUser(t, s) + "/consents"
 		}},

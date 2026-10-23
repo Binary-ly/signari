@@ -410,6 +410,22 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/users/{userID}/identity-links/{slug}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftLinkedUser(t, s, false)
+				return p
+			},
+			body: func(*testing.T, *Server, string) string { return `{"subject":"drift-subject"}` },
+		},
+		{
+			name: "DELETE /admin/users/{userID}/identity-links/{slug}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftLinkedUser(t, s, true)
+				return p
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations/{orgID}/identity-providers", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/identity-providers"

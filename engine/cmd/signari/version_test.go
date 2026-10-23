@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ func TestVersionReportsThePinTheReleaseScriptChecks(t *testing.T) {
 	pinOf := func() string {
 		t.Helper()
 		var out bytes.Buffer
-		if err := printVersion(&out); err != nil {
+		if err := printVersion(&out, "text"); err != nil {
 			t.Fatal(err)
 		}
 		for _, l := range strings.Split(out.String(), "\n") {
@@ -42,7 +43,7 @@ func TestVersionReportsThePinTheReleaseScriptChecks(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := printVersion(&out); err != nil {
+	if err := printVersion(&out, "text"); err != nil {
 		t.Fatal(err)
 	}
 	all, err := migrate.Load()
@@ -51,5 +52,21 @@ func TestVersionReportsThePinTheReleaseScriptChecks(t *testing.T) {
 	}
 	if want := fmt.Sprintf("schema   %d\n", all[len(all)-1].Version); !strings.Contains(out.String(), want) {
 		t.Errorf("version does not name the schema this binary expects (%q):\n%s", want, out.String())
+	}
+
+	// -o json: the same values, the pin empty rather than explained (6.15).
+	out.Reset()
+	if err := printVersion(&out, "json"); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("version -o json is not JSON: %v\n%s", err, out.String())
+	}
+	if got["pinned"] != fp || got["schema"] != float64(all[len(all)-1].Version) {
+		t.Errorf("version -o json answered %v", got)
+	}
+	if err := printVersion(&out, "yaml"); exitCode(err) != 2 {
+		t.Errorf("-o yaml answered %v", err)
 	}
 }

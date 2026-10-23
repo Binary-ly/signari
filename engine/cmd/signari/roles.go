@@ -53,7 +53,11 @@ func roleGrant(ctx context.Context, conn *pgx.Conn, orgID, email, clientID, role
 	return nil
 }
 
-func roleList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func roleList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("role list needs -org")
 	}
@@ -61,11 +65,16 @@ func roleList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	if err != nil {
 		return err
 	}
-	if len(bindings) == 0 {
+	if len(bindings) == 0 && out.text() {
 		fmt.Println("no role bindings: the organisation is administered by admin tokens alone")
 		return nil
 	}
 	for _, b := range bindings {
+		out.add(map[string]any{"id": b.ID, "role": b.Role, "user_id": b.UserID, "client_id": b.ClientID,
+			"group_id": b.GroupID})
+		if !out.text() {
+			continue
+		}
 		holder := "user " + b.UserID
 		if b.ClientID != "" {
 			holder = "client " + b.ClientID
@@ -76,7 +85,7 @@ func roleList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		}
 		fmt.Printf("%s  %-12s  %s%s\n", b.ID, b.Role, holder, over)
 	}
-	return nil
+	return out.flush()
 }
 
 func roleRevoke(ctx context.Context, conn *pgx.Conn, orgID, bindingID string) error {

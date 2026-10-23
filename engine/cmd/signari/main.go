@@ -258,6 +258,7 @@ func run(args []string) (err error) {
 	timeout := fs.Duration("timeout", 0,
 		"how long the command may run before it is cancelled (0 = no limit); unset, 60s for a "+
 			"command that edits configuration and no limit for one whose work grows with the data")
+	outputFormat := fs.String("o", "text", "what a listing prints: text, or json for a script")
 	issuer := fs.String("issuer", "", "issuer URL, e.g. https://id.example.com")
 	name := fs.String("name", "", "instance display name")
 	addr := fs.String("addr", ":8080", "listen address for `serve`")
@@ -834,7 +835,7 @@ func run(args []string) (err error) {
 	// What this binary is, answerable on a machine with no database: a
 	// release script checks the pin with it before tagging.
 	case "version":
-		return printVersion(os.Stdout)
+		return printVersion(os.Stdout, *outputFormat)
 	// The theme commands read files and nothing else. Dispatched here, before a
 	// DSN is required, because validating a theme is something you do in CI --
 	// where there is no database to reach and no reason to need one.
@@ -1233,17 +1234,17 @@ func run(args []string) (err error) {
 		return adminTokenCreate(ctx, conn, *name, *orgID, *tokenScopes, *tokenExpires, expiresGiven,
 			*tokenClients, *inviteGroups)
 	case "admin-token list":
-		return adminTokenList(ctx, conn)
+		return adminTokenList(ctx, conn, *outputFormat)
 	case "admin-token revoke":
 		return adminTokenRevoke(ctx, conn, *tokenID)
 	case "role grant":
 		return roleGrant(ctx, conn, *orgID, *email, *clientID, *roleName, *groupName)
 	case "role list":
-		return roleList(ctx, conn, *orgID)
+		return roleList(ctx, conn, *orgID, *outputFormat)
 	case "role revoke":
 		return roleRevoke(ctx, conn, *orgID, *bindingID)
 	case "keys list":
-		return keysList(ctx, conn)
+		return keysList(ctx, conn, *outputFormat)
 	case "keys rotate":
 		return keysRotate(ctx, conn, *alg, *promoteNow)
 	case "keys retire":
@@ -1461,7 +1462,7 @@ func run(args []string) (err error) {
 	case "idp apple-secret":
 		return idpAppleSecret(ctx, conn, *slug, *appleTeam, *appleKeyID, *appleKeyFile)
 	case "idp list":
-		return idpList(ctx, conn)
+		return idpList(ctx, conn, *outputFormat)
 	case "idp assertions":
 		return idpAssertions(ctx, conn, *slug, *allowAssertions)
 	case "idp add-issuer":
@@ -1511,7 +1512,7 @@ func run(args []string) (err error) {
 	case "group release":
 		return groupRelease(ctx, conn, *orgID, *clientID, *onlyGroups)
 	case "group list":
-		return groupList(ctx, conn)
+		return groupList(ctx, conn, *outputFormat)
 	case "policy apply":
 		return policyApply(ctx, conn, *orgID, *policyFile)
 	case "flow apply":
@@ -1595,7 +1596,11 @@ func loadInstanceKeys(ctx context.Context, conn *pgx.Conn) (instanceID string, s
 	return instanceID, set, root, nil
 }
 
-func keysList(ctx context.Context, conn *pgx.Conn) error {
+func keysList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	instanceID, set, _, err := loadInstanceKeys(ctx, conn)
 	if err != nil {
 		return err
@@ -1609,7 +1614,9 @@ func keysList(ctx context.Context, conn *pgx.Conn) error {
 		return err
 	}
 
-	fmt.Printf("%-24s %-8s %-8s %-22s %s\n", "KID", "ALG", "STATE", "PUBLISHED", "NOTE")
+	if out.text() {
+		fmt.Printf("%-24s %-8s %-8s %-22s %s\n", "KID", "ALG", "STATE", "PUBLISHED", "NOTE")
+	}
 	for _, k := range set.Keys() {
 		note := ""
 		switch k.State() {
@@ -1628,11 +1635,15 @@ func keysList(ctx context.Context, conn *pgx.Conn) error {
 				note = fmt.Sprintf("retirable in %s", wait.Round(time.Minute))
 			}
 		}
-		fmt.Printf("%-24s %-8s %-8s %-22s %s\n",
-			k.KID(), k.Algorithm(), k.State(),
-			k.PublishedAt().UTC().Format(time.RFC3339), note)
+		out.add(map[string]any{"kid": k.KID(), "alg": k.Algorithm(), "state": k.State(),
+			"published_at": k.PublishedAt().UTC(), "note": note})
+		if out.text() {
+			fmt.Printf("%-24s %-8s %-8s %-22s %s\n",
+				k.KID(), k.Algorithm(), k.State(),
+				k.PublishedAt().UTC().Format(time.RFC3339), note)
+		}
 	}
-	return nil
+	return out.flush()
 }
 
 // keysRotate advances the rotation by exactly one safe step, per algorithm.
@@ -3653,7 +3664,11 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 }
 
 // idpList shows configured providers.
-func idpList(ctx context.Context, conn *pgx.Conn) error {
+func idpList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT slug, display_name, kind, allow_signup, allow_linking, enabled,
 		       allow_jwt_bearer,
@@ -3664,8 +3679,10 @@ func idpList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-14s %-12s %-8s %-8s %-8s %-10s %s\n",
-		"SLUG", "KIND", "SIGNUP", "LINKING", "ENABLED", "ASSERTIONS", "LINKED ACCOUNTS")
+	if out.text() {
+		fmt.Printf("%-14s %-12s %-8s %-8s %-8s %-10s %s\n",
+			"SLUG", "KIND", "SIGNUP", "LINKING", "ENABLED", "ASSERTIONS", "LINKED ACCOUNTS")
+	}
 	var n int
 	for rows.Next() {
 		var slug, name, kind string
@@ -3676,13 +3693,20 @@ func idpList(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		n++
-		fmt.Printf("%-14s %-12s %-8t %-8t %-8t %-10t %d\n",
-			slug, kind, signup, linking, enabled, assertions, linked)
+		out.add(map[string]any{"slug": slug, "name": name, "kind": kind, "allow_signup": signup,
+			"allow_linking": linking, "enabled": enabled, "allow_assertions": assertions, "linked": linked})
+		if out.text() {
+			fmt.Printf("%-14s %-12s %-8t %-8t %-8t %-10t %d\n",
+				slug, kind, signup, linking, enabled, assertions, linked)
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("(none registered -- add one with `signari idp add`)")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // eraseSubjectCmd crypto-shreds a subject.
@@ -4272,30 +4296,42 @@ func groupRelease(ctx context.Context, conn *pgx.Conn, orgID, clientID, only str
 }
 
 // groupList shows groups and their sizes.
-func groupList(ctx context.Context, conn *pgx.Conn) error {
+func groupList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
-		SELECT g.name, g.display_name,
+		SELECT g.name, g.display_name, g.org_id::text,
 		       (SELECT count(*) FROM core.group_members m WHERE m.group_id = g.id)
 		FROM core.groups g ORDER BY g.name`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	fmt.Printf("%-24s %-28s %s\n", "NAME", "DISPLAY NAME", "MEMBERS")
+	if out.text() {
+		fmt.Printf("%-24s %-28s %s\n", "NAME", "DISPLAY NAME", "MEMBERS")
+	}
 	var n int
 	for rows.Next() {
-		var name, disp string
+		var name, disp, org string
 		var members int
-		if err := rows.Scan(&name, &disp, &members); err != nil {
+		if err := rows.Scan(&name, &disp, &org, &members); err != nil {
 			return err
 		}
 		n++
-		fmt.Printf("%-24s %-28s %d\n", name, disp, members)
+		out.add(map[string]any{"name": name, "display_name": disp, "org_id": org, "members": members})
+		if out.text() {
+			fmt.Printf("%-24s %-28s %d\n", name, disp, members)
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("(none -- create one with `signari group create`)")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // clientSetKeys configures a client for private_key_jwt.
@@ -4667,7 +4703,11 @@ func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes s
 	return nil
 }
 
-func adminTokenList(ctx context.Context, conn *pgx.Conn) error {
+func adminTokenList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT t.id::text, t.name, COALESCE(o.slug, 'ALL'), t.scopes,
 		       t.created_at, t.expires_at, t.revoked_at, t.last_used_at
@@ -4679,7 +4719,9 @@ func adminTokenList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("\n  %-38s %-24s %-12s %s\n", "ID", "NAME", "ORG", "STATE")
+	if out.text() {
+		fmt.Printf("\n  %-38s %-24s %-12s %s\n", "ID", "NAME", "ORG", "STATE")
+	}
 	n := 0
 	for rows.Next() {
 		var id, name, org string
@@ -4701,6 +4743,12 @@ func adminTokenList(ctx context.Context, conn *pgx.Conn) error {
 		case expires != nil:
 			state = "expires " + expires.Format("2006-01-02")
 		}
+		out.add(map[string]any{"id": id, "name": name, "org": org, "scopes": scopes, "state": state,
+			"created_at": created.UTC(), "expires_at": utcPtr(expires), "revoked_at": utcPtr(revoked),
+			"last_used_at": utcPtr(lastUsed)})
+		if !out.text() {
+			continue
+		}
 		fmt.Printf("  %-38s %-24s %-12s %s\n", id, truncate(name, 24), truncate(org, 12), state)
 		used := "never used"
 		if lastUsed != nil {
@@ -4708,12 +4756,24 @@ func adminTokenList(ctx context.Context, conn *pgx.Conn) error {
 		}
 		fmt.Printf("  %-38s %s | %s\n", "", strings.Join(scopes, ","), used)
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("\n  No admin tokens. The API is reachable only with SIGNARI_ADMIN_TOKEN,")
 		fmt.Println("  which grants everything in every organisation and cannot be revoked")
 		fmt.Println("  without restarting every node.")
 	}
-	return rows.Err()
+	return out.flush()
+}
+
+// utcPtr is a time in UTC, or nil for none, for -o json.
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }
 
 func adminTokenRevoke(ctx context.Context, conn *pgx.Conn, id string) error {

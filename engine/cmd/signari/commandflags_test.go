@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -371,6 +372,49 @@ func TestEveryWrittenInvocationUsesFlagsTheCommandTakes(t *testing.T) {
 	sort.Strings(wrong)
 	for _, w := range wrong {
 		t.Error(w)
+	}
+}
+
+// A listing prints its rows as a JSON array with -o json, for a script, and its
+// text as before without it (6.15).
+func TestListingsPrintJSON(t *testing.T) {
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
+	if dsn == "" {
+		t.Skip("SIGNARI_TEST_DSN not set")
+	}
+	conn, err := pgx.Connect(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	var org string
+	if err := conn.QueryRow(context.Background(), `SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).
+		Scan(&org); err != nil {
+		t.Skipf("no organisation: %v", err)
+	}
+	for _, args := range [][]string{{"group", "list"}, {"idp", "list"}, {"admin-token", "list"}, {"role", "list", "-org", org}} {
+		out, err := captureStdout(t, func() error { return run(append(args, "-dsn", dsn, "-o", "json")) })
+		if err != nil {
+			t.Errorf("%v -o json: %v", args, err)
+			continue
+		}
+		var rows []map[string]any
+		if err := json.Unmarshal([]byte(out), &rows); err != nil {
+			t.Errorf("%v -o json is not a JSON array: %v\n%.300s", args, err, out)
+		}
+		if strings.Contains(out, "sgnadm_") {
+			t.Errorf("%v -o json printed a token secret", args)
+		}
+	}
+	text, err := captureStdout(t, func() error { return run([]string{"group", "list", "-dsn", dsn}) })
+	if err != nil || !strings.HasPrefix(text, "NAME") {
+		t.Errorf("group list without -o answered %v:\n%.200s", err, text)
+	}
+	if err := run([]string{"group", "list", "-dsn", dsn, "-o", "yaml"}); exitCode(err) != 2 {
+		t.Errorf("-o yaml answered %v", err)
+	}
+	if err := run([]string{"group", "create", "-dsn", dsn, "-o", "json"}); exitCode(err) != 2 {
+		t.Errorf("a command that prints no listing took -o: %v", err)
 	}
 }
 

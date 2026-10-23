@@ -37,6 +37,11 @@ and `signari plan` exits 3 when the deployment differs from the file. Until
 October 2026 one set of every flag served every command, so a mistyped command's
 flags were accepted and did nothing, and every failure exited 1.
 
+A listing that takes `-o json` prints its rows as a JSON array of objects, for a
+script to read instead of the columns, and `version -o json` one object; its
+text is unchanged without it. `signari help <command>` shows whether a command
+takes it. A secret is never in either.
+
 ## Schema
 
 | | |

@@ -18,9 +18,17 @@ var version string
 // whether it is pinned to that schema's fingerprint. One `key value` per
 // line, so a release script can read a value with awk, and nothing that
 // needs a database, so it answers on a machine that has none.
-func printVersion(w io.Writer) error {
+//
+// With -o json it is one object of the same values, the release and the pin
+// empty rather than explained when there is none.
+func printVersion(w io.Writer, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	out.w = w
 	release := version
-	if release == "" {
+	if release == "" && out.text() {
 		release = "unreleased (not built by scripts/build-release.sh)"
 	}
 	commit, toolchain, module := "unknown", "unknown", "none"
@@ -50,6 +58,11 @@ func printVersion(w io.Writer) error {
 		return err
 	}
 	pinned := migrate.ExpectedFingerprint
+	if !out.text() {
+		return out.value(map[string]any{"version": release, "commit": commit, "go": toolchain,
+			"fips140": fips140.Enabled(), "fips140_module": module, "schema": all[len(all)-1].Version,
+			"pinned": pinned})
+	}
 	if pinned == "" {
 		pinned = "none (the schema is compared only with its ledger; see docs/schema-pinning.md)"
 	}

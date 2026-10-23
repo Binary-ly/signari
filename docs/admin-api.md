@@ -463,6 +463,7 @@ be stored in them.
 | `PUT /admin/organizations/{orgID}/attributes` | Declare or update one. Needs `organizations:write` |
 | `GET /admin/users/{userID}/attributes` | One user's values. Needs `users:read` |
 | `PUT /admin/users/{userID}/attributes` | Set values. Needs `users:write` |
+| `DELETE /admin/users/{userID}/attributes/{name}` | Clear one of the person's values. An undeclared attribute is `404 unknown_attribute`, a value they do not have `404 attribute_not_set`; a required attribute is `409 attribute_required`, since it is given another value rather than emptied, as the person's own profile refuses too. A person who may impersonate needs `privileged-users:write`. Audited `admin.attribute_cleared`, by name only; `users:write` |
 
 **An attribute must be declared before it can hold anything**, and the
 declaration carries the decision that matters: `personal`. A personal attribute

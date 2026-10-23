@@ -13,7 +13,7 @@ var EventTypes = []string{
 	"account.deleted", "account.exported", "account.migrated", "account.password_reset", "account.recovery_cancelled",
 	"account.recovery_factor_proven",
 	"account.recovery_requested",
-	"admin.access_policy_applied", "admin.attester_removed", "admin.attester_set",
+	"admin.access_policy_applied", "admin.attester_removed", "admin.attester_set", "admin.attribute_cleared",
 	"admin.attribute_declared", "admin.attributes_set", "admin.authorization_details_type_removed",
 	"admin.authorization_details_type_set", "admin.authorization_model_set", "admin.brand_removed", "admin.brand_set",
 	"admin.claim_mapper_created",

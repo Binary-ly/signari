@@ -451,6 +451,7 @@ func (s *Server) Routes() http.Handler {
 		// unsealed; registered here for the same reason.
 		route("GET /admin/subjects/{subjectID}/export", ScopeSubjectsExport, s.exportSubject)
 		privileged("PUT /admin/users/{userID}/attributes", ScopeUsersWrite, targetUser, s.setUserAttributes)
+		privileged("DELETE /admin/users/{userID}/attributes/{name}", ScopeUsersWrite, targetUser, s.clearUserAttribute)
 
 		// Claim mappers. Creating one decides that a relying party receives a
 		// fact about every user who has it, so it takes the same scope as

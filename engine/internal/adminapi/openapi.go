@@ -136,6 +136,7 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/attributes":                  "Declare or update a user attribute.",
 	"GET /admin/users/{userID}/attributes":                         "One user's attribute values.",
 	"PUT /admin/users/{userID}/attributes":                         "Set a user's attribute values.",
+	"DELETE /admin/users/{userID}/attributes/{name}":               "Clear one of a user's attribute values.",
 	"GET /admin/organizations/{orgID}/claim-mappers":               "Every attribute this organisation releases as a claim.",
 	"POST /admin/organizations/{orgID}/claim-mappers":              "Release an attribute as a claim.",
 	"DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}": "Stop releasing an attribute as a claim.",

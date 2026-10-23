@@ -200,6 +200,14 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			name: "DELETE /admin/users/{userID}/attributes/{name}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				u := newDriftUserWithValue(t, s)
+				return "/admin/users/" + u + "/attributes/" + driftAttributeName
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name:   "POST /admin/organizations/{orgID}/claim-mappers",
 			method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
@@ -1664,6 +1672,30 @@ func newDriftUserWithAttribute(t *testing.T, s *Server) string {
 		VALUES ($1::uuid, $2, 'string', true)
 		ON CONFLICT (org_id, name) DO NOTHING`, orgID, driftAttributeName); err != nil {
 		t.Fatalf("declaring the fixture attribute: %v", err)
+	}
+	return userID
+}
+
+// newDriftUserWithValue is newDriftUserWithAttribute with a value set, so
+// there is one to clear.
+func newDriftUserWithValue(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	userID := newDriftUserWithAttribute(t, s)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var orgID string
+	if err := tx.QueryRow(ctx, `SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserAttribute(ctx, tx, userID, orgID, driftAttributeName, "a value", s.root); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
 	}
 	return userID
 }

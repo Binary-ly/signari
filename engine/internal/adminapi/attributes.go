@@ -340,6 +340,50 @@ func (s *Server) setUserAttributes(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// clearUserAttribute removes one of a person's values (6.07). Before it the
+// Admin API could set a value and never take one away, so a leaver's
+// department could only be overwritten with another.
+func (s *Server) clearUserAttribute(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userID, name := r.PathValue("userID"), r.PathValue("name")
+	orgID, ok := s.consentUser(w, r)
+	if !ok {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := store.RemoveUserAttribute(ctx, tx, userID, orgID, name); err != nil {
+			return err
+		}
+		// The name only, as admin.attributes_set records it.
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.attribute_cleared", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, SubjectID: userID, Detail: map[string]any{"attribute": name}})
+	})
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case errors.Is(err, store.ErrNoSuchAttribute):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown_attribute", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrAttributeNotSet):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "attribute_not_set", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrAttributeRequired):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "attribute_required", "detail": err.Error()})
+		return
+	case err != nil:
+		s.log.Error("clearing an attribute", "user_id", userID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "attribute": name, "cleared": true,
+		"config_version": version})
+}
+
 // isConstraintViolation reports whether err names a database constraint.
 func isConstraintViolation(err error, name string) bool {
 	return err != nil && strings.Contains(err.Error(), name)

@@ -299,6 +299,38 @@ func ClearUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name stri
 // ErrAttributeRequired is a required attribute left empty.
 var ErrAttributeRequired = errors.New("this attribute is required")
 
+// ErrAttributeNotSet is a value cleared that the person does not have.
+var ErrAttributeNotSet = errors.New("the person has no value for that attribute")
+
+// RemoveUserAttribute clears one of a person's values as an administrator
+// does it (6.07). The attribute must be declared, and a required one is
+// replaced rather than cleared, as the person's own profile refuses to clear
+// it: an empty required attribute is a state nothing else can put a person in.
+func RemoveUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name string) error {
+	var attrID string
+	var required bool
+	err := tx.QueryRow(ctx, `SELECT id::text, required FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = $2`, orgID, name).Scan(&attrID, &required)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: %q", ErrNoSuchAttribute, name)
+	}
+	if err != nil {
+		return fmt.Errorf("reading the declaration for %q: %w", name, err)
+	}
+	if required {
+		return fmt.Errorf("%w: %q is required, so give it another value instead", ErrAttributeRequired, name)
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM core.user_attributes WHERE user_id = $1::uuid AND attribute_id = $2::uuid`,
+		userID, attrID)
+	if err != nil {
+		return fmt.Errorf("clearing attribute %q: %w", name, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: %q", ErrAttributeNotSet, name)
+	}
+	return nil
+}
+
 // SetOwnAttributes writes what a person set for themselves, from their profile
 // or at sign-up: only the attributes they may write, each checked against its
 // type and sealed as its declaration says. values maps a name to its new value;

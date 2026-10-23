@@ -25,6 +25,8 @@ func newDriftLinkedUser(t *testing.T, s *Server, linked bool) (userID, slug, pat
 		RETURNING id::text`, org, "linked-"+org[:8]+"@example.test").Scan(&userID); err != nil {
 		t.Fatal(err)
 	}
+	// Before the organisation's cleanup, which a person in it would refuse.
+	t.Cleanup(func() { _, _ = s.db.Exec(context.Background(), `DELETE FROM core.users WHERE id = $1::uuid`, userID) })
 	if linked {
 		if _, err := store.LinkSubject(ctx, s.db, org, slug, userID, "drift-subject"); err != nil {
 			t.Fatal(err)

@@ -159,6 +159,8 @@ func TestAProvisioningTargetIsRunThroughTheAPI(t *testing.T) {
 		RETURNING id::text`, org).Scan(&userID); err != nil {
 		t.Fatal(err)
 	}
+	// Before the organisation's cleanup, which a person in it would refuse.
+	t.Cleanup(func() { _, _ = s.db.Exec(context.Background(), `DELETE FROM core.users WHERE id = $1::uuid`, userID) })
 	if _, err := s.db.Exec(ctx, `INSERT INTO core.group_members (group_id, user_id, org_id)
 		SELECT id, $2::uuid, org_id FROM core.groups WHERE org_id = $1::uuid AND name = 'drift-group'`,
 		org, userID); err != nil {

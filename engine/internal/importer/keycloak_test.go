@@ -52,7 +52,7 @@ func TestImportedClientSecretIsHashedAndStillVerifies(t *testing.T) {
 	}}}
 
 	h := passwords.NewHasher(passwords.MemoryBudgetMiB)
-	if _, err := Import(ctx, tx, orgID, realm, h, false); err != nil {
+	if _, err := Import(ctx, tx, orgID, realm, h); err != nil {
 		t.Fatal(err)
 	}
 
@@ -141,7 +141,7 @@ func TestServiceAccountClientsKeepTheirGrant(t *testing.T) {
 	}}
 
 	h := passwords.NewHasher(passwords.MemoryBudgetMiB)
-	res, err := Import(ctx, tx, orgID, realm, h, false)
+	res, err := Import(ctx, tx, orgID, realm, h)
 	if err != nil {
 		t.Fatal(err)
 	}

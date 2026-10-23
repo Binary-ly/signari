@@ -2,9 +2,45 @@ package importer
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 )
+
+// importFixture is a transaction rolled back at the end of the test, and an
+// organisation of its own made in it.
+func importFixture(t *testing.T) (context.Context, pgx.Tx, string) {
+	t.Helper()
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
+	if dsn == "" {
+		t.Skip("SIGNARI_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	n := time.Now().UnixNano()
+	var org string
+	if err := tx.QueryRow(ctx, `
+		WITH i AS (INSERT INTO core.instances (issuer, display_name) VALUES ($1, 'probe') RETURNING id)
+		INSERT INTO core.organizations (instance_id, slug, display_name)
+		SELECT id, $2, 'probe' FROM i RETURNING id::text`,
+		fmt.Sprintf("https://import-%d.invalid", n), fmt.Sprintf("import-%d", n)).Scan(&org); err != nil {
+		t.Fatal(err)
+	}
+	return ctx, tx, org
+}
 
 // An imported hash whose cost is over what sign-in will verify is refused at
 // import, by name and with the reason, rather than imported and then refused
@@ -34,17 +70,21 @@ func TestAnImportedHashCostingMoreThanSignInAllowsIsSkippedWithTheReason(t *test
 		t.Errorf("the 2^21 hash was not skipped with its reason: %q", res.UsersSkipped)
 	}
 
-	realm, err := Parse(strings.NewReader(`{"realm":"r","users":[
-	 {"username":"dear","email":"dear@x.test","enabled":true,"credentials":[{"type":"password",
+	// The Keycloak import reads what the organisation holds, so it runs in a
+	// transaction, rolled back.
+	ctx, tx, org := importFixture(t)
+	n := time.Now().UnixNano()
+	realm, err := Parse(strings.NewReader(fmt.Sprintf(`{"realm":"r","users":[
+	 {"username":"dear","email":"dear-%[1]d@x.test","enabled":true,"credentials":[{"type":"password",
 	  "secretData":"{\"value\":\"aGFzaA==\",\"salt\":\"c2FsdA==\"}",
 	  "credentialData":"{\"algorithm\":\"pbkdf2-sha256\",\"hashIterations\":2000000}"}]},
-	 {"username":"cheap","email":"cheap@x.test","enabled":true,"credentials":[{"type":"password",
+	 {"username":"cheap","email":"cheap-%[1]d@x.test","enabled":true,"credentials":[{"type":"password",
 	  "secretData":"{\"value\":\"aGFzaA==\",\"salt\":\"c2FsdA==\"}",
-	  "credentialData":"{\"algorithm\":\"pbkdf2-sha256\",\"hashIterations\":27500}"}]}]}`))
+	  "credentialData":"{\"algorithm\":\"pbkdf2-sha256\",\"hashIterations\":27500}"}]}]}`, n)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	kres, err := Import(context.Background(), nil, "org", realm, nil, true)
+	kres, err := Import(ctx, tx, org, realm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

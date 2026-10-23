@@ -47,7 +47,7 @@ func TestAnImportedPersonKeepsTheirNames(t *testing.T) {
 		Credentials: []keycloakCredential{{Type: "password",
 			SecretData:     `{"value":"aGFzaA==","salt":"c2FsdA=="}`,
 			CredentialData: `{"algorithm":"pbkdf2-sha256","hashIterations":27500}`}}}}}
-	if _, err := Import(ctx, tx, orgID, realm, h, false); err != nil {
+	if _, err := Import(ctx, tx, orgID, realm, h); err != nil {
 		t.Fatal(err)
 	}
 	read := func() (string, string, string) {
@@ -69,7 +69,7 @@ func TestAnImportedPersonKeepsTheirNames(t *testing.T) {
 		WHERE org_id = $1::uuid AND lower(email) = $2`, orgID, email); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Import(ctx, tx, orgID, realm, h, false); err != nil {
+	if _, err := Import(ctx, tx, orgID, realm, h); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, d := read(); d != "Countess of Lovelace" {

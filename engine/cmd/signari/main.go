@@ -3477,14 +3477,22 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 		return err
 	}
 
+	// OTP seeds and personal attributes are sealed under each person's key;
+	// without the root key they are left behind, and named.
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
+	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	res, err := importer.Import(ctx, tx, orgID, realm,
-		passwords.Shared(), dryRun)
+	// A dry run is the import itself, rolled back, so what it reports is what
+	// the import would do.
+	res, err := importer.ImportWith(ctx, tx, orgID, realm,
+		importer.Options{Hasher: passwords.Shared(), Root: root})
 	if err != nil {
 		return err
 	}
@@ -3498,6 +3506,9 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 	fmt.Printf("realm %q\n  users:   %d created, %d updated, %d skipped\n  clients: %d created, %d skipped\n",
 		realm.Realm, res.UsersCreated, res.UsersUpdated, len(res.UsersSkipped),
 		res.ClientsCreated, len(res.ClientsSkipped))
+	fmt.Printf("  groups:  %d created, %d memberships\n  OTP: %d, passkeys: %d, provider links: %d, "+
+		"attributes: %d, SAML providers: %d\n", res.GroupsCreated, res.Memberships, res.OTPImported,
+		res.PasskeysImported, res.LinksImported, res.AttributesImported, res.SAMLProvidersCreated)
 
 	// Skipped entries are PRINTED, never merely counted. A number tells an
 	// operator something went wrong; the list tells them who cannot sign in.
@@ -3506,6 +3517,17 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 	}
 	for _, s := range res.ClientsSkipped {
 		fmt.Printf("  skipped client: %s\n", s)
+	}
+	for _, s := range res.Renamed {
+		fmt.Printf("  renamed:        %s\n", s)
+	}
+	// Everything else the realm held and this did not carry: the list of
+	// what to redo by hand, complete.
+	for _, s := range res.Dropped {
+		fmt.Printf("  not carried:    %s\n", s)
+	}
+	if len(res.BuiltIns) > 0 {
+		fmt.Printf("  Keycloak's own, left behind: %s\n", strings.Join(res.BuiltIns, ", "))
 	}
 	if len(res.ClientsNowRequiringPKCE) > 0 {
 		fmt.Printf("\nThese confidential clients now require PKCE, as every client here does.\n" +

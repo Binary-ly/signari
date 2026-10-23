@@ -377,6 +377,12 @@ func (s *Server) Routes() http.Handler {
 		route("PUT /admin/organizations/{orgID}/resource-servers", ScopeOrganizationsWrite, s.putResourceServer)
 		route("DELETE /admin/organizations/{orgID}/resource-servers", ScopeOrganizationsWrite, s.deleteResourceServer)
 
+		// An instance's signing keys (keys.go), under the root key their
+		// private halves are sealed with; deployment-wide tokens only.
+		route("GET /admin/instances/{instanceID}/keys", ScopeConfigRead, s.listSigningKeys)
+		route("POST /admin/instances/{instanceID}/keys/rotate", ScopeOrganizationsWrite, s.rotateSigningKeys)
+		route("POST /admin/instances/{instanceID}/keys/retire", ScopeOrganizationsWrite, s.retireSigningKeys)
+
 		// Duo as a second factor (duo.go), under the root key its secret is
 		// sealed with.
 		route("GET /admin/organizations/{orgID}/duo", ScopeConfigRead, s.getDuo)

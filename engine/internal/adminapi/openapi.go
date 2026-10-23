@@ -161,6 +161,11 @@ var summaries = map[string]string{
 	"POST /admin/instances/{instanceID}/issuer-aliases":  "Claim a legacy issuer while relying parties move across.",
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": "Retire an alias, now unless told when.",
 
+	// An instance's signing keys (6.07).
+	"GET /admin/instances/{instanceID}/keys":         "The instance's signing keys by id, algorithm and state; never a private half.",
+	"POST /admin/instances/{instanceID}/keys/rotate": "Take the next safe step of rotation for each algorithm in use.",
+	"POST /admin/instances/{instanceID}/keys/retire": "Retire the passive keys whose dwell is over.",
+
 	// Duo as a second factor (6.07).
 	"GET /admin/organizations/{orgID}/duo": "The organisation's Duo application, without its secret, and how many people are enrolled.",
 	"PUT /admin/organizations/{orgID}/duo": "Configure Duo, checked against Duo before anything is stored.",

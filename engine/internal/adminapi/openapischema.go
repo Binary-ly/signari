@@ -453,6 +453,19 @@ var opSchemas = map[string]opSchema{
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": {http.StatusOK, typeOf[issuerAliasRequest](), object(
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
+	"GET /admin/instances/{instanceID}/keys": {http.StatusOK, nil, object([]string{"instance_id", "keys"},
+		map[string]jsonSchema{"instance_id": uuidStr(), "keys": arrayOf(object(
+			[]string{"kid", "algorithm", "state", "published_at", "demoted_at"}, map[string]jsonSchema{
+				"kid": str(), "algorithm": str(), "state": str(), "published_at": dateTime(),
+				"demoted_at": nullable(dateTime()), "retirable_in_s": integer()}))})},
+	"POST /admin/instances/{instanceID}/keys/rotate": {http.StatusOK, typeOf[rotateKeysRequest](), object(
+		[]string{"instance_id", "steps", "config_version"}, withVersion(map[string]jsonSchema{
+			"instance_id": uuidStr(), "steps": arrayOf(object([]string{"algorithm"}, map[string]jsonSchema{
+				"algorithm": str(), "published": str(), "promoted": str(), "demoted": str(), "forced": boolean(),
+				"wait_s": integer()}))}))},
+	"POST /admin/instances/{instanceID}/keys/retire": {http.StatusOK, nil, object(
+		[]string{"instance_id", "retired", "config_version"}, withVersion(map[string]jsonSchema{
+			"instance_id": uuidStr(), "retired": arrayOf(str())}))},
 	"GET /admin/organizations/{orgID}/duo": {http.StatusOK, nil, object([]string{"org_id", "configured", "enabled",
 		"client_id", "api_host", "fail_open", "enrolled"}, map[string]jsonSchema{"org_id": uuidStr(),
 		"configured": boolean(), "enabled": boolean(), "client_id": str(), "api_host": str(), "fail_open": boolean(),

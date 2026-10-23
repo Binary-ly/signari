@@ -140,8 +140,8 @@ var cliAPI = map[string]string{
 
 	// Keys and the audit trail.
 	"keys list":        reads,
-	"keys rotate":      pending,
-	"keys retire":      pending,
+	"keys rotate":      "POST /admin/instances/{instanceID}/keys/rotate",
+	"keys retire":      "POST /admin/instances/{instanceID}/keys/retire",
 	"audit checkpoint": cliOnly("anchors the chain from the host, signed by whoever runs it"),
 	"audit verify":     reads,
 	"audit archive":    cliOnly("writes a file on the operator's disk"),

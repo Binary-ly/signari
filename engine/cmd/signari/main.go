@@ -1542,11 +1542,12 @@ func loadInstanceKeys(ctx context.Context, conn *pgx.Conn) (instanceID string, s
 	if err != nil {
 		return "", nil, nil, err
 	}
-	var issuer string
-	if err = conn.QueryRow(ctx,
-		`SELECT id::text, issuer FROM core.instances ORDER BY created_at LIMIT 1`).
-		Scan(&instanceID, &issuer); err != nil {
-		return "", nil, nil, fmt.Errorf("no instance found -- run `signari instance create -issuer …` first: %w", err)
+	// The instance SIGNARI_ISSUER names, or the only one, as `serve` chooses.
+	// This took the oldest whatever was named, so with two instances `keys
+	// rotate` rotated another issuer's keys (0.33).
+	instanceID, _, err = selectInstance(ctx, conn, os.Getenv("SIGNARI_ISSUER"))
+	if err != nil {
+		return "", nil, nil, err
 	}
 	set, err = keys.LoadSet(ctx, conn, instanceID, root)
 	if err != nil {
@@ -1612,19 +1613,9 @@ func keysList(ctx context.Context, conn *pgx.Conn) error {
 // with a key nobody has fetched is how a routine rotation becomes an outage --
 // so the wait is enforced rather than documented.
 func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow bool) error {
-	instanceID, set, root, err := loadInstanceKeys(ctx, conn)
+	instanceID, _, root, err := loadInstanceKeys(ctx, conn)
 	if err != nil {
 		return err
-	}
-
-	// Algorithms currently in use. Rotation replaces what exists; it is not the
-	// place to introduce a new algorithm.
-	algs := set.Algorithms()
-	if only != "" {
-		algs = []keys.Algorithm{keys.Algorithm(only)}
-	}
-	if len(algs) == 0 {
-		return fmt.Errorf("no active signing keys to rotate")
 	}
 
 	tx, err := conn.Begin(ctx)
@@ -1633,86 +1624,36 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	for _, a := range algs {
-		var next keys.Key
-		for _, k := range set.Keys() {
-			if k.Algorithm() == a && k.State() == keys.StateNext {
-				next = k
-				break
-			}
-		}
-
-		if next == nil {
-			generated, err := keys.Generate(keys.NewKID(), a)
-			if err != nil {
-				return fmt.Errorf("generating %s key: %w", a, err)
-			}
-			if err := keys.Save(ctx, tx, instanceID, generated, root); err != nil {
-				return err
-			}
-			if err := audit.Write(ctx, tx, audit.Event{Type: audit.EventKeyRotated,
-				Detail: map[string]any{"algorithm": string(a), "published": generated.KID()}}); err != nil {
-				return err
-			}
-			fmt.Printf("%s: published %s as `next`. Run `signari keys rotate` again after %s to promote it.\n",
-				a, generated.KID(), keys.MinPublishBeforeActive)
-			continue
-		}
-
-		if ok, wait := set.CanPromote(next); !ok {
-			if !promoteNow {
-				fmt.Printf("%s: %s is published but not promotable for another %s. Nothing changed.\n",
-					a, next.KID(), wait.Round(time.Minute))
-				continue
-			}
-			// Deliberately loud. This is correct for a compromised key, where
-			// continuing to sign with it is worse than some relying parties
-			// failing verification until their JWKS cache expires -- and wrong
-			// for anything else.
-			fmt.Fprintf(os.Stderr,
-				"WARNING: promoting %s %s after only %s of publication. Relying parties whose "+
-					"JWKS cache predates this key will REJECT its signatures until they refresh.\n",
-				a, next.KID(), (keys.MinPublishBeforeActive - wait).Round(time.Minute))
-		}
-
-		// Recorded with the key it replaces and whether the publication wait
-		// was skipped: "which key signed, from when, and was it forced" is the
-		// question after a compromise, and only admin.cli_command said anything.
-		detail := map[string]any{"algorithm": string(a), "promoted": next.KID()}
-		if ok, _ := set.CanPromote(next); !ok {
-			detail["forced"] = true
-		}
-
-		// Demote the outgoing key rather than deleting it: tokens it signed are
-		// still live, and passive keys stay in the JWKS precisely so those keep
-		// verifying. Deleting here would invalidate every unexpired token.
-		if current, err := set.Active(a); err == nil {
-			detail["demoted"] = current.KID()
-			demoted, err := keys.WithState(current, keys.StatePassive)
-			if err != nil {
-				return err
-			}
-			if err := keys.Save(ctx, tx, instanceID, demoted, root); err != nil {
-				return err
-			}
-			fmt.Printf("%s: demoted %s to passive (still published, so existing tokens verify).\n",
-				a, current.KID())
-		}
-
-		promoted, err := keys.WithState(next, keys.StateActive)
-		if err != nil {
-			return err
-		}
-		if err := keys.Save(ctx, tx, instanceID, promoted, root); err != nil {
-			return err
-		}
-		if err := audit.Write(ctx, tx, audit.Event{Type: audit.EventKeyRotated, Detail: detail}); err != nil {
-			return err
-		}
-		fmt.Printf("%s: promoted %s to active. It signs from the next restart or config reload.\n",
-			a, promoted.KID())
+	// The step the Admin API shares. Rotation replaces the algorithms in use;
+	// it is not the place to introduce one.
+	steps, err := keys.Rotate(ctx, tx, instanceID, root, keys.Algorithm(only), promoteNow, "cli")
+	if err != nil {
+		return err
 	}
-
+	for _, s := range steps {
+		switch {
+		case s.Published != "":
+			fmt.Printf("%s: published %s as `next`. Run `signari keys rotate` again after %s to promote it.\n",
+				s.Algorithm, s.Published, keys.MinPublishBeforeActive)
+		case s.Promoted == "":
+			fmt.Printf("%s: the next key is published but not promotable for another %s. Nothing changed.\n",
+				s.Algorithm, s.Wait.Round(time.Minute))
+		default:
+			if s.Forced {
+				// Deliberately loud. Right for a compromised key, where signing
+				// with it is worse than some relying parties failing verification
+				// until their JWKS cache expires, and wrong for anything else.
+				fmt.Fprintf(os.Stderr, "WARNING: promoted %s %s before its publication wait was over. Relying "+
+					"parties whose JWKS cache predates this key will REJECT its signatures until they refresh.\n",
+					s.Algorithm, s.Promoted)
+			}
+			if s.Demoted != "" {
+				fmt.Printf("%s: demoted %s to passive (still published, so existing tokens verify).\n",
+					s.Algorithm, s.Demoted)
+			}
+			fmt.Printf("%s: promoted %s to active. It signs from the next key refresh.\n", s.Algorithm, s.Promoted)
+		}
+	}
 	return tx.Commit(ctx)
 }
 
@@ -1869,7 +1810,7 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 }
 
 func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
-	instanceID, set, _, err := loadInstanceKeys(ctx, conn)
+	instanceID, set, root, err := loadInstanceKeys(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -1880,42 +1821,34 @@ func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 	}
 	fmt.Printf("Passive keys must stay published for %s (%s).\n", dwell, why)
 
-	var eligible []keys.Key
-	var waiting int
-	for _, k := range set.Keys() {
-		if k.State() != keys.StatePassive {
-			continue
-		}
-		ok, wait := set.CanRetire(k, dwell)
+	// Which passive keys may go, by the rule the Admin API shares.
+	var eligible int
+	passive := keys.PassiveKeys(set, dwell)
+	for _, r := range passive {
+		k := r.Key
 		switch {
-		case ok:
-			eligible = append(eligible, k)
-		case k.DemotedAt().IsZero():
-			// Refused rather than retired. See CanRetire: a missing stamp must
-			// not read as "demoted at the zero time", which would retire it now.
+		case r.Undated:
 			fmt.Printf("%s (%s): passive but has no demotion time recorded; not retiring it.\n",
 				k.KID(), k.Algorithm())
-			waiting++
-		default:
-			fmt.Printf("%s (%s): retirable in %s.\n",
-				k.KID(), k.Algorithm(), wait.Round(time.Minute))
-			waiting++
-		}
-	}
-
-	if len(eligible) == 0 {
-		if waiting == 0 {
-			fmt.Println("No passive keys. Nothing to retire.")
-		}
-		return nil
-	}
-
-	if dryRun {
-		for _, k := range eligible {
+		case r.Wait > 0:
+			fmt.Printf("%s (%s): retirable in %s.\n", k.KID(), k.Algorithm(), r.Wait.Round(time.Minute))
+		case dryRun:
+			eligible++
 			fmt.Printf("%s (%s): would be retired (demoted %s).\n",
 				k.KID(), k.Algorithm(), k.DemotedAt().UTC().Format(time.RFC3339))
+		default:
+			eligible++
 		}
-		fmt.Printf("Dry run: %d key(s) would leave the JWKS. Nothing changed.\n", len(eligible))
+	}
+	if len(passive) == 0 {
+		fmt.Println("No passive keys. Nothing to retire.")
+		return nil
+	}
+	if eligible == 0 {
+		return nil
+	}
+	if dryRun {
+		fmt.Printf("Dry run: %d key(s) would leave the JWKS. Nothing changed.\n", eligible)
 		return nil
 	}
 
@@ -1924,13 +1857,12 @@ func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	for _, k := range eligible {
-		if err := keys.Retire(ctx, tx, instanceID, k.KID(), dwell); err != nil {
-			return err
-		}
-		fmt.Printf("%s (%s): retired. It leaves the JWKS at the next restart or config reload.\n",
-			k.KID(), k.Algorithm())
+	retired, err := keys.RetireDue(ctx, tx, instanceID, root, "cli")
+	if err != nil {
+		return err
+	}
+	for _, k := range retired {
+		fmt.Printf("%s (%s): retired. It leaves the JWKS at the next key refresh.\n", k.KID(), k.Algorithm())
 	}
 	return tx.Commit(ctx)
 }

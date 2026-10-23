@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/brand"
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/store"
 )
@@ -333,6 +334,22 @@ func allMutatingRoutes() []mutatingRoute {
 				}
 				return `{"alias":"` + alias + `"}`
 			},
+		},
+		{
+			// An instance of its own with an active key, so rotating publishes
+			// a next one.
+			name: "POST /admin/instances/{instanceID}/keys/rotate", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftKeyedInstance(t, s) + "/keys/rotate"
+			},
+			body: func(*testing.T, *Server, string) string { return `{}` },
+		},
+		{
+			name: "POST /admin/instances/{instanceID}/keys/retire", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftKeyedInstance(t, s) + "/keys/retire"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
 			// A Duo stand-in, since the keys are checked against Duo first.
@@ -734,6 +751,36 @@ func newDriftInstance(t *testing.T, s *Server) string {
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.brands WHERE instance_id = $1::uuid`, id)
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.instance_issuer_aliases WHERE instance_id = $1::uuid`, id)
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.instances WHERE id = $1::uuid`, id)
+	})
+	return id
+}
+
+// newDriftKeyedInstance is newDriftInstance with one active ES256 key.
+func newDriftKeyedInstance(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	id := newDriftInstance(t, s)
+	k, err := keys.Generate(keys.NewKID(), keys.ES256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := keys.WithState(k, keys.StateActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := keys.Save(ctx, tx, id, active, s.root); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.signing_keys WHERE instance_id = $1::uuid`, id)
 	})
 	return id
 }

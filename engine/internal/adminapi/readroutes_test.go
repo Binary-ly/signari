@@ -29,6 +29,9 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/instances/{instanceID}/brand", func(t *testing.T, s *Server) string {
 			return "/admin/instances/" + newDriftInstance(t, s) + "/brand"
 		}},
+		{"GET /admin/instances/{instanceID}/keys", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftKeyedInstance(t, s) + "/keys"
+		}},
 		{"GET /admin/instances/{instanceID}/webauthn", func(t *testing.T, s *Server) string {
 			return "/admin/instances/" + newDriftInstance(t, s) + "/webauthn"
 		}},

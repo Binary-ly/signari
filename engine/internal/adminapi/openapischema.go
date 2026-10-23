@@ -204,6 +204,8 @@ func typeOf[T any]() reflect.Type { return reflect.TypeOf((*T)(nil)).Elem() }
 var (
 	appliedDocumentSchema = object([]string{"org_id", "document", "applied_at"}, map[string]jsonSchema{
 		"org_id": uuidStr(), "document": str(), "applied_at": nullable(dateTime())})
+	idpMappingSchema = object([]string{"slug", "claim", "attribute", "mapped", "config_version"},
+		withVersion(map[string]jsonSchema{"slug": str(), "claim": str(), "attribute": str(), "mapped": boolean()}))
 	groupMapSchema = object([]string{"slug", "remote_group", "group", "mapped", "config_version"},
 		withVersion(map[string]jsonSchema{"slug": str(), "remote_group": str(), "group": str(), "mapped": boolean()}))
 	scimGroupSchema = object([]string{"slug", "group", "remote_id", "provisioned", "config_version"},
@@ -496,6 +498,22 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
 		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
 			"removed": boolean()}))},
+	"GET /admin/organizations/{orgID}/identity-providers": {http.StatusOK, nil, object([]string{"org_id", "providers"},
+		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "slug", "name", "kind",
+			"issuer", "enabled", "allow_signup", "allow_linking", "allow_assertions", "trust_email_verification",
+			"require_verified_email", "mfa_amr", "mfa_acr", "linked", "attribute_map"}, map[string]jsonSchema{
+			"id": uuidStr(), "slug": str(), "name": str(), "kind": str(), "issuer": str(), "enabled": boolean(),
+			"allow_signup": boolean(), "allow_linking": boolean(), "allow_assertions": boolean(),
+			"trust_email_verification": boolean(), "require_verified_email": boolean(), "mfa_amr": arrayOf(str()), "mfa_acr": arrayOf(str()), "linked": integer(),
+			"attribute_map": arrayOf(object([]string{"claim", "attribute", "overwrite", "max_length"},
+				map[string]jsonSchema{"claim": str(), "attribute": str(), "overwrite": boolean(),
+					"max_length": integer()}))}))})},
+	"PATCH /admin/organizations/{orgID}/identity-providers/{slug}": {http.StatusOK,
+		typeOf[patchIdentityProviderRequest](), object([]string{"slug", "config_version"},
+			withVersion(map[string]jsonSchema{"slug": str()}))},
+	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map": {http.StatusOK,
+		typeOf[idpAttributeMapRequest](), idpMappingSchema},
+	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map": {http.StatusOK, nil, idpMappingSchema},
 	"GET /admin/organizations/{orgID}/saml-providers": {http.StatusOK, nil, object([]string{"org_id", "providers"},
 		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "entity_id", "name",
 			"name_id_format", "signature_alg", "enabled", "sign_assertions", "sign_responses", "want_signed_requests",

@@ -51,6 +51,12 @@ value only for a provider that sets it when, and only when, it checked a second
 factor itself. `github` and a `saml` upstream send no ID token to read these
 from, and the command refuses to set a list on either.
 
+The same settings, with taking a provider out of service, its assertions,
+whether its `email_verified` is believed and its attribute mapping, are
+`PATCH /admin/organizations/{orgID}/identity-providers/{slug}` and its
+`attribute-map` in the [Admin API](admin-api.md#organisations), for a console or
+automation that has no shell.
+
 ## Apple, and the secret that expires
 
 Every other provider issues a client secret: a string you paste in and forget.

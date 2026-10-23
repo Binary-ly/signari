@@ -240,6 +240,12 @@ var summaries = map[string]string{
 	"DELETE /admin/instances/{instanceID}/held-trust-marks":     "Stop publishing a Trust Mark the instance holds.",
 	"POST /admin/instances/{instanceID}/trust-mark-delegations": "Authorise another entity to issue a type of Trust Mark the instance owns.",
 
+	// Upstream identity providers (6.07).
+	"GET /admin/organizations/{orgID}/identity-providers":                         "The providers people sign in through and the issuers assertions come from.",
+	"PATCH /admin/organizations/{orgID}/identity-providers/{slug}":                "Take a provider out of service, allow its assertions, or say what of it is trusted.",
+	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map":    "Route a provider's claim into a declared attribute.",
+	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map": "Stop a provider's claim reaching an attribute.",
+
 	// SAML service providers (6.07).
 	"GET /admin/organizations/{orgID}/saml-providers":                                   "The organisation's SAML service providers and what each is told.",
 	"POST /admin/organizations/{orgID}/saml-providers":                                  "Register a service provider by entity id and ACS URL.",

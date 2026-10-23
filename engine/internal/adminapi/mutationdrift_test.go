@@ -410,6 +410,34 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PATCH /admin/organizations/{orgID}/identity-providers/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftIdP(t, s, "google")
+				return p
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftIdP(t, s, "google")
+				return p + "/attribute-map"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"claim":"dept","attribute":"department"}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org, slug, p := newDriftIdP(t, s, "google")
+				if err := store.SetIdPAttributeMap(context.Background(), s.db, org, slug, "dept", "department", false,
+					0); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/attribute-map?claim=dept&attribute=department"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations/{orgID}/saml-providers", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/saml-providers"

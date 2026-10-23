@@ -156,18 +156,18 @@ var cliAPI = map[string]string{
 
 	// Upstream providers.
 	"idp add":            pending,
-	"idp disable":        pending,
-	"idp enable":         pending,
+	"idp disable":        "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp enable":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp list":           reads,
-	"idp assertions":     pending,
+	"idp assertions":     "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp link":           pending,
 	"idp unlink":         pending,
 	"idp links":          reads,
 	"idp add-issuer":     pending,
 	"idp apple-secret":   cliOnly("signs with the .p8 key Apple issued, read from the operator's disk"),
-	"idp trust-mfa":      pending,
-	"idp verified-email": pending,
-	"idp attribute-map":  pending,
+	"idp trust-mfa":      "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp verified-email": "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp attribute-map":  "PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map",
 
 	// SAML service providers.
 	"saml add-sp":            "POST /admin/organizations/{orgID}/saml-providers",

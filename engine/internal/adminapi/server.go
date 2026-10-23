@@ -300,6 +300,14 @@ func (s *Server) Routes() http.Handler {
 	route("PUT /admin/organizations/{orgID}/access-policy", ScopeOrganizationsWrite, s.putAccessPolicy)
 	route("GET /admin/organizations/{orgID}/sign-in-flow", ScopeConfigRead, s.getSignInFlow)
 	route("PUT /admin/organizations/{orgID}/sign-in-flow", ScopeOrganizationsWrite, s.putSignInFlow)
+	// Upstream identity providers' settings, `signari idp` (idps.go).
+	route("GET /admin/organizations/{orgID}/identity-providers", ScopeConfigRead, s.listIdentityProviders)
+	route("PATCH /admin/organizations/{orgID}/identity-providers/{slug}", ScopeOrganizationsWrite,
+		s.patchIdentityProvider)
+	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", ScopeOrganizationsWrite,
+		s.putIdPAttributeMap)
+	route("DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", ScopeOrganizationsWrite,
+		s.deleteIdPAttributeMap)
 	// SAML service providers, `signari saml` (saml.go).
 	route("GET /admin/organizations/{orgID}/saml-providers", ScopeConfigRead, s.listSAMLProviders)
 	route("POST /admin/organizations/{orgID}/saml-providers", ScopeOrganizationsWrite, s.addSAMLProvider)

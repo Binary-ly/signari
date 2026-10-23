@@ -224,6 +224,11 @@ var summaries = map[string]string{
 	"PUT /admin/groups/{groupID}/radius":                           "Place a group's members on a VLAN, a Filter-Id or both.",
 	"DELETE /admin/groups/{groupID}/radius":                        "Take a group's VLAN and Filter-Id away.",
 
+	// Remote-access connections (6.07).
+	"GET /admin/organizations/{orgID}/rac-connections":          "The machines people reach through the browser; never a credential.",
+	"POST /admin/organizations/{orgID}/rac-connections":         "Register a machine, sealing its credentials.",
+	"PATCH /admin/organizations/{orgID}/rac-connections/{slug}": "Take a connection out of service or back, or replace its guacd parameters.",
+
 	// Outposts (6.07).
 	"GET /admin/organizations/{orgID}/outposts":          "The organisation's outposts, when each was last heard from, never a token.",
 	"POST /admin/organizations/{orgID}/outposts":         "Register an outpost; its token is shown once.",

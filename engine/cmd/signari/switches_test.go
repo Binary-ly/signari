@@ -5,11 +5,14 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/store"
 )
 
 // The switches the engine read and nothing could set (2.29): an outpost, a
@@ -129,5 +132,20 @@ func TestEverySwitchTheEngineReadsHasACommand(t *testing.T) {
 	if got := value(`SELECT count(*)::text FROM core.registration_tokens WHERE name = $1 AND revoked_at IS NOT NULL`,
 		"twin-"+n); got != "1" {
 		t.Errorf("-token-id revoked %s token(s), want exactly the one named", got)
+	}
+}
+
+// The command names the flag for every parameter the store refuses, and
+// refuses nothing the store would take: one list told two ways.
+func TestEveryReservedRACParameterNamesItsFlag(t *testing.T) {
+	for _, k := range store.RACReservedParameters {
+		if racReservedParameters[k] == "" {
+			t.Errorf("the store refuses %s and the command does not say what sets it", k)
+		}
+	}
+	for k := range racReservedParameters {
+		if !slices.Contains(store.RACReservedParameters, k) {
+			t.Errorf("the command refuses %s and the store would accept it", k)
+		}
 	}
 }

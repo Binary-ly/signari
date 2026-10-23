@@ -415,6 +415,12 @@ func (s *Server) Routes() http.Handler {
 		route("PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}", ScopeOrganizationsWrite,
 			s.patchRADIUSClient)
 
+		// Remote-access connections (rac.go), whose credentials are sealed
+		// with the root key.
+		route("GET /admin/organizations/{orgID}/rac-connections", ScopeConfigRead, s.listRAC)
+		route("POST /admin/organizations/{orgID}/rac-connections", ScopeOrganizationsWrite, s.addRAC)
+		route("PATCH /admin/organizations/{orgID}/rac-connections/{slug}", ScopeOrganizationsWrite, s.patchRAC)
+
 		// An instance's signing keys (keys.go), under the root key their
 		// private halves are sealed with; deployment-wide tokens only.
 		route("GET /admin/instances/{instanceID}/keys", ScopeConfigRead, s.listSigningKeys)

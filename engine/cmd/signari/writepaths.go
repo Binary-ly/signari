@@ -2707,13 +2707,8 @@ func racSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, enab
 	if slug == "" {
 		return fmt.Errorf("give -slug")
 	}
-	tp, err := conn.Exec(ctx, `UPDATE core.rac_connections SET enabled = $3
-		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, enabled)
-	if err != nil {
-		return err
-	}
-	if tp.RowsAffected() == 0 {
-		return fmt.Errorf("no remote-access connection %q in that organisation; `signari rac list` shows them", slug)
+	if err := store.SetRACEnabled(ctx, conn, orgID, slug, enabled); err != nil {
+		return racError(err, slug)
 	}
 	if enabled {
 		fmt.Printf("%s is enabled: it is listed and connectable again\n", slug)
@@ -2724,12 +2719,17 @@ func racSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, enab
 	return nil
 }
 
-// racReservedParameters are the guacd parameters a connection's own settings
-// supply, and which therefore cannot be set as parameters. The handshake writes
-// the host, port, credentials and recording path over the parameters, so a
-// parameter of one of these names would be stored, shown, and ignored -- and
-// the credentials would be stored in the clear, in a column a database read
-// returns, when the reason they are sealed is that it must not.
+// racError says a refused remote-access write in the command's own terms.
+func racError(err error, slug string) error {
+	if errors.Is(err, store.ErrRACUnknown) {
+		return fmt.Errorf("no remote-access connection %q in that organisation; `signari rac list` shows them", slug)
+	}
+	return err
+}
+
+// racReservedParameters says which flag sets each of store.RACReservedParameters,
+// the guacd parameters a connection's own settings supply; the store refuses
+// them too, and a test keeps the two lists the same.
 var racReservedParameters = map[string]string{
 	"hostname":              "-host",
 	"port":                  "-port",
@@ -2769,17 +2769,8 @@ func racSetParameters(ctx context.Context, conn *pgx.Conn, orgID, slug, raw stri
 		}
 		params[k] = strings.TrimSpace(v)
 	}
-	blob, err := json.Marshal(params)
-	if err != nil {
-		return err
-	}
-	tp, err := conn.Exec(ctx, `UPDATE core.rac_connections SET parameters = $3
-		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, blob)
-	if err != nil {
-		return err
-	}
-	if tp.RowsAffected() == 0 {
-		return fmt.Errorf("no remote-access connection %q in that organisation; `signari rac list` shows them", slug)
+	if err := store.SetRACParameters(ctx, conn, orgID, slug, params); err != nil {
+		return racError(err, slug)
 	}
 	if len(params) == 0 {
 		fmt.Printf("%s: no parameters; guacd's defaults apply\n", slug)

@@ -128,6 +128,20 @@ func AllGroupsForUser(ctx context.Context, db interface {
 	return out, rows.Err()
 }
 
+// GroupIDNamed returns the id of the organisation's group of that name, or ""
+// when it has none.
+func GroupIDNamed(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID, name string) (string, error) {
+	var id string
+	err := q.QueryRow(ctx, `SELECT id::text FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
+		orgID, name).Scan(&id)
+	if err == pgx.ErrNoRows {
+		return "", nil
+	}
+	return id, err
+}
+
 // CreateGroup adds a group.
 func CreateGroup(ctx context.Context, conn *pgx.Conn, orgID, name, displayName, description string) (string, error) {
 	if displayName == "" {

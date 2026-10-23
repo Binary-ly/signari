@@ -127,6 +127,15 @@ lifetime of a struct somebody might log.
 
 `signari rac list -org <uuid>` shows what is registered.
 
+The Admin API registers connections, takes them out of service and replaces
+their guacd parameters the same way, under
+`/admin/organizations/{orgID}/rac-connections`; see
+[admin-api.md](admin-api.md). Two settings stay with the command, run from a
+shell on the deployment: `-recording-path`, and any parameter whose name
+contains `path`. Each is a location on the machine guacd runs on, so choosing
+one decides where that machine writes, and that belongs to whoever runs the
+deployment rather than to an organisation's administrator.
+
 ## The API
 
 | | |

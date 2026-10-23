@@ -6691,58 +6691,29 @@ func racAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, protocol,
 		return fmt.Errorf("give -slug, the short name used in the URL")
 	case host == "":
 		return fmt.Errorf("give -host, the machine to connect to")
-	case protocol != "rdp" && protocol != "vnc" && protocol != "ssh":
-		return fmt.Errorf("-protocol must be rdp, vnc or ssh (got %q)", protocol)
-	}
-	if port == 0 {
-		switch protocol {
-		case "rdp":
-			port = 3389
-		case "vnc":
-			port = 5900
-		case "ssh":
-			port = 22
-		}
 	}
 	if name == "" {
 		name = slug
 	}
 
-	// The credentials are sealed, never stored in the parameters column: a
-	// database read must not be a working login to somebody's estate.
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	secrets := map[string]string{}
-	if login != "" {
-		secrets["username"] = login
-	}
-	if password != "" {
-		secrets["password"] = password
-	}
-	sealed, err := store.SealRACSecrets(root, secrets)
-	if err != nil {
+	_, err = store.AddRACConnection(ctx, conn, root, orgID, store.RACSpec{Slug: slug, Name: name,
+		Protocol: protocol, Host: host, Port: port, Login: login, Password: password,
+		RequireGroup: requireGroup, RecordingPath: recording})
+	switch {
+	case errors.Is(err, store.ErrRACProtocol):
+		return fmt.Errorf("-protocol must be rdp, vnc or ssh (got %q)", protocol)
+	case errors.Is(err, store.ErrRACExists):
+		return fmt.Errorf("a connection with slug %q already exists in that "+
+			"organisation", slug)
+	case err != nil:
 		return err
 	}
 
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.rac_connections
-			(org_id, slug, display_name, protocol, hostname, port, secrets_enc,
-			 require_group, recording_path)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, NULLIF($8,''), NULLIF($9,''))
-		RETURNING id::text`,
-		orgID, slug, name, protocol, host, port, sealed, requireGroup, recording).
-		Scan(&id); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a connection with slug %q already exists in that "+
-				"organisation", slug)
-		}
-		return err
-	}
-
-	fmt.Printf("registered %s (%s to %s:%d)\n", name, protocol, host, port)
+	fmt.Printf("registered %s (%s to %s)\n", name, protocol, host)
 	fmt.Printf("  connect URL : <issuer>/rac/connect/%s\n", slug)
 	if requireGroup == "" {
 		// Said out loud. A machine nobody restricted is a machine everybody has,

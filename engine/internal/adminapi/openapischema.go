@@ -488,6 +488,17 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
 		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
 			"removed": boolean()}))},
+	"GET /admin/organizations/{orgID}/rac-connections": {http.StatusOK, nil, object([]string{"org_id", "connections"},
+		map[string]jsonSchema{"org_id": uuidStr(), "connections": arrayOf(object([]string{"id", "slug", "name",
+			"protocol", "host", "port", "require_group", "recorded", "enabled", "has_credentials", "parameters"},
+			map[string]jsonSchema{"id": uuidStr(), "slug": str(), "name": str(), "protocol": str(), "host": str(),
+				"port": integer(), "require_group": str(), "recorded": boolean(), "enabled": boolean(),
+				"has_credentials": boolean(), "parameters": mapOf(str())}))})},
+	"POST /admin/organizations/{orgID}/rac-connections": {http.StatusCreated, typeOf[addRACRequest](), object(
+		[]string{"id", "slug", "config_version"}, withVersion(map[string]jsonSchema{"id": uuidStr(), "slug": str()}))},
+	"PATCH /admin/organizations/{orgID}/rac-connections/{slug}": {http.StatusOK, typeOf[patchRACRequest](), object(
+		[]string{"slug", "config_version"}, withVersion(map[string]jsonSchema{"slug": str(), "enabled": boolean(),
+			"parameters": mapOf(str())}))},
 	"GET /admin/organizations/{orgID}/outposts": {http.StatusOK, nil, object([]string{"org_id", "outposts"},
 		map[string]jsonSchema{"org_id": uuidStr(), "outposts": arrayOf(object([]string{"id", "name", "kind", "enabled",
 			"search_group", "last_seen_at", "last_seen_ip"}, map[string]jsonSchema{"id": uuidStr(), "name": str(),

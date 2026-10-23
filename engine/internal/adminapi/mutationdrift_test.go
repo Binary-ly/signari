@@ -404,6 +404,27 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/rac-connections", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/rac-connections"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"slug":"drift","protocol":"ssh","host":"bastion.example.test"}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/rac-connections/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, err := store.AddRACConnection(context.Background(), s.db, s.root, org, store.RACSpec{Slug: "drift",
+					Protocol: "ssh", Host: "bastion.example.test"}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/rac-connections/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
 			name: "POST /admin/organizations/{orgID}/outposts", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/outposts"

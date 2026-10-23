@@ -269,11 +269,13 @@ var cliAPI = map[string]string{
 	"proxy enable-host":     "PUT /admin/organizations/{orgID}/proxy-hosts",
 	"proxy remove-host":     "DELETE /admin/organizations/{orgID}/proxy-hosts/{host}",
 	"proxy list":            reads,
-	"rac add":               pending,
-	"rac disable":           pending,
-	"rac enable":            pending,
-	"rac list":              reads,
-	"rac set-parameters":    pending,
+	// Except -recording-path and a parameter naming a path, which choose where
+	// the machine guacd runs on writes and stay with the command.
+	"rac add":            "POST /admin/organizations/{orgID}/rac-connections",
+	"rac disable":        "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
+	"rac enable":         "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
+	"rac list":           reads,
+	"rac set-parameters": "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
 
 	// Policy, flows, prompts and appearance.
 	"policy apply":    pending,

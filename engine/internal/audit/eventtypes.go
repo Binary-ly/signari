@@ -33,6 +33,7 @@ var EventTypes = []string{
 	"admin.passkey_link_issued", "admin.privileged_refused", "admin.prompt_set", "admin.prompt_updated",
 	"admin.provider_claims_set", "admin.provider_removed", "admin.provider_secret_rotated", "admin.provider_set",
 	"admin.proxy_host_removed", "admin.proxy_host_set",
+	"admin.rac_connection_added", "admin.rac_connection_updated",
 	"admin.radius_authorization_removed", "admin.radius_authorization_set",
 	"admin.radius_client_added", "admin.radius_client_updated",
 	"admin.registration_disabled", "admin.registration_policy_set",

@@ -86,7 +86,7 @@ import (
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "signari: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }
 
@@ -125,7 +125,13 @@ var twoWordCommands = map[string]bool{
 }
 
 func usage() error {
-	fmt.Fprint(os.Stderr, `usage: signari <command> [flags]
+	fmt.Fprint(os.Stderr, usageText)
+	return usageError{fmt.Errorf("no command given")}
+}
+
+// usageText is what `signari` and `signari help` print, and where `signari
+// help <command>` finds the command's one-line description.
+const usageText = `usage: signari <command> [flags]
 
 commands:
   migrate bootstrap   apply 0001 (roles, schemas, grants) -- needs a superuser DSN
@@ -218,12 +224,11 @@ env:
   SIGNARI_ROOT_KEY        base64 of 32 random bytes; wraps stored private key material
   SIGNARI_ROOT_KEY_FILE   or a file holding it, readable by this user alone
 
-flags:
-  -dsn string   PostgreSQL connection string (or set SIGNARI_DSN)
-  -to int       stop at this version instead of the latest
-`)
-	return fmt.Errorf("no command given")
-}
+help:
+  signari help <command>    what one command does and the flags it takes
+  signari completion bash   a completion script (or zsh)
+  every command takes -dsn (or SIGNARI_DSN) and -timeout; docs/cli.md describes them all
+`
 
 func run(args []string) (err error) {
 	if len(args) == 0 {
@@ -762,15 +767,43 @@ func run(args []string) (err error) {
 
 	cmd := args[0]
 	rest := args[1:]
+	switch cmd {
+	case "help":
+		return commandHelp(os.Stdout, fs, rest)
+	case "-h", "-help", "--help":
+		return commandHelp(os.Stdout, fs, rest)
+	case "completion":
+		return printCompletion(os.Stdout, rest)
+	}
 	if twoWordCommands[cmd] {
-		if len(rest) == 0 {
-			return usage()
+		switch {
+		case len(rest) > 0 && (rest[0] == "-h" || rest[0] == "-help" || rest[0] == "--help"):
+			return commandHelp(os.Stdout, fs, []string{cmd})
+		case len(rest) == 0 || strings.HasPrefix(rest[0], "-"):
+			_ = commandHelp(os.Stderr, fs, []string{cmd})
+			return usageError{fmt.Errorf("no command given: signari %s takes one of the commands above", cmd)}
 		}
 		cmd, rest = cmd+" "+rest[0], rest[1:]
 	}
-	if err := fs.Parse(rest); err != nil {
+	// The command's own flags, over the values defined above (commandflags.go).
+	cfs, err := commandFlagSet(fs, cmd)
+	if err != nil {
 		return err
 	}
+	if err := cfs.Parse(rest); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printCommandHelp(os.Stdout, cmd, cfs)
+			return nil
+		}
+		return usageError{fmt.Errorf("%w; `signari help %s` lists the flags it takes", err, cmd)}
+	}
+	// Parsing stops at the first word that is not a flag, so whatever followed
+	// it would be ignored without a word: `user create -email a junk -org b`
+	// creating a user in no organisation.
+	if cfs.NArg() > 0 {
+		return usageError{fmt.Errorf("signari %s takes flags only, and %q is not one", cmd, cfs.Arg(0))}
+	}
+	fs = cfs
 	timeoutGiven := false
 	fs.Visit(func(f *flag.Flag) { timeoutGiven = timeoutGiven || f.Name == "timeout" })
 	if *timeout < 0 {
@@ -6940,7 +6973,8 @@ func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
 		if !prune {
 			fmt.Println("Anything not in the file was left alone; -prune would delete it.")
 		}
-		return nil
+		// Exit 3, so a pipeline running plan can tell drift from a failure.
+		return errDrift
 	}
 
 	if plan.Empty() {

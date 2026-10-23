@@ -112,7 +112,7 @@ signari rac add \
   -protocol rdp \
   -host 10.0.4.21 \
   -login svc-desk \
-  -password '…' \
+  -login-password '…' \
   -group finance
 ```
 
@@ -125,7 +125,10 @@ estate. They are merged into the parameter set inside `Resolve` and nowhere
 else — they exist in memory for the length of one handshake rather than for the
 lifetime of a struct somebody might log.
 
-`signari rac list -org <uuid>` shows what is registered.
+`signari rac list` shows what is registered, in every organisation. Until
+October 2026 this page gave the password as `-password`, which is `user
+create`'s flag: the command took it, ignored it and registered the connection
+with no password. Each command now refuses a flag it does not take.
 
 The Admin API registers connections, takes them out of service and replaces
 their guacd parameters the same way, under

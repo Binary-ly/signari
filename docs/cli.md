@@ -28,6 +28,15 @@ covers the SCIM target, directory source and RADIUS client commands,
 `user locale` and `duo enroll`. Until October 2026 these acted on every
 tenant's row of that name, or on whichever one came back first.
 
+Each command takes its own flags, and `-dsn` and `-timeout`: a flag it does not
+read is refused rather than ignored, and so is a word after the flags, where
+parsing stops. `signari help <command>` and `signari <command> -h` show what one
+command takes. A command exits 0 when it worked, 1 when it failed, 2 when it was
+used wrongly (no such command, a flag it does not take, one it needs left out),
+and `signari plan` exits 3 when the deployment differs from the file. Until
+October 2026 one set of every flag served every command, so a mistyped command's
+flags were accepted and did nothing, and every failure exited 1.
+
 ## Schema
 
 | | |
@@ -51,7 +60,9 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari doctor` | Check a deployment's configuration and report what is wrong, including the audit chain, organisation tables without forced row-level security, janitor backlog, the largest tables, the PostgreSQL version and the schema against its ledger. Exits non-zero on a critical finding. `-json` prints the report as JSON for a script: `signari doctor -json \| jq '.findings[] \| select(.severity == "critical")'` |
 | `signari version` | The release, commit, Go toolchain, FIPS module, the schema version this binary expects and the fingerprint it is pinned to (`none` when unpinned). Needs no database. `scripts/build-release.sh` reads the `pinned` line before it tags. See [schema-pinning.md](schema-pinning.md) |
 | `signari janitor once` | Run one janitor pass by hand — expiry, sweeping, parking |
-| `signari plan` / `signari apply` | Declarative configuration from a file. `apply -prune` to delete what the file omits |
+| `signari plan` / `signari apply` | Declarative configuration from a file. `apply -prune` to delete what the file omits. `plan` exits 3 when the deployment differs from the file, so a pipeline can tell drift from failure |
+| `signari help` | Every command, or `signari help <group>` the commands of one group and `signari help <command>` what one does and the flags it takes. Needs no database |
+| `signari completion` | `bash` or `zsh`: a completion script for the commands, each group's verbs and each command's flags, e.g. `source <(signari completion zsh)`. Needs no database |
 
 ## Instances, organisations, users
 

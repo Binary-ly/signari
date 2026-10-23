@@ -165,7 +165,10 @@ func TestEveryFlagTheCLINamesExists(t *testing.T) {
 	named := regexp.MustCompile("(?:^|[\\s(`\"',])-([a-z][a-z0-9]*(?:-[a-z0-9]+)*)")
 	// Flags of other programs the messages tell an operator to run, allowed
 	// only where that program is named in the same message.
-	others := map[string]string{"c": "head ", "e": "ipa-getkeytab ", "u": "date "}
+	// -h and -help are the flag package's own, which every command answers
+	// with its help (6.15), and -eq is the shell's, in the completion script.
+	others := map[string]string{"c": "head ", "e": "ipa-getkeytab ", "u": "date ", "eq": "COMP_CWORD",
+		"h": "", "help": ""}
 	var missing []string
 	for _, f := range files {
 		ast.Inspect(f, func(n ast.Node) bool {

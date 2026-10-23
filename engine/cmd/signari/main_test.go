@@ -268,8 +268,10 @@ func TestACLIWriteMovesTheVersionAndIsRecordedOnce(t *testing.T) {
 		t.Errorf("%d records after a refused group create, want still 1", n)
 	}
 
-	// A command that only reads changes nothing and is not recorded.
-	if err := run([]string{"group", "list", "-dsn", dsn, "-org", org, "-group", group}); err != nil {
+	// A command that only reads changes nothing and is not recorded. It takes
+	// no -org or -group: it lists every group, and since 6.15 a flag a
+	// command does not read is refused.
+	if err := run([]string{"group", "list", "-dsn", dsn}); err != nil {
 		t.Fatalf("group list: %v", err)
 	}
 	if n := len(records("group list")); n != 0 {

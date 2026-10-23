@@ -35,6 +35,8 @@ var cliAPI = map[string]string{
 	"verify":              reads,
 	"doctor":              reads,
 	"version":             reads,
+	"help":                reads,
+	"completion":          reads,
 	"migrate bootstrap":   cliOnly("needs a superuser connection, before the engine exists"),
 	"migrate up":          cliOnly("changes the schema the engine serving the API depends on"),
 	"migrate all":         cliOnly("changes the schema the engine serving the API depends on"),

@@ -50,7 +50,6 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/directory"
-	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/passkeys"
@@ -1987,12 +1986,11 @@ func idpLink(ctx context.Context, conn *pgx.Conn, slug, subject, email string) e
 	if slug == "" || subject == "" || email == "" {
 		return fmt.Errorf("idp link needs -slug, -subject and -email (the person the subject acts as)")
 	}
-	var providerID, orgID string
-	if err := conn.QueryRow(ctx, `SELECT id::text, org_id::text FROM core.identity_providers WHERE slug = $1`,
-		slug).Scan(&providerID, &orgID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no identity provider with slug %q; `signari idp list` shows them", slug)
-		}
+	orgID, _, err := store.IdentityProviderOrg(ctx, conn, slug)
+	if errors.Is(err, store.ErrProviderUnknown) {
+		return fmt.Errorf("no identity provider with slug %q; `signari idp list` shows them", slug)
+	}
+	if err != nil {
 		return err
 	}
 	userID, err := store.FindLocalUserByEmail(ctx, conn, orgID, email)
@@ -2002,17 +2000,17 @@ func idpLink(ctx context.Context, conn *pgx.Conn, slug, subject, email string) e
 	if userID == "" {
 		return fmt.Errorf("no person with the address %s in that provider's organisation", email)
 	}
-	tx, err := conn.Begin(ctx)
+	// A subject linked to somebody else is refused, not moved (0.37).
+	already, err := store.LinkSubject(ctx, conn, orgID, slug, userID, subject)
+	if errors.Is(err, store.ErrIdPLinkTaken) {
+		return fmt.Errorf("%w (`signari idp links -slug %s` shows them)", err, slug)
+	}
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := store.LinkFederatedIdentity(ctx, tx, providerID, userID, orgID,
-		federation.ExternalIdentity{Subject: subject}, false); err != nil {
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
+	if already {
+		fmt.Printf("%s at %s already acts as %s\n", subject, slug, email)
+		return nil
 	}
 	fmt.Printf("%s at %s now acts as %s: its assertions mint tokens for that account\n", subject, slug, email)
 	fmt.Println("through any client paired with this issuer and registered for jwt-bearer.")
@@ -2025,14 +2023,17 @@ func idpUnlink(ctx context.Context, conn *pgx.Conn, slug, subject string) error 
 	if slug == "" || subject == "" {
 		return fmt.Errorf("idp unlink needs -slug and -subject")
 	}
-	tag, err := conn.Exec(ctx, `
-		DELETE FROM core.federated_identities f USING core.identity_providers p
-		WHERE p.id = f.provider_id AND p.slug = $1 AND f.subject = $2`, slug, subject)
+	orgID, _, err := store.IdentityProviderOrg(ctx, conn, slug)
+	if errors.Is(err, store.ErrProviderUnknown) {
+		return fmt.Errorf("no identity provider with slug %q; `signari idp list` shows them", slug)
+	}
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if _, err := store.UnlinkSubject(ctx, conn, orgID, slug, "", subject); errors.Is(err, store.ErrIdPLinkUnknown) {
 		return fmt.Errorf("%s has no link for subject %q", slug, subject)
+	} else if err != nil {
+		return err
 	}
 	fmt.Printf("%s at %s is unlinked: its next assertion is refused\n", subject, slug)
 	return nil

@@ -77,6 +77,32 @@ func TestIdPLinkMakesTheLinkTheAssertionGrantResolves(t *testing.T) {
 	if err := run([]string{"idp", "links", "-dsn", dsn, "-slug", slug}); err != nil {
 		t.Fatal(err)
 	}
+	// Making the same link again changes nothing; moving it to somebody else
+	// by making it again is refused, and the subject goes on acting as the
+	// first person (0.37: the command used to say it now acted as the second).
+	if err := run([]string{"idp", "link", "-dsn", dsn, "-slug", slug, "-subject", sub, "-email", email}); err != nil {
+		t.Errorf("making the same link again: %v", err)
+	}
+	other := "other-" + suffix + "@example.test"
+	var otherID string
+	if err := db.QueryRow(ctx, `
+		INSERT INTO core.users (org_id, email, user_handle)
+		VALUES ($1::uuid, $2, decode(md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text)||
+		        md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text),'hex'))
+		RETURNING id::text`, org, other).Scan(&otherID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(context.Background(), `DELETE FROM core.users WHERE id = $1::uuid`, otherID) })
+	if err := run([]string{"idp", "link", "-dsn", dsn, "-slug", slug, "-subject", sub, "-email", other}); err == nil {
+		t.Error("a subject linked to one person was moved to another by linking it again")
+	}
+	if got := resolves(); got != userID {
+		t.Errorf("after the refused relink the subject resolves to %q, want %s", got, userID)
+	}
+	if err := run([]string{"idp", "link", "-dsn", dsn, "-slug", slug, "-subject", sub + "-second",
+		"-email", email}); err == nil {
+		t.Error("a person already linked was given a second subject at the same provider")
+	}
 	if err := run([]string{"idp", "link", "-dsn", dsn, "-slug", slug, "-subject", sub,
 		"-email", "nobody-" + suffix + "@example.test"}); err == nil {
 		t.Error("a link to a person who does not exist was accepted")

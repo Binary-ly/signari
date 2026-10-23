@@ -124,7 +124,7 @@ func (p *signariProvider) Configure(ctx context.Context, req provider.ConfigureR
 func (p *signariProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{NewClientResource, NewOrganizationResource, NewGroupResource,
 		NewGroupMemberResource, NewUserResource, NewGroupReleaseResource, NewScopeResource, NewProxyHostResource,
-		NewConfigurationResource}
+		NewConfigurationResource, NewAdminTokenResource}
 }
 
 func (p *signariProvider) DataSources(_ context.Context) []func() datasource.DataSource {

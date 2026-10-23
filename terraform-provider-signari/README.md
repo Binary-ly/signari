@@ -55,6 +55,13 @@ resource "signari_group_member" "ada_engineering" {
 | `signari_scope` | `display_name`, `description`, `advertise` | `org_id`, `name` | `<org_id>/<name>` |
 | `signari_proxy_host` | `enabled` | `org_id`, `host` (in lower case) | `<org_id>/<host>` |
 | `signari_organization_configuration` | `document`, `prune` | `org_id` | the organisation id |
+| `signari_admin_token` | nothing | every attribute | the id (its `secret` is then empty) |
+
+A `signari_admin_token` is minted for another automation and can be no wider
+than the provider's own token, as the API refuses any wider. Its `secret` is in
+state from the apply that minted it, because the server keeps only a hash. A
+destroy revokes it, and one revoked outside Terraform is dropped at the next
+refresh so the plan after it mints another.
 
 `signari_organization_configuration` applies an organisation's configuration
 file, as `signari apply` does (see [config-as-code.md](../docs/config-as-code.md)).

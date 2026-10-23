@@ -18,6 +18,7 @@ command or an environment variable exists in code and not on its page.
 | [config-as-code.md](config-as-code.md) | `signari plan` / `apply` — clients, groups and providers from a file |
 | [schema-pinning.md](schema-pinning.md) | Pinning a release binary to the schema it was built for |
 | [upgrading.md](upgrading.md) | Upgrading, rolling back, and which migrations the previous release may run against |
+| [troubleshooting.md](troubleshooting.md) | What a refusal means, quoted as the server writes it, and what to do about it |
 | [schema-versions.md](schema-versions.md) | What each schema version changed, newest first, generated from the migrations |
 | [connection-pooling.md](connection-pooling.md) | The two pools a node opens, and running behind PgBouncer |
 | [high-availability.md](high-availability.md) | Running more than one instance |

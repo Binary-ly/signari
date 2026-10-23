@@ -64,9 +64,10 @@ type File struct {
 
 	// The kinds holding a secret, which the file names by reference or the
 	// engine mints (secrets.go).
-	Providers     []Provider     `yaml:"providers,omitempty"`
-	Subscriptions []Subscription `yaml:"event_subscriptions,omitempty"`
-	SCIMTargets   []SCIMTarget   `yaml:"scim_targets,omitempty"`
+	Providers      []Provider      `yaml:"providers,omitempty"`
+	Subscriptions  []Subscription  `yaml:"event_subscriptions,omitempty"`
+	SCIMTargets    []SCIMTarget    `yaml:"scim_targets,omitempty"`
+	RACConnections []RACConnection `yaml:"rac_connections,omitempty"`
 }
 
 // ProxyHost is an application protected by forward authentication.

@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/keys"
 )
 
@@ -182,4 +184,112 @@ func RACConnections(ctx context.Context, q Querier, orgID string) ([]RACListing,
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// ErrRACCredentialsForAnotherMachine is a connection holding credentials
+// moved to another host or port without them: they were given for the machine
+// it named, and guacd would type them into whatever answers at the new one.
+var ErrRACCredentialsForAnotherMachine = errors.New("a connection's credentials were given for the machine it " +
+	"names; moving it to another needs them given again, or they would be typed into whatever answers there")
+
+// RACCredentials are what guacd signs in to the machine with.
+type RACCredentials struct{ Login, Password string }
+
+// RACChange is what changes about a registered connection, a nil field left as
+// it is; "" clears RequireGroup and RecordingPath. The protocol is fixed once
+// registered.
+type RACChange struct {
+	Name, Host, RequireGroup, RecordingPath *string
+	Port                                    *int
+	// Credentials replaces the login and password together; both empty
+	// clears them.
+	Credentials *RACCredentials
+}
+
+// UpdateRACConnection changes a registered connection as a configuration file
+// declares it (6.19).
+func UpdateRACConnection(ctx context.Context, q outpostDB, root *keys.RootKey, orgID, slug string, c RACChange) error {
+	var host string
+	var port int
+	var holds bool
+	if err := q.QueryRow(ctx, `SELECT hostname, port, secrets_enc IS NOT NULL FROM core.rac_connections
+		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug).Scan(&host, &port, &holds); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrRACUnknown
+		}
+		return err
+	}
+	moved := (c.Host != nil && *c.Host != host) || (c.Port != nil && *c.Port != port)
+	if moved && holds && c.Credentials == nil {
+		return ErrRACCredentialsForAnotherMachine
+	}
+	var sealed []byte
+	if c.Credentials != nil {
+		secrets := map[string]string{}
+		if c.Credentials.Login != "" {
+			secrets["username"] = c.Credentials.Login
+		}
+		if c.Credentials.Password != "" {
+			secrets["password"] = c.Credentials.Password
+		}
+		if len(secrets) > 0 && root == nil {
+			return fmt.Errorf("a connection's credentials are sealed under SIGNARI_ROOT_KEY, which is not loaded")
+		}
+		var err error
+		if sealed, err = SealRACSecrets(root, secrets); err != nil {
+			return err
+		}
+	}
+	_, err := q.Exec(ctx, `
+		UPDATE core.rac_connections SET
+			display_name   = COALESCE($3::text, display_name),
+			hostname       = COALESCE($4::text, hostname),
+			port           = COALESCE($5::integer, port),
+			require_group  = CASE WHEN $6::text IS NULL THEN require_group ELSE NULLIF($6::text, '') END,
+			recording_path = CASE WHEN $7::text IS NULL THEN recording_path ELSE NULLIF($7::text, '') END,
+			secrets_enc    = CASE WHEN $8::boolean THEN $9::bytea ELSE secrets_enc END
+		 WHERE org_id = $1::uuid AND slug = $2`,
+		orgID, slug, c.Name, c.Host, c.Port, c.RequireGroup, c.RecordingPath, c.Credentials != nil, sealed)
+	return err
+}
+
+// RACRecordingPath is where a connection's sessions are recorded, "" for
+// nowhere: RACConnections says only whether, which is what a listing shows.
+func RACRecordingPath(ctx context.Context, q outpostDB, orgID, slug string) (string, error) {
+	var path string
+	err := q.QueryRow(ctx, `SELECT COALESCE(recording_path, '') FROM core.rac_connections
+		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug).Scan(&path)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrRACUnknown
+	}
+	return path, err
+}
+
+// HeldRACCredentials opens what a connection signs in with, so a plan can say
+// whether the credentials a configuration file names differ. Never shown.
+func HeldRACCredentials(ctx context.Context, q outpostDB, root *keys.RootKey, orgID, slug string) (RACCredentials,
+	error) {
+	var sealed []byte
+	if err := q.QueryRow(ctx, `SELECT secrets_enc FROM core.rac_connections WHERE org_id = $1::uuid AND slug = $2`,
+		orgID, slug).Scan(&sealed); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RACCredentials{}, ErrRACUnknown
+		}
+		return RACCredentials{}, err
+	}
+	if len(sealed) == 0 {
+		return RACCredentials{}, nil
+	}
+	if root == nil {
+		return RACCredentials{}, fmt.Errorf("connection %q's credentials are sealed and no root key is loaded", slug)
+	}
+	plain, err := root.Open(sealed, "rac-connection-secret")
+	if err != nil {
+		return RACCredentials{}, fmt.Errorf("connection %q's credentials do not open: %w", slug, err)
+	}
+	var secrets map[string]string
+	if err := json.Unmarshal(plain, &secrets); err != nil {
+		return RACCredentials{}, fmt.Errorf("connection %q's credentials are unreadable: %w", slug, err)
+	}
+	return RACCredentials{Login: secrets["username"], Password: secrets["password"]}, nil
 }

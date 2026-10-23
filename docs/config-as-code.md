@@ -135,6 +135,17 @@ scim_targets:                 # where people are provisioned to
     credentials: {file: google-sa.json}
     impersonate: admin@example.com
     target_domain: example.com
+
+rac_connections:              # machines reached through the browser
+  - slug: build
+    protocol: ssh             # rdp, vnc or ssh; fixed once made
+    host: build.internal
+    port: 22                  # the protocol's own when left out
+    login: {env: BUILD_LOGIN}         # both by reference, compared together
+    password: {env: BUILD_PASSWORD}   # left out: the connection keeps what it holds
+    require_group: platform   # "" for everybody in the organisation
+    recording_path: /var/lib/guacd/recordings/build
+    parameters: {font-size: "12"}
 ```
 
 ## It plans before it applies
@@ -244,6 +255,13 @@ its `token` in the same file. The token held was issued for the old address,
 and moved without a new one it would be sent to whoever answers at the new
 address.
 
+A remote-access connection's `login` and `password` are named by reference in
+the same way. They are compared and replaced together, and left out they leave
+what the connection holds. A connection holding credentials moves to another
+`host` or `port` only when the same file gives them again, since guacd would
+otherwise type them into whatever answers at the new machine. A connection
+holding none moves freely.
+
 A reference may not name the engine's own settings or its database
 connection's (`SIGNARI_…`, `PG…`), nor a file that a `SIGNARI_…_FILE` setting
 names, under any path. Next to a URL, `{env: SIGNARI_ROOT_KEY}` would send the
@@ -281,8 +299,9 @@ diff cry wolf, and a diff that cries wolf is a diff nobody reads.
 Groups, OAuth/OIDC clients and their redirect URIs, SAML service providers and
 their ACS URLs, RADIUS clients, protected hosts, declared scopes, user
 attributes, resource servers, the sign-up rule, claim mappers, prompts, the
-access policy, the sign-in flows, extension providers, event subscriptions and
-provisioning targets. `signari export org` writes all of them, so a
+access policy, the sign-in flows, extension providers, event subscriptions,
+provisioning targets and remote-access connections. `signari export org`
+writes all of them, so a
 deployment's export applied to an empty one, with each target's token named by
 reference, plans nothing afterwards.
 
@@ -315,5 +334,10 @@ deleting the group would widen the target to everybody. Give the target
 another `scope_group` in the same file and the group can go. Nothing is sent
 to a target the file creates until it is synced.
 
-Not yet: identity providers and RAC connections, both of which have their own
-commands and Admin API routes.
+A remote-access connection that a pruned file leaves out is disabled too, not
+deleted: its sessions are the record of who reached that machine. Exported, a
+connection carries no credentials. Applied elsewhere, it holds none until the
+file names them.
+
+Not yet: identity providers, which have their own commands and Admin API
+routes.

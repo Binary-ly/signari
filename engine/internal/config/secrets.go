@@ -97,6 +97,14 @@ func (f *File) secretRefs() []secretAt {
 			out = append(out, secretAt{"scim_targets[" + w.Slug + "].credentials", w.Credentials})
 		}
 	}
+	for _, w := range f.RACConnections {
+		if w.Login != nil {
+			out = append(out, secretAt{w.at() + ".login", w.Login})
+		}
+		if w.Password != nil {
+			out = append(out, secretAt{w.at() + ".password", w.Password})
+		}
+	}
 	return out
 }
 

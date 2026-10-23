@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -149,9 +151,49 @@ func RotateProviderSecret(ctx context.Context, tx pgx.Tx, root *keys.RootKey, or
 		return "", fmt.Errorf("rotating the %s provider's secret: %w", hook, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return "", fmt.Errorf("no %s provider is registered for this organisation", hook)
+		return "", providerNotRegistered{hook}
 	}
 	return secret, nil
+}
+
+// ErrProviderNotRegistered is a hook the organisation has no provider for;
+// each change answers it as providerNotRegistered, which names the hook.
+var ErrProviderNotRegistered = errors.New("no provider is registered for that hook")
+
+type providerNotRegistered struct{ hook provider.Hook }
+
+func (e providerNotRegistered) Error() string {
+	return fmt.Sprintf("no %s provider is registered for this organisation", e.hook)
+}
+
+func (e providerNotRegistered) Is(target error) bool { return target == ErrProviderNotRegistered }
+
+// ErrProtocolClaim is an allow-list naming a claim the protocol decides (sub,
+// iss, aud, exp, iat, nbf, jti, nonce, azp, scope, client_id, auth_time, acr,
+// amr): letting an external service overwrite one is how a token is minted
+// for the wrong subject. The database refuses it too.
+var ErrProtocolClaim = errors.New("a hook may not be allowed to set a protocol claim")
+
+// SetProviderClaims replaces the claims a token hook may add; empty lets it
+// add none. The allow-list is the hook's whole security model: without it a
+// service returning {"admin": true} would put that in a token this engine
+// signed. Behind `signari provider claims` and the Admin API (6.07).
+func SetProviderClaims(ctx context.Context, tx Execer, orgID string, hook provider.Hook, claims []string) error {
+	if claims == nil {
+		claims = []string{}
+	}
+	tag, err := tx.Exec(ctx, `UPDATE core.providers SET allowed_claims = $3
+		WHERE org_id = $1::uuid AND hook = $2`, orgID, string(hook), claims)
+	if err != nil {
+		if strings.Contains(err.Error(), "providers_claims_are_not_protocol_claims") {
+			return ErrProtocolClaim
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return providerNotRegistered{hook}
+	}
+	return nil
 }
 
 // DeleteProvider removes a hook's provider. Reports whether one was there.
@@ -177,11 +219,14 @@ type ProviderRow struct {
 	// Signed is whether calls carry a Signari-Signature. False for a provider
 	// registered before secrets existed, until it is rotated.
 	Signed bool
+	// AllowedClaims are what a token hook may add.
+	AllowedClaims []string
 }
 
 func ListProviders(ctx context.Context, q providerReader, orgID string) ([]ProviderRow, error) {
 	rows, err := q.Query(ctx, `
-		SELECT id::text, name, hook, url, mode, timeout_ms, enabled, token_wrapped IS NOT NULL
+		SELECT id::text, name, hook, url, mode, timeout_ms, enabled, token_wrapped IS NOT NULL,
+		       COALESCE(allowed_claims, '{}')
 		  FROM core.providers WHERE org_id = $1::uuid ORDER BY hook`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("listing providers: %w", err)
@@ -192,7 +237,8 @@ func ListProviders(ctx context.Context, q providerReader, orgID string) ([]Provi
 	for rows.Next() {
 		var r ProviderRow
 		var ms int
-		if err := rows.Scan(&r.ID, &r.Name, &r.Hook, &r.URL, &r.Mode, &ms, &r.Enabled, &r.Signed); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.Hook, &r.URL, &r.Mode, &ms, &r.Enabled, &r.Signed,
+			&r.AllowedClaims); err != nil {
 			return nil, err
 		}
 		r.Timeout = time.Duration(ms) * time.Millisecond

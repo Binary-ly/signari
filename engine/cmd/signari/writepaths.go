@@ -53,6 +53,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/passkeys"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
@@ -513,22 +514,18 @@ func providerClaimsSet(ctx context.Context, conn *pgx.Conn, orgID, hook, claims 
 		}
 	}
 
-	tp, err := conn.Exec(ctx, `
-		UPDATE core.providers SET allowed_claims = $3
-		WHERE org_id = $1::uuid AND hook = $2`, orgID, hook, list)
-	if err != nil {
-		if strings.Contains(err.Error(), "providers_claims_are_not_protocol_claims") {
-			return fmt.Errorf("a hook may not be allowed to set a protocol claim " +
-				"(sub, iss, aud, exp, iat, nbf, jti, nonce, azp, scope, client_id, " +
-				"auth_time, acr, amr). Those are decided by the protocol, and letting " +
-				"an external service overwrite one is how a token is minted for the " +
-				"wrong subject")
-		}
-		return err
-	}
-	if tp.RowsAffected() == 0 {
+	switch err := store.SetProviderClaims(ctx, conn, orgID, provider.Hook(hook), list); {
+	case errors.Is(err, store.ErrProtocolClaim):
+		return fmt.Errorf("a hook may not be allowed to set a protocol claim " +
+			"(sub, iss, aud, exp, iat, nbf, jti, nonce, azp, scope, client_id, " +
+			"auth_time, acr, amr). Those are decided by the protocol, and letting " +
+			"an external service overwrite one is how a token is minted for the " +
+			"wrong subject")
+	case errors.Is(err, store.ErrProviderNotRegistered):
 		return fmt.Errorf("that organisation has no %q provider; add one with "+
 			"`signari provider add`", hook)
+	case err != nil:
+		return err
 	}
 
 	if len(list) == 0 {

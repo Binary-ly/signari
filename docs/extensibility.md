@@ -13,6 +13,9 @@ signari provider add -org <uuid> \
   -mode fail_closed
 ```
 
+The Admin API registers, rotates, bounds and removes providers the same way
+under `/admin/organizations/{orgID}/providers`; see [admin-api.md](admin-api.md).
+
 ## Telling the engine's calls from anybody else's
 
 Registration prints a **signing secret, once**, and every call carries

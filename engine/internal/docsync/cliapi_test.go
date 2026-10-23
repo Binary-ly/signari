@@ -243,11 +243,11 @@ var cliAPI = map[string]string{
 	"rar list":            reads,
 
 	// Extension hooks and outposts.
-	"provider add":         pending,
+	"provider add":         "PUT /admin/organizations/{orgID}/providers/{hook}",
 	"provider list":        reads,
-	"provider claims":      pending,
-	"provider remove":      pending,
-	"provider rotate":      pending,
+	"provider claims":      "PUT /admin/organizations/{orgID}/providers/{hook}/claims",
+	"provider remove":      "DELETE /admin/organizations/{orgID}/providers/{hook}",
+	"provider rotate":      "POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret",
 	"outpost create":       pending,
 	"outpost disable":      pending,
 	"outpost enable":       pending,

@@ -389,6 +389,16 @@ func (s *Server) Routes() http.Handler {
 		route("POST /admin/organizations/{orgID}/event-subscriptions/{name}/test", ScopeOrganizationsWrite,
 			s.testSubscription)
 
+		// Extension providers (providers.go), whose signing secrets are sealed
+		// with the root key.
+		route("GET /admin/organizations/{orgID}/providers", ScopeConfigRead, s.listProviders)
+		route("PUT /admin/organizations/{orgID}/providers/{hook}", ScopeOrganizationsWrite, s.putProvider)
+		route("DELETE /admin/organizations/{orgID}/providers/{hook}", ScopeOrganizationsWrite, s.deleteProvider)
+		route("POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret", ScopeOrganizationsWrite,
+			s.rotateProviderSecret)
+		route("PUT /admin/organizations/{orgID}/providers/{hook}/claims", ScopeOrganizationsWrite,
+			s.putProviderClaims)
+
 		// An instance's signing keys (keys.go), under the root key their
 		// private halves are sealed with; deployment-wide tokens only.
 		route("GET /admin/instances/{instanceID}/keys", ScopeConfigRead, s.listSigningKeys)

@@ -169,6 +169,13 @@ var summaries = map[string]string{
 	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/enable":        "Switch a subscription back on after it was given up on.",
 	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/test":          "Queue one signed test delivery to a subscription.",
 
+	// Extension providers (6.07).
+	"GET /admin/organizations/{orgID}/providers":                       "The services the organisation's hooks call, and whether anything consults them.",
+	"PUT /admin/organizations/{orgID}/providers/{hook}":                "Register or replace a hook's provider; a first registration's secret is shown once.",
+	"DELETE /admin/organizations/{orgID}/providers/{hook}":             "Remove a hook's provider; the decision is made locally only.",
+	"POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret": "Replace a provider's signing secret, shown once.",
+	"PUT /admin/organizations/{orgID}/providers/{hook}/claims":         "The claims a token hook may add; empty lets it add none.",
+
 	// An instance's signing keys (6.07).
 	"GET /admin/instances/{instanceID}/keys":         "The instance's signing keys by id, algorithm and state; never a private half.",
 	"POST /admin/instances/{instanceID}/keys/rotate": "Take the next safe step of rotation for each algorithm in use.",

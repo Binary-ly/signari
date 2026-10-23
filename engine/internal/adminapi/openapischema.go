@@ -469,6 +469,21 @@ var opSchemas = map[string]opSchema{
 		[]string{"name", "enabled", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "enabled": boolean()}))},
 	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/test": {http.StatusOK, nil, object(
 		[]string{"name", "event_id", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "event_id": str()}))},
+	"GET /admin/organizations/{orgID}/providers": {http.StatusOK, nil, object([]string{"org_id", "providers"},
+		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "hook", "url", "mode",
+			"timeout_ms", "enabled", "signed", "called", "allowed_claims"}, map[string]jsonSchema{
+			"id": uuidStr(), "hook": str(), "url": str(), "mode": str(), "timeout_ms": integer(), "enabled": boolean(),
+			"signed": boolean(), "called": boolean(), "allowed_claims": arrayOf(str())}))})},
+	"PUT /admin/organizations/{orgID}/providers/{hook}": {http.StatusOK, typeOf[putProviderRequest](), object(
+		[]string{"id", "hook", "secret", "called", "config_version"}, withVersion(map[string]jsonSchema{
+			"id": uuidStr(), "hook": str(), "secret": str(), "called": boolean()}))},
+	"DELETE /admin/organizations/{orgID}/providers/{hook}": {http.StatusOK, nil, object(
+		[]string{"hook", "removed", "config_version"}, withVersion(map[string]jsonSchema{"hook": str(), "removed": boolean()}))},
+	"POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret": {http.StatusOK, nil, object(
+		[]string{"hook", "secret", "config_version"}, withVersion(map[string]jsonSchema{"hook": str(), "secret": str()}))},
+	"PUT /admin/organizations/{orgID}/providers/{hook}/claims": {http.StatusOK, typeOf[providerClaimsRequest](), object(
+		[]string{"hook", "allowed_claims", "config_version"}, withVersion(map[string]jsonSchema{"hook": str(),
+			"allowed_claims": arrayOf(str())}))},
 	"GET /admin/instances/{instanceID}/keys": {http.StatusOK, nil, object([]string{"instance_id", "keys"},
 		map[string]jsonSchema{"instance_id": uuidStr(), "keys": arrayOf(object(
 			[]string{"kid", "algorithm", "state", "published_at", "demoted_at"}, map[string]jsonSchema{

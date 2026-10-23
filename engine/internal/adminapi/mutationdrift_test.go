@@ -16,6 +16,7 @@ import (
 	"signari.dev/engine/internal/brand"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/prompts"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/store"
 )
 
@@ -363,6 +364,30 @@ func allMutatingRoutes() []mutatingRoute {
 			name: "POST /admin/organizations/{orgID}/event-subscriptions/{name}/test", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string { return newDriftSubscription(t, s) + "/test" },
 			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/providers/{hook}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/providers/token_issue"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"url":"https://hooks.example.test/claims","mode":"fail_open"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/providers/{hook}", method: http.MethodDelete,
+			path: newDriftProvider,
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string { return newDriftProvider(t, s) + "/rotate-secret" },
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/providers/{hook}/claims", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string { return newDriftProvider(t, s) + "/claims" },
+			body: func(*testing.T, *Server, string) string { return `{"claims":["department"]}` },
 		},
 		{
 			// An instance of its own with an active key, so rotating publishes
@@ -802,6 +827,28 @@ func newDriftSubscription(t *testing.T, s *Server) string {
 		t.Fatal(err)
 	}
 	return "/admin/organizations/" + org + "/event-subscriptions/drift"
+}
+
+// newDriftProvider registers a token_issue provider for an organisation of
+// its own and returns its path.
+func newDriftProvider(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	org := newDriftMigrationOrg(t, s, false)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, _, err := store.SaveProvider(ctx, tx, s.root, org, provider.Provider{Name: "provider-token_issue",
+		Hook: provider.HookTokenIssue, URL: "https://hooks.example.test/claims", Mode: provider.FailOpen,
+		Timeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return "/admin/organizations/" + org + "/providers/token_issue"
 }
 
 // newDriftKeyedInstance is newDriftInstance with one active ES256 key.

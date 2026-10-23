@@ -1141,12 +1141,12 @@ func run(args []string) (err error) {
 		return dirSet(ctx, conn, *orgID, *slug, *onMissing, *maxDeactivate, fs, *setEnabled, *dryRun,
 			*fetchGroups, *groupAttribute)
 	case "dir list":
-		return dirList(ctx, conn, *orgID)
+		return dirList(ctx, conn, *orgID, *outputFormat)
 	case "rac add":
 		return racAdd(ctx, conn, *orgID, *slug, *name, *racProtocol, *racHost,
 			*racPort, *racUser, *racPassword, *groupName, *racRecording)
 	case "rac list":
-		return racList(ctx, conn)
+		return racList(ctx, conn, *outputFormat)
 	case "rac disable":
 		return racSetEnabled(ctx, conn, *orgID, *slug, false)
 	case "rac enable":
@@ -1197,7 +1197,7 @@ func run(args []string) (err error) {
 		return providerAdd(ctx, conn, *orgID, *providerHook, *providerURL,
 			*providerMode, *providerTimeout)
 	case "provider list":
-		return providerList(ctx, conn, *orgID)
+		return providerList(ctx, conn, *orgID, *outputFormat)
 	case "provider remove":
 		return providerRemove(ctx, conn, *orgID, *providerHook)
 	case "provider rotate":
@@ -1276,7 +1276,7 @@ func run(args []string) (err error) {
 	case "rar allow":
 		return rarAllow(ctx, conn, *clientID, *rarType)
 	case "rar list":
-		return rarList(ctx, conn)
+		return rarList(ctx, conn, *outputFormat)
 	case "credential define":
 		given := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
@@ -1287,7 +1287,7 @@ func run(args []string) (err error) {
 		return credentialDefine(ctx, conn, *orgID, *credConfigs, *credVCT,
 			*credAlways, *credSelective, *credLifetime, *brandName, requireAttestation)
 	case "credential list":
-		return credentialList(ctx, conn)
+		return credentialList(ctx, conn, *outputFormat)
 	case "credential trust-root":
 		return credentialTrustRoot(ctx, conn, *orgID, *name, *credRootCert)
 	case "credential roots":
@@ -1297,7 +1297,7 @@ func run(args []string) (err error) {
 	case "resource add":
 		return resourceAdd(ctx, conn, *orgID, *resourceURI, *name)
 	case "resource list":
-		return resourceList(ctx, conn, *orgID)
+		return resourceList(ctx, conn, *orgID, *outputFormat)
 	case "resource remove":
 		return resourceRemove(ctx, conn, *orgID, *resourceURI)
 	case "credential offer":
@@ -1356,7 +1356,7 @@ func run(args []string) (err error) {
 		}
 		return eventsSubscribe(ctx, conn, *orgID, *name, *subURL, types)
 	case "events list":
-		return eventsList(ctx, conn, *orgID)
+		return eventsList(ctx, conn, *orgID, *outputFormat)
 	case "events remove":
 		return eventsChange(ctx, conn, *orgID, *name, "remove")
 	case "events rotate":
@@ -1370,7 +1370,7 @@ func run(args []string) (err error) {
 	case "outpost search-group":
 		return outpostSetSearchGroup(ctx, conn, *orgID, *name, *outpostSearchGroup)
 	case "outpost list":
-		return outpostList(ctx, conn, *orgID)
+		return outpostList(ctx, conn, *orgID, *outputFormat)
 	case "outpost disable":
 		return outpostSetEnabled(ctx, conn, *orgID, *name, false)
 	case "outpost enable":
@@ -1378,7 +1378,7 @@ func run(args []string) (err error) {
 	case "invite create":
 		return inviteCreate(ctx, conn, *orgID, *email, *inviteGroups, *inviteTTL, *issuer, *inviteSend)
 	case "invite list":
-		return inviteList(ctx, conn, *orgID)
+		return inviteList(ctx, conn, *orgID, *outputFormat)
 	case "invite revoke":
 		return inviteRevoke(ctx, conn, *orgID, *inviteID)
 	case "signup enable":
@@ -1392,7 +1392,7 @@ func run(args []string) (err error) {
 	case "prompt set":
 		return promptSet(ctx, conn, *orgID, *slug, *promptFile)
 	case "prompt list":
-		return promptList(ctx, conn, *orgID)
+		return promptList(ctx, conn, *orgID, *outputFormat)
 	case "prompt disable":
 		return promptSetEnabled(ctx, conn, *orgID, *slug, false)
 	case "prompt enable":
@@ -1443,7 +1443,7 @@ func run(args []string) (err error) {
 	case "idp unlink":
 		return idpUnlink(ctx, conn, *slug, *subject)
 	case "idp links":
-		return idpLinks(ctx, conn, *slug)
+		return idpLinks(ctx, conn, *slug, *outputFormat)
 	case "instance webauthn":
 		return instanceWebAuthn(ctx, conn, *issuer, *rpID, *name)
 	case "instance related-origins":
@@ -1484,17 +1484,17 @@ func run(args []string) (err error) {
 	case "attester add":
 		return attesterAdd(ctx, conn, *orgID, *name, *attesterJWKS, *rarDesc)
 	case "attester list":
-		return attesterList(ctx, conn)
+		return attesterList(ctx, conn, *outputFormat)
 	case "scim-source add":
 		return scimSourceAdd(ctx, conn, *orgID, *slug, *name, *onDeactivate)
 	case "scim-source list":
-		return scimSourceList(ctx, conn)
+		return scimSourceList(ctx, conn, *outputFormat)
 	case "scim-source disable":
 		return scimSourceSetEnabled(ctx, conn, *orgID, *slug, false)
 	case "scim-source enable":
 		return scimSourceSetEnabled(ctx, conn, *orgID, *slug, true)
 	case "scim list":
-		return scimList(ctx, conn)
+		return scimList(ctx, conn, *outputFormat)
 	case "scim sync":
 		return scimSync(ctx, conn, *orgID, *slug, *apply)
 	case "scim verify":
@@ -4171,7 +4171,11 @@ func scimSync(ctx context.Context, conn *pgx.Conn, orgID, only string, apply boo
 }
 
 // scimList shows configured targets.
-func scimList(ctx context.Context, conn *pgx.Conn) error {
+func scimList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT t.slug, t.display_name, t.base_url, t.on_deactivate, t.dry_run, t.enabled,
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id),
@@ -4182,7 +4186,9 @@ func scimList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-12s %-38s %-12s %-8s %s\n", "SLUG", "BASE URL", "ON DEACTIVATE", "LINKED", "SHOULD BE GONE")
+	if out.text() {
+		fmt.Printf("%-12s %-38s %-12s %-8s %s\n", "SLUG", "BASE URL", "ON DEACTIVATE", "LINKED", "SHOULD BE GONE")
+	}
 	var n int
 	for rows.Next() {
 		var slug, name, base, onDeact string
@@ -4192,12 +4198,19 @@ func scimList(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		n++
-		fmt.Printf("%-12s %-38s %-12s %-8d %d\n", slug, truncateMiddle(base, 38), onDeact, linked, inactive)
+		out.add(map[string]any{"slug": slug, "name": name, "base_url": base, "on_deactivate": onDeact,
+			"dry_run": dry, "enabled": enabled, "linked": linked, "should_be_gone": inactive})
+		if out.text() {
+			fmt.Printf("%-12s %-38s %-12s %-8d %d\n", slug, truncateMiddle(base, 38), onDeact, linked, inactive)
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("(none registered -- add one with `signari scim add`)")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // envOr reads an environment variable with a fallback.
@@ -5728,7 +5741,11 @@ func scimSourceAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name,
 }
 
 // scimSourceList shows the configured upstreams and when each last called.
-func scimSourceList(ctx context.Context, conn *pgx.Conn) error {
+func scimSourceList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT s.slug, s.display_name, s.on_delete, s.enabled,
 		       COALESCE(to_char(s.last_seen_at, 'YYYY-MM-DD HH24:MI'), 'never'),
@@ -5739,8 +5756,10 @@ func scimSourceList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-16s %-22s %-11s %-8s %-17s %s\n",
-		"SLUG", "NAME", "ON DELETE", "ENABLED", "LAST SEEN", "USERS")
+	if out.text() {
+		fmt.Printf("%-16s %-22s %-11s %-8s %-17s %s\n",
+			"SLUG", "NAME", "ON DELETE", "ENABLED", "LAST SEEN", "USERS")
+	}
 	for rows.Next() {
 		var slug, name, onDelete, lastSeen string
 		var enabled bool
@@ -5748,10 +5767,17 @@ func scimSourceList(ctx context.Context, conn *pgx.Conn) error {
 		if err := rows.Scan(&slug, &name, &onDelete, &enabled, &lastSeen, &users); err != nil {
 			return err
 		}
-		fmt.Printf("%-16s %-22s %-11s %-8t %-17s %d\n",
-			slug, name, onDelete, enabled, lastSeen, users)
+		out.add(map[string]any{"slug": slug, "name": name, "on_delete": onDelete, "enabled": enabled,
+			"last_seen": lastSeen, "users": users})
+		if out.text() {
+			fmt.Printf("%-16s %-22s %-11s %-8t %-17s %d\n",
+				slug, name, onDelete, enabled, lastSeen, users)
+		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return out.flush()
 }
 
 // duoSet stores an organisation's Duo integration.
@@ -6114,7 +6140,11 @@ func racAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, protocol,
 }
 
 // racList shows the registered machines.
-func racList(ctx context.Context, conn *pgx.Conn) error {
+func racList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT slug, display_name, protocol, hostname, port,
 		       COALESCE(require_group, '(anyone)'),
@@ -6125,8 +6155,10 @@ func racList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9s %s\n",
-		"SLUG", "NAME", "PROTO", "TARGET", "GROUP", "RECORDED", "ENABLED")
+	if out.text() {
+		fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9s %s\n",
+			"SLUG", "NAME", "PROTO", "TARGET", "GROUP", "RECORDED", "ENABLED")
+	}
 	for rows.Next() {
 		var slug, name, protocol, host, group string
 		var port int
@@ -6135,11 +6167,18 @@ func racList(ctx context.Context, conn *pgx.Conn) error {
 			&recorded, &enabled); err != nil {
 			return err
 		}
-		fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9t %t\n",
-			slug, name, protocol, fmt.Sprintf("%s:%d", host, port), group,
-			recorded, enabled)
+		out.add(map[string]any{"slug": slug, "name": name, "protocol": protocol, "host": host, "port": port,
+			"group": group, "recorded": recorded, "enabled": enabled})
+		if out.text() {
+			fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9t %t\n",
+				slug, name, protocol, fmt.Sprintf("%s:%d", host, port), group,
+				recorded, enabled)
+		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return out.flush()
 }
 
 // brandCheck reports whether a palette is readable, without touching anything.
@@ -6334,7 +6373,11 @@ func inviteCreate(ctx context.Context, conn *pgx.Conn, orgID, email, groups stri
 	return nil
 }
 
-func inviteList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func inviteList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
@@ -6369,14 +6412,29 @@ func inviteList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		if who == "" {
 			who = "(anyone with the link)"
 		}
-		// The id, so an open one can be revoked by name (`invite revoke`).
-		fmt.Printf("  %s  %-8s %-34s %s\n", id, state, who, strings.Join(groups, ","))
 		n++
+		out.add(map[string]any{"id": id, "state": state, "email": email, "groups": nonNilList(groups),
+			"expires_at": expires.UTC()})
+		if out.text() {
+			// The id, so an open one can be revoked by name (`invite revoke`).
+			fmt.Printf("  %s  %-8s %-34s %s\n", id, state, who, strings.Join(groups, ","))
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("  no invitations")
 	}
-	return rows.Err()
+	return out.flush()
+}
+
+// nonNilList is a list for -o json, empty rather than null for none.
+func nonNilList(l []string) []string {
+	if l == nil {
+		return []string{}
+	}
+	return l
 }
 
 // signupEnable turns on open self-signup for an organisation. verify is
@@ -6525,7 +6583,11 @@ func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind, searc
 	return nil
 }
 
-func outpostList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func outpostList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
@@ -6561,13 +6623,20 @@ func outpostList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 				search = "search: members of " + group
 			}
 		}
-		fmt.Printf("  %-20s %-7s %-9s %-36s %s\n", name, kind, state, search, last)
 		n++
+		out.add(map[string]any{"name": name, "kind": kind, "enabled": enabled, "search_group": group,
+			"last_seen_at": utcPtr(seen), "last_seen_ip": ip})
+		if out.text() {
+			fmt.Printf("  %-20s %-7s %-9s %-36s %s\n", name, kind, state, search, last)
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("  no outposts registered")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // outpostSetSearchGroup sets or clears whose members may search the whole
@@ -7121,7 +7190,11 @@ func promptSet(ctx context.Context, conn *pgx.Conn, orgID, slug, path string) er
 	return nil
 }
 
-func promptList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func promptList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
@@ -7145,6 +7218,12 @@ func promptList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		if err := rows.Scan(&slug, &title, &once, &enabled, &version, &answered); err != nil {
 			return err
 		}
+		n++
+		out.add(map[string]any{"slug": slug, "title": title, "version": version, "enabled": enabled,
+			"once": once, "answered": answered})
+		if !out.text() {
+			continue
+		}
 		title = fmt.Sprintf("%s (v%d)", title, version)
 		state := "enabled"
 		if !enabled {
@@ -7156,12 +7235,14 @@ func promptList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		}
 		fmt.Printf("  %-18s %-30s %-9s %-14s %d answered\n",
 			slug, title, state, mode, answered)
-		n++
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("  no prompts")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // kerberosPrincipals lists what the realm holds, without changing anything.
@@ -7347,7 +7428,11 @@ func eventsChange(ctx context.Context, conn *pgx.Conn, orgID, name, action strin
 }
 
 // eventsList shows subscriptions and how their deliveries are going.
-func eventsList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func eventsList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("-org is required")
 	}
@@ -7376,6 +7461,11 @@ func eventsList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 			return err
 		}
 		found = true
+		out.add(map[string]any{"name": name, "url": url, "enabled": enabled, "disabled_reason": why,
+			"event_types": types, "delivered": delivered, "outstanding": outstanding})
+		if !out.text() {
+			continue
+		}
 		state := "enabled"
 		if !enabled {
 			state = "DISABLED"
@@ -7390,10 +7480,13 @@ func eventsList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 			fmt.Printf("  reason: %s\n", why)
 		}
 	}
-	if !found {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found && out.text() {
 		fmt.Println("no event subscriptions")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // authzModelSet parses a model, runs its own tests, and stores it.
@@ -7980,7 +8073,11 @@ func rarAllow(ctx context.Context, conn *pgx.Conn, clientID, typ string) error {
 }
 
 // rarList shows what is registered and who may ask for it.
-func rarList(ctx context.Context, conn *pgx.Conn) error {
+func rarList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT t.type, t.fields, t.required, COALESCE(t.description,''),
 		       COALESCE(array_agg(c.client_id) FILTER (WHERE c.client_id IS NOT NULL), '{}')
@@ -8003,6 +8100,11 @@ func rarList(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		found = true
+		out.add(map[string]any{"type": typ, "description": desc, "fields": nonNilList(fields),
+			"required": nonNilList(required), "clients": nonNilList(clients)})
+		if !out.text() {
+			continue
+		}
 		fmt.Printf("%s\n", typ)
 		if desc != "" {
 			fmt.Printf("  %s\n", desc)
@@ -8017,10 +8119,13 @@ func rarList(ctx context.Context, conn *pgx.Conn) error {
 			fmt.Printf("  clients  : %s\n", strings.Join(clients, ", "))
 		}
 	}
-	if !found {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found && out.text() {
 		fmt.Println("no authorization details types are registered")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // credentialDefine registers a credential this issuer can mint.
@@ -8084,7 +8189,11 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 }
 
 // credentialList shows what this issuer publishes.
-func credentialList(ctx context.Context, conn *pgx.Conn) error {
+func credentialList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT config_id, format, vct, always_claims, selective_claims,
 		       COALESCE(display_name,'')
@@ -8102,6 +8211,11 @@ func credentialList(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		found = true
+		out.add(map[string]any{"id": id, "format": format, "vct": vct, "always": nonNilList(a),
+			"selective": nonNilList(sel), "display_name": display})
+		if !out.text() {
+			continue
+		}
 		fmt.Printf("%s (%s)\n", id, format)
 		if display != "" {
 			fmt.Printf("  %s\n", display)
@@ -8110,10 +8224,13 @@ func credentialList(ctx context.Context, conn *pgx.Conn) error {
 		fmt.Printf("  always    : %s\n", strings.Join(a, ", "))
 		fmt.Printf("  selective : %s\n", strings.Join(sel, ", "))
 	}
-	if !found {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found && out.text() {
 		fmt.Println("this deployment issues no credentials")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // credentialTrustRoot registers a CA an OID4VCI key proof's `x5c` chain may
@@ -8216,7 +8333,11 @@ func attesterAdd(ctx context.Context, conn *pgx.Conn, orgID, name, jwksPath, des
 }
 
 // attesterList shows who is trusted to vouch for clients.
-func attesterList(ctx context.Context, conn *pgx.Conn) error {
+func attesterList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT org_id::text, name, jsonb_array_length(jwks->'keys'), created_at, COALESCE(description, '')
 		FROM core.client_attesters ORDER BY org_id, name`)
@@ -8233,16 +8354,24 @@ func attesterList(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		found = true
+		out.add(map[string]any{"org_id": org, "name": name, "keys": keys, "created_at": created.UTC(),
+			"description": description})
+		if !out.text() {
+			continue
+		}
 		fmt.Printf("%s  %-30s %d key(s)  %s\n", org, name, keys, created.Format(time.RFC3339))
 		if description != "" {
 			fmt.Printf("    %s\n", description)
 		}
 	}
-	if !found {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found && out.text() {
 		fmt.Println("no client attesters registered; attestation-based client " +
 			"authentication cannot verify anything until one is added")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // warnUndriven says which flows in a file were stored and will not run.

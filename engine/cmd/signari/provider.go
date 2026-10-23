@@ -133,13 +133,24 @@ func providerRotate(ctx context.Context, conn *pgx.Conn, orgID, hook string) err
 	return nil
 }
 
-func providerList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func providerList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("-org is required")
 	}
 	rows, err := store.ListProviders(ctx, conn, orgID)
 	if err != nil {
 		return err
+	}
+	if !out.text() {
+		for _, r := range rows {
+			out.add(map[string]any{"hook": r.Hook, "url": r.URL, "mode": r.Mode, "timeout": r.Timeout.String(),
+				"signed": r.Signed, "enabled": r.Enabled, "called": provider.Hook(r.Hook).Called() && r.Enabled})
+		}
+		return out.flush()
 	}
 	if len(rows) == 0 {
 		fmt.Printf("\n  no extension providers registered for this organisation\n\n")

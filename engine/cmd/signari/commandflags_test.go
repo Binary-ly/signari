@@ -392,7 +392,11 @@ func TestListingsPrintJSON(t *testing.T) {
 		Scan(&org); err != nil {
 		t.Skipf("no organisation: %v", err)
 	}
-	for _, args := range [][]string{{"group", "list"}, {"idp", "list"}, {"admin-token", "list"}, {"role", "list", "-org", org}} {
+	for _, args := range [][]string{{"group", "list"}, {"idp", "list"}, {"admin-token", "list"},
+		{"role", "list", "-org", org}, {"scim", "list"}, {"dir", "list", "-org", org}, {"outpost", "list", "-org", org},
+		{"provider", "list", "-org", org}, {"invite", "list", "-org", org}, {"prompt", "list", "-org", org},
+		{"events", "list", "-org", org}, {"rac", "list"}, {"credential", "list"}, {"attester", "list"},
+		{"rar", "list"}, {"resource", "list", "-org", org}, {"scim-source", "list"}, {"idp", "links", "-slug", "none"}} {
 		out, err := captureStdout(t, func() error { return run(append(args, "-dsn", dsn, "-o", "json")) })
 		if err != nil {
 			t.Errorf("%v -o json: %v", args, err)

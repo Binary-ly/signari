@@ -2040,7 +2040,11 @@ func idpUnlink(ctx context.Context, conn *pgx.Conn, slug, subject string) error 
 }
 
 // idpLinks lists a provider's subjects and the people they act as.
-func idpLinks(ctx context.Context, conn *pgx.Conn, slug string) error {
+func idpLinks(ctx context.Context, conn *pgx.Conn, slug, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if slug == "" {
 		return fmt.Errorf("idp links needs -slug")
 	}
@@ -2061,12 +2065,18 @@ func idpLinks(ctx context.Context, conn *pgx.Conn, slug string) error {
 			return err
 		}
 		n++
-		fmt.Printf("%s  %s  %s\n", sub, who, status)
+		out.add(map[string]any{"subject": sub, "person": who, "status": status})
+		if out.text() {
+			fmt.Printf("%s  %s  %s\n", sub, who, status)
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Printf("%s has no links\n", slug)
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // cliOperator names who ran this command, as its audit record does: the
@@ -2088,7 +2098,11 @@ func cliOperator() string {
 // did. The sync recorded its time, its counts and its error on every run, and
 // there was no command to read them: an operator could add, sync and tune a
 // source, and could not see whether its last run had worked.
-func dirList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func dirList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
@@ -2118,6 +2132,17 @@ func dirList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		case dry:
 			state = "dry run"
 		}
+		n++
+		row := map[string]any{"slug": slug, "kind": kind, "enabled": enabled, "dry_run": dry,
+			"on_missing": onMissing, "max_deactivate_percent": ceiling, "last_sync": nil, "last_error": lastErr}
+		if last != "never" {
+			row["last_sync"] = map[string]any{"at": last, "created": created, "updated": updated,
+				"deactivated": deactivated}
+		}
+		out.add(row)
+		if !out.text() {
+			continue
+		}
 		fmt.Printf("%s  (%s, %s, missing people: %s, at most %d%% deactivated per sync)\n",
 			slug, kind, state, onMissing, ceiling)
 		fmt.Printf("  last sync: %s", last)
@@ -2128,12 +2153,14 @@ func dirList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		if lastErr != "" {
 			fmt.Printf("  last error: %s\n", lastErr)
 		}
-		n++
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("no directory sources")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // inviteRevoke closes an open invitation, so its link stops working at once.
@@ -2756,7 +2783,11 @@ func resourceAdd(ctx context.Context, conn *pgx.Conn, orgID, resource, name stri
 }
 
 // resourceList shows the registered resource servers of one organisation.
-func resourceList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func resourceList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("resource list needs -org")
 	}
@@ -2764,14 +2795,17 @@ func resourceList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	if err != nil {
 		return err
 	}
-	if len(rs) == 0 {
+	if len(rs) == 0 && out.text() {
 		fmt.Println("no resource servers: every resource indicator is refused")
 		return nil
 	}
 	for _, r := range rs {
-		fmt.Printf("%s  %s\n", r.Resource, r.Name)
+		out.add(map[string]any{"resource": r.Resource, "name": r.Name})
+		if out.text() {
+			fmt.Printf("%s  %s\n", r.Resource, r.Name)
+		}
 	}
-	return nil
+	return out.flush()
 }
 
 // resourceRemove withdraws one. Tokens for it are refused from the next

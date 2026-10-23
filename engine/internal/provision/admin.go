@@ -168,6 +168,92 @@ func AddTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID st
 	return err
 }
 
+// TargetChange is what changes about a registered target; nil leaves a field
+// as it is. The kind is fixed once registered.
+type TargetChange struct {
+	Name, BaseURL, OnDeactivate, Impersonate, Domain *string
+	DryRun                                           *bool
+	// Token is a SCIM target's, Credentials a native one's.
+	Token       *string
+	Credentials []byte
+}
+
+// UpdateTarget changes a registered target as a configuration file declares
+// it (6.19), checked as AddTarget checks a new one. A SCIM target's base URL
+// changes only with its token: the one held was issued for the old address,
+// and sent to a new one it is handed to whoever answers there.
+func UpdateTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID, slug, kind string,
+	c TargetChange) error {
+	switch {
+	case c.OnDeactivate != nil && *c.OnDeactivate != "deactivate" && *c.OnDeactivate != "delete" &&
+		*c.OnDeactivate != "nothing":
+		return targetInvalid{fmt.Sprintf("on deactivate is deactivate, delete or nothing, not %q", *c.OnDeactivate)}
+	case c.BaseURL != nil && kind != "scim":
+		return targetInvalid{"only a SCIM target has a base URL"}
+	case c.BaseURL != nil && !strings.HasPrefix(*c.BaseURL, "https://"):
+		return targetInvalid{"the base URL must be https: the token can create and delete accounts in " +
+			"that system, and it is sent on every request"}
+	case c.BaseURL != nil && c.Token == nil:
+		return targetInvalid{"a new base URL needs the token too: the one held was issued for the old " +
+			"address, and would be sent to whoever answers at the new one"}
+	case c.Token != nil && (kind != "scim" || *c.Token == ""):
+		return targetInvalid{"only a SCIM target has a token, and it is never empty"}
+	case c.Credentials != nil && kind == "scim":
+		return targetInvalid{"a SCIM target has a token, not credentials"}
+	case (c.Impersonate != nil || c.Domain != nil) && kind != "google":
+		return targetInvalid{"only a Google target acts as an administrator in a domain"}
+	}
+	if c.BaseURL != nil {
+		if err := safedial.CheckURL(*c.BaseURL); err != nil {
+			return err
+		}
+	}
+	var token, creds []byte
+	if c.Token != nil || c.Credentials != nil {
+		if root == nil {
+			return fmt.Errorf("a target's secret is sealed under SIGNARI_ROOT_KEY, which is not loaded")
+		}
+		var err error
+		if c.Token != nil {
+			if token, err = root.Seal([]byte(*c.Token), "scim_token"); err != nil {
+				return fmt.Errorf("sealing the target token: %w", err)
+			}
+		}
+		if c.Credentials != nil {
+			if kind == "google" {
+				_, err = directory.ParseGoogleCredentials(c.Credentials)
+			} else {
+				_, err = directory.ParseEntraCredentials(c.Credentials)
+			}
+			if err != nil {
+				return targetInvalid{err.Error()}
+			}
+			if creds, err = root.Seal(c.Credentials, "provision_credentials"); err != nil {
+				return fmt.Errorf("sealing the credentials: %w", err)
+			}
+		}
+	}
+	tag, err := q.Exec(ctx, `
+		UPDATE core.scim_targets SET
+			display_name    = COALESCE($3::text, display_name),
+			base_url        = COALESCE($4::text, base_url),
+			on_deactivate   = COALESCE($5::text, on_deactivate),
+			impersonate     = COALESCE($6::text, impersonate),
+			target_domain   = COALESCE($7::text, target_domain),
+			dry_run         = COALESCE($8::boolean, dry_run),
+			token           = COALESCE($9::bytea, token),
+			credentials_enc = COALESCE($10::bytea, credentials_enc)
+		 WHERE org_id = $1::uuid AND slug = $2`,
+		orgID, slug, c.Name, c.BaseURL, c.OnDeactivate, c.Impersonate, c.Domain, c.DryRun, token, creds)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrTargetUnknown
+	}
+	return nil
+}
+
 // HTTPClient is the client every call to a target is made with: safedial,
 // because a target's base URL is stored and is sent a token that can create
 // and delete accounts (a target inside the network is named in

@@ -122,6 +122,19 @@ event_subscriptions:          # where the organisation's events are delivered
   - name: siem
     url: https://siem.example.com/hooks/signari
     event_types: [login.failed, admin.client_updated]   # left out: every event
+
+scim_targets:                 # where people are provisioned to
+  - slug: slack
+    base_url: https://api.slack.com/scim/v2
+    token: {env: SLACK_SCIM_TOKEN}   # the target issued it: by reference only
+    on_deactivate: deactivate # delete or nothing
+    scope_group: platform     # only its members; "" for everybody
+    dry_run: false
+  - slug: workspace
+    kind: google              # or entra; fixed once made
+    credentials: {file: google-sa.json}
+    impersonate: admin@example.com
+    target_domain: example.com
 ```
 
 ## It plans before it applies
@@ -222,6 +235,15 @@ and the file has two ways to give them one, neither of which is writing it in:
   empty or shorter than 32 characters, and compare it with the one held, so a
   secret changed where you keep it is planned as an update and applied.
 
+A provisioning target's `token` (SCIM) or `credentials` (Google, Entra) is
+issued by the system at the far end. The engine cannot mint one, so it is
+always named by reference, in the same way. A target cannot be created
+without it. On a target that exists it is compared and followed when given,
+and left as it is when left out. A SCIM target's `base_url` changes only with
+its `token` in the same file. The token held was issued for the old address,
+and moved without a new one it would be sent to whoever answers at the new
+address.
+
 A reference may not name the engine's own settings or its database
 connection's (`SIGNARI_…`, `PG…`), nor a file that a `SIGNARI_…_FILE` setting
 names, under any path. Next to a URL, `{env: SIGNARI_ROOT_KEY}` would send the
@@ -233,15 +255,16 @@ with `400 secret_reference`. Read there, the reference would read the server's
 environment. Without one, the API's apply answers the minted secrets once.
 
 The secrets are sealed with `SIGNARI_ROOT_KEY`, so these changes need the key:
-creating either kind, changing a provider (the registration it goes through
-seals a fresh secret before it finds the provider exists and keeps the held
-one), and naming a secret by reference, which the plan opens the held secret to
-compare against. Without the key the plan refuses such a change and names it.
-A new URL or event list for an existing subscription needs no key, and neither
-does a file that touches neither kind.
-`signari export org` writes neither kind's secret. Applied to another
-deployment, the export mints new ones, and each service must then be given its
-new secret, or the file must name the secret by reference.
+creating a provider, subscription or target, changing a provider (the
+registration it goes through seals a fresh secret before it finds the provider
+exists and keeps the held one), and naming a secret by reference, which the
+plan opens the held secret to compare against. Without the key the plan
+refuses such a change and names it. Any other change needs no key, and neither
+does a file that touches none of these kinds.
+`signari export org` writes none of these secrets. Applied to another
+deployment, the export mints new signing secrets, and each service must then
+be given its new one. A target's token or credentials have to be named by
+reference before the export will apply there, and the plan says which.
 
 ## Two smaller decisions
 
@@ -258,9 +281,10 @@ diff cry wolf, and a diff that cries wolf is a diff nobody reads.
 Groups, OAuth/OIDC clients and their redirect URIs, SAML service providers and
 their ACS URLs, RADIUS clients, protected hosts, declared scopes, user
 attributes, resource servers, the sign-up rule, claim mappers, prompts, the
-access policy, the sign-in flows, extension providers and event subscriptions.
-`signari export org` writes all of them, so a deployment's export applied to an
-empty one plans nothing afterwards.
+access policy, the sign-in flows, extension providers, event subscriptions and
+provisioning targets. `signari export org` writes all of them, so a
+deployment's export applied to an empty one, with each target's token named by
+reference, plans nothing afterwards.
 
 The access policy and the sign-in flows are each one document, kept as the text
 it was written in and loaded, its own tests run, before anything else in the
@@ -283,5 +307,13 @@ that says `false` stops delivery and records that a file did it. The export
 leaves `enabled` out, because which subscriptions were given up on is a fact
 about this deployment and not configuration.
 
-Not yet: identity providers, SCIM targets and RAC connections, all of which
-have their own commands and Admin API routes.
+A provisioning target that a pruned file leaves out is **disabled, not
+deleted**. Its links are the only record of which accounts at the far end are
+this organisation's people, and without them nothing could deactivate those
+accounts. Nor is the group a target is limited to pruned out from under it:
+deleting the group would widen the target to everybody. Give the target
+another `scope_group` in the same file and the group can go. Nothing is sent
+to a target the file creates until it is synced.
+
+Not yet: identity providers and RAC connections, both of which have their own
+commands and Admin API routes.

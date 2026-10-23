@@ -299,6 +299,9 @@ func BuildPlanWith(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune 
 
 	for name := range cur.groups {
 		if !inFile(fileGroups, name) {
+			if err := scopedTo(ctx, tx, orgID, f, name); err != nil {
+				return nil, err
+			}
 			p.Add(Change{Action: "delete", Kind: "group", Name: name, Destructive: true,
 				Detail: "every policy naming this group stops matching"})
 		}

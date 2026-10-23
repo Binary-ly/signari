@@ -66,6 +66,7 @@ type File struct {
 	// engine mints (secrets.go).
 	Providers     []Provider     `yaml:"providers,omitempty"`
 	Subscriptions []Subscription `yaml:"event_subscriptions,omitempty"`
+	SCIMTargets   []SCIMTarget   `yaml:"scim_targets,omitempty"`
 }
 
 // ProxyHost is an application protected by forward authentication.

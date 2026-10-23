@@ -87,6 +87,16 @@ func (f *File) secretRefs() []secretAt {
 			out = append(out, secretAt{w.where(), w.Secret})
 		}
 	}
+	// Both fields, whatever the kind: Validate refuses the one a kind does not
+	// take, and a reference must be found wherever it is written.
+	for _, w := range f.SCIMTargets {
+		if w.Token != nil {
+			out = append(out, secretAt{"scim_targets[" + w.Slug + "].token", w.Token})
+		}
+		if w.Credentials != nil {
+			out = append(out, secretAt{"scim_targets[" + w.Slug + "].credentials", w.Credentials})
+		}
+	}
 	return out
 }
 
@@ -118,9 +128,9 @@ func (f *File) ResolveSecrets(read func(SecretRef) (string, error)) error {
 
 // Options are what a plan needs besides the file and the deployment.
 type Options struct {
-	// Root seals what a provider or subscription the plan creates holds, and
-	// opens what one holds to compare with the secret a file names. Without it
-	// a plan that would need it is refused, with the reason.
+	// Root seals the secret of a thing the plan creates or gives a new one,
+	// and opens the one a thing holds to compare with the secret a file names.
+	// Without it a plan that would need it is refused, with the reason.
 	Root *keys.RootKey
 }
 

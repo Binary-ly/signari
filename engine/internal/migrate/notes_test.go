@@ -118,9 +118,9 @@ func TestTheSchemaVersionNotesAreCurrent(t *testing.T) {
 func TestASummaryIsTheHeadersFirstParagraph(t *testing.T) {
 	for sql, want := range map[string]string{
 		"-- 0195_x.sql\n--\n-- A handle of 1 to 64\n-- bytes.\n--\n-- More.\nALTER": "A handle of 1 to 64 bytes.",
-		"-- # Heading\n--\n-- The point.\nSELECT 1;":                                  "The point.",
-		"\nCREATE TABLE x ();":                                                        "",
-		"-- signari:compatible-with-previous\n--\n-- Adds a column.\nALTER":           "Adds a column.",
+		"-- # Heading\n--\n-- The point.\nSELECT 1;":                                "The point.",
+		"\nCREATE TABLE x ();": "",
+		"-- signari:compatible-with-previous\n--\n-- Adds a column.\nALTER": "Adds a column.",
 	} {
 		if got := summary(sql); got != want {
 			t.Errorf("summary(%q) = %q, want %q", sql, got, want)

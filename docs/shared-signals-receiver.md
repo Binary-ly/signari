@@ -16,6 +16,9 @@ signari ssf add-source -org <uuid> -name "Upstream IdP" \
 signari ssf received -org <uuid>
 ```
 
+The Admin API registers sources the same way at
+`/admin/organizations/{orgID}/ssf-sources`; see [admin-api.md](admin-api.md).
+
 ## The half everybody skips
 
 Every implementation that does Shared Signals **transmits**: "a session was

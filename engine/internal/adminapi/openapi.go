@@ -240,6 +240,13 @@ var summaries = map[string]string{
 	"DELETE /admin/instances/{instanceID}/held-trust-marks":     "Stop publishing a Trust Mark the instance holds.",
 	"POST /admin/instances/{instanceID}/trust-mark-delegations": "Authorise another entity to issue a type of Trust Mark the instance owns.",
 
+	// Shared Signals (6.07).
+	"GET /admin/organizations/{orgID}/ssf-streams":  "The relying parties' Shared Signals streams; never a receiver token.",
+	"POST /admin/organizations/{orgID}/ssf-streams": "Register a client's stream, pushed or polled.",
+	"PATCH /admin/clients/{clientID}/ssf-stream":    "Pause, disable or re-enable a client's stream, telling its receiver.",
+	"GET /admin/organizations/{orgID}/ssf-sources":  "The transmitters whose events the organisation acts on.",
+	"PUT /admin/organizations/{orgID}/ssf-sources":  "Accept events from a transmitter, or replace what it may send.",
+
 	// Fine-grained authorization (6.07).
 	"GET /admin/organizations/{orgID}/authorization-model": "The organisation's authorization model as written; none permits nothing.",
 	"PUT /admin/organizations/{orgID}/authorization-model": "Store a model once its own tests pass.",

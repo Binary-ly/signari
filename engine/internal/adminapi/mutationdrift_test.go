@@ -20,6 +20,7 @@ import (
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/provider"
+	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
 )
 
@@ -405,6 +406,48 @@ func allMutatingRoutes() []mutatingRoute {
 				return "/admin/groups/" + group + "/radius"
 			},
 			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// A poll stream, which needs no endpoint or token.
+			name: "POST /admin/organizations/{orgID}/ssf-streams", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				clientIn(t, s, org)
+				return "/admin/organizations/" + org + "/ssf-streams"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				var client string
+				if err := s.db.QueryRow(context.Background(), `SELECT client_id FROM core.clients
+					WHERE org_id::text = split_part($1, '/', 4)`, path).Scan(&client); err != nil {
+					t.Fatal(err)
+				}
+				return `{"client_id":"` + client + `","poll":true}`
+			},
+		},
+		{
+			name: "PATCH /admin/clients/{clientID}/ssf-stream", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				client := clientIn(t, s, org)
+				if _, err := store.AddStream(context.Background(), s.db, s.root, org, store.StreamSpec{ClientID: client,
+					Poll: true}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/clients/" + client + "/ssf-stream"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"status":"paused"}` },
+		},
+		{
+			// Issuer and audience are unique together across the deployment.
+			name: "PUT /admin/organizations/{orgID}/ssf-sources", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/ssf-sources"
+			},
+			body: func(_ *testing.T, _ *Server, path string) string {
+				return `{"name":"drift","issuer":"https://transmitter.example.test","jwks_uri":` +
+					`"https://transmitter.example.test/jwks","audience":"https://receiver.example.test/` +
+					strings.Split(path, "/")[3] + `","events":["` + ssf.EventSessionRevoked + `"]}`
+			},
 		},
 		{
 			name: "PUT /admin/instances/{instanceID}/federation", method: http.MethodPut,

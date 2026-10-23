@@ -45,6 +45,7 @@ var EventTypes = []string{
 	"admin.scope_deleted", "admin.session_revoked", "admin.sessions_revoked",
 	"admin.sign_in_flow_applied", "admin.signing_keys_retired", "admin.signing_keys_rotated",
 	"admin.signup_rule_removed", "admin.signup_rule_set",
+	"admin.ssf_source_set", "admin.ssf_stream_added", "admin.ssf_stream_status_set",
 	"admin.subject_erased", "admin.subject_exported", "admin.subscription_created",
 	"admin.subscription_enabled", "admin.subscription_removed", "admin.subscription_secret_rotated",
 	"admin.subscription_tested",

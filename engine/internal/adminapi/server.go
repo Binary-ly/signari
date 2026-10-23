@@ -211,6 +211,8 @@ func (s *Server) Routes() http.Handler {
 	// Which groups it is told of (grouprelease.go).
 	privileged("PUT /admin/clients/{clientID}/group-release", ScopeClientsWrite, targetClient, s.putGroupRelease)
 	privileged("DELETE /admin/clients/{clientID}/group-release", ScopeClientsWrite, targetClient, s.deleteGroupRelease)
+	// A client's Shared Signals stream paused, disabled or enabled (ssf.go).
+	privileged("PATCH /admin/clients/{clientID}/ssf-stream", ScopeClientsWrite, targetClient, s.setStreamStatus)
 	privileged("PATCH /admin/users/{userID}", ScopeUsersWrite, targetUser, s.patchUser)
 	privileged("DELETE /admin/users/{userID}", ScopeUsersWrite, targetUser, s.deleteUser)
 	route("GET /admin/users/{userID}/factors", ScopeUsersRead, s.listUserFactors)
@@ -283,6 +285,10 @@ func (s *Server) Routes() http.Handler {
 	route("PUT /admin/organizations/{orgID}/access-policy", ScopeOrganizationsWrite, s.putAccessPolicy)
 	route("GET /admin/organizations/{orgID}/sign-in-flow", ScopeConfigRead, s.getSignInFlow)
 	route("PUT /admin/organizations/{orgID}/sign-in-flow", ScopeOrganizationsWrite, s.putSignInFlow)
+	// The transmitters whose Shared Signals events are acted on, `signari ssf
+	// add-source` (ssf.go).
+	route("GET /admin/organizations/{orgID}/ssf-sources", ScopeConfigRead, s.listSources)
+	route("PUT /admin/organizations/{orgID}/ssf-sources", ScopeOrganizationsWrite, s.putSource)
 	// Fine-grained authorization, `signari authz` (authz.go).
 	route("GET /admin/organizations/{orgID}/authorization-model", ScopeConfigRead, s.getAuthzModel)
 	route("PUT /admin/organizations/{orgID}/authorization-model", ScopeOrganizationsWrite, s.putAuthzModel)
@@ -428,6 +434,11 @@ func (s *Server) Routes() http.Handler {
 		route("POST /admin/organizations/{orgID}/radius-clients", ScopeOrganizationsWrite, s.addRADIUSClient)
 		route("PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}", ScopeOrganizationsWrite,
 			s.patchRADIUSClient)
+
+		// Shared Signals streams (ssf.go), whose receiver tokens are sealed
+		// with the root key.
+		route("GET /admin/organizations/{orgID}/ssf-streams", ScopeClientsRead, s.listStreams)
+		route("POST /admin/organizations/{orgID}/ssf-streams", ScopeClientsWrite, s.addStream)
 
 		// Remote-access connections (rac.go), whose credentials are sealed
 		// with the root key.

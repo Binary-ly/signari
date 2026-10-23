@@ -37,6 +37,13 @@ There was no way to do this until recently: a stream could only be created by
 hand-written SQL, which is how it was first tested. A feature nobody can
 configure is one nobody uses.
 
+A stream is registered in its client's own organisation: it carries events about
+the people who signed in to that client, so a stream named under another
+organisation would send them to a receiver that organisation never chose. The
+Admin API registers streams and changes their status the same way, at
+`/admin/organizations/{orgID}/ssf-streams` and
+`/admin/clients/{clientID}/ssf-stream`; see [admin-api.md](admin-api.md).
+
 ## Pausing and disabling a stream
 
 ```sh

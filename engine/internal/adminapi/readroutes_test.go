@@ -71,6 +71,8 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/organizations/{orgID}/rac-connections", org("/rac-connections")},
 		{"GET /admin/organizations/{orgID}/access-policy", org("/access-policy")},
 		{"GET /admin/organizations/{orgID}/authorization-model", org("/authorization-model")},
+		{"GET /admin/organizations/{orgID}/ssf-streams", org("/ssf-streams")},
+		{"GET /admin/organizations/{orgID}/ssf-sources", org("/ssf-sources")},
 		{"GET /admin/organizations/{orgID}/sign-in-flow", org("/sign-in-flow")},
 		{"GET /admin/organizations/{orgID}/radius-authorizations", org("/radius-authorizations")},
 		{"GET /admin/organizations/{orgID}/uma/requests", org("/uma/requests")},

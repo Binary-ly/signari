@@ -206,9 +206,9 @@ var cliAPI = map[string]string{
 	"migration-source remove":  "DELETE /admin/organizations/{orgID}/migration-source",
 
 	// Signals and events.
-	"ssf add-stream":   pending,
-	"ssf set-status":   pending,
-	"ssf add-source":   pending,
+	"ssf add-stream":   "POST /admin/organizations/{orgID}/ssf-streams",
+	"ssf set-status":   "PATCH /admin/clients/{clientID}/ssf-stream",
+	"ssf add-source":   "PUT /admin/organizations/{orgID}/ssf-sources",
 	"ssf list":         reads,
 	"ssf received":     reads,
 	"events subscribe": "POST /admin/organizations/{orgID}/event-subscriptions",

@@ -492,6 +492,25 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
 		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
 			"removed": boolean()}))},
+	"GET /admin/organizations/{orgID}/ssf-streams": {http.StatusOK, nil, object([]string{"org_id", "streams"},
+		map[string]jsonSchema{"org_id": uuidStr(), "streams": arrayOf(object([]string{"id", "client_id",
+			"delivery_method", "endpoint", "status", "events", "has_receiver_token"}, map[string]jsonSchema{
+			"id": uuidStr(), "client_id": str(), "delivery_method": str(), "endpoint": str(), "status": str(),
+			"events": arrayOf(str()), "has_receiver_token": boolean()}))})},
+	"POST /admin/organizations/{orgID}/ssf-streams": {http.StatusCreated, typeOf[addStreamRequest](), object(
+		[]string{"id", "client_id", "events", "config_version"}, withVersion(map[string]jsonSchema{"id": uuidStr(),
+			"client_id": str(), "events": arrayOf(str())}))},
+	"PATCH /admin/clients/{clientID}/ssf-stream": {http.StatusOK, typeOf[streamStatusRequest](), object(
+		[]string{"client_id", "status", "was", "config_version"}, withVersion(map[string]jsonSchema{"client_id": str(),
+			"status": str(), "was": str()}))},
+	"GET /admin/organizations/{orgID}/ssf-sources": {http.StatusOK, nil, object([]string{"org_id", "sources"},
+		map[string]jsonSchema{"org_id": uuidStr(), "sources": arrayOf(object([]string{"id", "name", "issuer",
+			"jwks_uri", "audience", "events", "critical_members", "enabled"}, map[string]jsonSchema{"id": uuidStr(),
+			"name": str(), "issuer": str(), "jwks_uri": str(), "audience": str(), "events": arrayOf(str()),
+			"critical_members": arrayOf(str()), "enabled": boolean()}))})},
+	"PUT /admin/organizations/{orgID}/ssf-sources": {http.StatusOK, typeOf[putSourceRequest](), object(
+		[]string{"name", "issuer", "config_version"}, withVersion(map[string]jsonSchema{"name": str(),
+			"issuer": str()}))},
 	"GET /admin/instances/{instanceID}/federation": {http.StatusOK, nil, object([]string{"instance_id", "entity_id",
 		"enabled", "authority_hints", "trust_anchor_hints", "organization_name", "homepage_uri", "contacts",
 		"lifetime_s"}, map[string]jsonSchema{"instance_id": uuidStr(), "entity_id": str(), "enabled": boolean(),

@@ -110,12 +110,44 @@ func AddSource(ctx context.Context, e Execer, orgID, name, issuer, jwksURI,
 			enabled = true`,
 		orgID, name, issuer, jwksURI, audience, events, criticalMembers)
 	if err != nil && strings.Contains(err.Error(), "ssf_sources_issuer_audience_key") {
-		return fmt.Errorf("another organisation already accepts events from %s addressed "+
+		return fmt.Errorf("%w: another organisation already accepts events from %s addressed "+
 			"to %s; the receiver chooses a source by that pair, so it would not know whose "+
 			"they are. Use the audience the transmitter writes for this organisation",
-			issuer, audience)
+			ErrSourceAudienceTaken, issuer, audience)
 	}
 	return err
+}
+
+// ErrSourceAudienceTaken is an issuer and audience another organisation's
+// source already has.
+var ErrSourceAudienceTaken = errors.New("that issuer and audience belong to another organisation's source")
+
+// Source is one transmitter an organisation accepts events from.
+type Source struct {
+	ID, Name, Issuer, JWKSURI, Audience string
+	Events, CriticalMembers             []string
+	Enabled                             bool
+}
+
+// Sources lists an organisation's transmitters by name.
+func Sources(ctx context.Context, q Querier, orgID string) ([]Source, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id::text, display_name, issuer, jwks_uri, audience, allowed_events, critical_subject_members, enabled
+		  FROM core.ssf_sources WHERE org_id = $1::uuid ORDER BY display_name, issuer`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Source
+	for rows.Next() {
+		var s Source
+		if err := rows.Scan(&s.ID, &s.Name, &s.Issuer, &s.JWKSURI, &s.Audience, &s.Events, &s.CriticalMembers,
+			&s.Enabled); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 // ErrReplayed means this jti has already been seen from this source.

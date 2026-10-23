@@ -119,6 +119,17 @@ and the work here is one Argon2 verification, which is deliberately expensive.
 **A zero-length attribute is refused.** It would not advance the parse cursor,
 so the loop would spin forever on a packet an attacker sends once.
 
+**A request means one thing.** One with a second User-Name, a second
+User-Password or a second State is rejected. Until October 2026 only a second
+User-Name was. With two passwords the first was checked, so a request carrying
+the right one first and anything after it was accepted, and a proxy that read
+the other would have checked something else.
+
+**A certificate chain is reassembled up to one megabyte**, whatever its
+fragments declare. The cap used to hold only when the first fragment declared a
+total length, so a supplicant that declared none could grow the buffer for as
+long as it kept sending.
+
 **Binds go through the same credential path** as every other way into this
 product — same Argon2 parameters, same throttling, same audit trail. That
 includes the budget [LDAP](ldap.md) claims before verifying a password.

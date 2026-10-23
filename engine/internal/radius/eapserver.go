@@ -65,7 +65,9 @@ func (s *Server) handleEAP(conn net.PacketConn, addr net.Addr, p *Packet,
 
 	case EAPTypeTLS:
 		state, ok := p.Attr(AttrState)
-		if !ok {
+		if !ok || p.Count(AttrState) > 1 {
+			// One conversation per request: with two States, which session it
+			// continued was the parser's choice (7.17).
 			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
 			return
 		}

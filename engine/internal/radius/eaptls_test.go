@@ -141,6 +141,9 @@ type supplicant struct {
 	// declared records that the total length has already been sent, so it goes
 	// on the first fragment only.
 	declared bool
+	// secondState sends another State after the real one in every
+	// continuation, as a request meaning two conversations would.
+	secondState []byte
 }
 
 // nextFragment takes the next piece of our outbound flight.
@@ -310,6 +313,9 @@ func (s *supplicant) exchange(eap, state []byte) (*Packet, error) {
 	attrs := EAPAttributes(eap)
 	if state != nil {
 		attrs = append(attrs, Attribute{Type: AttrState, Value: state})
+		if s.secondState != nil {
+			attrs = append(attrs, Attribute{Type: AttrState, Value: s.secondState})
+		}
 	}
 	attrs = append(attrs, Attribute{Type: AttrUserName, Value: []byte(s.identity)})
 

@@ -22,6 +22,11 @@ const (
 	// by somebody's five-year-old controller.
 	eapTLSMaxFragment = 1024
 
+	// maxReassembly bounds one inbound TLS message put back together from
+	// its fragments: a megabyte of certificate chain is not a certificate
+	// chain.
+	maxReassembly = 1 << 20
+
 	// eapSessionTTL bounds an unfinished conversation.
 	eapSessionTTL = 60 * time.Second
 
@@ -331,7 +336,7 @@ func (s *Server) continueEAPTLS(sess *eapSession, resp *EAPPacket) (
 	// certificate chain larger than one fragment.
 	if frame.More {
 		if frame.LengthIncluded {
-			if frame.TotalLength > 1<<20 {
+			if frame.TotalLength > maxReassembly {
 				// A megabyte of certificate chain is not a certificate chain.
 				return nil, true, false
 			}
@@ -339,6 +344,12 @@ func (s *Server) continueEAPTLS(sess *eapSession, resp *EAPPacket) (
 		}
 		sess.inbound = append(sess.inbound, frame.Data...)
 		if sess.expecting > 0 && uint64(len(sess.inbound)) > uint64(sess.expecting) {
+			return nil, true, false
+		}
+		// Whatever the fragments declare, or when they declare nothing: the
+		// cap held only for a length given, so a supplicant that sent none
+		// grew the buffer for as long as it kept sending (7.17).
+		if len(sess.inbound) > maxReassembly {
 			return nil, true, false
 		}
 		sess.identifier++
@@ -349,6 +360,9 @@ func (s *Server) continueEAPTLS(sess *eapSession, resp *EAPPacket) (
 
 	// Final fragment: the whole TLS message is now in hand.
 	sess.inbound = append(sess.inbound, frame.Data...)
+	if len(sess.inbound) > maxReassembly {
+		return nil, true, false
+	}
 	payload := sess.inbound
 	sess.inbound = nil
 	sess.expecting = 0

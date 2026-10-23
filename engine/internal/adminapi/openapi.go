@@ -240,6 +240,15 @@ var summaries = map[string]string{
 	"DELETE /admin/instances/{instanceID}/held-trust-marks":     "Stop publishing a Trust Mark the instance holds.",
 	"POST /admin/instances/{instanceID}/trust-mark-delegations": "Authorise another entity to issue a type of Trust Mark the instance owns.",
 
+	// SAML service providers (6.07).
+	"GET /admin/organizations/{orgID}/saml-providers":                                   "The organisation's SAML service providers and what each is told.",
+	"POST /admin/organizations/{orgID}/saml-providers":                                  "Register a service provider by entity id and ACS URL.",
+	"PATCH /admin/organizations/{orgID}/saml-providers/{providerID}":                    "Choose what is signed, with which algorithm, and an assertion's lifetime.",
+	"PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release":    "Release a local attribute under a SAML attribute name.",
+	"DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release": "Stop releasing a SAML attribute.",
+	"PUT /admin/organizations/{orgID}/saml-providers/{providerID}/group-release":        "Say which groups the provider is told of.",
+	"DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/group-release":     "Stop telling the provider of group membership.",
+
 	// Directory sources (6.07).
 	"GET /admin/organizations/{orgID}/directories":                     "The directories the organisation's accounts follow, and what each last sync did.",
 	"POST /admin/organizations/{orgID}/directories":                    "Register a Google, Entra or LDAP source; it starts in dry run.",

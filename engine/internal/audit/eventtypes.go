@@ -43,6 +43,8 @@ var EventTypes = []string{
 	"admin.relation_granted", "admin.relation_revoked",
 	"admin.resource_server_removed", "admin.resource_server_set",
 	"admin.role_granted", "admin.role_revoked",
+	"admin.saml_attribute_released", "admin.saml_attribute_withdrawn", "admin.saml_group_release_removed",
+	"admin.saml_group_release_set", "admin.saml_provider_added", "admin.saml_signing_set",
 	"admin.scim_group_deprovisioned", "admin.scim_group_provisioned",
 	"admin.scim_source_added", "admin.scim_source_updated", "admin.scim_target_added", "admin.scim_target_synced",
 	"admin.scim_target_updated", "admin.scope_declared",

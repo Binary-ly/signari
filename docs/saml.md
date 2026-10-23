@@ -13,6 +13,10 @@ signari saml add-sp \
 
 Then point the application at `https://auth.example.com/saml/metadata`.
 
+The Admin API registers service providers and sets their signing and their
+attribute and group releases the same way, under
+`/admin/organizations/{orgID}/saml-providers`; see [admin-api.md](admin-api.md).
+
 | Endpoint | Purpose |
 |---|---|
 | `GET /saml/metadata` | what the service provider imports |

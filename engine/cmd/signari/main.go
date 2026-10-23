@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/fips140"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -80,7 +79,6 @@ import (
 	"signari.dev/engine/internal/proxyproto"
 	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/safedial"
-	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/ssf"
@@ -3407,162 +3405,44 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	case acs == "":
 		return fmt.Errorf("give -acs, the AssertionConsumerService URL assertions are POSTed to")
 	}
-	if !strings.HasPrefix(acs, "https://") {
-		return fmt.Errorf("the ACS URL must be https: %q would carry a signed assertion "+
-			"for a real user across the network in the clear", acs)
-	}
-	if strings.Contains(acs, "*") {
-		return fmt.Errorf("%q contains a wildcard. ACS URLs are matched exactly, because "+
-			"anything looser lets a request steer where the assertion is delivered", acs)
-	}
-	if name == "" {
-		name = entityID
-	}
-	switch keyTransport {
-	case "", saml.KeyTransportMGF1P:
-		keyTransport = saml.KeyTransportMGF1P
-	case saml.KeyTransportSHA256:
-		// Not the default, deliberately. Every service provider implements
-		// mgf1p; xmlenc11 rsa-oaep is widely but not universally supported, and
-		// choosing it for one that cannot read it produces assertions that
-		// decrypt nowhere.
-		if encCertPath == "" {
-			return fmt.Errorf("-sp-key-transport only affects encrypted assertions, " +
-				"and no -sp-encryption-cert was given, so nothing would be encrypted")
-		}
-	default:
-		return fmt.Errorf("unknown key transport %q: use rsa-oaep-mgf1p or "+
-			"rsa-oaep-sha256", keyTransport)
-	}
-	switch nameIDFormat {
-	case "", "persistent":
-		nameIDFormat = "persistent"
-	case "emailAddress", "transient":
-	default:
-		return fmt.Errorf("unknown NameID format %q: use persistent, emailAddress or transient",
-			nameIDFormat)
-	}
-
-	// Single logout needs BOTH a place to send to and a certificate to verify
-	// with. A provider configured with a logout URL and no certificate is the
-	// dangerous half-configuration: it looks set up, and the endpoint refuses
-	// every request because there is nothing to check the signature against.
-	var certPEM string
+	spec := store.SAMLProviderSpec{EntityID: entityID, Name: name, ACSURL: acs, NameIDFormat: nameIDFormat,
+		SLOURL: slo, SLOBinding: sloBinding, KeyTransport: keyTransport, WantSignedRequests: wantSignedRequests}
+	// The SIGNING certificate, which verifies its requests, and the ENCRYPTION
+	// one, a different key, which assertions are encrypted to; the store
+	// checks both (store.SAMLProviderSpec.Validate).
 	if certPath != "" {
 		b, err := os.ReadFile(certPath)
 		if err != nil {
 			return fmt.Errorf("reading the service provider certificate: %w", err)
 		}
-		block, _ := pem.Decode(b)
-		if block == nil {
-			return fmt.Errorf("%s is not PEM. Export the provider's SIGNING certificate, "+
-				"not its private key or metadata", certPath)
-		}
-		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
-			return fmt.Errorf("%s did not parse as a certificate: %w", certPath, err)
-		}
-		certPEM = string(b)
+		spec.SigningCertPEM = string(b)
 	}
-	if slo != "" && certPEM == "" {
-		return fmt.Errorf("a logout URL was given with no -sp-cert. A LogoutRequest is " +
-			"acted on only when signed, so without the provider's certificate every " +
-			"logout would be refused -- which looks configured and is not")
-	}
-	if slo != "" && !strings.HasPrefix(slo, "https://") {
-		return fmt.Errorf("the logout URL must be https: %q", slo)
-	}
-	// The ENCRYPTION certificate, which is a different key from the signing one.
-	// A provider signs with one and decrypts with another; treating them as
-	// interchangeable means either encrypting to a key the provider cannot
-	// decrypt with, or encrypting to a key held somewhere it should not be.
-	var encCertPEM string
 	if encCertPath != "" {
 		b, err := os.ReadFile(encCertPath)
 		if err != nil {
 			return fmt.Errorf("reading the service provider encryption certificate: %w", err)
 		}
-		block, _ := pem.Decode(b)
-		if block == nil {
-			return fmt.Errorf("%s is not PEM. Export the provider's ENCRYPTION certificate "+
-				"-- in its SAML metadata it is the KeyDescriptor with use=\"encryption\"",
-				encCertPath)
-		}
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return fmt.Errorf("%s did not parse as a certificate: %w", encCertPath, err)
-		}
-		pub, ok := cert.PublicKey.(*rsa.PublicKey)
-		if !ok {
-			return fmt.Errorf("%s holds a %T key; assertion encryption here needs RSA",
-				encCertPath, cert.PublicKey)
-		}
-		if pub.N.BitLen() < 2048 {
-			return fmt.Errorf("%s is a %d-bit RSA key; 2048 is the minimum",
-				encCertPath, pub.N.BitLen())
-		}
-		// Caught at registration rather than at first login. The same file given
-		// for both is the mistake this separation exists to prevent, and it is
-		// silent otherwise: assertions encrypt fine and the provider cannot read
-		// a single one.
-		if certPEM != "" && strings.TrimSpace(string(b)) == strings.TrimSpace(certPEM) {
-			return fmt.Errorf("the signing and encryption certificates are the same file. " +
-				"Service providers use separate keys for the two")
-		}
-		encCertPEM = string(b)
+		spec.EncryptionCertPEM = string(b)
 	}
-
-	// The binding is stored because it decides how the LogoutResponse is sent
-	// back. Getting it wrong means the provider receives a form POST where it
-	// expects query parameters, or the reverse -- it parses nothing and reports a
-	// logout failure for a session that was in fact ended.
-	switch sloBinding {
-	case "HTTP-Redirect", "HTTP-POST":
-	default:
-		return fmt.Errorf("unknown -slo-binding %q: use HTTP-Redirect or HTTP-POST", sloBinding)
+	if err := spec.Validate(); err != nil {
+		return err
 	}
-	// The same fail-closed rule as the logout URL, for the same reason. Requiring
-	// signed AuthnRequests with no certificate to verify them against means every
-	// login is refused: configured-looking and completely broken.
-	if wantSignedRequests && certPEM == "" {
-		return fmt.Errorf("-want-signed-requests was given with no -sp-cert. There would " +
-			"be nothing to verify a signature against, so every AuthnRequest from this " +
-			"provider would be refused and nobody could sign in through it")
-	}
+	name, nameIDFormat, sloBinding = spec.Name, spec.NameIDFormat, spec.SLOBinding
+	encCertPEM := spec.EncryptionCertPEM
 
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	var id string
-	err = tx.QueryRow(ctx, `
-		INSERT INTO core.saml_providers (org_id, entity_id, display_name, name_id_format,
-		                                 sp_signing_cert, want_authn_requests_signed,
-		                                 sp_encryption_cert, sp_key_transport)
-		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''), $6, NULLIF($7,''), $8)
-		RETURNING id::text`, orgID, entityID, name, nameIDFormat, certPEM,
-		wantSignedRequests, encCertPEM, keyTransport).Scan(&id)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+	if _, err := store.AddSAMLProvider(ctx, tx, orgID, spec); err != nil {
+		if errors.Is(err, store.ErrSAMLEntityTaken) {
 			return fmt.Errorf("a service provider with entity id %q is already registered "+
 				"in this deployment. Entity IDs are unique across organisations: an "+
 				"AuthnRequest names only its entity ID and the SSO endpoint names no "+
 				"organisation, so two registrations would be answered at random", entityID)
 		}
 		return err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.saml_acs_urls (provider_id, url, binding, is_default)
-		VALUES ($1::uuid, $2, 'HTTP-POST', true)`, id, acs); err != nil {
-		return err
-	}
-	if slo != "" {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO core.saml_slo_urls (provider_id, url, binding)
-			VALUES ($1::uuid, $2, $3)`, id, slo, sloBinding); err != nil {
-			return err
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err

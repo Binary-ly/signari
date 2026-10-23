@@ -496,6 +496,36 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
 		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
 			"removed": boolean()}))},
+	"GET /admin/organizations/{orgID}/saml-providers": {http.StatusOK, nil, object([]string{"org_id", "providers"},
+		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "entity_id", "name",
+			"name_id_format", "signature_alg", "enabled", "sign_assertions", "sign_responses", "want_signed_requests",
+			"encrypted", "has_signing_cert", "lifetime_s", "acs_urls", "slo_urls", "attribute_release",
+			"group_release"}, map[string]jsonSchema{"id": uuidStr(), "entity_id": str(), "name": str(),
+			"name_id_format": str(), "signature_alg": str(), "enabled": boolean(), "sign_assertions": boolean(),
+			"sign_responses": boolean(), "want_signed_requests": boolean(), "encrypted": boolean(),
+			"has_signing_cert": boolean(), "lifetime_s": integer(), "acs_urls": arrayOf(str()),
+			"slo_urls": arrayOf(str()), "attribute_release": mapOf(str()),
+			"group_release": nullable(object([]string{"attribute_name", "only"}, map[string]jsonSchema{
+				"attribute_name": str(), "only": arrayOf(str())}))}))})},
+	"POST /admin/organizations/{orgID}/saml-providers": {http.StatusCreated, typeOf[addSAMLProviderRequest](), object(
+		[]string{"id", "entity_id", "name_id_format", "config_version"}, withVersion(map[string]jsonSchema{
+			"id": uuidStr(), "entity_id": str(), "name_id_format": str()}))},
+	"PATCH /admin/organizations/{orgID}/saml-providers/{providerID}": {http.StatusOK, typeOf[patchSAMLProviderRequest](),
+		object([]string{"id", "sign_assertions", "sign_responses", "signature_alg", "config_version"},
+			withVersion(map[string]jsonSchema{"id": uuidStr(), "sign_assertions": boolean(),
+				"sign_responses": boolean(), "signature_alg": str(), "metadata_changed": boolean()}))},
+	"PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release": {http.StatusOK,
+		typeOf[samlAttributeRequest](), object([]string{"id", "saml_attribute", "attribute", "config_version"},
+			withVersion(map[string]jsonSchema{"id": uuidStr(), "saml_attribute": str(), "attribute": str()}))},
+	"DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release": {http.StatusOK, nil, object(
+		[]string{"id", "saml_attribute", "removed", "config_version"}, withVersion(map[string]jsonSchema{
+			"id": uuidStr(), "saml_attribute": str(), "removed": boolean()}))},
+	"PUT /admin/organizations/{orgID}/saml-providers/{providerID}/group-release": {http.StatusOK,
+		typeOf[samlGroupReleaseRequest](), object([]string{"id", "attribute_name", "only", "config_version"},
+			withVersion(map[string]jsonSchema{"id": uuidStr(), "attribute_name": str(), "only": arrayOf(str())}))},
+	"DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/group-release": {http.StatusOK, nil, object(
+		[]string{"id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"id": uuidStr(),
+			"removed": boolean()}))},
 	"GET /admin/organizations/{orgID}/directories": {http.StatusOK, nil, object([]string{"org_id", "sources"},
 		map[string]jsonSchema{"org_id": uuidStr(), "sources": arrayOf(object([]string{"id", "slug", "name", "kind",
 			"on_missing", "enabled", "dry_run", "fetch_groups", "max_deactivate_percent", "last_sync_at",

@@ -170,11 +170,11 @@ var cliAPI = map[string]string{
 	"idp attribute-map":  pending,
 
 	// SAML service providers.
-	"saml add-sp":            pending,
+	"saml add-sp":            "POST /admin/organizations/{orgID}/saml-providers",
 	"saml list":              reads,
-	"saml attribute-release": pending,
-	"saml signing":           pending,
-	"saml group-release":     pending,
+	"saml attribute-release": "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release",
+	"saml signing":           "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
+	"saml group-release":     "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/group-release",
 
 	// Provisioning and directories.
 	"scim-source add":          "POST /admin/organizations/{orgID}/scim-sources",

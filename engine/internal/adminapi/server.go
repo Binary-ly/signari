@@ -300,6 +300,19 @@ func (s *Server) Routes() http.Handler {
 	route("PUT /admin/organizations/{orgID}/access-policy", ScopeOrganizationsWrite, s.putAccessPolicy)
 	route("GET /admin/organizations/{orgID}/sign-in-flow", ScopeConfigRead, s.getSignInFlow)
 	route("PUT /admin/organizations/{orgID}/sign-in-flow", ScopeOrganizationsWrite, s.putSignInFlow)
+	// SAML service providers, `signari saml` (saml.go).
+	route("GET /admin/organizations/{orgID}/saml-providers", ScopeConfigRead, s.listSAMLProviders)
+	route("POST /admin/organizations/{orgID}/saml-providers", ScopeOrganizationsWrite, s.addSAMLProvider)
+	route("PATCH /admin/organizations/{orgID}/saml-providers/{providerID}", ScopeOrganizationsWrite,
+		s.patchSAMLProvider)
+	route("PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release", ScopeOrganizationsWrite,
+		s.putSAMLAttributeRelease)
+	route("DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release", ScopeOrganizationsWrite,
+		s.deleteSAMLAttributeRelease)
+	route("PUT /admin/organizations/{orgID}/saml-providers/{providerID}/group-release", ScopeOrganizationsWrite,
+		s.putSAMLGroupRelease)
+	route("DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/group-release", ScopeOrganizationsWrite,
+		s.deleteSAMLGroupRelease)
 	// Inbound SCIM sources, `signari scim-source` (scimsources.go).
 	route("GET /admin/organizations/{orgID}/scim-sources", ScopeConfigRead, s.listSCIMSources)
 	route("POST /admin/organizations/{orgID}/scim-sources", ScopeOrganizationsWrite, s.addSCIMSource)

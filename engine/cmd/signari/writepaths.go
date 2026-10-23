@@ -56,7 +56,6 @@ import (
 	"signari.dev/engine/internal/passkeys"
 	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/provision"
-	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
 )
@@ -1753,22 +1752,20 @@ func samlAttributeRelease(ctx context.Context, conn *pgx.Conn, entityID, samlNam
 			"attribute name it expects, e.g. http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress)")
 	}
 
-	var providerID, orgID string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text, org_id::text FROM core.saml_providers WHERE entity_id = $1`,
-		entityID).Scan(&providerID, &orgID); err != nil {
-		return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	if err != nil {
+		if errors.Is(err, store.ErrSAMLProviderUnknown) {
+			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+		}
+		return err
 	}
 
 	if remove {
-		tp, err := conn.Exec(ctx,
-			`UPDATE core.saml_providers SET attributes = attributes - $2 WHERE id = $1::uuid`,
-			providerID, samlName)
-		if err != nil {
+		if err := store.RemoveSAMLAttributeRelease(ctx, conn, orgID, providerID, samlName); err != nil {
+			if errors.Is(err, store.ErrSAMLReleaseUnknown) {
+				return fmt.Errorf("%s releases no attribute %q", entityID, samlName)
+			}
 			return err
-		}
-		if tp.RowsAffected() == 0 {
-			return fmt.Errorf("no such provider")
 		}
 		fmt.Printf("%s no longer releases %q\n", entityID, samlName)
 		return nil
@@ -1777,21 +1774,10 @@ func samlAttributeRelease(ctx context.Context, conn *pgx.Conn, entityID, samlNam
 	if attribute == "" {
 		return fmt.Errorf("give -attribute, the local user attribute whose value is released")
 	}
-	// The local attribute must exist. Naming one that does not would store a
-	// release that resolves to nothing on every assertion -- the exact silence
-	// this command exists to end.
-	var exists bool
-	if err := conn.QueryRow(ctx,
-		`SELECT true FROM core.user_attribute_schema WHERE org_id = $1::uuid AND name = $2`,
-		orgID, attribute).Scan(&exists); err != nil {
-		return fmt.Errorf("that organisation has no attribute named %q; declare it "+
-			"before releasing it", attribute)
-	}
-
-	if _, err := conn.Exec(ctx, `
-		UPDATE core.saml_providers
-		   SET attributes = attributes || jsonb_build_object($2::text, $3::text)
-		 WHERE id = $1::uuid`, providerID, samlName, attribute); err != nil {
+	// The local attribute must exist (store.SetSAMLAttributeRelease): one
+	// that does not would resolve to nothing on every assertion -- the exact
+	// silence this command exists to end.
+	if err := store.SetSAMLAttributeRelease(ctx, conn, orgID, providerID, samlName, attribute); err != nil {
 		return err
 	}
 
@@ -1820,88 +1806,32 @@ func samlSigning(ctx context.Context, conn *pgx.Conn, entityID string,
 	if entityID == "" {
 		return fmt.Errorf("give -entity-id")
 	}
-	keyAlg := map[string]string{
-		saml.SignatureAlgRSASHA256: "RS256", saml.SignatureAlgECDSASHA256: "ES256"}[signatureAlg]
-	if signatureAlg != "" && keyAlg == "" {
-		return fmt.Errorf("-signature-alg is rsa-sha256 or ecdsa-sha256, not %q", signatureAlg)
-	}
-	var signA, signR bool
-	if err := conn.QueryRow(ctx, `
-		SELECT sign_assertions, sign_responses FROM core.saml_providers
-		WHERE entity_id = $1`, entityID).Scan(&signA, &signR); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	if err != nil {
+		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
 		}
 		return err
 	}
-	var algArg any
-	if keyAlg != "" {
-		// In the provider's own instance: that is the key set its sign-ins use.
-		var active bool
-		if err := conn.QueryRow(ctx, `
-			SELECT EXISTS (SELECT 1 FROM core.signing_keys k
-			                 JOIN core.organizations o ON o.instance_id = k.instance_id
-			                 JOIN core.saml_providers p ON p.org_id = o.id
-			               WHERE p.entity_id = $2 AND k.algorithm = $1
-			                 AND k.state = 'active' AND k.purpose = 'oidc')`,
-			keyAlg, entityID).Scan(&active); err != nil {
-			return err
-		}
-		if !active {
-			return fmt.Errorf("-signature-alg %s signs with the active %s key and there is "+
-				"none; every sign-in to %s would fail. Add one first: `signari keys rotate -alg %s`",
-				signatureAlg, keyAlg, entityID, keyAlg)
-		}
-		algArg = signatureAlg
-	}
-	if assertions != nil {
-		signA = *assertions
-	}
-	if responses != nil {
-		signR = *responses
-	}
-	if !signA && !signR {
-		return fmt.Errorf("-sign-assertions and -sign-responses cannot both be off: an " +
-			"unsigned assertion inside an unsigned response is a document anyone can " +
-			"write, and the service provider has nothing to check")
-	}
-
-	// 0 means "leave it alone", so a caller changing only the signing flags does
-	// not silently reset a lifetime somebody chose.
-	var lifeArg any
-	if lifetime != 0 {
-		if lifetime < 30 || lifetime > 3600 {
-			return fmt.Errorf("-assertion-lifetime is 30 to 3600 seconds; %d is outside "+
-				"that. Short because an assertion is a bearer credential, and long enough "+
-				"to survive clock skew", lifetime)
-		}
-		lifeArg = lifetime
-	}
-
-	var alg string
-	if err := conn.QueryRow(ctx, `
-		UPDATE core.saml_providers
-		   SET sign_assertions = $2, sign_responses = $3,
-		       lifetime_seconds = COALESCE($4::int, lifetime_seconds),
-		       signature_alg = COALESCE($5::text, signature_alg)
-		 WHERE entity_id = $1
-		 RETURNING signature_alg`, entityID, signA, signR, lifeArg, algArg).Scan(&alg); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
-		}
+	// A zero lifetime leaves it alone, so a caller changing only the signing
+	// flags does not silently reset a lifetime somebody chose; the rules are
+	// store.SetSAMLSigning's.
+	signA, signR, alg, err := store.SetSAMLSigning(ctx, conn, orgID, providerID, store.SAMLSigningChange{
+		Assertions: assertions, Responses: responses, LifetimeSeconds: lifetime, SignatureAlg: signatureAlg})
+	if err != nil {
 		return err
 	}
 
 	fmt.Printf("%s:\n  sign assertions : %t\n  sign responses  : %t\n  signature       : %s\n",
 		entityID, signA, signR, alg)
-	if lifeArg != nil {
+	if lifetime != 0 {
 		fmt.Printf("  lifetime        : %ds\n", lifetime)
 	}
-	if algArg != nil {
+	if signatureAlg != "" {
 		fmt.Printf("\n  The provider checks signatures against the certificates in its copy of\n"+
 			"  the metadata, which are now the %s ones. Give it /saml/metadata?sp=%s\n"+
 			"  before its next sign-in, or every one of them is refused.\n",
-			keyAlg, url.QueryEscape(entityID))
+			signatureAlg, url.QueryEscape(entityID))
 	}
 	return nil
 }
@@ -1918,56 +1848,35 @@ func samlGroupRelease(ctx context.Context, conn *pgx.Conn, entityID, attrName,
 	if entityID == "" {
 		return fmt.Errorf("give -entity-id")
 	}
-	var providerID, orgID string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text, org_id::text FROM core.saml_providers WHERE entity_id = $1`,
-		entityID).Scan(&providerID, &orgID); err != nil {
-		return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	if err != nil {
+		if errors.Is(err, store.ErrSAMLProviderUnknown) {
+			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+		}
+		return err
 	}
 
 	if remove {
-		tp, err := conn.Exec(ctx,
-			`DELETE FROM core.saml_group_release WHERE provider_id = $1::uuid`, providerID)
-		if err != nil {
+		if err := store.StopSAMLGroupRelease(ctx, conn, orgID, providerID); err != nil {
+			if errors.Is(err, store.ErrSAMLReleaseUnknown) {
+				return fmt.Errorf("%s releases no groups already", entityID)
+			}
 			return err
-		}
-		if tp.RowsAffected() == 0 {
-			return fmt.Errorf("%s releases no groups already", entityID)
 		}
 		fmt.Printf("%s no longer receives group membership\n", entityID)
 		return nil
 	}
 
-	names := []string{}
-	for _, g := range strings.Split(only, ",") {
-		if g = strings.TrimSpace(g); g != "" {
-			names = append(names, g)
-		}
+	names := splitList(only)
+	// Every named group must exist (store.SetSAMLGroupRelease): a typo would
+	// silently release nothing, and an allow-list that quietly matches no
+	// group is indistinguishable from one that is working.
+	if err := store.SetSAMLGroupRelease(ctx, conn, orgID, providerID, attrName, names); err != nil {
+		return err
 	}
-	// Every named group must exist. A typo would silently release nothing, and
-	// an allow-list that quietly matches no group is indistinguishable from one
-	// that is working.
-	for _, n := range names {
-		var ok bool
-		if err := conn.QueryRow(ctx,
-			`SELECT true FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
-			orgID, n).Scan(&ok); err != nil {
-			return fmt.Errorf("no group named %q in that organisation", n)
-		}
-	}
-
 	name := strings.TrimSpace(attrName)
 	if name == "" {
 		name = "groups"
-	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.saml_group_release (provider_id, org_id, attribute_name, only_groups)
-		VALUES ($1::uuid, $2::uuid, $3, $4)
-		ON CONFLICT (provider_id) DO UPDATE
-		   SET attribute_name = EXCLUDED.attribute_name,
-		       only_groups    = EXCLUDED.only_groups`,
-		providerID, orgID, name, names); err != nil {
-		return err
 	}
 
 	fmt.Printf("%s receives group membership as %q\n", entityID, name)

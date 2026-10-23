@@ -410,6 +410,66 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/saml-providers", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/saml-providers"
+			},
+			body: func(_ *testing.T, _ *Server, path string) string {
+				return `{"entity_id":"https://drift-` + strings.Split(path, "/")[3] + `.example.test",` +
+					`"acs_url":"https://drift.example.test/acs"}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				_, p := newDriftSAMLProvider(t, s)
+				return p
+			},
+			body: func(*testing.T, *Server, string) string { return `{"lifetime_s":600}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, p := newDriftSAMLProvider(t, s)
+				return p + "/attribute-release"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"saml_attribute":"department","attribute":"department"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org, p := newDriftSAMLProvider(t, s)
+				if err := store.SetSAMLAttributeRelease(context.Background(), s.db, org, p[strings.LastIndex(p, "/")+1:],
+					"department", "department"); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/attribute-release?saml_attribute=department"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/group-release", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, p := newDriftSAMLProvider(t, s)
+				return p + "/group-release"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"only":["drift-group"]}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/group-release", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org, p := newDriftSAMLProvider(t, s)
+				if err := store.SetSAMLGroupRelease(context.Background(), s.db, org, p[strings.LastIndex(p, "/")+1:],
+					"", nil); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/group-release"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations/{orgID}/directories", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/directories"

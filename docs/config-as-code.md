@@ -125,6 +125,18 @@ uma:                          # resource-owner intervention
   owner_intervention: true
   poll_interval: 30s
 
+group_releases:               # which groups an application is told a person is in
+  - client_id: wiki
+    groups: [platform]        # or all_groups: true, never assumed
+  - saml_provider: urn:sharepoint:intranet
+    all_groups: true
+    attribute: memberOf       # groups by default
+
+radius_authorizations:        # what a network device puts a group's members on
+  - group: platform
+    vlan: 20                  # 1 to 4094, and/or filter_id
+    priority: 10              # for someone in several groups, highest first
+
 providers:                    # your own service consulted at a hook, one per hook
   - hook: token_issue         # or authorize
     url: https://hooks.example.com/claims
@@ -362,7 +374,8 @@ Groups, OAuth/OIDC clients and their redirect URIs, SAML service providers and
 their ACS URLs, RADIUS clients, protected hosts, declared scopes, user
 attributes, resource servers, the sign-up rule, claim mappers, prompts, the
 access policy, the sign-in flows, dynamic registration, the WebAuthn policy,
-UMA's owner intervention, extension providers, event subscriptions,
+UMA's owner intervention, group releases to clients and SAML providers, RADIUS
+group authorizations, extension providers, event subscriptions,
 provisioning targets, remote-access connections and identity providers.
 `signari export org` writes all of them, so a
 deployment's export applied to an empty one, with each target's token named by
@@ -389,6 +402,14 @@ returns to the defaults. The plan marks that destructive, because an
 allow-list of authenticator models goes with it. The policy is compared as it
 is stored, so an AAGUID written in capitals is not planned as a change every
 time.
+
+A group release names its groups or says `all_groups`, as a claim mapper names
+its client: membership is authorization data. It is refused for a client or
+provider the organisation does not have, and for a group the organisation or
+the file does not have. With `-prune`, only the file's own groups count,
+because the others are about to be deleted, and a release, sign-up rule,
+provisioning scope or remote-access group naming one of them would point at
+nothing.
 
 An event subscription's `enabled` is left as it is when the file leaves it out.
 When deliveries keep failing, the deployment gives up on a subscription and

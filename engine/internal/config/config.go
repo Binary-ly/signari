@@ -67,6 +67,10 @@ type File struct {
 	WebAuthnPolicy *WebAuthnPolicy `yaml:"webauthn_policy,omitempty"`
 	UMA            *UMA            `yaml:"uma,omitempty"`
 
+	// What is told of group membership (releasekinds.go).
+	GroupReleases        []GroupRelease        `yaml:"group_releases,omitempty"`
+	RADIUSAuthorizations []RADIUSAuthorization `yaml:"radius_authorizations,omitempty"`
+
 	// The kinds holding a secret, which the file names by reference or the
 	// engine mints (secrets.go).
 	Providers         []Provider         `yaml:"providers,omitempty"`

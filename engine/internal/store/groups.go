@@ -274,6 +274,27 @@ func GroupReleaseOf(ctx context.Context, q interface {
 	return only, true, nil
 }
 
+// ClientGroupReleases is every release the organisation's clients have, by
+// client id: the groups, none for every group.
+func ClientGroupReleases(ctx context.Context, q Querier, orgID string) (map[string][]string, error) {
+	rows, err := q.Query(ctx, `SELECT r.client_id, r.only_groups FROM core.client_group_release r
+		JOIN core.clients c ON c.client_id = r.client_id AND c.org_id = $1::uuid`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var id string
+		var only []string
+		if err := rows.Scan(&id, &only); err != nil {
+			return nil, err
+		}
+		out[id] = only
+	}
+	return out, rows.Err()
+}
+
 // StopGroupRelease tells a client of no group membership from its next token,
 // reporting whether it was told of any.
 func StopGroupRelease(ctx context.Context, tx Execer, clientID string) (bool, error) {

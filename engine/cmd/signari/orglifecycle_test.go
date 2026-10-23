@@ -178,6 +178,13 @@ sign_in_flow: |
         - name: password only
           given: {}
           expect: [password, session]
+registration: {max_clients: 7}
+webauthn_policy: {attestation: direct, timeout_seconds: 120}
+uma: {owner_intervention: true}
+group_releases:
+  - {client_id: web-%[1]d, groups: [staff-%[1]d]}
+  - {saml_provider: 'https://sp-%[1]d.example.test/metadata', all_groups: true}
+radius_authorizations: [{group: staff-%[1]d, vlan: 20}]
 providers:
   - {hook: authorize, url: 'https://pdp-%[1]d.example.test/', mode: fail_closed, timeout: 3s}
 event_subscriptions:

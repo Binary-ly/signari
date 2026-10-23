@@ -343,7 +343,7 @@ func (signupSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File,
 	// The groups a new account joins must be the organisation's, or the file's
 	// own, whether the rule is new or not.
 	if want := f.Signup; want != nil {
-		missing, err := missingGroups(ctx, tx, orgID, f, want.Groups)
+		missing, err := missingGroups(ctx, tx, orgID, f, prune, want.Groups)
 		if err != nil {
 			return err
 		}
@@ -381,13 +381,15 @@ func groupNames(f *File) []string {
 }
 
 // missingGroups are the names neither the organisation nor the file has a
-// group of, sorted.
-func missingGroups(ctx context.Context, tx pgx.Tx, orgID string, f *File, names []string) ([]string, error) {
+// group of, sorted. Pruned, the organisation's groups the file leaves out are
+// about to be deleted, so only the file's count.
+func missingGroups(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool, names []string) ([]string,
+	error) {
 	var missing []string
-	err := tx.QueryRow(ctx, `SELECT COALESCE(array_agg(n ORDER BY n), '{}') FROM unnest($2::text[]) n
-		WHERE NOT EXISTS (SELECT 1 FROM core.groups g WHERE g.org_id = $1::uuid AND g.name = n)
-		  AND NOT n = ANY($3::text[])`, orgID, names, groupNames(f)).Scan(&missing)
-	return missing, err
+	err := tx.QueryRow(ctx, `SELECT COALESCE(array_agg(DISTINCT n), '{}') FROM unnest($2::text[]) n
+		WHERE ($4 OR NOT EXISTS (SELECT 1 FROM core.groups g WHERE g.org_id = $1::uuid AND g.name = n))
+		  AND NOT n = ANY($3::text[])`, orgID, names, groupNames(f), prune).Scan(&missing)
+	return sortedCopy(missing), err
 }
 
 func sortedCopy(l []string) []string {

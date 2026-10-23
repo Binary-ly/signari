@@ -169,7 +169,7 @@ func (scimSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, p
 				"for the old address, and would be sent to whoever answers at the new one", at)
 		}
 	}
-	if missing, err := missingGroups(ctx, tx, orgID, f, scopes); err != nil {
+	if missing, err := missingGroups(ctx, tx, orgID, f, prune, scopes); err != nil {
 		return err
 	} else if len(missing) > 0 {
 		return refuse("scim_targets: the organisation has no group %s to limit a target to; declare it in groups",

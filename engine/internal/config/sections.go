@@ -61,6 +61,8 @@ var sections = []section{
 	registrationSection{},
 	webauthnSection{},
 	umaSection{},
+	releaseSection{},
+	radiusAuthSection{},
 	providerSection{},
 	subscriptionSection{},
 	scimSection{},

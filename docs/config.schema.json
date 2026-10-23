@@ -185,6 +185,30 @@
       },
       "type": "object"
     },
+    "GroupRelease": {
+      "additionalProperties": false,
+      "properties": {
+        "all_groups": {
+          "type": "boolean"
+        },
+        "attribute": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "groups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "saml_provider": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "IdPMapping": {
       "additionalProperties": false,
       "properties": {
@@ -414,6 +438,24 @@
         },
         "slug": {
           "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "RADIUSAuthorization": {
+      "additionalProperties": false,
+      "properties": {
+        "filter_id": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer"
+        },
+        "vlan": {
+          "type": "integer"
         }
       },
       "type": "object"
@@ -786,6 +828,12 @@
       },
       "type": "array"
     },
+    "group_releases": {
+      "items": {
+        "$ref": "#/$defs/GroupRelease"
+      },
+      "type": "array"
+    },
     "groups": {
       "items": {
         "$ref": "#/$defs/Group"
@@ -822,6 +870,12 @@
     "rac_connections": {
       "items": {
         "$ref": "#/$defs/RACConnection"
+      },
+      "type": "array"
+    },
+    "radius_authorizations": {
+      "items": {
+        "$ref": "#/$defs/RADIUSAuthorization"
       },
       "type": "array"
     },

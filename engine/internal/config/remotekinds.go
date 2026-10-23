@@ -142,7 +142,7 @@ func (racSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, pr
 			return refuse("%s: %v", w.at(), store.ErrRACCredentialsForAnotherMachine)
 		}
 	}
-	if missing, err := missingGroups(ctx, tx, orgID, f, groups); err != nil {
+	if missing, err := missingGroups(ctx, tx, orgID, f, prune, groups); err != nil {
 		return err
 	} else if len(missing) > 0 {
 		return refuse("rac_connections: the organisation has no group %s to limit a connection to; declare it "+

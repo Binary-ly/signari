@@ -6,6 +6,11 @@ SCIM base URL : <issuer>/scim/v2
 bearer token  : <shown once, stored only as a SHA-256 hash>
 ```
 
+`signari scim-source add` registers an upstream and prints that token; the
+Admin API does the same at `POST /admin/organizations/{orgID}/scim-sources` and
+takes one out of service with `PATCH .../scim-sources/{slug}`. See
+[admin-api.md](admin-api.md).
+
 
 ## PATCH is where every implementation goes wrong
 

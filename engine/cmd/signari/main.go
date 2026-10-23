@@ -11,7 +11,6 @@ import (
 	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -6002,36 +6001,20 @@ func scimSourceAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name,
 		name = slug
 	}
 	// The flag is shared with `scim add`, where it means the same thing in the
-	// other direction.
-	switch onDelete {
-	case "", "deactivate":
-		onDelete = "deactivate"
-	case "delete":
-	default:
+	// other direction. The token is generated, shown once and stored only as
+	// a hash (store.AddSCIMSource).
+	_, token, err := store.AddSCIMSource(ctx, conn, orgID, slug, name, onDelete)
+	switch {
+	case errors.Is(err, store.ErrSCIMSourceOnDelete):
 		return fmt.Errorf("-on-deactivate must be deactivate or delete (got %q)", onDelete)
-	}
-
-	// 32 bytes. This token can create and deactivate every user in the
-	// organisation, so it is generated here rather than chosen, shown once, and
-	// stored only as a hash.
-	raw := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+	case errors.Is(err, store.ErrSCIMSourceExists):
+		return fmt.Errorf("a SCIM source with slug %q already exists in that "+
+			"organisation", slug)
+	case err != nil:
 		return err
 	}
-	token := base64.RawURLEncoding.EncodeToString(raw)
-	sum := sha256.Sum256([]byte(token))
-
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.scim_sources (org_id, slug, display_name, token_hash, on_delete)
-		VALUES ($1::uuid, $2, $3, $4, $5)
-		RETURNING id::text`,
-		orgID, slug, name, sum[:], onDelete).Scan(&id); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a SCIM source with slug %q already exists in that "+
-				"organisation", slug)
-		}
-		return err
+	if onDelete == "" {
+		onDelete = "deactivate"
 	}
 
 	fmt.Printf("registered %s\n", name)

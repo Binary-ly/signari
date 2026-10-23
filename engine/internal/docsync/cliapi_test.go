@@ -177,9 +177,9 @@ var cliAPI = map[string]string{
 	"saml group-release":     pending,
 
 	// Provisioning and directories.
-	"scim-source add":          pending,
-	"scim-source disable":      pending,
-	"scim-source enable":       pending,
+	"scim-source add":          "POST /admin/organizations/{orgID}/scim-sources",
+	"scim-source disable":      "PATCH /admin/organizations/{orgID}/scim-sources/{slug}",
+	"scim-source enable":       "PATCH /admin/organizations/{orgID}/scim-sources/{slug}",
 	"scim-source list":         reads,
 	"scim add":                 "POST /admin/organizations/{orgID}/scim-targets",
 	"scim enable":              "PATCH /admin/organizations/{orgID}/scim-targets/{slug}",

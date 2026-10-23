@@ -240,6 +240,11 @@ var summaries = map[string]string{
 	"DELETE /admin/instances/{instanceID}/held-trust-marks":     "Stop publishing a Trust Mark the instance holds.",
 	"POST /admin/instances/{instanceID}/trust-mark-delegations": "Authorise another entity to issue a type of Trust Mark the instance owns.",
 
+	// Inbound SCIM sources (6.07).
+	"GET /admin/organizations/{orgID}/scim-sources":          "The upstreams that provision people into the organisation; never a token.",
+	"POST /admin/organizations/{orgID}/scim-sources":         "Register an upstream; its bearer token is shown once.",
+	"PATCH /admin/organizations/{orgID}/scim-sources/{slug}": "Take an upstream out of service or back.",
+
 	// Provisioning targets (6.07).
 	"GET /admin/organizations/{orgID}/scim-targets":                          "The systems the organisation's people are written out to; never a token.",
 	"POST /admin/organizations/{orgID}/scim-targets":                         "Register a SCIM, Google or Entra target; nothing is sent until it is synced.",

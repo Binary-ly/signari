@@ -494,6 +494,17 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
 		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
 			"removed": boolean()}))},
+	"GET /admin/organizations/{orgID}/scim-sources": {http.StatusOK, nil, object([]string{"org_id", "sources"},
+		map[string]jsonSchema{"org_id": uuidStr(), "sources": arrayOf(object([]string{"id", "slug", "name",
+			"on_delete", "enabled", "last_seen_at", "linked"}, map[string]jsonSchema{"id": uuidStr(), "slug": str(),
+			"name": str(), "on_delete": str(), "enabled": boolean(), "last_seen_at": nullable(dateTime()),
+			"linked": integer()}))})},
+	"POST /admin/organizations/{orgID}/scim-sources": {http.StatusCreated, typeOf[addSCIMSourceRequest](), object(
+		[]string{"id", "slug", "token", "config_version"}, withVersion(map[string]jsonSchema{"id": uuidStr(),
+			"slug": str(), "token": str()}))},
+	"PATCH /admin/organizations/{orgID}/scim-sources/{slug}": {http.StatusOK, typeOf[patchSCIMSourceRequest](), object(
+		[]string{"slug", "enabled", "config_version"}, withVersion(map[string]jsonSchema{"slug": str(),
+			"enabled": boolean()}))},
 	"GET /admin/organizations/{orgID}/scim-targets": {http.StatusOK, nil, object([]string{"org_id", "targets"},
 		map[string]jsonSchema{"org_id": uuidStr(), "targets": arrayOf(object([]string{"id", "slug", "name", "kind",
 			"base_url", "on_deactivate", "scope_group", "dry_run", "enabled", "linked", "should_be_gone",

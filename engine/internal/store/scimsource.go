@@ -2,7 +2,12 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -104,14 +109,8 @@ func SetSCIMSourceEnabled(ctx context.Context, db interface {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	tag, err := tx.Exec(ctx, `
-		UPDATE core.scim_sources SET enabled = $3
-		 WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, enabled)
-	if err != nil {
+	if err := SetSCIMSourceEnabledIn(ctx, tx, orgID, slug, enabled); err != nil {
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrSCIMSourceUnknown
 	}
 	if err := audit.Write(ctx, tx, audit.Event{
 		Type: "admin.scim_source_updated", OrgID: orgID,
@@ -120,6 +119,94 @@ func SetSCIMSourceEnabled(ctx context.Context, db interface {
 		return fmt.Errorf("auditing the change: %w", err)
 	}
 	return tx.Commit(ctx)
+}
+
+// SetSCIMSourceEnabledIn is SetSCIMSourceEnabled in the caller's
+// transaction, which writes its own record: the Admin API's names the token.
+func SetSCIMSourceEnabledIn(ctx context.Context, q Execer, orgID, slug string, enabled bool) error {
+	tag, err := q.Exec(ctx, `
+		UPDATE core.scim_sources SET enabled = $3
+		 WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, enabled)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSCIMSourceUnknown
+	}
+	return nil
+}
+
+// ErrSCIMSourceExists is a slug the organisation already gave a source.
+var ErrSCIMSourceExists = errors.New("a SCIM source with that slug already exists in that organisation")
+
+// ErrSCIMSourceOnDelete is a deprovisioning policy that is neither.
+var ErrSCIMSourceOnDelete = errors.New("on delete is deactivate or delete")
+
+// AddSCIMSource registers an upstream that may provision people into the
+// organisation, and returns its bearer token, the one time it exists in the
+// clear: 32 random bytes, stored only as a hash. It can create and deactivate
+// every user in the organisation, so it is generated rather than chosen.
+// onDelete is deactivate (the default), which keeps a person's history, or
+// delete, which destroys it.
+func AddSCIMSource(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID, slug, name, onDelete string) (id, token string, err error) {
+	switch onDelete {
+	case "", "deactivate":
+		onDelete = "deactivate"
+	case "delete":
+	default:
+		return "", "", ErrSCIMSourceOnDelete
+	}
+	if name == "" {
+		name = slug
+	}
+	raw := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+		return "", "", err
+	}
+	token = base64.RawURLEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(token))
+	if err := q.QueryRow(ctx, `
+		INSERT INTO core.scim_sources (org_id, slug, display_name, token_hash, on_delete)
+		VALUES ($1::uuid, $2, $3, $4, $5)
+		RETURNING id::text`, orgID, slug, name, sum[:], onDelete).Scan(&id); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return "", "", ErrSCIMSourceExists
+		}
+		return "", "", err
+	}
+	return id, token, nil
+}
+
+// SCIMSourceRow is one inbound source, without its token.
+type SCIMSourceRow struct {
+	ID, Slug, Name, OnDelete string
+	Enabled                  bool
+	LastSeenAt               *time.Time
+	Linked                   int
+}
+
+// SCIMSources lists an organisation's inbound sources by slug, with when
+// each last called and how many people it provisioned.
+func SCIMSources(ctx context.Context, q Querier, orgID string) ([]SCIMSourceRow, error) {
+	rows, err := q.Query(ctx, `
+		SELECT s.id::text, s.slug, s.display_name, s.on_delete, s.enabled, s.last_seen_at,
+		       (SELECT count(*) FROM core.scim_source_links l WHERE l.source_id = s.id)
+		  FROM core.scim_sources s WHERE s.org_id = $1::uuid ORDER BY s.slug`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SCIMSourceRow
+	for rows.Next() {
+		var s SCIMSourceRow
+		if err := rows.Scan(&s.ID, &s.Slug, &s.Name, &s.OnDelete, &s.Enabled, &s.LastSeenAt, &s.Linked); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 // FindSCIMSourceByToken resolves a bearer token hash to its source, of an

@@ -292,6 +292,10 @@ func (s *Server) Routes() http.Handler {
 	route("PUT /admin/organizations/{orgID}/access-policy", ScopeOrganizationsWrite, s.putAccessPolicy)
 	route("GET /admin/organizations/{orgID}/sign-in-flow", ScopeConfigRead, s.getSignInFlow)
 	route("PUT /admin/organizations/{orgID}/sign-in-flow", ScopeOrganizationsWrite, s.putSignInFlow)
+	// Inbound SCIM sources, `signari scim-source` (scimsources.go).
+	route("GET /admin/organizations/{orgID}/scim-sources", ScopeConfigRead, s.listSCIMSources)
+	route("POST /admin/organizations/{orgID}/scim-sources", ScopeOrganizationsWrite, s.addSCIMSource)
+	route("PATCH /admin/organizations/{orgID}/scim-sources/{slug}", ScopeOrganizationsWrite, s.patchSCIMSource)
 	// The transmitters whose Shared Signals events are acted on, `signari ssf
 	// add-source` (ssf.go).
 	route("GET /admin/organizations/{orgID}/ssf-sources", ScopeConfigRead, s.listSources)

@@ -409,6 +409,24 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/scim-sources", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/scim-sources"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"slug":"drift"}` },
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/scim-sources/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, _, err := store.AddSCIMSource(context.Background(), s.db, org, "drift", "", ""); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/scim-sources/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
 			name: "POST /admin/organizations/{orgID}/scim-targets", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/scim-targets"

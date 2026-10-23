@@ -42,7 +42,7 @@ var EventTypes = []string{
 	"admin.resource_server_removed", "admin.resource_server_set",
 	"admin.role_granted", "admin.role_revoked",
 	"admin.scim_group_deprovisioned", "admin.scim_group_provisioned",
-	"admin.scim_source_updated", "admin.scim_target_added", "admin.scim_target_synced",
+	"admin.scim_source_added", "admin.scim_source_updated", "admin.scim_target_added", "admin.scim_target_synced",
 	"admin.scim_target_updated", "admin.scope_declared",
 	"admin.scope_deleted", "admin.session_revoked", "admin.sessions_revoked",
 	"admin.sign_in_flow_applied", "admin.signing_keys_retired", "admin.signing_keys_rotated",

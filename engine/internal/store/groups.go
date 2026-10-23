@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -209,10 +210,39 @@ func RemoveGroupMember(ctx context.Context, conn *pgx.Conn, orgID, groupName, us
 	return tag.RowsAffected() > 0, nil
 }
 
+// ErrReleaseClientUnknown is a client the organisation does not have, so its
+// group release is not the organisation's to set.
+var ErrReleaseClientUnknown = errors.New("no client of that id in the organisation")
+
+// ErrReleaseGroupUnknown is a group named in a release that the organisation
+// does not have: released, it would release nothing, silently.
+var ErrReleaseGroupUnknown = errors.New("no group of that name in the organisation")
+
 // ReleaseGroupsToClient records that a client may see group membership: of
 // only those groups, or of every group when only is empty. conn is the
 // command's connection or the Admin API's transaction.
-func ReleaseGroupsToClient(ctx context.Context, conn Execer, orgID, clientID string, only []string) error {
+//
+// The client must be the organisation's, and each group too (0.42). The row is
+// keyed by client id alone, so the command, given another organisation's
+// client, wrote that client's release under this organisation's id.
+func ReleaseGroupsToClient(ctx context.Context, conn outpostDB, orgID, clientID string, only []string) error {
+	var ours bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.clients WHERE client_id = $1 AND org_id = $2::uuid)`,
+		clientID, orgID).Scan(&ours); err != nil {
+		return err
+	}
+	if !ours {
+		return ErrReleaseClientUnknown
+	}
+	for _, g := range only {
+		id, err := GroupIDNamed(ctx, conn, orgID, g)
+		if err != nil {
+			return err
+		}
+		if id == "" {
+			return fmt.Errorf("%w: %q", ErrReleaseGroupUnknown, g)
+		}
+	}
 	// A nil slice encodes as SQL NULL, not as an empty array, and the column is
 	// NOT NULL -- so "release every group" (the nil case) failed outright while
 	// "release these two" worked. The empty array is the meaningful value here:

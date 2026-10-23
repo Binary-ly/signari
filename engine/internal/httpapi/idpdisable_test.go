@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"signari.dev/engine/internal/store"
 )
 
@@ -17,14 +20,38 @@ import (
 // column and its readers existed from the start, and nothing could set it, so
 // none of this was reachable without SQL.
 
-func configVersion(t *testing.T, f *signInFixture) int64 {
-	t.Helper()
-	var v int64
-	if err := f.pool.QueryRow(context.Background(),
-		`SELECT version FROM core.config_version WHERE id = true`).Scan(&v); err != nil {
-		t.Fatal(err)
+// bumpWatch begins transactions on a pool and counts the ones that moved the
+// configuration version themselves. The count is read inside each
+// transaction, just before it commits, while it still holds the version's
+// row: comparing the version before and after across the whole test counted
+// every bump another package's test made against the same database meanwhile,
+// and failed whenever one did.
+type bumpWatch struct {
+	pool   *pgxpool.Pool
+	t      *testing.T
+	bumped int
+}
+
+func (b *bumpWatch) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := b.pool.Begin(ctx)
+	return &bumpCheckedTx{Tx: tx, watch: b}, err
+}
+
+type bumpCheckedTx struct {
+	pgx.Tx
+	watch *bumpWatch
+}
+
+func (tx *bumpCheckedTx) Commit(ctx context.Context) error {
+	var own bool
+	if err := tx.Tx.QueryRow(ctx, `SELECT xmin = pg_current_xact_id()::xid FROM core.config_version
+		WHERE id = true`).Scan(&own); err != nil {
+		tx.watch.t.Fatal(err)
 	}
-	return v
+	if own {
+		tx.watch.bumped++
+	}
+	return tx.Tx.Commit(ctx)
 }
 
 func TestADisabledProviderClosesEveryWayInThroughIt(t *testing.T) {
@@ -38,14 +65,14 @@ func TestADisabledProviderClosesEveryWayInThroughIt(t *testing.T) {
 		return rec
 	}
 
-	before := configVersion(t, p.f)
+	watch := &bumpWatch{pool: p.f.pool, t: t}
 	for _, slug := range []string{p.oidc, p.saml} {
-		if _, err := store.SetIdentityProviderEnabled(ctx, p.f.pool, slug, false); err != nil {
+		if _, err := store.SetIdentityProviderEnabled(ctx, watch, slug, false); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if after := configVersion(t, p.f); after != before+2 {
-		t.Errorf("the configuration version moved %d -> %d over two changes", before, after)
+	if watch.bumped != 2 {
+		t.Errorf("%d of two changes moved the configuration version", watch.bumped)
 	}
 
 	page := p.render(authz)

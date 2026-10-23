@@ -50,7 +50,7 @@ var cliAPI = map[string]string{
 
 	// Declarative configuration: files read and applied from where they are kept.
 	"plan":  reads,
-	"apply": pending,
+	"apply": "POST /admin/organizations/{orgID}/config",
 
 	// Instances and organisations.
 	"instance create":            cliOnly("a new issuer is a deployment decision, made where its root key is"),

@@ -142,6 +142,20 @@ func GroupIDNamed(ctx context.Context, q interface {
 	return id, err
 }
 
+// GroupMayImpersonate reports whether the organisation's group of that name
+// lets its members impersonate others; false for no such group.
+func GroupMayImpersonate(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID, name string) (bool, error) {
+	var may bool
+	err := q.QueryRow(ctx, `SELECT may_impersonate FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
+		orgID, name).Scan(&may)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	return may, err
+}
+
 // CreateGroup adds a group.
 func CreateGroup(ctx context.Context, conn *pgx.Conn, orgID, name, displayName, description string) (string, error) {
 	if displayName == "" {

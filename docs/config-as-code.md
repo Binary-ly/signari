@@ -5,6 +5,12 @@ signari plan  -f signari.yaml     # what would change
 signari apply -f signari.yaml     # make it so
 ```
 
+The Admin API takes the same file at `POST /admin/organizations/{orgID}/config`:
+`"dry_run": true` answers the plan and the version it was computed against,
+and an apply sent with that version as `If-Match` is refused if anything
+changed since, so what is applied is what was reviewed. See
+[admin-api.md](admin-api.md).
+
 ```yaml
 version: 1
 org: 25924b75-63ad-4dc3-bdeb-4791dcffbdbe

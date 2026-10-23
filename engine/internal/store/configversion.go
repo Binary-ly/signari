@@ -24,3 +24,14 @@ func LockConfigVersion(ctx context.Context, tx pgx.Tx) error {
 	}
 	return nil
 }
+
+// CurrentConfigVersion reads the version without locking it, for an answer
+// computed from what follows: read first, so a write committed in between
+// makes the version stale rather than the answer newer than its tag.
+func CurrentConfigVersion(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}) (int64, error) {
+	var v int64
+	err := q.QueryRow(ctx, `SELECT version FROM core.config_version WHERE id = true`).Scan(&v)
+	return v, err
+}

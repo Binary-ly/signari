@@ -230,6 +230,9 @@ var summaries = map[string]string{
 	"GET /admin/organizations/{orgID}/sign-in-flow":  "The sign-in flows applied; none runs the built-in flows.",
 	"PUT /admin/organizations/{orgID}/sign-in-flow":  "Apply a flow document once it loads and its tests pass.",
 
+	// Configuration as code (6.07).
+	"POST /admin/organizations/{orgID}/config": "Plan a configuration file, or apply it in one transaction.",
+
 	// Remote-access connections (6.07).
 	"GET /admin/organizations/{orgID}/rac-connections":          "The machines people reach through the browser; never a credential.",
 	"POST /admin/organizations/{orgID}/rac-connections":         "Register a machine, sealing its credentials.",

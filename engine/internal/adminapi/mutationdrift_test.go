@@ -405,6 +405,20 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			// A group the organisation does not have, so the plan creates it.
+			name: "POST /admin/organizations/{orgID}/config", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/config"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				b, err := json.Marshal(map[string]string{"document": "version: 1\ngroups:\n  - name: drift\n"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(b)
+			},
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/access-policy", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/access-policy"

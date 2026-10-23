@@ -490,6 +490,12 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
 		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
 			"removed": boolean()}))},
+	"POST /admin/organizations/{orgID}/config": {http.StatusOK, typeOf[applyConfigRequest](), object(
+		[]string{"dry_run", "changes", "create", "update", "delete", "config_version"}, withVersion(
+			map[string]jsonSchema{"dry_run": boolean(), "changes": arrayOf(object([]string{"action", "kind", "name",
+				"detail", "destructive"}, map[string]jsonSchema{"action": str(), "kind": str(), "name": str(),
+				"detail": str(), "destructive": boolean()})), "create": integer(), "update": integer(),
+				"delete": integer()}))},
 	"GET /admin/organizations/{orgID}/access-policy": {http.StatusOK, nil, appliedDocumentSchema},
 	"PUT /admin/organizations/{orgID}/access-policy": {http.StatusOK, typeOf[putDocumentRequest](), object(
 		[]string{"org_id", "summary", "config_version"}, withVersion(map[string]jsonSchema{"org_id": uuidStr(),

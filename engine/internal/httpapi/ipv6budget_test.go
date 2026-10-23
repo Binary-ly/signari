@@ -20,7 +20,7 @@ import (
 // along, twenty more. The budget is the /64's.
 func TestOneIPv6SubnetSharesOneSignInBudget(t *testing.T) {
 	f := newSignInFixture(t)
-	clearOfWindowEdge(t, signInPerIPWindow)
+	start := clearOfWindowEdge(t, signInPerIPWindow)
 
 	// A /64 no other test uses, so its bucket starts empty.
 	n := time.Now().UnixNano()
@@ -63,7 +63,8 @@ func TestOneIPv6SubnetSharesOneSignInBudget(t *testing.T) {
 	}
 	if rec := attempt(subnet+"::ffff", fmt.Sprintf("nobody-%d-x@example.test", n), "wrong"); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("the next address in the same /64 gave %d after %d failures from its "+
-			"neighbours, want 429: the budget resets by changing address", rec.Code, signInPerIPLimit)
+			"neighbours, want 429: the budget resets by changing address%s", rec.Code, signInPerIPLimit,
+			windowTurned(start, signInPerIPWindow))
 	}
 	// The neighbouring /64 is another network, and is not charged.
 	neighbour := fmt.Sprintf("2001:db8:%x:%x::1", n%0xffff, ((n/0xffff)+1)%0xffff)

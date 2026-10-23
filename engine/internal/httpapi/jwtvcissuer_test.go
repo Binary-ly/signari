@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,15 @@ func TestTheWellKnownPathIsInsertedNotAppended(t *testing.T) {
 // credential issuer metadata follows.
 func TestNoCredentialsMeansNoIssuerMetadata(t *testing.T) {
 	f := newTokenFixture(t)
+	// The fixture's own instance, which defines no credential. A server told
+	// none serves the whole database, so this read every credential any
+	// package's test had defined at that moment, and failed when one had.
+	var instance string
+	if err := f.pool.QueryRow(context.Background(), `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, f.orgID).Scan(&instance); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.SetInstance(instance)
 	req := httptest.NewRequest(http.MethodGet, jwtVCIssuerPath(f.srv.cfg.Issuer), nil)
 	rec := httptest.NewRecorder()
 	f.srv.Routes().ServeHTTP(rec, req)

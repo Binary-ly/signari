@@ -1,0 +1,13 @@
+{
+  "name": "@signari/admin",
+  "version": "0.1.0",
+  "description": "A client of the Signari Admin API, generated from its OpenAPI document",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "files": ["src"],
+  "license": "AGPL-3.0-only",
+  "engines": { "node": ">=23.6" },
+  "scripts": {
+    "test": "node --test test/client.test.ts"
+  }
+}

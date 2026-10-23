@@ -50,6 +50,8 @@ var clientsOutsideSafedial = map[string]string{
 	"engine/cmd/signari/apiclient.go": "the operator's CLI calling the Admin API at the address they " +
 		"type, usually on their own network, which safedial refuses by design; not the engine making a " +
 		"request. It follows no redirect and sends its token in the clear only to loopback",
+	"engine/internal/sdkgen/golang.go": "text the generator writes into the Go client operators' own " +
+		"programs import (sdk/go), calling their Admin API; the engine makes no request with it",
 }
 
 func TestEveryOutboundClientIsSafedialsOrListed(t *testing.T) {

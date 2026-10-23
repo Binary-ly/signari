@@ -18,6 +18,7 @@ import (
 	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oid4vci"
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/provider"
@@ -408,6 +409,62 @@ func allMutatingRoutes() []mutatingRoute {
 				return "/admin/groups/" + group + "/radius"
 			},
 			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/credential-configurations/{configID}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				o, _, _, _ := newDriftWallet(t, s)
+				return "/admin/organizations/" + o + "/credential-configurations/drift-staff"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"vct":"https://drift.example.test/staff","always":["email"]}`
+			},
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/credential-proof-roots/{name}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				o, _, _, _ := newDriftWallet(t, s)
+				return "/admin/organizations/" + o + "/credential-proof-roots/drift"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				ca, _ := testCertPEM(t, true)
+				b, _ := json.Marshal(map[string]string{"certificate": ca})
+				return string(b)
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				o, _, _, _ := newDriftWallet(t, s)
+				ca, _ := testCertPEM(t, true)
+				der, err := store.ParseProofRootPEM([]byte(ca))
+				if err == nil {
+					err = store.SetCredentialProofRoot(context.Background(), s.db, o, "drift", der)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + o + "/credential-proof-roots/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/users/{userID}/credential-offers", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				_, _, _, u := newDriftWallet(t, s)
+				return "/admin/users/" + u + "/credential-offers"
+			},
+			// The wallet client newDriftWallet registered beside the person.
+			body: func(t *testing.T, s *Server, path string) string {
+				var client string
+				if err := s.db.QueryRow(context.Background(), `SELECT c.client_id FROM core.clients c
+					JOIN core.users u ON u.org_id = c.org_id
+					WHERE u.id = $1::uuid AND $2 = ANY(c.grant_types)`, strings.Split(path, "/")[3],
+					oid4vci.GrantType).Scan(&client); err != nil {
+					t.Fatal(err)
+				}
+				return `{"client_id":"` + client + `","credential_configurations":["drift-id"]}`
+			},
 		},
 		{
 			name: "PUT /admin/users/{userID}/identity-links/{slug}", method: http.MethodPut,

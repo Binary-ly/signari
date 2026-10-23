@@ -251,6 +251,9 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/users/{userID}/identity-links", ScopeUsersRead, s.listIdentityLinks)
 	privileged("PUT /admin/users/{userID}/identity-links/{slug}", ScopeUsersWrite, targetUser, s.putIdentityLink)
 	privileged("DELETE /admin/users/{userID}/identity-links/{slug}", ScopeUsersWrite, targetUser, s.deleteIdentityLink)
+	// And a credential offer, which whoever holds it redeems into a token
+	// for the person (credentialadmin.go).
+	privileged("POST /admin/users/{userID}/credential-offers", ScopeUsersWrite, targetUser, s.offerCredential)
 	// Invitations. users:write, because an accepted one makes an account; a
 	// group it names is checked as adding a member is (invitations.go).
 	route("GET /admin/invitations", ScopeUsersRead, s.listInvitations)
@@ -297,6 +300,16 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/attesters", ScopeConfigRead, s.listAttesters)
 	route("PUT /admin/organizations/{orgID}/attesters/{name}", ScopeOrganizationsWrite, s.putAttester)
 	route("DELETE /admin/organizations/{orgID}/attesters/{name}", ScopeOrganizationsWrite, s.deleteAttester)
+	// OID4VCI issuance, `signari credential` (credentialadmin.go).
+	route("GET /admin/organizations/{orgID}/credential-configurations", ScopeConfigRead,
+		s.listCredentialConfigurations)
+	route("PUT /admin/organizations/{orgID}/credential-configurations/{configID}", ScopeOrganizationsWrite,
+		s.putCredentialConfiguration)
+	route("GET /admin/organizations/{orgID}/credential-proof-roots", ScopeConfigRead, s.listCredentialProofRoots)
+	route("PUT /admin/organizations/{orgID}/credential-proof-roots/{name}", ScopeOrganizationsWrite,
+		s.putCredentialProofRoot)
+	route("DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}", ScopeOrganizationsWrite,
+		s.deleteCredentialProofRoot)
 	// RFC 9396 authorization details types, `signari rar register` (rar.go).
 	route("GET /admin/organizations/{orgID}/authorization-detail-types", ScopeConfigRead, s.listDetailTypes)
 	route("PUT /admin/organizations/{orgID}/authorization-detail-types", ScopeOrganizationsWrite, s.putDetailType)

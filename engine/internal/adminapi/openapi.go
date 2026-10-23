@@ -198,6 +198,14 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/attesters/{name}":    "Trust an attester's public keys, or replace them.",
 	"DELETE /admin/organizations/{orgID}/attesters/{name}": "Stop trusting an attester.",
 
+	// OID4VCI issuance (6.07).
+	"GET /admin/organizations/{orgID}/credential-configurations":            "The credentials the organisation issues.",
+	"PUT /admin/organizations/{orgID}/credential-configurations/{configID}": "Define a credential, or redefine it.",
+	"GET /admin/organizations/{orgID}/credential-proof-roots":               "The roots an x5c key proof may verify to.",
+	"PUT /admin/organizations/{orgID}/credential-proof-roots/{name}":        "Trust a CA for x5c key proofs.",
+	"DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}":     "Stop trusting a CA for x5c key proofs.",
+	"POST /admin/users/{userID}/credential-offers":                          "Mint a Credential Offer for the person.",
+
 	// RFC 9396 authorization details types (6.07).
 	"GET /admin/organizations/{orgID}/authorization-detail-types":    "The authorization details types the organisation accepts, and which clients may ask for each.",
 	"PUT /admin/organizations/{orgID}/authorization-detail-types":    "Register a type, or replace its fields.",

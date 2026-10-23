@@ -14,7 +14,6 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -38,7 +37,6 @@ import (
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/provision"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -7713,6 +7711,10 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 			"section 3.5 says a pre-authorized code MUST be short lived, and it is "+
 			"redeemed within seconds of being scanned (got %s)", ttl)
 	}
+	if wantTxCode && (txLength < 4 || txLength > 12) {
+		return fmt.Errorf("-tx-code-length must be 4 to 12 digits: shorter is guessable within the "+
+			"attempt limit, and longer is something nobody types correctly at a counter (got %d)", txLength)
+	}
 
 	// The Credential Issuer identifier the wallet will fetch metadata from.
 	//
@@ -7732,31 +7734,6 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 			"deployment is also the credential issuer", err)
 	}
 
-	// The client must exist, and must belong to this organisation. Checked now
-	// rather than at redemption, where the wallet holder would be the one to
-	// discover it — standing at a counter, with nothing to do about it.
-	var clientOrg string
-	var clientGrants []string
-	if err := conn.QueryRow(ctx,
-		`SELECT org_id::text, grant_types FROM core.clients WHERE client_id = $1`,
-		clientID).Scan(&clientOrg, &clientGrants); err != nil {
-		return fmt.Errorf("no client %q is registered; the offer would redeem into "+
-			"a token with no audience", clientID)
-	}
-	if clientOrg != orgID {
-		return fmt.Errorf("client %q belongs to a different organisation than the "+
-			"holder; a token minted for it would cross a tenant boundary", clientID)
-	}
-	// Checked at MINT time, not only at redemption. The person who finds out
-	// otherwise is the holder, standing wherever they scanned the QR code, with
-	// nothing they can do about it.
-	if !slices.Contains(clientGrants, oid4vci.GrantType) {
-		return fmt.Errorf("client %q is not registered for the pre-authorized code "+
-			"grant, so this offer could not be redeemed. Add it with:\n"+
-			"  signari client set-grants -client-id %s -grant-types %s",
-			clientID, clientID, oid4vci.GrantType)
-	}
-
 	var userID string
 	if err := conn.QueryRow(ctx, `
 		SELECT id::text FROM core.users
@@ -7765,69 +7742,19 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 		return fmt.Errorf("no user %q in that organisation", email)
 	}
 
-	code, codeHash, err := store.NewPreAuthCode()
+	// The client, its grant and the configurations are checked at mint time in
+	// store.MintCredentialOffer, as the Admin API checks them: the person who
+	// finds out otherwise is the holder, standing wherever they scanned it.
+	minted, err := store.MintCredentialOffer(ctx, conn, orgID, store.OfferSpec{UserID: userID,
+		ClientID: clientID, CredentialIssuer: ci, ConfigIDs: ids, TxCode: wantTxCode, TxLength: txLength, TTL: ttl})
+	if errors.Is(err, store.ErrOfferClientCannotRedeem) {
+		return fmt.Errorf("%w. Add it with:\n  signari client set-grants -client-id %s -grant-types %s",
+			err, clientID, oid4vci.GrantType)
+	}
 	if err != nil {
 		return err
 	}
-
-	var tx *oid4vci.TxCode
-	var txPlain string
-	var txHash []byte
-	if wantTxCode {
-		txPlain, txHash, err = store.NewTxCode(txLength)
-		if err != nil {
-			return err
-		}
-		tx = &oid4vci.TxCode{
-			InputMode: oid4vci.InputNumeric,
-			Length:    txLength,
-			Description: fmt.Sprintf("Enter the %d-digit code from the issuer",
-				txLength),
-		}
-	}
-
-	// §4.1.1: the ids "each identify one of the keys in the name/value pairs
-	// stored in the credential_configurations_supported Credential Issuer
-	// metadata". Checked here, where the configurations are reachable.
-	//
-	// Without it a typo produces a perfectly well-formed offer. The holder scans
-	// it, authenticates, redeems the pre-authorized code -- and the credential
-	// endpoint answers unsupported_credential_type, after everything they were
-	// asked to do has been done correctly. The failure is maximally late and
-	// lands on the wallet, which is the one component that did nothing wrong.
-	configured, cerr := store.CredentialConfigurations(ctx, conn, orgID)
-	if cerr != nil {
-		return fmt.Errorf("loading credential configurations: %w", cerr)
-	}
-	var unknown []string
-	for _, id := range ids {
-		if _, ok := configured[id]; !ok {
-			unknown = append(unknown, id)
-		}
-	}
-	if len(unknown) > 0 {
-		known := make([]string, 0, len(configured))
-		for id := range configured {
-			known = append(known, id)
-		}
-		sort.Strings(known)
-		if len(known) == 0 {
-			return fmt.Errorf("this organisation issues no credentials, so an offer "+
-				"naming %s could not be redeemed. Configure one first with "+
-				"`signari credential define`", strings.Join(unknown, ", "))
-		}
-		return fmt.Errorf("no credential configuration named %s; this issuer "+
-			"advertises %s", strings.Join(unknown, ", "), strings.Join(known, ", "))
-	}
-
-	offer, err := oid4vci.BuildOffer(ci, ids, code, tx)
-	if err != nil {
-		return err
-	}
-	if err := store.NewPreAuthorizedCode(ctx, conn, orgID, userID, clientID,
-		codeHash, ids, tx, txHash, ttl); err != nil {
-		return err
-	}
+	offer, txPlain := minted.Offer, minted.TxCode
 
 	blob, err := json.Marshal(offer)
 	if err != nil {
@@ -8002,13 +7929,6 @@ func rarList(ctx context.Context, conn *pgx.Conn) error {
 	return rows.Err()
 }
 
-// credentialClaims are the claim names a credential may carry.
-//
-// A fixed list, not "any column": every value here ends up inside a credential
-// the holder can present to anybody, so what may appear is a decision rather
-// than a projection of whatever the users table happens to hold.
-var credentialClaims = []string{"sub", "email", "email_verified", "preferred_username"}
-
 // credentialDefine registers a credential this issuer can mint.
 //
 // OID4VCI §12.2: the entry becomes one key of
@@ -8038,45 +7958,15 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	if len(a)+len(sel) == 0 {
 		return fmt.Errorf("give -always and/or -selective: a credential carrying "+
 			"no claims asserts nothing. Available: %s",
-			strings.Join(credentialClaims, ", "))
+			strings.Join(store.CredentialClaims, ", "))
 	}
-	for _, name := range append(append([]string{}, a...), sel...) {
-		if !slices.Contains(credentialClaims, name) {
-			return fmt.Errorf("%q is not a claim this issuer can put in a "+
-				"credential. Available: %s", name, strings.Join(credentialClaims, ", "))
-		}
-	}
-	for _, name := range a {
-		if slices.Contains(sel, name) {
-			return fmt.Errorf("%q is listed as both always-visible and selective; "+
-				"revealing it would put the claim in the credential twice", name)
-		}
-	}
-
-	var interval any
-	if lifetime > 0 {
-		interval = fmt.Sprintf("%d seconds", int(lifetime.Seconds()))
-	}
-	// The format is written, from the constant issuance checks, rather than
-	// left to the column default: the one format implemented is then a fact
-	// this command states, and a second format is a flag here and a value that
-	// constant's check admits (2.30).
-	var required bool
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.credential_configurations
-			(org_id, config_id, vct, always_claims, selective_claims, lifetime, display_name,
-			 require_key_attestation, format)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6::interval, NULLIF($7,''), COALESCE($8::boolean, false), $9)
-		ON CONFLICT (org_id, config_id) DO UPDATE
-		SET format = EXCLUDED.format, vct = EXCLUDED.vct, always_claims = EXCLUDED.always_claims,
-		    selective_claims = EXCLUDED.selective_claims,
-		    lifetime = EXCLUDED.lifetime, display_name = EXCLUDED.display_name,
-		    require_key_attestation = COALESCE($8::boolean,
-		        credential_configurations.require_key_attestation)
-		RETURNING require_key_attestation`,
-		orgID, configID, vct, a, sel, interval, displayName, requireAttestation,
-		oid4vci.FormatSDJWTVC).Scan(&required); err != nil {
-		return fmt.Errorf("defining the credential: %w", err)
+	// The claims list, and a claim both always visible and selective, are
+	// checked in store.CredentialSpec, as the Admin API checks them.
+	required, err := store.DefineCredential(ctx, conn, orgID, store.CredentialSpec{ConfigID: configID, VCT: vct,
+		DisplayName: displayName, Always: a, Selective: sel, Lifetime: lifetime,
+		RequireKeyAttestation: requireAttestation})
+	if err != nil {
+		return err
 	}
 
 	fmt.Printf("credential configuration %s\n", configID)
@@ -8143,27 +8033,10 @@ func credentialTrustRoot(ctx context.Context, conn *pgx.Conn, orgID, name, certP
 	if err != nil {
 		return fmt.Errorf("reading the root certificate: %w", err)
 	}
-	// Exactly one certificate, and no key. A file holding the CA's private key
-	// is a mistake worth catching when it is made: a server holding it could
-	// mint the chains it is meant to be checking.
-	var der []byte
-	for rest := blob; ; {
-		var block *pem.Block
-		block, rest = pem.Decode(rest)
-		if block == nil {
-			break
-		}
-		switch {
-		case strings.Contains(block.Type, "PRIVATE KEY"):
-			return fmt.Errorf("%s holds a private key; register only the CA's certificate", certPath)
-		case block.Type == "CERTIFICATE" && der == nil:
-			der = block.Bytes
-		case block.Type == "CERTIFICATE":
-			return fmt.Errorf("%s holds more than one certificate; register each root under its own -name", certPath)
-		}
-	}
-	if der == nil {
-		return fmt.Errorf("%s holds no PEM certificate", certPath)
+	// Exactly one certificate, and no key (store.ParseProofRootPEM).
+	der, err := store.ParseProofRootPEM(blob)
+	if err != nil {
+		return fmt.Errorf("%s: %w", certPath, err)
 	}
 	cert, err := store.CheckProofRoot(der, time.Now())
 	if err != nil {
@@ -8212,13 +8085,10 @@ func credentialUntrustRoot(ctx context.Context, conn *pgx.Conn, orgID, name stri
 	if orgID == "" || name == "" {
 		return fmt.Errorf("credential untrust-root needs -org and -name")
 	}
-	tag, err := conn.Exec(ctx, `DELETE FROM core.credential_proof_roots
-		WHERE org_id = $1::uuid AND name = $2`, orgID, name)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
+	if err := store.RemoveCredentialProofRoot(ctx, conn, orgID, name); errors.Is(err, store.ErrProofRootUnknown) {
 		return fmt.Errorf("no root named %q in organisation %s", name, orgID)
+	} else if err != nil {
+		return err
 	}
 	fmt.Printf("no longer trusted for x5c key proofs: %q\n", name)
 	return nil

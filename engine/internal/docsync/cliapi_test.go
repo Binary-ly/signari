@@ -16,14 +16,11 @@ import (
 //
 // The table is read in both directions against what main.go dispatches and the
 // admin router registers: a new command must be placed in it, and a route it
-// names must exist.
+// names must exist. Until every write had one, a row could say its route was
+// pending; none is now, so a new write arrives with its route or its reason.
 
-const (
-	// reads is a command that changes nothing.
-	reads = "reads only"
-	// pending is a write whose route is still to be built.
-	pending = "pending"
-)
+// reads is a command that changes nothing.
+const reads = "reads only"
 
 // orgSettings is where every organisation-wide sign-in and session setting is
 // changed.
@@ -131,12 +128,12 @@ var cliAPI = map[string]string{
 	"logout-test":                     cliOnly("runs a relying party on the operator's host to watch a logout arrive"),
 
 	// Credentials (OID4VCI).
-	"credential define":       pending,
+	"credential define":       "PUT /admin/organizations/{orgID}/credential-configurations/{configID}",
 	"credential list":         reads,
-	"credential offer":        pending,
-	"credential trust-root":   pending,
+	"credential offer":        "POST /admin/users/{userID}/credential-offers",
+	"credential trust-root":   "PUT /admin/organizations/{orgID}/credential-proof-roots/{name}",
 	"credential roots":        reads,
-	"credential untrust-root": pending,
+	"credential untrust-root": "DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}",
 
 	// Keys and the audit trail.
 	"keys list":        reads,
@@ -311,7 +308,7 @@ func TestEveryCLIWriteHasAnAdminAPIRoute(t *testing.T) {
 	dispatched := dispatchedCommands(t, readSource(t, filepath.Join(root, "engine", "cmd", "signari", "main.go")))
 	routes := adminRoutes(t, root)
 
-	var unplaced, stale, unrouted, open []string
+	var unplaced, stale, unrouted []string
 	for cmd := range dispatched {
 		if _, ok := cliAPI[cmd]; !ok {
 			unplaced = append(unplaced, cmd)
@@ -321,14 +318,12 @@ func TestEveryCLIWriteHasAnAdminAPIRoute(t *testing.T) {
 		switch {
 		case !dispatched[cmd]:
 			stale = append(stale, cmd)
-		case where == pending:
-			open = append(open, cmd)
 		case where == reads, strings.HasPrefix(where, "command only: ") && len(where) > len("command only: "):
 		case !routes[where]:
 			unrouted = append(unrouted, cmd+" -> "+where)
 		}
 	}
-	for _, l := range [][]string{unplaced, stale, unrouted, open} {
+	for _, l := range [][]string{unplaced, stale, unrouted} {
 		sort.Strings(l)
 	}
 	for _, c := range unplaced {
@@ -340,8 +335,5 @@ func TestEveryCLIWriteHasAnAdminAPIRoute(t *testing.T) {
 	}
 	for _, c := range unrouted {
 		t.Errorf("cliAPI says %s, and the admin router registers no such route", c)
-	}
-	if len(open) > 0 {
-		t.Logf("%d command writes have no Admin API route yet:\n  %s", len(open), strings.Join(open, "\n  "))
 	}
 }

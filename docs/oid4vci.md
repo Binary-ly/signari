@@ -139,6 +139,13 @@ copies to the holder defeats it entirely, so the output says so.
 `-offer-expires` defaults to five minutes and is capped at an hour: §3.5 says the
 code MUST be short lived, and it is redeemed within seconds of being scanned.
 
+A front desk with no shell mints the same offer at
+`POST /admin/users/{userID}/credential-offers` in the [Admin API](admin-api.md#users),
+which also defines credentials and trusts `x5c` roots under the organisation
+(`credential-configurations`, `credential-proof-roots`). It answers the
+transaction code beside the offer only so the caller can send it by another
+channel.
+
 ## Registering the grant
 
 A client may only use grants it is registered for — RFC 6749 §5.2's

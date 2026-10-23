@@ -1,8 +1,11 @@
 package adminapi
 
 import (
+	"context"
 	"net/url"
 	"testing"
+
+	"signari.dev/engine/internal/store"
 )
 
 // readRoute is a GET with a path that answers 200, for the schema drift test:
@@ -62,6 +65,22 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/organizations/{orgID}/prompts", org("/prompts")},
 		{"GET /admin/organizations/{orgID}/authorization-detail-types", org("/authorization-detail-types")},
 		{"GET /admin/organizations/{orgID}/attesters", org("/attesters")},
+		{"GET /admin/organizations/{orgID}/credential-configurations", func(t *testing.T, s *Server) string {
+			o, _, _, _ := newDriftWallet(t, s)
+			return "/admin/organizations/" + o + "/credential-configurations"
+		}},
+		{"GET /admin/organizations/{orgID}/credential-proof-roots", func(t *testing.T, s *Server) string {
+			o, _, _, _ := newDriftWallet(t, s)
+			ca, _ := testCertPEM(t, true)
+			der, err := store.ParseProofRootPEM([]byte(ca))
+			if err == nil {
+				err = store.SetCredentialProofRoot(context.Background(), s.db, o, "drift", der)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			return "/admin/organizations/" + o + "/credential-proof-roots"
+		}},
 		{"GET /admin/organizations/{orgID}/uma", org("/uma")},
 		{"GET /admin/organizations/{orgID}/duo", org("/duo")},
 		{"GET /admin/organizations/{orgID}/event-subscriptions", org("/event-subscriptions")},

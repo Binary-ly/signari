@@ -126,6 +126,42 @@ func SetDuoIntegration(ctx context.Context, q interface {
 	return err
 }
 
+// DuoSealedSecretOf is the Duo secret an organisation holds, still sealed,
+// for a configuration file that changes the integration without naming the
+// secret again: SetDuoIntegration writes it whole.
+func DuoSealedSecretOf(ctx context.Context, db rowQuerier, orgID string) ([]byte, error) {
+	var sealed []byte
+	err := db.QueryRow(ctx, `SELECT secret_enc FROM core.duo_integrations WHERE org_id = $1::uuid`, orgID).Scan(&sealed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNoDuoIntegration
+	}
+	return sealed, err
+}
+
+// DuoSecretOf opens it, so a plan can say whether the one a file names
+// differs. Never shown.
+func DuoSecretOf(ctx context.Context, db rowQuerier, root *keys.RootKey, orgID string) (string, error) {
+	sealed, err := DuoSealedSecretOf(ctx, db, orgID)
+	if err != nil {
+		return "", err
+	}
+	if root == nil {
+		return "", fmt.Errorf("the Duo secret is sealed and no root key is loaded")
+	}
+	plain, err := root.Open(sealed, "duo_secret")
+	return string(plain), err
+}
+
+// RemoveDuoIntegration takes Duo away from an organisation, as a pruned
+// configuration file asks (6.25). Its people's enrolments stay, for when it
+// is set again.
+func RemoveDuoIntegration(ctx context.Context, db interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, orgID string) error {
+	_, err := db.Exec(ctx, `DELETE FROM core.duo_integrations WHERE org_id = $1::uuid`, orgID)
+	return err
+}
+
 // DuoIntegration is an organisation's Duo application as an operator sees it:
 // never its secret.
 type DuoIntegration struct {

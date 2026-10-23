@@ -25,6 +25,8 @@ var declaredBy = map[string]string{
 	"radius_group_authorization": "radius_authorization", "authorization_detail_types": "authorization_detail_type",
 	"client_authorization_detail_types": "authorization_detail_type", "client_attesters": "client_attester",
 	"credential_configurations": "credential_configuration", "credential_proof_roots": "credential_proof_root",
+	"directory_sources": "directory_source", "directory_group_map": "directory_source", "duo_integrations": "duo",
+	"migration_sources": "migration_source",
 }
 
 const (
@@ -70,9 +72,7 @@ var notConfiguration = map[string]string{
 // notYet is configuration a file does not declare yet, each set by its own
 // command and Admin API route meanwhile: ROADMAP 6.25.
 var notYet = map[string]bool{
-	"authorization_models": true, "directory_group_map": true, "directory_sources": true,
-	"duo_integrations": true, "migration_sources": true, "outposts": true,
-	"scim_sources": true, "ssf_sources": true, "ssf_streams": true,
+	"authorization_models": true, "outposts": true, "scim_sources": true, "ssf_sources": true, "ssf_streams": true,
 }
 
 func TestEveryOrganisationTableIsDeclarableOrSaysWhyNot(t *testing.T) {

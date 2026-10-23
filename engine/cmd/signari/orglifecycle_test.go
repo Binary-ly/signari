@@ -85,6 +85,8 @@ func TestAnExportedOrganisationAppliedToAnEmptyDeploymentPlansNothing(t *testing
 		t.Setenv("SIGNARI_ROOT_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	}
 	t.Setenv("LIFECYCLE_SCIM_TOKEN", fmt.Sprintf("scim-token-%d", n))
+	t.Setenv("LIFECYCLE_AD_PASSWORD", fmt.Sprintf("bind-%d", n))
+	t.Setenv("LIFECYCLE_DUO_SECRET", fmt.Sprintf("%040d", n))
 	cert, ca := lifecycleCertificate(t), lifecycleCertificate(t, true)
 	attesterKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -206,6 +208,13 @@ client_attesters: [{name: android, jwks: %[4]s, description: Play}]
 credential_configurations:
   - {config_id: employee, vct: 'https://example.test/employee', always_claims: [sub], lifetime: 720h}
 credential_proof_roots: [{name: wallet-ca, certificate: %[5]q}]
+directory_sources:
+  - {slug: ad-%[1]d, kind: ldap, url: 'ldaps://dc-%[1]d.example.test', bind_dn: 'CN=svc,DC=corp,DC=test',
+     password: {env: LIFECYCLE_AD_PASSWORD}, base_dn: 'DC=corp,DC=test', flavour: ad,
+     group_map: [{remote: 'CN=Engineering,DC=corp,DC=test', group: staff-%[1]d}]}
+duo: {client_id: DIABCDEFGHIJKLMNOPQR, secret: {env: LIFECYCLE_DUO_SECRET}, api_host: api-1234abcd.duosecurity.com}
+migration_source: {kind: ldap, name: Old directory, url: 'ldaps://old-%[1]d.example.test',
+  bind_dn_template: 'uid={username},ou=people,dc=corp,dc=test'}
 providers:
   - {hook: authorize, url: 'https://pdp-%[1]d.example.test/', mode: fail_closed, timeout: 3s}
 event_subscriptions:
@@ -324,10 +333,12 @@ identity_providers:
 		!strings.Contains(err.Error(), "name it by reference") {
 		t.Fatalf("the export applied with no token for its target answered %v", err)
 	}
-	givenRaw := []byte(strings.Replace(string(raw), "      base_url: ",
-		"      token: {env: LIFECYCLE_SCIM_TOKEN}\n      base_url: ", 1))
-	given := filepath.Join(dir, "export-given.yaml")
-	if err := os.WriteFile(given, givenRaw, 0o600); err != nil {
+	given := strings.NewReplacer("      base_url: ", "      token: {env: LIFECYCLE_SCIM_TOKEN}\n      base_url: ",
+		"      bind_dn: ", "      password: {env: LIFECYCLE_AD_PASSWORD}\n      bind_dn: ",
+		"\nduo:\n", "\nduo:\n    secret: {env: LIFECYCLE_DUO_SECRET}\n").Replace(string(raw))
+	givenRaw := []byte(given)
+	givenPath := filepath.Join(dir, "export-given.yaml")
+	if err := os.WriteFile(givenPath, givenRaw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fGiven, err := config.Parse(givenRaw)
@@ -337,7 +348,7 @@ identity_providers:
 	if p := planWith(conn, fresh, fGiven); p.Empty() {
 		t.Fatal("the export plans nothing against an empty organisation, so it carries nothing")
 	}
-	if err := run([]string{"apply", "-dsn", scratch, "-org", fresh, "-f", given}); err != nil {
+	if err := run([]string{"apply", "-dsn", scratch, "-org", fresh, "-f", givenPath}); err != nil {
 		t.Fatalf("applying the export to an empty deployment: %v", err)
 	}
 	if p := planWith(conn, fresh, fGiven); !p.Empty() {

@@ -41,6 +41,11 @@ var schemaEnums = map[string][]string{
 	"WebAuthnPolicy.user_verification": {"required", "preferred"},
 	"WebAuthnPolicy.resident_key":      {"required", "preferred", "discouraged"},
 	"WebAuthnPolicy.attachment":        {"platform", "cross-platform"},
+	// directory.SourceSpec's and store.MigrationSourceConfig's.
+	"DirectorySource.kind":       {"google", "entra", "ldap"},
+	"DirectorySource.flavour":    {"openldap", "ad", "freeipa"},
+	"DirectorySource.on_missing": {"report", "deactivate"},
+	"MigrationSource.kind":       {"oidc_password", "ldap"},
 }
 
 func hookNames() []string {

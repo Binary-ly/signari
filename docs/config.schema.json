@@ -220,6 +220,122 @@
       },
       "type": "object"
     },
+    "DirectoryMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "type": "string"
+        },
+        "remote": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "DirectorySource": {
+      "additionalProperties": false,
+      "properties": {
+        "base_dn": {
+          "type": "string"
+        },
+        "bind_dn": {
+          "type": "string"
+        },
+        "ca": {
+          "type": "string"
+        },
+        "credentials": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "fetch_groups": {
+          "type": "boolean"
+        },
+        "filter": {
+          "type": "string"
+        },
+        "flavour": {
+          "enum": [
+            "openldap",
+            "ad",
+            "freeipa"
+          ],
+          "type": "string"
+        },
+        "group_attribute": {
+          "type": "string"
+        },
+        "group_map": {
+          "items": {
+            "$ref": "#/$defs/DirectoryMapping"
+          },
+          "type": "array"
+        },
+        "impersonate": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "google",
+            "entra",
+            "ldap"
+          ],
+          "type": "string"
+        },
+        "max_deactivate_percent": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "on_missing": {
+          "enum": [
+            "report",
+            "deactivate"
+          ],
+          "type": "string"
+        },
+        "password": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "start_tls": {
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Duo": {
+      "additionalProperties": false,
+      "properties": {
+        "api_host": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "fail_open": {
+          "type": "boolean"
+        },
+        "secret": {
+          "$ref": "#/$defs/SecretRef"
+        }
+      },
+      "type": "object"
+    },
     "Field": {
       "additionalProperties": false,
       "properties": {
@@ -392,6 +508,46 @@
           "type": "boolean"
         },
         "userinfo_url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "MigrationSource": {
+      "additionalProperties": false,
+      "properties": {
+        "bind_dn_template": {
+          "type": "string"
+        },
+        "ca": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "client_secret": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "oidc_password",
+            "ldap"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "start_tls": {
+          "type": "boolean"
+        },
+        "url": {
           "type": "string"
         }
       },
@@ -938,6 +1094,15 @@
       },
       "type": "array"
     },
+    "directory_sources": {
+      "items": {
+        "$ref": "#/$defs/DirectorySource"
+      },
+      "type": "array"
+    },
+    "duo": {
+      "$ref": "#/$defs/Duo"
+    },
     "event_subscriptions": {
       "items": {
         "$ref": "#/$defs/Subscription"
@@ -961,6 +1126,9 @@
         "$ref": "#/$defs/IdentityProvider"
       },
       "type": "array"
+    },
+    "migration_source": {
+      "$ref": "#/$defs/MigrationSource"
     },
     "org": {
       "type": "string"

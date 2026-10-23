@@ -72,6 +72,9 @@ var sections = []section{
 	scimSection{},
 	racSection{},
 	idpSection{},
+	directorySection{},
+	duoSection{},
+	migrationSection{},
 }
 
 // sectionOf is the section a plan's Kind belongs to, nil for a built-in kind.

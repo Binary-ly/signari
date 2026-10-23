@@ -54,6 +54,11 @@ func TestEverySchemaEnumIsWhatParseAccepts(t *testing.T) {
 		"WebAuthnPolicy.user_verification": "webauthn_policy: {user_verification: %q}",
 		"WebAuthnPolicy.resident_key":      "webauthn_policy: {resident_key: %q}",
 		"WebAuthnPolicy.attachment":        "webauthn_policy: {attachment: %q}",
+		// The sources'.
+		"DirectorySource.kind":       "directory_sources: [{slug: a, kind: %q, url: 'ldaps://x.test', base_dn: 'dc=x', flavour: ad, password: {env: P}}]",
+		"DirectorySource.flavour":    "directory_sources: [{slug: a, kind: ldap, url: 'ldaps://x.test', base_dn: 'dc=x', flavour: %q, password: {env: P}}]",
+		"DirectorySource.on_missing": "directory_sources: [{slug: a, kind: ldap, url: 'ldaps://x.test', base_dn: 'dc=x', flavour: ad, password: {env: P}, on_missing: %q}]",
+		"MigrationSource.kind":       "migration_source: {kind: %q, name: n, url: 'https://old.example.test/token', client_id: c}",
 	}
 	cert := testCertificate(t)
 	parse := func(key, value string) error {
@@ -78,7 +83,8 @@ func TestEverySchemaEnumIsWhatParseAccepts(t *testing.T) {
 		for _, v := range values {
 			// SCIM's google and entra need credentials, not a token; their
 			// acceptance is the provisioning tests'.
-			if key == "SCIMTarget.kind" && v != "scim" {
+			if key == "SCIMTarget.kind" && v != "scim" || key == "DirectorySource.kind" && v != "ldap" ||
+				key == "MigrationSource.kind" && v != "oidc_password" {
 				continue
 			}
 			if err := parse(key, v); err != nil {

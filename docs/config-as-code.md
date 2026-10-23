@@ -160,6 +160,31 @@ credential_proof_roots:       # CAs a wallet's key attestation must chain to
       -----BEGIN CERTIFICATE-----
       ...
 
+directory_sources:            # where people are synced from
+  - slug: corp-ad
+    kind: ldap                # google, entra or ldap; fixed once made
+    url: ldaps://dc.corp.example.com
+    bind_dn: CN=signari,OU=Service,DC=corp,DC=example,DC=com
+    password: {env: AD_BIND_PASSWORD}   # google and entra: credentials: {file: ...}
+    base_dn: DC=corp,DC=example,DC=com
+    flavour: ad               # openldap, ad or freeipa
+    on_missing: report        # or deactivate
+    max_deactivate_percent: 10
+    dry_run: true             # a new source starts in dry run
+    group_map: [{remote: "CN=Engineering,OU=Groups,DC=corp,DC=example,DC=com", group: platform}]
+
+duo:                          # Duo for multi-factor sign-in
+  client_id: DIXXXXXXXXXXXXXXXXXX
+  secret: {env: DUO_SECRET_KEY}
+  api_host: api-1234abcd.duosecurity.com
+
+migration_source:             # the old provider first password sign-ins are checked against
+  kind: ldap                  # or oidc_password, with client_id and client_secret
+  name: Old directory
+  url: ldaps://old.example.com
+  bind_dn_template: uid={username},ou=people,dc=example,dc=com
+  enabled: false              # off for a new one; on, it forwards each unmigrated password
+
 providers:                    # your own service consulted at a hook, one per hook
   - hook: token_issue         # or authorize
     url: https://hooks.example.com/claims
@@ -346,6 +371,17 @@ its `token` in the same file. The token held was issued for the old address,
 and moved without a new one it would be sent to whoever answers at the new
 address.
 
+A directory source's `password` (LDAP) or `credentials` (Google, Entra), Duo's
+`secret` and the migration source's `client_secret` are named by reference in
+the same way. A directory source moves to another `url`, `bind_dn`,
+`impersonate` or `domain` only with its credentials given again. Duo takes a
+new `client_id` only with its secret, and the migration source a new endpoint
+or client id only with its client secret. None of the three is contacted when
+a file is planned. `signari duo set` checks Duo's keys against Duo, and
+`signari dir sync` reaches the directory. A file is checked for shape only.
+Pruned, a directory source and the migration source are switched off and
+kept, and Duo is removed, with its people's enrolments kept.
+
 A remote-access connection's `login` and `password` are named by reference in
 the same way. They are compared and replaced together, and left out they leave
 what the connection holds. A connection holding credentials moves to another
@@ -399,8 +435,9 @@ attributes, resource servers, the sign-up rule, claim mappers, prompts, the
 access policy, the sign-in flows, dynamic registration, the WebAuthn policy,
 UMA's owner intervention, group releases to clients and SAML providers, RADIUS
 group authorizations, authorization details types and their clients, client
-attesters, credential configurations and proof roots, extension providers,
-event subscriptions,
+attesters, credential configurations and proof roots, directory sources and
+their group maps, the Duo integration, the migration source, extension
+providers, event subscriptions,
 provisioning targets, remote-access connections and identity providers.
 `signari export org` writes all of them, so a
 deployment's export applied to an empty one, with each target's token named by

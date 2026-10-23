@@ -188,6 +188,13 @@ func (c *MigrationSourceConfig) validate() error {
 	return nil
 }
 
+// CheckMigrationSource is what SetMigrationSource refuses of a source,
+// answering it as it would be stored.
+func CheckMigrationSource(c MigrationSourceConfig) (MigrationSourceConfig, error) {
+	err := c.validate()
+	return c, err
+}
+
 // SetMigrationSource creates or replaces an organisation's one source. A new
 // source is disabled, because a live one forwards every unmigrated user's
 // password to a third party (0014); a replaced one keeps its state.
@@ -254,6 +261,35 @@ func SetMigrationSource(ctx context.Context, tx pgx.Tx, root *keys.RootKey, orgI
 		orgID, c.Kind, c.DisplayName, c.URL, clientID, sealed, c.Scope, template, c.StartTLS && c.Kind == "ldap", ca).
 		Scan(&id)
 	return id, err
+}
+
+// MigrationSourceMaterial is the CA a source's directory is verified with and
+// its client secret, opened, so a plan can say whether what a configuration
+// file gives differs; the status leaves both out. root may be nil when the
+// file names no secret.
+func MigrationSourceMaterial(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, root *keys.RootKey, orgID string) (ca, secret string, err error) {
+	var caPEM *string
+	var sealed []byte
+	if err := q.QueryRow(ctx, `SELECT ca_pem, client_secret_enc FROM core.migration_sources WHERE org_id = $1::uuid`,
+		orgID).Scan(&caPEM, &sealed); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", ErrMigrationSourceUnknown
+		}
+		return "", "", err
+	}
+	if caPEM != nil {
+		ca = *caPEM
+	}
+	if len(sealed) > 0 && root != nil {
+		plain, err := root.Open(sealed, migrationSecretContext)
+		if err != nil {
+			return "", "", err
+		}
+		secret = string(plain)
+	}
+	return ca, secret, nil
 }
 
 // SetMigrationSourceEnabled switches delegation on or off.

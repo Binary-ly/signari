@@ -110,6 +110,20 @@ func (f *File) secretRefs() []secretAt {
 			out = append(out, secretAt{w.at() + ".client_secret", w.ClientSecret})
 		}
 	}
+	for _, w := range f.DirectorySources {
+		if w.Credentials != nil {
+			out = append(out, secretAt{w.at() + ".credentials", w.Credentials})
+		}
+		if w.Password != nil {
+			out = append(out, secretAt{w.at() + ".password", w.Password})
+		}
+	}
+	if f.Duo != nil && f.Duo.Secret != nil {
+		out = append(out, secretAt{"duo.secret", f.Duo.Secret})
+	}
+	if m := f.MigrationSource; m != nil && m.ClientSecret != nil {
+		out = append(out, secretAt{"migration_source.client_secret", m.ClientSecret})
+	}
 	return out
 }
 

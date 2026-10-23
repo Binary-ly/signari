@@ -84,6 +84,9 @@ type File struct {
 	SCIMTargets       []SCIMTarget       `yaml:"scim_targets,omitempty"`
 	RACConnections    []RACConnection    `yaml:"rac_connections,omitempty"`
 	IdentityProviders []IdentityProvider `yaml:"identity_providers,omitempty"`
+	DirectorySources  []DirectorySource  `yaml:"directory_sources,omitempty"`
+	Duo               *Duo               `yaml:"duo,omitempty"`
+	MigrationSource   *MigrationSource   `yaml:"migration_source,omitempty"`
 }
 
 // ProxyHost is an application protected by forward authentication.

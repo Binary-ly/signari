@@ -258,10 +258,10 @@ var cliAPI = map[string]string{
 	"attester list":        reads,
 
 	// Network access.
-	"radius add-client":     pending,
-	"radius authorize":      pending,
-	"radius disable-client": pending,
-	"radius enable-client":  pending,
+	"radius add-client":     "POST /admin/organizations/{orgID}/radius-clients",
+	"radius authorize":      "PUT /admin/groups/{groupID}/radius",
+	"radius disable-client": "PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}",
+	"radius enable-client":  "PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}",
 	"radius list":           reads,
 	"proxy check":           reads,
 	"proxy add-host":        "PUT /admin/organizations/{orgID}/proxy-hosts",

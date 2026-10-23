@@ -469,6 +469,25 @@ var opSchemas = map[string]opSchema{
 		[]string{"name", "enabled", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "enabled": boolean()}))},
 	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/test": {http.StatusOK, nil, object(
 		[]string{"name", "event_id", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "event_id": str()}))},
+	"GET /admin/organizations/{orgID}/radius-clients": {http.StatusOK, nil, object([]string{"org_id", "clients"},
+		map[string]jsonSchema{"org_id": uuidStr(), "clients": arrayOf(object([]string{"id", "name", "network", "enabled"},
+			map[string]jsonSchema{"id": uuidStr(), "name": str(), "network": str(), "enabled": boolean()}))})},
+	"POST /admin/organizations/{orgID}/radius-clients": {http.StatusCreated, typeOf[addRADIUSClientRequest](), object(
+		[]string{"id", "name", "network", "config_version"}, withVersion(map[string]jsonSchema{
+			"id": uuidStr(), "name": str(), "network": str()}))},
+	"PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}": {http.StatusOK, typeOf[patchRADIUSClientRequest](),
+		object([]string{"id", "enabled", "config_version"}, withVersion(map[string]jsonSchema{"id": uuidStr(),
+			"enabled": boolean()}))},
+	"GET /admin/organizations/{orgID}/radius-authorizations": {http.StatusOK, nil, object(
+		[]string{"org_id", "authorizations"}, map[string]jsonSchema{"org_id": uuidStr(), "authorizations": arrayOf(
+			object([]string{"group_id", "group", "vlan_id", "filter_id", "priority"}, map[string]jsonSchema{
+				"group_id": uuidStr(), "group": str(), "vlan_id": nullable(integer()), "filter_id": str(),
+				"priority": integer()}))})},
+	"PUT /admin/groups/{groupID}/radius": {http.StatusOK, typeOf[putRADIUSAuthorizationRequest](), object(
+		[]string{"group_id", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr()}))},
+	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
+		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
+			"removed": boolean()}))},
 	"GET /admin/organizations/{orgID}/outposts": {http.StatusOK, nil, object([]string{"org_id", "outposts"},
 		map[string]jsonSchema{"org_id": uuidStr(), "outposts": arrayOf(object([]string{"id", "name", "kind", "enabled",
 			"search_group", "last_seen_at", "last_seen_ip"}, map[string]jsonSchema{"id": uuidStr(), "name": str(),

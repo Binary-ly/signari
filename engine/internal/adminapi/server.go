@@ -337,6 +337,11 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/groups/{groupID}/members", ScopeGroupsRead, s.listGroupMembers)
 	privileged("PUT /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, targetGroup, s.addGroupMember)
 	privileged("DELETE /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, targetGroup, s.removeGroupMember)
+	// The VLAN or Filter-Id a group's members are given (radius.go). Under
+	// groups:write, which already decides who is in the group.
+	route("GET /admin/organizations/{orgID}/radius-authorizations", ScopeConfigRead, s.listRADIUSAuthorizations)
+	privileged("PUT /admin/groups/{groupID}/radius", ScopeGroupsWrite, targetGroup, s.putRADIUSAuthorization)
+	privileged("DELETE /admin/groups/{groupID}/radius", ScopeGroupsWrite, targetGroup, s.deleteRADIUSAuthorization)
 
 	// Sessions. Reading is part of seeing a user; ending one is acting on them,
 	// so the scopes follow users:* rather than getting a third pair. Ending
@@ -402,6 +407,13 @@ func (s *Server) Routes() http.Handler {
 			s.rotateProviderSecret)
 		route("PUT /admin/organizations/{orgID}/providers/{hook}/claims", ScopeOrganizationsWrite,
 			s.putProviderClaims)
+
+		// RADIUS devices (radius.go), whose shared secrets are sealed with the
+		// root key.
+		route("GET /admin/organizations/{orgID}/radius-clients", ScopeConfigRead, s.listRADIUSClients)
+		route("POST /admin/organizations/{orgID}/radius-clients", ScopeOrganizationsWrite, s.addRADIUSClient)
+		route("PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}", ScopeOrganizationsWrite,
+			s.patchRADIUSClient)
 
 		// An instance's signing keys (keys.go), under the root key their
 		// private halves are sealed with; deployment-wide tokens only.

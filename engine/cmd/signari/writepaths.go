@@ -441,13 +441,12 @@ func radiusAuthorize(ctx context.Context, conn *pgx.Conn, orgID, group string,
 	}
 
 	if remove {
-		tp, err := conn.Exec(ctx,
-			`DELETE FROM core.radius_group_authorization WHERE group_id = $1::uuid`, groupID)
+		err := store.RemoveRADIUSAuthorization(ctx, conn, orgID, groupID)
+		if errors.Is(err, store.ErrRADIUSNotAuthorised) {
+			return fmt.Errorf("%q carries no RADIUS authorisation", group)
+		}
 		if err != nil {
 			return err
-		}
-		if tp.RowsAffected() == 0 {
-			return fmt.Errorf("%q carries no RADIUS authorisation", group)
 		}
 		fmt.Printf("%q no longer carries a VLAN or filter\n", group)
 		fmt.Println("\n  Members already connected keep their session until it is re-authorised;")
@@ -455,31 +454,14 @@ func radiusAuthorize(ctx context.Context, conn *pgx.Conn, orgID, group string,
 		return nil
 	}
 
-	if vlan == 0 && strings.TrimSpace(filterID) == "" {
+	switch err := store.SetRADIUSAuthorization(ctx, conn, orgID, groupID, vlan, filterID, priority); {
+	case errors.Is(err, store.ErrRADIUSNothingAuthorised):
 		return fmt.Errorf("give -vlan, -filter-id or both. A row that authorises nothing " +
 			"is a configuration somebody believes is doing something")
-	}
-
-	var vlanArg, filterArg any
-	if vlan != 0 {
-		vlanArg = vlan
-	}
-	if f := strings.TrimSpace(filterID); f != "" {
-		filterArg = f
-	}
-
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.radius_group_authorization
-		    (org_id, group_id, vlan_id, filter_id, priority)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5)
-		ON CONFLICT (org_id, group_id) DO UPDATE
-		   SET vlan_id = EXCLUDED.vlan_id, filter_id = EXCLUDED.filter_id,
-		       priority = EXCLUDED.priority`,
-		orgID, groupID, vlanArg, filterArg, priority); err != nil {
-		if strings.Contains(err.Error(), "radius_group_authorization_vlan_id_check") {
-			return fmt.Errorf("a VLAN id is 12 bits: 1 to 4094 (RFC 3580 section 3.31). "+
-				"%d is outside that, and a switch would reject or misread it", vlan)
-		}
+	case errors.Is(err, store.ErrVLANRange):
+		return fmt.Errorf("a VLAN id is 12 bits: 1 to 4094 (RFC 3580 section 3.31). "+
+			"%d is outside that, and a switch would reject or misread it", vlan)
+	case err != nil:
 		return err
 	}
 
@@ -487,8 +469,8 @@ func radiusAuthorize(ctx context.Context, conn *pgx.Conn, orgID, group string,
 	if vlan != 0 {
 		fmt.Printf("  VLAN      : %d\n", vlan)
 	}
-	if filterArg != nil {
-		fmt.Printf("  Filter-Id : %s\n", filterArg)
+	if f := strings.TrimSpace(filterID); f != "" {
+		fmt.Printf("  Filter-Id : %s\n", f)
 	}
 	fmt.Printf("  priority  : %d\n", priority)
 	fmt.Println("\n  Somebody in several authorised groups gets the highest priority, and ties")

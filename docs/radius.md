@@ -17,6 +17,10 @@ SIGNARI_RADIUS_ORG_ID=<org-uuid> \
   signari serve
 ```
 
+The Admin API registers devices, revokes them and places groups on VLANs the
+same way, under `/admin/organizations/{orgID}/radius-clients` and
+`/admin/groups/{groupID}/radius`; see [admin-api.md](admin-api.md).
+
 Networks may overlap. A packet is checked against the **most specific** network
 that contains its source address, so a `/24` for a controller inside a `/16`
 for the building uses the controller's secret. Two entries for exactly the same

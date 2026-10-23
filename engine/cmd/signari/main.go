@@ -5101,42 +5101,21 @@ func radiusAddClient(ctx context.Context, conn *pgx.Conn, orgID, name, network, 
 	if secret == "" {
 		return fmt.Errorf("give -secret, the shared secret configured on the device")
 	}
-	if err := radius.ValidSecret(secret); err != nil {
-		return err
-	}
-
-	// Normalised before it is checked and stored, so an IPv4-mapped spelling of
-	// every address is refused like the plain one (radius.ClientNetwork).
-	ipnet, err := radius.ClientNetwork(network)
-	if err != nil {
-		return fmt.Errorf("-network %w", err)
-	}
-	network = ipnet.String()
-
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	sealed, err := root.Seal([]byte(secret), "radius-client-secret")
-	if err != nil {
-		return fmt.Errorf("sealing the shared secret: %w", err)
+	id, stored, err := store.AddRADIUSClient(ctx, conn, root, orgID, name, network, secret)
+	if errors.Is(err, store.ErrRADIUSNetworkTaken) {
+		return fmt.Errorf("a RADIUS client for %s is already registered in that "+
+			"organisation; two entries for one range with different secrets is a "+
+			"configuration nobody can reason about", network)
 	}
-
-	var id string
-	err = conn.QueryRow(ctx, `
-		INSERT INTO core.radius_clients (org_id, name, network, secret_enc)
-		VALUES ($1::uuid, $2, $3::cidr, $4)
-		RETURNING id::text`, orgID, name, ipnet.String(), sealed).Scan(&id)
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a RADIUS client for %s is already registered in that "+
-				"organisation; two entries for one range with different secrets is a "+
-				"configuration nobody can reason about", ipnet.String())
-		}
 		return err
 	}
 
-	fmt.Printf("registered %s\n  network : %s\n  id      : %s\n", name, ipnet.String(), id)
+	fmt.Printf("registered %s\n  network : %s\n  id      : %s\n", name, stored, id)
 	fmt.Println("\n  Start the listener with SIGNARI_RADIUS_ADDR (and SIGNARI_RADIUS_ORG_ID\n" +
 		"  if this database holds more than one organisation).")
 	return nil
@@ -5196,7 +5175,7 @@ func loadRADIUSClients(ctx context.Context, pool *pgxpool.Pool, orgID string,
 		if err := rows.Scan(&name, &network, &sealed); err != nil {
 			return nil, err
 		}
-		secret, err := root.Open(sealed, "radius-client-secret")
+		secret, err := root.Open(sealed, store.SealContextRADIUSSecret)
 		if err != nil {
 			return nil, fmt.Errorf("unsealing the secret for RADIUS client %q: %w", name, err)
 		}
@@ -6642,13 +6621,11 @@ func radiusSetClientEnabled(ctx context.Context, conn *pgx.Conn, orgID, name str
 	// A name is not unique at all, not even within an organisation (the table
 	// keys on the network), and the update used to change every device of that
 	// name in every tenant.
-	id, _, err := oneInOrg(ctx, conn, "radius_clients", "name = $1", name, orgID, "RADIUS client")
+	id, org, err := oneInOrg(ctx, conn, "radius_clients", "name = $1", name, orgID, "RADIUS client")
 	if err != nil {
 		return err
 	}
-	if _, err := conn.Exec(ctx, `
-		UPDATE core.radius_clients SET enabled = $2, updated_at = now()
-		WHERE id = $1::uuid`, id, enabled); err != nil {
+	if err := store.SetRADIUSClientEnabled(ctx, conn, org, id, enabled); err != nil {
 		return err
 	}
 

@@ -366,6 +366,44 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/radius-clients", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/radius-clients"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"name":"drift","network":"192.0.2.0/24","secret":"a-drift-shared-secret"}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				id, _, err := store.AddRADIUSClient(context.Background(), s.db, s.root, org, "drift", "192.0.2.0/24",
+					"a-drift-shared-secret")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/radius-clients/" + id
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
+			name: "PUT /admin/groups/{groupID}/radius", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string { return "/admin/groups/" + newDriftGroup(t, s) + "/radius" },
+			body: func(*testing.T, *Server, string) string { return `{"vlan_id":42}` },
+		},
+		{
+			name: "DELETE /admin/groups/{groupID}/radius", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				group := newDriftGroup(t, s)
+				if err := store.SetRADIUSAuthorization(context.Background(), s.db, anyOrgID(t, s), group, 42, "", 0); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/groups/" + group + "/radius"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations/{orgID}/outposts", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/outposts"

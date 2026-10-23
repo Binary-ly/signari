@@ -216,6 +216,14 @@ var summaries = map[string]string{
 	"POST /admin/organizations/{orgID}/registration-tokens":             "Mint an initial access token, shown once.",
 	"DELETE /admin/organizations/{orgID}/registration-tokens/{tokenID}": "Revoke an initial access token.",
 
+	// RADIUS (6.07).
+	"GET /admin/organizations/{orgID}/radius-clients":              "The network devices that may send Access-Requests; never a secret.",
+	"POST /admin/organizations/{orgID}/radius-clients":             "Register a device by the range it sends from and its shared secret.",
+	"PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}": "Revoke or restore a device's access.",
+	"GET /admin/organizations/{orgID}/radius-authorizations":       "The VLAN and Filter-Id each authorised group's members are given.",
+	"PUT /admin/groups/{groupID}/radius":                           "Place a group's members on a VLAN, a Filter-Id or both.",
+	"DELETE /admin/groups/{groupID}/radius":                        "Take a group's VLAN and Filter-Id away.",
+
 	// Outposts (6.07).
 	"GET /admin/organizations/{orgID}/outposts":          "The organisation's outposts, when each was last heard from, never a token.",
 	"POST /admin/organizations/{orgID}/outposts":         "Register an outpost; its token is shown once.",

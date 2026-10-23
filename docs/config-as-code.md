@@ -80,6 +80,35 @@ signup:                       # self-sign-up; omit to leave it as it is
   groups: [platform]
   verify_email: true          # the default
   require_approval: false
+
+claim_mappers:                # what is released about a person, and to whom
+  - attribute: department
+    claim: department
+    destination: id_token     # id_token, userinfo or access_token
+    client_id: wiki           # or all_clients: true, never assumed
+    required_scope: hr
+
+prompts:                      # asked between authentication and the session
+  - slug: terms
+    title: Terms of use
+    body: Read and accept them to go on.
+    once: true
+    fields:
+      - {name: accept, type: checkbox, label: I accept, required: true}
+
+access_policy: |              # the policy document, as `signari policy apply` takes it
+  version: 1
+  policies:
+    - name: wiki-needs-staff
+      when: {client: wiki}
+      require: {groups: [platform]}
+  tests:
+    - {name: staff get in, given: {client: wiki, groups: [platform]}, expect: allow}
+    - {name: others do not, given: {client: wiki, groups: []}, expect: deny}
+
+sign_in_flow: |               # the flows document, as `signari flow apply` takes it
+  version: 1
+  flows: [...]
 ```
 
 ## It plans before it applies
@@ -182,9 +211,16 @@ diff cry wolf, and a diff that cries wolf is a diff nobody reads.
 
 Groups, OAuth/OIDC clients and their redirect URIs, SAML service providers and
 their ACS URLs, RADIUS clients, protected hosts, declared scopes, user
-attributes, resource servers and the sign-up rule. `signari export org` writes
-all of them, so a deployment's export applied to an empty one plans nothing
-afterwards.
+attributes, resource servers, the sign-up rule, claim mappers, prompts, the
+access policy and the sign-in flows. `signari export org` writes all of them, so
+a deployment's export applied to an empty one plans nothing afterwards.
+
+The access policy and the sign-in flows are each one document, kept as the text
+it was written in and loaded, its own tests run, before anything else in the
+file is planned; an export carries the text that was applied. A claim mapper
+names its client or says `all_clients`, so the wider disclosure is never what a
+missing line means. A prompt a pruned file leaves out is **disabled, not
+deleted**: its answers are the record of who agreed to what.
 
 An attribute's `personal` is fixed once declared, since it decides whether the
 values are sealed, and its `value_type` changes only while nobody holds a value:
@@ -193,5 +229,5 @@ Pruning an attribute erases every person's value of it, which the plan says.
 A scope a claim mapper is gated on is not pruned while the mapper stays, and the
 sign-up rule's groups must be the organisation's or the file's own.
 
-Not yet: identity providers, SCIM targets, RAC connections and sign-in policy,
-all of which have their own commands and Admin API routes.
+Not yet: identity providers, SCIM targets and RAC connections, all of which
+have their own commands and Admin API routes.

@@ -54,6 +54,13 @@ type File struct {
 	Attributes []Attribute `yaml:"attributes,omitempty"`
 	Resources  []Resource  `yaml:"resources,omitempty"`
 	Signup     *Signup     `yaml:"signup,omitempty"`
+
+	ClaimMappers []ClaimMapper `yaml:"claim_mappers,omitempty"`
+	// AccessPolicy and SignInFlow are documents, kept as the text they were
+	// written in; absent leaves the one in force.
+	AccessPolicy *string  `yaml:"access_policy,omitempty"`
+	SignInFlow   *string  `yaml:"sign_in_flow,omitempty"`
+	Prompts      []Prompt `yaml:"prompts,omitempty"`
 }
 
 // ProxyHost is an application protected by forward authentication.

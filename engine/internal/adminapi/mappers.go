@@ -48,9 +48,6 @@ type mapperRequest struct {
 	RequiredScope string `json:"required_scope"`
 }
 
-// errUnknownScope is a required_scope that is neither standard nor declared.
-var errUnknownScope = errors.New("the required scope is not declared")
-
 // createMapper declares that an attribute is released as a claim.
 func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -89,49 +86,14 @@ func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		var attrID string
+		// The attribute declared, the scope one a grant can carry, the client
+		// the organisation's (store.SetClaimMapper): a typo otherwise made a
+		// mapper that released nothing, to anybody, while looking configured.
 		var personal bool
-		if err := tx.QueryRow(ctx, `
-			SELECT id::text, personal FROM core.user_attribute_schema
-			WHERE org_id = $1::uuid AND name = $2`, orgID, req.Attribute).
-			Scan(&attrID, &personal); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return errNotFound
-			}
-			return err
-		}
-
-		// The scope it waits for must be one a grant can carry: standard, or
-		// declared here. A typo otherwise made a mapper that released nothing,
-		// to anybody, while looking configured. Share-locked, so a delete of
-		// the declaration waits for this and then finds the mapper.
-		if req.RequiredScope != "" && !store.IsStandardScope(req.RequiredScope) {
-			var declared bool
-			if err := tx.QueryRow(ctx, `
-				SELECT true FROM core.scopes WHERE org_id = $1::uuid AND name = $2
-				FOR SHARE`, orgID, req.RequiredScope).Scan(&declared); err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return errUnknownScope
-				}
-				return err
-			}
-		}
-
-		var client any
-		if req.ClientID != "" {
-			client = req.ClientID
-		}
-
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO core.claim_mappers
-				(org_id, client_id, attribute_id, claim_name, destination, required_scope)
-			VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6)
-			ON CONFLICT (org_id, client_id, attribute_id, destination) DO UPDATE SET
-				claim_name = EXCLUDED.claim_name,
-				required_scope = EXCLUDED.required_scope
-			RETURNING id::text`,
-			orgID, client, attrID, req.ClaimName, req.Destination,
-			req.RequiredScope).Scan(&mapperID); err != nil {
+		var err error
+		if mapperID, personal, err = store.SetClaimMapper(ctx, tx, orgID, store.ClaimMapper{
+			Attribute: req.Attribute, ClaimName: req.ClaimName, Destination: req.Destination,
+			ClientID: req.ClientID, RequiredScope: req.RequiredScope}); err != nil {
 			return err
 		}
 
@@ -158,13 +120,13 @@ func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errCrossOrg):
 		writeCrossOrg(w, err)
 		return
-	case errors.Is(err, errNotFound):
+	case errors.Is(err, store.ErrMapperAttributeUnknown):
 		writeJSON(w, http.StatusNotFound, map[string]string{
 			"error":  "unknown_attribute",
 			"detail": "no attribute named " + req.Attribute + " is declared here",
 		})
 		return
-	case errors.Is(err, errUnknownScope):
+	case errors.Is(err, store.ErrMapperScopeUnknown):
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "unknown_scope",
 			"detail": req.RequiredScope + " is neither a standard scope nor one this " +
@@ -172,7 +134,7 @@ func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 				"would release nothing. Declare it first",
 		})
 		return
-	case err != nil && isConstraintViolation(err, "claim_mappers_not_a_protocol_claim"):
+	case errors.Is(err, store.ErrMapperProtocolClaim):
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "protocol_claim",
 			"detail": "that claim name is part of the token's own identity. A " +
@@ -181,15 +143,15 @@ func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 				"authenticated and how strongly",
 		})
 		return
-	case err != nil && isConstraintViolation(err, "claim_mappers_destination_check"):
+	case errors.Is(err, store.ErrMapperDestination):
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error":  "invalid_destination",
 			"detail": "destination is one of id_token, userinfo, access_token",
 		})
 		return
-	case err != nil && isConstraintViolation(err, "claim_mappers_client_id_fkey"):
+	case errors.Is(err, store.ErrMapperClientElsewhere):
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "unknown_client", "detail": "no client with that id",
+			"error": "unknown_client", "detail": "no client with that id in this organisation",
 		})
 		return
 	case err != nil:
@@ -216,44 +178,24 @@ func (s *Server) listMappers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.db.Query(ctx, `
-		SELECT m.id::text, COALESCE(m.client_id, ''), s.name, s.personal,
-		       m.claim_name, m.destination, m.required_scope
-		FROM core.claim_mappers m
-		JOIN core.user_attribute_schema s ON s.id = m.attribute_id
-		WHERE m.org_id = $1::uuid
-		ORDER BY s.name, m.destination, m.client_id NULLS FIRST`, orgID)
+	mappers, err := store.ClaimMappers(ctx, s.db, orgID)
 	if err != nil {
 		s.log.Error("listing claim mappers", "org_id", orgID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
-	defer rows.Close()
-
-	out := []map[string]any{}
-	for rows.Next() {
-		var id, clientID, attr, claim, dest, scope string
-		var personal bool
-		if err := rows.Scan(&id, &clientID, &attr, &personal, &claim, &dest, &scope); err != nil {
-			s.log.Error("listing claim mappers", "err", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
-			return
-		}
+	out := make([]map[string]any, 0, len(mappers))
+	for _, m := range mappers {
 		entry := map[string]any{
-			"id": id, "attribute": attr, "personal": personal,
-			"claim_name": claim, "destination": dest,
-			"required_scope": scope,
-			"all_clients":    clientID == "",
+			"id": m.ID, "attribute": m.Attribute, "personal": m.Personal,
+			"claim_name": m.ClaimName, "destination": m.Destination,
+			"required_scope": m.RequiredScope,
+			"all_clients":    m.ClientID == "",
 		}
-		if clientID != "" {
-			entry["client_id"] = clientID
+		if m.ClientID != "" {
+			entry["client_id"] = m.ClientID
 		}
 		out = append(out, entry)
-	}
-	if err := rows.Err(); err != nil {
-		s.log.Error("listing claim mappers", "err", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
-		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"mappers": out})
 }
@@ -273,17 +215,12 @@ func (s *Server) deleteMapper(w http.ResponseWriter, r *http.Request) {
 		if err := requireOrg(ctx, orgID); err != nil {
 			return err
 		}
-		// org_id in the WHERE clause as well as the id: without it a caller could
-		// delete another tenant's mapper by id, which is the tenancy boundary
-		// undone by an omitted clause.
-		tag, err := tx.Exec(ctx,
-			`DELETE FROM core.claim_mappers WHERE id = $1::uuid AND org_id = $2::uuid`,
-			mapperID, orgID)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
+		// In the organisation only (store.RemoveClaimMapper): without it a
+		// caller could delete another tenant's mapper by id.
+		if err := store.RemoveClaimMapper(ctx, tx, orgID, mapperID); errors.Is(err, store.ErrMapperUnknown) {
 			return errNotFound
+		} else if err != nil {
+			return err
 		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.claim_mapper_deleted", AdminTokenID: TokenIDFrom(ctx),

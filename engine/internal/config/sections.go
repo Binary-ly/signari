@@ -58,6 +58,10 @@ var sections = []section{
 	attributeSection{},
 	resourceSection{},
 	signupSection{},
+	mapperSection{},
+	accessPolicySection,
+	signInFlowSection,
+	promptSection{},
 }
 
 // sectionOf is the section a plan's Kind belongs to, nil for a built-in kind.

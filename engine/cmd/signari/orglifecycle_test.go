@@ -101,6 +101,53 @@ signup:
   domains: [Example.TEST]
   groups: [staff-%[1]d]
   require_approval: true
+claim_mappers:
+  - attribute: department
+    claim: department
+    destination: id_token
+    client_id: web-%[1]d
+    required_scope: hr-%[1]d
+  - attribute: department
+    claim: dept
+    destination: userinfo
+    all_clients: true
+prompts:
+  - slug: terms-%[1]d
+    title: Terms of use
+    body: Read and accept them to go on.
+    once: true
+    fields:
+      - {name: accept, type: checkbox, label: I accept, required: true}
+access_policy: |
+  version: 1
+  policies:
+    - name: wiki-needs-staff
+      when: {client: wiki}
+      require: {groups: [staff]}
+  tests:
+    - name: staff get the wiki
+      given: {client: wiki, groups: [staff]}
+      expect: allow
+    - name: others do not
+      given: {client: wiki, groups: []}
+      expect: deny
+sign_in_flow: |
+  version: 1
+  flows:
+    - name: default-sign-in
+      on: authentication
+      stages:
+        - one_of:
+            - {stage: passkey, when: proved_by_passkey}
+            - {stage: kerberos, when: proved_by_kerberos}
+            - {stage: federated, when: proved_by_federated}
+            - {stage: password}
+        - {stage: mfa, when: user_has_second_factor}
+        - session
+      tests:
+        - name: password only
+          given: {}
+          expect: [password, session]
 `, n, n%250)), 0o600); err != nil {
 		t.Fatal(err)
 	}

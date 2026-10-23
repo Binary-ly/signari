@@ -88,7 +88,7 @@ func TestTheNewKindsRefuseWhatTheDeploymentCannotHonour(t *testing.T) {
 	}
 
 	// A scope a claim mapper is gated on is not pruned out from under it, while
-	// the attribute the mapper releases is kept.
+	// the file keeps the mapper (pruned with the scope, the mapper goes first).
 	scope := fmt.Sprintf("gated%d", n)
 	if err := plan(fmt.Sprintf("scopes: [{name: %s}]", scope)); err != nil {
 		t.Fatal(err)
@@ -97,7 +97,9 @@ func TestTheNewKindsRefuseWhatTheDeploymentCannotHonour(t *testing.T) {
 		required_scope) VALUES ($1::uuid, $2::uuid, 'badge', 'id_token', $3)`, org, attrID, scope); err != nil {
 		t.Fatal(err)
 	}
-	f, err := Parse([]byte(fmt.Sprintf("version: 1\nattributes: [{name: %s, personal: true}]\n", attr)))
+	f, err := Parse([]byte(fmt.Sprintf("version: 1\nattributes: [{name: %[1]s, personal: true}]\n"+
+		"claim_mappers: [{attribute: %[1]s, claim: badge, destination: id_token, all_clients: true, "+
+		"required_scope: %[2]s}]\n", attr, scope)))
 	if err != nil {
 		t.Fatal(err)
 	}

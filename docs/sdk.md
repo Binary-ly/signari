@@ -7,6 +7,9 @@ server registers, typed by the schemas the document carries. A route added to
 the server, or a field added to one, is in the document from then on, and a
 test fails until the clients are made again.
 
+The same document is rendered as [admin-api-reference.md](admin-api-reference.md):
+every operation, the scope it needs, and the fields it takes and answers.
+
 | | Where | Needs |
 |---|---|---|
 | Go | `sdk/go`, the module `signari.dev/sdk/go`, package `signariadmin` | Go 1.22, nothing outside the standard library |
@@ -68,7 +71,7 @@ try {
 
 ## Making them again
 
-The document first, then the clients:
+The document first, then the clients and the reference:
 
 ```sh
 cd engine

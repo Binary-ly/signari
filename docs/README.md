@@ -163,6 +163,7 @@ command or an environment variable exists in code and not on its page.
 | [console-configuration.md](console-configuration.md) | What each screen answers, and why they are read-only |
 | [admin-api.md](admin-api.md) | The write surface, its endpoints, and conditional writes |
 | [sdk.md](sdk.md) | The Go and TypeScript clients generated from [admin-openapi.json](admin-openapi.json) |
+| [admin-api-reference.md](admin-api-reference.md) | Every Admin API operation, its scope, and the fields it takes and answers, generated from the same document |
 | [extensibility.md](extensibility.md) | Extending a decision with your own service |
 | [admin-tokens.md](admin-tokens.md) | Credentials for the Admin API |
 

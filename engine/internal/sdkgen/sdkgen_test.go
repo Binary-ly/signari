@@ -20,6 +20,7 @@ var (
 var outputs = map[string]func([]byte) ([]byte, error){
 	filepath.Join("sdk", "go", "signariadmin", "signariadmin.go"): Go,
 	filepath.Join("sdk", "typescript", "src", "index.ts"):         TypeScript,
+	filepath.Join("docs", "admin-api-reference.md"):               Markdown,
 }
 
 // The committed clients are the ones docs/admin-openapi.json makes (6.18).

@@ -28,10 +28,10 @@ The realm's other contents also come across:
 | Groups, by path, and who is in them | Groups. A path becomes a name such as `/Engineering Team/Backend` → `Engineering-Team.Backend` (segments joined by `.`, other characters `-`), and each rename is listed |
 | Realm roles a person holds | A group per role, `role.<name>`, so a policy can name who held it. Keycloak's own (`offline_access`, `uma_authorization`, `default-roles-*`) are left behind and listed apart |
 | OTP (TOTP and HOTP) | The same seed, algorithm, digits and period, sealed under the person's key. A counter-based token's counter is carried as the last one used. Needs `SIGNARI_ROOT_KEY` |
-| Passkeys | Saved under the relying party ID the realm states (`webAuthnPolicyRpId`, `webAuthnPolicyPasswordlessRpId`), each key checked as a COSE key. They work only if this deployment serves that same ID. A realm stating none used its host name, which the export does not record, so the passkeys are left behind |
+| Passkeys | Saved under the relying party ID the realm states (`webAuthnPolicyRpId`, `webAuthnPolicyPasswordlessRpId`), each key checked as a COSE key, and the account takes the user handle Keycloak registered them under (see below). They work only if this deployment serves that same ID. A realm stating none used its host name, which the export does not record, so the passkeys are left behind |
 | Links to an upstream provider | Kept, where a provider with the same slug as the realm's alias is registered here first. A person whose only way in is such a link is imported with no password |
 | Attributes | Written where the organisation declares an attribute of that name |
-| SAML clients | Service providers, with the HTTPS ACS URLs and the NameID format (`email`, `persistent`, `transient`) |
+| SAML clients | Service providers, with the HTTPS ACS URLs and the NameID format (`email`, `persistent`, `transient`), and each person's persistent NameID (see below) |
 
 **Everything else is named in the report** under `not carried`, with the
 reason: roles granted through a group, composite roles' contents, client roles,
@@ -44,7 +44,34 @@ A SAML client whose NameID format is `username` is skipped and named, not
 brought across as another format. Keycloak sends the username in that format,
 and no format here does. Every account at the service provider is keyed on the
 NameID, so another value would point them at a subject the provider has never
-seen.
+seen. A client that states no format is skipped too. Keycloak sends such a
+client the format its request asks for and, when the request asks for none,
+the username. Until October 2026 such a client was imported as persistent.
+
+## What applications know people by
+
+An application keys its accounts on what the provider sends it. If that value
+changes at cutover, the application meets every person as a stranger and makes
+them a second account. Three such values come across:
+
+- **The subject.** Keycloak sends the user's id as `sub`, and an account here
+  sends its own id. An imported person is given the realm's id as theirs.
+- **The passkey user handle.** An authenticator returns the handle a passkey was
+  registered under, and both kinds of sign-in refuse a passkey whose handle is
+  not the account's. Keycloak registers a passkey under the user's id. An
+  imported person with passkeys is given that handle.
+- **The persistent NameID.** Keycloak keeps the NameID each SAML client knows a
+  person by in the attribute `saml.persistent.name.id.for.<client>`, or
+  `saml.persistent.name.id.for.*` for every client. Each one is kept for the
+  service provider here that is sent persistent NameIDs.
+
+Each of these is kept only when nobody here holds it. A person already here,
+matched by address, keeps the id they have. They take the handle only if none
+of their passkeys here was registered under the handle they have, because
+changing it would lock out those passkeys. The report names every person whose
+subject, handle or NameID could not be kept, with the reason and the new value.
+Their passkeys are then left behind, since sign-in would refuse them, and they
+register again.
 
 A person whose username already belongs to another account here, under a
 different address, is skipped and named. Where either side has no address,

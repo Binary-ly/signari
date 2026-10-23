@@ -16,8 +16,8 @@
 //  2. REPORT, DO NOT GUESS. A user with an unsupported credential type is
 //     skipped and named, not imported without a password. Silently creating an
 //     account nobody can sign in to is worse than refusing it. Everything else
-//     the realm holds and this does not carry is named too (Result.Dropped),
-//     so the list of what to redo by hand is complete rather than whatever an
+//     the export holds and this does not carry is named too (Dropped), so the
+//     list of what to redo by hand is complete rather than whatever an
 //     operator happened to notice was missing.
 package importer
 
@@ -26,20 +26,15 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
-	"github.com/go-webauthn/webauthn/protocol/webauthncose"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/passwords"
@@ -59,13 +54,18 @@ type KeycloakRealm struct {
 		Realm []keycloakRole `json:"realm"`
 	} `json:"roles"`
 	// The relying party IDs passkeys were registered under
-	// (RealmRepresentation.java:138,153). Empty, Keycloak used the host name,
-	// which the export does not record, so the passkeys cannot be carried.
+	// (RealmRepresentation.java:138,153, at the pinned 783ca364). Empty,
+	// Keycloak used the host name, which the export does not record, so the
+	// passkeys cannot be carried.
 	WebAuthnRPID             string `json:"webAuthnPolicyRpId"`
 	WebAuthnPasswordlessRPID string `json:"webAuthnPolicyPasswordlessRpId"`
 }
 
 type keycloakUser struct {
+	// ID is the subject every token carried (TokenManager.java:1403) and,
+	// as UTF-8, the user handle passkeys were registered under
+	// (WebAuthnRegister.java:155), at the pinned 783ca364.
+	ID                  string               `json:"id"`
 	Username            string               `json:"username"`
 	Email               string               `json:"email"`
 	FirstName           string               `json:"firstName"`
@@ -151,6 +151,11 @@ type Result struct {
 	LinksImported        int
 	AttributesImported   int
 	SAMLProvidersCreated int
+	// SubjectsKept are people whose applications are sent the subject they
+	// were before, and NameIDsKept the persistent NameIDs carried to the
+	// service providers that know them by one (0.44).
+	SubjectsKept int
+	NameIDsKept  int
 	// Renamed are names that changed coming across, so nothing is renamed
 	// without saying: a group's path, which names here cannot hold.
 	Renamed []string
@@ -187,7 +192,7 @@ func Parse(r io.Reader) (*KeycloakRealm, error) {
 	return &realm, nil
 }
 
-// Options are what an import needs besides the realm.
+// Options are what an import needs besides the export.
 type Options struct {
 	// Hasher hashes the client secrets an import keeps.
 	Hasher *passwords.Hasher
@@ -225,6 +230,7 @@ func ImportWith(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRea
 	unlinked := map[string]int{}
 	clientRoles := map[string]int{}
 	attributes := map[string]int{}
+	var nameIDs []keycloakNameID
 
 	for _, u := range realm.Users {
 		identifier := u.Email
@@ -246,13 +252,9 @@ func ImportWith(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRea
 		// organisation has: either is an account somebody can use.
 		var links []keycloakLink
 		for _, l := range u.FederatedIdentities {
-			known, seen := providers[l.IdentityProvider]
-			if !seen {
-				if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.identity_providers
-					WHERE org_id = $1::uuid AND slug = $2)`, orgID, l.IdentityProvider).Scan(&known); err != nil {
-					return nil, fmt.Errorf("importer: looking for provider %s: %w", l.IdentityProvider, err)
-				}
-				providers[l.IdentityProvider] = known
+			known, err := providerRegistered(ctx, tx, orgID, l.IdentityProvider, providers)
+			if err != nil {
+				return nil, err
 			}
 			if known {
 				links = append(links, l)
@@ -281,64 +283,30 @@ func ImportWith(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRea
 			}
 		}
 
-		// The username is unique here too, and the email match below cannot see
-		// it. An account holding it under another address is somebody else,
-		// reported rather than a failed import; matched by it where either side
-		// has no address, it is the same person, which a re-run of a realm
-		// whose people have no email must survive. Both failed the whole import
-		// on users_org_username_key.
-		var holder, holderEmail string
-		if u.Username != "" {
-			err := tx.QueryRow(ctx, `SELECT id::text, COALESCE(email, '') FROM core.users
-				WHERE org_id = $1::uuid AND lower(username) = lower($2)`, orgID, u.Username).Scan(&holder, &holderEmail)
-			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				return nil, fmt.Errorf("importer: looking up %s: %w", identifier, err)
-			}
+		// The names fill gaps and never replace what an account already
+		// holds; they were dropped on import entirely.
+		given, surname := strings.TrimSpace(u.FirstName), strings.TrimSpace(u.LastName)
+		p := person{Email: u.Email, Username: u.Username, Given: given, Surname: surname,
+			Display: strings.TrimSpace(given + " " + surname), Verified: u.EmailVerified, Pending: ok,
+			Subject: u.ID}
+		if keycloakHasPasskeys(u) && u.ID != "" {
+			p.Handle = []byte(u.ID)
 		}
-		if holder != "" && u.Email != "" && holderEmail != "" && !strings.EqualFold(holderEmail, u.Email) {
-			res.UsersSkipped = append(res.UsersSkipped, fmt.Sprintf("%s (the username %s belongs to another "+
-				"account here, %s)", identifier, u.Username, holderEmail))
-			continue
-		}
-
-		var userID string
-		var inserted bool
-		var err error
-		if holder != "" && (u.Email == "" || holderEmail == "") {
-			userID = holder
-			_, err = tx.Exec(ctx, `UPDATE core.users SET
-				given_name = COALESCE(given_name, NULLIF($2,'')), surname = COALESCE(surname, NULLIF($3,'')),
-				display_name = COALESCE(display_name, NULLIF(btrim($2 || ' ' || $3), ''))
-				WHERE id = $1::uuid`, holder, strings.TrimSpace(u.FirstName), strings.TrimSpace(u.LastName))
-		} else {
-			err = tx.QueryRow(ctx, `
-			INSERT INTO core.users (org_id, email, username, user_handle, email_verified_at, migration_state,
-			                        given_name, surname, display_name)
-			VALUES ($1::uuid, NULLIF($2,''), NULLIF($3,''),
-			        decode(md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text)||
-			               md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text),'hex'),
-			        CASE WHEN $4 THEN now() ELSE NULL END, CASE WHEN $7 THEN 'pending' ELSE 'none' END,
-			        NULLIF($5,''), NULLIF($6,''), NULLIF(btrim($5 || ' ' || $6), ''))
-			-- Matches users_org_email_key exactly: a PARTIAL unique index on
-			-- (org_id, lower(email)). The conflict target must mirror the index
-			-- expression and its WHERE clause, or PostgreSQL cannot use it and the
-			-- import fails on the first existing user -- which is precisely the
-			-- re-run an idempotent importer exists to make safe.
-			ON CONFLICT (org_id, lower(email)) WHERE email IS NOT NULL
-			DO UPDATE SET username = COALESCE(core.users.username, EXCLUDED.username),
-			              -- The names fill gaps and never replace what an account
-			              -- already holds; they were dropped on import entirely.
-			              given_name = COALESCE(core.users.given_name, EXCLUDED.given_name),
-			              surname = COALESCE(core.users.surname, EXCLUDED.surname),
-			              display_name = COALESCE(core.users.display_name, EXCLUDED.display_name)
-			RETURNING id::text, (xmax = 0)`,
-				orgID, strings.ToLower(u.Email), u.Username, u.EmailVerified,
-				strings.TrimSpace(u.FirstName), strings.TrimSpace(u.LastName), ok).Scan(&userID, &inserted)
-		}
+		who, err := importPerson(ctx, tx, orgID, p)
 		if err != nil {
 			return nil, fmt.Errorf("importer: creating user %s: %w", identifier, err)
 		}
-
+		if who.Refused != "" {
+			res.UsersSkipped = append(res.UsersSkipped, identifier+" ("+who.Refused+")")
+			continue
+		}
+		userID, inserted := who.ID, who.New
+		if u.ID != "" && userID == u.ID {
+			res.SubjectsKept++
+		}
+		for _, l := range who.Lost {
+			res.Dropped = append(res.Dropped, identifier+"'s "+l)
+		}
 		if ok {
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, source_system, is_current)
@@ -378,13 +346,13 @@ func ImportWith(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRea
 			}
 		}
 		for _, name := range member {
-			tag, err := tx.Exec(ctx, `INSERT INTO core.group_members (group_id, user_id, org_id)
-				SELECT id, $3::uuid, org_id FROM core.groups WHERE org_id = $1::uuid AND name = $2
-				ON CONFLICT DO NOTHING`, orgID, name, userID)
+			added, err := importMembership(ctx, tx, orgID, name, userID)
 			if err != nil {
-				return nil, fmt.Errorf("importer: adding %s to %s: %w", identifier, name, err)
+				return nil, err
 			}
-			res.Memberships += int(tag.RowsAffected())
+			if added {
+				res.Memberships++
+			}
 		}
 		for client, held := range u.ClientRoles {
 			for _, r := range held {
@@ -392,21 +360,31 @@ func ImportWith(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRea
 			}
 		}
 
-		if err := importKeycloakFactors(ctx, tx, orgID, userID, identifier, realm, u, opts, res); err != nil {
+		if err := importKeycloakFactors(ctx, tx, orgID, userID, identifier, realm, u, who.HandleKept, opts,
+			res); err != nil {
 			return nil, err
 		}
 		for _, l := range links {
-			if _, err := store.LinkSubject(ctx, tx, orgID, l.IdentityProvider, userID, l.UserID); err != nil {
-				if errors.Is(err, store.ErrIdPLinkTaken) || errors.Is(err, store.ErrIdPLinkPersonElsewhere) {
-					res.Dropped = append(res.Dropped, fmt.Sprintf("%s's link to %s as %s (%v)", identifier,
-						l.IdentityProvider, l.UserID, err))
-					continue
-				}
-				return nil, fmt.Errorf("importer: linking %s to %s: %w", identifier, l.IdentityProvider, err)
+			linked, why, err := importLink(ctx, tx, orgID, l.IdentityProvider, userID, l.UserID)
+			if err != nil {
+				return nil, err
 			}
-			res.LinksImported++
+			if why != "" {
+				res.Dropped = append(res.Dropped, fmt.Sprintf("%s's link to %s as %s (%s)", identifier,
+					l.IdentityProvider, l.UserID, why))
+			} else if linked {
+				res.LinksImported++
+			}
 		}
 		for name, values := range u.Attributes {
+			if client, ok := strings.CutPrefix(name, keycloakPersistentNameID); ok {
+				// The NameID a SAML client knows them by, written once the
+				// clients have come across.
+				if len(values) > 0 && values[0] != "" {
+					nameIDs = append(nameIDs, keycloakNameID{userID, identifier, client, values[0]})
+				}
+				continue
+			}
 			n, err := importKeycloakAttribute(ctx, tx, orgID, userID, name, values, opts.Root)
 			if err != nil {
 				return nil, fmt.Errorf("importer: %s's attribute %s: %w", identifier, name, err)
@@ -445,35 +423,66 @@ func ImportWith(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRea
 			return nil, err
 		}
 	}
+	if err := importKeycloakNameIDs(ctx, tx, orgID, realm, nameIDs, res); err != nil {
+		return nil, err
+	}
 	return res, nil
 }
 
-func sortedKeys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
+// keycloakPersistentNameID prefixes the attribute holding the NameID a SAML
+// client knows a person by, the client's id or * after it
+// (SamlProtocol.java:155,463-481).
+const keycloakPersistentNameID = "saml.persistent.name.id.for."
 
-// groupNamePart is what a group name here may hold (groups_name_shape).
-var groupNamePart = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
+type keycloakNameID struct{ UserID, Identifier, Client, Value string }
 
-// keycloakGroupName is a group path as a name here: its segments joined by
-// dots, each one's other characters a hyphen; "" for one that does not fit.
-func keycloakGroupName(path string) string {
-	var parts []string
-	for _, seg := range strings.Split(strings.Trim(path, "/"), "/") {
-		if seg = strings.Trim(groupNamePart.ReplaceAllString(seg, "-"), "-"); seg != "" {
-			parts = append(parts, seg)
+// importKeycloakNameIDs writes each person's persistent NameIDs at the
+// clients that send one: the client's own, else the one for every client, as
+// Keycloak reads them.
+func importKeycloakNameIDs(ctx context.Context, tx pgx.Tx, orgID string, realm *KeycloakRealm,
+	nameIDs []keycloakNameID, res *Result) error {
+	persistent := map[string]bool{}
+	for _, c := range realm.Clients {
+		if c.Protocol == "saml" && c.Attributes["saml_name_id_format"] == "persistent" {
+			persistent[c.ClientID] = true
 		}
 	}
-	name := strings.Join(parts, ".")
-	if len(name) > 64 {
-		return ""
+	own := map[string]bool{}
+	for _, n := range nameIDs {
+		own[n.UserID+" "+n.Client] = true
 	}
-	return name
+	for _, n := range nameIDs {
+		var at []string
+		switch {
+		case n.Client == "*":
+			for _, c := range sortedKeys(persistent) {
+				if !own[n.UserID+" "+c] {
+					at = append(at, c)
+				}
+			}
+		case persistent[n.Client]:
+			at = []string{n.Client}
+		}
+		for _, entity := range at {
+			kept, why, err := importNameID(ctx, tx, orgID, entity, n.UserID, n.Value)
+			if err != nil {
+				return err
+			}
+			if why != "" {
+				res.Dropped = append(res.Dropped, fmt.Sprintf("%s's NameID at %s (%s)", n.Identifier, entity, why))
+			} else if kept {
+				res.NameIDsKept++
+			}
+		}
+	}
+	return nil
+}
+
+// keycloakHasPasskeys reports whether the person holds a WebAuthn credential.
+func keycloakHasPasskeys(u keycloakUser) bool {
+	return slices.ContainsFunc(u.Credentials, func(c keycloakCredential) bool {
+		return c.Type == "webauthn" || c.Type == "webauthn-passwordless"
+	})
 }
 
 // importKeycloakGroups makes every group in the tree, answering each path's
@@ -489,7 +498,7 @@ func importKeycloakGroups(ctx context.Context, tx pgx.Tx, orgID string, realm *K
 			if path == "" {
 				path = parent + "/" + g.Name
 			}
-			name := keycloakGroupName(path)
+			name := groupNameOf(path)
 			switch {
 			case name == "":
 				res.Dropped = append(res.Dropped, fmt.Sprintf("group %s (its path makes no name of at most 64 "+
@@ -503,13 +512,13 @@ func importKeycloakGroups(ctx context.Context, tx pgx.Tx, orgID string, realm *K
 				if name != strings.TrimPrefix(path, "/") {
 					res.Renamed = append(res.Renamed, fmt.Sprintf("group %s is %s", path, name))
 				}
-				tag, err := tx.Exec(ctx, `INSERT INTO core.groups (org_id, name, display_name, description)
-					VALUES ($1::uuid, $2, $3, $4) ON CONFLICT (org_id, name) DO NOTHING`, orgID, name, g.Name,
-					"From Keycloak realm "+realm.Realm+", "+path)
+				created, err := importGroup(ctx, tx, orgID, name, g.Name, "From Keycloak realm "+realm.Realm+", "+path)
 				if err != nil {
-					return fmt.Errorf("importer: creating group %s: %w", path, err)
+					return err
 				}
-				res.GroupsCreated += int(tag.RowsAffected())
+				if created {
+					res.GroupsCreated++
+				}
 			}
 			if len(g.RealmRoles) > 0 || len(g.ClientRoles) > 0 {
 				res.Dropped = append(res.Dropped, fmt.Sprintf("the roles group %s grants its members (a group "+
@@ -538,7 +547,7 @@ func importKeycloakRoles(ctx context.Context, tx pgx.Tx, orgID string, realm *Ke
 			res.BuiltIns = append(res.BuiltIns, "role "+r.Name)
 			continue
 		}
-		part := keycloakGroupName("/" + r.Name)
+		part := groupNameOf("/" + r.Name)
 		name := "role." + part
 		if part == "" || len(name) > 64 {
 			res.Dropped = append(res.Dropped, fmt.Sprintf("realm role %s (its name makes no group name here)", r.Name))
@@ -554,12 +563,13 @@ func importKeycloakRoles(ctx context.Context, tx pgx.Tx, orgID string, realm *Ke
 		if r.Description != "" {
 			desc += ": " + r.Description
 		}
-		tag, err := tx.Exec(ctx, `INSERT INTO core.groups (org_id, name, display_name, description)
-			VALUES ($1::uuid, $2, $3, $4) ON CONFLICT (org_id, name) DO NOTHING`, orgID, name, r.Name, desc)
+		created, err := importGroup(ctx, tx, orgID, name, r.Name, desc)
 		if err != nil {
-			return nil, fmt.Errorf("importer: creating the group for role %s: %w", r.Name, err)
+			return nil, err
 		}
-		res.GroupsCreated += int(tag.RowsAffected())
+		if created {
+			res.GroupsCreated++
+		}
 	}
 	return names, nil
 }
@@ -588,9 +598,11 @@ type keycloakWebAuthnData struct {
 	Transports                 []string `json:"transports"`
 }
 
-// importKeycloakFactors brings a person's OTP and passkeys.
+// importKeycloakFactors brings a person's OTP and passkeys; the passkeys only
+// where the account holds the handle they were registered under, since sign-in
+// refuses them otherwise and why is already in the report.
 func importKeycloakFactors(ctx context.Context, tx pgx.Tx, orgID, userID, identifier string, realm *KeycloakRealm,
-	u keycloakUser, opts Options, res *Result) error {
+	u keycloakUser, handleKept bool, opts Options, res *Result) error {
 	otp := false
 	for _, c := range u.Credentials {
 		switch c.Type {
@@ -600,36 +612,26 @@ func importKeycloakFactors(ctx context.Context, tx pgx.Tx, orgID, userID, identi
 				continue
 			}
 			otp = true
-			// One held already, imported before or enrolled here since, is
-			// kept: assigned again, a counter-based token's counter would go
-			// back to the export's, and the codes pressed since would work twice.
-			var held bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.totp_credentials
-				WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL)`, userID).Scan(&held); err != nil {
-				return err
-			}
-			if held {
-				continue
-			}
-			why, err := importKeycloakOTP(ctx, tx, orgID, userID, c, opts.Root)
+			imported, why, err := importKeycloakOTP(ctx, tx, orgID, userID, c, opts.Root)
 			if err != nil {
 				return err
 			}
 			if why != "" {
 				res.Dropped = append(res.Dropped, fmt.Sprintf("%s's OTP (%s)", identifier, why))
+			} else if imported {
+				res.OTPImported++
+			}
+		case "webauthn", "webauthn-passwordless":
+			if !handleKept {
 				continue
 			}
-			res.OTPImported++
-		case "webauthn", "webauthn-passwordless":
 			imported, why, err := importKeycloakPasskey(ctx, tx, orgID, userID, realm, c)
 			if err != nil {
 				return err
 			}
 			if why != "" {
 				res.Dropped = append(res.Dropped, fmt.Sprintf("%s's %s credential (%s)", identifier, c.Type, why))
-				continue
-			}
-			if imported {
+			} else if imported {
 				res.PasskeysImported++
 			}
 		case "password":
@@ -641,16 +643,16 @@ func importKeycloakFactors(ctx context.Context, tx pgx.Tx, orgID, userID, identi
 	return nil
 }
 
-// importKeycloakOTP assigns the credential's seed, answering why not when it
-// cannot be carried.
+// importKeycloakOTP assigns the credential's seed, answering whether it was
+// assigned now, or why it cannot be carried.
 func importKeycloakOTP(ctx context.Context, tx pgx.Tx, orgID, userID string, c keycloakCredential,
-	root *keys.RootKey) (string, error) {
+	root *keys.RootKey) (bool, string, error) {
 	var data keycloakOTPData
 	var secret struct {
 		Value string `json:"value"`
 	}
 	if json.Unmarshal([]byte(c.CredentialData), &data) != nil || json.Unmarshal([]byte(c.SecretData), &secret) != nil {
-		return "its data does not parse", nil
+		return false, "its data does not parse", nil
 	}
 	// OTPCredentialModel.java:111-121: no encoding is the value's own bytes,
 	// BASE32 its decoding.
@@ -659,37 +661,29 @@ func importKeycloakOTP(ctx context.Context, tx pgx.Tx, orgID, userID string, c k
 		v := strings.ToUpper(strings.TrimRight(strings.ReplaceAll(secret.Value, " ", ""), "="))
 		decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(v)
 		if err != nil {
-			return "its Base32 seed does not decode", nil
+			return false, "its Base32 seed does not decode", nil
 		}
 		seed = decoded
 	} else if data.SecretEncoding != "" {
-		return "its seed is in an encoding Keycloak itself refuses, " + data.SecretEncoding, nil
+		return false, "its seed is in an encoding Keycloak itself refuses, " + data.SecretEncoding, nil
 	}
 	algorithm, known := keycloakOTPAlgorithms[data.Algorithm]
 	if !known {
-		return "its algorithm " + data.Algorithm + " is not SHA1, SHA256 or SHA512", nil
+		return false, "its algorithm " + data.Algorithm + " is not SHA1, SHA256 or SHA512", nil
 	}
 	params := mfa.Params{Algorithm: algorithm, Digits: data.Digits, Period: time.Duration(data.Period) * time.Second}
 	kind, last := "totp", int64(0)
-	if data.SubType == "hotp" {
+	switch data.SubType {
+	case "hotp":
 		// Keycloak keeps the next counter to try (HmacOTP.java:82-93, saved
 		// by OTPCredentialProvider.java:105-109); this keeps the last used.
 		kind, last = "hotp", int64(data.Counter)-1
 		params.Period = mfa.DefaultPeriod
-	} else if data.SubType != "totp" {
-		return "its kind " + data.SubType + " is neither totp nor hotp", nil
+	case "totp":
+	default:
+		return false, "its kind " + data.SubType + " is neither totp nor hotp", nil
 	}
-	if err := params.Check(); err != nil {
-		return err.Error(), nil
-	}
-	if root == nil {
-		return "sealing a seed needs SIGNARI_ROOT_KEY, which is not loaded", nil
-	}
-	if _, err := store.AssignOTPToken(ctx, tx, userID, orgID, seed, kind, string(params.Algorithm), params.Digits,
-		params.Period, last, root); err != nil {
-		return "", fmt.Errorf("importer: assigning OTP: %w", err)
-	}
-	return "", nil
+	return importOTP(ctx, tx, orgID, userID, seed, kind, params, last, root)
 }
 
 // decodeKeycloakBytes reads base64 in any of the encodings a key may have
@@ -731,11 +725,6 @@ func importKeycloakPasskey(ctx context.Context, tx pgx.Tx, orgID, userID string,
 	if !ok {
 		return false, "its public key does not decode", nil
 	}
-	// Checked as sign-in will read it: a key that does not parse here would
-	// fail every ceremony.
-	if _, err := webauthncose.ParsePublicKey(key); err != nil {
-		return false, "its public key is not a COSE key: " + err.Error(), nil
-	}
 	var aaguid []byte
 	if data.AAGUID != "" {
 		u, err := uuid.Parse(data.AAGUID)
@@ -744,26 +733,9 @@ func importKeycloakPasskey(ctx context.Context, tx pgx.Tx, orgID, userID string,
 		}
 		aaguid = u[:]
 	}
-	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.webauthn_credentials WHERE credential_id = $1)`,
-		id).Scan(&exists); err != nil {
-		return false, "", err
-	}
-	if exists {
-		// Imported before: the import is idempotent, and the counter it holds
-		// now is newer than the export's.
-		return false, "", nil
-	}
-	transports := data.Transports
-	if transports == nil {
-		transports = []string{}
-	}
-	if err := store.SaveCredential(ctx, tx, userID, orgID, rpID, id, key, aaguid, uint32(max(data.Counter, 0)),
-		c.Type == "webauthn-passwordless", false, false, transports, data.AttestationStatementFormat,
-		c.UserLabel); err != nil {
-		return false, "", fmt.Errorf("importer: saving a passkey: %w", err)
-	}
-	return true, "", nil
+	return importPasskey(ctx, tx, orgID, userID, passkey{RPID: rpID, ID: id, PublicKey: key, AAGUID: aaguid,
+		SignCount: data.Counter, Discoverable: c.Type == "webauthn-passwordless", Transports: data.Transports,
+		Attestation: data.AttestationStatementFormat, Label: c.UserLabel})
 }
 
 // importKeycloakAttribute writes a person's attribute when the organisation
@@ -786,17 +758,18 @@ func importKeycloakAttribute(ctx context.Context, tx pgx.Tx, orgID, userID, name
 }
 
 // keycloakNameIDFormats are SamlClient.java:71-89's names, as this server's.
-// "username" (or anything else, there) is unspecified carrying the username,
-// which has no counterpart here.
+// "username" (or anything else, there, or nothing) is unspecified carrying the
+// username, which has no counterpart here.
 var keycloakNameIDFormats = map[string]string{"email": "emailAddress", "persistent": "persistent",
 	"transient": "transient"}
 
 // importKeycloakSAML makes a SAML client a service provider.
 func importKeycloakSAML(ctx context.Context, tx pgx.Tx, orgID string, c keycloakClient, res *Result) error {
+	// A client stating no format is sent the one its request asks for, and
+	// with none asked, unspecified (SamlProtocol.java:154,416-426), which is
+	// the username (:441-443). It was once brought across as persistent,
+	// re-keying every account at the service provider.
 	format, ok := keycloakNameIDFormats[c.Attributes["saml_name_id_format"]]
-	if c.Attributes["saml_name_id_format"] == "" {
-		format, ok = "persistent", true
-	}
 	if !ok {
 		res.ClientsSkipped = append(res.ClientsSkipped, fmt.Sprintf("SAML client %s (its NameID format %q sends "+
 			"the username, which no format here does; brought across as another, every account at the service "+
@@ -813,43 +786,15 @@ func importKeycloakSAML(ctx context.Context, tx pgx.Tx, orgID string, c keycloak
 			acs = append(acs, u)
 		}
 	}
-	var usable []string
-	for _, u := range acs {
-		if strings.HasPrefix(u, "https://") {
-			usable = append(usable, u)
-		} else {
-			res.ClientsSkipped = append(res.ClientsSkipped, fmt.Sprintf("SAML client %s ACS %s (it carries a "+
-				"signed assertion and must be https)", c.ClientID, u))
-		}
-	}
-	if len(usable) == 0 {
-		res.ClientsSkipped = append(res.ClientsSkipped, "SAML client "+c.ClientID+" (no https ACS URL)")
-		return nil
-	}
 	name := c.Name
 	if name == "" {
 		name = c.ClientID
 	}
-	var id string
-	var created bool
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO core.saml_providers (org_id, entity_id, display_name, name_id_format, enabled)
-		VALUES ($1::uuid, $2, $3, $4, $5)
-		ON CONFLICT (org_id, entity_id) DO UPDATE SET display_name = core.saml_providers.display_name
-		RETURNING id::text, (xmax = 0)`, orgID, c.ClientID, name, format, c.Enabled).Scan(&id, &created); err != nil {
-		if strings.Contains(err.Error(), "saml_providers_entity_id_key") {
-			res.ClientsSkipped = append(res.ClientsSkipped, "SAML client "+c.ClientID+
-				" (another organisation registered that entity ID)")
-			return nil
-		}
-		return fmt.Errorf("importer: SAML provider %s: %w", c.ClientID, err)
+	created, skipped, err := importSAMLProvider(ctx, tx, orgID, c.ClientID, name, format, c.Enabled, acs)
+	if err != nil {
+		return err
 	}
-	for i, u := range usable {
-		if _, err := tx.Exec(ctx, `INSERT INTO core.saml_acs_urls (provider_id, url, binding, is_default)
-			VALUES ($1::uuid, $2, 'HTTP-POST', $3) ON CONFLICT DO NOTHING`, id, u, i == 0 && created); err != nil {
-			return fmt.Errorf("importer: SAML provider %s ACS %s: %w", c.ClientID, u, err)
-		}
-	}
+	res.ClientsSkipped = append(res.ClientsSkipped, skipped...)
 	if created {
 		res.SAMLProvidersCreated++
 	}
@@ -903,70 +848,12 @@ func importKeycloakClient(ctx context.Context, tx pgx.Tx, orgID string, c keyclo
 			c.ClientID+" (uses no flow this server implements)")
 		return nil
 	}
-
-	kind := "confidential"
-	if c.PublicClient {
-		kind = "public"
-	}
-	// The application keeps the secret it already has -- that is the point of
-	// the whole feature -- but it is HASHED before storage, exactly like one
-	// we generated.
-	//
-	// The first version of this wrote the plaintext into client_secret_hash.
-	// Two things were wrong with that and only one of them is obvious: a
-	// plaintext secret sat in a column named `_hash`, AND the Argon2 verifier
-	// correctly refused it, so every imported client silently could not
-	// authenticate. "Verbatim import" meant "verbatim and unusable".
-	secretHash := ""
-	if c.Secret != "" {
-		h, herr := hasher.Hash(ctx, c.Secret)
-		if herr != nil {
-			return fmt.Errorf("importer: hashing the secret for %s: %w", c.ClientID, herr)
-		}
-		secretHash = h
-	}
-	name := c.Name
-	if name == "" {
-		name = c.ClientID
-	}
-	// PKCE required, as for every client created here. This once required it
-	// only of public clients, so every imported confidential client accepted
-	// an authorization request with no challenge. The ones that may need an
-	// opt-out are listed, not left to fail silently in either direction.
-	tag, err := tx.Exec(ctx, `
-		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
-		                          client_secret_hash, enabled, grant_types, scopes, require_pkce)
-		VALUES ($1, $2::uuid, $7, $3, $4, $5, $6,
-		        ARRAY['openid','profile','email'], true)
-		ON CONFLICT (client_id) DO NOTHING`,
-		c.ClientID, orgID, kind, secretHash, c.Enabled, grants, name)
+	created, err := importClient(ctx, tx, orgID, c.ClientID, c.Name, c.Secret, c.PublicClient, c.Enabled, grants,
+		c.RedirectURIs, hasher, res)
 	if err != nil {
-		return fmt.Errorf("importer: creating client %s: %w", c.ClientID, err)
+		return err
 	}
-	if tag.RowsAffected() == 1 && !c.PublicClient && c.StandardFlowEnabled {
-		res.ClientsNowRequiringPKCE = append(res.ClientsNowRequiringPKCE, c.ClientID)
-	}
-	for _, u := range c.RedirectURIs {
-		// An import brings somebody else's registrations, and Keycloak
-		// permits shapes we do not: wildcards, and redirect URIs carrying
-		// response parameters.
-		//
-		// SKIPPED AND REPORTED rather than fatal. A migration that dies on
-		// one bad URI out of four hundred is a migration nobody finishes,
-		// and the operator needs the list of what did not come across --
-		// which is exactly what ClientsSkipped is.
-		if verr := clients.ValidateRedirectURI(u); verr != nil {
-			res.ClientsSkipped = append(res.ClientsSkipped,
-				c.ClientID+" redirect "+u+" ("+verr.Error()+")")
-			continue
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO core.client_redirect_uris (client_id, redirect_uri)
-			VALUES ($1, $2) ON CONFLICT DO NOTHING`, c.ClientID, u); err != nil {
-			return fmt.Errorf("importer: redirect for %s: %w", c.ClientID, err)
-		}
-	}
-	if tag.RowsAffected() == 1 {
+	if created {
 		res.ClientsCreated++
 	}
 	return nil

@@ -3509,6 +3509,7 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 	fmt.Printf("  groups:  %d created, %d memberships\n  OTP: %d, passkeys: %d, provider links: %d, "+
 		"attributes: %d, SAML providers: %d\n", res.GroupsCreated, res.Memberships, res.OTPImported,
 		res.PasskeysImported, res.LinksImported, res.AttributesImported, res.SAMLProvidersCreated)
+	fmt.Printf("  subjects kept: %d, SAML NameIDs kept: %d\n", res.SubjectsKept, res.NameIDsKept)
 
 	// Skipped entries are PRINTED, never merely counted. A number tells an
 	// operator something went wrong; the list tells them who cannot sign in.

@@ -277,6 +277,12 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/prompts", ScopeConfigRead, s.listPrompts)
 	route("PUT /admin/organizations/{orgID}/prompts/{slug}", ScopeOrganizationsWrite, s.putPrompt)
 	route("PATCH /admin/organizations/{orgID}/prompts/{slug}", ScopeOrganizationsWrite, s.patchPrompt)
+	// The access policy and sign-in flows, `signari policy` and `signari flow`
+	// (declarative.go).
+	route("GET /admin/organizations/{orgID}/access-policy", ScopeConfigRead, s.getAccessPolicy)
+	route("PUT /admin/organizations/{orgID}/access-policy", ScopeOrganizationsWrite, s.putAccessPolicy)
+	route("GET /admin/organizations/{orgID}/sign-in-flow", ScopeConfigRead, s.getSignInFlow)
+	route("PUT /admin/organizations/{orgID}/sign-in-flow", ScopeOrganizationsWrite, s.putSignInFlow)
 	// Outposts, `signari outpost` (outposts.go).
 	route("GET /admin/organizations/{orgID}/outposts", ScopeConfigRead, s.listOutposts)
 	route("POST /admin/organizations/{orgID}/outposts", ScopeOrganizationsWrite, s.createOutpost)

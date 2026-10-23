@@ -63,6 +63,8 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/organizations/{orgID}/outposts", org("/outposts")},
 		{"GET /admin/organizations/{orgID}/radius-clients", org("/radius-clients")},
 		{"GET /admin/organizations/{orgID}/rac-connections", org("/rac-connections")},
+		{"GET /admin/organizations/{orgID}/access-policy", org("/access-policy")},
+		{"GET /admin/organizations/{orgID}/sign-in-flow", org("/sign-in-flow")},
 		{"GET /admin/organizations/{orgID}/radius-authorizations", org("/radius-authorizations")},
 		{"GET /admin/organizations/{orgID}/uma/requests", org("/uma/requests")},
 		{"GET /admin/organizations/{orgID}/registration-tokens", org("/registration-tokens")},

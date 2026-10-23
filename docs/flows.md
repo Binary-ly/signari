@@ -32,6 +32,10 @@ signari flow apply -org <uuid> -flow-file flows.yaml  # install it
 signari flow show                                     # the built-in flows
 ```
 
+The Admin API reads and applies the same file at
+`/admin/organizations/{orgID}/sign-in-flow`, parsed and tested the same way
+before it is stored; see [admin-api.md](admin-api.md).
+
 ## What is different here
 
 

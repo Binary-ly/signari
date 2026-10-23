@@ -278,11 +278,11 @@ var cliAPI = map[string]string{
 	"rac set-parameters": "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
 
 	// Policy, flows, prompts and appearance.
-	"policy apply":    pending,
+	"policy apply":    "PUT /admin/organizations/{orgID}/access-policy",
 	"policy show":     reads,
 	"policy test":     reads,
 	"policy graph":    reads,
-	"flow apply":      pending,
+	"flow apply":      "PUT /admin/organizations/{orgID}/sign-in-flow",
 	"flow show":       reads,
 	"flow test":       reads,
 	"flow paths":      reads,

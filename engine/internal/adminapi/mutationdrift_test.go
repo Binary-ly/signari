@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/brand"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/provider"
@@ -402,6 +403,33 @@ func allMutatingRoutes() []mutatingRoute {
 				return "/admin/groups/" + group + "/radius"
 			},
 			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/access-policy", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/access-policy"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				b, err := json.Marshal(map[string]string{"document": "version: 1\npolicies: []\ntests:\n" +
+					"  - name: open\n    given: {client: anything}\n    expect: allow\n"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(b)
+			},
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/sign-in-flow", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/sign-in-flow"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				b, err := json.Marshal(map[string]string{"document": string(flow.DefaultDocument())})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(b)
+			},
 		},
 		{
 			name: "POST /admin/organizations/{orgID}/rac-connections", method: http.MethodPost,

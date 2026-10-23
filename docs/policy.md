@@ -9,6 +9,10 @@ signari policy apply -org <uuid> -policy-file access.yaml
 signari policy show  -org <uuid>
 ```
 
+The Admin API reads and applies the same file at
+`/admin/organizations/{orgID}/access-policy`, parsed and tested the same way
+before it is stored; see [admin-api.md](admin-api.md).
+
 ```yaml
 version: 1
 policies:

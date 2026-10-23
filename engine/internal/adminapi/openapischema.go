@@ -202,6 +202,8 @@ func typeOf[T any]() reflect.Type { return reflect.TypeOf((*T)(nil)).Elem() }
 
 // The shapes several operations share.
 var (
+	appliedDocumentSchema = object([]string{"org_id", "document", "applied_at"}, map[string]jsonSchema{
+		"org_id": uuidStr(), "document": str(), "applied_at": nullable(dateTime())})
 	clientSummarySchema = object([]string{"client_id", "org_id", "display_name", "client_type", "enabled", "created_at"},
 		map[string]jsonSchema{"client_id": str(), "org_id": uuidStr(), "display_name": str(),
 			"client_type": str(), "enabled": boolean(), "created_at": dateTime()})
@@ -488,6 +490,14 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/groups/{groupID}/radius": {http.StatusOK, nil, object(
 		[]string{"group_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{"group_id": uuidStr(),
 			"removed": boolean()}))},
+	"GET /admin/organizations/{orgID}/access-policy": {http.StatusOK, nil, appliedDocumentSchema},
+	"PUT /admin/organizations/{orgID}/access-policy": {http.StatusOK, typeOf[putDocumentRequest](), object(
+		[]string{"org_id", "summary", "config_version"}, withVersion(map[string]jsonSchema{"org_id": uuidStr(),
+			"summary": str()}))},
+	"GET /admin/organizations/{orgID}/sign-in-flow": {http.StatusOK, nil, appliedDocumentSchema},
+	"PUT /admin/organizations/{orgID}/sign-in-flow": {http.StatusOK, typeOf[putDocumentRequest](), object(
+		[]string{"org_id", "summary", "not_executed", "config_version"}, withVersion(map[string]jsonSchema{
+			"org_id": uuidStr(), "summary": str(), "not_executed": arrayOf(str())}))},
 	"GET /admin/organizations/{orgID}/rac-connections": {http.StatusOK, nil, object([]string{"org_id", "connections"},
 		map[string]jsonSchema{"org_id": uuidStr(), "connections": arrayOf(object([]string{"id", "slug", "name",
 			"protocol", "host", "port", "require_group", "recorded", "enabled", "has_credentials", "parameters"},

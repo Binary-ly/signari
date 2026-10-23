@@ -4792,21 +4792,9 @@ func flowApply(ctx context.Context, conn *pgx.Conn, orgID, path string) error {
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
-	// Parsed BEFORE storing, which here means more than it does for a policy: a
-	// document that reaches the table has had its own test cases run AND has been
-	// proved unable to issue a session without authenticating somebody. Storing
-	// first and validating at load would put a document the engine will refuse
-	// into a table an operator already believes is deployed.
-	f, err := flow.Parse(data)
+	// Parsed before it is stored (store.ApplySignInFlow).
+	f, err := store.ApplySignInFlow(ctx, conn, orgID, data)
 	if err != nil {
-		return err
-	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.sign_in_flows (org_id, document)
-		VALUES ($1::uuid, $2)
-		ON CONFLICT (org_id) DO UPDATE
-			SET document = EXCLUDED.document, applied_at = now()`,
-		orgID, string(data)); err != nil {
 		return err
 	}
 	fmt.Printf("applied %s (%s)\n", path, f.Summary())
@@ -4852,19 +4840,10 @@ func policyApply(ctx context.Context, conn *pgx.Conn, orgID, path string) error 
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
-	// Parsed BEFORE storing. A file that would not load must not reach the
-	// database, or the next engine start fails on something an operator already
-	// believes is deployed.
-	f, err := policy.Parse(data)
+	// Parsed before it is stored (store.ApplyAccessPolicy): a file that would
+	// not load must not reach the database.
+	f, err := store.ApplyAccessPolicy(ctx, conn, orgID, data)
 	if err != nil {
-		return err
-	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.access_policies (org_id, document, applied_at)
-		VALUES ($1::uuid, $2, now())
-		ON CONFLICT (org_id) DO UPDATE
-			SET document = EXCLUDED.document, applied_at = now()`,
-		orgID, string(data)); err != nil {
 		return err
 	}
 	fmt.Printf("applied %s (%s)\n", path, f.Summary())
@@ -4873,15 +4852,15 @@ func policyApply(ctx context.Context, conn *pgx.Conn, orgID, path string) error 
 
 // policyShow prints the policy currently in force.
 func policyShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
-	var doc string
-	var applied time.Time
-	if err := conn.QueryRow(ctx,
-		`SELECT document, applied_at FROM core.access_policies WHERE org_id = $1::uuid`,
-		orgID).Scan(&doc, &applied); err != nil {
+	got, err := store.AccessPolicyOf(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if got.AppliedAt == nil {
 		fmt.Println("no policy is in force for that organisation (everything is allowed)")
 		return nil
 	}
-	fmt.Printf("# applied %s\n%s", applied.UTC().Format(time.RFC3339), doc)
+	fmt.Printf("# applied %s\n%s", got.AppliedAt.UTC().Format(time.RFC3339), got.Document)
 	return nil
 }
 

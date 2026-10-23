@@ -224,6 +224,12 @@ var summaries = map[string]string{
 	"PUT /admin/groups/{groupID}/radius":                           "Place a group's members on a VLAN, a Filter-Id or both.",
 	"DELETE /admin/groups/{groupID}/radius":                        "Take a group's VLAN and Filter-Id away.",
 
+	// The access policy and sign-in flows (6.07).
+	"GET /admin/organizations/{orgID}/access-policy": "The access policy in force, as applied; none allows everything.",
+	"PUT /admin/organizations/{orgID}/access-policy": "Put a policy document in force once it loads and its tests pass.",
+	"GET /admin/organizations/{orgID}/sign-in-flow":  "The sign-in flows applied; none runs the built-in flows.",
+	"PUT /admin/organizations/{orgID}/sign-in-flow":  "Apply a flow document once it loads and its tests pass.",
+
 	// Remote-access connections (6.07).
 	"GET /admin/organizations/{orgID}/rac-connections":          "The machines people reach through the browser; never a credential.",
 	"POST /admin/organizations/{orgID}/rac-connections":         "Register a machine, sealing its credentials.",

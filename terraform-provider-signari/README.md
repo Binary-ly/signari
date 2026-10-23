@@ -23,7 +23,55 @@ resource "signari_client" "web" {
   display_name  = "Web application"
   redirect_uris = ["https://app.example.com/callback"]
 }
+
+resource "signari_group" "engineering" {
+  org_id       = signari_client.web.org_id
+  name         = "engineering"
+  display_name = "Engineering"
+}
+
+resource "signari_user" "ada" {
+  org_id       = signari_client.web.org_id
+  email        = "ada@example.com"
+  display_name = "Ada Lovelace"
+}
+
+resource "signari_group_member" "ada_engineering" {
+  group_id = signari_group.engineering.id
+  user_id  = signari_user.ada.id
+}
 ```
+
+## Resources and data sources
+
+| Resource | Changed in place | Replaced by a change of | Imported as |
+|---|---|---|---|
+| `signari_client` | `enabled`, `display_name`, `redirect_uris` | `client_id`, `org_id`, `public` | the client id |
+| `signari_organization` | `status` (`active` or `suspended`) | `slug`, `display_name`, `instance_id` | the id |
+| `signari_group` | `display_name`, `description` | `org_id`, `name` | the id |
+| `signari_user` | `email`, `username`, the names, `locale`, `active`, `password` | `org_id` | the id |
+| `signari_group_member` | nothing | `group_id`, `user_id` | `<group_id>/<user_id>` |
+
+Data sources: `signari_organization` (by `id` or `slug`), `signari_group` (by
+`id`, or `org_id` and `name`) and `signari_user` (by `id`, or `email`, with
+`org_id` when the address is held in several organisations).
+
+- **An organisation is never deleted by Terraform.** Deleting one erases every
+  person in it, and the Admin API does not offer it. A destroy refuses and
+  names `signari instance org-delete`, which does it with the database in
+  front of you. Run `terraform state rm` after it. Managing organisations needs
+  a token scoped to no organisation.
+- **A user's password is write-only.** It is sent when the person is made and
+  whenever the configuration changes it, and never read back. Left out, the
+  person signs in through recovery. An update sends only the fields that
+  changed. Sending the address back unchanged used to clear its verified mark,
+  and an engine from before that fix still does.
+- **`may_impersonate` on a group is read-only.** It is set only with
+  `signari group impersonation`, so that no token can grant itself the power.
+  Joining such a group needs a token holding `privileged-users:write`.
+- **A membership has no read of its own.** The group's members are paged to
+  find it. One removed outside Terraform is dropped from state, and the next
+  plan adds it back.
 
 ## The concurrent-apply hole, and why this provider does not have it
 
@@ -108,11 +156,11 @@ and exists for a server too old to honour the header.
 
 ## `config_version`
 
-A computed attribute recording the version each read observed. It is deliberately
-**not** tracked for drift: it moves whenever any configuration in the deployment
-changes, so treating a change in it as a change to *this* resource would produce
-a permanent diff on every plan. It is state that exists to be sent back on the
-next write, not a property of the client.
+A computed attribute, on every resource, recording the version each read
+observed. It is deliberately **not** tracked for drift: it moves whenever any
+configuration in the deployment changes, so treating a change in it as a change
+to *this* resource would produce a permanent diff on every plan. It is state
+that exists to be sent back on the next write, not a property of the object.
 
 ## What an apply changes in place, and what replaces the client
 
@@ -148,10 +196,15 @@ without a foreign key.
 | `token` | `SIGNARI_ADMIN_TOKEN` | From `signari admin-token create`. |
 | `conditional_writes` | — | Defaults to `true`. |
 
-The token needs the `clients:read` and `clients:write` scopes:
+The token needs the read and write scopes of what the configuration manages:
+`clients:read` and `clients:write` for clients, `groups:read` and
+`groups:write` for groups and memberships, `users:read` and `users:write` for
+users, and `config:read` and `organizations:write`, on a token scoped to no
+organisation, for organisations:
 
 ```
-signari admin-token create -name terraform -scopes clients:read,clients:write
+signari admin-token create -name terraform \
+  -scopes clients:read,clients:write,groups:read,groups:write,users:read,users:write
 ```
 
 ## Tests

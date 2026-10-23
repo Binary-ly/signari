@@ -122,9 +122,10 @@ func (p *signariProvider) Configure(ctx context.Context, req provider.ConfigureR
 }
 
 func (p *signariProvider) Resources(_ context.Context) []func() resource.Resource {
-	return []func() resource.Resource{NewClientResource}
+	return []func() resource.Resource{NewClientResource, NewOrganizationResource, NewGroupResource,
+		NewGroupMemberResource, NewUserResource}
 }
 
 func (p *signariProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{NewOrganizationDataSource, NewGroupDataSource, NewUserDataSource}
 }

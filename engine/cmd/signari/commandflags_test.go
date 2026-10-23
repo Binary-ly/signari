@@ -396,7 +396,9 @@ func TestListingsPrintJSON(t *testing.T) {
 		{"role", "list", "-org", org}, {"scim", "list"}, {"dir", "list", "-org", org}, {"outpost", "list", "-org", org},
 		{"provider", "list", "-org", org}, {"invite", "list", "-org", org}, {"prompt", "list", "-org", org},
 		{"events", "list", "-org", org}, {"rac", "list"}, {"credential", "list"}, {"attester", "list"},
-		{"rar", "list"}, {"resource", "list", "-org", org}, {"scim-source", "list"}, {"idp", "links", "-slug", "none"}} {
+		{"rar", "list"}, {"resource", "list", "-org", org}, {"scim-source", "list"}, {"idp", "links", "-slug", "none"},
+		{"saml", "list"}, {"radius", "list"}, {"ssf", "list"}, {"proxy", "list"}, {"credential", "roots"},
+		{"ssf", "received", "-org", org}, {"uma", "requests", "-org", org}} {
 		out, err := captureStdout(t, func() error { return run(append(args, "-dsn", dsn, "-o", "json")) })
 		if err != nil {
 			t.Errorf("%v -o json: %v", args, err)
@@ -409,6 +411,12 @@ func TestListingsPrintJSON(t *testing.T) {
 		if strings.Contains(out, "sgnadm_") {
 			t.Errorf("%v -o json printed a token secret", args)
 		}
+	}
+	status, err := captureStdout(t, func() error { return run([]string{"migrate", "status", "-dsn", dsn, "-o", "json"}) })
+	var report map[string]any
+	if err != nil || json.Unmarshal([]byte(status), &report) != nil || report["database_version"] == nil ||
+		report["pending"] == nil {
+		t.Errorf("migrate status -o json answered %v:\n%.300s", err, status)
 	}
 	text, err := captureStdout(t, func() error { return run([]string{"group", "list", "-dsn", dsn}) })
 	if err != nil || !strings.HasPrefix(text, "NAME") {

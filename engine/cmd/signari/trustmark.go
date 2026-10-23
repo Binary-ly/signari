@@ -112,7 +112,11 @@ func trustMarkRevoke(ctx context.Context, conn *pgx.Conn, markType, subject, rea
 }
 
 // trustMarkList prints what this entity has issued and what it holds.
-func trustMarkList(ctx context.Context, conn *pgx.Conn) error {
+func trustMarkList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	instanceID, issuer, err := selectInstance(ctx, conn, "")
 	if err != nil {
 		return err
@@ -122,6 +126,34 @@ func trustMarkList(ctx context.Context, conn *pgx.Conn) error {
 	issued, err := store.ListIssuedTrustMarks(ctx, conn, instanceID)
 	if err != nil {
 		return err
+	}
+	if !out.text() {
+		held, err := store.ListHeldTrustMarks(ctx, conn, instanceID)
+		if err != nil {
+			return err
+		}
+		issues := make([]map[string]any, 0, len(issued))
+		for _, m := range issued {
+			row := map[string]any{"type": m.Type, "subject": m.Subject, "state": m.StatusAt(now), "expires_at": nil,
+				"revoked_at": nil, "reason": m.Reason}
+			if !m.ExpiresAt.IsZero() {
+				row["expires_at"] = m.ExpiresAt.UTC()
+			}
+			if m.Status == "revoked" {
+				row["revoked_at"] = m.RevokedAt.UTC()
+			}
+			issues = append(issues, row)
+		}
+		holds := make([]map[string]any, 0, len(held))
+		for _, m := range held {
+			row := map[string]any{"type": m.Type, "issuer": m.Issuer, "expires_at": nil,
+				"expired": !m.ExpiresAt.IsZero() && !m.ExpiresAt.After(now)}
+			if !m.ExpiresAt.IsZero() {
+				row["expires_at"] = m.ExpiresAt.UTC()
+			}
+			holds = append(holds, row)
+		}
+		return out.value(map[string]any{"entity_id": issuer, "issues": issues, "holds": holds})
 	}
 	fmt.Printf("%s issues:\n", issuer)
 	if len(issued) == 0 {

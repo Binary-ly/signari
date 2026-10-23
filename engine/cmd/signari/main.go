@@ -960,7 +960,7 @@ func run(args []string) (err error) {
 		}
 		return up(ctx, conn, migrate.TierCore, *to, opts)
 	case "migrate status":
-		return status(ctx, conn)
+		return status(ctx, conn, *outputFormat)
 	case "migrate fingerprint":
 		return printFingerprint(ctx, conn)
 	case "doctor":
@@ -1005,7 +1005,7 @@ func run(args []string) (err error) {
 	case "instance retire-alias":
 		return instanceRetireAlias(ctx, conn, *issuerAlias, *aliasRetire)
 	case "instance aliases":
-		return instanceAliases(ctx, conn)
+		return instanceAliases(ctx, conn, *outputFormat)
 	case "instance session-limit":
 		return instanceSessionLimit(ctx, conn, *orgID, *sessionMax, *sessionBehaviour)
 	case "instance password-binds":
@@ -1175,11 +1175,11 @@ func run(args []string) (err error) {
 		return ssfAddSource(ctx, conn, *orgID, *name, *srcIssuer, *srcJWKS,
 			*srcAudience, *ssfEvents, *ssfCritical)
 	case "ssf received":
-		return ssfReceived(ctx, conn, *orgID)
+		return ssfReceived(ctx, conn, *orgID, *outputFormat)
 	case "ssf add-stream":
 		return ssfAddStream(ctx, conn, *orgID, *clientID, *ssfEndpoint, *ssfToken, *ssfEvents, *ssfPoll)
 	case "ssf list":
-		return ssfListStreams(ctx, conn)
+		return ssfListStreams(ctx, conn, *outputFormat)
 	case "migration-source add":
 		return migrationSourceAdd(ctx, conn, *orgID, *kind, *name, *migrationTokenEndpoint, *ldapURL,
 			*extClientID, *extSecret, *migrationScope, *bindDNTemplate, *ldapStartTLS, *ldapCA)
@@ -1211,14 +1211,14 @@ func run(args []string) (err error) {
 	case "radius enable-client":
 		return radiusSetClientEnabled(ctx, conn, *orgID, *name, true)
 	case "radius list":
-		return radiusListClients(ctx, conn)
+		return radiusListClients(ctx, conn, *outputFormat)
 	case "radius authorize":
 		return radiusAuthorize(ctx, conn, *orgID, *groupName, *radiusVLAN,
 			*radiusFilterID, *radiusPriority, *removeMember)
 	case "proxy add-host":
 		return proxyAddHost(ctx, conn, *orgID, *racHost)
 	case "proxy list":
-		return proxyListHosts(ctx, conn)
+		return proxyListHosts(ctx, conn, *outputFormat)
 	case "proxy disable-host":
 		return proxySetHostEnabled(ctx, conn, *orgID, *racHost, false)
 	case "proxy enable-host":
@@ -1291,7 +1291,7 @@ func run(args []string) (err error) {
 	case "credential trust-root":
 		return credentialTrustRoot(ctx, conn, *orgID, *name, *credRootCert)
 	case "credential roots":
-		return credentialRoots(ctx, conn)
+		return credentialRoots(ctx, conn, *outputFormat)
 	case "credential untrust-root":
 		return credentialUntrustRoot(ctx, conn, *orgID, *name)
 	case "resource add":
@@ -1311,7 +1311,7 @@ func run(args []string) (err error) {
 	case "trust-mark revoke":
 		return trustMarkRevoke(ctx, conn, *tmType, *tmSubject, *tmReason)
 	case "trust-mark list":
-		return trustMarkList(ctx, conn)
+		return trustMarkList(ctx, conn, *outputFormat)
 	case "trust-mark accept":
 		return trustMarkAccept(ctx, conn, *tmFile)
 	case "trust-mark drop":
@@ -1325,7 +1325,7 @@ func run(args []string) (err error) {
 	case "uma settings":
 		return umaSettings(ctx, conn, *orgID, *umaIntervention, *umaPoll)
 	case "uma requests":
-		return umaRequests(ctx, conn, *orgID)
+		return umaRequests(ctx, conn, *orgID, *outputFormat)
 	case "uma approve":
 		return umaApprove(ctx, conn, *umaRequestID, *relRelation)
 	case "uma deny":
@@ -1453,7 +1453,7 @@ func run(args []string) (err error) {
 	case "scim disable":
 		return scimSetEnabled(ctx, conn, *orgID, *slug, false)
 	case "saml list":
-		return samlListSPs(ctx, conn)
+		return samlListSPs(ctx, conn, *outputFormat)
 	case "idp add":
 		return idpAdd(ctx, conn, *orgID, *slug, *name, *kind, *extClientID, *extSecret,
 			*issuer, *allowSignup, *allowLinking, *trustEmail,
@@ -2884,7 +2884,11 @@ func printFingerprint(ctx context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
-func status(ctx context.Context, conn *pgx.Conn) error {
+func status(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	all, err := migrate.Load()
 	if err != nil {
 		return err
@@ -2893,46 +2897,75 @@ func status(ctx context.Context, conn *pgx.Conn) error {
 	if err != nil {
 		return err
 	}
+	var pending []migrate.Migration
+	for _, m := range all {
+		if m.Version > current {
+			pending = append(pending, m)
+		}
+	}
+	tierOf := func(m migrate.Migration) string {
+		if m.Tier() == migrate.TierBootstrap {
+			return "bootstrap (superuser)"
+		}
+		return "core"
+	}
+	report := map[string]any{"database_version": current, "binary_expects": all[len(all)-1].Version}
 
-	fmt.Printf("database version : %d\n", current)
-	fmt.Printf("binary expects   : %d\n", all[len(all)-1].Version)
+	if out.text() {
+		fmt.Printf("database version : %d\n", current)
+		fmt.Printf("binary expects   : %d\n", all[len(all)-1].Version)
+	}
 
 	if current > 0 {
 		fp, err := migrate.Fingerprint(ctx, conn)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("live fingerprint : %s\n", fp)
+		report["fingerprint"] = fp
 		c, err := migrate.CompareLedger(ctx, conn)
 		if err != nil {
 			return err
-		}
-		switch {
-		case c.Drifted():
-			fmt.Printf("ledger           : DIFFERS -- migration %d recorded %s; the schema has been changed by hand since\n",
-				c.Version, c.Recorded)
-		case c.Comparable:
-			fmt.Printf("ledger           : matches what migration %d recorded\n", c.Version)
-		default:
-			fmt.Printf("ledger           : not compared -- %s\n", c.Reason)
 		}
 		earliest, err := migrate.EarliestCompatible(ctx, conn)
 		if err != nil {
 			return err
 		}
-		if earliest < current {
-			fmt.Printf("oldest binary    : %d -- the migrations since are compatible with it, "+
-				"so it may serve this database\n", earliest)
-		} else {
-			fmt.Printf("oldest binary    : %d -- no earlier binary may serve this database\n", earliest)
+		report["oldest_binary"] = earliest
+		switch {
+		case c.Drifted():
+			report["ledger"] = map[string]any{"state": "differs", "version": c.Version, "recorded": c.Recorded}
+		case c.Comparable:
+			report["ledger"] = map[string]any{"state": "matches", "version": c.Version}
+		default:
+			report["ledger"] = map[string]any{"state": "not compared", "reason": c.Reason}
+		}
+		if out.text() {
+			fmt.Printf("live fingerprint : %s\n", fp)
+			switch {
+			case c.Drifted():
+				fmt.Printf("ledger           : DIFFERS -- migration %d recorded %s; the schema has been changed by hand since\n",
+					c.Version, c.Recorded)
+			case c.Comparable:
+				fmt.Printf("ledger           : matches what migration %d recorded\n", c.Version)
+			default:
+				fmt.Printf("ledger           : not compared -- %s\n", c.Reason)
+			}
+			if earliest < current {
+				fmt.Printf("oldest binary    : %d -- the migrations since are compatible with it, "+
+					"so it may serve this database\n", earliest)
+			} else {
+				fmt.Printf("oldest binary    : %d -- no earlier binary may serve this database\n", earliest)
+			}
 		}
 	}
 
-	var pending []migrate.Migration
-	for _, m := range all {
-		if m.Version > current {
-			pending = append(pending, m)
+	if !out.text() {
+		list := make([]map[string]any, 0, len(pending))
+		for _, m := range pending {
+			list = append(list, map[string]any{"version": m.Version, "name": m.Name, "tier": tierOf(m)})
 		}
+		report["pending"] = list
+		return out.value(report)
 	}
 	if len(pending) == 0 {
 		fmt.Println("pending          : none")
@@ -2940,11 +2973,7 @@ func status(ctx context.Context, conn *pgx.Conn) error {
 	}
 	fmt.Println("pending          :")
 	for _, m := range pending {
-		tier := "core"
-		if m.Tier() == migrate.TierBootstrap {
-			tier = "bootstrap (superuser)"
-		}
-		fmt.Printf("  %04d_%-24s %s\n", m.Version, m.Name, tier)
+		fmt.Printf("  %04d_%-24s %s\n", m.Version, m.Name, tierOf(m))
 	}
 	return nil
 }
@@ -3526,7 +3555,11 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 }
 
 // samlListSPs shows what is registered.
-func samlListSPs(ctx context.Context, conn *pgx.Conn) error {
+func samlListSPs(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled,
 		       COALESCE(string_agg(a.url, ', ' ORDER BY a.url), '(none)')
@@ -3539,21 +3572,30 @@ func samlListSPs(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-38s %-12s %-8s %s\n", "ENTITY ID", "NAMEID", "ENABLED", "ACS")
+	if out.text() {
+		fmt.Printf("%-38s %-12s %-8s %s\n", "ENTITY ID", "NAMEID", "ENABLED", "ACS")
+	}
 	var n int
 	for rows.Next() {
-		var entity, name, format, acs string
+		var entity, name, nameID, acs string
 		var enabled bool
-		if err := rows.Scan(&entity, &name, &format, &enabled, &acs); err != nil {
+		if err := rows.Scan(&entity, &name, &nameID, &enabled, &acs); err != nil {
 			return err
 		}
 		n++
-		fmt.Printf("%-38s %-12s %-8t %s\n", truncateMiddle(entity, 38), format, enabled, acs)
+		out.add(map[string]any{"entity_id": entity, "name": name, "name_id_format": nameID, "enabled": enabled,
+			"acs": acs})
+		if out.text() {
+			fmt.Printf("%-38s %-12s %-8t %s\n", truncateMiddle(entity, 38), nameID, enabled, acs)
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("(none registered -- add one with `signari saml add-sp`)")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 func truncateMiddle(s string, n int) string {
@@ -4850,7 +4892,11 @@ func radiusAddClient(ctx context.Context, conn *pgx.Conn, orgID, name, network, 
 	return nil
 }
 
-func radiusListClients(ctx context.Context, conn *pgx.Conn) error {
+func radiusListClients(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT c.name, host(c.network) || '/' || masklen(c.network), c.enabled, o.slug
 		FROM core.radius_clients c
@@ -4862,7 +4908,9 @@ func radiusListClients(ctx context.Context, conn *pgx.Conn) error {
 	defer rows.Close()
 
 	n := 0
-	fmt.Printf("\n  %-28s %-20s %-10s %s\n", "NAME", "NETWORK", "STATE", "ORG")
+	if out.text() {
+		fmt.Printf("\n  %-28s %-20s %-10s %s\n", "NAME", "NETWORK", "STATE", "ORG")
+	}
 	for rows.Next() {
 		var name, network, org string
 		var enabled bool
@@ -4870,18 +4918,27 @@ func radiusListClients(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		n++
+		out.add(map[string]any{"name": name, "network": network, "enabled": enabled, "org": org})
 		state := "enabled"
 		if !enabled {
 			state = "disabled"
 		}
-		fmt.Printf("  %-28s %-20s %-10s %s\n", truncate(name, 28), network, state, org)
+		if out.text() {
+			fmt.Printf("  %-28s %-20s %-10s %s\n", truncate(name, 28), network, state, org)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !out.text() {
+		return out.flush()
 	}
 	if n == 0 {
 		fmt.Println("\n  No RADIUS clients. The listener refuses to start without at least one:")
 		fmt.Println("  a server that trusts everybody is an authentication oracle for the")
 		fmt.Println("  whole network.")
 	}
-	return rows.Err()
+	return nil
 }
 
 // loadRADIUSClients reads and unseals the configured devices for one organisation.
@@ -4981,7 +5038,11 @@ func ssfAddStream(ctx context.Context, conn *pgx.Conn, orgID, clientID, endpoint
 	return nil
 }
 
-func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
+func ssfListStreams(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT s.client_id, s.delivery_method, COALESCE(s.endpoint_url, ''),
 		       s.status, (s.auth_token IS NOT NULL), cardinality(s.events_requested)
@@ -4992,7 +5053,9 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
 	defer rows.Close()
 
 	n := 0
-	fmt.Printf("\n  %-24s %-6s %-40s %-10s %s\n", "CLIENT", "MODE", "ENDPOINT", "STATUS", "AUTH")
+	if out.text() {
+		fmt.Printf("\n  %-24s %-6s %-40s %-10s %s\n", "CLIENT", "MODE", "ENDPOINT", "STATUS", "AUTH")
+	}
 	for rows.Next() {
 		var client, method, endpoint, status string
 		var hasToken bool
@@ -5001,6 +5064,11 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		n++
+		out.add(map[string]any{"client_id": client, "delivery": method, "endpoint": endpoint, "status": status,
+			"has_receiver_token": hasToken, "event_types": events})
+		if !out.text() {
+			continue
+		}
 		auth := "none"
 		if hasToken {
 			auth = "bearer"
@@ -5014,10 +5082,13 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
 		fmt.Printf("  %-24s %-6s %-40s %-10s %s (%d event types)\n",
 			truncate(client, 24), method, truncate(endpoint, 40), status, auth, events)
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("\n  No Shared Signals receivers. Register one with `signari ssf add-stream`.")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // importAuthentik migrates users and groups from an authentik deployment.
@@ -7726,13 +7797,24 @@ func ssfAddSource(ctx context.Context, conn *pgx.Conn, orgID, name, issuer,
 }
 
 // ssfReceived shows what sources have sent, and what was done about it.
-func ssfReceived(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func ssfReceived(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("-org is required")
 	}
 	rows, err := store.RecentReceived(ctx, conn, orgID, 50)
 	if err != nil {
 		return err
+	}
+	if !out.text() {
+		for _, r := range rows {
+			out.add(map[string]any{"received_at": r.ReceivedAt.UTC(), "event_type": r.EventType,
+				"action": r.Action, "detail": r.Detail})
+		}
+		return out.flush()
 	}
 	if len(rows) == 0 {
 		fmt.Println("no events received")
@@ -8262,7 +8344,11 @@ func credentialTrustRoot(ctx context.Context, conn *pgx.Conn, orgID, name, certP
 }
 
 // credentialRoots lists the roots x5c key proofs may verify to.
-func credentialRoots(ctx context.Context, conn *pgx.Conn) error {
+func credentialRoots(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT org_id::text, name, certificate FROM core.credential_proof_roots
 		ORDER BY org_id, name`)
@@ -8279,15 +8365,23 @@ func credentialRoots(ctx context.Context, conn *pgx.Conn) error {
 		}
 		found = true
 		subject, until := "(does not parse)", ""
+		var notAfter *time.Time
 		if cert, perr := x509.ParseCertificate(der); perr == nil {
 			subject, until = cert.Subject.String(), cert.NotAfter.Format(time.DateOnly)
+			notAfter = utcPtr(&cert.NotAfter)
 		}
-		fmt.Printf("%s  %s  %s  until %s\n", org, name, subject, until)
+		out.add(map[string]any{"org_id": org, "name": name, "subject": subject, "not_after": notAfter})
+		if out.text() {
+			fmt.Printf("%s  %s  %s  until %s\n", org, name, subject, until)
+		}
 	}
-	if !found {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found && out.text() {
 		fmt.Println("no roots: x5c key proofs are refused")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // credentialUntrustRoot withdraws a root. Chains to it are refused from the
@@ -8707,7 +8801,11 @@ func instanceRetireAlias(ctx context.Context, conn *pgx.Conn, alias, retire stri
 }
 
 // instanceAliases lists the instance's aliases and who is pinned to each.
-func instanceAliases(ctx context.Context, conn *pgx.Conn) error {
+func instanceAliases(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	instanceID, issuer, err := selectInstance(ctx, conn, os.Getenv("SIGNARI_ISSUER"))
 	if err != nil {
 		return err
@@ -8715,6 +8813,12 @@ func instanceAliases(ctx context.Context, conn *pgx.Conn) error {
 	list, err := store.IssuerAliases(ctx, conn, instanceID)
 	if err != nil {
 		return err
+	}
+	if !out.text() {
+		for _, a := range list {
+			out.add(map[string]any{"issuer": a.Issuer, "retire_after": utcPtr(a.RetireAfter), "pinned": a.Pinned})
+		}
+		return out.flush()
 	}
 	if len(list) == 0 {
 		fmt.Printf("%s claims no other issuer\n", issuer)

@@ -63,7 +63,11 @@ func umaSettings(ctx context.Context, conn *pgx.Conn, orgID string,
 }
 
 // umaRequests lists the requests awaiting a decision.
-func umaRequests(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func umaRequests(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("-org is required")
 	}
@@ -71,13 +75,27 @@ func umaRequests(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	if err != nil {
 		return err
 	}
-	if len(pending) == 0 {
+	if len(pending) == 0 && out.text() {
 		fmt.Println("nothing is waiting for a decision")
 		return nil
 	}
 	model, err := store.LoadModel(ctx, conn, orgID)
 	if err != nil {
 		return err
+	}
+	if !out.text() {
+		for _, p := range pending {
+			perms := make([]map[string]any, 0, len(p.Permissions))
+			for _, perm := range p.Permissions {
+				perms = append(perms, map[string]any{"resource_type": perm.ResourceType,
+					"resource_id": perm.ResourceID, "scopes": perm.ResourceScopes})
+			}
+			out.add(map[string]any{"id": p.ID, "requesting_party": p.RequestingParty,
+				"requesting_party_email": p.RequestingPartyEmail, "client_id": p.ClientID,
+				"resource_server": p.ResourceServer, "created_at": p.CreatedAt.UTC(), "permissions": perms,
+				"candidate_relations": nonNilList(store.UMACandidateRelations(model, p))})
+		}
+		return out.flush()
 	}
 	for _, p := range pending {
 		who := p.RequestingPartyEmail

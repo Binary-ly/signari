@@ -1647,7 +1647,11 @@ func hostOnly(host string) string {
 	return host
 }
 
-func proxyListHosts(ctx context.Context, conn *pgx.Conn) error {
+func proxyListHosts(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT h.host, h.enabled, o.slug
 		  FROM core.proxy_hosts h
@@ -1658,7 +1662,9 @@ func proxyListHosts(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 	n := 0
-	fmt.Printf("\n  %-40s %-10s %s\n", "HOST", "STATE", "ORG")
+	if out.text() {
+		fmt.Printf("\n  %-40s %-10s %s\n", "HOST", "STATE", "ORG")
+	}
 	for rows.Next() {
 		var host, org string
 		var enabled bool
@@ -1666,17 +1672,23 @@ func proxyListHosts(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		n++
+		out.add(map[string]any{"host": host, "enabled": enabled, "org": org})
 		state := "enabled"
 		if !enabled {
 			state = "disabled"
 		}
-		fmt.Printf("  %-40s %-10s %s\n", host, state, org)
+		if out.text() {
+			fmt.Printf("  %-40s %-10s %s\n", host, state, org)
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("\n  No protected hosts. Forward auth sends nobody back to an application")
 		fmt.Println("  until its host is added with `signari proxy add-host`.")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 func proxySetHostEnabled(ctx context.Context, conn *pgx.Conn, orgID, raw string, enabled bool) error {

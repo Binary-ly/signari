@@ -161,6 +161,13 @@ var summaries = map[string]string{
 	"POST /admin/instances/{instanceID}/issuer-aliases":  "Claim a legacy issuer while relying parties move across.",
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": "Retire an alias, now unless told when.",
 
+	// UMA resource-owner intervention (6.07).
+	"GET /admin/organizations/{orgID}/uma":                               "Whether refused UMA requests wait for a resource owner, and how often clients poll.",
+	"PUT /admin/organizations/{orgID}/uma":                               "Offer or stop offering resource-owner intervention.",
+	"GET /admin/organizations/{orgID}/uma/requests":                      "The UMA requests waiting for a decision, with the relations that would let each through.",
+	"POST /admin/organizations/{orgID}/uma/requests/{requestID}/approve": "Grant a relation that lets the whole request through, and approve it.",
+	"POST /admin/organizations/{orgID}/uma/requests/{requestID}/deny":    "Close the request, granting nothing.",
+
 	// Trusted Client Attesters (6.07).
 	"GET /admin/organizations/{orgID}/attesters":           "The attesters whose client attestations the organisation accepts.",
 	"PUT /admin/organizations/{orgID}/attesters/{name}":    "Trust an attester's public keys, or replace them.",

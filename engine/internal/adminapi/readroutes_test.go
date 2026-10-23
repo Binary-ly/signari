@@ -53,6 +53,8 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/organizations/{orgID}/prompts", org("/prompts")},
 		{"GET /admin/organizations/{orgID}/authorization-detail-types", org("/authorization-detail-types")},
 		{"GET /admin/organizations/{orgID}/attesters", org("/attesters")},
+		{"GET /admin/organizations/{orgID}/uma", org("/uma")},
+		{"GET /admin/organizations/{orgID}/uma/requests", org("/uma/requests")},
 		{"GET /admin/organizations/{orgID}/registration-tokens", org("/registration-tokens")},
 		{"GET /admin/organizations/{orgID}/claim-mappers", org("/claim-mappers")},
 		{"GET /admin/organizations/{orgID}/migration-source", func(t *testing.T, s *Server) string {

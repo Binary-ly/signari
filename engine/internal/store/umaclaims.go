@@ -54,8 +54,16 @@ func LoadUMASettings(ctx context.Context, db Querier, orgID string) (UMASettings
 	return UMASettings{}, rows.Err()
 }
 
+// ErrUMAPollInterval is a poll interval outside 5s to 1h: below that a
+// polling client is a load generator against the token endpoint, and above
+// it the client has almost certainly given up.
+var ErrUMAPollInterval = errors.New("the poll interval must be between 5s and 1h")
+
 // SetUMASettings writes an organisation's settings.
 func SetUMASettings(ctx context.Context, e Execer, orgID string, s UMASettings) error {
+	if s.PollInterval < 5*time.Second || s.PollInterval > time.Hour {
+		return ErrUMAPollInterval
+	}
 	_, err := e.Exec(ctx, `
 		INSERT INTO core.uma_settings (org_id, owner_intervention, poll_interval_seconds)
 		VALUES ($1::uuid, $2, $3)

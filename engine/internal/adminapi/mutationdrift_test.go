@@ -335,6 +335,29 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/uma", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/uma"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"owner_intervention":true}` },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/uma/requests/{requestID}/approve", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				org, id, _ := newDriftUMARequest(t, s)
+				return "/admin/organizations/" + org + "/uma/requests/" + id + "/approve"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"relation":"viewer"}` },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/uma/requests/{requestID}/deny", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				org, id, _ := newDriftUMARequest(t, s)
+				return "/admin/organizations/" + org + "/uma/requests/" + id + "/deny"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/attesters/{name}", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/attesters/drift"

@@ -93,6 +93,10 @@ func signupProps() map[string]jsonSchema {
 		"require_approval": boolean()}
 }
 
+// umaDecisionSchema is a UMA request approved or denied (6.07).
+var umaDecisionSchema = object([]string{"id", "state", "config_version"},
+	withVersion(map[string]jsonSchema{"id": uuidStr(), "state": str()}))
+
 // webauthnProps is an instance's Relying Party identity (6.07).
 func webauthnProps() map[string]jsonSchema {
 	return map[string]jsonSchema{"instance_id": uuidStr(), "rp_id": str(), "rp_display_name": str(),
@@ -449,6 +453,22 @@ var opSchemas = map[string]opSchema{
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": {http.StatusOK, typeOf[issuerAliasRequest](), object(
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
+	"GET /admin/organizations/{orgID}/uma": {http.StatusOK, nil, object([]string{"org_id", "owner_intervention", "poll_interval_s"},
+		map[string]jsonSchema{"org_id": uuidStr(), "owner_intervention": boolean(), "poll_interval_s": integer()})},
+	"PUT /admin/organizations/{orgID}/uma": {http.StatusOK, typeOf[putUMASettingsRequest](), object(
+		[]string{"org_id", "owner_intervention", "poll_interval_s", "config_version"}, withVersion(map[string]jsonSchema{
+			"org_id": uuidStr(), "owner_intervention": boolean(), "poll_interval_s": integer()}))},
+	"GET /admin/organizations/{orgID}/uma/requests": {http.StatusOK, nil, object([]string{"org_id", "requests"},
+		map[string]jsonSchema{"org_id": uuidStr(), "requests": arrayOf(object([]string{"id", "client_id",
+			"resource_server", "requesting_party", "permissions", "relations", "created_at", "expires_at"},
+			map[string]jsonSchema{"id": uuidStr(), "client_id": str(), "resource_server": str(),
+				"requesting_party": str(), "permissions": arrayOf(object([]string{"resource_type", "resource_id",
+					"resource_scopes"}, map[string]jsonSchema{"resource_type": str(), "resource_id": str(),
+					"resource_scopes": arrayOf(str())})),
+				"relations": arrayOf(str()), "created_at": dateTime(), "expires_at": dateTime()}))})},
+	"POST /admin/organizations/{orgID}/uma/requests/{requestID}/approve": {http.StatusOK, typeOf[approveUMARequest](),
+		umaDecisionSchema},
+	"POST /admin/organizations/{orgID}/uma/requests/{requestID}/deny": {http.StatusOK, nil, umaDecisionSchema},
 	"GET /admin/organizations/{orgID}/attesters": {http.StatusOK, nil, object([]string{"org_id", "attesters"},
 		map[string]jsonSchema{"org_id": uuidStr(), "attesters": arrayOf(object(
 			[]string{"name", "keys", "description", "created_at"}, map[string]jsonSchema{"name": str(),

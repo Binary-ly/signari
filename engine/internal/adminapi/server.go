@@ -259,6 +259,12 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/instances/{instanceID}/issuer-aliases", ScopeConfigRead, s.listIssuerAliases)
 	route("POST /admin/instances/{instanceID}/issuer-aliases", ScopeOrganizationsWrite, s.addIssuerAlias)
 	route("PATCH /admin/instances/{instanceID}/issuer-aliases", ScopeOrganizationsWrite, s.retireIssuerAlias)
+	// UMA resource-owner intervention, `signari uma` (uma.go).
+	route("GET /admin/organizations/{orgID}/uma", ScopeConfigRead, s.getUMASettings)
+	route("PUT /admin/organizations/{orgID}/uma", ScopeOrganizationsWrite, s.putUMASettings)
+	route("GET /admin/organizations/{orgID}/uma/requests", ScopeConfigRead, s.listUMARequests)
+	route("POST /admin/organizations/{orgID}/uma/requests/{requestID}/approve", ScopeOrganizationsWrite, s.approveUMA)
+	route("POST /admin/organizations/{orgID}/uma/requests/{requestID}/deny", ScopeOrganizationsWrite, s.denyUMA)
 	// Trusted Client Attesters, `signari attester` (attesters.go).
 	route("GET /admin/organizations/{orgID}/attesters", ScopeConfigRead, s.listAttesters)
 	route("PUT /admin/organizations/{orgID}/attesters/{name}", ScopeOrganizationsWrite, s.putAttester)

@@ -39,6 +39,7 @@ var EventTypes = []string{
 	"admin.signup_rule_removed", "admin.signup_rule_set",
 	"admin.subject_erased", "admin.subject_exported",
 	"admin.token_created", "admin.token_revoked", "admin.token_rotated",
+	"admin.uma_request_approved", "admin.uma_request_denied", "admin.uma_settings_set",
 	"admin.user_approved", "admin.user_created",
 	"admin.user_deleted", "admin.user_unlocked",
 	"admin.user_updated",

@@ -161,6 +161,14 @@ var summaries = map[string]string{
 	"POST /admin/instances/{instanceID}/issuer-aliases":  "Claim a legacy issuer while relying parties move across.",
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": "Retire an alias, now unless told when.",
 
+	// Event subscriptions (6.07).
+	"GET /admin/organizations/{orgID}/event-subscriptions":                       "Where the organisation's events are delivered, and how the deliveries are going.",
+	"POST /admin/organizations/{orgID}/event-subscriptions":                      "Subscribe a URL to events; its signing secret is shown once.",
+	"DELETE /admin/organizations/{orgID}/event-subscriptions/{name}":             "Remove a subscription; nothing more is delivered to it.",
+	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/rotate-secret": "Replace a subscription's signing secret, shown once.",
+	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/enable":        "Switch a subscription back on after it was given up on.",
+	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/test":          "Queue one signed test delivery to a subscription.",
+
 	// An instance's signing keys (6.07).
 	"GET /admin/instances/{instanceID}/keys":         "The instance's signing keys by id, algorithm and state; never a private half.",
 	"POST /admin/instances/{instanceID}/keys/rotate": "Take the next safe step of rotation for each algorithm in use.",

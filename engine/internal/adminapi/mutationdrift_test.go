@@ -336,6 +336,35 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/event-subscriptions", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/event-subscriptions"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"name":"drift","url":"https://hooks.example.test/drift"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/event-subscriptions/{name}", method: http.MethodDelete,
+			path: newDriftSubscription,
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/event-subscriptions/{name}/rotate-secret", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string { return newDriftSubscription(t, s) + "/rotate-secret" },
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/event-subscriptions/{name}/enable", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string { return newDriftSubscription(t, s) + "/enable" },
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/event-subscriptions/{name}/test", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string { return newDriftSubscription(t, s) + "/test" },
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			// An instance of its own with an active key, so rotating publishes
 			// a next one.
 			name: "POST /admin/instances/{instanceID}/keys/rotate", method: http.MethodPost,
@@ -753,6 +782,26 @@ func newDriftInstance(t *testing.T, s *Server) string {
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.instances WHERE id = $1::uuid`, id)
 	})
 	return id
+}
+
+// newDriftSubscription is an organisation of the test's own subscribed by name
+// to every event, and the path of that subscription.
+func newDriftSubscription(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	org := newDriftMigrationOrg(t, s, false)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := store.CreateSubscription(ctx, tx, s.root, org, "drift", "https://hooks.example.test/drift", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return "/admin/organizations/" + org + "/event-subscriptions/drift"
 }
 
 // newDriftKeyedInstance is newDriftInstance with one active ES256 key.

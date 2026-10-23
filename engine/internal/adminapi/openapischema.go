@@ -453,6 +453,22 @@ var opSchemas = map[string]opSchema{
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
 	"PATCH /admin/instances/{instanceID}/issuer-aliases": {http.StatusOK, typeOf[issuerAliasRequest](), object(
 		[]string{"alias", "config_version"}, withVersion(map[string]jsonSchema{"alias": str()}))},
+	"GET /admin/organizations/{orgID}/event-subscriptions": {http.StatusOK, nil, object([]string{"org_id", "subscriptions"},
+		map[string]jsonSchema{"org_id": uuidStr(), "subscriptions": arrayOf(object([]string{"id", "name", "url",
+			"event_types", "enabled", "disabled_reason", "delivered", "outstanding"}, map[string]jsonSchema{
+			"id": uuidStr(), "name": str(), "url": str(), "event_types": arrayOf(str()), "enabled": boolean(),
+			"disabled_reason": str(), "delivered": integer(), "outstanding": integer()}))})},
+	"POST /admin/organizations/{orgID}/event-subscriptions": {http.StatusCreated, typeOf[createSubscriptionRequest](),
+		object([]string{"id", "name", "secret", "config_version"}, withVersion(map[string]jsonSchema{
+			"id": uuidStr(), "name": str(), "secret": str()}))},
+	"DELETE /admin/organizations/{orgID}/event-subscriptions/{name}": {http.StatusOK, nil, object(
+		[]string{"name", "removed", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "removed": boolean()}))},
+	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/rotate-secret": {http.StatusOK, nil, object(
+		[]string{"name", "secret", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "secret": str()}))},
+	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/enable": {http.StatusOK, nil, object(
+		[]string{"name", "enabled", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "enabled": boolean()}))},
+	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/test": {http.StatusOK, nil, object(
+		[]string{"name", "event_id", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "event_id": str()}))},
 	"GET /admin/instances/{instanceID}/keys": {http.StatusOK, nil, object([]string{"instance_id", "keys"},
 		map[string]jsonSchema{"instance_id": uuidStr(), "keys": arrayOf(object(
 			[]string{"kid", "algorithm", "state", "published_at", "demoted_at"}, map[string]jsonSchema{

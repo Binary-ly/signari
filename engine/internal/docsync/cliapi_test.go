@@ -211,12 +211,12 @@ var cliAPI = map[string]string{
 	"ssf add-source":   pending,
 	"ssf list":         reads,
 	"ssf received":     reads,
-	"events subscribe": pending,
-	"events remove":    pending,
-	"events rotate":    pending,
-	"events enable":    pending,
+	"events subscribe": "POST /admin/organizations/{orgID}/event-subscriptions",
+	"events remove":    "DELETE /admin/organizations/{orgID}/event-subscriptions/{name}",
+	"events rotate":    "POST /admin/organizations/{orgID}/event-subscriptions/{name}/rotate-secret",
+	"events enable":    "POST /admin/organizations/{orgID}/event-subscriptions/{name}/enable",
 	"events list":      reads,
-	"events test":      pending,
+	"events test":      "POST /admin/organizations/{orgID}/event-subscriptions/{name}/test",
 
 	// Authorization, federation and UMA.
 	"authz set-model":     pending,

@@ -157,6 +157,61 @@ func newSubscriptionSecret(root *keys.RootKey) (secret string, sealed []byte, er
 // RemoveSubscription deletes one by name, and with it its delivery history. A
 // delivery already queued is closed as delivered when the worker finds its
 // subscription gone (ClaimWebhooks).
+// SubscriptionStatus is one subscription as an operator sees it: never its
+// secret, and how its deliveries are going.
+type SubscriptionStatus struct {
+	ID, Name, URL  string
+	EventTypes     []string
+	Enabled        bool
+	DisabledReason string
+	Delivered      int
+	Outstanding    int
+}
+
+// OrgSubscriptions lists an organisation's subscriptions, oldest first.
+func OrgSubscriptions(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, orgID string) ([]SubscriptionStatus, error) {
+	rows, err := q.Query(ctx, `
+		SELECT s.id::text, s.display_name, s.url, s.event_types, s.enabled, COALESCE(s.disabled_reason, ''),
+		       (SELECT count(*) FROM core.event_deliveries d
+		         WHERE d.subscription_id = s.id AND d.delivered_at IS NOT NULL),
+		       (SELECT count(*) FROM core.event_deliveries d
+		         WHERE d.subscription_id = s.id AND d.delivered_at IS NULL)
+		  FROM core.event_subscriptions s
+		 WHERE s.org_id = $1::uuid
+		 ORDER BY s.created_at, s.id`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SubscriptionStatus{}
+	for rows.Next() {
+		var s SubscriptionStatus
+		if err := rows.Scan(&s.ID, &s.Name, &s.URL, &s.EventTypes, &s.Enabled, &s.DisabledReason,
+			&s.Delivered, &s.Outstanding); err != nil {
+			return nil, err
+		}
+		if s.EventTypes == nil {
+			s.EventTypes = []string{}
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// ErrSubscriptionUnknown is a subscription name the organisation does not
+// have; each change below answers it as subscriptionNamed, which says which.
+var ErrSubscriptionUnknown = errors.New("no such subscription")
+
+type subscriptionNamed struct{ name string }
+
+func (e subscriptionNamed) Error() string {
+	return fmt.Sprintf("no subscription named %q in this organisation", e.name)
+}
+
+func (e subscriptionNamed) Is(target error) bool { return target == ErrSubscriptionUnknown }
+
 func RemoveSubscription(ctx context.Context, tx pgx.Tx, orgID, name string) (bool, error) {
 	tag, err := tx.Exec(ctx, `DELETE FROM core.event_subscriptions
 		WHERE org_id = $1::uuid AND display_name = $2`, orgID, name)
@@ -181,7 +236,7 @@ func RotateSubscriptionSecret(ctx context.Context, tx pgx.Tx, root *keys.RootKey
 		return "", err
 	}
 	if tag.RowsAffected() == 0 {
-		return "", fmt.Errorf("no subscription named %q in this organisation", name)
+		return "", subscriptionNamed{name}
 	}
 	return secret, nil
 }
@@ -196,7 +251,7 @@ func EnableSubscription(ctx context.Context, tx pgx.Tx, orgID, name string) erro
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no subscription named %q in this organisation", name)
+		return subscriptionNamed{name}
 	}
 	return nil
 }
@@ -213,7 +268,7 @@ func SendTestEvent(ctx context.Context, tx pgx.Tx, orgID, name string) (string, 
 	if err := tx.QueryRow(ctx, `SELECT id::text, url FROM core.event_subscriptions
 		WHERE org_id = $1::uuid AND display_name = $2`, orgID, name).Scan(&id, &url); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", fmt.Errorf("no subscription named %q in this organisation", name)
+			return "", subscriptionNamed{name}
 		}
 		return "", err
 	}

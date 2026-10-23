@@ -160,6 +160,71 @@ func TestEveryFlagAMessageAsksForIsOneTheCommandReads(t *testing.T) {
 			return true
 		})
 	}
+	// A flag may also reach the call as a pointer, either the flag's own
+	// variable or a local the caller set from it (`emailTrust = trustEmail`,
+	// so that nil can mean "not given"), as cmd/signari's hints test reads it.
+	// Only in the function that defines the flags: elsewhere a variable of a
+	// flag's name is a parameter carrying whatever its caller passed.
+	for _, caller := range funcs {
+		if caller.Body == nil {
+			continue
+		}
+		definesFlags := false
+		ast.Inspect(caller.Body, func(n ast.Node) bool {
+			if as, ok := n.(*ast.AssignStmt); ok && len(as.Rhs) == 1 {
+				if call, ok := as.Rhs[0].(*ast.CallExpr); ok {
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+						if x, ok := sel.X.(*ast.Ident); ok && x.Name == "fs" {
+							definesFlags = true
+						}
+					}
+				}
+			}
+			return !definesFlags
+		})
+		if !definesFlags {
+			continue
+		}
+		alias := map[string]string{}
+		ast.Inspect(caller.Body, func(n ast.Node) bool {
+			if as, ok := n.(*ast.AssignStmt); ok && len(as.Lhs) == 1 && len(as.Rhs) == 1 {
+				lhs, ok := as.Lhs[0].(*ast.Ident)
+				rhs, ok2 := as.Rhs[0].(*ast.Ident)
+				if ok && ok2 && flagOf[rhs.Name] != "" {
+					alias[lhs.Name] = flagOf[rhs.Name]
+				}
+			}
+			return true
+		})
+		ast.Inspect(caller.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			fn, ok := call.Fun.(*ast.Ident)
+			if !ok || funcs[fn.Name] == nil {
+				return true
+			}
+			for _, a := range call.Args {
+				id, ok := a.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				flag := flagOf[id.Name]
+				if flag == "" {
+					flag = alias[id.Name]
+				}
+				if flag == "" {
+					continue
+				}
+				if passed[fn.Name] == nil {
+					passed[fn.Name] = map[string]bool{}
+				}
+				passed[fn.Name][flag] = true
+			}
+			return true
+		})
+	}
 	if len(passed) < 50 {
 		t.Fatalf("only %d functions receive flags; the call walk is wrong", len(passed))
 	}

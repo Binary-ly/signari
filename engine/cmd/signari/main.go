@@ -546,6 +546,8 @@ func run(args []string) (err error) {
 	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
 	allowLinking := fs.Bool("allow-linking", true, "let users add this provider to an existing account")
 	trustEmail := fs.Bool("trust-email-verification", false, "generic OIDC only: believe this provider's email_verified claim")
+	requireVerified := fs.Bool("require-verified-email", true,
+		"`idp verified-email`: a new account through the provider needs an address it verified and is believed about")
 	baseURL := fs.String("base-url", "", "SCIM base URL of the target application")
 	scimToken := fs.String("token", "", "bearer token the SCIM target issued")
 	onDeactivate := fs.String("on-deactivate", "deactivate", "deactivate, delete or nothing")
@@ -1388,7 +1390,16 @@ func run(args []string) (err error) {
 	case "saml group-release":
 		return samlGroupRelease(ctx, conn, *entityID, *samlAttrName, *onlyGroups, *removeMember)
 	case "idp verified-email":
-		return idpVerifiedEmail(ctx, conn, *slug, *trustEmail)
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var emailTrust, emailRequired *bool
+		if given["trust-email-verification"] {
+			emailTrust = trustEmail
+		}
+		if given["require-verified-email"] {
+			emailRequired = requireVerified
+		}
+		return idpVerifiedEmail(ctx, conn, *slug, emailTrust, emailRequired)
 	case "idp trust-mfa":
 		return idpTrustMFA(ctx, conn, *slug, *idpMFAAMR, *idpMFAACR)
 	case "idp disable":
@@ -3886,17 +3897,13 @@ func idpAssertions(ctx context.Context, conn *pgx.Conn, slug string, allow bool)
 	if slug == "" {
 		return fmt.Errorf("-slug is required")
 	}
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{AllowAssertions: &allow}); err != nil {
+		return err
+	}
 	var issuer, jwks string
 	var enabled bool
-	err := conn.QueryRow(ctx, `
-		UPDATE core.identity_providers SET allow_jwt_bearer = $2, updated_at = now()
-		WHERE slug = $1
-		RETURNING COALESCE(issuer,''), COALESCE(jwks_url,''), enabled`,
-		slug, allow).Scan(&issuer, &jwks, &enabled)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("no identity provider called %q", slug)
-	}
-	if err != nil {
+	if err := conn.QueryRow(ctx, `SELECT COALESCE(issuer,''), COALESCE(jwks_url,''), enabled
+		FROM core.identity_providers WHERE slug = $1`, slug).Scan(&issuer, &jwks, &enabled); err != nil {
 		return err
 	}
 

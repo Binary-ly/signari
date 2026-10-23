@@ -311,44 +311,29 @@ func idpAttributeMap(ctx context.Context, conn *pgx.Conn, slug, claim, attribute
 		return fmt.Errorf("give -slug, -claim and -attribute")
 	}
 
-	var providerID, orgID string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text, org_id::text FROM core.identity_providers WHERE slug = $1`,
-		slug).Scan(&providerID, &orgID); err != nil {
+	orgID, _, err := store.IdentityProviderOrg(ctx, conn, slug)
+	if errors.Is(err, store.ErrProviderUnknown) {
 		return fmt.Errorf("no identity provider with slug %q", slug)
 	}
-
-	var attributeID string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text FROM core.user_attribute_schema
-		 WHERE org_id = $1::uuid AND name = $2`, orgID, attribute).Scan(&attributeID); err != nil {
-		return fmt.Errorf("that organisation has no attribute named %q. Declare it first "+
-			"through the admin API; an attribute carries whether its values are sealed, "+
-			"and a mapping cannot decide that for it", attribute)
+	if err != nil {
+		return err
 	}
 
 	if remove {
-		tp, err := conn.Exec(ctx, `
-			DELETE FROM core.idp_attribute_map
-			WHERE provider_id = $1::uuid AND upstream_claim = $2 AND attribute_id = $3::uuid`,
-			providerID, claim, attributeID)
+		err := store.RemoveIdPAttributeMap(ctx, conn, orgID, slug, claim, attribute)
+		if errors.Is(err, store.ErrIdPMappingUnknown) {
+			return fmt.Errorf("%s does not map %q to %q", slug, claim, attribute)
+		}
 		if err != nil {
 			return err
-		}
-		if tp.RowsAffected() == 0 {
-			return fmt.Errorf("%s does not map %q to %q", slug, claim, attribute)
 		}
 		fmt.Printf("%s no longer maps %q into %q\n", slug, claim, attribute)
 		return nil
 	}
 
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.idp_attribute_map
-		    (provider_id, org_id, upstream_claim, attribute_id, overwrite, max_length)
-		VALUES ($1::uuid, $2::uuid, $3, $4::uuid, $5, $6)
-		ON CONFLICT (provider_id, upstream_claim, attribute_id) DO UPDATE
-		   SET overwrite = EXCLUDED.overwrite, max_length = EXCLUDED.max_length`,
-		providerID, orgID, claim, attributeID, overwrite, maxLength); err != nil {
+	// The attribute must be declared (store.SetIdPAttributeMap): it carries
+	// whether its values are sealed, and a mapping cannot decide that for it.
+	if err := store.SetIdPAttributeMap(ctx, conn, orgID, slug, claim, attribute, overwrite, maxLength); err != nil {
 		return err
 	}
 
@@ -1889,34 +1874,41 @@ func samlGroupRelease(ctx context.Context, conn *pgx.Conn, entityID, attrName,
 	return nil
 }
 
-// idpVerifiedEmail decides whether to believe a provider's email_verified claim.
+// idpVerifiedEmail decides whether to believe a provider's email_verified
+// claim (-trust-email-verification), and whether a new account through it
+// needs an address it verified (-require-verified-email).
 //
 // Believing it is trusting a third party's word that somebody controls an
-// address, and that word is what account linking is decided on. A provider that
-// lets anybody set an unverified address and reports it as verified turns this
-// into account takeover by registration.
-func idpVerifiedEmail(ctx context.Context, conn *pgx.Conn, slug string, trust bool) error {
+// address: an address the provider reports as verified is recorded as verified
+// here. An address never finds or links an account (internal/federation), so a
+// provider that lies puts unproved addresses on accounts rather than handing
+// over someone else's. Until 0.36 the trust flag wrote require_verified_email,
+// so turning belief off left a generic provider believed.
+func idpVerifiedEmail(ctx context.Context, conn *pgx.Conn, slug string, trust, require *bool) error {
 	if slug == "" {
 		return fmt.Errorf("give -slug")
 	}
-	tp, err := conn.Exec(ctx,
-		`UPDATE core.identity_providers SET require_verified_email = $2 WHERE slug = $1`,
-		slug, !trust)
-	if err != nil {
+	if trust == nil && require == nil {
+		return fmt.Errorf("give -trust-email-verification=true|false, -require-verified-email=true|false, or both")
+	}
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{TrustEmailVerification: trust,
+		RequireVerifiedEmail: require}); err != nil {
 		return err
 	}
-	if tp.RowsAffected() == 0 {
-		return fmt.Errorf("no identity provider with slug %q", slug)
-	}
 
-	if trust {
+	if trust != nil && *trust {
 		fmt.Printf("%s: this engine believes the provider's email_verified claim\n", slug)
-		fmt.Println("\n  Accounts are linked by address on that basis. Only do this for a")
-		fmt.Println("  provider that verifies addresses itself and will not report an")
+		fmt.Println("\n  An address it reports as verified is recorded as verified. Only do this")
+		fmt.Println("  for a provider that verifies addresses itself and will not report an")
 		fmt.Println("  unverified one as verified.")
-		return nil
+	} else if trust != nil {
+		fmt.Printf("%s: an address from this provider is recorded as unverified\n", slug)
 	}
-	fmt.Printf("%s: an address from this provider is verified here, not taken on trust\n", slug)
+	if require != nil && *require {
+		fmt.Printf("%s: a new account through it needs an address it verified and is believed about\n", slug)
+	} else if require != nil {
+		fmt.Printf("%s: a new account through it may be created on an unverified address\n", slug)
+	}
 	return nil
 }
 
@@ -1927,28 +1919,10 @@ func idpTrustMFA(ctx context.Context, conn *pgx.Conn, slug, amr, acr string) err
 		return fmt.Errorf("give -slug")
 	}
 	amrs, acrs := splitList(amr), splitList(acr)
-	var kind string
-	if err := conn.QueryRow(ctx, `SELECT kind FROM core.identity_providers WHERE slug = $1`,
-		slug).Scan(&kind); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no identity provider with slug %q", slug)
-		}
+	// Only a verified ID token is read for these claims, so a list on a kind
+	// that sends none is refused (store.ChangeIdentityProvider).
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{MFAAMR: &amrs, MFAACR: &acrs}); err != nil {
 		return err
-	}
-	// Only a verified ID token is read for these claims. GitHub sends none and a
-	// SAML upstream sends an assertion, so a list set on either would be a
-	// setting nothing enforces, which an operator would believe had worked.
-	if (kind == "github" || kind == "saml") && len(amrs)+len(acrs) > 0 {
-		return fmt.Errorf("%s is a %s provider, which sends no ID token for an amr or acr to be read from", slug, kind)
-	}
-	tp, err := conn.Exec(ctx,
-		`UPDATE core.identity_providers SET mfa_amr = $2, mfa_acr = $3 WHERE slug = $1`,
-		slug, amrs, acrs)
-	if err != nil {
-		return err
-	}
-	if tp.RowsAffected() == 0 {
-		return fmt.Errorf("no identity provider with slug %q", slug)
 	}
 	if len(amrs)+len(acrs) == 0 {
 		fmt.Printf("%s: no upstream claim counts as multi-factor; a sign-in through it is `fed` alone\n", slug)
@@ -1959,6 +1933,19 @@ func idpTrustMFA(ctx context.Context, conn *pgx.Conn, slug, amr, acr string) err
 	fmt.Println("\n  The provider's word is taken for it: trust a value only from a provider")
 	fmt.Println("  that sets it when, and only when, it checked a second factor itself.")
 	return nil
+}
+
+// idpChange applies a setting to the provider of that slug, in its own
+// organisation, as the Admin API does.
+func idpChange(ctx context.Context, conn *pgx.Conn, slug string, c store.IdentityProviderChange) error {
+	orgID, _, err := store.IdentityProviderOrg(ctx, conn, slug)
+	if errors.Is(err, store.ErrProviderUnknown) {
+		return fmt.Errorf("no identity provider with slug %q", slug)
+	}
+	if err != nil {
+		return err
+	}
+	return store.ChangeIdentityProvider(ctx, conn, orgID, slug, c)
 }
 
 // idpSetEnabled takes an upstream provider out of service, or puts it back.

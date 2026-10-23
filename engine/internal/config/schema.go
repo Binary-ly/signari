@@ -36,6 +36,11 @@ var schemaEnums = map[string][]string{
 	"SAMLUpstream.name_id_format": {"persistent", "emailAddress", "unspecified"},
 	"Provider.hook":               hookNames(),
 	"IdentityProvider.kind":       idpKinds(),
+	// store.CheckWebAuthnPolicy's.
+	"WebAuthnPolicy.attestation":       {"none", "indirect", "direct", "enterprise"},
+	"WebAuthnPolicy.user_verification": {"required", "preferred"},
+	"WebAuthnPolicy.resident_key":      {"required", "preferred", "discouraged"},
+	"WebAuthnPolicy.attachment":        {"platform", "cross-platform"},
 }
 
 func hookNames() []string {

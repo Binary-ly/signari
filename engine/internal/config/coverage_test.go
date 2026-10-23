@@ -20,7 +20,8 @@ var declaredBy = map[string]string{
 	"providers": "provider", "proxy_hosts": "proxy_host", "rac_connections": "rac_connection",
 	"radius_clients": "radius_client", "resource_servers": "resource", "saml_providers": "saml_provider",
 	"scim_targets": "scim_target", "scopes": "scope", "sign_in_flows": "sign_in_flow", "signup_rules": "signup",
-	"user_attribute_schema": "attribute",
+	"user_attribute_schema": "attribute", "registration_policies": "registration", "webauthn_policy": "webauthn_policy",
+	"uma_settings": "uma",
 }
 
 const (
@@ -70,8 +71,7 @@ var notYet = map[string]bool{
 	"client_authorization_detail_types": true, "client_group_release": true, "credential_configurations": true,
 	"credential_proof_roots": true, "directory_group_map": true, "directory_sources": true,
 	"duo_integrations": true, "migration_sources": true, "outposts": true, "radius_group_authorization": true,
-	"registration_policies": true, "saml_group_release": true, "scim_sources": true, "ssf_sources": true,
-	"ssf_streams": true, "uma_settings": true, "webauthn_policy": true,
+	"saml_group_release": true, "scim_sources": true, "ssf_sources": true, "ssf_streams": true,
 }
 
 func TestEveryOrganisationTableIsDeclarableOrSaysWhyNot(t *testing.T) {

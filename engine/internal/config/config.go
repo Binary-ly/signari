@@ -62,6 +62,11 @@ type File struct {
 	SignInFlow   *string  `yaml:"sign_in_flow,omitempty"`
 	Prompts      []Prompt `yaml:"prompts,omitempty"`
 
+	// The settings that are one each (settingskinds.go); absent leaves them.
+	Registration   *Registration   `yaml:"registration,omitempty"`
+	WebAuthnPolicy *WebAuthnPolicy `yaml:"webauthn_policy,omitempty"`
+	UMA            *UMA            `yaml:"uma,omitempty"`
+
 	// The kinds holding a secret, which the file names by reference or the
 	// engine mints (secrets.go).
 	Providers         []Provider         `yaml:"providers,omitempty"`

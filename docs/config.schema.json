@@ -434,6 +434,30 @@
       },
       "type": "object"
     },
+    "Registration": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_confidential": {
+          "type": "boolean"
+        },
+        "allowed_scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_clients": {
+          "type": "integer"
+        },
+        "open": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "Resource": {
       "additionalProperties": false,
       "properties": {
@@ -655,6 +679,80 @@
         }
       },
       "type": "object"
+    },
+    "UMA": {
+      "additionalProperties": false,
+      "properties": {
+        "owner_intervention": {
+          "type": "boolean"
+        },
+        "poll_interval": {
+          "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "WebAuthnPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "algorithms": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "allowed_aaguids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "attachment": {
+          "enum": [
+            "platform",
+            "cross-platform"
+          ],
+          "type": "string"
+        },
+        "attestation": {
+          "enum": [
+            "none",
+            "indirect",
+            "direct",
+            "enterprise"
+          ],
+          "type": "string"
+        },
+        "hints": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refuse_cloned": {
+          "type": "boolean"
+        },
+        "resident_key": {
+          "enum": [
+            "required",
+            "preferred",
+            "discouraged"
+          ],
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "type": "integer"
+        },
+        "user_verification": {
+          "enum": [
+            "required",
+            "preferred"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -733,6 +831,9 @@
       },
       "type": "array"
     },
+    "registration": {
+      "$ref": "#/$defs/Registration"
+    },
     "resources": {
       "items": {
         "$ref": "#/$defs/Resource"
@@ -763,9 +864,15 @@
     "signup": {
       "$ref": "#/$defs/Signup"
     },
+    "uma": {
+      "$ref": "#/$defs/UMA"
+    },
     "version": {
       "const": 1,
       "type": "integer"
+    },
+    "webauthn_policy": {
+      "$ref": "#/$defs/WebAuthnPolicy"
     }
   },
   "required": [

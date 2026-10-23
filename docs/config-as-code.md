@@ -110,6 +110,21 @@ sign_in_flow: |               # the flows document, as `signari flow apply` take
   version: 1
   flows: [...]
 
+registration:                 # RFC 7591 dynamic client registration; omit to leave it
+  open: false                 # true: no initial access token needed
+  max_clients: 100
+  allowed_scopes: [openid, profile, email]
+
+webauthn_policy:              # written whole: a field left out takes the default
+  attestation: direct         # none (default), indirect, direct, enterprise
+  allowed_aaguids: [ee882879-721c-4913-9775-3dfcce97072a]
+  user_verification: required
+  timeout_seconds: 300
+
+uma:                          # resource-owner intervention
+  owner_intervention: true
+  poll_interval: 30s
+
 providers:                    # your own service consulted at a hook, one per hook
   - hook: token_issue         # or authorize
     url: https://hooks.example.com/claims
@@ -346,7 +361,8 @@ diff cry wolf, and a diff that cries wolf is a diff nobody reads.
 Groups, OAuth/OIDC clients and their redirect URIs, SAML service providers and
 their ACS URLs, RADIUS clients, protected hosts, declared scopes, user
 attributes, resource servers, the sign-up rule, claim mappers, prompts, the
-access policy, the sign-in flows, extension providers, event subscriptions,
+access policy, the sign-in flows, dynamic registration, the WebAuthn policy,
+UMA's owner intervention, extension providers, event subscriptions,
 provisioning targets, remote-access connections and identity providers.
 `signari export org` writes all of them, so a
 deployment's export applied to an empty one, with each target's token named by
@@ -365,6 +381,14 @@ a file that asks otherwise is refused at the plan, before anything is written.
 Pruning an attribute erases every person's value of it, which the plan says.
 A scope a claim mapper is gated on is not pruned while the mapper stays, and the
 sign-up rule's groups must be the organisation's or the file's own.
+
+Dynamic registration that a pruned file leaves out is **turned off, not
+deleted**, so its initial access tokens are still there when it is turned on
+again. `enabled: false` turns it off the same way. A pruned WebAuthn policy
+returns to the defaults. The plan marks that destructive, because an
+allow-list of authenticator models goes with it. The policy is compared as it
+is stored, so an AAGUID written in capitals is not planned as a change every
+time.
 
 An event subscription's `enabled` is left as it is when the file leaves it out.
 When deliveries keep failing, the deployment gives up on a subscription and

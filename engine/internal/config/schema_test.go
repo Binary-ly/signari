@@ -49,6 +49,11 @@ func TestEverySchemaEnumIsWhatParseAccepts(t *testing.T) {
 		"SCIMTarget.on_deactivate":    "scim_targets: [{slug: s, base_url: 'https://a.example.test/', token: {env: T}, on_deactivate: %q}]",
 		"RACConnection.protocol":      "rac_connections: [{slug: r, protocol: %q, host: h}]",
 		"SAMLUpstream.name_id_format": "identity_providers: [{slug: i, kind: saml, saml: {entity_id: e, sso_url: 'https://i.example.test/', certificate: %q, name_id_format: %q}}]",
+		// The WebAuthn policy's, store.CheckWebAuthnPolicy's sets.
+		"WebAuthnPolicy.attestation":       "webauthn_policy: {attestation: %q}",
+		"WebAuthnPolicy.user_verification": "webauthn_policy: {user_verification: %q}",
+		"WebAuthnPolicy.resident_key":      "webauthn_policy: {resident_key: %q}",
+		"WebAuthnPolicy.attachment":        "webauthn_policy: {attachment: %q}",
 	}
 	cert := testCertificate(t)
 	parse := func(key, value string) error {

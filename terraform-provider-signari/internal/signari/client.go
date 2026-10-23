@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -98,28 +99,65 @@ type Result struct {
 	Version int64
 }
 
-// do performs one request, optionally conditional.
+// arrivalRetries is how often a request the Admin API turned away at the door
+// is sent again. Its arrival limit answers 429 before it authenticates the
+// request (limitArrivals, engine/internal/adminapi/server.go), so nothing was
+// done and any request, a write included, is safe to send again; an apply of
+// a few dozen objects met it, and failed on a request the server never read.
+const arrivalRetries = 8
+
+// retryWait waits before a retry; a test makes it immediate.
+var retryWait = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// do performs one request, optionally conditional, waiting out the arrival
+// limit as the server's Retry-After asks.
 //
 // ifMatch of 0 means unconditional. That is used for creates, where there is no
 // prior read to be conditional on.
 func (c *Client) do(ctx context.Context, method, path string, body any, ifMatch int64) (*Result, error) {
-	var rdr io.Reader
+	var blob []byte
 	if body != nil {
-		blob, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if blob, err = json.Marshal(body); err != nil {
 			return nil, fmt.Errorf("encoding the request: %w", err)
 		}
+	}
+	for attempt := 0; ; attempt++ {
+		res, wait, err := c.once(ctx, method, path, blob, body != nil, ifMatch)
+		if wait == 0 || attempt == arrivalRetries {
+			return res, err
+		}
+		if err := retryWait(ctx, wait); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// once sends the request one time, answering how long to wait before sending
+// it again when the server turned it away at the door.
+func (c *Client) once(ctx context.Context, method, path string, blob []byte, hasBody bool,
+	ifMatch int64) (*Result, time.Duration, error) {
+	var rdr io.Reader
+	if hasBody {
 		rdr = bytes.NewReader(blob)
 	}
-
 	req, err := http.NewRequestWithContext(ctx, method,
 		strings.TrimSuffix(c.Endpoint, "/")+path, rdr)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("Accept", "application/json")
-	if body != nil {
+	if hasBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if ifMatch > 0 {
@@ -131,38 +169,51 @@ func (c *Client) do(ctx context.Context, method, path string, body any, ifMatch 
 
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	blob, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	out, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, fmt.Errorf("reading the response: %w", err)
+		return nil, 0, fmt.Errorf("reading the response: %w", err)
 	}
 
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		return nil, ErrNotFound
+		return nil, 0, ErrNotFound
 	case resp.StatusCode == http.StatusPreconditionFailed:
 		var pf struct {
 			Expected int64 `json:"expected_version"`
 			Current  int64 `json:"current_version"`
 		}
-		_ = json.Unmarshal(blob, &pf)
-		return nil, &ErrConflict{Expected: pf.Expected, Actual: pf.Current}
+		_ = json.Unmarshal(out, &pf)
+		return nil, 0, &ErrConflict{Expected: pf.Expected, Actual: pf.Current}
 	case resp.StatusCode >= 400:
 		var e struct {
 			Error  string `json:"error"`
 			Detail string `json:"detail"`
 		}
-		_ = json.Unmarshal(blob, &e)
+		_ = json.Unmarshal(out, &e)
 		if e.Error == "" {
 			e.Error = "unexpected_status"
 		}
-		return nil, &APIError{Status: resp.StatusCode, Code: e.Error, Detail: e.Detail}
+		var wait time.Duration
+		if resp.StatusCode == http.StatusTooManyRequests {
+			wait = retryAfter(resp.Header.Get("Retry-After"))
+		}
+		return nil, wait, &APIError{Status: resp.StatusCode, Code: e.Error, Detail: e.Detail}
 	}
 
-	return &Result{Body: blob, Version: parseETag(resp.Header.Get("ETag"))}, nil
+	return &Result{Body: out, Version: parseETag(resp.Header.Get("ETag"))}, 0, nil
+}
+
+// retryAfter reads a Retry-After of seconds, between one and thirty.
+func retryAfter(v string) time.Duration {
+	s, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || s < 1 {
+		s = 1
+	}
+	return time.Duration(min(s, 30)) * time.Second
 }
 
 // parseETag reads the version out of a strong entity tag.

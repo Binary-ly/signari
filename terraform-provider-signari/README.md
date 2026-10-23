@@ -54,6 +54,39 @@ resource "signari_group_member" "ada_engineering" {
 | `signari_client_group_release` | `only_groups` (left out, every group) | `client_id` | the client id |
 | `signari_scope` | `display_name`, `description`, `advertise` | `org_id`, `name` | `<org_id>/<name>` |
 | `signari_proxy_host` | `enabled` | `org_id`, `host` (in lower case) | `<org_id>/<host>` |
+| `signari_organization_configuration` | `document`, `prune` | `org_id` | the organisation id |
+
+`signari_organization_configuration` applies an organisation's configuration
+file, as `signari apply` does (see [config-as-code.md](../docs/config-as-code.md)).
+It declares everything the file format does, each part checked by its own
+writer's rules: attributes, claim mappers, identity providers, SAML providers,
+the access policy, the sign-in flow and the rest.
+
+```hcl
+resource "signari_organization_configuration" "acme" {
+  org_id   = "bf55447f-3bf0-4275-aed2-c8728678c190"
+  document = file("${path.module}/signari.yaml")
+}
+```
+
+- **The plan shows the engine's plan.** `changes` is the dry run of the planned
+  document, one line per change, so `terraform plan` lists what will be
+  created, updated and deleted, and which of those are destructive.
+- **The apply is conditional on that plan.** `planned_at` is the version the dry
+  run saw, and the apply is sent it as `If-Match`. A deployment that moved after
+  `terraform plan` is refused rather than overwritten with a plan nobody read.
+- **Drift is put back.** A refresh runs the dry run of the document in state.
+  Anything the deployment holds differently is `drift`, and drift plans an
+  apply that restores the document.
+- **Secrets are minted, not chosen.** A token or secret the apply generated is
+  in `minted`, keyed `<kind>/<name>`, because the server shows it once. A
+  document that names a secret by reference is refused, because the server
+  cannot read the operator's environment. Set those parts with their own
+  commands.
+- **A destroy deletes nothing it declared.** It forgets the document and warns.
+  A destroy that pruned the organisation empty would be the most destructive
+  thing a provider could do by accident. To remove what it declared, apply a
+  smaller document with `prune = true` first.
 
 Data sources: `signari_organization` (by `id` or `slug`), `signari_group` (by
 `id`, or `org_id` and `name`) and `signari_user` (by `id`, or `email`, with
@@ -144,6 +177,14 @@ colleague, a pipeline or the console. The resource's write is then sent the
 version it was read at, and refused, as before. Nothing about the guarantee is
 weakened, and a conflict is never retried on the server's say-so, since that
 would be the silent overwrite again.
+
+### Waiting out the arrival limit
+
+The Admin API turns away requests beyond its arrival limit with `429` and
+`Retry-After`, before it authenticates them, so nothing was done. The provider
+waits as long as the server asks, up to thirty seconds a time, and sends the
+same request again, up to eight times. An apply of a few dozen objects used to
+fail on a request the server had never read.
 
 ### Turning it off
 

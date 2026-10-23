@@ -83,6 +83,38 @@ func (h *harness[M]) destroy(s tfsdk.State) diag.Diagnostics {
 	return resp.Diagnostics
 }
 
+// null is the state of an object that does not exist yet.
+func (h *harness[M]) null() tfsdk.State {
+	return tfsdk.State{Schema: h.sch.Schema, Raw: tftypes.NewValue(h.sch.Schema.Type().TerraformType(h.ctx), nil)}
+}
+
+// planned is `terraform plan`: the configuration m over the prior state,
+// through the resource's ModifyPlan when it has one.
+func (h *harness[M]) planned(prior tfsdk.State, m M) (tfsdk.Plan, diag.Diagnostics) {
+	p := h.plan(m)
+	mp, ok := h.r.(resource.ResourceWithModifyPlan)
+	if !ok {
+		return p, nil
+	}
+	resp := &resource.ModifyPlanResponse{Plan: p}
+	mp.ModifyPlan(h.ctx, resource.ModifyPlanRequest{Plan: p, State: prior,
+		Config: tfsdk.Config{Schema: h.sch.Schema, Raw: p.Raw}}, resp)
+	return resp.Plan, resp.Diagnostics
+}
+
+// createFrom and updateFrom apply a plan made by planned.
+func (h *harness[M]) createFrom(p tfsdk.Plan) (tfsdk.State, diag.Diagnostics) {
+	resp := &resource.CreateResponse{State: tfsdk.State{Schema: h.sch.Schema}}
+	h.r.Create(h.ctx, resource.CreateRequest{Plan: p}, resp)
+	return resp.State, resp.Diagnostics
+}
+
+func (h *harness[M]) updateFrom(s tfsdk.State, p tfsdk.Plan) (tfsdk.State, diag.Diagnostics) {
+	resp := &resource.UpdateResponse{State: s}
+	h.r.Update(h.ctx, resource.UpdateRequest{Plan: p, State: s}, resp)
+	return resp.State, resp.Diagnostics
+}
+
 // imported is `terraform import`: the id into an empty state, then a refresh.
 func (h *harness[M]) imported(id string) (tfsdk.State, diag.Diagnostics) {
 	// A null object of the schema's type, as Terraform starts an import.

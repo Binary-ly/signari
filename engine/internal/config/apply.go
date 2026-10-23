@@ -260,6 +260,12 @@ func BuildPlan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool
 		}
 	}
 
+	for _, s := range sections {
+		if err := s.plan(ctx, tx, orgID, f, prune, p); err != nil {
+			return nil, err
+		}
+	}
+
 	if !prune {
 		sortPlan(p)
 		return p, nil
@@ -461,6 +467,16 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		return c, ok
 	}
 
+	// What the built-in kinds are checked against comes first: a client's
+	// scopes must be declared by the time it is written.
+	for _, s := range sections {
+		if s.first() {
+			if err := s.apply(ctx, tx, orgID, f, planned); err != nil {
+				return fmt.Errorf("%s: %w", s.kind(), err)
+			}
+		}
+	}
+
 	for _, g := range f.Groups {
 		c, ok := planned("group", g.Name)
 		if !ok || c.Action == "delete" {
@@ -659,10 +675,29 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		}
 	}
 
+	for _, s := range sections {
+		if !s.first() {
+			if err := s.apply(ctx, tx, orgID, f, planned); err != nil {
+				return fmt.Errorf("%s: %w", s.kind(), err)
+			}
+		}
+	}
+
 	// Deletions last, so a plan that both creates and deletes never leaves a gap
-	// where neither exists.
+	// where neither exists; a section's in the reverse of the order they are
+	// applied, so what names a thing goes before the thing.
+	for i := len(sections) - 1; i >= 0; i-- {
+		s := sections[i]
+		for _, c := range plan.Changes {
+			if c.Action == "delete" && c.Kind == s.kind() {
+				if err := s.remove(ctx, tx, orgID, c.Name); err != nil {
+					return fmt.Errorf("deleting %s %q: %w", c.Kind, c.Name, err)
+				}
+			}
+		}
+	}
 	for _, c := range plan.Changes {
-		if c.Action != "delete" {
+		if c.Action != "delete" || sectionOf(c.Kind) != nil {
 			continue
 		}
 		var err error

@@ -77,7 +77,9 @@ func (s *Server) applyConfig(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		var err error
-		if plan, err = config.BuildPlan(ctx, tx, orgID, f, req.Prune); err != nil {
+		if plan, err = config.BuildPlan(ctx, tx, orgID, f, req.Prune); errors.Is(err, config.ErrRefused) {
+			return fmt.Errorf("%w: %w", errConfigRefused, err)
+		} else if err != nil {
 			return err
 		}
 		if err := mayApply(ctx, tx, orgID, plan); err != nil {
@@ -156,6 +158,9 @@ func (s *Server) planConfig(w http.ResponseWriter, r *http.Request, orgID string
 	}
 	switch {
 	case writeOrgRefusal(w, err):
+		return
+	case errors.Is(err, config.ErrRefused):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "config_refused", "detail": err.Error()})
 		return
 	case err != nil:
 		s.log.Error("planning a configuration", "org_id", orgID, "err", err)

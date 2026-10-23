@@ -156,3 +156,20 @@ func TestAConfigurationFileIsPlannedAndAppliedThroughTheAPI(t *testing.T) {
 		t.Error("a pruned apply kept the group the file no longer declares")
 	}
 }
+
+// A file the deployment cannot honour, which only the plan can see, is the
+// caller's mistake: 400 config_refused with the reason, planned or applied
+// (6.19), not a server error.
+func TestAConfigurationThePlanRefusesIsTheCallersMistake(t *testing.T) {
+	s, _ := newTestServer(t)
+	org := newDriftMigrationOrg(t, s, false)
+	file := "version: 1\nsignup: {domains: [example.test], groups: [never-made]}\n"
+	for _, dry := range []bool{true, false} {
+		rec := call(t, s, http.MethodPost, "/admin/organizations/"+org+"/config", testToken,
+			map[string]any{"document": file, "dry_run": dry})
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "config_refused") ||
+			!strings.Contains(rec.Body.String(), "never-made") {
+			t.Errorf("dry_run %v answered %d %s", dry, rec.Code, rec.Body.String())
+		}
+	}
+}

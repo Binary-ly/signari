@@ -62,7 +62,7 @@ clients:
   - client_id: web-%[1]d
     name: Web
     redirect_uris: [https://web.example.test/cb, https://web.example.test/cb2]
-    scopes: [openid, profile, email]
+    scopes: [openid, profile, email, hr-%[1]d]
     access_token_ttl: 10m
     first_party: true
     post_logout_redirect_uris: [https://web.example.test/bye]
@@ -82,6 +82,25 @@ radius_clients:
     network: 10.%[2]d.0.0/24
 proxy_hosts:
   - host: grafana-%[1]d.example.test
+scopes:
+  - name: hr-%[1]d
+    display_name: HR
+    description: Human resources data
+    advertise: true
+attributes:
+  - name: department
+    display_name: Department
+    user_readable: true
+  - name: badge
+    value_type: number
+    personal: true
+resources:
+  - resource: https://api-%[1]d.example.test
+    name: API
+signup:
+  domains: [Example.TEST]
+  groups: [staff-%[1]d]
+  require_approval: true
 `, n, n%250)), 0o600); err != nil {
 		t.Fatal(err)
 	}

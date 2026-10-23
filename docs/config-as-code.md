@@ -58,6 +58,28 @@ proxy_hosts:                  # applications behind forward auth
   - host: grafana.example.com
   - host: wiki.example.com:8443
     enabled: false
+
+scopes:                       # beyond the standard ones; applied before the clients
+  - name: hr
+    display_name: HR data
+    advertise: true           # list it in discovery
+
+attributes:                   # what a person carries besides their account
+  - name: department
+    user_readable: true
+  - name: badge
+    value_type: number        # string (default), number, boolean or date
+    personal: true            # sealed under the person's key; fixed once declared
+
+resources:                    # RFC 8707 resources tokens may be audienced to
+  - resource: https://api.example.com
+    name: Orders API
+
+signup:                       # self-sign-up; omit to leave it as it is
+  domains: [example.com]      # or any_domain: true, never assumed from an empty list
+  groups: [platform]
+  verify_email: true          # the default
+  require_approval: false
 ```
 
 ## It plans before it applies
@@ -159,9 +181,17 @@ diff cry wolf, and a diff that cries wolf is a diff nobody reads.
 ## What it covers
 
 Groups, OAuth/OIDC clients and their redirect URIs, SAML service providers and
-their ACS URLs, and RADIUS clients.
+their ACS URLs, RADIUS clients, protected hosts, declared scopes, user
+attributes, resource servers and the sign-up rule. `signari export org` writes
+all of them, so a deployment's export applied to an empty one plans nothing
+afterwards.
 
-Not yet: identity providers, SCIM targets, RAC connections, brands and signup
-rules — all of which have their own commands. Extending the file is adding a
-struct and a diff function; the plan, the transaction and the prune safety are
-already shared.
+An attribute's `personal` is fixed once declared, since it decides whether the
+values are sealed, and its `value_type` changes only while nobody holds a value:
+a file that asks otherwise is refused at the plan, before anything is written.
+Pruning an attribute erases every person's value of it, which the plan says.
+A scope a claim mapper is gated on is not pruned while the mapper stays, and the
+sign-up rule's groups must be the organisation's or the file's own.
+
+Not yet: identity providers, SCIM targets, RAC connections and sign-in policy,
+all of which have their own commands and Admin API routes.

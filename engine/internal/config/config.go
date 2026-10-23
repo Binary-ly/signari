@@ -48,6 +48,12 @@ type File struct {
 	SAMLProviders []SAMLProvider `yaml:"saml_providers"`
 	RADIUSClients []RADIUSClient `yaml:"radius_clients"`
 	ProxyHosts    []ProxyHost    `yaml:"proxy_hosts"`
+
+	// The kinds in sections.go (6.19).
+	Scopes     []Scope     `yaml:"scopes,omitempty"`
+	Attributes []Attribute `yaml:"attributes,omitempty"`
+	Resources  []Resource  `yaml:"resources,omitempty"`
+	Signup     *Signup     `yaml:"signup,omitempty"`
 }
 
 // ProxyHost is an application protected by forward authentication.
@@ -313,6 +319,10 @@ func (f *File) Validate() error {
 			add("proxy_hosts[%d]: %q appears twice", i, host)
 		}
 		seenHosts[host] = true
+	}
+
+	for _, s := range sections {
+		s.validate(f, add)
 	}
 
 	if len(problems) > 0 {

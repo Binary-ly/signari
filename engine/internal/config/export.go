@@ -50,6 +50,11 @@ func Export(ctx context.Context, tx pgx.Tx, orgID string) (*File, error) {
 		f.ProxyHosts = append(f.ProxyHosts, h)
 	}
 	sort.Slice(f.ProxyHosts, func(i, j int) bool { return f.ProxyHosts[i].Host < f.ProxyHosts[j].Host })
+	for _, s := range sections {
+		if err := s.export(ctx, tx, orgID, f); err != nil {
+			return nil, fmt.Errorf("exporting the %ss: %w", s.kind(), err)
+		}
+	}
 	return f, nil
 }
 

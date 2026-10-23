@@ -70,6 +70,8 @@ type providerData struct {
 	// rather than inside it, because it is a policy about how to use the client
 	// rather than a property of the connection.
 	conditional bool
+	// chain is the run of versions this apply's own writes made.
+	chain writeChain
 }
 
 func (p *signariProvider) Configure(ctx context.Context, req provider.ConfigureRequest,

@@ -163,19 +163,26 @@ func (r *clientResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	res, err := r.data.client.CreateClient(ctx, in)
-	if err != nil {
-		resp.Diagnostics.AddError("creating the client", err.Error())
-		return
-	}
-
 	// The secret is returned exactly once. Anything that loses it here loses it
 	// permanently, because the server keeps only a hash.
 	var created struct {
 		ClientSecret  string `json:"client_secret"`
 		ConfigVersion int64  `json:"config_version"`
 	}
-	decodeInto(res.Body, &created)
+	var version int64
+	err := r.data.write(0, func(int64) (int64, error) {
+		res, err := r.data.client.CreateClient(ctx, in)
+		if err != nil {
+			return 0, err
+		}
+		decodeInto(res.Body, &created)
+		version = pick(res.Version, created.ConfigVersion)
+		return version, nil
+	})
+	if err != nil {
+		resp.Diagnostics.AddError("creating the client", err.Error())
+		return
+	}
 	plan.ClientSecret = types.StringValue(created.ClientSecret)
 
 	// A client is created enabled; the create request has no say in it. So
@@ -183,11 +190,13 @@ func (r *clientResource) Create(ctx context.Context, req resource.CreateRequest,
 	// create produced, and without it the client would be live while state
 	// said it was not.
 	if !plan.Enabled.ValueBool() {
-		ifMatch := int64(0)
-		if r.data.conditional {
-			ifMatch = pick(res.Version, created.ConfigVersion)
-		}
-		if _, err := r.data.client.SetClientEnabled(ctx, in.ClientID, false, ifMatch); err != nil {
+		if err := r.data.write(version, func(ifMatch int64) (int64, error) {
+			res, err := r.data.client.SetClientEnabled(ctx, in.ClientID, false, ifMatch)
+			if err != nil {
+				return 0, err
+			}
+			return res.Version, nil
+		}); err != nil {
 			// The client exists, so it is recorded as it is, which taints it,
 			// rather than lost from state with its secret.
 			resp.Diagnostics.AddError("disabling the new client", err.Error())
@@ -264,14 +273,6 @@ func (r *clientResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	// The precondition, taken from the version the last READ observed. This is
-	// the line that makes a concurrent change a failure rather than a silent
-	// overwrite.
-	ifMatch := int64(0)
-	if r.data.conditional {
-		ifMatch = state.ConfigVersion.ValueInt64()
-	}
-
 	// `enabled`, the name and the redirect URIs change in place, in one
 	// conditional request; the id, organisation and client type replace the
 	// client. Replacing it for a rename or a new redirect URI used to delete
@@ -280,9 +281,18 @@ func (r *clientResource) Update(ctx context.Context, req resource.UpdateRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	_, err := r.data.client.UpdateClient(ctx, plan.ClientID.ValueString(), signari.ClientUpdate{
-		Enabled: plan.Enabled.ValueBool(), DisplayName: plan.DisplayName.ValueString(), RedirectURIs: uris,
-	}, ifMatch)
+	// The precondition, taken from the version the last READ observed. This is
+	// the line that makes a concurrent change a failure rather than a silent
+	// overwrite.
+	err := r.data.write(state.ConfigVersion.ValueInt64(), func(ifMatch int64) (int64, error) {
+		res, err := r.data.client.UpdateClient(ctx, plan.ClientID.ValueString(), signari.ClientUpdate{
+			Enabled: plan.Enabled.ValueBool(), DisplayName: plan.DisplayName.ValueString(), RedirectURIs: uris,
+		}, ifMatch)
+		if err != nil {
+			return 0, err
+		}
+		return res.Version, nil
+	})
 
 	var conflict *signari.ErrConflict
 	if errors.As(err, &conflict) {
@@ -316,11 +326,13 @@ func (r *clientResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	// record that it existed. This used to disable the client and warn, from
 	// before the Admin API had a delete, so a destroy left the row behind and a
 	// replacement could not create its successor under the same client id.
-	ifMatch := int64(0)
-	if r.data.conditional {
-		ifMatch = state.ConfigVersion.ValueInt64()
-	}
-	_, err := r.data.client.DeleteClient(ctx, state.ClientID.ValueString(), ifMatch)
+	err := r.data.write(state.ConfigVersion.ValueInt64(), func(ifMatch int64) (int64, error) {
+		res, err := r.data.client.DeleteClient(ctx, state.ClientID.ValueString(), ifMatch)
+		if err != nil {
+			return 0, err
+		}
+		return res.Version, nil
+	})
 
 	var conflict *signari.ErrConflict
 	if errors.As(err, &conflict) {

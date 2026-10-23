@@ -75,6 +75,25 @@ upstream source on 25 August 2026, found no administrative API in the field that
 accepts a precondition on a write. A provider for one of those cannot offer this
 however it is written — the server has to support it.
 
+### Many writes in one apply
+
+The configuration version belongs to the whole deployment, not to one
+resource, and every write moves it on by one. So the second write of an apply
+cannot send the version the plan read, because the apply's own first write has
+already moved it. Until October 2026 it did send that version, and any apply
+that changed two things failed with the conflict above, reporting its own write
+as somebody else's.
+
+The provider now sends its writes one at a time and remembers the versions its
+own writes produced. A resource that was read at a version from which every
+later change was this apply's own is up to date. Its write is sent with the
+latest version, and lands. Any other write breaks that run of versions: one
+made before the apply started, or one made between two of its writes, by a
+colleague, a pipeline or the console. The resource's write is then sent the
+version it was read at, and refused, as before. Nothing about the guarantee is
+weakened, and a conflict is never retried on the server's say-so, since that
+would be the silent overwrite again.
+
 ### Turning it off
 
 ```hcl

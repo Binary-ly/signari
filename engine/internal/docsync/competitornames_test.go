@@ -68,7 +68,7 @@ func TestNoCompetitorIsNamedInAPublishedFile(t *testing.T) {
 	// A line naming a product purely as something we migrate FROM. Narrow on
 	// purpose: it matches the migrate-from page names and the import verbs, and
 	// nothing else, so it cannot be used to smuggle a comparison through.
-	migrationLine := regexp.MustCompile(`migrate-from-|import (keycloak|authentik)\b`)
+	migrationLine := regexp.MustCompile(`migrate-from-|import (keycloak|authentik|zitadel)\b`)
 
 	// Prefixes of paths that are LOCAL-ONLY: never committed, so a competitor
 	// named inside one is exactly where it should be. Keep in step with

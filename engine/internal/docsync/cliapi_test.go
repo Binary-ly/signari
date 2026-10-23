@@ -92,6 +92,7 @@ var cliAPI = map[string]string{
 	"signup show":        reads,
 	"import keycloak":    cliOnly("reads another product's export from the operator's disk"),
 	"import authentik":   cliOnly("reads another product's export from the operator's disk"),
+	"import zitadel":     cliOnly("reads another product's export from the operator's disk"),
 	"import shadow":      cliOnly("reads /etc/shadow from the operator's disk"),
 
 	// Groups.

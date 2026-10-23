@@ -26,6 +26,7 @@ var unboundedCommands = map[string]string{
 	"audit archive":     "verifies the whole audit trail and writes what it archives to a file",
 	"import authentik":  "imports every user in the export file",
 	"import keycloak":   "imports every user in the export file",
+	"import zitadel":    "imports every user in the export file",
 	"dir sync":          "reads every person in the directory",
 	"scim sync":         "pushes every person to the downstream application, one request each",
 	"kerberos sync":     "reads every principal in the realm",

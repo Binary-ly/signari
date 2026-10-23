@@ -172,3 +172,4 @@ command or an environment variable exists in code and not on its page.
 | [password-migration.md](password-migration.md) | Verifying migrating people against the old directory or provider at their first sign-in |
 | [migrate-from-keycloak.md](migrate-from-keycloak.md) | Importing a realm |
 | [migrate-from-authentik.md](migrate-from-authentik.md) | Importing an installation |
+| [migrate-from-zitadel.md](migrate-from-zitadel.md) | Importing an organisation |

@@ -290,8 +290,9 @@ federation in:
   kerberos check            will this keytab work (no database needed)
   kerberos principals       the principals a realm holds
   kerberos sync             import a realm's principals as people
-  import keycloak           import users and clients from a Keycloak realm export
-  import authentik          import users and groups from an authentik dumpdata export
+  import keycloak           import users, groups and clients from a Keycloak realm export
+  import authentik          import users, groups and providers from an authentik dumpdata export
+  import zitadel            import an organisation's users and roles from a Zitadel export
   import shadow             an account for each /etc/shadow entry with a password
   migration-source add      where pending people's passwords are verified at first sign-in
   migration-source enable   start sending pending passwords to the source
@@ -1367,6 +1368,8 @@ func run(args []string) (err error) {
 		return importAuthentik(ctx, conn, *file, *orgID, *installID, !*apply)
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
+	case "import zitadel":
+		return importZitadel(ctx, conn, *file, *orgID, *dryRun)
 	case "import shadow":
 		return importShadow(ctx, conn, *file, *orgID, *dirDomain, !*apply)
 	case "dir add":
@@ -5357,6 +5360,53 @@ func printImportReport(res *importer.Result, builtIns string) {
 			fmt.Printf("  %s\n", id)
 		}
 	}
+}
+
+// importZitadel imports one organisation of a Zitadel export (6.20).
+func importZitadel(ctx context.Context, conn *pgx.Conn, path, orgID string, dryRun bool) error {
+	if path == "" || orgID == "" {
+		return fmt.Errorf("-file and -org are both required.\n\n" +
+			"Export one organisation from Zitadel with its Admin API:\n" +
+			"  POST /admin/v1/export {\"org_ids\": [\"<id>\"], \"with_passwords\": true, \"with_otp\": true}")
+	}
+	f, err := os.Open(path) // #nosec G304 -- the operator names the file to import
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	exp, err := importer.ParseZitadel(f)
+	if err != nil {
+		return err
+	}
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	res, err := importer.ImportZitadel(ctx, tx, orgID, exp, importer.Options{Root: root})
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		fmt.Printf("DRY RUN -- nothing was written.\n")
+	} else if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("  password formats found\n")
+	formats := make([]string, 0, len(res.HashFormats))
+	for format := range res.HashFormats {
+		formats = append(formats, format)
+	}
+	slices.Sort(formats)
+	for _, format := range formats {
+		fmt.Printf("    %-46s %d\n", format, res.HashFormats[format])
+	}
+	printImportReport(&res.Result, "Zitadel's own")
+	return nil
 }
 
 func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID, installID string, dryRun bool) error {

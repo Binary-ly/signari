@@ -97,6 +97,7 @@ var commandFlags = map[string][]string{
 	"import authentik":                {"apply", "file", "install-id", "org"},
 	"import keycloak":                 {"dry-run", "file", "org"},
 	"import shadow":                   {"apply", "domain", "file", "org"},
+	"import zitadel":                  {"dry-run", "file", "org"},
 	"instance add-alias":              {"alias", "retire-after"},
 	"instance aliases":                {"o"},
 	"instance create":                 {"issuer", "name"},

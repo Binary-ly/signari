@@ -120,13 +120,16 @@ func MayUse(ctx context.Context, db *pgxpool.Pool, c *RACConnection, userID stri
 	if c.RequireGroup == "" {
 		return true, nil
 	}
+	// The connection's organisation's group of that name, not any group of it:
+	// a group name means something only within one organisation, and a
+	// membership row naming another's must not open this one's machines.
 	var ok bool
 	err := db.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM core.group_members gm
 			JOIN core.groups g ON g.id = gm.group_id
-			WHERE gm.user_id = $1::uuid AND g.name = $2)`,
-		userID, c.RequireGroup).Scan(&ok)
+			WHERE gm.user_id = $1::uuid AND g.name = $2 AND g.org_id = $3::uuid)`,
+		userID, c.RequireGroup, c.OrgID).Scan(&ok)
 	return ok, err
 }
 

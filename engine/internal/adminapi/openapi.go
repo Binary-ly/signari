@@ -242,6 +242,7 @@ var summaries = map[string]string{
 
 	// Upstream identity providers (6.07).
 	"GET /admin/organizations/{orgID}/identity-providers":                         "The providers people sign in through and the issuers assertions come from.",
+	"POST /admin/organizations/{orgID}/identity-providers":                        "Register a provider to sign in through, or an issuer whose assertions may be accepted.",
 	"PATCH /admin/organizations/{orgID}/identity-providers/{slug}":                "Take a provider out of service, allow its assertions, or say what of it is trusted.",
 	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map":    "Route a provider's claim into a declared attribute.",
 	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map": "Stop a provider's claim reaching an attribute.",

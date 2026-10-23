@@ -117,6 +117,11 @@ type Server struct {
 	// directory it would call.
 	directorySync func(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, slug string,
 		apply bool) (directory.SyncReport, error)
+
+	// providerClient discovers an upstream identity provider and reads an
+	// assertion issuer's keys: safedial's, which the sign-in reaches them
+	// with too, unless a test hands it a server it started.
+	providerClient func() *http.Client
 }
 
 func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
@@ -144,8 +149,9 @@ func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
 		arrivals: ratelimit.New(float64(limits.arrivals), float64(2*limits.arrivals)),
 		perToken: ratelimit.NewKeyed(float64(limits.perToken), float64(2*limits.perToken),
 			adminTrackedTokens),
-		targetClient:  provision.HTTPClient,
-		directorySync: directory.Sync,
+		targetClient:   provision.HTTPClient,
+		directorySync:  directory.Sync,
+		providerClient: providerHTTPClient,
 	}, nil
 }
 
@@ -486,6 +492,11 @@ func (s *Server) Routes() http.Handler {
 			s.unmapDirectoryGroup)
 		route("POST /admin/organizations/{orgID}/directories/{slug}/sync", ScopeOrganizationsWrite,
 			s.syncDirectory)
+
+		// Registering an upstream identity provider (idps.go), whose client
+		// secret is sealed with the root key.
+		route("POST /admin/organizations/{orgID}/identity-providers", ScopeOrganizationsWrite,
+			s.addIdentityProvider)
 
 		// Provisioning targets (scimtargets.go), whose tokens and credentials
 		// are sealed with the root key.

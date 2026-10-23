@@ -329,7 +329,7 @@ func run(args []string) (err error) {
 		"accept IdP-initiated sign-in, which cannot be tied to a request this browser made")
 	srcForceAuthn := fs.Bool("force-authn", false,
 		"ask the upstream to re-authenticate rather than reuse its session")
-	srcSkew := fs.Int("skew", 30, "clock tolerance in seconds, clamped to 300")
+	srcSkew := fs.Int("skew", 30, "clock tolerance in seconds, at most 300")
 	ldapURL := fs.String("ldap-url", "", "ldap:// or ldaps:// URL of the directory")
 	ldapBindDN := fs.String("ldap-bind-dn", "", "DN to bind as when reading")
 	ldapPassword := fs.String("ldap-password", "", "password for the bind DN")
@@ -3546,62 +3546,51 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 			samlUnsolicited, samlForceAuthn, samlSkew)
 	}
 
+	if kind == "oidc" && issuer == "" {
+		return fmt.Errorf("a generic OIDC provider needs -issuer, so its endpoints " +
+			"and signing keys can be discovered")
+	}
+	if trustEmail && kind != "oidc" {
+		return fmt.Errorf("-trust-email-verification is for a generic OIDC provider: a %s provider's "+
+			"email_verified is believed or not as that provider is known to behave", kind)
+	}
+	spec := store.IdentityProviderSpec{Slug: slug, Name: name, Kind: kind, ClientID: clientID,
+		ClientSecret: secret, Issuer: issuer, AllowSignup: allowSignup, AllowLinking: allowLinking,
+		TrustEmailVerification: trustEmail}
+	if err := spec.Validate(); err != nil {
+		return err
+	}
 	preset, err := federation.PresetFor(federation.Kind(kind))
 	if err != nil {
 		return err
 	}
 	// A generic provider is discovered NOW, so a wrong issuer fails in front of
-	// the person who typed it rather than at somebody's first sign-in.
-	var authorizeURL, tokenURL, userinfoURL, jwksURL string
-	if kind == "oidc" {
-		if issuer == "" {
-			return fmt.Errorf("a generic OIDC provider needs -issuer, so its endpoints " +
-				"and signing keys can be discovered")
-		}
-		// The engine reaches these endpoints through safedial at sign-in, so
-		// discovery does too: an internal issuer fails here, with the setting
-		// that allows it, instead of at the first sign-in.
-		d, derr := federation.Discover(ctx, safedial.Client(15*time.Second), issuer)
-		if derr != nil {
-			return fmt.Errorf("discovering %s: %w", issuer, derr)
-		}
-		authorizeURL, tokenURL, userinfoURL, jwksURL = d.AuthorizeURL, d.TokenURL, d.UserinfoURL, d.JWKSURL
-		fmt.Printf("discovered %s\n  authorize : %s\n  token     : %s\n  jwks      : %s\n\n",
-			issuer, authorizeURL, tokenURL, jwksURL)
-	}
-	if name == "" {
-		name = slug
-	}
-
-	root, err := rootKey()
-	if err != nil {
+	// the person who typed it rather than at somebody's first sign-in. The
+	// engine reaches these endpoints through safedial at sign-in, so discovery
+	// does too: an internal issuer fails here, with the setting that allows it,
+	// instead of at the first sign-in.
+	if _, err := spec.Resolve(ctx, safedial.Client(15*time.Second)); err != nil {
 		return err
 	}
-	var sealed []byte
-	if secret != "" {
-		if sealed, err = root.Seal([]byte(secret), "idp_client_secret"); err != nil {
-			return fmt.Errorf("sealing the client secret: %w", err)
-		}
+	if kind == "oidc" {
+		fmt.Printf("discovered %s\n  authorize : %s\n  token     : %s\n  jwks      : %s\n\n",
+			issuer, spec.AuthorizeURL, spec.TokenURL, spec.JWKSURL)
 	}
 
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.identity_providers
-			(org_id, slug, display_name, kind, client_id, client_secret, issuer,
-			 authorize_url, token_url, userinfo_url, jwks_url,
-			 scopes, allow_signup, allow_linking, trust_email_verification)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, NULLIF($7,''),
-		        NULLIF($8,''), NULLIF($9,''), NULLIF($10,''), NULLIF($11,''),
-		        $12, $13, $14, $15)`,
-		orgID, slug, name, kind, clientID, sealed, issuer,
-		authorizeURL, tokenURL, userinfoURL, jwksURL,
-		preset.Scopes, allowSignup, allowLinking, trustEmail && kind == "oidc"); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+	var root *keys.RootKey
+	if secret != "" {
+		if root, err = rootKey(); err != nil {
+			return err
+		}
+	}
+	if _, err := store.AddIdentityProvider(ctx, conn, root, orgID, spec); err != nil {
+		if errors.Is(err, store.ErrIdPSlugTaken) {
 			return errSlugTaken(slug)
 		}
 		return err
 	}
 
-	fmt.Printf("registered %s (%s)\n", name, kind)
+	fmt.Printf("registered %s (%s)\n", spec.Name, kind)
 	fmt.Printf("  sign-in URL  : /login/with/%s\n", slug)
 	fmt.Printf("  callback URL : <issuer>/login/callback/%s\n", slug)
 	fmt.Print("     register that callback with the provider, exactly as written\n")
@@ -3844,8 +3833,9 @@ func idpAddIssuer(ctx context.Context, conn *pgx.Conn, orgID, slug, name, issuer
 	case jwks == "":
 		return fmt.Errorf("give -jwks-url, the URL publishing this issuer's signing keys")
 	}
-	if name == "" {
-		name = slug
+	spec := store.IdentityProviderSpec{Slug: slug, Name: name, Kind: "assertion", Issuer: issuer, JWKSURL: jwks}
+	if err := spec.Validate(); err != nil {
+		return err
 	}
 
 	// Fetched now, so a wrong URL fails in front of the person who typed it
@@ -3853,21 +3843,14 @@ func idpAddIssuer(ctx context.Context, conn *pgx.Conn, orgID, slug, name, issuer
 	// immediately. A trust anchor whose keys cannot be read is not a trust
 	// anchor, it is a provider that refuses everything for a reason nobody can
 	// see from the outside.
-	set, err := federation.FetchJWKS(ctx, safedial.Client(15*time.Second), jwks)
+	n, err := spec.Resolve(ctx, safedial.Client(15*time.Second))
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", jwks, err)
+		return err
 	}
-	fmt.Printf("read %d key(s) from %s\n", len(set.Keys), jwks)
+	fmt.Printf("read %d key(s) from %s\n", n, jwks)
 
-	var id string
-	err = conn.QueryRow(ctx, `
-		INSERT INTO core.identity_providers
-			(org_id, slug, display_name, kind, client_id, issuer, jwks_url,
-			 allow_signup, allow_linking, enabled, allow_jwt_bearer)
-		VALUES ($1::uuid, $2, $3, 'assertion', '', $4, $5, false, false, true, false)
-		RETURNING id::text`, orgID, slug, name, issuer, jwks).Scan(&id)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+	if _, err := store.AddIdentityProvider(ctx, conn, nil, orgID, spec); err != nil {
+		if errors.Is(err, store.ErrIdPSlugTaken) {
 			return errSlugTaken(slug)
 		}
 		return fmt.Errorf("registering the issuer: %w", err)
@@ -5541,20 +5524,6 @@ func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID
 			"unverified assertion is an attacker's choice of user")
 	}
 
-	// transient is deliberately absent: a NameID that differs on every sign-in
-	// would create a new orphaned account each time somebody signed in.
-	switch nameIDFormat {
-	case "", "persistent", "emailAddress", "unspecified":
-	default:
-		return fmt.Errorf("-nameid-format must be persistent, emailAddress or "+
-			"unspecified (got %q). transient is refused: it is a different value on "+
-			"every sign-in, so an account linked to it would be abandoned the moment "+
-			"it was created", nameIDFormat)
-	}
-	if nameIDFormat == "" {
-		nameIDFormat = "persistent"
-	}
-
 	// A SAML assertion carries no email_verified claim: there is no field for
 	// one. So the question "is this address verified" has to be answered by the
 	// deployment, and the honest answer for an enterprise upstream is yes -- the
@@ -5579,44 +5548,18 @@ func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID
 			"can sign in.\n\n")
 	}
 
-	// The SSO URL becomes a Location header sent to every user starting a
-	// sign-in, so its scheme is checked here rather than trusted later.
-	u, err := url.Parse(ssoURL)
-	switch {
-	case err != nil:
-		return fmt.Errorf("-sso-url %q is not a URL: %w", ssoURL, err)
-	case u.Scheme != "https" && u.Scheme != "http":
-		return fmt.Errorf("-sso-url must be http or https, not %q: this value is "+
-			"sent to a browser as a redirect", u.Scheme)
-	case u.Host == "":
-		return fmt.Errorf("-sso-url %q has no host", ssoURL)
-	case u.Scheme == "http" && !strings.HasPrefix(u.Host, "localhost") &&
-		!strings.HasPrefix(u.Host, "127.0.0.1"):
-		return fmt.Errorf("-sso-url is plaintext http. The AuthnRequest names this " +
-			"engine and the user being signed in, and the response comes back over " +
-			"the same browser session; use https")
-	}
-
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return err
 	}
-	// Parsed now, so a PEM that is not a certificate is a message here rather
-	// than a refused sign-in later.
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return fmt.Errorf("%s is not PEM", certPath)
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("%s is not a certificate: %w", certPath, err)
-	}
-	if time.Now().After(cert.NotAfter) {
-		return fmt.Errorf("that certificate expired on %s, so every assertion it "+
-			"signs would be refused", cert.NotAfter.Format("2006-01-02"))
-	}
-	if name == "" {
-		name = slug
+	// The NameID format, the SSO URL's scheme and the certificate are checked
+	// in store.IdentityProviderSpec.Validate, as the Admin API checks them.
+	spec := store.IdentityProviderSpec{Slug: slug, Name: name, Kind: "saml", AllowSignup: allowSignup,
+		AllowLinking: allowLinking, TrustEmailVerification: trustEmail, EntityID: entityID, SSOURL: ssoURL,
+		CertPEM: string(certPEM), NameIDFormat: nameIDFormat, AllowUnsolicited: unsolicited,
+		ForceAuthn: forceAuthn, SkewSeconds: skew}
+	if err := spec.Validate(); err != nil {
+		return err
 	}
 
 	tx, err := conn.Begin(ctx)
@@ -5624,36 +5567,17 @@ func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	var providerID string
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO core.identity_providers
-			(org_id, slug, display_name, kind, client_id, scopes,
-			 allow_signup, allow_linking, trust_email_verification)
-		VALUES ($1::uuid, $2, $3, 'saml', '', '{}', $4, $5, $6)
-		RETURNING id::text`,
-		orgID, slug, name, allowSignup, allowLinking, trustEmail).Scan(&providerID); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+	if _, err := store.AddIdentityProvider(ctx, tx, nil, orgID, spec); err != nil {
+		if errors.Is(err, store.ErrIdPSlugTaken) {
 			return errSlugTaken(slug)
 		}
 		return err
 	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.saml_sources
-			(provider_id, org_id, entity_id, sso_url, cert_pem, name_id_format,
-			 force_authn, allow_unsolicited, skew_seconds)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)`,
-		providerID, orgID, entityID, ssoURL, string(certPEM), nameIDFormat,
-		forceAuthn, unsolicited, skew); err != nil {
-		return err
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
-	fmt.Printf("registered %s (saml source)\n", name)
+	fmt.Printf("registered %s (saml source)\n", spec.Name)
 	fmt.Printf("  sign-in URL  : /saml/source/%s/start\n", slug)
 	fmt.Printf("  ACS URL      : <issuer>/saml/source/%s/acs\n", slug)
 	fmt.Printf("  metadata     : <issuer>/saml/source/%s/metadata\n", slug)

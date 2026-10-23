@@ -155,7 +155,7 @@ var cliAPI = map[string]string{
 	"role revoke":        "DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}",
 
 	// Upstream providers.
-	"idp add":            pending,
+	"idp add":            "POST /admin/organizations/{orgID}/identity-providers",
 	"idp disable":        "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp enable":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp list":           reads,
@@ -163,7 +163,7 @@ var cliAPI = map[string]string{
 	"idp link":           pending,
 	"idp unlink":         pending,
 	"idp links":          reads,
-	"idp add-issuer":     pending,
+	"idp add-issuer":     "POST /admin/organizations/{orgID}/identity-providers",
 	"idp apple-secret":   cliOnly("signs with the .p8 key Apple issued, read from the operator's disk"),
 	"idp trust-mfa":      "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp verified-email": "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",

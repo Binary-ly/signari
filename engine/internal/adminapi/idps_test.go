@@ -148,6 +148,8 @@ func TestANarrowedTokenCannotChangeAnIdentityProvider(t *testing.T) {
 		body         any
 	}{
 		{http.MethodPatch, path, map[string]any{"trust_email_verification": true}},
+		{http.MethodPost, "/admin/organizations/" + org + "/identity-providers",
+			map[string]any{"kind": "github", "slug": "narrowed-" + org[:8], "client_id": "x"}},
 		{http.MethodPut, path + "/attribute-map", map[string]any{"claim": "dept", "attribute": "department"}},
 	} {
 		rec := call(t, s, c.method, c.path, narrowed, c.body)

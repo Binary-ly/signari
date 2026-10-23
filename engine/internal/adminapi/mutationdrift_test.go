@@ -410,6 +410,17 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/identity-providers", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/identity-providers"
+			},
+			// A named provider is reached at nothing until somebody signs in.
+			body: func(_ *testing.T, _ *Server, path string) string {
+				return `{"kind":"github","slug":"drift-gh-` + strings.Split(path, "/")[3][:8] +
+					`","client_id":"drift","client_secret":"drift-secret"}`
+			},
+		},
+		{
 			name: "PATCH /admin/organizations/{orgID}/identity-providers/{slug}", method: http.MethodPatch,
 			path: func(t *testing.T, s *Server) string {
 				_, _, p := newDriftIdP(t, s, "google")

@@ -577,7 +577,8 @@ See [CAPTCHA](captcha.md).
 | `SIGNARI_ALLOW_PRIVATE_DELIVERY` | Permit logout and event delivery to private, loopback and link-local addresses. **Off by default.** A `backchannel_logout_uri` is chosen by the *client*, so without the check a registered client can have this server POST a signed logout token into your internal network on every sign-out. Set `1` only if your relying parties genuinely are internal. Even then no cloud metadata endpoint is reached, in any form that carries one (see [Internal destinations](#internal-destinations)). The switch once replaced the address check with none at all, so a client's logout or CIBA notification URL could read the instance's credentials. Trusting an internal CA (`SIGNARI_CA_BUNDLE`) is a different decision and does not imply this one. |
 | `SIGNARI_SCIM_CA_BUNDLE` | Authorities added for SCIM targets specifically, on top of `SIGNARI_CA_BUNDLE`. With that unset it also covers delivery, as it did before the general setting existed |
 | `SIGNARI_OUTBOUND_ALLOW_PRIVATE` | Comma-separated addresses or prefixes, such as `10.20.0.0/16,192.168.7.9`, that outbound requests may reach although they are private. **Empty by default.** See [Internal destinations](#internal-destinations) below |
-| `SIGNARI_ADMIN_TOKEN` | Bearer token for the admin API |
+| `SIGNARI_ADMIN_TOKEN` | Bearer token for the admin API. To `serve`, the break-glass token it accepts; to `signari api` and a command run with `-admin-url`, the token it presents (or `-token-file`), never taken as a flag's value |
+| `SIGNARI_ADMIN_URL` | The Admin API's address for `signari api`, such as `https://admin.example.com:8443`: `https`, or `http` to loopback only, since the token would otherwise cross a network in the clear. It trusts `SIGNARI_CA_BUNDLE`. Setting it moves no other command off the database: those that have an endpoint mode use it only when given `-admin-url` |
 
 ### Internal destinations
 

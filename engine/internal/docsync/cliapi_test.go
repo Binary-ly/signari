@@ -37,6 +37,7 @@ var cliAPI = map[string]string{
 	"version":             reads,
 	"help":                reads,
 	"completion":          reads,
+	"api":                 cliOnly("is the Admin API, called from the command line: whatever it changes goes through a route"),
 	"migrate bootstrap":   cliOnly("needs a superuser connection, before the engine exists"),
 	"migrate up":          cliOnly("changes the schema the engine serving the API depends on"),
 	"migrate all":         cliOnly("changes the schema the engine serving the API depends on"),

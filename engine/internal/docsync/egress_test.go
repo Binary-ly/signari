@@ -47,6 +47,9 @@ var clientsOutsideSafedial = map[string]string{
 		"operator types",
 	"engine/internal/proxycheck/proxycheck.go": "a diagnostic run by hand against a URL the " +
 		"operator types",
+	"engine/cmd/signari/apiclient.go": "the operator's CLI calling the Admin API at the address they " +
+		"type, usually on their own network, which safedial refuses by design; not the engine making a " +
+		"request. It follows no redirect and sends its token in the clear only to loopback",
 }
 
 func TestEveryOutboundClientIsSafedialsOrListed(t *testing.T) {

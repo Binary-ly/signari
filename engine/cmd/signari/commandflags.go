@@ -25,7 +25,7 @@ var commonFlags = []string{"dsn", "timeout"}
 // beforeFlags are the commands run() answers before any command's flags are
 // parsed, which take words rather than flags: `signari help keys rotate`,
 // `signari completion zsh`.
-var beforeFlags = []string{"help", "completion"}
+var beforeFlags = []string{"help", "completion", "api"}
 
 // bookkeepingFlags are read for every command without changing what one does,
 // each with the reason; a command parses one only when its branch reads it too.

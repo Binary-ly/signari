@@ -37,6 +37,16 @@ and `signari plan` exits 3 when the deployment differs from the file. Until
 October 2026 one set of every flag served every command, so a mistyped command's
 flags were accepted and did nothing, and every failure exited 1.
 
+`user create`, `group create`, `admin-token create`, `admin-token list`,
+`admin-token revoke`, `role list` and `role revoke` also run with no database:
+given `-admin-url`, they make their change through the Admin API as the token in
+`SIGNARI_ADMIN_TOKEN` or `-token-file`, so it is recorded under that token and
+refused what the token may not do, from a machine that holds no database
+credentials. `-org` is then required, there being no only organisation to
+assume, and `admin-token create -groups`, which names groups, is refused in
+favour of `signari api` with their ids. Every other change is one `signari api`
+request away.
+
 A listing that takes `-o json` prints its rows as a JSON array of objects, for a
 script to read instead of the columns, and `version -o json` one object; its
 text is unchanged without it. `signari help <command>` shows whether a command
@@ -67,6 +77,7 @@ a class of failure that shows up as data corruption rather than an error.
 | `signari janitor once` | Run one janitor pass by hand — expiry, sweeping, parking |
 | `signari plan` / `signari apply` | Declarative configuration from a file. `apply -prune` to delete what the file omits. `plan` exits 3 when the deployment differs from the file, so a pipeline can tell drift from failure |
 | `signari help` | Every command, or `signari help <group>` the commands of one group and `signari help <command>` what one does and the flags it takes. Needs no database |
+| `signari api` | `signari api <METHOD> <path> [-data JSON\|@file\|-] [-if-match N]`: one request to any Admin API route, as the token in `SIGNARI_ADMIN_TOKEN` or `-token-file` at `-admin-url` or `SIGNARI_ADMIN_URL`, e.g. `signari api GET /admin/me` or `signari api PATCH /admin/organizations/<id>/settings -data '{"session_limit": 5}' -if-match 412`. Prints the answer; a refusal exits 1 with the API's error. Needs no database: the change is the API's, recorded under that token and refused what its scopes and roles do not allow. See [admin-api.md](admin-api.md) |
 | `signari completion` | `bash` or `zsh`: a completion script for the commands, each group's verbs and each command's flags, e.g. `source <(signari completion zsh)`. Needs no database |
 
 ## Instances, organisations, users

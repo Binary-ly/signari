@@ -150,6 +150,7 @@ running it:
   apply                make the deployment match a configuration file
   help                 every command, the commands of a group, or one command and its flags
   completion           a completion script for bash or zsh
+  api                  send one request to the Admin API: signari api GET /admin/me
   passwords calibrate  time Argon2id on this host against a target duration
 
 instances and organisations:
@@ -439,6 +440,12 @@ func run(args []string) (err error) {
 		"how long the command may run before it is cancelled (0 = no limit); unset, 60s for a "+
 			"command that edits configuration and no limit for one whose work grows with the data")
 	outputFormat := fs.String("o", "text", "what a listing prints: text, or json for a script")
+	adminURL := fs.String("admin-url", "",
+		"the Admin API's address (or SIGNARI_ADMIN_URL for `signari api`): the command makes its change "+
+			"through the API, as the token in SIGNARI_ADMIN_TOKEN or -token-file, rather than the database")
+	tokenFile := fs.String("token-file", "", "a file holding the admin token to present, instead of SIGNARI_ADMIN_TOKEN")
+	apiData := fs.String("data", "", "`signari api`: the request body, as JSON, @file, or - for standard input")
+	ifMatch := fs.String("if-match", "", "`signari api`: the configuration version the change must be made against")
 	issuer := fs.String("issuer", "", "issuer URL, e.g. https://id.example.com")
 	name := fs.String("name", "", "instance display name")
 	addr := fs.String("addr", ":8080", "listen address for `serve`")
@@ -955,6 +962,8 @@ func run(args []string) (err error) {
 		return commandHelp(os.Stdout, fs, rest)
 	case "completion":
 		return printCompletion(os.Stdout, rest)
+	case "api":
+		return apiCommand(fs, rest, apiData, ifMatch, adminURL, tokenFile, timeout)
 	}
 	if twoWordCommands[cmd] {
 		switch {
@@ -1081,6 +1090,55 @@ func run(args []string) (err error) {
 		pctx, pcancel := commandContext(runFor)
 		defer pcancel()
 		return proxyCheck(pctx, *appURL, *issuer, *origin, *probePath, *insecure)
+	}
+
+	// The endpoint mode (endpoint.go): given -admin-url, these make their change
+	// through the Admin API and need no database. Only the flag switches it, so
+	// a SIGNARI_ADMIN_URL set for `signari api` sends nothing else there.
+	switch cmd {
+	case "user create":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointUserCreate(ctx, c, *orgID, *email, *password)
+			})
+		}
+	case "group create":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointGroupCreate(ctx, c, *orgID, *groupName, *name)
+			})
+		}
+	case "admin-token create":
+		if *adminURL != "" {
+			expiresGiven := false
+			fs.Visit(func(f *flag.Flag) { expiresGiven = expiresGiven || f.Name == "expires-in" })
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointTokenCreate(ctx, c, *name, *orgID, *tokenScopes, *tokenExpires, expiresGiven,
+					*tokenClients, *inviteGroups)
+			})
+		}
+	case "admin-token list":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, endpointTokenList)
+		}
+	case "admin-token revoke":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointTokenRevoke(ctx, c, *tokenID)
+			})
+		}
+	case "role list":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointRoleList(ctx, c, *orgID)
+			})
+		}
+	case "role revoke":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointRoleRevoke(ctx, c, *orgID, *bindingID)
+			})
+		}
 	}
 
 	if *dsn == "" {

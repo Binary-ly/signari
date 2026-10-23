@@ -133,92 +133,272 @@ func usage() error {
 // help <command>` finds the command's one-line description.
 const usageText = `usage: signari <command> [flags]
 
-commands:
-  migrate bootstrap   apply 0001 (roles, schemas, grants) -- needs a superuser DSN
-  migrate up          apply 0002+ (tables, policies, views) as signari_engine
-  migrate all         bootstrap then up, in one invocation (for containers)
-  migrate status      show applied version, pending migrations, live fingerprint
-  migrate fingerprint print ONLY the schema fingerprint, for pinning a build
-  verify              run the startup schema gate and exit
-  version             print the release, commit, toolchain, schema and its pin
-  instance create     create an instance and its first signing keys
-  user create         create a user with a password
-  user approve        let a self-sign-up waiting for approval sign in
-  client create       register an OAuth client
-  client set-keys     switch a client to private_key_jwt with its public JWKS
-  client set-tls      authenticate a client by TLS certificate (RFC 8705)
-  client set-assertion-issuers  which issuers' assertions a client may exchange
-  janitor once        run one maintenance pass (serve runs this continuously)
-  import keycloak     import users and clients from a Keycloak realm export
-  import authentik    import users and groups from an authentik dumpdata export
-  keys list           show signing keys, their state and when each may advance
-  keys rotate         advance the rotation one safe step (run it again later)
-  keys retire         remove passive keys nothing can still be verifying against
-  proxy check         prove a forward-auth deployment actually protects the app
-  saml add-sp         register a SAML service provider
-  saml list           show registered SAML service providers
-  idp add             register an external sign-in provider (Google, GitHub, ...)
-  idp list            show external sign-in providers
-  idp assertions      allow or refuse RFC 7523 assertions from a provider
-  idp add-issuer      register a key-publishing issuer for the jwt-bearer grant
-  scim add            register a SCIM provisioning target
-  scim list           show provisioning targets
-  scim sync           converge targets on this directory (preview unless -apply)
-  scim verify         read each target back and report anyone still active
-  group create        create a group
-  group member        add or remove a member (-remove)
-  group release       let a client see group membership
-  group list          show groups and their sizes
-  policy test         check a policy file (no database needed -- for CI)
-  policy apply        install a policy file
-  policy show         print the policy in force
-  flow test           check a sign-in flow file (no database needed -- for CI)
-  flow paths          list every journey a flow admits, and what produces each
-  flow apply          install a sign-in flow file
-  flow show           print the built-in flows, as a file to start from
-  dir add             register a Google Workspace or Entra ID directory source
-  dir sync            reconcile users from a directory (preview unless -apply)
-  export audit        write the audit trail as CSV, with its chain verified
-  erase subject       destroy a subject key, making their data unreadable forever
-  registration enable turn on dynamic client registration (RFC 7591)
-  registration token  mint an initial access token for registration
-  ssf add-stream      register a Shared Signals receiver for CAEP events
-  ssf list            show Shared Signals receivers
-  radius add-client   register a network device permitted to send Access-Requests
-  radius list         show registered RADIUS clients
-  admin-token create  mint a scoped, revocable admin API token
-  admin-token list    show admin tokens, their scopes and when each was last used
-  admin-token revoke  revoke one immediately, with no restart
-  role grant          give a person or an application an administrative role in one organisation
-  role list           who holds which role in an organisation
-  role revoke         take a role away; the holder's next request is refused
-  theme eject         write the built-in HTML pages out so they can be edited
-  theme check         validate a theme directory; non-zero if anything is refused
-  theme list          which page is built-in and which is overridden
-  uma settings        offer, or stop offering, resource-owner intervention on refused UMA requests
-  uma requests        UMA requests waiting for a resource owner to decide
-  uma approve         grant a relation and let a submitted UMA request through
-  uma deny            close a submitted UMA request without granting anything
-  trust-mark issue    issue an OpenID Federation Trust Mark to an entity
-  trust-mark revoke   withdraw a Trust Mark this entity issued
-  trust-mark list     Trust Marks this entity issues and holds
-  trust-mark accept   publish a Trust Mark somebody granted this entity
-  trust-mark drop     stop publishing a Trust Mark
-  trust-mark delegate authorise another entity to issue a Trust Mark type we own
-  trust-mark issuers  set trust_mark_issuers (Trust Anchor only)
-  trust-mark owners   set trust_mark_owners (Trust Anchor only)
-  federation enable   join an OpenID Federation: generate an Entity Statement key
-                      and publish /.well-known/openid-federation
-  federation show     print the Entity Configuration this instance publishes
-  client set-grants   set which grant types a client may use
-  credential offer    mint an OID4VCI Credential Offer a wallet can redeem
-  credential define   define a credential this issuer can mint (SD-JWT VC)
-  credential list     show the credential configurations this issuer publishes
-  rar register        register an RFC 9396 authorization details type
-  rar allow           let a client request a registered type
-  rar list            show registered types and which clients may use them
-  doctor              inspect this deployment and report what is wrong with it
-  serve               serve the OIDC endpoints
+schema:
+  migrate bootstrap    apply 0001 (roles, schemas, grants) -- needs a superuser DSN
+  migrate up           apply 0002+ (tables, policies, views) as signari_engine
+  migrate all          bootstrap then up, in one invocation (for containers)
+  migrate status       applied version, pending migrations, live fingerprint, ledger
+  migrate fingerprint  print only the schema fingerprint, for pinning a build
+  verify               run the startup schema gate and exit
+
+running it:
+  serve                serve the OIDC endpoints, and with -admin-addr the Admin API
+  doctor               inspect this deployment and report what is wrong with it
+  version              the release, commit, toolchain, schema and its pin
+  janitor once         run one maintenance pass (serve runs this continuously)
+  plan                 diff a configuration file against the deployment; exits 3 on drift
+  apply                make the deployment match a configuration file
+  help                 every command, the commands of a group, or one command and its flags
+  completion           a completion script for bash or zsh
+  passwords calibrate  time Argon2id on this host against a target duration
+
+instances and organisations:
+  instance create             create an instance and its first signing keys
+  instance add-alias          claim a legacy issuer while relying parties move across
+  instance retire-alias       stop accepting an alias, now or at a time
+  instance aliases            the instance's aliases and how many clients each pins
+  instance webauthn           set the passkey Relying Party ID and name
+  instance related-origins    further origins a passkey under the RP ID may be used from
+  instance org-status         suspend an organisation, or reactivate it
+  instance org-delete         delete a suspended organisation, in two steps
+  instance org-budgets        show or set an organisation's token and sign-in budgets
+  instance session-lifetime   how long sessions last, idle and offline
+  instance session-limit      how many sessions one person may hold at once
+  instance remember-device    offer "remember this device" after a second factor
+  instance new-device-notice  whether a sign-in from a new device is mailed to the person
+  instance reauth-window      how recent a sign-in must be to change the account
+  instance password-binds     whether a password-only bind may sign in somebody needing MFA
+  instance login-throttle     the sign-in delay: free attempts and the longest wait
+  instance sms-numbers        keep each SMS number, or only a keyed hash of it
+  instance totp-policy        the algorithm, digits and period new authenticators use
+
+people:
+  user create          create a user with a password
+  user approve         let a self-sign-up waiting for approval sign in
+  user unlock          clear the wrong guesses charged to a person
+  user locale          the language a person's notices and pages are written in
+  user remove-factor   remove a sign-in method from a person
+  user passkey-link    email a person a link that registers one passkey
+  user assign-otp      give a person a hardware token from its seed file
+  erase subject        destroy a subject key, making their data unreadable forever
+  export subject       write everything kept about one person as JSON
+  restore finalize     end what a restored backup brought back, before serving it
+  invite create        make an invitation link, or mail it
+  invite list          the organisation's invitations and their state
+  invite revoke        close an open invitation at once
+  signup enable        open self-sign-up, by email domain
+  signup disable       close self-sign-up
+  signup show          the organisation's self-sign-up rule
+  group create         create a group
+  group list           show groups and their sizes
+  group member         add or remove a member (-remove)
+  group release        let a client see group membership
+  group impersonation  grant or revoke a group's ability to act as another user
+  role grant           give a person or an application an administrative role in one organisation
+  role list            who holds which role in an organisation
+  role revoke          take a role away; the holder's next request is refused
+  admin-token create   mint a scoped, revocable admin API token
+  admin-token list     show admin tokens, their scopes and when each was last used
+  admin-token revoke   revoke one immediately, with no restart
+  webauthn policy      which authenticators an organisation accepts, and what to ask of them
+  webauthn show        the organisation's passkey policy
+  duo set              configure the organisation's Duo application
+  duo show             the organisation's Duo application
+  duo enroll           give a person the Duo username they sign in with there
+
+clients:
+  client create                    register an OAuth client
+  client set-keys                  switch a client to private_key_jwt with its public JWKS
+  client set-tls                   authenticate a client by TLS certificate (RFC 8705)
+  client set-dpop                  require a DPoP proof on every token request
+  client set-pkce                  whether its authorization requests must carry PKCE
+  client set-par                   refuse an authorization request not pushed first
+  client set-logout                post-logout redirects and front- and back-channel logout
+  client set-lifetimes             token lifetimes, and how long consent lasts
+  client set-alg                   what signs the client's ID and access tokens
+  client set-issuer-alias          mint the client's tokens under a legacy issuer
+  client set-admin-api             let the client obtain tokens for the Admin API
+  client set-first-party           skip the consent screen for a client that is yours
+  client set-acr                   the assurance every sign-in to the client must reach
+  client set-grants                set which grant types a client may use
+  client set-exchange              grant RFC 8693 token exchange, for itself and audiences
+  client set-exchange-containment  exchange only tokens the client holds or is the audience of
+  client set-hybrid                permit hybrid response types
+  client set-claims-redirects      where UMA claims gathering may return a requesting party
+  client set-ciba                  the CIBA delivery mode: poll, ping or push
+  client set-assertion-issuers     which issuers' assertions a client may exchange
+  registration enable              turn on dynamic client registration (RFC 7591)
+  registration token               mint an initial access token for registration
+  registration revoke              stop a registration token before it is spent
+  rar register                     register an RFC 9396 authorization details type
+  rar allow                        let a client request a registered type
+  rar list                         show registered types and which clients may use them
+  resource add                     a resource the organisation's tokens may be audienced to
+  resource list                    the organisation's RFC 8707 resources
+  resource remove                  stop issuing tokens for a resource
+
+verifiable credentials:
+  credential define        define a credential this issuer can mint (SD-JWT VC)
+  credential list          show the credential configurations this issuer publishes
+  credential offer         mint an OID4VCI Credential Offer a wallet can redeem
+  credential trust-root    trust a CA for x5c key proofs
+  credential untrust-root  stop trusting a CA for x5c key proofs
+  credential roots         the CAs x5c key proofs may verify to
+  attester add             trust a Client Attester's public keys
+  attester list            the trusted Client Attesters
+
+keys and audit:
+  keys list         show signing keys, their state and when each may advance
+  keys rotate       advance the rotation one safe step (run it again later)
+  keys retire       remove passive keys nothing can still be verifying against
+  keys rewrap-root  re-seal every stored secret under a new root key
+  audit verify      say whether the audit chain verifies, or an archive file does
+  audit checkpoint  anchor the audit chain, signed by whoever runs it
+  audit archive     move entries before a date into a file that verifies alone
+  export audit      write the audit trail as CSV, with its chain verified
+  export org        write an organisation's configuration as the file plan and apply read
+
+federation in:
+  idp add                   register an external sign-in provider (Google, GitHub, ...)
+  idp list                  show external sign-in providers
+  idp disable               take an upstream provider out of service
+  idp enable                put an upstream provider back in service
+  idp assertions            allow or refuse RFC 7523 assertions from a provider
+  idp add-issuer            register a key-publishing issuer for the jwt-bearer grant
+  idp link                  make an upstream subject act as a person
+  idp unlink                detach an upstream subject from its person
+  idp links                 a provider's subjects and the people they act as
+  idp trust-mfa             which upstream amr and acr values count as multi-factor
+  idp verified-email        whether to believe a provider's email_verified, and require it
+  idp attribute-map         route a provider's claim into a local attribute
+  idp apple-secret          mint the client secret Apple requires
+  saml add-sp               register a SAML service provider
+  saml list                 show registered SAML service providers
+  saml signing              what a service provider is sent signed, and how long it lasts
+  saml attribute-release    which local attribute a SAML attribute carries
+  saml group-release        which groups a service provider is told of
+  scim-source add           register an inbound SCIM source and mint its token
+  scim-source list          the inbound SCIM sources
+  scim-source disable       refuse an inbound source's token
+  scim-source enable        accept an inbound source's token again
+  dir add                   register an LDAP, Entra ID or Google Workspace directory
+  dir list                  each directory source and what its last sync did
+  dir set                   a source's state, missing-people rule and deactivation ceiling
+  dir group-map             which local group a directory group grants
+  dir sync                  reconcile users from a directory (preview unless -apply)
+  kerberos check            will this keytab work (no database needed)
+  kerberos principals       the principals a realm holds
+  kerberos sync             import a realm's principals as people
+  import keycloak           import users and clients from a Keycloak realm export
+  import authentik          import users and groups from an authentik dumpdata export
+  import shadow             an account for each /etc/shadow entry with a password
+  migration-source add      where pending people's passwords are verified at first sign-in
+  migration-source enable   start sending pending passwords to the source
+  migration-source disable  stop sending pending passwords to the source
+  migration-source show     the source, and how the cutover is going
+  migration-source remove   delete the migration source
+
+federation out:
+  scim add                register a SCIM provisioning target
+  scim list               show provisioning targets
+  scim sync               converge targets on this directory (preview unless -apply)
+  scim verify             read each target back and report anyone still active
+  scim enable             put a target back in service
+  scim disable            take a target out of service, keeping its links
+  scim scope              limit a target to one group's members
+  scim provision-group    create a group at a target and own it there
+  scim deprovision-group  delete a group this deployment made at a target
+  provision add           register a native provisioning target
+  ssf add-stream          register a Shared Signals receiver for CAEP events
+  ssf list                show Shared Signals receivers
+  ssf set-status          enable, pause or disable a receiver's stream
+  ssf add-source          accept Shared Signals from a transmitter
+  ssf received            what transmitters sent, most recent first
+  events subscribe        subscribe a URL to an organisation's events
+  events list             the organisation's event subscriptions
+  events remove           delete a subscription
+  events rotate           print a new signing secret for a subscription
+  events enable           switch a subscription back on
+  events test             send a subscription a test delivery
+
+authorization and federation:
+  authz set-model      store an authorization model once its own tests pass
+  authz show-model     print the authorization model in force
+  authz grant          grant a relation
+  authz revoke         revoke a relation
+  authz check          answer an authorization question, with the reason
+  uma settings         offer, or stop offering, resource-owner intervention on refused UMA requests
+  uma requests         UMA requests waiting for a resource owner to decide
+  uma approve          grant a relation and let a submitted UMA request through
+  uma deny             close a submitted UMA request without granting anything
+  federation enable    join an OpenID Federation: generate an Entity Statement key
+                       and publish /.well-known/openid-federation
+  federation show      print the Entity Configuration this instance publishes
+  trust-mark issue     issue an OpenID Federation Trust Mark to an entity
+  trust-mark revoke    withdraw a Trust Mark this entity issued
+  trust-mark list      Trust Marks this entity issues and holds
+  trust-mark accept    publish a Trust Mark somebody granted this entity
+  trust-mark drop      stop publishing a Trust Mark
+  trust-mark delegate  authorise another entity to issue a Trust Mark type we own
+  trust-mark issuers   set trust_mark_issuers (Trust Anchor only)
+  trust-mark owners    set trust_mark_owners (Trust Anchor only)
+
+extension providers:
+  provider add     register a provider for a hook, failing open or closed
+  provider list    what is registered, and whether anything consults each hook
+  provider claims  which claims a token hook may add
+  provider rotate  print a new signing secret for a provider
+  provider remove  remove a provider; decisions are made locally again
+
+outposts and remote access:
+  outpost create         register an LDAP, RADIUS, proxy or desktop outpost
+  outpost list           the organisation's outposts and when each last called
+  outpost run            run an LDAP outpost, which holds no database credentials
+  outpost disable        refuse an outpost's token
+  outpost enable         accept an outpost's token again
+  outpost search-group   whose members may search the directory through an LDAP outpost
+  radius add-client      register a network device permitted to send Access-Requests
+  radius list            show registered RADIUS clients
+  radius disable-client  refuse a RADIUS device
+  radius enable-client   accept a RADIUS device again
+  radius authorize       place a group's members on a VLAN or give them a Filter-Id
+  proxy check            prove a forward-auth deployment actually protects the app
+  proxy add-host         protect an application with forward auth
+  proxy list             the protected hosts
+  proxy disable-host     stop protecting a host, keeping it
+  proxy enable-host      protect a host again
+  proxy remove-host      remove a protected host
+  rac add                register a remote-access connection (RDP, VNC or SSH)
+  rac list               the remote-access connections
+  rac disable            take a connection out of service
+  rac enable             put a connection back in service
+  rac set-parameters     replace a connection's guacd parameters
+
+policy, prompts and branding:
+  policy test     check a policy file (no database needed -- for CI)
+  policy graph    draw a policy file's decisions
+  policy apply    install a policy file
+  policy show     print the policy in force
+  flow test       check a sign-in flow file (no database needed -- for CI)
+  flow paths      list every journey a flow admits, and what produces each
+  flow apply      install a sign-in flow file
+  flow show       print the built-in flows, as a file to start from
+  prompt set      define or reword an interstitial prompt
+  prompt list     the organisation's prompts and how many answered each
+  prompt enable   ask a prompt again
+  prompt disable  stop asking a prompt, keeping its answers
+  brand set       an instance's name, logo, support link and colours
+  brand show      the brand in force
+  brand check     would this palette be readable (no database needed)
+  theme eject     write the built-in HTML pages out so they can be edited
+  theme check     validate a theme directory; non-zero if anything is refused
+  theme list      which page is built-in and which is overridden
+  i18n list       the languages the sign-in pages can be rendered in
+  i18n status     every message a loaded language is missing
+  i18n keys       every message key the pages use
+
+testing:
+  logout-test     prove back-channel logout ends a relying party's session
 
 env:
   SIGNARI_ROOT_KEY        base64 of 32 random bytes; wraps stored private key material

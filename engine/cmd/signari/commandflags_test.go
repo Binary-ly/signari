@@ -430,6 +430,27 @@ func TestListingsPrintJSON(t *testing.T) {
 	}
 }
 
+// Every command says in a line what it does, in `signari help` and at the head
+// of its own help (6.15); before, about 150 of them had none.
+func TestEveryCommandHasASummary(t *testing.T) {
+	summaries := commandSummaries()
+	var missing []string
+	for c := range commandFlags {
+		if summaries[c] == "" {
+			missing = append(missing, c)
+		}
+	}
+	for _, c := range beforeFlags {
+		if summaries[c] == "" {
+			missing = append(missing, c)
+		}
+	}
+	sort.Strings(missing)
+	for _, c := range missing {
+		t.Errorf("%q has no line in usageText", c)
+	}
+}
+
 // `signari plan` exits 3 when the deployment differs from the file, so a
 // pipeline can tell drift from a failure (6.15), and 0 when it does not.
 func TestPlanExitsThreeOnDrift(t *testing.T) {

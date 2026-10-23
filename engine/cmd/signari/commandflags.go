@@ -109,7 +109,7 @@ func commandSummaries() map[string]string {
 	last := ""
 	for _, l := range strings.Split(usageText, "\n") {
 		if m := line.FindStringSubmatch(l); m != nil {
-			if _, ok := commandFlags[m[1]]; ok {
+			if _, ok := commandFlags[m[1]]; ok || slices.Contains(beforeFlags, m[1]) {
 				out[m[1]], last = m[2], m[1]
 				continue
 			}

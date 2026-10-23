@@ -7436,7 +7436,7 @@ func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
 	fmt.Println("\napplied")
 	if len(plan.Minted) > 0 {
 		// After the commit, so a secret shown is one that exists.
-		fmt.Println("\n  Signing secrets, shown this once; give each to the service it names:")
+		fmt.Println("\n  Secrets and tokens minted, shown this once; give each to what it names:")
 		for _, m := range plan.Minted {
 			fmt.Printf("    %s %s: %s\n", m.Kind, m.Name, m.Secret)
 		}

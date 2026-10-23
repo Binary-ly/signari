@@ -87,6 +87,14 @@ type File struct {
 	DirectorySources  []DirectorySource  `yaml:"directory_sources,omitempty"`
 	Duo               *Duo               `yaml:"duo,omitempty"`
 	MigrationSource   *MigrationSource   `yaml:"migration_source,omitempty"`
+
+	// The rest (tokenkinds.go): outposts and SCIM sources, whose tokens are
+	// minted, Shared Signals, and the authorization model as its text.
+	Outposts           []Outpost    `yaml:"outposts,omitempty"`
+	SCIMSources        []SCIMSource `yaml:"scim_sources,omitempty"`
+	SSFStreams         []SSFStream  `yaml:"ssf_streams,omitempty"`
+	SSFSources         []SSFSource  `yaml:"ssf_sources,omitempty"`
+	AuthorizationModel *string      `yaml:"authorization_model,omitempty"`
 }
 
 // ProxyHost is an application protected by forward authentication.

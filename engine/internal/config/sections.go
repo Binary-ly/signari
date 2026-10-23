@@ -75,6 +75,11 @@ var sections = []section{
 	directorySection{},
 	duoSection{},
 	migrationSection{},
+	outpostSection{},
+	scimSourceSection{},
+	ssfStreamSection{},
+	ssfSourceSection{},
+	authorizationModelSection,
 }
 
 // sectionOf is the section a plan's Kind belongs to, nil for a built-in kind.

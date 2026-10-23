@@ -26,7 +26,8 @@ var declaredBy = map[string]string{
 	"client_authorization_detail_types": "authorization_detail_type", "client_attesters": "client_attester",
 	"credential_configurations": "credential_configuration", "credential_proof_roots": "credential_proof_root",
 	"directory_sources": "directory_source", "directory_group_map": "directory_source", "duo_integrations": "duo",
-	"migration_sources": "migration_source",
+	"migration_sources": "migration_source", "outposts": "outpost", "scim_sources": "scim_source",
+	"ssf_streams": "ssf_stream", "ssf_sources": "ssf_source", "authorization_models": "authorization_model",
 }
 
 const (
@@ -70,10 +71,9 @@ var notConfiguration = map[string]string{
 }
 
 // notYet is configuration a file does not declare yet, each set by its own
-// command and Admin API route meanwhile: ROADMAP 6.25.
-var notYet = map[string]bool{
-	"authorization_models": true, "outposts": true, "scim_sources": true, "ssf_sources": true, "ssf_streams": true,
-}
+// command and Admin API route meanwhile. Empty since 6.25; a table added later
+// goes in declaredBy or notConfiguration, here only with a ROADMAP row.
+var notYet = map[string]bool{}
 
 func TestEveryOrganisationTableIsDeclarableOrSaysWhyNot(t *testing.T) {
 	ctx, pool, _ := applyFixture(t)

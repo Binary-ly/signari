@@ -215,6 +215,17 @@ directory_sources:
 duo: {client_id: DIABCDEFGHIJKLMNOPQR, secret: {env: LIFECYCLE_DUO_SECRET}, api_host: api-1234abcd.duosecurity.com}
 migration_source: {kind: ldap, name: Old directory, url: 'ldaps://old-%[1]d.example.test',
   bind_dn_template: 'uid={username},ou=people,dc=corp,dc=test'}
+outposts: [{name: ldap-front, kind: ldap, search_group: staff-%[1]d}, {name: wifi, kind: radius}]
+scim_sources: [{slug: hr, name: HR, on_delete: deactivate}]
+ssf_streams: [{client_id: spa-%[1]d, poll: true}]
+ssf_sources:
+  - {issuer: 'https://idp-%[1]d.partner.test', name: Partner, jwks_uri: 'https://idp-%[1]d.partner.test/jwks',
+     audience: 'https://us-%[1]d.example.test', events: ['https://schemas.openid.net/secevent/caep/event-type/session-revoked']}
+authorization_model: |
+  types:
+    document:
+      relations: {owner: [], viewer: [owner]}
+      permissions: {read: [viewer]}
 providers:
   - {hook: authorize, url: 'https://pdp-%[1]d.example.test/', mode: fail_closed, timeout: 3s}
 event_subscriptions:

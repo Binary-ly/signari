@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/ssf"
 )
@@ -127,6 +129,85 @@ func AddStream(ctx context.Context, q outpostDB, root *keys.RootKey, orgID strin
 		return "", err
 	}
 	return id, nil
+}
+
+// ErrStreamTokenForAnotherEndpoint is a push stream holding a receiver token
+// moved to another endpoint without one: the token was the receiver's, and
+// would be pushed to whoever answers at the new address.
+var ErrStreamTokenForAnotherEndpoint = errors.New("a stream's receiver token was given for the endpoint it " +
+	"pushes to; a new endpoint needs the token given again, or it would be sent there")
+
+// UpdateStream changes a client's stream as a configuration file declares it
+// (6.25), checked as AddStream checks a new one. withToken writes the
+// receiver token given; without it the held one is kept, or dropped when the
+// stream becomes a poll stream, which has none.
+func UpdateStream(ctx context.Context, q outpostDB, root *keys.RootKey, orgID string, s StreamSpec,
+	withToken bool) error {
+	if !withToken {
+		s.ReceiverToken = ""
+	}
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	var endpoint string
+	var held bool
+	if err := q.QueryRow(ctx, `SELECT COALESCE(endpoint_url, ''), auth_token IS NOT NULL FROM core.ssf_streams
+		WHERE org_id = $1::uuid AND client_id = $2`, orgID, s.ClientID).Scan(&endpoint, &held); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrStreamUnknown
+		}
+		return err
+	}
+	if !s.Poll && held && !withToken && endpoint != s.Endpoint {
+		return ErrStreamTokenForAnotherEndpoint
+	}
+	var sealed []byte
+	if withToken && s.ReceiverToken != "" {
+		if root == nil {
+			return fmt.Errorf("a receiver token is sealed under SIGNARI_ROOT_KEY, which is not loaded")
+		}
+		var err error
+		if sealed, err = root.Seal([]byte(s.ReceiverToken), SealContextSSFToken); err != nil {
+			return fmt.Errorf("sealing the receiver's token: %w", err)
+		}
+	}
+	method := "push"
+	var url any = s.Endpoint
+	if s.Poll {
+		method, url = "poll", nil
+	}
+	_, err := q.Exec(ctx, `
+		UPDATE core.ssf_streams SET delivery_method = $3, endpoint_url = $4, events_requested = $5,
+		       auth_token = CASE WHEN $3 = 'poll' THEN NULL WHEN $6 THEN $7::bytea ELSE auth_token END
+		 WHERE org_id = $1::uuid AND client_id = $2`, orgID, s.ClientID, method, url, s.Events, withToken, sealed)
+	return err
+}
+
+// StreamReceiverToken opens a stream's receiver token, so a plan can say
+// whether the one a file names differs. Never shown.
+func StreamReceiverToken(ctx context.Context, q outpostDB, root *keys.RootKey, orgID, clientID string) (string, error) {
+	var sealed []byte
+	if err := q.QueryRow(ctx, `SELECT auth_token FROM core.ssf_streams WHERE org_id = $1::uuid AND client_id = $2`,
+		orgID, clientID).Scan(&sealed); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrStreamUnknown
+		}
+		return "", err
+	}
+	if len(sealed) == 0 {
+		return "", nil
+	}
+	if root == nil {
+		return "", fmt.Errorf("the stream's receiver token is sealed and no root key is loaded")
+	}
+	plain, err := root.Open(sealed, SealContextSSFToken)
+	return string(plain), err
+}
+
+// RemoveStream stops a client's stream, as a pruned configuration file asks.
+func RemoveStream(ctx context.Context, q outpostDB, orgID, clientID string) error {
+	_, err := q.Exec(ctx, `DELETE FROM core.ssf_streams WHERE org_id = $1::uuid AND client_id = $2`, orgID, clientID)
+	return err
 }
 
 // Stream is one registered stream, without its receiver token.

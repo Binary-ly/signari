@@ -59,6 +59,8 @@ func TestEverySchemaEnumIsWhatParseAccepts(t *testing.T) {
 		"DirectorySource.flavour":    "directory_sources: [{slug: a, kind: ldap, url: 'ldaps://x.test', base_dn: 'dc=x', flavour: %q, password: {env: P}}]",
 		"DirectorySource.on_missing": "directory_sources: [{slug: a, kind: ldap, url: 'ldaps://x.test', base_dn: 'dc=x', flavour: ad, password: {env: P}, on_missing: %q}]",
 		"MigrationSource.kind":       "migration_source: {kind: %q, name: n, url: 'https://old.example.test/token', client_id: c}",
+		"Outpost.kind":               "outposts: [{name: o, kind: %q}]",
+		"SCIMSource.on_delete":       "scim_sources: [{slug: s, on_delete: %q}]",
 	}
 	cert := testCertificate(t)
 	parse := func(key, value string) error {

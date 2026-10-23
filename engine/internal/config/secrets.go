@@ -124,6 +124,11 @@ func (f *File) secretRefs() []secretAt {
 	if m := f.MigrationSource; m != nil && m.ClientSecret != nil {
 		out = append(out, secretAt{"migration_source.client_secret", m.ClientSecret})
 	}
+	for _, s := range f.SSFStreams {
+		if s.ReceiverToken != nil {
+			out = append(out, secretAt{s.where(), s.ReceiverToken})
+		}
+	}
 	return out
 }
 

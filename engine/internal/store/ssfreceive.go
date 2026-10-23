@@ -118,6 +118,15 @@ func AddSource(ctx context.Context, e Execer, orgID, name, issuer, jwksURI,
 	return err
 }
 
+// SetSSFSourceEnabled stops or resumes accepting a transmitter's events, as a
+// pruned configuration file asks (6.25): switched off rather than deleted,
+// since deleting it takes the record of what it sent.
+func SetSSFSourceEnabled(ctx context.Context, e Execer, orgID, issuer string, enabled bool) error {
+	_, err := e.Exec(ctx, `UPDATE core.ssf_sources SET enabled = $3 WHERE org_id = $1::uuid AND issuer = $2`,
+		orgID, issuer, enabled)
+	return err
+}
+
 // ErrSourceAudienceTaken is an issuer and audience another organisation's
 // source already has.
 var ErrSourceAudienceTaken = errors.New("that issuer and audience belong to another organisation's source")

@@ -553,6 +553,31 @@
       },
       "type": "object"
     },
+    "Outpost": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "ldap",
+            "radius",
+            "proxy",
+            "desktop",
+            "pdp"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "search_group": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Prompt": {
       "additionalProperties": false,
       "properties": {
@@ -822,6 +847,28 @@
       },
       "type": "object"
     },
+    "SCIMSource": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "on_delete": {
+          "enum": [
+            "deactivate",
+            "delete"
+          ],
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "SCIMTarget": {
       "additionalProperties": false,
       "properties": {
@@ -869,6 +916,63 @@
           "type": "string"
         },
         "token": {
+          "$ref": "#/$defs/SecretRef"
+        }
+      },
+      "type": "object"
+    },
+    "SSFSource": {
+      "additionalProperties": false,
+      "properties": {
+        "audience": {
+          "type": "string"
+        },
+        "critical_subject_members": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "events": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "jwks_uri": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SSFStream": {
+      "additionalProperties": false,
+      "properties": {
+        "client_id": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "events": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "poll": {
+          "type": "boolean"
+        },
+        "receiver_token": {
           "$ref": "#/$defs/SecretRef"
         }
       },
@@ -1064,6 +1168,9 @@
       },
       "type": "array"
     },
+    "authorization_model": {
+      "type": "string"
+    },
     "claim_mappers": {
       "items": {
         "$ref": "#/$defs/ClaimMapper"
@@ -1133,6 +1240,12 @@
     "org": {
       "type": "string"
     },
+    "outposts": {
+      "items": {
+        "$ref": "#/$defs/Outpost"
+      },
+      "type": "array"
+    },
     "prompts": {
       "items": {
         "$ref": "#/$defs/Prompt"
@@ -1184,6 +1297,12 @@
       },
       "type": "array"
     },
+    "scim_sources": {
+      "items": {
+        "$ref": "#/$defs/SCIMSource"
+      },
+      "type": "array"
+    },
     "scim_targets": {
       "items": {
         "$ref": "#/$defs/SCIMTarget"
@@ -1201,6 +1320,18 @@
     },
     "signup": {
       "$ref": "#/$defs/Signup"
+    },
+    "ssf_sources": {
+      "items": {
+        "$ref": "#/$defs/SSFSource"
+      },
+      "type": "array"
+    },
+    "ssf_streams": {
+      "items": {
+        "$ref": "#/$defs/SSFStream"
+      },
+      "type": "array"
     },
     "uma": {
       "$ref": "#/$defs/UMA"

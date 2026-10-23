@@ -9,6 +9,7 @@ import (
 
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/provider"
+	"signari.dev/engine/internal/store"
 )
 
 // The JSON Schema of a configuration file (6.19), for an editor to check a
@@ -46,6 +47,8 @@ var schemaEnums = map[string][]string{
 	"DirectorySource.flavour":    {"openldap", "ad", "freeipa"},
 	"DirectorySource.on_missing": {"report", "deactivate"},
 	"MigrationSource.kind":       {"oidc_password", "ldap"},
+	"Outpost.kind":               store.OutpostKinds,
+	"SCIMSource.on_delete":       {"deactivate", "delete"},
 }
 
 func hookNames() []string {

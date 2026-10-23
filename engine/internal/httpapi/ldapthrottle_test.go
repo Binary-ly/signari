@@ -149,12 +149,29 @@ func cleanupBuckets(t *testing.T, a *LDAPAuthenticator, ctx context.Context, key
 // limit. That made the address-budget test fail about one run in a few hundred,
 // in a full suite whose load stretched its twenty binds over a window edge, with
 // a message blaming the limiter. Waiting is cheaper than a test nobody believes.
-func clearOfWindowEdge(t *testing.T, window time.Duration) {
+//
+// Sixty seconds, not twenty: the delegated-budget test's thirty-one sign-ins
+// take about nine seconds alone and more beside six other packages, and it
+// failed twice in an afternoon of such runs answering 401 where the spent
+// budget should have answered 429. windowTurned now says so when that is why.
+func clearOfWindowEdge(t *testing.T, window time.Duration) time.Time {
 	t.Helper()
-	const need = 20 * time.Second
+	const need = 60 * time.Second
 	if left := window - time.Duration(time.Now().UnixNano()%int64(window)); left < need {
 		time.Sleep(left + 250*time.Millisecond)
 	}
+	return time.Now()
+}
+
+// windowTurned explains a budget assertion that failed because a
+// clock-aligned window ended between start and now, which empties every
+// bucket the test had charged.
+func windowTurned(start time.Time, window time.Duration) string {
+	if start.UnixNano()/int64(window) != time.Now().UnixNano()/int64(window) {
+		return fmt.Sprintf(" (the %s window turned over during the test, which empties every bucket it charged)",
+			window)
+	}
+	return ""
 }
 
 // requireCharged fails, naming the count, when a bucket holds fewer failures

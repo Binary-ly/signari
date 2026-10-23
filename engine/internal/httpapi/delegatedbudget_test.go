@@ -19,7 +19,7 @@ import (
 // forwarded to a third party in this server's name.
 func TestADelegatedSignInFailureIsChargedLikeAnyOther(t *testing.T) {
 	f := newSignInFixture(t)
-	clearOfWindowEdge(t, signInPerAccountWindow)
+	start := clearOfWindowEdge(t, signInPerAccountWindow)
 	ctx := context.Background()
 
 	root, err := keys.NewRootKey("test", make([]byte, 32))
@@ -83,8 +83,8 @@ func TestADelegatedSignInFailureIsChargedLikeAnyOther(t *testing.T) {
 	}
 	before := asked.Load()
 	if rec := attempt(addr(signInPerAccountLimit), target, "a-guess"); rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("after %d delegated failures against one account the next gave %d, want 429",
-			signInPerAccountLimit, rec.Code)
+		t.Fatalf("after %d delegated failures against one account the next gave %d, want 429%s",
+			signInPerAccountLimit, rec.Code, windowTurned(start, signInPerAccountWindow))
 	}
 	if asked.Load() != before {
 		t.Error("the old provider was still asked once the account's budget was spent")

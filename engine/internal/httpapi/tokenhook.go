@@ -205,9 +205,12 @@ func (s *Server) clientAccessRefused(ctx context.Context, orgID, clientID, userI
 // has already decided to make. Before the grant's transaction opens, because
 // the call may take the provider's whole timeout. A veto or a fault is
 // answered here and ok is false; otherwise the context carries what the
-// provider contributed.
-func (s *Server) consultTokenHook(ctx context.Context, w http.ResponseWriter,
+// provider contributed. A client whose organisation has none has told us so.
+func (s *Server) consultTokenHook(ctx context.Context, w http.ResponseWriter, c *clients.Client,
 	req store.TokenHookRequest) (context.Context, bool) {
+	if req.OrgID == c.OrgID && !c.HasTokenHook {
+		return ctx, true
+	}
 	hook, err := store.ConsultTokenProvider(ctx, s.db, s.root, s.outboundClient, s.log, req.OrgID, req)
 	if err != nil {
 		s.log.Error("consulting the token provider", "err", err, "grant_type", req.Grant)

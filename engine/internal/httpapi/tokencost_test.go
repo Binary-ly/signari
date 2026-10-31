@@ -114,6 +114,54 @@ func TestAPasswordSignInTakesFewTransactions(t *testing.T) {
 	}
 }
 
+// The token endpoint's three common grants, with a root key and an instance as a
+// deployment has them, and begin and commit counted. A mapper or a provider adds
+// what it needs; a deployment with neither pays for neither.
+func TestTheTokenEndpointAsksTheDatabaseLittle(t *testing.T) {
+	f := newTokenFixture(t)
+	secret := revocableClient(t, f)
+	ctx := context.Background()
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.root = root
+	if err := f.pool.QueryRow(ctx, `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, f.orgID).Scan(&f.srv.instanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE core.clients SET grant_types = grant_types || ARRAY['client_credentials', 'refresh_token'],
+		scopes = scopes || ARRAY['api.read'] WHERE client_id = $1`, f.clientID); err != nil {
+		t.Fatal(err)
+	}
+	const verifier = "verifier-cost-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	code := f.issueCodeWithDetailsAndScopes(t, verifier, nil, []string{"openid", "offline_access"})
+	spent := traced(t, f.srv)
+
+	status, body := f.post(t, url.Values{"grant_type": {"client_credentials"}, "client_id": {f.clientID},
+		"client_secret": {secret}, "scope": {"api.read"}})
+	if status != http.StatusOK {
+		t.Fatalf("client credentials: %d %v", status, body)
+	}
+	underLimit(t, "client credentials", spent.take(), 3)
+
+	status, body = f.post(t, url.Values{"grant_type": {"authorization_code"}, "code": {code},
+		"client_id": {f.clientID}, "client_secret": {secret}, "redirect_uri": {"https://rp.test/cb"},
+		"code_verifier": {verifier}})
+	if status != http.StatusOK {
+		t.Fatalf("redeeming a code: %d %v", status, body)
+	}
+	underLimit(t, "redeeming a code", spent.take(), 10)
+
+	refresh, _ := body["refresh_token"].(string)
+	status, body = f.post(t, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh},
+		"client_id": {f.clientID}, "client_secret": {secret}})
+	if status != http.StatusOK {
+		t.Fatalf("refreshing: %d %v", status, body)
+	}
+	underLimit(t, "refreshing", spent.take(), 13)
+}
+
 // These two are what a resource server calls on every request it serves, so a
 // statement here is one for each of those.
 func TestIntrospectionAndUserinfoAskTheDatabaseLittle(t *testing.T) {

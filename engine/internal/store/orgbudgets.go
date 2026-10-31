@@ -95,5 +95,12 @@ func AllowOrgBudget(ctx context.Context, q interface {
 	if err != nil {
 		return RateResult{}, err
 	}
+	return ChargeOrgBudget(ctx, q, orgID, kind, b)
+}
+
+// ChargeOrgBudget is AllowOrgBudget for a caller that has read the budgets already.
+func ChargeOrgBudget(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID string, kind BudgetKind, b OrgBudgets) (RateResult, error) {
 	return AllowRate(ctx, q, "org:"+orgID+":"+string(kind), b.Effective(kind), time.Minute)
 }

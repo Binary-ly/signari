@@ -260,7 +260,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 	if party.userID != "" {
 		rptSubject = party.userID
 	}
-	hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+	hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
 		Subject: rptSubject, ClientID: c.ClientID, Scopes: scopes,
 		Grant: oauth.GrantTypeUMATicket, OrgID: c.OrgID})
 	if !ok {

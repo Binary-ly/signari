@@ -506,7 +506,7 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 		scopes = c.Scopes
 	}
 	// The device grant and CIBA's poll and ping both end here.
-	hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+	hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
 		Subject: d.UserID, ClientID: c.ClientID, Scopes: scopes,
 		Grant: firstForm(r, "grant_type"), OrgID: d.OrgID})
 	if !ok {

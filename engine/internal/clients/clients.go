@@ -127,6 +127,14 @@ type Client struct {
 	// turn -- private_key_jwt, mutual TLS, and attestation-based.
 	TokenEndpointAuthMethod string
 
+	// TokenBudget is the organisation's budget of tokens a minute, nil for the
+	// deployment's default. HasClaimMappers and HasTokenHook say whether a token
+	// has any more to ask: most deployments have neither, and each was a statement
+	// on every token.
+	TokenBudget     *int
+	HasClaimMappers bool
+	HasTokenHook    bool
+
 	// AllowHybrid permits response_type "code id_token" for this client.
 	//
 	// Off unless somebody turned it on. It exists for applications being
@@ -279,7 +287,12 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       (SELECT o.instance_id::text FROM core.organizations o
 		         WHERE o.id = core.clients.org_id),
 		       COALESCE((SELECT array_agg(r.redirect_uri ORDER BY r.redirect_uri) FROM core.client_redirect_uris r
-		                  WHERE r.client_id = core.clients.client_id), ARRAY[]::text[])
+		                  WHERE r.client_id = core.clients.client_id), ARRAY[]::text[]),
+		       -- What a token for this client will need to know, so that it asks
+		       -- nothing further of a deployment that has none of it.
+		       (SELECT o.token_budget_per_minute FROM core.organizations o WHERE o.id = core.clients.org_id),
+		       EXISTS (SELECT 1 FROM core.claim_mappers m WHERE m.org_id = core.clients.org_id),
+		       EXISTS (SELECT 1 FROM core.providers p WHERE p.org_id = core.clients.org_id AND p.hook = 'token_issue')
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -295,7 +308,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.BackchannelClientNotificationEndpoint,
 			&c.ClaimsRedirectURIs,
 			&c.AccessTTL, &c.RefreshReuseGrace, &c.RequirePAR, &c.RequireState, &c.MinimumACR, &c.AdminAPI,
-			&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs)
+			&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs, &c.TokenBudget, &c.HasClaimMappers, &c.HasTokenHook)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

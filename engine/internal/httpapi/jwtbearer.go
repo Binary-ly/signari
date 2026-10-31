@@ -244,7 +244,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	}
 	// The operator's token provider, before the transaction below holds a
 	// connection for as long as it takes to answer.
-	hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+	hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
 		Subject: userID, ClientID: c.ClientID, Scopes: scopes, Grant: oauth.GrantTypeJWTBearer, OrgID: orgID})
 	if !ok {
 		return

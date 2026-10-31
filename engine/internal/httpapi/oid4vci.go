@@ -194,7 +194,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 
 	// The operator's token provider, before the code is spent, so a veto does
 	// not leave the holder an unusable offer they were never told about.
-	hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+	hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
 		Subject: stored.UserID, ClientID: c.ClientID, Scopes: scopes,
 		Grant: oauth.GrantTypePreAuthorizedCode, OrgID: stored.OrgID})
 	if !ok {

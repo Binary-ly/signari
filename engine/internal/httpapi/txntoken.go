@@ -273,7 +273,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 	// And the operator's token provider, as every grant asks it. Its veto
 	// applies; its claims do not, since a Txn-Token's members are fixed by its
 	// draft and are not an access token's.
-	if _, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+	if _, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
 		Subject: out.Subject, ClientID: c.ClientID, Scopes: req.Scope,
 		Grant: oauth.GrantTypeTokenExchange, OrgID: c.OrgID}); !ok {
 		return

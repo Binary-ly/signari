@@ -916,7 +916,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// The client's organisation's token budget (6.10), charged once the client
 	// is known to be its: a stranger naming somebody's client id spends
 	// nothing of theirs.
-	if spent, err := s.orgBudgetSpent(ctx, w, c.OrgID, store.BudgetTokens); err != nil || spent {
+	if spent, err := s.tokenBudgetSpent(ctx, w, c); err != nil || spent {
 		if err != nil {
 			writeTokenError(w, &oauth.TokenError{Code: "temporarily_unavailable",
 				Description: "please try again shortly", Status: http.StatusServiceUnavailable})
@@ -980,8 +980,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		if _, verr := oauth.ValidateCodeRedemption(req, c, &peeked.GrantRecord,
 			dpopThumbprintFrom(ctx), time.Now()); verr == nil {
 			early = peeked
-			hook, hookErr = store.ConsultTokenProvider(ctx, s.db, s.root, s.outboundClient, s.log,
-				peeked.OrgID, tokenHookRequest(peeked, c.ClientID, req.GrantType))
+			if peeked.OrgID != c.OrgID || c.HasTokenHook {
+				hook, hookErr = store.ConsultTokenProvider(ctx, s.db, s.root, s.outboundClient, s.log,
+					peeked.OrgID, tokenHookRequest(peeked, c.ClientID, req.GrantType))
+			}
 		}
 	}
 
@@ -1059,7 +1061,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// provider was never asked about. Inside the transaction, the read uses `tx`
 	// and not s.db: a second connection taken while holding one deadlocks the
 	// pool under concurrent redemptions (it hung the suite for eight minutes once).
-	if early == nil || !sameRedemption(early, consumed) {
+	if (early == nil || !sameRedemption(early, consumed)) && (consumed.OrgID != c.OrgID || c.HasTokenHook) {
 		hook, hookErr = store.ConsultTokenProvider(ctx, tx, s.root, s.outboundClient, s.log,
 			consumed.OrgID, tokenHookRequest(consumed, c.ClientID, req.GrantType))
 	}
@@ -1220,17 +1222,31 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	// well as the ID token, and regardless of scope: an API call made during
 	// support access is exactly the case where a resource server needs to know,
 	// and a token minted without `openid` would otherwise carry no trace of it.
+	//
+	// And how this person signed in, for a resource server deciding whether that
+	// is enough, as the ID token says it to the client. A token with no session
+	// says nothing rather than something assumed.
 	var act *tokens.Actor
+	var authTime time.Time
+	var acr string
+	var amr []string
+	var accessAuthTime int64
 	if sid != "" {
 		var impersonator *string
 		if err := tx.QueryRow(ctx,
-			`SELECT impersonator_id::text FROM core.sessions WHERE sid = $1`, sid).
-			Scan(&impersonator); err != nil {
-			return nil, nil, fmt.Errorf("loading session actor: %w", err)
+			`SELECT impersonator_id::text, auth_time, acr, amr FROM core.sessions WHERE sid = $1`, sid).
+			Scan(&impersonator, &authTime, &acr, &amr); err != nil {
+			return nil, nil, fmt.Errorf("loading the session behind a token: %w", err)
 		}
 		if impersonator != nil && *impersonator != "" {
 			act = &tokens.Actor{Subject: *impersonator}
 		}
+		// The rung the authorization request asked for and was given, above
+		// the session's own "1" or "2".
+		if granted := grantedACRFrom(ctx); granted != "" {
+			acr = granted
+		}
+		accessAuthTime = authTime.Unix()
 	}
 
 	// The refresh family is established BEFORE the access token is signed, so the
@@ -1274,7 +1290,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	// so releasing something there is a wider decision, and the mapper has to
 	// say so explicitly.
 	var accessExtra map[string]any
-	if s.root != nil && userID != "" {
+	if s.root != nil && userID != "" && c.HasClaimMappers {
 		mapped, merr := store.MappedClaims(ctx, tx, userID, orgID, c.ClientID,
 			store.ClaimInAccessToken, joinScopes(scopes), s.root)
 		if merr != nil {
@@ -1284,26 +1300,6 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	}
 	if accessExtra, err = withRoles(ctx, tx, c, userID, orgID, accessExtra); err != nil {
 		return nil, nil, err
-	}
-
-	// How this person signed in, for a resource server deciding whether that is
-	// enough, as the ID token says it to the client. A token with no session says
-	// nothing rather than something assumed.
-	var authTime time.Time
-	var acr string
-	var amr []string
-	var accessAuthTime int64
-	if sid != "" {
-		if err := tx.QueryRow(ctx, `SELECT auth_time, acr, amr FROM core.sessions WHERE sid = $1`, sid).
-			Scan(&authTime, &acr, &amr); err != nil {
-			return nil, nil, fmt.Errorf("loading session context: %w", err)
-		}
-		// The rung the authorization request asked for and was given, above
-		// the session's own "1" or "2".
-		if granted := grantedACRFrom(ctx); granted != "" {
-			acr = granted
-		}
-		accessAuthTime = authTime.Unix()
 	}
 
 	at, err := issueAccessToken(ctx, tx, c, accessSigner, tokens.AccessTokenClaims{
@@ -1386,7 +1382,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		// anything else — a mapper can only ever add. That is enforced at three
 		// layers on purpose (schema, resolution, serialisation), and this is the
 		// call site that makes the feature reachable at all.
-		if s.root != nil && userID != "" {
+		if s.root != nil && userID != "" && c.HasClaimMappers {
 			mapped, merr := store.MappedClaims(ctx, tx, userID, orgID, c.ClientID,
 				store.ClaimInIDToken, joinScopes(scopes), s.root)
 			if merr != nil {
@@ -1633,7 +1629,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 		audience = req.Resources
 	}
 	// The subject is the client itself.
-	hookCtx, ok := s.consultTokenHook(r.Context(), w, store.TokenHookRequest{
+	hookCtx, ok := s.consultTokenHook(r.Context(), w, c, store.TokenHookRequest{
 		Subject: c.ClientID, ClientID: c.ClientID, Scopes: scopes, Grant: req.GrantType, OrgID: c.OrgID})
 	if !ok {
 		return
@@ -1734,7 +1730,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		if req.Scope != "" {
 			scopes = splitScopes(req.Scope)
 		}
-		hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+		hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
 			Subject: peek.UserID, ClientID: c.ClientID, Scopes: scopes,
 			Grant: "refresh_token", OrgID: peek.OrgID})
 		if !ok {
@@ -3555,7 +3551,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	exchangeJKT := dpopThumbprintFrom(ctx)
 
 	// About the person the token is still for, issued to the calling client.
-	hookCtx, ok := s.consultTokenHook(ctx, w, store.TokenHookRequest{
+	hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
 		Subject: subject.Subject, ClientID: c.ClientID, Scopes: granted,
 		Grant: oauth.GrantTypeTokenExchange, OrgID: c.OrgID})
 	if !ok {

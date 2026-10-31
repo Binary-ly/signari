@@ -386,6 +386,8 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/outposts", ScopeConfigRead, s.listOutposts)
 	route("POST /admin/organizations/{orgID}/outposts", ScopeOrganizationsWrite, s.createOutpost)
 	route("PATCH /admin/organizations/{orgID}/outposts/{name}", ScopeOrganizationsWrite, s.patchOutpost)
+	route("DELETE /admin/organizations/{orgID}/outposts/{name}", ScopeOrganizationsWrite, s.removeOutpost)
+	route("POST /admin/organizations/{orgID}/outposts/{name}/rotate", ScopeOrganizationsWrite, s.rotateOutpost)
 	// Dynamic client registration and its initial access tokens, `signari
 	// registration` (registration.go).
 	route("GET /admin/organizations/{orgID}/registration", ScopeConfigRead, s.getRegistration)

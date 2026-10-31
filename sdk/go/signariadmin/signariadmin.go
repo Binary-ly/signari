@@ -298,6 +298,13 @@ type DeleteOrganizationsOrgIDMigrationSourceResponse struct {
 	Removed       bool  `json:"removed"`
 }
 
+// DeleteOrganizationsOrgIDOutpostsNameResponse is a JSON object of the Admin API.
+type DeleteOrganizationsOrgIDOutpostsNameResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Name          string `json:"name"`
+	Removed       bool   `json:"removed"`
+}
+
 // DeleteOrganizationsOrgIDProvidersHookResponse is a JSON object of the Admin API.
 type DeleteOrganizationsOrgIDProvidersHookResponse struct {
 	ConfigVersion int64  `json:"config_version"`
@@ -2342,6 +2349,13 @@ type PostOrganizationsOrgIDOutpostsResponse struct {
 	Token         string `json:"token"`
 }
 
+// PostOrganizationsOrgIDOutpostsNameRotateResponse is a JSON object of the Admin API.
+type PostOrganizationsOrgIDOutpostsNameRotateResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Name          string `json:"name"`
+	Token         string `json:"token"`
+}
+
 // PostOrganizationsOrgIDProvidersHookRotateSecretResponse is a JSON object of the Admin API.
 type PostOrganizationsOrgIDProvidersHookRotateSecretResponse struct {
 	ConfigVersion int64  `json:"config_version"`
@@ -3499,6 +3513,17 @@ func (c *Client) DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMap(ctx conte
 func (c *Client) DeleteOrganizationsOrgIDMigrationSource(ctx context.Context, orgID string, opts ...Option) (*DeleteOrganizationsOrgIDMigrationSourceResponse, int64, error) {
 	var out DeleteOrganizationsOrgIDMigrationSourceResponse
 	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/migration-source", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// DeleteOrganizationsOrgIDOutpostsName is DELETE /admin/organizations/{orgID}/outposts/{name}:
+// Remove an outpost and its token. Needs organizations:write.
+func (c *Client) DeleteOrganizationsOrgIDOutpostsName(ctx context.Context, orgID string, name string, opts ...Option) (*DeleteOrganizationsOrgIDOutpostsNameResponse, int64, error) {
+	var out DeleteOrganizationsOrgIDOutpostsNameResponse
+	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/outposts/"+url.PathEscape(name), nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -4949,6 +4974,18 @@ func (c *Client) PostOrganizationsOrgIDMigrationSourceTest(ctx context.Context, 
 func (c *Client) PostOrganizationsOrgIDOutposts(ctx context.Context, orgID string, body PostOrganizationsOrgIDOutpostsRequest, opts ...Option) (*PostOrganizationsOrgIDOutpostsResponse, int64, error) {
 	var out PostOrganizationsOrgIDOutpostsResponse
 	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/outposts", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PostOrganizationsOrgIDOutpostsNameRotate is POST
+// /admin/organizations/{orgID}/outposts/{name}/rotate: Replace an outpost's token; the new one is
+// shown once and the old one stops at once. Needs organizations:write.
+func (c *Client) PostOrganizationsOrgIDOutpostsNameRotate(ctx context.Context, orgID string, name string, opts ...Option) (*PostOrganizationsOrgIDOutpostsNameRotateResponse, int64, error) {
+	var out PostOrganizationsOrgIDOutpostsNameRotateResponse
+	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/outposts/"+url.PathEscape(name)+"/rotate", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

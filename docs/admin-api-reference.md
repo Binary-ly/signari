@@ -45,7 +45,7 @@ refused with `412` when the configuration moved since the version it names.
 | [me](#me) | 1 |
 | [migration-source](#migration-source) | 4 |
 | [organizations](#organizations) | 4 |
-| [outposts](#outposts) | 3 |
+| [outposts](#outposts) | 5 |
 | [prompts](#prompts) | 3 |
 | [providers](#providers) | 5 |
 | [proxy-hosts](#proxy-hosts) | 3 |
@@ -2237,6 +2237,20 @@ Answers:
 | `name` | string | always |
 | `token` | string | always |
 
+### `DELETE /admin/organizations/{orgID}/outposts/{name}`
+
+Remove an outpost and its token. Needs organizations:write.
+
+Go `DeleteOrganizationsOrgIDOutpostsName`, TypeScript `deleteOrganizationsOrgIDOutpostsName`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `name` | string | always |
+| `removed` | boolean | always |
+
 ### `PATCH /admin/organizations/{orgID}/outposts/{name}`
 
 Take an outpost out of service or back, or set who may search through it. Needs organizations:write.
@@ -2258,6 +2272,20 @@ Answers:
 | `enabled` | boolean |  |
 | `name` | string | always |
 | `search_group` | string |  |
+
+### `POST /admin/organizations/{orgID}/outposts/{name}/rotate`
+
+Replace an outpost's token; the new one is shown once and the old one stops at once. Needs organizations:write.
+
+Go `PostOrganizationsOrgIDOutpostsNameRotate`, TypeScript `postOrganizationsOrgIDOutpostsNameRotate`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `name` | string | always |
+| `token` | string | always |
 
 ## prompts
 

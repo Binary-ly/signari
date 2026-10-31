@@ -317,9 +317,11 @@ var summaries = map[string]string{
 	"PATCH /admin/organizations/{orgID}/rac-connections/{slug}": "Take a connection out of service or back, or replace its guacd parameters.",
 
 	// Outposts (6.07).
-	"GET /admin/organizations/{orgID}/outposts":          "The organisation's outposts, when each was last heard from, never a token.",
-	"POST /admin/organizations/{orgID}/outposts":         "Register an outpost; its token is shown once.",
-	"PATCH /admin/organizations/{orgID}/outposts/{name}": "Take an outpost out of service or back, or set who may search through it.",
+	"GET /admin/organizations/{orgID}/outposts":                "The organisation's outposts, when each was last heard from, never a token.",
+	"POST /admin/organizations/{orgID}/outposts":               "Register an outpost; its token is shown once.",
+	"PATCH /admin/organizations/{orgID}/outposts/{name}":       "Take an outpost out of service or back, or set who may search through it.",
+	"DELETE /admin/organizations/{orgID}/outposts/{name}":      "Remove an outpost and its token.",
+	"POST /admin/organizations/{orgID}/outposts/{name}/rotate": "Replace an outpost's token; the new one is shown once and the old one stops at once.",
 
 	// Which groups an application is told of (6.07).
 	"GET /admin/clients/{clientID}/group-release":    "Which groups the application is told of in the groups claim.",

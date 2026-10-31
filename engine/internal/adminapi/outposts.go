@@ -162,6 +162,66 @@ func (s *Server) patchOutpost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// removeOutpost deletes a registration and its token, where PATCH keeps both.
+func (s *Server) removeOutpost(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID, name := r.PathValue("orgID"), r.PathValue("name")
+	if narrowedTokenRefused(w, r, outpostRefusal) {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
+			return err
+		}
+		if err := store.RemoveOutpost(ctx, tx, orgID, name); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.outpost_removed", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, Detail: map[string]any{"name": name}})
+	})
+	if s.writeOutpostFailure(w, err, orgID) {
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "removed": true, "config_version": version})
+}
+
+// rotateOutpost replaces an outpost's token and answers the new one, once. The
+// old one stops at once.
+func (s *Server) rotateOutpost(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID, name := r.PathValue("orgID"), r.PathValue("name")
+	if narrowedTokenRefused(w, r, outpostRefusal) {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	var token string
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
+			return err
+		}
+		var err error
+		if token, err = store.RotateOutpostToken(ctx, tx, orgID, name); err != nil {
+			return err
+		}
+		// Never the token.
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.outpost_rotated", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, Detail: map[string]any{"name": name}})
+	})
+	if s.writeOutpostFailure(w, err, orgID) {
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "token": token, "config_version": version})
+}
+
 // writeOutpostFailure answers a refused or failed outpost write, and reports
 // whether it wrote anything.
 func (s *Server) writeOutpostFailure(w http.ResponseWriter, err error, orgID string) bool {

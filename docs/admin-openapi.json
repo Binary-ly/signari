@@ -13080,6 +13080,113 @@
       }
     },
     "/admin/organizations/{orgID}/outposts/{name}": {
+      "delete": {
+        "operationId": "delete_organizations_orgID_outposts_name",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "removed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "removed",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Remove an outpost and its token."
+      },
       "patch": {
         "operationId": "patch_organizations_orgID_outposts_name",
         "parameters": [
@@ -13207,6 +13314,115 @@
           }
         ],
         "summary": "Take an outpost out of service or back, or set who may search through it."
+      }
+    },
+    "/admin/organizations/{orgID}/outposts/{name}/rotate": {
+      "post": {
+        "operationId": "post_organizations_orgID_outposts_name_rotate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "token": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "token",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Replace an outpost's token; the new one is shown once and the old one stops at once."
       }
     },
     "/admin/organizations/{orgID}/prompts": {

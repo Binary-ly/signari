@@ -18,8 +18,9 @@ signari outpost run -core https://auth.example.com \
   -tls-cert ldap.pem -tls-key ldap-key.pem -ldap-base-dn dc=example,dc=com
 ```
 
-The Admin API registers outposts, takes them out of service and sets their
-search group the same way under `/admin/organizations/{orgID}/outposts`; see
+The Admin API registers outposts, takes them out of service, rotates and removes
+them and sets their search group the same way under
+`/admin/organizations/{orgID}/outposts`; see
 [admin-api.md](admin-api.md).
 
 ## LDAPS
@@ -92,7 +93,21 @@ password correct for this user" as fast as the core answers. That is unavoidable
   carry only a password. See
   [a password alone, and a second factor](ldap.md#a-password-alone-and-a-second-factor).
 
-Revocation is immediate: `enabled = false` and the next bind is refused.
+## Taking one out of service
+
+```sh
+signari outpost disable -org <uuid> -name dmz-ldap   # refused from its next call; settings kept
+signari outpost enable  -org <uuid> -name dmz-ldap
+signari outpost rotate  -org <uuid> -name dmz-ldap   # a new token, once; the old one stops at once
+signari outpost remove  -org <uuid> -name dmz-ldap   # the registration and its token, for good
+```
+
+Each takes effect on the next call, and the same goes through the Admin API. A
+disabled outpost is answered `403 outpost_disabled`, a rotated or removed token
+`401` with `WWW-Authenticate: Bearer error="invalid_token"`. Neither is a wrong
+password to anybody behind the outpost: they are told the directory is unavailable,
+as they are in an outage. After a rotation the outpost answers nobody until it is
+restarted with the new token.
 
 ## It checks before it listens
 
@@ -110,11 +125,13 @@ is a user.
 ## An unreachable core is not a wrong password
 
 If the core cannot be reached, the outpost says so. It does not refuse the
-credential.
+credential: a bind or a search is answered `unavailable` (52), and a search does
+not come back empty.
 
 Answering "wrong password" during a network outage sends an entire office to
 reset passwords they typed correctly, which turns a five-minute outage into an
-afternoon.
+afternoon. Until November 2026 that is what a bind did: the outpost knew the
+difference and the directory in front of it did not.
 
 ## Liveness
 

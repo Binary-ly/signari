@@ -133,6 +133,38 @@ func SetOutpostEnabled(ctx context.Context, q outpostDB, orgID, name string, ena
 	return nil
 }
 
+// RemoveOutpost deletes a registration and its token (8.31). Disabling keeps the
+// settings for when the outpost comes back; this is for one that will not.
+func RemoveOutpost(ctx context.Context, q outpostDB, orgID, name string) error {
+	tag, err := q.Exec(ctx, `DELETE FROM core.outposts WHERE org_id = $1::uuid AND name = $2`, orgID, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrOutpostUnknown
+	}
+	return nil
+}
+
+// RotateOutpostToken replaces an outpost's token and returns the new one, the
+// one time it exists in the clear (8.31). The old one stops at once, so the
+// outpost has to be given the new one in the same change.
+func RotateOutpostToken(ctx context.Context, q outpostDB, orgID, name string) (string, error) {
+	token, hash, err := NewInvitationToken() // the same 32-byte shape
+	if err != nil {
+		return "", err
+	}
+	tag, err := q.Exec(ctx, `UPDATE core.outposts SET token_hash = $3
+		WHERE org_id = $1::uuid AND name = $2`, orgID, name, hash)
+	if err != nil {
+		return "", err
+	}
+	if tag.RowsAffected() == 0 {
+		return "", ErrOutpostUnknown
+	}
+	return token, nil
+}
+
 // Outpost is one registration, without its token, which is kept only hashed.
 type Outpost struct {
 	ID, Name, Kind string

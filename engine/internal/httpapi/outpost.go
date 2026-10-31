@@ -137,17 +137,27 @@ func (s *Server) outpostCall(w http.ResponseWriter, r *http.Request) (*outpostCa
 	// This instance's outposts (6.12): another's is answered here as a token
 	// that is not valid.
 	var c outpostCaller
+	var enabled bool
 	err := s.db.QueryRow(r.Context(), `
-		SELECT id::text, org_id::text, kind, name, COALESCE(search_group, '')
-		  FROM core.outposts WHERE token_hash = $1 AND enabled
+		SELECT id::text, org_id::text, kind, name, COALESCE(search_group, ''), enabled
+		  FROM core.outposts WHERE token_hash = $1
 		   AND `+store.OrgInService("org_id")+`
 		   AND `+store.InInstance("org_id", "$2"), sum[:], s.instanceID).
-		Scan(&c.ID, &c.OrgID, &c.Kind, &c.Name, &c.SearchGroup)
+		Scan(&c.ID, &c.OrgID, &c.Kind, &c.Name, &c.SearchGroup, &enabled)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			s.log.Error("looking up an outpost token", "err", err)
 		}
+		// The challenge is what tells this 401 from a refused password, which an
+		// outpost must not repeat to everybody behind it as their mistake.
+		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
 		writeError(w, http.StatusUnauthorized, "unauthorized", "that outpost token is not valid")
+		return nil, false
+	}
+	if !enabled {
+		// Whoever holds the token is told why, since nobody else gets this far: an
+		// operator reading "not valid" goes looking for a typo.
+		writeError(w, http.StatusForbidden, "outpost_disabled", "this outpost has been taken out of service")
 		return nil, false
 	}
 	id, kind := c.ID, c.Kind

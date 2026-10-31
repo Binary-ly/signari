@@ -204,6 +204,12 @@ export class SignariAdmin {
     return this.call<DeleteOrganizationsOrgIDMigrationSourceResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/migration-source`, undefined, opts)
   }
 
+  // DELETE /admin/organizations/{orgID}/outposts/{name}: Remove an outpost and its token. Needs
+  // organizations:write.
+  deleteOrganizationsOrgIDOutpostsName(orgID: string, name: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDOutpostsNameResponse>> {
+    return this.call<DeleteOrganizationsOrgIDOutpostsNameResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/outposts/${encodeURIComponent(name)}`, undefined, opts)
+  }
+
   // DELETE /admin/organizations/{orgID}/providers/{hook}: Remove a hook's provider; the decision
   // is made locally only. Needs organizations:write.
   deleteOrganizationsOrgIDProvidersHook(orgID: string, hook: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDProvidersHookResponse>> {
@@ -967,6 +973,12 @@ export class SignariAdmin {
     return this.call<PostOrganizationsOrgIDOutpostsResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/outposts`, body, opts)
   }
 
+  // POST /admin/organizations/{orgID}/outposts/{name}/rotate: Replace an outpost's token; the new
+  // one is shown once and the old one stops at once. Needs organizations:write.
+  postOrganizationsOrgIDOutpostsNameRotate(orgID: string, name: string, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDOutpostsNameRotateResponse>> {
+    return this.call<PostOrganizationsOrgIDOutpostsNameRotateResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/outposts/${encodeURIComponent(name)}/rotate`, undefined, opts)
+  }
+
   // POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret: Replace a provider's signing
   // secret, shown once. Needs organizations:write.
   postOrganizationsOrgIDProvidersHookRotateSecret(orgID: string, hook: string, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDProvidersHookRotateSecretResponse>> {
@@ -1429,6 +1441,13 @@ export interface DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse {
 /** A JSON object of the Admin API. */
 export interface DeleteOrganizationsOrgIDMigrationSourceResponse {
   config_version: number
+  removed: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteOrganizationsOrgIDOutpostsNameResponse {
+  config_version: number
+  name: string
   removed: boolean
 }
 
@@ -3472,6 +3491,13 @@ export interface PostOrganizationsOrgIDOutpostsResponse {
   config_version: number
   id: string
   kind: string
+  name: string
+  token: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDOutpostsNameRotateResponse {
+  config_version: number
   name: string
   token: string
 }

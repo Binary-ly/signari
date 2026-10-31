@@ -766,6 +766,11 @@ var opSchemas = map[string]opSchema{
 	"PATCH /admin/organizations/{orgID}/outposts/{name}": {http.StatusOK, typeOf[patchOutpostRequest](), object(
 		[]string{"name", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "enabled": boolean(),
 			"search_group": str()}))},
+	"DELETE /admin/organizations/{orgID}/outposts/{name}": {http.StatusOK, nil, object(
+		[]string{"name", "removed", "config_version"}, withVersion(map[string]jsonSchema{"name": str(),
+			"removed": boolean()}))},
+	"POST /admin/organizations/{orgID}/outposts/{name}/rotate": {http.StatusOK, nil, object(
+		[]string{"name", "token", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "token": str()}))},
 	"GET /admin/organizations/{orgID}/providers": {http.StatusOK, nil, object([]string{"org_id", "providers"},
 		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "hook", "url", "mode",
 			"timeout_ms", "enabled", "signed", "called", "allowed_claims"}, map[string]jsonSchema{

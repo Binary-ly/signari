@@ -983,6 +983,28 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
 		},
 		{
+			name: "DELETE /admin/organizations/{orgID}/outposts/{name}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, _, err := store.CreateOutpost(context.Background(), s.db, org, "drift", "radius", ""); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/outposts/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/outposts/{name}/rotate", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, _, err := store.CreateOutpost(context.Background(), s.db, org, "drift", "radius", ""); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/outposts/drift/rotate"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/providers/{hook}", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/providers/token_issue"

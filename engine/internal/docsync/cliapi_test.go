@@ -269,6 +269,8 @@ var cliAPI = map[string]string{
 	"outpost disable":      "PATCH /admin/organizations/{orgID}/outposts/{name}",
 	"outpost enable":       "PATCH /admin/organizations/{orgID}/outposts/{name}",
 	"outpost list":         reads,
+	"outpost remove":       "DELETE /admin/organizations/{orgID}/outposts/{name}",
+	"outpost rotate":       "POST /admin/organizations/{orgID}/outposts/{name}/rotate",
 	"outpost search-group": "PATCH /admin/organizations/{orgID}/outposts/{name}",
 	"outpost run":          cliOnly("runs an outpost, which holds no database credentials"),
 	"attester add":         "PUT /admin/organizations/{orgID}/attesters/{name}",

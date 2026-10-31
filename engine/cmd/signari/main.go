@@ -374,6 +374,8 @@ outposts and remote access:
   outpost run            run an LDAP outpost, which holds no database credentials
   outpost disable        refuse an outpost's token
   outpost enable         accept an outpost's token again
+  outpost rotate         give an outpost a new token, and stop the old one
+  outpost remove         delete an outpost and its token
   outpost search-group   whose members may search the directory through an LDAP outpost
   radius add-client      register a network device permitted to send Access-Requests
   radius list            show registered RADIUS clients
@@ -1712,6 +1714,10 @@ func run(args []string) (err error) {
 		return outpostSetEnabled(ctx, conn, *orgID, *name, false)
 	case "outpost enable":
 		return outpostSetEnabled(ctx, conn, *orgID, *name, true)
+	case "outpost rotate":
+		return outpostRotate(ctx, conn, *orgID, *name)
+	case "outpost remove":
+		return outpostRemove(ctx, conn, *orgID, *name)
 	case "invite create":
 		return inviteCreate(ctx, conn, *orgID, *email, *inviteGroups, *inviteTTL, *issuer, *inviteSend)
 	case "invite list":

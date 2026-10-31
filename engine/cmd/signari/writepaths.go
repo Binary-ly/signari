@@ -2775,6 +2775,60 @@ func outpostSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, name string, 
 	return nil
 }
 
+// outpostRotate gives an outpost a new token and prints it, once (8.31). The old
+// one stops at once, so a leaked token is dealt with by a command and not by
+// registering the outpost again under another name.
+func outpostRotate(ctx context.Context, conn *pgx.Conn, orgID, name string) error {
+	if orgID == "" || name == "" {
+		return fmt.Errorf("give -org and -name")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	token, err := store.RotateOutpostToken(ctx, tx, orgID, name)
+	if err != nil {
+		return outpostError(err, name, "", "")
+	}
+	// Never the token.
+	if err := audit.Write(ctx, tx, audit.Event{Type: "admin.outpost_rotated", OrgID: orgID,
+		Detail: map[string]any{"name": name, "via": "cli", "operator": cliOperator()}}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("outpost %s\n\n  SIGNARI_OUTPOST_TOKEN=%s\n\n", name, token)
+	fmt.Println("The token is shown once. The old one has stopped, so the outpost answers")
+	fmt.Println("nobody until it is restarted with this one.")
+	return nil
+}
+
+// outpostRemove deletes a registration and its token.
+func outpostRemove(ctx context.Context, conn *pgx.Conn, orgID, name string) error {
+	if orgID == "" || name == "" {
+		return fmt.Errorf("give -org and -name")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.RemoveOutpost(ctx, tx, orgID, name); err != nil {
+		return outpostError(err, name, "", "")
+	}
+	if err := audit.Write(ctx, tx, audit.Event{Type: "admin.outpost_removed", OrgID: orgID,
+		Detail: map[string]any{"name": name, "via": "cli", "operator": cliOperator()}}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("outpost %s and its token are gone\n", name)
+	return nil
+}
+
 // promptSetEnabled switches a sign-in prompt off, or back on (2.29). Off, it is
 // neither asked nor answerable; the answers already given are kept.
 func promptSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, enabled bool) error {

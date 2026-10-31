@@ -101,10 +101,12 @@ func (c *Client) Check(ctx context.Context) error {
 		_ = json.NewDecoder(resp.Body).Decode(&out)
 		c.origin, c.searchGroup = out.Name, out.SearchGroup
 		return nil
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case http.StatusForbidden:
+		return fmt.Errorf("the core has this outpost out of service: `signari outpost enable` puts "+
+			"it back (core said %s)", resp.Status)
+	case http.StatusUnauthorized:
 		return fmt.Errorf("the core refused this outpost token. It may have been "+
-			"revoked, or issued for a different protocol -- a token created for "+
-			"one protocol is not accepted for another (core said %s)", resp.Status)
+			"rotated or removed, or never issued by this core (core said %s)", resp.Status)
 	default:
 		return fmt.Errorf("the core answered %s", resp.Status)
 	}
@@ -261,7 +263,14 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 			return fmt.Errorf("%w: reading the core's answer: %w", ldapd.ErrUnavailable, err)
 		}
 		return nil
-	case http.StatusUnauthorized, http.StatusNotFound:
+	case http.StatusUnauthorized:
+		// Refused or rotated, the one word that tells them apart. A token the core
+		// has stopped taking is an outage to whoever is behind this outpost.
+		if strings.Contains(resp.Header.Get("WWW-Authenticate"), "invalid_token") {
+			return fmt.Errorf("%w: the core no longer takes this outpost's token", ldapd.ErrUnavailable)
+		}
+		return ErrRefused
+	case http.StatusNotFound:
 		return ErrRefused
 	case http.StatusBadRequest:
 		return errBadRequest

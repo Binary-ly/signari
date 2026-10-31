@@ -323,7 +323,3 @@ func parseEmailValue(raw json.RawMessage) (string, error) {
 	}
 	return "", fmt.Errorf("%s is not an email value", string(raw))
 }
-
-func ParseUserNameFilter(filter string) (string, error) {
-	return parseEqFilter(filter, "userName", "/Users")
-}

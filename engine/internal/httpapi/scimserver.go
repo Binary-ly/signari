@@ -202,17 +202,21 @@ func (s *Server) scimListUsers(w http.ResponseWriter, r *http.Request, src *stor
 		count = scimMaxPageSize
 	}
 
-	userName, err := scim.ParseUserNameFilter(q.Get("filter"))
+	filter, err := scim.ParseListFilter(q.Get("filter"))
 	if err != nil {
 		// RFC 7644 Table 9 (specs/rfc7644.txt:3821): invalidFilter, for "the
 		// specified attribute and filter comparison combination is not
-		// supported". Only `userName eq` is, until the full grammar (7.10); a
-		// bare 400 left a client unable to tell that from a broken request.
+		// supported". A bare 400 left a client unable to tell that from a broken
+		// request.
 		writeSCIMErrorType(w, http.StatusBadRequest, "invalidFilter", err.Error())
 		return
 	}
 
-	users, total, err := store.ListSCIMUsers(ctx, s.db, src.ID, userName, start, count)
+	users, total, err := store.ListSCIMUsers(ctx, s.db, src.ID, filter, start, count)
+	if errors.Is(err, store.ErrSCIMFilter) {
+		writeSCIMErrorType(w, http.StatusBadRequest, "invalidFilter", err.Error())
+		return
+	}
 	if err != nil {
 		s.log.Error("listing SCIM users", "err", err)
 		writeSCIMError(w, http.StatusInternalServerError, "unavailable")

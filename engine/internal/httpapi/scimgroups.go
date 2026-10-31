@@ -73,7 +73,7 @@ func (s *Server) scimListGroups(w http.ResponseWriter, r *http.Request, src *sto
 		count = scimMaxPageSize
 	}
 
-	displayName, err := scim.ParseDisplayNameFilter(q.Get("filter"))
+	filter, err := scim.ParseListFilter(q.Get("filter"))
 	if err != nil {
 		// RFC 7644 Table 9: invalidFilter covers "the specified attribute and
 		// filter comparison combination is not supported", so a client can tell
@@ -82,7 +82,11 @@ func (s *Server) scimListGroups(w http.ResponseWriter, r *http.Request, src *sto
 		return
 	}
 
-	groups, total, err := store.ListSCIMGroups(r.Context(), s.db, src, displayName, start, count)
+	groups, total, err := store.ListSCIMGroups(r.Context(), s.db, src, filter, start, count)
+	if errors.Is(err, store.ErrSCIMFilter) {
+		writeSCIMErrorType(w, http.StatusBadRequest, "invalidFilter", err.Error())
+		return
+	}
 	if err != nil {
 		s.log.Error("listing SCIM groups", "err", err)
 		writeSCIMError(w, http.StatusInternalServerError, "unavailable")

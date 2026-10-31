@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -231,7 +232,7 @@ func FindSCIMSourceByToken(ctx context.Context, db *pgxpool.Pool, hash []byte) (
 // startIndex is ONE-based, as SCIM requires. The offset conversion happens here,
 // once, rather than in each caller -- an off-by-one in this arithmetic drops the
 // first user of every page and looks like an intermittent sync failure.
-func ListSCIMUsers(ctx context.Context, db *pgxpool.Pool, sourceID, userNameFilter string,
+func ListSCIMUsers(ctx context.Context, db *pgxpool.Pool, sourceID string, filter *scim.Filter,
 	startIndex, count int) ([]SCIMUser, int, error) {
 
 	if startIndex < 1 {
@@ -239,12 +240,19 @@ func ListSCIMUsers(ctx context.Context, db *pgxpool.Pool, sourceID, userNameFilt
 	}
 	offset := startIndex - 1
 
+	cond, err := scimFilterSQL(filter, scimUserAttrs, scimUserSchema, 2)
+	if err != nil {
+		return nil, 0, err
+	}
+	matching := `core.scim_source_links l`
+	if cond.person {
+		matching += ` JOIN core.users u ON u.id = l.user_id`
+	}
+	matching += ` WHERE l.source_id = $1::uuid AND ` + cond.where
+	args := append([]any{sourceID}, cond.args...)
+
 	var total int
-	if err := db.QueryRow(ctx, `
-		SELECT count(*) FROM core.scim_source_links l
-		WHERE l.source_id = $1::uuid
-		  AND ($2 = '' OR lower(l.user_name) = lower($2))`,
-		sourceID, userNameFilter).Scan(&total); err != nil {
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM `+matching, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -259,18 +267,16 @@ func ListSCIMUsers(ctx context.Context, db *pgxpool.Pool, sourceID, userNameFilt
 	// in ListSCIMGroups.
 	rows, err := db.Query(ctx, `
 		WITH page AS (
-			SELECT external_id FROM core.scim_source_links
-			WHERE source_id = $1::uuid
-			  AND ($2 = '' OR lower(user_name) = lower($2))
-			ORDER BY created_at, external_id
-			LIMIT $3 OFFSET $4)
+			SELECT l.external_id FROM `+matching+`
+			ORDER BY l.created_at, l.external_id
+			LIMIT $`+strconv.Itoa(len(args)+1)+` OFFSET $`+strconv.Itoa(len(args)+2)+`)
 		SELECT l.resource_id::text, l.external_id, l.user_id::text, l.user_name,
 		       l.display_name, COALESCE(u.email,''),
 		       u.status = 'active', l.created_at, l.updated_at
 		FROM page
 		JOIN core.scim_source_links l ON l.source_id = $1::uuid AND l.external_id = page.external_id
 		JOIN core.users u ON u.id = l.user_id
-		ORDER BY l.created_at, l.external_id`, sourceID, userNameFilter, count, offset)
+		ORDER BY l.created_at, l.external_id`, append(args, count, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}

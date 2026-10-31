@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -296,13 +297,17 @@ func membersOf(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 // page's rows reach the join: a deep page used to sort the collection and join
 // every row it skipped.
 func ListSCIMGroups(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
-	displayName string, start, count int) ([]SCIMGroup, int, error) {
+	filter *scim.Filter, start, count int) ([]SCIMGroup, int, error) {
+
+	cond, err := scimFilterSQL(filter, scimGroupAttrs, scimGroupSchema, 2)
+	if err != nil {
+		return nil, 0, err
+	}
+	matching := `core.scim_source_group_links l WHERE l.source_id = $1::uuid AND ` + cond.where
+	args := append([]any{src.ID}, cond.args...)
 
 	var total int
-	if err := db.QueryRow(ctx, `
-		SELECT count(*) FROM core.scim_source_group_links
-		WHERE source_id = $1::uuid AND ($2 = '' OR display_name = $2)`,
-		src.ID, displayName).Scan(&total); err != nil {
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM `+matching, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	if count == 0 {
@@ -311,16 +316,15 @@ func ListSCIMGroups(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 
 	rows, err := db.Query(ctx, `
 		WITH page AS (
-			SELECT external_id FROM core.scim_source_group_links
-			WHERE source_id = $1::uuid AND ($2 = '' OR display_name = $2)
-			ORDER BY created_at, external_id
-			OFFSET $3 LIMIT $4)
+			SELECT l.external_id FROM `+matching+`
+			ORDER BY l.created_at, l.external_id
+			OFFSET $`+strconv.Itoa(len(args)+1)+` LIMIT $`+strconv.Itoa(len(args)+2)+`)
 		SELECT l.resource_id::text, l.external_id, l.group_id::text,
 		       g.name, l.display_name, l.created_at, l.updated_at
 		FROM page
 		JOIN core.scim_source_group_links l ON l.source_id = $1::uuid AND l.external_id = page.external_id
 		JOIN core.groups g ON g.id = l.group_id
-		ORDER BY l.created_at, l.external_id`, src.ID, displayName, start-1, count)
+		ORDER BY l.created_at, l.external_id`, append(args, start-1, count)...)
 	if err != nil {
 		return nil, 0, err
 	}

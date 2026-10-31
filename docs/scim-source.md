@@ -194,14 +194,38 @@ which is why `/Groups` entered `/ResourceTypes` only when it was implemented,
 and why `ResourceTypes` now counts its own list rather than carrying a number
 beside it that can drift.
 
-Filtering supports exactly `userName eq "..."` on `/Users` and
-`displayName eq "..."` on `/Groups`, which is what both upstreams
-send before every create. Anything else is a **400** with `scimType`
-`invalidFilter` (RFC 7644 Table 9), not an ignored parameter: ignoring an
-unrecognised filter returns the whole directory, and a caller reading the first
-result would then match the wrong person. The value is exactly one quoted
-string, so `userName eq "a" or userName eq "b"` is refused rather than read as a
-search for one user with an odd name, which matched nobody and invited a
+A list takes a filter in RFC 7644's grammar: `and`, `or`, `not`, brackets, and
+every operator of its Table 3, over what the two resources return. `totalResults`
+counts what matched.
+
+| Resource | Attribute | Compared | Operators |
+|---|---|---|---|
+| Both | `id` | as an id | `eq` `ne` `pr` |
+| Both | `externalId` | as stored | all |
+| Both | `displayName` | ignoring case | all |
+| Both | `meta.created`, `meta.lastModified` | to the second | `eq` `ne` `gt` `ge` `lt` `le` `pr` |
+| User | `userName`, `emails.value` | ignoring case | all |
+| User | `active` | as a boolean | `eq` `ne` `pr` |
+| User | `emails` | | `pr` |
+| Group | `members` | | `pr` |
+| Group | `members.value` | a member's id | `eq` `pr` |
+
+`/Schemas` says the same: `externalId` is `caseExact`, because an upstream's
+identifier is opaque and two that differ by case are two people. An attribute may
+be written with its schema. A person with no address is not equal to any address
+and `eq null` finds them. `id eq` something that is not one of ours finds nobody,
+since an upstream may hold ids from elsewhere. `co`, `sw` and `ew` take the value
+as text, so `%` is a percent sign.
+
+Anything else is a **400** with `scimType` `invalidFilter` (RFC 7644 Table 9),
+not an ignored parameter: ignoring an unrecognised filter returns the whole
+directory, and a caller reading the first result would then match the wrong
+person. That covers an attribute this engine does not store, even negated,
+because read as absent `not (nickName eq "x")` would match everybody; a value of
+the wrong type; `gt` on a boolean; a value path such as `emails[type eq "work"]`;
+and a filter of more than 256 terms. A value is JSON, so a string is quoted and
+`userName eq "a" or userName eq "b"` is two comparisons, where it used to be read
+as a search for one user with an odd name, which matched nobody and invited a
 duplicate create.
 
 ## Verified against a running engine

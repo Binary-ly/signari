@@ -54,6 +54,11 @@ func attr(name, typ string, multi bool, opts ...func(map[string]any)) map[string
 func required(a map[string]any)     { a["required"] = true }
 func readOnly(a map[string]any)     { a["mutability"] = "readOnly" }
 func serverUnique(a map[string]any) { a["uniqueness"] = "server" }
+
+// caseExact says what a filter does (specs/rfc7644.txt:1216, it "SHALL be
+// determined by the attribute's "caseExact" characteristic"). An upstream's
+// identifier is opaque and matched as stored: `ab` and `AB` are two people.
+func caseExact(a map[string]any) { a["caseExact"] = true }
 func subAttrs(subs ...map[string]any) func(map[string]any) {
 	return func(a map[string]any) { a["subAttributes"] = subs }
 }
@@ -67,7 +72,7 @@ func scimSchemaDefinitions() []map[string]any {
 			"description": "User Account",
 			"attributes": []map[string]any{
 				attr("userName", "string", false, required, serverUnique),
-				attr("externalId", "string", false),
+				attr("externalId", "string", false, caseExact),
 				attr("displayName", "string", false),
 				attr("active", "boolean", false),
 				attr("emails", "complex", true, subAttrs(
@@ -87,7 +92,7 @@ func scimSchemaDefinitions() []map[string]any {
 			"description": "Group",
 			"attributes": []map[string]any{
 				attr("displayName", "string", false, required),
-				attr("externalId", "string", false),
+				attr("externalId", "string", false, caseExact),
 				attr("members", "complex", true, subAttrs(
 					attr("value", "string", false),
 					attr("display", "string", false, readOnly),

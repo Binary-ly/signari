@@ -137,13 +137,36 @@ var comparisonOps = map[string]bool{
 	"gt": true, "lt": true, "ge": true, "le": true,
 }
 
+// maxFilterTokens bounds a filter, whose nesting is recursion here and whose
+// every term is a condition in a query. A request line can carry a megabyte, and
+// no upstream's question takes more than a few terms.
+const maxFilterTokens = 256
+
 // parseFilter reads a value filter.
 func parseFilter(s string) (*Filter, error) {
+	return readFilter(s, false)
+}
+
+// ParseListFilter reads the filter of a list request, nil when there is none.
+//
+// As RFC 7644 Figure 1 writes it (specs/rfc7644.txt:1127): an attribute is a
+// name and a value is JSON, so `userName eq bjensen` is refused. The value filter
+// of a PATCH path takes those from what upstreams send, and a list filter has no
+// such history. A value's type and an attribute's existence are the store's to
+// judge, since they depend on the resource.
+func ParseListFilter(s string) (*Filter, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	return readFilter(s, true)
+}
+
+func readFilter(s string, strict bool) (*Filter, error) {
 	toks, err := tokenizeFilter(s)
 	if err != nil {
 		return nil, err
 	}
-	p := &filterParser{toks: toks}
+	p := &filterParser{toks: toks, strict: strict}
 	f, err := p.parseOr()
 	if err != nil {
 		return nil, err
@@ -163,6 +186,9 @@ func tokenizeFilter(s string) ([]token, error) {
 	var out []token
 	i := 0
 	for i < len(s) {
+		if len(out) >= maxFilterTokens {
+			return nil, fmt.Errorf("the filter has more than %d terms", maxFilterTokens)
+		}
 		switch c := s[i]; {
 		case c == ' ' || c == '\t':
 			i++
@@ -171,23 +197,23 @@ func tokenizeFilter(s string) ([]token, error) {
 			i++
 		case c == '"':
 			j := i + 1
-			var b strings.Builder
-			for j < len(s) {
-				if s[j] == '\\' && j+1 < len(s) {
-					b.WriteByte(s[j+1])
-					j += 2
-					continue
+			for j < len(s) && s[j] != '"' {
+				if s[j] == '\\' {
+					j++
 				}
-				if s[j] == '"' {
-					break
-				}
-				b.WriteByte(s[j])
 				j++
 			}
 			if j >= len(s) {
 				return nil, fmt.Errorf("unterminated string in filter")
 			}
-			out = append(out, token{text: b.String(), quoted: true})
+			// JSON's rules (Figure 1's compValue), and not only its quotes: a
+			// unicode escape is the character it names, and was read as the
+			// letter u and four digits.
+			var text string
+			if err := json.Unmarshal([]byte(s[i:j+1]), &text); err != nil {
+				return nil, fmt.Errorf("%s is not a JSON string", s[i:j+1])
+			}
+			out = append(out, token{text: text, quoted: true})
 			i = j + 1
 		default:
 			j := i
@@ -205,8 +231,9 @@ func tokenizeFilter(s string) ([]token, error) {
 }
 
 type filterParser struct {
-	toks []token
-	pos  int
+	toks   []token
+	pos    int
+	strict bool
 }
 
 func (p *filterParser) peek() (token, bool) {
@@ -288,6 +315,9 @@ func (p *filterParser) parseComparison() (*Filter, error) {
 	if !ok {
 		return nil, fmt.Errorf("filter ended where an attribute was expected")
 	}
+	if p.strict && attrTok.quoted {
+		return nil, fmt.Errorf("%q is a value where an attribute was expected", attrTok.text)
+	}
 	p.pos++
 	opTok, ok := p.peek()
 	if !ok {
@@ -295,17 +325,23 @@ func (p *filterParser) parseComparison() (*Filter, error) {
 	}
 	p.pos++
 	op := strings.ToLower(opTok.text)
+	if opTok.quoted {
+		return nil, fmt.Errorf("%q is a value where an operator was expected", opTok.text)
+	}
 
 	// `pr` is unary: "attribute is present". No comparand follows.
 	if op == "pr" {
 		return &Filter{Op: "pr", Attr: strings.ToLower(attrTok.text)}, nil
 	}
 	if !comparisonOps[op] {
-		return nil, fmt.Errorf("unknown filter operator %q", opTok.text)
+		return nil, fmt.Errorf("the operator %q is not supported", opTok.text)
 	}
 	valTok, ok := p.peek()
 	if !ok {
 		return nil, fmt.Errorf("filter operator %q has no value", op)
+	}
+	if p.strict && !valTok.quoted && !json.Valid([]byte(valTok.text)) {
+		return nil, fmt.Errorf("%q is not a value: a string is quoted", valTok.text)
 	}
 	p.pos++
 	return &Filter{Op: op, Attr: strings.ToLower(attrTok.text),

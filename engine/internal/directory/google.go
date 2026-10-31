@@ -287,6 +287,8 @@ func (g *GoogleSource) groupEmails(ctx context.Context, token, userKey string) (
 const (
 	ScopeDirectoryRead  = "https://www.googleapis.com/auth/admin.directory.user.readonly"
 	ScopeDirectoryWrite = "https://www.googleapis.com/auth/admin.directory.user"
+	// ScopeGroupWrite is asked for only by a group operation.
+	ScopeGroupWrite = "https://www.googleapis.com/auth/admin.directory.group"
 )
 
 // GoogleToken exchanges a service account assertion for a bearer token.

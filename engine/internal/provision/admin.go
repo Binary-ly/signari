@@ -43,9 +43,6 @@ var (
 	ErrTargetUnknown = errors.New("no provisioning target of that slug in the organisation")
 	// ErrTargetDisabled is a target taken out of service.
 	ErrTargetDisabled = errors.New("that target is disabled")
-	// ErrTargetNotSCIM is a group operation on a target written through its
-	// own API: group provisioning speaks SCIM.
-	ErrTargetNotSCIM = errors.New("that target is not a SCIM one; group provisioning speaks SCIM")
 	// ErrTargetDryRun is a group operation on a target that records without
 	// sending: a group cannot be created in a mode that sends nothing.
 	ErrTargetDryRun = errors.New("that target is in dry-run mode, which records without sending; " +
@@ -571,7 +568,10 @@ func syncGroups(ctx context.Context, db DB, t scim.Target, hc *http.Client, appl
 	}
 
 	var out []GroupChange
-	client := scim.NewClient(t, hc)
+	client, err := groupsAt(t, hc)
+	if err != nil {
+		return nil, err
+	}
 	for _, g := range groups {
 		// Who should be in it: our members who have an account at this
 		// target. One without is provisioned by the pass above, and the next
@@ -580,14 +580,14 @@ func syncGroups(ctx context.Context, db DB, t scim.Target, hc *http.Client, appl
 		if err != nil {
 			return out, err
 		}
-		remote, gerr := client.GetGroup(ctx, g.remoteID)
+		remote, gerr := client.GroupMembers(ctx, g.remoteID)
 		if gerr != nil {
 			out = append(out, GroupChange{Name: g.name, Unreadable: gerr.Error()})
 			continue
 		}
 		have := map[string]bool{}
-		for _, m := range remote.Members {
-			have[m.Value] = true
+		for _, m := range remote {
+			have[m] = true
 		}
 		var toAdd, toRemove []string
 		for id := range want {
@@ -610,10 +610,10 @@ func syncGroups(ctx context.Context, db DB, t scim.Target, hc *http.Client, appl
 			out = append(out, change)
 			continue
 		}
-		if err := client.AddMembers(ctx, g.remoteID, toAdd); err != nil {
+		if err := client.AddGroupMembers(ctx, g.remoteID, toAdd); err != nil {
 			return out, fmt.Errorf("adding members to %q at %s: %w", g.name, t.Slug, err)
 		}
-		if err := client.RemoveMembers(ctx, g.remoteID, toRemove); err != nil {
+		if err := client.RemoveGroupMembers(ctx, g.remoteID, toRemove); err != nil {
 			return out, fmt.Errorf("removing members from %q at %s: %w", g.name, t.Slug, err)
 		}
 		// Recorded only after both calls succeeded: a timestamp written on a
@@ -651,7 +651,7 @@ func remoteMembers(ctx context.Context, db DB, targetID, groupID string) (map[st
 }
 
 // TargetForGroups loads the organisation's target for a group operation,
-// refusing one that is unknown, disabled, not SCIM, or in dry-run mode: dry
+// refusing one that is unknown, disabled, or in dry-run mode: dry
 // run is refused rather than honoured by doing nothing, which would report
 // success for a group that was never created. Through store.LoadSCIMTargets,
 // the one loader that knows the token column is sealed.
@@ -675,9 +675,6 @@ func TargetForGroups(ctx context.Context, db DB, root *keys.RootKey, orgID, slug
 		return zero, ErrTargetUnknown
 	}
 	t := targets[0]
-	if t.Kind != "" && t.Kind != "scim" {
-		return zero, ErrTargetNotSCIM
-	}
 	if t.DryRun {
 		return zero, ErrTargetDryRun
 	}
@@ -701,8 +698,12 @@ func ProvisionGroup(ctx context.Context, db DB, t scim.Target, hc *http.Client, 
 	if displayName == "" {
 		displayName = group
 	}
+	client, err := groupsAt(t, hc)
+	if err != nil {
+		return "", err
+	}
 	var existing string
-	err := db.QueryRow(ctx, `SELECT remote_id FROM core.scim_group_links
+	err = db.QueryRow(ctx, `SELECT remote_id FROM core.scim_group_links
 		WHERE target_id = $1::uuid AND group_id = $2::uuid`, t.ID, groupID).Scan(&existing)
 	if err == nil {
 		return existing, ErrGroupProvisioned
@@ -712,8 +713,7 @@ func ProvisionGroup(ctx context.Context, db DB, t scim.Target, hc *http.Client, 
 	}
 	// externalId carries OUR group id, so somebody at the far end can tell
 	// which of their groups this system owns, through a rename on either side.
-	client := scim.NewClient(t, hc)
-	remoteID, err := client.CreateGroup(ctx, scim.Group{DisplayName: displayName, ExternalID: groupID})
+	remoteID, err := client.CreateGroup(ctx, Group{Name: group, DisplayName: displayName, ExternalID: groupID})
 	if err != nil {
 		return "", fmt.Errorf("creating %q at %s: %w", displayName, t.Slug, err)
 	}
@@ -742,7 +742,10 @@ func DeprovisionGroup(ctx context.Context, db DB, t scim.Target, hc *http.Client
 		}
 		return "", err
 	}
-	client := scim.NewClient(t, hc)
+	client, err := groupsAt(t, hc)
+	if err != nil {
+		return remoteID, err
+	}
 	if err := client.DeleteGroup(ctx, remoteID); err != nil {
 		return remoteID, fmt.Errorf("deleting %s at %s: %w; the link is kept, so nothing here has forgotten "+
 			"the group -- fix the target and try again", remoteID, t.Slug, err)

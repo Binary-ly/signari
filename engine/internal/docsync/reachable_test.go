@@ -74,8 +74,8 @@ var mustBeReachable = []capability{
 		"cannot authenticate anybody"},
 	{"SetMigrationSource", "nothing can configure the old provider, so delegated " +
 		"verification is built, tested and switched off everywhere"},
-	{"AddMembers", "group membership is provisioned to no target"},
-	{"RemoveMembers", "somebody removed from a group keeps their access at every " +
+	{"AddGroupMembers", "group membership is provisioned to no target"},
+	{"RemoveGroupMembers", "somebody removed from a group keeps their access at every " +
 		"provisioned target"},
 	{"DeleteGroup", "a group provisioned to a target can never be removed from it, " +
 		"so deprovisioning is one-way"},

@@ -694,8 +694,6 @@ func scimTargetForGroups(ctx context.Context, conn *pgx.Conn, givenOrg, slug str
 	switch {
 	case errors.Is(err, provision.ErrTargetDisabled):
 		return zero, fmt.Errorf("%s is disabled", slug)
-	case errors.Is(err, provision.ErrTargetNotSCIM):
-		return zero, fmt.Errorf("%s is not a SCIM target; group provisioning here speaks SCIM", slug)
 	case errors.Is(err, provision.ErrTargetDryRun):
 		return zero, fmt.Errorf("%s is in dry-run mode, which records without sending. "+
 			"A group cannot be created in a mode that sends nothing; take the target out "+

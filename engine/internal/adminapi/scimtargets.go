@@ -461,8 +461,7 @@ func (s *Server) writeSCIMTargetFailure(w http.ResponseWriter, err error, orgID 
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "already_exists", "detail": err.Error()})
 	case errors.Is(err, provision.ErrTargetUnknown), errors.Is(err, store.ErrSCIMTargetUnknown):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "target_not_found"})
-	case errors.Is(err, provision.ErrTargetDisabled), errors.Is(err, provision.ErrTargetNotSCIM),
-		errors.Is(err, provision.ErrTargetDryRun):
+	case errors.Is(err, provision.ErrTargetDisabled), errors.Is(err, provision.ErrTargetDryRun):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "target_unavailable", "detail": err.Error()})
 	case errors.Is(err, provision.ErrGroupUnknown), errors.Is(err, store.ErrScopeGroupUnknown):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "group_not_found"})

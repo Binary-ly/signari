@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,6 +43,8 @@ type Google struct {
 
 	token   string
 	expires time.Time
+	// scope is what a token asks for; empty is users alone.
+	scope string
 }
 
 func (g *Google) base() string {
@@ -65,8 +68,11 @@ func (g *Google) bearer(ctx context.Context) (string, error) {
 	if g.token != "" && time.Now().Before(g.expires) {
 		return g.token, nil
 	}
-	tok, err := directory.GoogleToken(ctx, g.Creds, g.Impersonate,
-		directory.ScopeDirectoryWrite, g.client())
+	scope := g.scope
+	if scope == "" {
+		scope = directory.ScopeDirectoryWrite
+	}
+	tok, err := directory.GoogleToken(ctx, g.Creds, g.Impersonate, scope, g.client())
 	if err != nil {
 		return "", err
 	}
@@ -210,6 +216,9 @@ func (g *Google) ListUsers(ctx context.Context, pageSize int) ([]User, error) {
 	}
 }
 
+// errGoogleNotFound is a 404, which a removal can stop at.
+var errGoogleNotFound = errors.New("404 Not Found")
+
 func (g *Google) call(ctx context.Context, method, path string, body, out any) error {
 	tok, err := g.bearer(ctx)
 	if err != nil {
@@ -237,6 +246,9 @@ func (g *Google) call(ctx context.Context, method, path string, body, out any) e
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("google admin API %s %s: %w", method, path, errGoogleNotFound)
+	}
 	if resp.StatusCode >= 400 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("google admin API %s %s: %s: %s",

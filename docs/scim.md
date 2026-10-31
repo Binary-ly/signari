@@ -115,6 +115,23 @@ Internal targets often sit behind a private CA, and the alternative operators
 reach for is disabling verification entirely. It *adds* to the system pool, so
 trusting an internal CA does not stop public targets from verifying.
 
+## Groups at Entra and Google
+
+A group is provisioned to an Entra or Google target exactly as to a SCIM one: created
+when you ask, its members followed by every sync, and only ever a group this
+deployment made, never one matched by name. Both need more than user provisioning:
+
+| Target | Needs | Created as |
+|---|---|---|
+| Entra | `Group.ReadWrite.All` on the application registration | A security group, not mail-enabled. Its description names it as managed here |
+| Google | The `admin.directory.group` scope on the service account's delegation, asked for only by group calls, so user provisioning keeps working where it is not granted | `<name>@<domain>`, the group's name made fit for an address |
+
+A group whose name has nothing an address can hold, such as one written wholly in
+another script, is refused rather than sent. Group members are added one request at
+a time, so a first sync of a large group takes a request a person.
+
+This has been run against faithful fakes of both APIs and not against a real tenant.
+
 ## A target that issues its own tokens
 
 A target that takes OAuth 2.0 client credentials instead of a long-lived bearer

@@ -25,10 +25,13 @@ type RACConnection struct {
 	Host     string `yaml:"host"`
 	// Port is the protocol's own when absent.
 	Port int `yaml:"port,omitempty"`
-	// Login and Password are compared and replaced together, each by
-	// reference; neither leaves what the connection holds.
-	Login    *SecretRef `yaml:"login,omitempty"`
-	Password *SecretRef `yaml:"password,omitempty"`
+	// Login, Password, PrivateKey and Passphrase are compared and replaced together,
+	// each by reference; none leaves what the connection holds. The key and its
+	// passphrase are for an ssh connection.
+	Login      *SecretRef `yaml:"login,omitempty"`
+	Password   *SecretRef `yaml:"password,omitempty"`
+	PrivateKey *SecretRef `yaml:"private_key,omitempty"`
+	Passphrase *SecretRef `yaml:"passphrase,omitempty"`
 	// RequireGroup limits it to one group's members, "" to everybody in the
 	// organisation; RecordingPath is where guacd records its sessions, ""
 	// for nowhere. Each left as it is when absent.
@@ -45,28 +48,39 @@ type RACConnection struct {
 
 func (w RACConnection) at() string { return "rac_connections[" + w.Slug + "]" }
 
-// credentials are the login and password the file names, resolved; nil when
-// it names neither.
+// credentials are what the file names, resolved; nil when it names none of them.
 func (w RACConnection) credentials() *store.RACCredentials {
-	if w.Login == nil && w.Password == nil {
+	if w.Login == nil && w.Password == nil && w.PrivateKey == nil && w.Passphrase == nil {
 		return nil
 	}
 	var c store.RACCredentials
-	if w.Login != nil {
-		c.Login = w.Login.value
-	}
-	if w.Password != nil {
-		c.Password = w.Password.value
+	for _, r := range []struct {
+		ref  *SecretRef
+		into *string
+	}{{w.Login, &c.Login}, {w.Password, &c.Password}, {w.PrivateKey, &c.PrivateKey}, {w.Passphrase, &c.Passphrase}} {
+		if r.ref != nil {
+			*r.into = r.ref.value
+		}
 	}
 	return &c
 }
 
+// references are the secrets the file names for this connection.
+func (w RACConnection) references() []secretAt {
+	var named []secretAt
+	for _, r := range []secretAt{{"login", w.Login}, {"password", w.Password}, {"private_key", w.PrivateKey},
+		{"passphrase", w.Passphrase}} {
+		if r.ref != nil {
+			named = append(named, secretAt{w.at() + "." + r.where, r.ref})
+		}
+	}
+	return named
+}
+
 func (w RACConnection) source() string {
 	var from []string
-	for _, r := range []*SecretRef{w.Login, w.Password} {
-		if r != nil {
-			from = append(from, r.String())
-		}
+	for _, r := range w.references() {
+		from = append(from, r.ref.String())
 	}
 	return strings.Join(from, " and ")
 }
@@ -102,11 +116,11 @@ func (racSection) validate(f *File, add func(string, ...any)) {
 		if err := store.CheckRACLimits(w.MaxConnections, w.MaxDurationSeconds); err != nil {
 			add("%s: %v", w.at(), err)
 		}
-		if w.Login != nil {
-			w.Login.check(w.at()+".login", add)
+		for _, r := range w.references() {
+			r.ref.check(r.where, add)
 		}
-		if w.Password != nil {
-			w.Password.check(w.at()+".password", add)
+		if (w.PrivateKey != nil || w.Passphrase != nil) && w.Protocol != "ssh" {
+			add("%s: %v", w.at(), store.ErrRACKey)
 		}
 	}
 }
@@ -123,14 +137,9 @@ func (racSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, pr
 	held := keyBy(have, func(c store.RACListing) string { return c.Slug })
 	var groups []string
 	for _, w := range f.RACConnections {
-		for _, r := range []struct {
-			ref   *SecretRef
-			where string
-		}{{w.Login, w.at() + ".login"}, {w.Password, w.at() + ".password"}} {
-			if r.ref != nil {
-				if _, err := r.ref.secret(r.where); err != nil {
-					return err
-				}
+		for _, r := range w.references() {
+			if _, err := r.ref.secret(r.where); err != nil {
+				return err
 			}
 		}
 		if w.RequireGroup != nil && *w.RequireGroup != "" {
@@ -227,7 +236,7 @@ func (racSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p
 		if c.Action == "create" {
 			spec := store.RACSpec{Slug: w.Slug, Name: w.Name, Protocol: w.Protocol, Host: w.Host, Port: w.Port}
 			if creds := w.credentials(); creds != nil {
-				spec.Login, spec.Password = creds.Login, creds.Password
+				spec.RACCredentials = *creds
 			}
 			if w.RequireGroup != nil {
 				spec.RequireGroup = *w.RequireGroup

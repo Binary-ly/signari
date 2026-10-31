@@ -1,6 +1,7 @@
 package rac_test
 
 import (
+	"io"
 	"strings"
 	"testing"
 
@@ -21,6 +22,25 @@ import (
 // from a page that renders, validates and looks completely normal; what happens
 // is a black rectangle, which is the one symptom this viewer was written to
 // avoid ever showing without an explanation.
+// What the viewer asks of the vendored library is in the version vendored (8.28).
+// Whether the form works is a matter of looking at it, in the harness at /prompt;
+// this catches an upgrade that renames what the form depends on, which would leave a
+// connection holding no credentials with no way to be opened and nothing on screen.
+func TestTheViewerUsesWhatTheLibraryOffers(t *testing.T) {
+	library, err := io.ReadAll(rac.LibraryJS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"onrequired", "createArgumentValueStream", "StringWriter"} {
+		if !strings.Contains(rac.ClientJS, name) {
+			t.Errorf("the viewer no longer uses %s, so a connection holding no credentials asks nobody", name)
+		}
+		if !strings.Contains(string(library), name) {
+			t.Errorf("the vendored library has no %s", name)
+		}
+	}
+}
+
 func TestTheViewerMarkupHoldsItsContractWithTheScript(t *testing.T) {
 	set, problems, err := pages.Load("")
 	if err != nil {

@@ -256,11 +256,15 @@ rac_connections:              # machines reached through the browser
     protocol: ssh             # rdp, vnc or ssh; fixed once made
     host: build.internal
     port: 22                  # the protocol's own when left out
-    login: {env: BUILD_LOGIN}         # both by reference, compared together
+    login: {env: BUILD_LOGIN}         # each by reference, compared together
     password: {env: BUILD_PASSWORD}   # left out: the connection keeps what it holds
+    private_key: {file: deploy.pem}   # ssh only, a PEM key
+    passphrase: {env: DEPLOY_KEY_PASSPHRASE}
     require_group: platform   # "" for everybody in the organisation
     recording_path: /var/lib/guacd/recordings/build
     parameters: {font-size: "12"}
+    max_connections: 2        # how many at once, 0 for no limit
+    max_duration_seconds: 28800   # how long one session lasts, 0 for no limit
 
 identity_providers:           # where people sign in from
   - slug: github              # the sign-in URL /login/with/github

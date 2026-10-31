@@ -8,6 +8,7 @@ import (
 
 	"signari.dev/engine/internal/config"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/store"
 )
 
 // localSecret reads a secret the configuration file at configPath names by
@@ -53,6 +54,33 @@ func localSecret(configPath string) func(config.SecretRef) (string, error) {
 		// One trailing newline is how a file of one line ends, not part of it.
 		return strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r"), nil
 	}
+}
+
+// racCredentials reads what a connection signs in with from files. A file and
+// never a flag, because a flag is on the command line, and that can be read by
+// anybody on the machine for as long as the command runs. An empty file is refused:
+// it would register a connection that asks for the password somebody meant it to
+// hold.
+func racCredentials(login, passwordFile, keyFile, passphraseFile string) (store.RACCredentials, error) {
+	read := localSecret(".")
+	c := store.RACCredentials{Login: login}
+	for _, f := range []struct {
+		path string
+		into *string
+	}{{passwordFile, &c.Password}, {keyFile, &c.PrivateKey}, {passphraseFile, &c.Passphrase}} {
+		if f.path == "" {
+			continue
+		}
+		value, err := read(config.SecretRef{File: f.path})
+		if err != nil {
+			return c, err
+		}
+		if value == "" {
+			return c, fmt.Errorf("%s is empty", f.path)
+		}
+		*f.into = value
+	}
+	return c, nil
 }
 
 // rootKeyIfGiven is the root key when this process is given one, and nil

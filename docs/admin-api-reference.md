@@ -2441,8 +2441,10 @@ Takes:
 | `host` | string |  |
 | `login` | string |  |
 | `name` | string |  |
+| `passphrase` | string |  |
 | `password` | string |  |
 | `port` | integer |  |
+| `private_key` | string |  |
 | `protocol` | string |  |
 | `require_group` | string |  |
 | `slug` | string |  |

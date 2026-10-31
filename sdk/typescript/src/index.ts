@@ -3450,8 +3450,10 @@ export interface PostOrganizationsOrgIDRACConnectionsRequest {
   host?: string
   login?: string
   name?: string
+  passphrase?: string
   password?: string
   port?: number
+  private_key?: string
   protocol?: string
   require_group?: string
   slug?: string

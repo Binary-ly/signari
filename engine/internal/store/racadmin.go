@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"slices"
@@ -26,6 +27,8 @@ var (
 	// ErrRACReservedParameter is a parameter the connection's own settings
 	// supply; see RACReservedParameters.
 	ErrRACReservedParameter = errors.New("that is not a parameter: the connection's own settings supply it")
+	// ErrRACKey is a private key guacd could not use.
+	ErrRACKey = errors.New("a private key is a PEM block, and only an ssh connection takes one")
 )
 
 // RACReservedParameters are the guacd parameters a connection's own settings
@@ -46,15 +49,15 @@ func (e racReserved) Error() string {
 
 func (e racReserved) Is(target error) bool { return target == ErrRACReservedParameter }
 
-// RACSpec is what a connection is registered with. Login and Password are
-// sealed; RecordingPath is where guacd writes a session recording, empty for
-// none.
+// RACSpec is what a connection is registered with. Credentials are sealed, and
+// what they leave out the viewer asks the person for; RecordingPath is where guacd
+// writes a session recording, empty for none.
 type RACSpec struct {
 	Slug, Name, Protocol, Host string
 	Port                       int
-	Login, Password            string
-	RequireGroup               string
-	RecordingPath              string
+	RACCredentials
+	RequireGroup  string
+	RecordingPath string
 }
 
 // racDefaultPorts are each protocol's port when none is given.
@@ -74,17 +77,7 @@ func AddRACConnection(ctx context.Context, q outpostDB, root *keys.RootKey, orgI
 	if c.Name == "" {
 		c.Name = c.Slug
 	}
-	secrets := map[string]string{}
-	if c.Login != "" {
-		secrets["username"] = c.Login
-	}
-	if c.Password != "" {
-		secrets["password"] = c.Password
-	}
-	if len(secrets) > 0 && root == nil {
-		return "", fmt.Errorf("a connection's credentials are sealed under SIGNARI_ROOT_KEY, which is not loaded")
-	}
-	sealed, err := SealRACSecrets(root, secrets)
+	sealed, err := c.RACCredentials.seal(root, c.Protocol)
 	if err != nil {
 		return "", err
 	}
@@ -231,8 +224,30 @@ func RACConnections(ctx context.Context, q Querier, orgID string) ([]RACListing,
 var ErrRACCredentialsForAnotherMachine = errors.New("a connection's credentials were given for the machine it " +
 	"names; moving it to another needs them given again, or they would be typed into whatever answers there")
 
-// RACCredentials are what guacd signs in to the machine with.
-type RACCredentials struct{ Login, Password string }
+// RACCredentials are what guacd signs in to the machine with. PrivateKey and
+// Passphrase are for an ssh connection, in place of or beside a password.
+type RACCredentials struct{ Login, Password, PrivateKey, Passphrase string }
+
+// seal is the credentials as the row holds them: nil when there are none, so a
+// connection with none asks the person who opens it.
+func (c RACCredentials) seal(root *keys.RootKey, protocol string) ([]byte, error) {
+	if c.PrivateKey != "" || c.Passphrase != "" {
+		if block, _ := pem.Decode([]byte(c.PrivateKey)); block == nil || protocol != "ssh" {
+			return nil, ErrRACKey
+		}
+	}
+	secrets := map[string]string{}
+	for name, value := range map[string]string{"username": c.Login, "password": c.Password,
+		"private-key": c.PrivateKey, "passphrase": c.Passphrase} {
+		if value != "" {
+			secrets[name] = value
+		}
+	}
+	if len(secrets) > 0 && root == nil {
+		return nil, fmt.Errorf("a connection's credentials are sealed under SIGNARI_ROOT_KEY, which is not loaded")
+	}
+	return SealRACSecrets(root, secrets)
+}
 
 // RACChange is what changes about a registered connection, a nil field left as
 // it is; "" clears RequireGroup and RecordingPath. The protocol is fixed once
@@ -240,19 +255,18 @@ type RACCredentials struct{ Login, Password string }
 type RACChange struct {
 	Name, Host, RequireGroup, RecordingPath *string
 	Port                                    *int
-	// Credentials replaces the login and password together; both empty
-	// clears them.
+	// Credentials replaces all of them together; all empty clears them.
 	Credentials *RACCredentials
 }
 
 // UpdateRACConnection changes a registered connection as a configuration file
 // declares it (6.19).
 func UpdateRACConnection(ctx context.Context, q outpostDB, root *keys.RootKey, orgID, slug string, c RACChange) error {
-	var host string
+	var host, protocol string
 	var port int
 	var holds bool
-	if err := q.QueryRow(ctx, `SELECT hostname, port, secrets_enc IS NOT NULL FROM core.rac_connections
-		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug).Scan(&host, &port, &holds); err != nil {
+	if err := q.QueryRow(ctx, `SELECT hostname, port, protocol, secrets_enc IS NOT NULL FROM core.rac_connections
+		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug).Scan(&host, &port, &protocol, &holds); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrRACUnknown
 		}
@@ -264,18 +278,8 @@ func UpdateRACConnection(ctx context.Context, q outpostDB, root *keys.RootKey, o
 	}
 	var sealed []byte
 	if c.Credentials != nil {
-		secrets := map[string]string{}
-		if c.Credentials.Login != "" {
-			secrets["username"] = c.Credentials.Login
-		}
-		if c.Credentials.Password != "" {
-			secrets["password"] = c.Credentials.Password
-		}
-		if len(secrets) > 0 && root == nil {
-			return fmt.Errorf("a connection's credentials are sealed under SIGNARI_ROOT_KEY, which is not loaded")
-		}
 		var err error
-		if sealed, err = SealRACSecrets(root, secrets); err != nil {
+		if sealed, err = c.Credentials.seal(root, protocol); err != nil {
 			return err
 		}
 	}
@@ -330,5 +334,6 @@ func HeldRACCredentials(ctx context.Context, q outpostDB, root *keys.RootKey, or
 	if err := json.Unmarshal(plain, &secrets); err != nil {
 		return RACCredentials{}, fmt.Errorf("connection %q's credentials are unreadable: %w", slug, err)
 	}
-	return RACCredentials{Login: secrets["username"], Password: secrets["password"]}, nil
+	return RACCredentials{Login: secrets["username"], Password: secrets["password"],
+		PrivateKey: secrets["private-key"], Passphrase: secrets["passphrase"]}, nil
 }

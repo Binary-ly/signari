@@ -42,7 +42,8 @@ type racView struct {
 
 // addRACRequest registers a connection. require_group names the group whose
 // members may reach it; empty lets anybody in the organisation, subject to
-// the access policy.
+// the access policy. private_key and passphrase are for an ssh connection, and
+// what none of the credentials supply the viewer asks the person for.
 type addRACRequest struct {
 	Slug         string `json:"slug"`
 	Name         string `json:"name"`
@@ -51,6 +52,8 @@ type addRACRequest struct {
 	Port         int    `json:"port"`
 	Login        string `json:"login"`
 	Password     string `json:"password"`
+	PrivateKey   string `json:"private_key"`
+	Passphrase   string `json:"passphrase"`
 	RequireGroup string `json:"require_group"`
 }
 
@@ -94,7 +97,8 @@ func (s *Server) addRAC(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := r.PathValue("orgID")
 	var req addRACRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	// Room for an RSA key, which is the longest thing a connection holds.
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
@@ -132,15 +136,18 @@ func (s *Server) addRAC(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var err error
+		credentials := store.RACCredentials{Login: req.Login, Password: req.Password, PrivateKey: req.PrivateKey,
+			Passphrase: req.Passphrase}
 		if id, err = store.AddRACConnection(ctx, tx, s.root, orgID, store.RACSpec{Slug: req.Slug, Name: req.Name,
-			Protocol: req.Protocol, Host: req.Host, Port: req.Port, Login: req.Login, Password: req.Password,
+			Protocol: req.Protocol, Host: req.Host, Port: req.Port, RACCredentials: credentials,
 			RequireGroup: req.RequireGroup}); err != nil {
 			return err
 		}
 		// Never the credentials.
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.rac_connection_added", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: map[string]any{"connection": id, "slug": req.Slug, "protocol": req.Protocol,
-				"host": req.Host, "require_group": req.RequireGroup, "credentials": req.Login != "" || req.Password != ""}})
+				"host": req.Host, "require_group": req.RequireGroup,
+				"credentials": credentials != store.RACCredentials{}}})
 	})
 	if s.writeRACFailure(w, err, orgID) {
 		return
@@ -268,6 +275,8 @@ func (s *Server) writeRACFailure(w http.ResponseWriter, err error, orgID string)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown_group", "detail": err.Error()})
 	case errors.Is(err, store.ErrRACProtocol):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_protocol", "detail": err.Error()})
+	case errors.Is(err, store.ErrRACKey):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_private_key", "detail": err.Error()})
 	case errors.Is(err, store.ErrRACReservedParameter):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "reserved_parameter", "detail": err.Error()})
 	case errors.Is(err, store.ErrRACExists):

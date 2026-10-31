@@ -78,17 +78,19 @@ func main() {
 	var seen input
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
+	// /prompt is a connection holding no credentials, so the fake asks the viewer
+	// for them, and /harness/input shows what came back.
+	view := func(slug string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Content-Security-Policy", rac.ViewCSP)
+			_ = set.Execute(w, "racview", map[string]any{
+				"Slug": slug, "Name": "Harness", "Protocol": "fake",
+			})
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Content-Security-Policy", rac.ViewCSP)
-		_ = set.Execute(w, "racview", map[string]any{
-			"Slug": "harness", "Name": "Harness", "Protocol": "fake",
-		})
-	})
+	}
+	mux.HandleFunc("GET /{$}", view("harness"))
+	mux.HandleFunc("GET /prompt", view("prompt"))
 	mux.HandleFunc("GET /rac.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		_, _ = io.WriteString(w, rac.ClientJS)
@@ -106,15 +108,16 @@ func main() {
 	})
 
 	mux.HandleFunc("GET /rac/connect/{slug}", func(w http.ResponseWriter, r *http.Request) {
+		params := map[string]string{"hostname": "harness.invalid", "port": "3389"}
+		if r.PathValue("slug") != "prompt" {
+			params["username"], params["password"] = "harness", "unused"
+		}
 		guac, err := rac.Dial(guacd.Addr().String(), rac.Connection{
-			Protocol: "rdp",
-			Parameters: map[string]string{
-				"hostname": "harness.invalid", "port": "3389",
-				"username": "harness", "password": "unused",
-			},
-			Width:  atoiOr(r.URL.Query().Get("width"), 1024),
-			Height: atoiOr(r.URL.Query().Get("height"), 768),
-			DPI:    atoiOr(r.URL.Query().Get("dpi"), 96),
+			Protocol:   "rdp",
+			Parameters: params,
+			Width:      atoiOr(r.URL.Query().Get("width"), 1024),
+			Height:     atoiOr(r.URL.Query().Get("height"), 768),
+			DPI:        atoiOr(r.URL.Query().Get("dpi"), 96),
 		}, 5*time.Second)
 		if err != nil {
 			log.Printf("dial: %v", err)
@@ -233,8 +236,9 @@ func fakeGuacd(conn net.Conn) {
 	if err != nil || sel.Opcode != "select" {
 		return
 	}
-	// The parameter list a real guacd sends for RDP, in its order.
-	params := []string{"hostname", "port", "domain", "username", "password",
+	// The parameter list a real guacd sends for RDP, in its order, with the
+	// protocol version first.
+	params := []string{"VERSION_1_5_0", "hostname", "port", "domain", "username", "password",
 		"width", "height", "dpi", "recording-path", "create-recording-path"}
 	_ = w.Write(rac.Instruction{Opcode: "args", Args: params})
 
@@ -247,6 +251,11 @@ func fakeGuacd(conn net.Conn) {
 			continue
 		}
 		_ = w.Write(rac.Instruction{Opcode: "ready", Args: []string{"$harness-0001"}})
+		if len(in.Args) > 5 && in.Args[0] != "" && in.Args[4] == "" && in.Args[5] == "" {
+			if !askForCredentials(r, w) {
+				return
+			}
+		}
 		draw(conn)
 
 		for {
@@ -260,6 +269,32 @@ func fakeGuacd(conn net.Conn) {
 			}
 		}
 	}
+}
+
+// askForCredentials sends `required`, as guacd does for what a connection did not
+// supply, and reads one stream back per value. Asked only of a browser side that
+// answered the version, as guacd is.
+func askForCredentials(r *rac.Reader, w *rac.Writer) bool {
+	_ = w.Write(rac.Instruction{Opcode: "required", Args: []string{"username", "password"}})
+	got := map[string]string{}
+	names := map[string]string{}
+	for len(got) < 2 {
+		in, err := r.ReadInstruction()
+		if err != nil {
+			return false
+		}
+		switch in.Opcode {
+		case "argv":
+			names[in.Args[0]] = in.Args[2]
+			_ = w.Write(rac.Instruction{Opcode: "ack", Args: []string{in.Args[0], "OK", "0"}})
+		case "blob":
+			value, _ := base64.StdEncoding.DecodeString(in.Args[1])
+			got[names[in.Args[0]]] += string(value)
+			_ = w.Write(rac.Instruction{Opcode: "ack", Args: []string{in.Args[0], "OK", "0"}})
+		}
+	}
+	log.Printf("  the viewer answered for %q, with a password of %d bytes", got["username"], len(got["password"]))
+	return true
 }
 
 const (

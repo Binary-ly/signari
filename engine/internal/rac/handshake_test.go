@@ -243,6 +243,37 @@ func TestAParameterGuacdDoesNotWantIsRefused(t *testing.T) {
 
 // TestMissingParameterIsSentEmpty: guacd asking for something a connection does
 // not define is normal -- most parameters are optional.
+// guacd offers its protocol version as the first argument and takes the answer as
+// what the far side speaks (8.28). Left empty, it never sends the `required`
+// instruction a connection holding no credentials depends on. The answer is never
+// newer than the client vendored here, whatever guacd offers.
+func TestGuacdsVersionIsAnswered(t *testing.T) {
+	for offered, want := range map[string]string{
+		"VERSION_1_3_0": "VERSION_1_3_0",
+		"VERSION_1_5_0": "VERSION_1_5_0",
+		"VERSION_1_5_9": "VERSION_1_5_0",
+		"VERSION_1_6_0": "VERSION_1_5_0",
+		"VERSION_2_0_0": "VERSION_1_5_0",
+		"VERSION_x_0_0": "",
+		"VERSION_1_5":   "",
+		"domain":        "",
+	} {
+		g := startFakeGuacd(t, []string{offered, "hostname", "VERSION_1_0_0"})
+		s, err := Dial(g.addr(), Connection{Protocol: "rdp", Parameters: map[string]string{"hostname": "h"}},
+			5*time.Second)
+		if err != nil {
+			t.Fatalf("%s: %v", offered, err)
+		}
+		_ = s.Close()
+		if len(g.gotConnect) != 3 || g.gotConnect[0] != want || g.gotConnect[1] != "h" {
+			t.Errorf("offered %s, connect sent %v, want %q first", offered, g.gotConnect, want)
+		}
+		if len(g.gotConnect) == 3 && g.gotConnect[2] != "" {
+			t.Errorf("only the first argument is a version, and connect sent %v", g.gotConnect)
+		}
+	}
+}
+
 func TestMissingParameterIsSentEmpty(t *testing.T) {
 	g := startFakeGuacd(t, []string{"hostname", "port", "domain"})
 

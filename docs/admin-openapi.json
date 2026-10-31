@@ -14488,11 +14488,17 @@
                   "name": {
                     "type": "string"
                   },
+                  "passphrase": {
+                    "type": "string"
+                  },
                   "password": {
                     "type": "string"
                   },
                   "port": {
                     "type": "integer"
+                  },
+                  "private_key": {
+                    "type": "string"
                   },
                   "protocol": {
                     "type": "string"

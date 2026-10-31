@@ -786,8 +786,11 @@ func run(args []string) (err error) {
 	racHost := fs.String("host", "", "hostname: of the machine (rac), or of the protected "+
 		"application, with its port if not 443 (proxy add-host and friends)")
 	racPort := fs.Int("port", 0, "port (defaults to the protocol's)")
-	racUser := fs.String("login", "", "username on the remote machine")
-	racPassword := fs.String("login-password", "", "password on the remote machine")
+	racUser := fs.String("login", "", "username on the remote machine; left out, the viewer asks for it")
+	racPasswordFile := fs.String("password-file", "",
+		"a file holding the password on the remote machine; left out, the viewer asks for it (rac add)")
+	racKeyFile := fs.String("private-key-file", "", "a file holding a PEM private key, for an ssh connection (rac add)")
+	racPassphraseFile := fs.String("passphrase-file", "", "a file holding that key's passphrase (rac add)")
 	racRecording := fs.String("recording-path", "", "where guacd writes session recordings")
 	declaredBy := fs.String("by", "", "who is declaring an audit checkpoint")
 	reason := fs.String("reason", "",
@@ -1433,8 +1436,12 @@ func run(args []string) (err error) {
 	case "dir list":
 		return dirList(ctx, conn, *orgID, *outputFormat)
 	case "rac add":
+		credentials, err := racCredentials(*racUser, *racPasswordFile, *racKeyFile, *racPassphraseFile)
+		if err != nil {
+			return err
+		}
 		return racAdd(ctx, conn, *orgID, *slug, *name, *racProtocol, *racHost,
-			*racPort, *racUser, *racPassword, *groupName, *racRecording)
+			*racPort, credentials, *groupName, *racRecording)
 	case "rac list":
 		return racList(ctx, conn, *outputFormat)
 	case "rac disable":
@@ -6650,7 +6657,7 @@ func auditCheckpoint(ctx context.Context, conn *pgx.Conn, orgID, by, reason stri
 
 // racAdd registers a machine somebody may reach through the browser.
 func racAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, protocol,
-	host string, port int, login, password, requireGroup, recording string) error {
+	host string, port int, credentials store.RACCredentials, requireGroup, recording string) error {
 
 	orgID, err := resolveOrg(ctx, conn, orgID)
 	if err != nil {
@@ -6671,7 +6678,7 @@ func racAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, protocol,
 		return err
 	}
 	_, err = store.AddRACConnection(ctx, conn, root, orgID, store.RACSpec{Slug: slug, Name: name,
-		Protocol: protocol, Host: host, Port: port, Login: login, Password: password,
+		Protocol: protocol, Host: host, Port: port, RACCredentials: credentials,
 		RequireGroup: requireGroup, RecordingPath: recording})
 	switch {
 	case errors.Is(err, store.ErrRACProtocol):
@@ -6693,6 +6700,9 @@ func racAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, protocol,
 		fmt.Print("  policy. Add one with -group unless that is what you meant.\n")
 	} else {
 		fmt.Printf("  restricted to group: %s\n", requireGroup)
+	}
+	if credentials.Password == "" && credentials.PrivateKey == "" {
+		fmt.Print("\n  No password or key held: the viewer asks the person opening it.\n")
 	}
 	if recording == "" {
 		fmt.Print("\n  No -recording-path: sessions are not recorded.\n")

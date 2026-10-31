@@ -105,6 +105,35 @@ func TestARemoteAccessConnectionIsDeclaredWithItsCredentialsByReference(t *testi
 	if _, p, _ := plan(org, fmt.Sprintf(machine, "build.internal"), false); !p.Empty() {
 		t.Errorf("a file that names no limit plans\n%s", p)
 	}
+	// A key is by reference and compared like a password, and for ssh only.
+	env["DEPLOY_KEY"] = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"
+	env["DEPLOY_PASSPHRASE"] = "first"
+	keyed := "groups: [{name: builders}]\nrac_connections:\n  - {slug: build, protocol: ssh, host: build.internal, " +
+		"login: {env: BUILD_LOGIN}, password: {env: BUILD_PASSWORD}, private_key: {env: DEPLOY_KEY}, " +
+		"passphrase: {env: DEPLOY_PASSPHRASE}, require_group: builders, recording_path: /var/lib/guacd/build, " +
+		"parameters: {font-size: '12'}}\n"
+	if p := apply(org, keyed, false); !strings.Contains(p.String(), "credentials") {
+		t.Errorf("a key was planned as\n%s", p)
+	}
+	if _, creds := held(org); creds.PrivateKey != env["DEPLOY_KEY"] || creds.Passphrase != "first" {
+		t.Errorf("the connection holds %+v", creds)
+	}
+	if _, p, _ := plan(org, keyed, false); !p.Empty() {
+		t.Errorf("applied again it plans\n%s", p)
+	}
+	env["DEPLOY_PASSPHRASE"] = "second"
+	if _, p, _ := plan(org, keyed, false); !strings.Contains(p.String(), "credentials") {
+		t.Errorf("a changed passphrase was planned as\n%s", p)
+	}
+	apply(org, fmt.Sprintf(machine, "build.internal"), false)
+	rdpKey, err := Parse([]byte("version: 1\nrac_connections: [{slug: d, protocol: rdp, host: h, private_key: {env: K}}]\n"))
+	if err == nil {
+		err = rdpKey.Validate()
+	}
+	if err == nil || !strings.Contains(err.Error(), store.ErrRACKey.Error()) {
+		t.Errorf("a key on an rdp connection answered %v", err)
+	}
+
 	negative, err := Parse([]byte("version: 1\nrac_connections: [{slug: build, protocol: ssh, host: h, max_connections: -1}]\n"))
 	if err == nil {
 		err = negative.Validate()

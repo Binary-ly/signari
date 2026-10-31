@@ -1,6 +1,7 @@
 package rac
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -39,7 +40,8 @@ type Peer interface {
 	//
 	// The error should report a normal close distinguishably; see NormalClose.
 	ReadMessage(ctx context.Context) ([]byte, error)
-	// WriteMessage sends one message, which must contain whole instructions.
+	// WriteMessage sends one message, which must contain whole instructions. It
+	// is called from two goroutines, and neither message may split the other.
 	WriteMessage(ctx context.Context, data []byte) error
 }
 
@@ -100,6 +102,15 @@ func Proxy(ctx context.Context, peer Peer, guac *Session, recheck Recheck) strin
 				done <- reasonFor(err, "client disconnected")
 				return
 			}
+			if reply, internal := forThisEnd(data); internal {
+				if reply != nil {
+					if err := peer.WriteMessage(ctx, reply); err != nil {
+						done <- reasonFor(err, "client stopped reading")
+						return
+					}
+				}
+				continue
+			}
 			if _, err := guac.WriteRaw(data); err != nil {
 				done <- "guacd stopped reading"
 				return
@@ -131,6 +142,25 @@ func Proxy(ctx context.Context, peer Peer, guac *Session, recheck Recheck) strin
 	// The first side to finish ends the session; the other goroutine unblocks
 	// when its connection closes, which the caller's Close guarantees.
 	return <-done
+}
+
+// forThisEnd reports whether a browser message is for the tunnel and not for
+// guacd, which is what an empty opcode says, and what to answer it with.
+//
+// The browser's tunnel gives up on a channel it has heard nothing on for fifteen
+// seconds, and its ping is how it hears from this end when guacd has nothing to
+// say: guacamole-common.js:15414 has the endpoint send back an identical one. Sent on
+// to guacd instead, a channel stayed open only for as long as guacd kept drawing, and
+// the person typing a password into the viewer's form was disconnected part way.
+func forThisEnd(data []byte) (reply []byte, internal bool) {
+	if !bytes.HasPrefix(data, []byte("0.")) {
+		return nil, false
+	}
+	in, err := NewReader(bytes.NewReader(data)).ReadInstruction()
+	if err == nil && len(in.Args) == 2 && in.Args[0] == "ping" {
+		return data, true
+	}
+	return nil, true
 }
 
 func reasonFor(err error, fallback string) string {

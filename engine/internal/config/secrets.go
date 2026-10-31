@@ -98,12 +98,7 @@ func (f *File) secretRefs() []secretAt {
 		}
 	}
 	for _, w := range f.RACConnections {
-		if w.Login != nil {
-			out = append(out, secretAt{w.at() + ".login", w.Login})
-		}
-		if w.Password != nil {
-			out = append(out, secretAt{w.at() + ".password", w.Password})
-		}
+		out = append(out, w.references()...)
 	}
 	for _, w := range f.IdentityProviders {
 		if w.ClientSecret != nil {

@@ -45,6 +45,7 @@ import Guacamole from "/static/guacamole-common.js";
 const screen = document.getElementById("screen");
 const status = document.getElementById("status");
 const slug = screen.dataset.slug;
+let closeForm = null;
 
 // A visible reason for everything.
 //
@@ -52,6 +53,9 @@ const slug = screen.dataset.slug;
 // cannot tell a policy refusal from a dead host from a bug, and neither can the
 // person they report it to. Every state change says something.
 function say(text, kind) {
+  // A form left open over a channel that has ended would take a password and
+  // send it nowhere.
+  if (kind === "err" && closeForm) closeForm();
   status.textContent = text;
   status.className = kind || "";
   status.hidden = false;
@@ -76,12 +80,14 @@ function fit() {
 display.onresize = fit;
 window.addEventListener("resize", fit);
 
+// A status worked out from how the socket closed carries no message of its own.
 tunnel.onerror = function (status) {
-  say("The connection failed: " + status.message + " (" + status.code + ")", "err");
+  say("The connection failed: " + (status.message || "the channel closed") +
+    " (" + status.code + ")", "err");
 };
 
 client.onerror = function (status) {
-  say("The remote session ended: " + status.message, "err");
+  say("The remote session ended: " + (status.message || "the channel closed"), "err");
 };
 
 client.onstatechange = function (state) {
@@ -116,6 +122,84 @@ display.getElement().style.cursor = "none";
 // menu accelerator rather than a letter.
 window.addEventListener("blur", function () { keyboard.reset(); });
 window.addEventListener("pagehide", function () { client.disconnect(); });
+
+// What the connection does not hold, asked of the person.
+//
+// guacd says which values it still needs with "required", and each answer goes
+// back on a stream of its own, so nothing typed here is kept: not by this page,
+// not in a URL and not by the engine, which only carries it to guacd.
+//
+// The keyboard listens on the document in the capture phase, ahead of any field,
+// and it gives up a key only while its handlers are unset. So they are unset for as
+// long as the form is open; otherwise the password would be typed at the remote
+// machine, one key at a time, and not into the field.
+const labels = { username: "Username", password: "Password", domain: "Domain",
+  passphrase: "Passphrase" };
+const secret = ["password", "passphrase"];
+
+function ask(names) {
+  const keys = [keyboard.onkeydown, keyboard.onkeyup];
+  keyboard.reset();
+  keyboard.onkeydown = keyboard.onkeyup = null;
+
+  const form = document.createElement("form");
+  form.id = "ask";
+  form.autocomplete = "off";
+  form.style.cssText = "display:grid;gap:.75rem;padding:1rem;width:20rem;max-width:calc(100% - 2rem);" +
+    "position:absolute;z-index:1;background:var(--chrome-2);border:2px solid var(--line);" +
+    "border-radius:var(--radius)";
+  const heading = document.createElement("strong");
+  heading.textContent = "Sign in to this machine";
+  form.appendChild(heading);
+
+  const fields = names.map(function (name) {
+    const label = document.createElement("label");
+    label.style.cssText = "display:grid;gap:.25rem;color:var(--muted)";
+    label.textContent = labels[name] || name;
+    const field = document.createElement("input");
+    field.name = name;
+    field.required = true;
+    // Never the browser's saved sign-in for this site: that is the password here,
+    // and this form would hand it to the machine.
+    field.autocomplete = secret.includes(name) ? "new-password" : "off";
+    field.type = secret.includes(name) ? "password" : "text";
+    field.style.cssText = "font:inherit;padding:.375rem .5rem;color:var(--fg);background:var(--chrome);" +
+      "border:2px solid var(--line);border-radius:var(--radius)";
+    label.appendChild(field);
+    form.appendChild(label);
+    return field;
+  });
+
+  const go = document.createElement("button");
+  go.type = "submit";
+  go.textContent = "Connect";
+  go.style.cssText = "font:inherit;font-weight:700;padding:.375rem .875rem;color:var(--fg);" +
+    "background:transparent;border:2px solid var(--fg);border-radius:var(--radius);cursor:pointer";
+  form.appendChild(go);
+
+  closeForm = function () {
+    form.remove();
+    keyboard.onkeydown = keys[0];
+    keyboard.onkeyup = keys[1];
+    closeForm = null;
+  };
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    for (const field of fields) {
+      const writer = new Guacamole.StringWriter(
+        client.createArgumentValueStream("text/plain", field.name));
+      writer.sendText(field.value);
+      writer.sendEnd();
+    }
+    closeForm();
+    say("Connecting…");
+  });
+
+  clearStatus();
+  screen.appendChild(form);
+  if (fields.length) fields[0].focus();
+}
+client.onrequired = ask;
 
 document.getElementById("disconnect").addEventListener("click", function () {
   client.disconnect();

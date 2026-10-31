@@ -53,7 +53,9 @@ copy of them: a harness that reimplements what it tests will agree with itself
 while production is broken.
 
 `GET /harness/input` returns what the browser sent back, so mouse and keyboard
-can be checked without reading a log.
+can be checked without reading a log. `http://127.0.0.1:4830/prompt` is a
+connection holding no credentials, for checking the form the viewer asks for them
+with.
 
 ## What Signari provides and what guacd provides
 
@@ -128,18 +130,48 @@ signari rac add \
   -protocol rdp \
   -host 10.0.4.21 \
   -login svc-desk \
-  -login-password '…' \
+  -password-file /run/secrets/finance-desk \
   -group finance
 ```
 
 `-group` is the group requirement. Without it every signed-in user in the
 organisation may reach the host, subject to policy.
 
+The password is read from a file because a command line can be read by anybody on
+the machine for as long as the command runs. There is no flag that takes the
+value itself. One trailing newline in the file is ignored, and an empty file is
+refused, because it would register a connection asking for a password somebody
+meant it to hold.
+
+An SSH connection can sign in with a key instead, or as well:
+
+```
+signari rac add -org <org-uuid> -slug build -protocol ssh -host build.internal \
+  -login deploy -private-key-file ./deploy.pem -passphrase-file ./deploy.pass
+```
+
+The key is a PEM block, and a connection of another protocol refuses one, because
+guacd would refuse it at the first connect instead.
+
 Credentials are sealed with the root key and unsealed only at the moment a
 connection is made, so a database read is not a set of working logins to the
 estate. They are merged into the parameter set inside `Resolve` and nowhere
 else — they exist in memory for the length of one handshake rather than for the
 lifetime of a struct somebody might log.
+
+**A connection that holds no password asks the person who opens it.** Leave the
+credentials out, or give only `-login`, and guacd sends the viewer the names of
+what it still needs. The viewer shows a form, sends each answer back on a stream
+of its own, and keeps nothing: not in the page, not in a URL, and not in the
+engine, which carries the answers to guacd along with every other byte of the
+session. Each person signs in to the machine as themselves, so the machine's own
+logs say who it was.
+
+An SSH connection with neither asks in the terminal instead, inside the session,
+because that is where guacd asks; the form is for RDP and VNC. A wrong answer ends
+the session with what the machine said, and nothing retries it. This relies on
+guacd answering the protocol version the engine now sends, which has not been
+checked against a real guacd; the harness above checks the viewer's half.
 
 `signari rac list` shows what is registered, in every organisation. Until
 October 2026 this page gave the password as `-password`, which is `user

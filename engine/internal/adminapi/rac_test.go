@@ -50,6 +50,31 @@ func TestARemoteAccessConnectionIsManagedThroughTheAPI(t *testing.T) {
 		}
 	}
 
+	// A key is sealed like a password, is for ssh, and is PEM; a connection given
+	// none of these asks whoever opens it, and that is not a refusal.
+	const key = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"
+	for _, bad := range []map[string]any{{"slug": "k1", "protocol": "rdp", "host": "h", "private_key": key},
+		{"slug": "k2", "protocol": "ssh", "host": "h", "private_key": "not a key"},
+		{"slug": "k3", "protocol": "ssh", "host": "h", "passphrase": "no key to open"}} {
+		if e := errorOf(http.MethodPost, base, bad, http.StatusBadRequest); e != "invalid_private_key" {
+			t.Errorf("%v answered %q", bad, e)
+		}
+	}
+	keyed := call(t, s, http.MethodPost, base, testToken, map[string]any{"slug": "build", "protocol": "ssh",
+		"host": "build.internal", "login": "deploy", "private_key": key, "passphrase": "opens-the-key"})
+	if keyed.Code != http.StatusCreated {
+		t.Fatalf("registering with a key: %d %s", keyed.Code, keyed.Body.String())
+	}
+	if held, err := store.HeldRACCredentials(ctx, s.db, s.root, org, "build"); err != nil {
+		t.Fatal(err)
+	} else if held != (store.RACCredentials{Login: "deploy", PrivateKey: key, Passphrase: "opens-the-key"}) {
+		t.Errorf("the connection holds %+v", held)
+	}
+	if rec := call(t, s, http.MethodPost, base, testToken, map[string]any{"slug": "asks", "protocol": "vnc",
+		"host": "desk.internal"}); rec.Code != http.StatusCreated {
+		t.Fatalf("registering with nothing: %d %s", rec.Code, rec.Body.String())
+	}
+
 	rec := call(t, s, http.MethodPost, base, testToken, map[string]any{"slug": "desk", "name": "Finance desktop",
 		"protocol": "rdp", "host": "10.0.4.21", "login": "svc-desk", "password": password, "require_group": "finance"})
 	if rec.Code != http.StatusCreated {

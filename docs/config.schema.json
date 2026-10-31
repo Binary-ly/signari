@@ -725,11 +725,17 @@
           },
           "type": "object"
         },
+        "passphrase": {
+          "$ref": "#/$defs/SecretRef"
+        },
         "password": {
           "$ref": "#/$defs/SecretRef"
         },
         "port": {
           "type": "integer"
+        },
+        "private_key": {
+          "$ref": "#/$defs/SecretRef"
         },
         "protocol": {
           "enum": [

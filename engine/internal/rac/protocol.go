@@ -101,17 +101,19 @@ func (r *Reader) ReadInstruction() (Instruction, error) {
 		if err != nil {
 			return inst, err
 		}
-		first = false
 
 		value, err := r.readRunes(length)
 		if err != nil {
 			return inst, err
 		}
-		if inst.Opcode == "" && len(inst.Args) == 0 {
+		// By position and not by being empty: the tunnel's own instructions have
+		// an empty opcode, and their first argument is not one.
+		if first {
 			inst.Opcode = value
 		} else {
 			inst.Args = append(inst.Args, value)
 		}
+		first = false
 
 		sep, err := r.br.ReadByte()
 		if err != nil {

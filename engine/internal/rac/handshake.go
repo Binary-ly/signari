@@ -4,7 +4,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -98,6 +100,34 @@ func DialTLS(addr string, c Connection, timeout time.Duration, tlsConfig *tls.Co
 	return s, nil
 }
 
+// clientVersion is the newest protocol the vendored browser client speaks, from
+// static/PROVENANCE.md.
+var clientVersion = [3]int{1, 5, 0}
+
+// agreedVersion answers the version guacd offers as its first argument with the
+// older of that and clientVersion, and reports false for a first argument that is
+// no version. Left empty, guacd is told nothing about the browser behind this side,
+// and never sends `required`, the instruction that asks the viewer for what a
+// connection does not hold.
+func agreedVersion(offered string) (string, bool) {
+	parts := strings.Split(offered, "_")
+	if len(parts) != 4 || parts[0] != "VERSION" {
+		return "", false
+	}
+	var version [3]int
+	for i, part := range parts[1:] {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return "", false
+		}
+		version[i] = n
+	}
+	if slices.Compare(version[:], clientVersion[:]) > 0 {
+		version = clientVersion
+	}
+	return fmt.Sprintf("VERSION_%d_%d_%d", version[0], version[1], version[2]), true
+}
+
 func (s *Session) handshake(c Connection, timeout time.Duration) error {
 	// The handshake is bounded. Everything after it is interactive and has no
 	// deadline, but a guacd that never answers `args` must not hold a browser
@@ -148,7 +178,11 @@ func (s *Session) handshake(c Connection, timeout time.Duration) error {
 	// that changes between versions cannot shift a password into the hostname.
 	values := make([]string, 0, len(args.Args))
 	var unknown []string
-	for _, name := range args.Args {
+	for i, name := range args.Args {
+		if version, ok := agreedVersion(name); i == 0 && ok {
+			values = append(values, version)
+			continue
+		}
 		if v, ok := c.Parameters[name]; ok {
 			values = append(values, v)
 			continue

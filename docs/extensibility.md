@@ -37,6 +37,31 @@ change. Registering the same hook again keeps the secret it had. A provider
 registered before October 2026 has none and is called unsigned until it is
 rotated; `provider list` shows which.
 
+## The contract
+
+[`hook-contracts.json`](hook-contracts.json) is the JSON Schema of what each hook
+sends and may answer, and every call says which version it was made under:
+
+```
+Signari-Hook-Version: 1
+```
+
+The version moves when a provider has to act, because something it relies on
+changed or went. A new optional member does not move it, so ignore what you do not
+know, as this engine ignores what it does not know in your answer.
+
+Check a service before anything depends on it:
+
+```sh
+signari provider test -org <uuid> -hook authorize
+```
+
+That makes the same call a decision makes, signed and through the same outbound
+guard, with a request that names nobody and `Signari-Hook-Test: 1`, so your service
+can answer without recording a decision about nobody. It prints the decision and
+how long it took, and exits non-zero when a real call would count as unreachable or
+as no answer.
+
 ## Why out of process
 
 Three alternatives were considered and rejected:

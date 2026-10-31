@@ -256,6 +256,7 @@ An operator's own service, called to extend a decision this engine makes. See
 | `signari provider list` | What is registered, with its failure mode, and whether any decision point actually consults that hook |
 | `signari provider claims` | Which claims a token hook may add. The allow-list is the hook's whole security model: without it a service returning `{"admin": true}` would put that claim in a token this engine signed, and a resource server could not tell it apart from one the engine decided. Protocol claims are refused by the schema |
 | `signari provider remove` | Remove it. Decisions are then made locally only |
+| `signari provider test` | `-org <id> -hook <hook>`: call the provider with a request that names nobody, marked `Signari-Hook-Test: 1`, and print its decision. Exits non-zero when a real call would count as unreachable or as no answer. See [extensibility.md](extensibility.md#the-contract) |
 | `signari provider rotate` | `-org <id> -hook <hook>`: print a new signing secret for the provider's `Signari-Signature`, once; the old one stops verifying at once. `provider add` prints the first. See [extensibility.md](extensibility.md) |
 
 ## Outposts and remote access

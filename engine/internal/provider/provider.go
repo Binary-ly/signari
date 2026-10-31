@@ -182,6 +182,8 @@ type Provider struct {
 	// an extension point is also a way to make every sign-in as slow as the
 	// slowest thing an operator registered.
 	Timeout time.Duration
+	// Test marks the calls `signari provider test` makes (TestHeader).
+	Test bool
 
 	// AllowedClaims bounds what a HookTokenIssue provider may contribute.
 	//
@@ -342,6 +344,10 @@ func (p Provider) call(ctx context.Context, client *http.Client, req, out any) (
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Accept", "application/json")
+	hreq.Header.Set(VersionHeader, ContractVersion)
+	if p.Test {
+		hreq.Header.Set(TestHeader, "1")
+	}
 	if p.Secret != "" {
 		hreq.Header.Set(hmacsig.Header, hmacsig.Sign(p.Secret, time.Now(), body))
 	}

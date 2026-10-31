@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/provider"
+	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/store"
 )
 
@@ -92,6 +93,50 @@ func providerAdd(ctx context.Context, conn *pgx.Conn, orgID, hook, url, mode str
 		fmt.Printf("  NOTE: fail_open means that when this service is unreachable the\n" +
 			"        decision proceeds WITHOUT it. For an authorization hook that is\n" +
 			"        the control switching itself off during an outage.\n\n")
+	}
+	return nil
+}
+
+// providerTest calls a registered provider with a request naming nobody, marked as
+// a test, and says what came back, so a broken one is found by its operator and
+// not by the first person signing in. It goes through the same call a decision
+// does, so the signature and the outbound guard apply, and exits non-zero on
+// anything a real decision would count as unreachable or as no answer.
+func providerTest(ctx context.Context, conn *pgx.Conn, orgID, hook string) error {
+	if orgID == "" || hook == "" {
+		return fmt.Errorf("-org and -hook are both required")
+	}
+	h := provider.Hook(hook)
+	contract, ok := provider.ContractFor(h)
+	if !ok {
+		return fmt.Errorf("unknown hook %q; one of %s", hook, providerHookList())
+	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	p, err := store.LoadProvider(ctx, conn, root, orgID, h)
+	if err != nil {
+		return err
+	}
+	if p == nil {
+		return fmt.Errorf("no enabled provider is registered for %s in this organisation", hook)
+	}
+	p.Test = true
+	var answer map[string]any
+	started := time.Now()
+	if err := p.Call(ctx, safedial.Client(p.Timeout), contract.Sample, &answer); err != nil {
+		return fmt.Errorf("%s did not answer, so a real decision would go by its %s mode: %w", p.URL, p.Mode, err)
+	}
+	took := time.Since(started).Round(time.Millisecond)
+	decision, ok := answer["decision"].(bool)
+	if !ok {
+		return fmt.Errorf("%s answered in %s with no boolean decision, which contract %s requires",
+			p.URL, took, provider.ContractVersion)
+	}
+	fmt.Printf("%s answered in %s under contract %s: decision %v\n", p.URL, took, provider.ContractVersion, decision)
+	if p.Secret == "" {
+		fmt.Println("  NOTE: the call was unsigned. `signari provider rotate` gives this provider a secret.")
 	}
 	return nil
 }

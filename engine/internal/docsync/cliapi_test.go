@@ -256,6 +256,7 @@ var cliAPI = map[string]string{
 	"provider claims":      "PUT /admin/organizations/{orgID}/providers/{hook}/claims",
 	"provider remove":      "DELETE /admin/organizations/{orgID}/providers/{hook}",
 	"provider rotate":      "POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret",
+	"provider test":        reads,
 	"outpost create":       "POST /admin/organizations/{orgID}/outposts",
 	"outpost disable":      "PATCH /admin/organizations/{orgID}/outposts/{name}",
 	"outpost enable":       "PATCH /admin/organizations/{orgID}/outposts/{name}",

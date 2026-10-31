@@ -357,6 +357,7 @@ extension providers:
   provider list    what is registered, and whether anything consults each hook
   provider claims  which claims a token hook may add
   provider rotate  print a new signing secret for a provider
+  provider test    call a provider with a request naming nobody, and say what came back
   provider remove  remove a provider; decisions are made locally again
 
 outposts and remote access:
@@ -1480,6 +1481,8 @@ func run(args []string) (err error) {
 		return providerRemove(ctx, conn, *orgID, *providerHook)
 	case "provider rotate":
 		return providerRotate(ctx, conn, *orgID, *providerHook)
+	case "provider test":
+		return providerTest(ctx, conn, *orgID, *providerHook)
 	case "provider claims":
 		return providerClaimsSet(ctx, conn, *orgID, *providerHook, *providerClaims)
 	case "radius add-client":

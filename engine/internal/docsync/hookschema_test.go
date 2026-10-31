@@ -9,6 +9,46 @@ import (
 	"testing"
 )
 
+// Every hook has a section of its own in docs/extensibility.md, and the page says
+// where the contract is. A provider is written by somebody who never sees this
+// repository, from that page and nothing else, so a hook it omits is a hook nobody
+// outside can use correctly, and a section left behind describes one that is gone.
+func TestEveryHookIsDocumented(t *testing.T) {
+	root := repoRoot(t)
+	src, err := os.ReadFile(filepath.Join(root, "engine", "internal", "provider", "provider.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := os.ReadFile(filepath.Join(root, "docs", "extensibility.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defined := map[string]bool{}
+	for _, m := range hookConst.FindAllStringSubmatch(string(src), -1) {
+		defined[m[1]] = true
+	}
+	if len(defined) == 0 {
+		t.Fatal("no Hook constants found in internal/provider/provider.go")
+	}
+	sections := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^## The `([a-z_]+)` hook$").FindAllStringSubmatch(string(page), -1) {
+		sections[m[1]] = true
+	}
+	for hook := range defined {
+		if !sections[hook] {
+			t.Errorf("docs/extensibility.md has no \"## The `%s` hook\" section", hook)
+		}
+	}
+	for hook := range sections {
+		if !defined[hook] {
+			t.Errorf("docs/extensibility.md documents a hook that does not exist: %s", hook)
+		}
+	}
+	if !strings.Contains(string(page), "hook-contracts.json") {
+		t.Error("docs/extensibility.md does not point at the published contracts")
+	}
+}
+
 // The schema must accept every extension hook the code knows about.
 //
 // # The failure this catches

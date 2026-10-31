@@ -165,6 +165,7 @@ var commandFlags = map[string][]string{
 	"provider list":                   {"o", "org"},
 	"provider remove":                 {"hook", "org"},
 	"provider rotate":                 {"hook", "org"},
+	"provider test":                   {"hook", "org"},
 	"provision add":                   {"credentials", "impersonate", "kind-outpost", "name", "on-deactivate", "org", "recreate-missing", "scim-dry-run", "slug", "target-domain"},
 	"proxy add-host":                  {"host", "org"},
 	"proxy check":                     {"app", "insecure", "issuer", "origin", "path"},

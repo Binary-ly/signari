@@ -180,7 +180,7 @@ func (s *Server) emailSignInAccount(ctx context.Context, identifier, orgID strin
 		SELECT id::text, org_id::text FROM core.users
 		 WHERE ($1 = '' OR org_id::text = $1) AND status = 'active' AND email IS NOT NULL
 		   AND `+store.InInstance("org_id", "$3")+`
-		   AND (lower(email) = lower($2) OR lower(username) = lower($2))
+		   AND (email_fold = lower($2) OR username_fold = lower($2))
 		 ORDER BY org_id LIMIT 2`, orgID, identifier, s.instanceID)
 	if err != nil {
 		s.log.Error("looking up an emailed sign-in's account", "err", err)

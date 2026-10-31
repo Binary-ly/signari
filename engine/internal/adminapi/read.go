@@ -193,7 +193,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	limit, cursor := pageParams(r)
 	// Filters (6.08), each in the WHERE clause beside the organisation, and
-	// each served by an index (0189): ?email= exactly, ?q= a prefix of the
+	// each served by an index (0199): ?email= exactly, ?q= a prefix of the
 	// address or the user name, ?status= one of the statuses. Case does not
 	// matter, as it does not at sign-in. A support desk paged through every
 	// person to find one.
@@ -256,10 +256,14 @@ func userListQuery(cursor string, org any, limit int, email, prefix, status stri
 		where = append(where, strings.ReplaceAll(cond, "$?", "$"+strconv.Itoa(len(args))))
 	}
 	if email != "" {
-		add("lower(email) = $?", email)
+		add("email_fold = $?", email)
 	}
 	if prefix != "" {
-		add("(lower(email) LIKE $? OR lower(username) LIKE $?)", likePrefix(prefix))
+		// A range rather than LIKE, whose function is not leakproof, so under
+		// row security it could use no index (0.52). The end is past anything
+		// the prefix can be followed by.
+		add("((email_fold ~>=~ lower($?) AND email_fold ~<~ (lower($?) || chr(1114111))) OR "+
+			"(username_fold ~>=~ lower($?) AND username_fold ~<~ (lower($?) || chr(1114111))))", prefix)
 	}
 	if status != "" {
 		add("status = $?", status)
@@ -275,12 +279,6 @@ func userListQuery(cursor string, org any, limit int, email, prefix, status stri
 		 WHERE ` + strings.Join(where, " AND ") + `
 		 ORDER BY id
 		 LIMIT $3`, args
-}
-
-// likePrefix is a LIKE pattern matching what starts with p, with p's own %, _
-// and \ taken literally: a name containing an underscore is not a wildcard.
-func likePrefix(p string) string {
-	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p) + "%"
 }
 
 // userDetail is one user read: the summary and every field PATCH sets or

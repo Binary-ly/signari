@@ -256,7 +256,7 @@ func ResolveSSFSubject(ctx context.Context, q Querier, orgID string,
 		// could name any address in the deployment and end those sessions.
 		rows, err := q.Query(ctx, `
 			SELECT id::text FROM core.users
-			 WHERE lower(email) = lower($1) AND org_id = $2::uuid
+			 WHERE email_fold = lower($1) AND org_id = $2::uuid
 			 LIMIT 1`, s.Sub, orgID)
 		if err != nil {
 			return "", err

@@ -65,7 +65,7 @@ func LookupMigrationCandidate(ctx context.Context, db *pgxpool.Pool, orgID, inst
 		  -- locally; delegating for them would send their password to a third
 		  -- party we no longer need to ask.
 		  AND pc.user_id IS NULL
-		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))
+		  AND (u.email_fold = lower($1) OR u.username_fold = lower($1))
 		  AND ($2 = '' OR u.org_id = $2::uuid)
 		  AND `+InInstance("u.org_id", "$3")+`
 		LIMIT 2`, identifier, orgID, instanceID)

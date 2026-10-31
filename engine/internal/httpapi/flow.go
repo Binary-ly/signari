@@ -2423,7 +2423,7 @@ func (s *Server) lookupCredentials(ctx context.Context, identifier, orgID string
 		WHERE u.status IN ('active', 'pending')
 		  AND ($2 = '' OR u.org_id::text = $2)
 		  AND `+store.InInstance("u.org_id", "$3")+`
-		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))
+		  AND (u.email_fold = lower($1) OR u.username_fold = lower($1))
 		ORDER BY u.org_id
 		LIMIT 5`, identifier, orgID, s.instanceID)
 	if err != nil {

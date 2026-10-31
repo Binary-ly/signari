@@ -104,7 +104,7 @@ func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request,
 	var userID string
 	err = tx.QueryRow(ctx, `
 		SELECT id::text FROM core.users
-		 WHERE org_id = $1::uuid AND lower(email) = lower($2) AND status = 'active'`,
+		 WHERE org_id = $1::uuid AND email_fold = lower($2) AND status = 'active'`,
 		orgID, username).Scan(&userID)
 	if err != nil {
 		s.log.Info("kerberos principal has no account", "correlation_id", correlationID(ctx))

@@ -4532,7 +4532,7 @@ func groupMember(ctx context.Context, conn *pgx.Conn, orgID, name, email string,
 	var userID string
 	if err := conn.QueryRow(ctx,
 		`SELECT id::text FROM core.users WHERE org_id = $1::uuid
-		   AND (lower(email) = lower($2) OR lower(username) = lower($2))`,
+		   AND (email_fold = lower($2) OR username_fold = lower($2))`,
 		orgID, email).Scan(&userID); err != nil {
 		return fmt.Errorf("no user %q in that organisation", email)
 	}
@@ -6260,7 +6260,7 @@ func duoEnroll(ctx context.Context, conn *pgx.Conn, orgID, email, duoUsername st
 	// One address may belong to a person in each of several organisations, so
 	// the address alone found whichever came back first, and -org then refused
 	// it as "a different organisation" while the right person existed.
-	userID, foundOrg, err := oneInOrg(ctx, conn, "users", "lower(email) = lower($1)", email, orgID,
+	userID, foundOrg, err := oneInOrg(ctx, conn, "users", "email_fold = lower($1)", email, orgID,
 		"user with address")
 	if err != nil {
 		return err
@@ -7696,7 +7696,7 @@ func kerberosSync(ctx context.Context, conn *pgx.Conn, orgID, realm,
 		}
 		var found bool
 		if err := conn.QueryRow(ctx, `
-			SELECT true FROM core.users WHERE org_id = $1::uuid AND lower(email) = lower($2)`,
+			SELECT true FROM core.users WHERE org_id = $1::uuid AND email_fold = lower($2)`,
 			orgID, email).Scan(&found); err == nil && found {
 			existing++
 			continue
@@ -8345,7 +8345,7 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 	var userID string
 	if err := conn.QueryRow(ctx, `
 		SELECT id::text FROM core.users
-		WHERE org_id = $1::uuid AND lower(email) = lower($2)`,
+		WHERE org_id = $1::uuid AND email_fold = lower($2)`,
 		orgID, strings.TrimSpace(email)).Scan(&userID); err != nil {
 		return fmt.Errorf("no user %q in that organisation", email)
 	}

@@ -73,7 +73,7 @@ func (w *LDAPWriter) actorID(ctx context.Context, q interface {
 	var id string
 	err := q.QueryRow(ctx, `
 		SELECT id::text FROM core.users
-		WHERE org_id = $1::uuid AND (lower(username) = lower($2) OR lower(email) = lower($2))`,
+		WHERE org_id = $1::uuid AND (username_fold = lower($2) OR email_fold = lower($2))`,
 		w.orgID, actor).Scan(&id)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		w.log.Error("resolving the bound LDAP account", "err", err)
@@ -233,7 +233,7 @@ func (w *LDAPWriter) Update(ctx context.Context, actor, username string, u *ldap
 	err = tx.QueryRow(ctx, `
 		SELECT id::text, COALESCE(email,'') FROM core.users
 		WHERE org_id = $1::uuid AND status = 'active'
-		  AND (lower(username) = lower($2) OR lower(email) = lower($2))`,
+		  AND (username_fold = lower($2) OR email_fold = lower($2))`,
 		w.orgID, username).Scan(&userID, &currentEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ldapd.ErrNoSuchEntry
@@ -373,7 +373,7 @@ func (w *LDAPWriter) Remove(ctx context.Context, actor, username string) error {
 	err = tx.QueryRow(ctx, `
 		SELECT id::text FROM core.users
 		WHERE org_id = $1::uuid
-		  AND (lower(username) = lower($2) OR lower(email) = lower($2))`,
+		  AND (username_fold = lower($2) OR email_fold = lower($2))`,
 		w.orgID, username).Scan(&userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ldapd.ErrNoSuchEntry
@@ -415,7 +415,7 @@ func (w *LDAPWriter) Rename(ctx context.Context, actor, from, to string) error {
 	var userID string
 	err = tx.QueryRow(ctx, `
 		SELECT id::text FROM core.users
-		WHERE org_id = $1::uuid AND lower(username) = lower($2)`,
+		WHERE org_id = $1::uuid AND username_fold = lower($2)`,
 		w.orgID, from).Scan(&userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ldapd.ErrNoSuchEntry
@@ -488,7 +488,7 @@ func (w *LDAPWriter) nameTaken(ctx context.Context, q pgx.Tx, name, exceptID str
 	err := q.QueryRow(ctx, `
 		SELECT count(*) FROM core.users
 		WHERE org_id = $1::uuid
-		  AND (lower(username) = lower($2) OR lower(email) = lower($2))
+		  AND (username_fold = lower($2) OR email_fold = lower($2))
 		  AND ($3 = '' OR id <> $3::uuid)`, w.orgID, name, exceptID).Scan(&n)
 	return n > 0, err
 }
@@ -497,7 +497,7 @@ func (w *LDAPWriter) emailTaken(ctx context.Context, q pgx.Tx, email, exceptID s
 	var n int
 	err := q.QueryRow(ctx, `
 		SELECT count(*) FROM core.users
-		WHERE org_id = $1::uuid AND lower(email) = lower($2)
+		WHERE org_id = $1::uuid AND email_fold = lower($2)
 		  AND ($3 = '' OR id <> $3::uuid)`, w.orgID, email, exceptID).Scan(&n)
 	return n > 0, err
 }

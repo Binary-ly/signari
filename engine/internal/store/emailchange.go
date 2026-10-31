@@ -60,7 +60,7 @@ func StartEmailChange(ctx context.Context, tx pgx.Tx, userID, orgID, address str
 	if err := tx.QueryRow(ctx, `
 		SELECT COALESCE(u.email, ''),
 		       EXISTS (SELECT 1 FROM core.users o WHERE o.org_id = u.org_id AND o.id <> u.id
-		                AND lower(o.email) = $2)
+		                AND o.email_fold = $2)
 		  FROM core.users u WHERE u.id = $1::uuid`, userID, address).Scan(&current, &taken); err != nil {
 		return "", err
 	}

@@ -88,7 +88,7 @@ func (a *EAPCertAuthenticator) AuthenticateCertificate(cert *x509.Certificate) (
 		       CASE WHEN `+store.OrgInService("org_id")+` THEN status ELSE 'org_suspended' END
 		FROM core.users
 		WHERE org_id = $1::uuid
-		  AND (lower(email) = lower($2) OR lower(username) = lower($2))`,
+		  AND (email_fold = lower($2) OR username_fold = lower($2))`,
 		a.orgID, identity).Scan(&userID, &status)
 	// The supplicant is told nothing either way; the distinction belongs in
 	// the log, which says it without the certificate's address or name: the

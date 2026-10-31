@@ -92,7 +92,7 @@ var (
 	colDecl     = regexp.MustCompile(`(?i)^([a-z_]+)\s+([a-z_]+(?:\[\])?)\b(.*)$`)
 	// Values the database supplies. A column with one of these is not
 	// configuration and no code should be setting it.
-	dbOwned = regexp.MustCompile(`(?i)now\(\)|gen_random_uuid\(\)|nextval|uuid_generate|current_timestamp|generated always as identity`)
+	dbOwned = regexp.MustCompile(`(?i)now\(\)|gen_random_uuid\(\)|nextval|uuid_generate|current_timestamp|generated always as`)
 )
 
 var notAColumn = map[string]bool{

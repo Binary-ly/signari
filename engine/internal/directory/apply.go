@@ -156,7 +156,7 @@ func accountsAt(ctx context.Context, tx pgx.Tx, orgID string, addresses []string
 	rows, err := tx.Query(ctx, `
 		SELECT a.address, u.id::text
 		  FROM unnest($2::text[]) AS a(address)
-		  JOIN core.users u ON u.org_id = $1::uuid AND lower(u.email) = lower(a.address)`, orgID, addresses)
+		  JOIN core.users u ON u.org_id = $1::uuid AND u.email_fold = lower(a.address)`, orgID, addresses)
 	if err != nil {
 		return nil, err
 	}

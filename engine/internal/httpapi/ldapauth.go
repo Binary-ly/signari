@@ -266,7 +266,7 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 		WHERE u.status = 'active'
 		  AND `+store.OrgInService("u.org_id")+`
 		  AND ($2 = '' OR u.org_id::text = $2)
-		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))`,
+		  AND (u.email_fold = lower($1) OR u.username_fold = lower($1))`,
 		username, a.orgID).Scan(&userID, &orgID, &hash)
 	found := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -334,7 +334,7 @@ func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd
 		       COALESCE(u.given_name,'')
 		FROM core.users u
 		WHERE u.org_id = $1::uuid
-		  AND (lower(u.username) = lower($2) OR lower(u.email) = lower($2))
+		  AND (u.username_fold = lower($2) OR u.email_fold = lower($2))
 		  AND u.status = 'active' AND `+store.OrgInService("u.org_id"), a.orgID, username).
 		Scan(&id.Username, &id.Email, &id.Active,
 			&id.DisplayName, &id.Surname, &id.GivenName)
@@ -355,7 +355,7 @@ func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd
 	var userID string
 	if err := a.db.QueryRow(ctx,
 		`SELECT id::text FROM core.users WHERE org_id = $1::uuid
-		   AND (lower(username) = lower($2) OR lower(email) = lower($2))`,
+		   AND (username_fold = lower($2) OR email_fold = lower($2))`,
 		a.orgID, username).Scan(&userID); err == nil {
 		if groups, gerr := store.AllGroupsForUser(ctx, a.db, userID); gerr == nil {
 			id.Groups = groups

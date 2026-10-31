@@ -80,7 +80,7 @@ func TestAnExactAddressLookupUsesAnIndex(t *testing.T) {
 	if err := s.db.QueryRow(ctx, "EXPLAIN (FORMAT JSON) "+sql, args...).Scan(&plan); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(plan), "users_lower_email_pattern_idx") {
+	if !strings.Contains(string(plan), "users_email_fold_idx") {
 		t.Errorf("the exact-address lookup does not use the address index:\n%s", plan)
 	}
 }

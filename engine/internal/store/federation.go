@@ -236,7 +236,7 @@ func FindLocalUserByEmail(ctx context.Context, q rowQuerier, orgID, email string
 	}
 	err = q.QueryRow(ctx, `
 		SELECT id::text FROM core.users
-		WHERE org_id = $1::uuid AND lower(email) = lower($2) AND status = 'active'`,
+		WHERE org_id = $1::uuid AND email_fold = lower($2) AND status = 'active'`,
 		orgID, email).Scan(&userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil

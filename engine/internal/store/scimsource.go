@@ -358,7 +358,7 @@ func UpsertSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 	var userID string
 	if email != "" {
 		err = tx.QueryRow(ctx, `
-			SELECT id::text FROM core.users WHERE org_id = $1::uuid AND lower(email) = lower($2)`,
+			SELECT id::text FROM core.users WHERE org_id = $1::uuid AND email_fold = lower($2)`,
 			src.OrgID, email).Scan(&userID)
 		if err != nil && err != pgx.ErrNoRows {
 			return out, err

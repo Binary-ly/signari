@@ -25,7 +25,7 @@ func roleGrant(ctx context.Context, conn *pgx.Conn, orgID, email, clientID, role
 	b := store.RoleBinding{OrgID: orgID, Role: role, ClientID: clientID}
 	if email != "" {
 		if err := conn.QueryRow(ctx, `SELECT id::text FROM core.users
-			WHERE org_id = $1::uuid AND lower(email) = lower($2)`, orgID, email).Scan(&b.UserID); err != nil {
+			WHERE org_id = $1::uuid AND email_fold = lower($2)`, orgID, email).Scan(&b.UserID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("nobody in that organisation has the address %s", email)
 			}

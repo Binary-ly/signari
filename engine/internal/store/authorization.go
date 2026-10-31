@@ -390,11 +390,17 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 func ResolveSubject(ctx context.Context, q Querier, orgID, subjectID string) (
 	userID string, err error) {
 
+	// An id only when it can be one: a cast of anything else is an error, and
+	// the column's text is what no index under row security can read.
+	var id *string
+	if canonical, ok := CanonicalUUID(subjectID); ok {
+		id = &canonical
+	}
 	rows, err := q.Query(ctx, `
 		SELECT id::text FROM core.users
 		 WHERE org_id = $1::uuid
-		   AND (id::text = $2 OR lower(email) = lower($2))
-		 LIMIT 1`, orgID, subjectID)
+		   AND (id = $3::uuid OR email_fold = lower($2))
+		 LIMIT 1`, orgID, subjectID, id)
 	if err != nil {
 		return "", err
 	}

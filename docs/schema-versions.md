@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0199 users_folded_identifiers
+
+Not compatible with the release before: stop it before migrating.
+
+Finding a person by address or name uses an index on the engine's own connection, which it never did (0.52). core.users is under FORCE ROW LEVEL SECURITY, and PostgreSQL will not run a function that is not leakproof on a column ahead of a policy, so `lower(email) = lower($1)` could use no index at all: every sign-in read every person, and the unique indexes on lower(email) served only their uniqueness. Tests connect as a role that bypasses the policy, so none of them saw it.
+
 ## 0198 directory_page_index
 
 Compatible with the release before: its binary may still serve this schema.

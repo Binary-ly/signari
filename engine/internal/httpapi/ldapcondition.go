@@ -17,9 +17,8 @@ const ldapConditionDepth = 16
 // person it gets against the filter again, so this has to include everyone the
 // filter matches and may include others; see ldapd's narrow.
 //
-// The login and address arms are each their own index (0002's unique ones on
-// lower(), as sign-in reads them), which is what finds one person among a
-// hundred thousand in one query.
+// The login and address arms are each their own index (0199's, as sign-in reads
+// them), which is what finds one person among a hundred thousand in one query.
 func ldapCondition(c *ldapd.Condition, args *[]any, depth int) (string, error) {
 	if depth > ldapConditionDepth {
 		return "", fmt.Errorf("a directory condition nests deeper than %d", ldapConditionDepth)
@@ -45,7 +44,7 @@ func ldapCondition(c *ldapd.Condition, args *[]any, depth int) (string, error) {
 
 	case ldapd.CondLogin:
 		n := bind(c.Value)
-		arms := fmt.Sprintf("lower(u.username) = lower($%d) OR lower(u.email) = lower($%d)", n, n)
+		arms := fmt.Sprintf("u.username_fold = lower($%d) OR u.email_fold = lower($%d)", n, n)
 		// A person with neither is named by their id. Only a uuid can be that,
 		// and a cast of anything else would be an error rather than no match.
 		if id, ok := store.CanonicalUUID(c.Value); ok {
@@ -54,7 +53,7 @@ func ldapCondition(c *ldapd.Condition, args *[]any, depth int) (string, error) {
 		return "(" + arms + ")", nil
 
 	case ldapd.CondMail:
-		return fmt.Sprintf("lower(u.email) = lower($%d)", bind(c.Value)), nil
+		return fmt.Sprintf("u.email_fold = lower($%d)", bind(c.Value)), nil
 
 	case ldapd.CondName:
 		return fmt.Sprintf(`lower(COALESCE(NULLIF(u.display_name,''), NULLIF(u.username,''), u.email, u.id::text)) = lower($%d)`,

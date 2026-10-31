@@ -72,7 +72,7 @@ func importPerson(ctx context.Context, tx pgx.Tx, orgID string, p person) (impor
 	var holder, holderEmail string
 	if p.Username != "" {
 		err := tx.QueryRow(ctx, `SELECT id::text, COALESCE(email, '') FROM core.users
-			WHERE org_id = $1::uuid AND lower(username) = lower($2)`, orgID, p.Username).Scan(&holder, &holderEmail)
+			WHERE org_id = $1::uuid AND username_fold = lower($2)`, orgID, p.Username).Scan(&holder, &holderEmail)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return imported{}, err
 		}

@@ -98,7 +98,7 @@ func ImportShadow(ctx context.Context, tx pgx.Tx, orgID string, entries []Shadow
 		err := tx.QueryRow(ctx, `
 			WITH found AS (
 				SELECT id FROM core.users
-				 WHERE org_id = $1::uuid AND lower(username) = lower($3)
+				 WHERE org_id = $1::uuid AND username_fold = lower($3)
 			), made AS (
 				INSERT INTO core.users (org_id, email, username, user_handle, migration_state)
 				SELECT $1::uuid, NULLIF($2,''), $3,

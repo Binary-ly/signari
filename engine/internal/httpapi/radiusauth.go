@@ -92,7 +92,7 @@ func (a *RADIUSAuthenticator) Authorize(ctx context.Context, username string) (r
 		JOIN core.users u          ON u.id = gm.user_id
 		WHERE u.status = 'active' AND `+store.OrgInService("u.org_id")+`
 		  AND u.org_id = $2::uuid AND ra.org_id = $2::uuid
-		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))
+		  AND (u.email_fold = lower($1) OR u.username_fold = lower($1))
 		ORDER BY ra.priority DESC, ra.group_id
 		LIMIT 1`, username, a.inner.orgID).Scan(&vlan, &filter)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -120,7 +120,7 @@ func userLocale(ctx context.Context, conn *pgx.Conn, orgID, email, tag string) e
 	}
 	tag = strings.TrimSpace(tag)
 	userID, _, err := oneInOrg(ctx, conn, "users",
-		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+		"(email_fold = lower($1) OR username_fold = lower($1))", email, orgID, "user")
 	if err != nil {
 		return err
 	}
@@ -915,7 +915,7 @@ func userUnlock(ctx context.Context, conn *pgx.Conn, orgID, email string) error 
 		return fmt.Errorf("give -email (and -org where the address is in more than one)")
 	}
 	userID, userOrg, err := oneInOrg(ctx, conn, "users",
-		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+		"(email_fold = lower($1) OR username_fold = lower($1))", email, orgID, "user")
 	if err != nil {
 		return err
 	}
@@ -952,7 +952,7 @@ func userApprove(ctx context.Context, conn *pgx.Conn, orgID, email string) error
 		return fmt.Errorf("give -email (and -org where the address is in more than one)")
 	}
 	userID, userOrg, err := oneInOrg(ctx, conn, "users",
-		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+		"(email_fold = lower($1) OR username_fold = lower($1))", email, orgID, "user")
 	if err != nil {
 		return err
 	}
@@ -1028,7 +1028,7 @@ func userRemoveFactor(ctx context.Context, conn *pgx.Conn, orgID, email, kind, f
 		return fmt.Errorf("give -email and -factor (totp, email_otp, sms_otp, duo, webauthn or recovery)")
 	}
 	userID, userOrg, err := oneInOrg(ctx, conn, "users",
-		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+		"(email_fold = lower($1) OR username_fold = lower($1))", email, orgID, "user")
 	if err != nil {
 		return err
 	}
@@ -1071,7 +1071,7 @@ func userPasskeyLink(ctx context.Context, conn *pgx.Conn, orgID, email string, t
 		return fmt.Errorf("give -email; -link-expires is how long the link works, 1m to 168h (default 24h)")
 	}
 	userID, userOrg, err := oneInOrg(ctx, conn, "users",
-		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+		"(email_fold = lower($1) OR username_fold = lower($1))", email, orgID, "user")
 	if err != nil {
 		return err
 	}
@@ -1231,7 +1231,7 @@ func userAssignOTP(ctx context.Context, conn *pgx.Conn, orgID, email, seedFile s
 		return err
 	}
 	userID, userOrg, err := oneInOrg(ctx, conn, "users",
-		"(lower(email) = lower($1) OR lower(username) = lower($1))", email, orgID, "user")
+		"(email_fold = lower($1) OR username_fold = lower($1))", email, orgID, "user")
 	if err != nil {
 		return err
 	}

@@ -54,7 +54,7 @@ func ResolveCIBASubject(ctx context.Context, db *pgxpool.Pool, orgID, hint strin
 	err := db.QueryRow(ctx, `
 		SELECT id::text FROM core.users
 		WHERE org_id = $1::uuid AND status = 'active'
-		  AND (lower(email) = lower($2) OR lower(username) = lower($2))`,
+		  AND (email_fold = lower($2) OR username_fold = lower($2))`,
 		orgID, hint).Scan(&userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrCIBASubjectUnknown

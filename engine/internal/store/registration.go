@@ -175,6 +175,7 @@ type NewClientRegistration struct {
 // RegisteredClient is what came back.
 type RegisteredClient struct {
 	ClientID          string
+	OrgID             string
 	DisplayName       string
 	ClientSecret      string
 	RegistrationToken string
@@ -287,12 +288,12 @@ func LoadRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID string
 	instanceID string) (*RegisteredClient, error) {
 	c := &RegisteredClient{}
 	err := db.QueryRow(ctx, `
-		SELECT client_id, display_name, scopes
+		SELECT client_id, org_id::text, display_name, scopes
 		FROM core.clients
 		WHERE client_id = $1 AND dynamically_registered
 		  AND registration_token_hash = $2
 		  AND `+InInstance("org_id", "$3"), clientID, tokenHash, instanceID).
-		Scan(&c.ClientID, &c.DisplayName, &c.Scopes)
+		Scan(&c.ClientID, &c.OrgID, &c.DisplayName, &c.Scopes)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrRegistrationClosed
@@ -305,6 +306,29 @@ func LoadRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID string
 		return nil, err
 	}
 	return c, nil
+}
+
+// UpdateRegisteredClient replaces what a registrant may change of their own client:
+// its name, where it may be redirected and what it may ask for. In one transaction,
+// since a client caught between the two statements would have no redirect at all.
+func UpdateRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID, name string, redirectURIs, scopes []string) error {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `UPDATE core.clients SET display_name = $2, scopes = $3, updated_at = now()
+		WHERE client_id = $1 AND dynamically_registered`, clientID, name, scopes); err != nil {
+		return fmt.Errorf("updating a registered client: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM core.client_redirect_uris WHERE client_id = $1`, clientID); err != nil {
+		return fmt.Errorf("replacing a registered client's redirects: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO core.client_redirect_uris (client_id, redirect_uri)
+		SELECT $1, unnest($2::text[])`, clientID, redirectURIs); err != nil {
+		return fmt.Errorf("replacing a registered client's redirects: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // DeleteRegisteredClient removes a self-registered client.

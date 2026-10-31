@@ -501,6 +501,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /oauth2/device_authorization", s.handleDeviceAuthorization)
 	mux.HandleFunc("POST /oauth2/register", s.handleRegister)
 	mux.HandleFunc("GET /oauth2/register/{clientID}", s.handleRegisteredClient)
+	mux.HandleFunc("PUT /oauth2/register/{clientID}", s.handleRegisteredClient)
 	mux.HandleFunc("DELETE /oauth2/register/{clientID}", s.handleRegisteredClient)
 	// Both methods on one path: GET renders the code entry screen, POST handles
 	// entry and the approve/refuse decision.

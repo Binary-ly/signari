@@ -345,6 +345,8 @@ func (s *Server) handleRegisteredClient(w http.ResponseWriter, r *http.Request) 
 			"scope":         strings.Join(c.Scopes, " "),
 			"grant_types":   []string{"authorization_code", "refresh_token"},
 		})
+	case http.MethodPut:
+		s.replaceRegisteredClient(w, r, c)
 	case http.MethodDelete:
 		if err := store.DeleteRegisteredClient(ctx, s.db, clientID); err != nil {
 			s.log.Error("deleting a registered client", "err", err)
@@ -355,9 +357,71 @@ func (s *Server) handleRegisteredClient(w http.ResponseWriter, r *http.Request) 
 			"correlation_id", correlationID(ctx))
 		w.WriteHeader(http.StatusNoContent)
 	default:
-		w.Header().Set("Allow", "GET, DELETE")
+		w.Header().Set("Allow", "GET, PUT, DELETE")
 		writeError(w, http.StatusMethodNotAllowed, "invalid_request", "")
 	}
+}
+
+// replaceRegisteredClient is RFC 7592's update, held to what registering was: the same
+// redirect rules and the same ceiling on scopes, read from the policy as it stands now.
+// A registrant holding the token is not thereby trusted with more than a stranger
+// registering afresh, so a policy tightened since narrows the client here. A secret
+// cannot be chosen, and the token stays as it is.
+func (s *Server) replaceRegisteredClient(w http.ResponseWriter, r *http.Request, c *store.RegisteredClient) {
+	ctx := r.Context()
+	var req struct {
+		registrationRequest
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", "the request body is not valid JSON")
+		return
+	}
+	if req.ClientID != c.ClientID {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", "client_id must be the client being updated")
+		return
+	}
+	if req.ClientSecret != "" {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", "a client secret cannot be chosen")
+		return
+	}
+	if len(req.RedirectURIs) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_redirect_uri",
+			"redirect_uris is required: a client with none can never complete a flow")
+		return
+	}
+	for _, u := range req.RedirectURIs {
+		if err := validateRegisteredRedirect(u); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_redirect_uri", err.Error())
+			return
+		}
+	}
+	pol, err := store.LoadRegistrationPolicy(ctx, s.db, c.OrgID)
+	if err != nil {
+		s.log.Error("loading the registration policy", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "")
+		return
+	}
+	granted := intersectScopes(strings.Fields(req.Scope), pol.AllowedScopes)
+	if len(granted) == 0 {
+		granted = []string{"openid"}
+	}
+	name := displayNameFor(req.ClientName)
+	if err := store.UpdateRegisteredClient(ctx, s.db, c.ClientID, name, req.RedirectURIs, granted); err != nil {
+		s.log.Error("updating a registered client", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "")
+		return
+	}
+	s.log.Info("registered client updated", "client_id", c.ClientID, "correlation_id", correlationID(ctx))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"client_id":               c.ClientID,
+		"client_name":             name,
+		"redirect_uris":           req.RedirectURIs,
+		"scope":                   strings.Join(granted, " "),
+		"grant_types":             []string{"authorization_code", "refresh_token"},
+		"registration_client_uri": s.cfg.Issuer + "/oauth2/register/" + c.ClientID,
+	})
 }
 
 // authorizeRegistration decides whether this caller may register, and where.

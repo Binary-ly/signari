@@ -12,8 +12,15 @@ signari registration token  -org <uuid> -name "ci pipeline" -uses 3
 ```
 POST   /oauth2/register                 register
 GET    /oauth2/register/{client_id}     read it back
+PUT    /oauth2/register/{client_id}     replace its name, redirects and scope
 DELETE /oauth2/register/{client_id}     remove it
 ```
+
+`PUT` takes the `client_id`, `redirect_uris`, `client_name` and `scope`. It is held to
+what registering was: the same redirect rules, and scopes intersected with the policy
+as it stands now, so a policy tightened since narrows the client. A secret cannot be
+chosen, and the registration access token stays as it is. Nothing else a client
+registered with changes.
 
 ## Off by default, and why
 

@@ -3,6 +3,7 @@ package saml
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -246,15 +247,19 @@ func ConsumeResponse(raw []byte, p *InboundProvider,
 	if err := checkIssuer(root, assertion, p.EntityID); err != nil {
 		return nil, err
 	}
-	if err := checkInResponseTo(root, assertion, p, opt.ExpectedInResponseTo); err != nil {
-		return nil, err
-	}
 	if err := checkDestination(root, opt.Destination); err != nil {
 		return nil, err
 	}
-
 	skew := clampSkew(p.SkewSeconds)
-	notOnOrAfter, err := checkConditions(assertion, p.SPEntityID, opt.Now, skew)
+	confirmation, err := bearerConfirmation(assertion, opt, skew)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkInResponseTo(root, confirmation, p, opt.ExpectedInResponseTo); err != nil {
+		return nil, err
+	}
+
+	notOnOrAfter, err := checkConditions(assertion, confirmation, p.SPEntityID, opt.Now, skew)
 	if err != nil {
 		return nil, err
 	}
@@ -416,17 +421,14 @@ func checkIssuer(root, assertion *etree.Element, want string) error {
 // can be posted into a victim's session and signs them in as somebody else. The
 // signature says the upstream minted it; only this says it was minted for now,
 // for this browser, because we asked.
-func checkInResponseTo(root, assertion *etree.Element, p *InboundProvider,
+func checkInResponseTo(root, confirmation *etree.Element, p *InboundProvider,
 	expected string) error {
 
 	got := root.SelectAttrValue("InResponseTo", "")
 
 	// The subject confirmation carries it too, and both must agree: a document
 	// where they differ is trying to satisfy two readers at once.
-	scGot := ""
-	if scd := assertion.FindElement("./Subject/SubjectConfirmation/SubjectConfirmationData"); scd != nil {
-		scGot = scd.SelectAttrValue("InResponseTo", "")
-	}
+	scGot := confirmation.SelectAttrValue("InResponseTo", "")
 	if got != "" && scGot != "" && got != scGot {
 		return fmt.Errorf("the response answers request %q while the assertion inside "+
 			"answers %q", got, scGot)
@@ -471,8 +473,56 @@ func checkDestination(root *etree.Element, want string) error {
 	return nil
 }
 
+const bearerMethod = "urn:oasis:names:tc:SAML:2.0:cm:bearer"
+
+// bearerConfirmation finds what lets the holder of this assertion present it here: a
+// bearer confirmation addressed to our ACS, unexpired, answering our request. An
+// assertion may carry several, for several recipients, so each is tried and any one
+// will do. Without this an assertion minted for another service provider's ACS passes
+// on its audience and its timing alone, and those two say nothing of where it was
+// meant to be delivered.
+//
+// The SAML profiles document is not in specs/. This is at least as strict as the
+// implementation it was read against, which takes the first bearer confirmation and
+// matches its Recipient to the response's Destination; see ROADMAP 8.35.
+func bearerConfirmation(assertion *etree.Element, opt ConsumeOptions, skew time.Duration) (*etree.Element, error) {
+	var refused error
+	for _, sc := range assertion.FindElements("./Subject/SubjectConfirmation") {
+		if sc.SelectAttrValue("Method", "") != bearerMethod {
+			continue
+		}
+		scd := sc.FindElement("./SubjectConfirmationData")
+		if scd == nil {
+			refused = errors.New("a bearer confirmation has no SubjectConfirmationData, so nothing says where it may be used")
+			continue
+		}
+		if recipient := scd.SelectAttrValue("Recipient", ""); opt.Destination == "" || !sameURL(recipient, opt.Destination) {
+			refused = fmt.Errorf("the assertion is confirmed for %q, not for this endpoint (%q)", recipient, opt.Destination)
+			continue
+		}
+		until, err := time.Parse(time.RFC3339, scd.SelectAttrValue("NotOnOrAfter", ""))
+		if err != nil {
+			refused = fmt.Errorf("a bearer confirmation has no usable NotOnOrAfter: %w", err)
+			continue
+		}
+		if !opt.Now.Add(-skew).Before(until) {
+			refused = fmt.Errorf("the subject confirmation expired at %s", until.Format(time.RFC3339))
+			continue
+		}
+		if got := scd.SelectAttrValue("InResponseTo", ""); got != "" && got != opt.ExpectedInResponseTo {
+			refused = fmt.Errorf("a bearer confirmation answers request %q, not the one this browser sent", got)
+			continue
+		}
+		return scd, nil
+	}
+	if refused == nil {
+		refused = errors.New("the assertion has no bearer confirmation, so nothing allows its holder to present it")
+	}
+	return nil, refused
+}
+
 // checkConditions validates the time window and the audience.
-func checkConditions(assertion *etree.Element, spEntityID string, now time.Time,
+func checkConditions(assertion, confirmation *etree.Element, spEntityID string, now time.Time,
 	skew time.Duration) (time.Time, error) {
 
 	cond := assertion.FindElement("./Conditions")
@@ -531,22 +581,9 @@ func checkConditions(assertion *etree.Element, spEntityID string, now time.Time,
 	}
 
 	// The subject confirmation has its own expiry, and it is usually shorter.
-	if scd := assertion.FindElement(
-		"./Subject/SubjectConfirmation/SubjectConfirmationData"); scd != nil {
-		if v := scd.SelectAttrValue("NotOnOrAfter", ""); v != "" {
-			t, err := time.Parse(time.RFC3339, v)
-			if err != nil {
-				return time.Time{}, fmt.Errorf("SubjectConfirmationData NotOnOrAfter "+
-					"%q is not a timestamp: %w", v, err)
-			}
-			if !now.Add(-skew).Before(t) {
-				return time.Time{}, fmt.Errorf("the subject confirmation expired at %s",
-					t.Format(time.RFC3339))
-			}
-			if notOnOrAfter.IsZero() || t.Before(notOnOrAfter) {
-				notOnOrAfter = t
-			}
-		}
+	if t, err := time.Parse(time.RFC3339, confirmation.SelectAttrValue("NotOnOrAfter", "")); err == nil &&
+		(notOnOrAfter.IsZero() || t.Before(notOnOrAfter)) {
+		notOnOrAfter = t
 	}
 
 	if notOnOrAfter.IsZero() {

@@ -48,7 +48,16 @@ func newUpstream(t *testing.T) *upstream {
 	}
 }
 
+// confirmation is one SubjectConfirmation of a test response.
+type confirmation struct {
+	method, recipient string
+	noData, noExpiry  bool
+}
+
 type respOpts struct {
+	// confirmations replaces the one bearer confirmation a response has, for
+	// destination, when set.
+	confirmations  []confirmation
 	inResponseTo   string
 	audience       string
 	destination    string
@@ -115,15 +124,26 @@ func (u *upstream) response(t *testing.T, o respOpts) []byte {
 	nid := sub.CreateElement("saml:NameID")
 	nid.CreateAttr("Format", o.nameIDFormat)
 	nid.SetText(o.nameID)
-	sc := sub.CreateElement("saml:SubjectConfirmation")
-	sc.CreateAttr("Method", "urn:oasis:names:tc:SAML:2.0:cm:bearer")
-	scd := sc.CreateElement("saml:SubjectConfirmationData")
-	scd.CreateAttr("NotOnOrAfter", o.notOnOrAfter.UTC().Format(time.RFC3339))
-	if o.inResponseTo != "" {
-		scd.CreateAttr("InResponseTo", o.inResponseTo)
+	confirmations := o.confirmations
+	if confirmations == nil {
+		confirmations = []confirmation{{method: bearerMethod, recipient: o.destination}}
 	}
-	if o.destination != "" {
-		scd.CreateAttr("Recipient", o.destination)
+	for _, c := range confirmations {
+		sc := sub.CreateElement("saml:SubjectConfirmation")
+		sc.CreateAttr("Method", c.method)
+		if c.noData {
+			continue
+		}
+		scd := sc.CreateElement("saml:SubjectConfirmationData")
+		if !c.noExpiry {
+			scd.CreateAttr("NotOnOrAfter", o.notOnOrAfter.UTC().Format(time.RFC3339))
+		}
+		if o.inResponseTo != "" {
+			scd.CreateAttr("InResponseTo", o.inResponseTo)
+		}
+		if c.recipient != "" {
+			scd.CreateAttr("Recipient", c.recipient)
+		}
 	}
 
 	if !o.omitConditions {

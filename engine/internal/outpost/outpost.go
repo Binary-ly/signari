@@ -251,19 +251,24 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 		// A core that cannot be reached is NOT an authentication failure. Saying
 		// "wrong password" when the network is down sends everybody to reset
 		// their password during an outage, which makes the outage worse.
-		return fmt.Errorf("the core could not be reached: %w", err)
+		return fmt.Errorf("%w: %w", ldapd.ErrUnavailable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
+			return fmt.Errorf("%w: reading the core's answer: %w", ldapd.ErrUnavailable, err)
+		}
+		return nil
 	case http.StatusUnauthorized, http.StatusNotFound:
 		return ErrRefused
 	case http.StatusBadRequest:
 		return errBadRequest
+	case http.StatusTooManyRequests:
+		return ldapd.ErrBusy
 	default:
-		return fmt.Errorf("the core answered %s", resp.Status)
+		return fmt.Errorf("%w: the core answered %s", ldapd.ErrUnavailable, resp.Status)
 	}
 }
 

@@ -89,6 +89,7 @@ const (
 	// "Indicates that the server is too busy to service the operation."
 	// RFC 4511 s4.1.9, specs/rfc4511.txt:2904.
 	resultBusy                      = 51
+	resultUnavailable               = 52 // specs/rfc4511.txt:2919
 	resultUnwillingToPerform        = 53
 	resultNamingViolation           = 64
 	resultObjectClassViolation      = 65

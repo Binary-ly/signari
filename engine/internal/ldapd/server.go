@@ -196,13 +196,6 @@ type session struct {
 	dn       string
 }
 
-// peerKey carries the connection's remote address down to the Authenticator.
-//
-// A context value rather than a parameter on Authenticate, for the same reason
-// net/http puts the local address in the connection context: every LDAP
-// operation would otherwise have to grow an address argument to serve the one
-// that needs it, and each implementation of the interface would have to be
-// changed to ignore it.
 // ErrBusy is returned by an Authenticator that refused a bind without judging
 // the credential, because the caller has spent a failure budget.
 //
@@ -210,6 +203,20 @@ type session struct {
 // answers on the wire, and only the Authenticator knows which happened.
 var ErrBusy = errors.New("too many recent authentication failures")
 
+// ErrUnavailable is returned by an Authenticator that could not ask: what it
+// depends on is down, as an outpost's core can be. RFC 4511 A.2 has a code for
+// exactly this, unavailable (52), "a subsystem necessary to complete the
+// operation is offline". Read as an invalid credential, an outage tells
+// everybody behind an outpost that a correct password is wrong.
+var ErrUnavailable = errors.New("the service behind this directory cannot be reached")
+
+// peerKey carries the connection's remote address down to the Authenticator.
+//
+// A context value rather than a parameter on Authenticate, for the same reason
+// net/http puts the local address in the connection context: every LDAP
+// operation would otherwise have to grow an address argument to serve the one
+// that needs it, and each implementation of the interface would have to be
+// changed to ignore it.
 type peerKey struct{}
 
 type bindProofKey struct{}
@@ -588,6 +595,13 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 		return s.write(c, newMessage(messageID, newResult(appBindResponse,
 			resultBusy, "", "too many recent authentication failures")))
 	}
+	if errors.Is(err, ErrUnavailable) {
+		// Before the collapse below, which is about what is said of a person:
+		// this says nothing of anybody, and it is the same for every bind.
+		s.log.Error("ldap bind could not be judged", "err", err, "remote", c.RemoteAddr().String())
+		return s.write(c, newMessage(messageID, newResult(appBindResponse,
+			resultUnavailable, "", "authentication is unavailable")))
+	}
 	if err != nil || id == nil {
 		s.log.Info("ldap bind failed", "remote", c.RemoteAddr().String())
 		// One message for every failure: no such user, wrong password,
@@ -691,6 +705,11 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
 			resultTimeLimitExceeded, "", "the search exceeded the requested timeLimit")))
 	}
+	if errors.Is(err, ErrUnavailable) {
+		s.log.Error("ldap search could not be answered", "err", err)
+		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
+			resultUnavailable, "", "the directory is unavailable")))
+	}
 	if err != nil {
 		s.log.Error("ldap search", "err", err)
 		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
@@ -752,6 +771,9 @@ func (s *Server) ownEntry(ctx context.Context, sess *session, req *searchRequest
 			return nil, nil
 		}
 		asked, lerr := s.auth.Lookup(ctx, username)
+		if errors.Is(lerr, ErrUnavailable) {
+			return nil, lerr
+		}
 		if lerr != nil || asked == nil || !equalFold(asked.Username, self.Username) {
 			return nil, nil
 		}
@@ -818,6 +840,11 @@ func (s *Server) entriesFor(ctx context.Context, req *searchRequest, after strin
 			return nil, "", false, nil
 		}
 		id, err := s.auth.Lookup(ctx, username)
+		if errors.Is(err, ErrUnavailable) {
+			// An empty answer is a statement that nobody is there, which a
+			// service reading this directory is entitled to act on.
+			return nil, "", false, err
+		}
 		if err != nil || id == nil {
 			return nil, "", false, nil
 		}

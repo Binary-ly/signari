@@ -2868,11 +2868,35 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "class": {
+                    "type": "string"
+                  },
                   "filter_id": {
                     "type": "string"
                   },
                   "priority": {
                     "type": "integer"
+                  },
+                  "session_timeout": {
+                    "type": "integer"
+                  },
+                  "vendor_attributes": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "integer"
+                        },
+                        "value": {
+                          "type": "string"
+                        },
+                        "vendor": {
+                          "type": "integer"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
                   },
                   "vlan_id": {
                     "type": "integer"

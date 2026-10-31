@@ -718,6 +718,9 @@
     "RADIUSAuthorization": {
       "additionalProperties": false,
       "properties": {
+        "class": {
+          "type": "string"
+        },
         "filter_id": {
           "type": "string"
         },
@@ -726,6 +729,15 @@
         },
         "priority": {
           "type": "integer"
+        },
+        "session_timeout": {
+          "type": "integer"
+        },
+        "vendor_attributes": {
+          "items": {
+            "$ref": "#/$defs/VendorAttribute"
+          },
+          "type": "array"
         },
         "vlan": {
           "type": "integer"
@@ -1083,6 +1095,21 @@
         "poll_interval": {
           "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
           "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "VendorAttribute": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "integer"
+        },
+        "value": {
+          "type": "string"
+        },
+        "vendor": {
+          "type": "integer"
         }
       },
       "type": "object"

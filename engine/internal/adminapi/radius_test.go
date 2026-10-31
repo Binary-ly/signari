@@ -123,6 +123,83 @@ func TestRADIUSIsConfiguredThroughTheAPI(t *testing.T) {
 
 // A token narrowed to one group places that group on a VLAN and sees only
 // its own authorisation; another group is not its to change.
+// Everything a group can be given is set and read back through the API, alone
+// or together, and what could not be sent is refused here rather than dropped
+// at Access-Accept (7.06).
+func TestAGroupIsGivenAnyRADIUSAttribute(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	org := anyOrgID(t, s)
+	var group string
+	if err := s.db.QueryRow(ctx, `INSERT INTO core.groups (org_id, name, display_name) VALUES ($1::uuid, $2, $2)
+		RETURNING id::text`, org, fmt.Sprintf("attrs-%d", time.Now().UnixNano())).Scan(&group); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.groups WHERE id = $1::uuid`, group)
+	})
+	path := "/admin/groups/" + group + "/radius"
+	list := "/admin/organizations/" + org + "/radius-authorizations"
+	read := func() map[string]any {
+		t.Helper()
+		var out struct {
+			Authorizations []map[string]any `json:"authorizations"`
+		}
+		rec := call(t, s, http.MethodGet, list, testToken, nil)
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range out.Authorizations {
+			if a["group_id"] == group {
+				return a
+			}
+		}
+		return nil
+	}
+
+	// Each alone is something to say, in this order: the last is what is left.
+	for _, body := range []map[string]any{
+		{"session_timeout": 3600},
+		{"class": "staff"},
+		{"vendor_attributes": []map[string]any{{"vendor": 9, "type": 1, "value": "x=y"}}},
+	} {
+		if rec := call(t, s, http.MethodPut, path, testToken, body); rec.Code != http.StatusOK {
+			t.Errorf("%v alone answered %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	got := read()
+	vendor, _ := got["vendor_attributes"].([]any)
+	if len(vendor) != 1 || got["session_timeout"] != nil {
+		t.Errorf("a PUT replaces what the group carried, and it reads %v", got)
+	}
+
+	if rec := call(t, s, http.MethodPut, path, testToken, map[string]any{"vlan_id": 42, "session_timeout": 28800,
+		"class": "staff", "priority": 5}); rec.Code != http.StatusOK {
+		t.Fatalf("the lot answered %d %s", rec.Code, rec.Body.String())
+	}
+	got = read()
+	if got["vlan_id"] != float64(42) || got["session_timeout"] != float64(28800) || got["class"] != "staff" {
+		t.Errorf("read back %v", got)
+	}
+	if vendor, _ := got["vendor_attributes"].([]any); vendor == nil || len(vendor) != 0 {
+		t.Errorf("no vendor attributes read %v, want an empty list", got["vendor_attributes"])
+	}
+
+	for name, body := range map[string]map[string]any{
+		"nothing at all":     {},
+		"a negative timeout": {"session_timeout": -1},
+		"a long class":       {"class": strings.Repeat("x", 254)},
+		"no vendor":          {"vendor_attributes": []map[string]any{{"type": 1, "value": "x"}}},
+		"no type":            {"vendor_attributes": []map[string]any{{"vendor": 9, "value": "x"}}},
+		"a long value":       {"vendor_attributes": []map[string]any{{"vendor": 9, "type": 1, "value": strings.Repeat("x", 248)}}},
+	} {
+		rec := call(t, s, http.MethodPut, path, testToken, body)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_radius_authorization") {
+			t.Errorf("%s answered %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestAGroupNarrowedTokenAuthorisesItsOwnGroupOnly(t *testing.T) {
 	s, _ := newTestServer(t)
 	ctx := context.Background()
@@ -134,7 +211,7 @@ func TestAGroupNarrowedTokenAuthorisesItsOwnGroupOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := store.SetRADIUSAuthorization(ctx, s.db, org, groups[1], 7, "", 0); err != nil {
+	if err := store.SetRADIUSAuthorization(ctx, s.db, org, groups[1], store.RADIUSGrant{VLAN: 7}); err != nil {
 		t.Fatal(err)
 	}
 	narrowed, _, err := NewToken(ctx, s.db, "radius-narrowed-"+groups[0], org,

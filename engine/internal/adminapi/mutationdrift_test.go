@@ -411,7 +411,8 @@ func allMutatingRoutes() []mutatingRoute {
 			name: "DELETE /admin/groups/{groupID}/radius", method: http.MethodDelete,
 			path: func(t *testing.T, s *Server) string {
 				group := newDriftGroup(t, s)
-				if err := store.SetRADIUSAuthorization(context.Background(), s.db, anyOrgID(t, s), group, 42, "", 0); err != nil {
+				if err := store.SetRADIUSAuthorization(context.Background(), s.db, anyOrgID(t, s), group,
+					store.RADIUSGrant{VLAN: 42}); err != nil {
 					t.Fatal(err)
 				}
 				return "/admin/groups/" + group + "/radius"

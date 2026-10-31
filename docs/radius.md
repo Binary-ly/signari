@@ -21,6 +21,31 @@ The Admin API registers devices, revokes them and places groups on VLANs the
 same way, under `/admin/organizations/{orgID}/radius-clients` and
 `/admin/groups/{groupID}/radius`; see [admin-api.md](admin-api.md).
 
+A group can give its members more than a VLAN, and an Access-Accept says the same
+thing whether the person arrived with a password or a certificate:
+
+```sh
+signari radius authorize --org=<org-uuid> --group=network-admins --vlan=20 \
+  --filter-id=staff --session-timeout=28800 --radius-class=staff \
+  --vendor-attributes=9:1=shell:priv-lvl=15
+```
+
+| Flag | Attribute | |
+|---|---|---|
+| `--vlan` | Tunnel-Type, Tunnel-Medium-Type, Tunnel-Private-Group-ID | 1 to 4094. |
+| `--filter-id` | Filter-Id | A filter list already on the device. |
+| `--session-timeout` | Session-Timeout | Seconds the device may keep the session. |
+| `--radius-class` | Class | Opaque to the device, which echoes it in accounting. |
+| `--vendor-attributes` | Vendor-Specific | `vendor:type=value`, comma-separated. |
+
+A vendor attribute is given by number, because the engine carries no dictionary:
+the vendor's IANA enterprise number, the attribute number from its documentation,
+and a value of up to 247 bytes, sent as it stands. Only the first `=` divides, so
+a value may hold more; one holding a comma is given in a
+[configuration file](config-as-code.md) or through the Admin API instead. Somebody in several authorised groups gets the one with the
+highest `--priority`, ties broken by group id, and only that group's attributes:
+they are not merged.
+
 Networks may overlap. A packet is checked against the **most specific** network
 that contains its source address, so a `/24` for a controller inside a `/16`
 for the building uses the controller's secret. Two entries for exactly the same

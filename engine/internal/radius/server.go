@@ -312,7 +312,7 @@ func (s *Server) handle(ctx context.Context, conn net.PacketConn, addr net.Addr,
 	// no User-Password at all, so the password path below would reject it for
 	// the wrong reason and tell the supplicant nothing useful.
 	if eap, ok := p.EAPMessage(); ok {
-		s.handleEAP(conn, addr, p, secret, client, eap)
+		s.handleEAP(ctx, conn, addr, p, secret, client, eap)
 		return
 	}
 
@@ -376,28 +376,30 @@ func (s *Server) accept(ctx context.Context, conn net.PacketConn, addr net.Addr,
 	secret []byte, client Client, username string) {
 
 	s.log.Info("RADIUS authentication succeeded", "client", client.Name)
-
-	// Network authorisation, when the deployment has any.
-	//
-	// Advisory throughout: a failed lookup logs and sends an Accept with no
-	// attributes. Refusing somebody who authenticated correctly because an
-	// optional VLAN mapping could not be read would turn a directory hiccup
-	// into a building full of people who cannot get on the network.
-	var attrs []Attribute
-	if s.authz != nil {
-		auth, aerr := s.authz.Authorize(ctx, username)
-		if aerr != nil {
-			s.log.Error("reading RADIUS authorisation", "client", client.Name, "err", aerr)
-		} else {
-			attrs = auth.Attributes()
-		}
-	}
-
-	out, err := Response(p, CodeAccessAccept, secret, attrs)
+	out, err := Response(p, CodeAccessAccept, secret, s.authorization(ctx, username))
 	if err != nil {
 		return
 	}
 	_, _ = conn.WriteTo(out, addr)
+}
+
+// authorization is the network access a person's Accept carries, when the
+// deployment has any.
+//
+// Advisory throughout: a failed lookup logs and sends an Accept with no
+// attributes. Refusing somebody who authenticated correctly because an
+// optional VLAN mapping could not be read would turn a directory hiccup
+// into a building full of people who cannot get on the network.
+func (s *Server) authorization(ctx context.Context, username string) []Attribute {
+	if s.authz == nil || username == "" {
+		return nil
+	}
+	auth, err := s.authz.Authorize(ctx, username)
+	if err != nil {
+		s.log.Error("reading RADIUS authorisation", "err", err)
+		return nil
+	}
+	return auth.Attributes()
 }
 
 // reject answers Access-Reject.

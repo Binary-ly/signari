@@ -110,15 +110,15 @@ func (a *RADIUSAuthenticator) Authenticate(ctx context.Context, username, passwo
 // reproduce.
 func (a *RADIUSAuthenticator) Authorize(ctx context.Context, username string) (radius.Authorization, error) {
 	var auth radius.Authorization
-	var vlan *int
-	var filter *string
+	var vlan, timeout *int
+	var filter, class *string
 
 	// Scoped to the listener's organisation on both sides. The engine role is
 	// not subject to row-level security, so nothing else narrows this: without
 	// the org predicate a user name held in two organisations put a person on
 	// whichever one's VLAN sorted first -- the other tenant's network.
 	err := a.inner.db.QueryRow(ctx, `
-		SELECT ra.vlan_id, ra.filter_id
+		SELECT ra.vlan_id, ra.filter_id, ra.session_timeout, ra.class, ra.vendor_attributes
 		FROM core.radius_group_authorization ra
 		JOIN core.group_members gm ON gm.group_id = ra.group_id
 		JOIN core.users u          ON u.id = gm.user_id
@@ -126,7 +126,7 @@ func (a *RADIUSAuthenticator) Authorize(ctx context.Context, username string) (r
 		  AND u.org_id = $2::uuid AND ra.org_id = $2::uuid
 		  AND (u.email_fold = lower($1) OR u.username_fold = lower($1))
 		ORDER BY ra.priority DESC, ra.group_id
-		LIMIT 1`, username, a.inner.orgID).Scan(&vlan, &filter)
+		LIMIT 1`, username, a.inner.orgID).Scan(&vlan, &filter, &timeout, &class, &auth.Vendor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No authorised group. Not an error: most deployments configure none,
 		// and the Access-Accept then carries nothing, exactly as before.
@@ -140,6 +140,12 @@ func (a *RADIUSAuthenticator) Authorize(ctx context.Context, username string) (r
 	}
 	if filter != nil {
 		auth.FilterID = *filter
+	}
+	if timeout != nil {
+		auth.SessionTimeout = *timeout
+	}
+	if class != nil {
+		auth.Class = *class
 	}
 	return auth, nil
 }

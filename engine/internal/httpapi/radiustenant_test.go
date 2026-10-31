@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/radius"
 )
 
 // One user name in two organisations. User names are unique per organisation
@@ -114,6 +115,35 @@ func TestARADIUSVLANComesFromTheListenersOrganisation(t *testing.T) {
 			t.Errorf("the listener for one organisation put %q on VLAN %d, want %d: "+
 				"another tenant's network", tf.name, got.VLANID, want)
 		}
+	}
+}
+
+// Everything a group can be given reaches the Accept through the query that
+// serves it (7.06), which is not the one the Admin API reads back with.
+func TestAGrantIsReadInFullForTheAccept(t *testing.T) {
+	tf := newTwinFixture(t)
+	ctx := context.Background()
+	if _, err := tf.f.pool.Exec(ctx, `
+		UPDATE core.radius_group_authorization SET filter_id = 'staff', session_timeout = 28800, class = 'c',
+		       vendor_attributes = '[{"vendor": 9, "type": 1, "value": "shell:priv-lvl=15"}]'
+		 WHERE org_id = $1::uuid`, tf.f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := tf.radius(tf.f.orgID).Authorize(ctx, tf.name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.VLANID != tf.ownVLAN || got.FilterID != "staff" || got.SessionTimeout != 28800 || got.Class != "c" ||
+		len(got.Vendor) != 1 || got.Vendor[0] != (radius.VendorAttribute{Vendor: 9, Type: 1, Value: "shell:priv-lvl=15"}) {
+		t.Errorf("read %+v", got)
+	}
+	// The other organisation's row, which carries none of them, is read too.
+	bare, err := tf.radius(tf.otherOrg).Authorize(ctx, tf.name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bare.VLANID != tf.otherVLAN || len(bare.Attributes()) != 3 {
+		t.Errorf("a VLAN alone was read as %+v", bare)
 	}
 }
 

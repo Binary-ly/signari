@@ -1288,8 +1288,11 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `class` | string |  |
 | `filter_id` | string |  |
 | `priority` | integer |  |
+| `session_timeout` | integer |  |
+| `vendor_attributes` | list of object |  |
 | `vlan_id` | integer |  |
 
 Answers:

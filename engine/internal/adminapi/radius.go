@@ -43,15 +43,26 @@ type radiusAuthorizationView struct {
 	VLAN     *int   `json:"vlan_id"`
 	FilterID string `json:"filter_id"`
 	Priority int    `json:"priority"`
+	// Seconds, and a value for the device to echo in accounting; each absent
+	// when not set.
+	SessionTimeout int    `json:"session_timeout,omitempty"`
+	Class          string `json:"class,omitempty"`
+	// Vendor-specific attributes, always a list.
+	VendorAttributes []radius.VendorAttribute `json:"vendor_attributes"`
 }
 
-// putRADIUSAuthorizationRequest places a group's members on a VLAN, a
-// Filter-Id naming a filter list on the device, or both. Priority decides for
-// somebody in several authorised groups: highest wins, ties by group id.
+// putRADIUSAuthorizationRequest is what a group's members are given at
+// Access-Accept: a VLAN, a Filter-Id naming a filter list on the device, a
+// Session-Timeout, a Class or vendor-specific attributes, in any combination.
+// Priority decides for somebody in several authorised groups: highest wins,
+// ties by group id.
 type putRADIUSAuthorizationRequest struct {
-	VLAN     int    `json:"vlan_id"`
-	FilterID string `json:"filter_id"`
-	Priority int    `json:"priority"`
+	VLAN             int                      `json:"vlan_id"`
+	FilterID         string                   `json:"filter_id"`
+	Priority         int                      `json:"priority"`
+	SessionTimeout   int                      `json:"session_timeout"`
+	Class            string                   `json:"class"`
+	VendorAttributes []radius.VendorAttribute `json:"vendor_attributes"`
 }
 
 const radiusRefusal = "register or change a network device, which may ask for anybody's password"
@@ -205,7 +216,8 @@ func (s *Server) listRADIUSAuthorizations(w http.ResponseWriter, r *http.Request
 	out := make([]radiusAuthorizationView, 0, len(got))
 	for _, a := range got {
 		out = append(out, radiusAuthorizationView{GroupID: a.GroupID, Group: a.Group, VLAN: a.VLAN,
-			FilterID: a.FilterID, Priority: a.Priority})
+			FilterID: a.FilterID, Priority: a.Priority, SessionTimeout: a.SessionTimeout, Class: a.Class,
+			VendorAttributes: a.Vendor})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "authorizations": out})
 }
@@ -261,7 +273,9 @@ func (s *Server) changeRADIUSAuthorization(w http.ResponseWriter, r *http.Reques
 			return audit.Write(ctx, tx, audit.Event{Type: "admin.radius_authorization_removed",
 				AdminTokenID: TokenIDFrom(ctx), OrgID: orgID, Detail: map[string]any{"group_id": groupID}})
 		}
-		if err := store.SetRADIUSAuthorization(ctx, tx, orgID, groupID, req.VLAN, req.FilterID, req.Priority); err != nil {
+		if err := store.SetRADIUSAuthorization(ctx, tx, orgID, groupID, store.RADIUSGrant{
+			VLAN: req.VLAN, FilterID: req.FilterID, Priority: req.Priority, SessionTimeout: req.SessionTimeout,
+			Class: req.Class, Vendor: req.VendorAttributes}); err != nil {
 			return err
 		}
 		detail := map[string]any{"group_id": groupID, "priority": req.Priority}
@@ -271,12 +285,22 @@ func (s *Server) changeRADIUSAuthorization(w http.ResponseWriter, r *http.Reques
 		if f := strings.TrimSpace(req.FilterID); f != "" {
 			detail["filter_id"] = f
 		}
+		if req.SessionTimeout != 0 {
+			detail["session_timeout"] = req.SessionTimeout
+		}
+		if c := strings.TrimSpace(req.Class); c != "" {
+			detail["class"] = c
+		}
+		if len(req.VendorAttributes) > 0 {
+			detail["vendor_attributes"] = len(req.VendorAttributes)
+		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.radius_authorization_set", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})
 	})
 	switch {
 	case errors.Is(err, store.ErrRADIUSNothingAuthorised), errors.Is(err, store.ErrVLANRange),
-		errors.Is(err, store.ErrFilterIDLength):
+		errors.Is(err, store.ErrFilterIDLength), errors.Is(err, store.ErrSessionTimeout),
+		errors.Is(err, store.ErrRADIUSClass), errors.Is(err, store.ErrVendorAttribute):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_radius_authorization",
 			"detail": err.Error()})
 		return

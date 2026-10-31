@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0201 radius_attributes
+
+Not compatible with the release before: stop it before migrating.
+
+What else a group's members can be given at Access-Accept (7.06), beside a VLAN and a Filter-Id: a Session-Timeout in seconds, a Class the device echoes in accounting, and vendor-specific attributes. Those are named by number, the vendor's enterprise number and its own attribute type, because a device's documentation gives them that way and a dictionary here would be one more thing to go stale.
+
 ## 0200 audit_by_admin_token
 
 Compatible with the release before: its binary may still serve this schema.

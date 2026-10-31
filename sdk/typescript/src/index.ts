@@ -3684,9 +3684,19 @@ export interface PutGroupsGroupIDMembersUserIDResponse {
 
 /** A JSON object of the Admin API. */
 export interface PutGroupsGroupIDRADIUSRequest {
+  class?: string
   filter_id?: string
   priority?: number
+  session_timeout?: number
+  vendor_attributes?: PutGroupsGroupIDRADIUSRequestVendorAttributesItem[]
   vlan_id?: number
+}
+
+/** A JSON object of the Admin API. */
+export interface PutGroupsGroupIDRADIUSRequestVendorAttributesItem {
+  type?: number
+  value?: string
+  vendor?: number
 }
 
 /** A JSON object of the Admin API. */

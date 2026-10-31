@@ -59,6 +59,7 @@ import (
 	"signari.dev/engine/internal/passkeys"
 	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/provision"
+	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
 )
@@ -400,15 +401,20 @@ func dirGroupMap(ctx context.Context, conn *pgx.Conn, givenOrg, slug, remote, lo
 // radiusAuthorize places a group's members on a VLAN.
 //
 // RFC 3580 §3.31 bounds a VLAN id to 1-4094 and the column enforces it. A row
-// that sets neither a VLAN nor a Filter-Id is refused by the table, because a
-// row authorising nothing is a configuration somebody believes is doing
-// something.
-func radiusAuthorize(ctx context.Context, conn *pgx.Conn, orgID, group string,
-	vlan int, filterID string, priority int, remove bool) error {
+// that sets nothing at all is refused by the table, because a row authorising
+// nothing is a configuration somebody believes is doing something.
+func radiusAuthorize(ctx context.Context, conn *pgx.Conn, orgID, group string, vlan int, filterID string,
+	priority, sessionTimeout int, class, vendorAttributes string, remove bool) error {
 
 	if orgID == "" || group == "" {
 		return fmt.Errorf("give -org and -group")
 	}
+	vendor, err := parseVendorAttributes(vendorAttributes)
+	if err != nil {
+		return err
+	}
+	g := store.RADIUSGrant{VLAN: vlan, FilterID: filterID, Priority: priority, SessionTimeout: sessionTimeout,
+		Class: class, Vendor: vendor}
 	var groupID string
 	if err := conn.QueryRow(ctx,
 		`SELECT id::text FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
@@ -430,28 +436,80 @@ func radiusAuthorize(ctx context.Context, conn *pgx.Conn, orgID, group string,
 		return nil
 	}
 
-	switch err := store.SetRADIUSAuthorization(ctx, conn, orgID, groupID, vlan, filterID, priority); {
+	switch err := store.SetRADIUSAuthorization(ctx, conn, orgID, groupID, g); {
 	case errors.Is(err, store.ErrRADIUSNothingAuthorised):
-		return fmt.Errorf("give -vlan, -filter-id or both. A row that authorises nothing " +
-			"is a configuration somebody believes is doing something")
+		return fmt.Errorf("give at least one of -vlan, -filter-id, -session-timeout, -radius-class or " +
+			"-vendor-attributes. A row that authorises nothing is a configuration somebody believes is doing " +
+			"something")
 	case errors.Is(err, store.ErrVLANRange):
 		return fmt.Errorf("a VLAN id is 12 bits: 1 to 4094 (RFC 3580 section 3.31). "+
-			"%d is outside that, and a switch would reject or misread it", vlan)
+			"%d is outside that, and a switch would reject or misread it", g.VLAN)
 	case err != nil:
 		return err
 	}
 
 	fmt.Printf("group %q:\n", group)
-	if vlan != 0 {
-		fmt.Printf("  VLAN      : %d\n", vlan)
+	if g.VLAN != 0 {
+		fmt.Printf("  VLAN      : %d\n", g.VLAN)
 	}
-	if f := strings.TrimSpace(filterID); f != "" {
+	if f := strings.TrimSpace(g.FilterID); f != "" {
 		fmt.Printf("  Filter-Id : %s\n", f)
 	}
-	fmt.Printf("  priority  : %d\n", priority)
+	if g.SessionTimeout != 0 {
+		fmt.Printf("  timeout   : %d seconds\n", g.SessionTimeout)
+	}
+	if c := strings.TrimSpace(g.Class); c != "" {
+		fmt.Printf("  Class     : %s\n", c)
+	}
+	for _, v := range g.Vendor {
+		fmt.Printf("  vendor    : %d:%d=%s\n", v.Vendor, v.Type, v.Value)
+	}
+	fmt.Printf("  priority  : %d\n", g.Priority)
 	fmt.Println("\n  Somebody in several authorised groups gets the highest priority, and ties")
 	fmt.Println("  break by group id so the same person lands on the same VLAN every time.")
 	return nil
+}
+
+// parseVendorAttributes reads a comma-separated list. One whose value holds a
+// comma is given through a file or the Admin API: what is left after the split
+// is not vendor:type=value, so it is refused rather than sent in pieces.
+func parseVendorAttributes(s string) ([]radius.VendorAttribute, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	var out []radius.VendorAttribute
+	for part := range strings.SplitSeq(s, ",") {
+		a, err := parseVendorAttribute(strings.TrimSpace(part))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// parseVendorAttribute reads `vendor:type=value`. Only the first `=` divides:
+// a device's own settings are often `name=value` themselves.
+func parseVendorAttribute(s string) (radius.VendorAttribute, error) {
+	var a radius.VendorAttribute
+	number, value, ok := strings.Cut(s, "=")
+	vendor, kind, ok2 := strings.Cut(number, ":")
+	if !ok || !ok2 {
+		return a, fmt.Errorf("%q is not vendor:type=value", s)
+	}
+	v, err := strconv.Atoi(vendor)
+	if err != nil {
+		return a, fmt.Errorf("%q: the vendor is an enterprise number", s)
+	}
+	k, err := strconv.Atoi(kind)
+	if err != nil {
+		return a, fmt.Errorf("%q: the type is a number from 1 to 255", s)
+	}
+	a = radius.VendorAttribute{Vendor: v, Type: k, Value: value}
+	if _, ok := a.Encode(); !ok {
+		return a, fmt.Errorf("%q cannot be sent: %w", s, store.ErrVendorAttribute)
+	}
+	return a, nil
 }
 
 // providerClaimsSet bounds what a token hook may add.

@@ -109,35 +109,75 @@ func RADIUSClients(ctx context.Context, q Querier, orgID string) ([]RADIUSClient
 	return out, rows.Err()
 }
 
-// SetRADIUSAuthorization places a group's members on a VLAN, a Filter-Id or
-// both, at a priority for somebody in several authorised groups; 0 and ""
-// leave either out. Replaces what the group carried.
-func SetRADIUSAuthorization(ctx context.Context, q Execer, orgID, groupID string, vlan int, filterID string,
-	priority int) error {
-	filterID = strings.TrimSpace(filterID)
-	if vlan == 0 && filterID == "" {
+// RADIUSGrant is what a group's members are given at Access-Accept. A zero field
+// leaves that attribute out.
+type RADIUSGrant struct {
+	VLAN     int
+	FilterID string
+	// SessionTimeout is in seconds.
+	SessionTimeout int
+	Class          string
+	Vendor         []radius.VendorAttribute
+	// Priority decides for somebody in several authorised groups.
+	Priority int
+}
+
+// ErrSessionTimeout is a Session-Timeout that is not a positive number of
+// seconds a device could be sent.
+var ErrSessionTimeout = errors.New("a Session-Timeout is a positive number of seconds")
+
+// ErrRADIUSClass is a Class too long for one attribute.
+var ErrRADIUSClass = errors.New("a Class is 1 to 253 characters")
+
+// ErrVendorAttribute is a vendor-specific attribute that could not be sent.
+var ErrVendorAttribute = fmt.Errorf("a vendor attribute needs a vendor number, a type from 1 to 255, and a value "+
+	"of 1 to %d bytes", radius.MaxVendorValue)
+
+// SetRADIUSAuthorization places a group's members on what g gives them, and
+// replaces what the group carried.
+func SetRADIUSAuthorization(ctx context.Context, q Execer, orgID, groupID string, g RADIUSGrant) error {
+	g.FilterID = strings.TrimSpace(g.FilterID)
+	g.Class = strings.TrimSpace(g.Class)
+	if g.VLAN == 0 && g.FilterID == "" && g.SessionTimeout == 0 && g.Class == "" && len(g.Vendor) == 0 {
 		return ErrRADIUSNothingAuthorised
 	}
-	var vlanArg, filterArg any
-	if vlan != 0 {
-		vlanArg = vlan
+	if g.SessionTimeout < 0 {
+		return ErrSessionTimeout
 	}
-	if filterID != "" {
-		filterArg = filterID
+	for _, v := range g.Vendor {
+		if _, ok := v.Encode(); !ok {
+			return ErrVendorAttribute
+		}
+	}
+	vendor := g.Vendor
+	if vendor == nil {
+		vendor = []radius.VendorAttribute{}
+	}
+	nullable := func(v any, zero bool) any {
+		if zero {
+			return nil
+		}
+		return v
 	}
 	if _, err := q.Exec(ctx, `
 		INSERT INTO core.radius_group_authorization
-		    (org_id, group_id, vlan_id, filter_id, priority)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+		    (org_id, group_id, vlan_id, filter_id, priority, session_timeout, class, vendor_attributes)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (org_id, group_id) DO UPDATE
 		   SET vlan_id = EXCLUDED.vlan_id, filter_id = EXCLUDED.filter_id,
-		       priority = EXCLUDED.priority`,
-		orgID, groupID, vlanArg, filterArg, priority); err != nil {
+		       priority = EXCLUDED.priority, session_timeout = EXCLUDED.session_timeout,
+		       class = EXCLUDED.class, vendor_attributes = EXCLUDED.vendor_attributes`,
+		orgID, groupID, nullable(g.VLAN, g.VLAN == 0), nullable(g.FilterID, g.FilterID == ""), g.Priority,
+		nullable(g.SessionTimeout, g.SessionTimeout == 0), nullable(g.Class, g.Class == ""), vendor); err != nil {
 		switch {
 		case strings.Contains(err.Error(), "radius_group_authorization_vlan_id_check"):
 			return ErrVLANRange
 		case strings.Contains(err.Error(), "radius_group_authorization_filter_id_check"):
 			return ErrFilterIDLength
+		case strings.Contains(err.Error(), "radius_group_authorization_session_timeout_check"):
+			return ErrSessionTimeout
+		case strings.Contains(err.Error(), "radius_group_authorization_class_check"):
+			return ErrRADIUSClass
 		}
 		return err
 	}
@@ -164,13 +204,17 @@ type RADIUSAuthorization struct {
 	VLAN           *int
 	FilterID       string
 	Priority       int
+	SessionTimeout int
+	Class          string
+	Vendor         []radius.VendorAttribute
 }
 
 // RADIUSAuthorizations lists an organisation's authorised groups, highest
 // priority first, among the groups given; nil means every group.
 func RADIUSAuthorizations(ctx context.Context, q Querier, orgID string, groups []string) ([]RADIUSAuthorization, error) {
 	rows, err := q.Query(ctx, `
-		SELECT a.group_id::text, g.name, a.vlan_id, COALESCE(a.filter_id, ''), a.priority
+		SELECT a.group_id::text, g.name, a.vlan_id, COALESCE(a.filter_id, ''), a.priority,
+		       COALESCE(a.session_timeout, 0), COALESCE(a.class, ''), a.vendor_attributes
 		  FROM core.radius_group_authorization a
 		  JOIN core.groups g ON g.id = a.group_id
 		 WHERE a.org_id = $1::uuid AND ($2::uuid[] IS NULL OR a.group_id = ANY($2::uuid[]))
@@ -182,7 +226,8 @@ func RADIUSAuthorizations(ctx context.Context, q Querier, orgID string, groups [
 	var out []RADIUSAuthorization
 	for rows.Next() {
 		var a RADIUSAuthorization
-		if err := rows.Scan(&a.GroupID, &a.Group, &a.VLAN, &a.FilterID, &a.Priority); err != nil {
+		if err := rows.Scan(&a.GroupID, &a.Group, &a.VLAN, &a.FilterID, &a.Priority,
+			&a.SessionTimeout, &a.Class, &a.Vendor); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

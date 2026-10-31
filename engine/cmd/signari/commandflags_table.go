@@ -173,7 +173,7 @@ var commandFlags = map[string][]string{
 	"rac list":                        {"o"},
 	"rac set-parameters":              {"org", "rac-params", "slug"},
 	"radius add-client":               {"name", "network", "org", "secret"},
-	"radius authorize":                {"filter-id", "group", "org", "priority", "remove", "vlan"},
+	"radius authorize":                {"filter-id", "group", "org", "priority", "radius-class", "remove", "session-timeout", "vendor-attributes", "vlan"},
 	"radius disable-client":           {"name", "org"},
 	"radius enable-client":            {"name", "org"},
 	"radius list":                     {"o"},

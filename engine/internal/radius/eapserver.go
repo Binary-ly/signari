@@ -4,6 +4,7 @@ import (
 	// #nosec G501 -- RFC 2548 specifies MD5 for MPPE key encoding. It is not a
 	// choice: every access point in existence expects exactly this, and the
 	// keys it protects live for one wireless association.
+	"context"
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/binary"
@@ -21,7 +22,7 @@ import (
 // certificate problem and is not.
 
 // handleEAP advances one EAP conversation.
-func (s *Server) handleEAP(conn net.PacketConn, addr net.Addr, p *Packet,
+func (s *Server) handleEAP(ctx context.Context, conn net.PacketConn, addr net.Addr, p *Packet,
 	secret []byte, client Client, raw []byte) {
 
 	eap, err := DecodeEAP(raw)
@@ -85,7 +86,7 @@ func (s *Server) handleEAP(conn net.PacketConn, addr net.Addr, p *Packet,
 		case !done:
 			s.challenge(conn, addr, p, secret, sess, next)
 		case ok:
-			s.acceptEAP(conn, addr, p, secret, sess, eap.Identifier)
+			s.acceptEAP(ctx, conn, addr, p, secret, sess, eap.Identifier)
 			s.sessions.drop(sess.state)
 		default:
 			s.log.Info("EAP-TLS authentication failed", "client", client.Name)
@@ -119,7 +120,7 @@ func (s *Server) challenge(conn net.PacketConn, addr net.Addr, p *Packet,
 }
 
 // acceptEAP answers Access-Accept with EAP-Success and the session keys.
-func (s *Server) acceptEAP(conn net.PacketConn, addr net.Addr, p *Packet,
+func (s *Server) acceptEAP(ctx context.Context, conn net.PacketConn, addr net.Addr, p *Packet,
 	secret []byte, sess *eapSession, id byte) {
 
 	attrs := EAPAttributes((&EAPPacket{Code: EAPSuccess, Identifier: id}).Encode())
@@ -147,6 +148,12 @@ func (s *Server) acceptEAP(conn net.PacketConn, addr net.Addr, p *Packet,
 		return
 	}
 	attrs = append(attrs, keys...)
+
+	// The VLAN and the rest, for the person the certificate named (7.06). A
+	// certificate on the same switch port got none of what a password did, so
+	// moving people onto EAP-TLS moved them off their VLAN. Advisory, as it is
+	// for a password: see accept.
+	attrs = append(attrs, s.authorization(ctx, sess.username)...)
 
 	out, err := Response(p, CodeAccessAccept, secret, attrs)
 	if err != nil {

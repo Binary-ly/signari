@@ -3,10 +3,12 @@ package config
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/store"
 )
 
@@ -220,6 +222,11 @@ type RADIUSAuthorization struct {
 	// list the device already has. One or both.
 	VLAN     int    `yaml:"vlan,omitempty"`
 	FilterID string `yaml:"filter_id,omitempty"`
+	// SessionTimeout is in seconds; Class is echoed by the device in accounting.
+	SessionTimeout int    `yaml:"session_timeout,omitempty"`
+	Class          string `yaml:"class,omitempty"`
+	// Vendor are vendor-specific attributes, by the numbers a device documents.
+	Vendor []radius.VendorAttribute `yaml:"vendor_attributes,omitempty"`
 	// Priority decides for somebody in several authorised groups, highest
 	// first.
 	Priority int `yaml:"priority,omitempty"`
@@ -239,12 +246,22 @@ func (radiusAuthSection) validate(f *File, add func(string, ...any)) {
 			continue
 		}
 		switch {
-		case a.VLAN == 0 && strings.TrimSpace(a.FilterID) == "":
+		case a.VLAN == 0 && strings.TrimSpace(a.FilterID) == "" && a.SessionTimeout == 0 &&
+			strings.TrimSpace(a.Class) == "" && len(a.Vendor) == 0:
 			add("radius_authorizations[%s]: %v", a.Group, store.ErrRADIUSNothingAuthorised)
 		case a.VLAN < 0 || a.VLAN > 4094:
 			add("radius_authorizations[%s]: %v", a.Group, store.ErrVLANRange)
 		case len(a.FilterID) > 253:
 			add("radius_authorizations[%s]: %v", a.Group, store.ErrFilterIDLength)
+		case a.SessionTimeout < 0:
+			add("radius_authorizations[%s]: %v", a.Group, store.ErrSessionTimeout)
+		case len(a.Class) > 253:
+			add("radius_authorizations[%s]: %v", a.Group, store.ErrRADIUSClass)
+		}
+		for _, v := range a.Vendor {
+			if _, ok := v.Encode(); !ok {
+				add("radius_authorizations[%s]: %v", a.Group, store.ErrVendorAttribute)
+			}
 		}
 	}
 }
@@ -256,7 +273,8 @@ func heldAuthorizations(ctx context.Context, tx pgx.Tx, orgID string) (map[strin
 	}
 	out := map[string]RADIUSAuthorization{}
 	for _, a := range have {
-		r := RADIUSAuthorization{Group: a.Group, FilterID: a.FilterID, Priority: a.Priority}
+		r := RADIUSAuthorization{Group: a.Group, FilterID: a.FilterID, Priority: a.Priority,
+			SessionTimeout: a.SessionTimeout, Class: a.Class, Vendor: a.Vendor}
 		if a.VLAN != nil {
 			r.VLAN = *a.VLAN
 		}
@@ -286,6 +304,9 @@ func (radiusAuthSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *F
 		var c changed
 		c.note(h.VLAN != w.VLAN, "vlan")
 		c.note(h.FilterID != strings.TrimSpace(w.FilterID), "filter_id")
+		c.note(h.SessionTimeout != w.SessionTimeout, "session_timeout")
+		c.note(h.Class != strings.TrimSpace(w.Class), "class")
+		c.note(!slices.Equal(h.Vendor, w.Vendor), "vendor_attributes")
 		c.note(h.Priority != w.Priority, "priority")
 		return c.String()
 	}, "members are put on the device's default network")
@@ -301,7 +322,9 @@ func (radiusAuthSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *
 		if err != nil {
 			return err
 		}
-		if err := store.SetRADIUSAuthorization(ctx, tx, orgID, id, a.VLAN, a.FilterID, a.Priority); err != nil {
+		if err := store.SetRADIUSAuthorization(ctx, tx, orgID, id, store.RADIUSGrant{VLAN: a.VLAN,
+			FilterID: a.FilterID, SessionTimeout: a.SessionTimeout, Class: a.Class, Vendor: a.Vendor,
+			Priority: a.Priority}); err != nil {
 			return err
 		}
 	}

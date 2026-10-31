@@ -866,6 +866,10 @@ func run(args []string) (err error) {
 		"RADIUS Filter-Id: the name of a filter list already configured on the device")
 	radiusPriority := fs.Int("priority", 0,
 		"which row wins when somebody is in several authorised groups; highest first")
+	radiusSessionTimeout := fs.Int("session-timeout", 0, "RADIUS Session-Timeout, in seconds; 0 sets none")
+	radiusClass := fs.String("radius-class", "", "RADIUS Class, which the device echoes in accounting")
+	radiusVendor := fs.String("vendor-attributes", "", "vendor-specific RADIUS attributes, comma-separated "+
+		"`vendor:type=value`, by the numbers the device documents")
 	providerClaims := fs.String("claims", "",
 		"comma-separated claim names this token hook may add. A hook can add nothing "+
 			"that is not listed here, whatever it returns")
@@ -1461,8 +1465,8 @@ func run(args []string) (err error) {
 	case "radius list":
 		return radiusListClients(ctx, conn, *outputFormat)
 	case "radius authorize":
-		return radiusAuthorize(ctx, conn, *orgID, *groupName, *radiusVLAN,
-			*radiusFilterID, *radiusPriority, *removeMember)
+		return radiusAuthorize(ctx, conn, *orgID, *groupName, *radiusVLAN, *radiusFilterID, *radiusPriority,
+			*radiusSessionTimeout, *radiusClass, *radiusVendor, *removeMember)
 	case "proxy add-host":
 		return proxyAddHost(ctx, conn, *orgID, *racHost)
 	case "proxy list":

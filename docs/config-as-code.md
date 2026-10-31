@@ -135,6 +135,10 @@ group_releases:               # which groups an application is told a person is 
 radius_authorizations:        # what a network device puts a group's members on
   - group: platform
     vlan: 20                  # 1 to 4094, and/or filter_id
+    session_timeout: 28800    # seconds, optional
+    class: platform           # echoed by the device in accounting, optional
+    vendor_attributes:        # by the numbers the device documents, optional
+      - {vendor: 9, type: 1, value: "shell:priv-lvl=15"}
     priority: 10              # for someone in several groups, highest first
 
 authorization_detail_types:   # RFC 9396 types the organisation accepts

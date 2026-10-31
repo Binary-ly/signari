@@ -2580,9 +2580,19 @@ type PutGroupsGroupIDMembersUserIDResponse struct {
 
 // PutGroupsGroupIDRADIUSRequest is a JSON object of the Admin API.
 type PutGroupsGroupIDRADIUSRequest struct {
-	FilterID *string `json:"filter_id,omitempty"`
-	Priority *int64  `json:"priority,omitempty"`
-	VlanID   *int64  `json:"vlan_id,omitempty"`
+	Class            *string                                              `json:"class,omitempty"`
+	FilterID         *string                                              `json:"filter_id,omitempty"`
+	Priority         *int64                                               `json:"priority,omitempty"`
+	SessionTimeout   *int64                                               `json:"session_timeout,omitempty"`
+	VendorAttributes *[]PutGroupsGroupIDRADIUSRequestVendorAttributesItem `json:"vendor_attributes,omitempty"`
+	VlanID           *int64                                               `json:"vlan_id,omitempty"`
+}
+
+// PutGroupsGroupIDRADIUSRequestVendorAttributesItem is a JSON object of the Admin API.
+type PutGroupsGroupIDRADIUSRequestVendorAttributesItem struct {
+	Type   *int64  `json:"type,omitempty"`
+	Value  *string `json:"value,omitempty"`
+	Vendor *int64  `json:"vendor,omitempty"`
 }
 
 // PutGroupsGroupIDRADIUSResponse is a JSON object of the Admin API.

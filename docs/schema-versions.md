@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0197 identifier_lock_per_organisation
+
+Not compatible with the release before: stop it before migrating.
+
+A transaction writing many people no longer runs PostgreSQL out of locks (7.16). Migration 0158 took an advisory lock per identifier, held until commit, and the lock table holds about 6,400 at PostgreSQL's defaults, so a first directory sync or an import failed with `out of shared memory` around the twelve-thousandth person.
+
 ## 0196 scim_page_indexes
 
 Compatible with the release before: its binary may still serve this schema.

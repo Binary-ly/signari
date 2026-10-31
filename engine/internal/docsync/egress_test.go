@@ -25,8 +25,6 @@ import (
 // destinations already known: a client literal, a transport literal, or the
 // package-level defaults, in non-test code outside safedial itself.
 var clientsOutsideSafedial = map[string]string{
-	"engine/internal/captcha/captcha.go": "the three vendors' siteverify endpoints are constants; " +
-		"nothing configurable reaches the URL",
 	"engine/internal/passwords/breached.go": "the range API is a constant; the override is set " +
 		"only by tests",
 	"engine/internal/posture/chrome.go": "Google's Verified Access endpoint is a constant; the " +

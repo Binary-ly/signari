@@ -299,7 +299,7 @@ func flowNameOf(fl *flow.Flow) string {
 // than being held still by a stream of blank submissions.
 func (s *Server) enrolCaptcha(w http.ResponseWriter, r *http.Request) bool {
 	ctx := r.Context()
-	if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
+	if cerr := s.captcha.Verify(ctx, s.captchaResponse(r), r.RemoteAddr); cerr != nil {
 		s.captcha.RecordFailure(ctx, r.RemoteAddr)
 		s.log.Info("captcha refused at sign-up", "err", cerr,
 			"correlation_id", correlationID(ctx))

@@ -4,12 +4,35 @@ Off by default. Adaptive when on.
 
 ```sh
 SIGNARI_CAPTCHA_MODE=adaptive          # off (default) | adaptive | always
-SIGNARI_CAPTCHA_PROVIDER=turnstile     # turnstile | hcaptcha | recaptcha
+SIGNARI_CAPTCHA_PROVIDER=turnstile     # turnstile | hcaptcha | recaptcha | siteverify
 SIGNARI_CAPTCHA_SITE_KEY=...
 SIGNARI_CAPTCHA_SECRET=...
 SIGNARI_CAPTCHA_AFTER_FAILURES=3       # adaptive threshold, per source address
 SIGNARI_CAPTCHA_FAIL_CLOSED=1          # optional; see below
 ```
+
+## A service you run yourself
+
+`siteverify` is for a challenge service of your own, so sign-in does not depend
+on a third party or send it your users' addresses. It has to speak the same
+shape as the others: a POST of `secret`, `response` and `remoteip`, answered with
+JSON carrying a `success` boolean and optionally `error-codes`.
+
+```sh
+SIGNARI_CAPTCHA_PROVIDER=siteverify
+SIGNARI_CAPTCHA_VERIFY_URL=https://captcha.example.com/siteverify
+SIGNARI_CAPTCHA_WIDGET_URL=https://captcha.example.com/widget.js
+SIGNARI_CAPTCHA_WIDGET_CLASS=my-captcha
+SIGNARI_CAPTCHA_RESPONSE_FIELD=my-captcha-response
+```
+
+All four are required, and both addresses must be https, since the verify address
+receives the secret. Setting them with any other provider stops the start rather
+than being ignored. The page renders `<div class="my-captcha" data-sitekey="…">`
+and loads the script, and only the script's origin joins the content security
+policy. A widget that calls anywhere else needs a [theme](theming.md) with that
+written in. The verify address goes through the outbound guard, so a service on a
+private address has to be named in `SIGNARI_OUTBOUND_ALLOW_PRIVATE`.
 
 ## Why off by default
 

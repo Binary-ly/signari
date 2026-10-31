@@ -572,8 +572,12 @@ See [CAPTCHA](captcha.md).
 | | |
 |---|---|
 | `SIGNARI_CAPTCHA_MODE` | `off`, `adaptive` or `always` |
-| `SIGNARI_CAPTCHA_PROVIDER` | Which service |
+| `SIGNARI_CAPTCHA_PROVIDER` | Which service: `turnstile`, `hcaptcha`, `recaptcha`, or `siteverify` for one you run |
 | `SIGNARI_CAPTCHA_SITE_KEY`, `SIGNARI_CAPTCHA_SECRET` | Credentials |
+| `SIGNARI_CAPTCHA_VERIFY_URL` | With `siteverify`: the https address that verifies an answer. Reached through the outbound guard, so a private address also needs `SIGNARI_OUTBOUND_ALLOW_PRIVATE` |
+| `SIGNARI_CAPTCHA_WIDGET_URL` | With `siteverify`: the https address of the widget's script, whose origin the sign-in page's content security policy admits |
+| `SIGNARI_CAPTCHA_WIDGET_CLASS` | With `siteverify`: the class of the element the script fills |
+| `SIGNARI_CAPTCHA_RESPONSE_FIELD` | With `siteverify`: the form field the widget puts its answer in |
 | `SIGNARI_CAPTCHA_AFTER_FAILURES` | Failures before adaptive mode challenges |
 | `SIGNARI_CAPTCHA_FAIL_CLOSED` | Refuse sign-in when the provider is unreachable. Off by default: a provider outage should not become an authentication outage |
 

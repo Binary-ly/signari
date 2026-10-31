@@ -11,6 +11,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"signari.dev/engine/internal/kerberos"
 	"strconv"
@@ -957,7 +958,7 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 	// deployment, including the ones that never turn this on.
 	script, frame, connect := "'self'", "'none'", "'self'"
 	if s.captcha.Enabled() {
-		if origins := captchaOrigins(s.captcha.Provider()); origins != "" {
+		if origins := captchaOrigins(s.captcha); origins != "" {
 			script += " " + origins
 			frame = origins
 			connect += " " + origins
@@ -1003,6 +1004,8 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),
 		"CaptchaProvider": string(s.captcha.Provider()),
 		"CaptchaSiteKey":  s.captcha.SiteKey(),
+		"CaptchaClass":    s.captcha.Widget().Class,
+		"CaptchaScript":   s.captcha.Widget().ScriptURL,
 	}
 	if b != nil {
 		data["BrandName"] = b.ProductName
@@ -1062,6 +1065,8 @@ func (s *Server) captchaWidget(data map[string]any) map[string]any {
 		data["Captcha"] = true
 		data["CaptchaProvider"] = string(s.captcha.Provider())
 		data["CaptchaSiteKey"] = s.captcha.SiteKey()
+		data["CaptchaClass"] = s.captcha.Widget().Class
+		data["CaptchaScript"] = s.captcha.Widget().ScriptURL
 	}
 	return data
 }
@@ -1308,15 +1313,22 @@ func writeError(w http.ResponseWriter, code int, err, desc string) {
 //
 // Enumerated rather than derived from the verify URL: the origin that serves a
 // widget is often not the origin that verifies it, and guessing would produce a
-// policy that silently blocks the challenge from rendering.
-func captchaOrigins(p captcha.Provider) string {
-	switch p {
+// policy that silently blocks the challenge from rendering. A Siteverify widget
+// is named by its operator, and the script's origin is the one that is known; a
+// widget that calls anywhere else needs the theme overridden with it.
+func captchaOrigins(v *captcha.Verifier) string {
+	switch v.Provider() {
 	case captcha.Turnstile:
 		return "https://challenges.cloudflare.com"
 	case captcha.HCaptcha:
 		return "https://hcaptcha.com https://*.hcaptcha.com"
 	case captcha.ReCaptcha:
 		return "https://www.google.com https://www.gstatic.com"
+	case captcha.Siteverify:
+		if u, err := url.Parse(v.Widget().ScriptURL); err == nil {
+			return u.Scheme + "://" + u.Host
+		}
+		return ""
 	default:
 		return ""
 	}
@@ -1339,6 +1351,21 @@ func captchaFromEnv() (*captcha.Verifier, error) {
 	provider, err := captcha.ParseProvider(os.Getenv("SIGNARI_CAPTCHA_PROVIDER"))
 	if err != nil {
 		return nil, err
+	}
+	widget := captcha.Widget{
+		VerifyURL:     os.Getenv("SIGNARI_CAPTCHA_VERIFY_URL"),
+		ScriptURL:     os.Getenv("SIGNARI_CAPTCHA_WIDGET_URL"),
+		Class:         os.Getenv("SIGNARI_CAPTCHA_WIDGET_CLASS"),
+		ResponseField: os.Getenv("SIGNARI_CAPTCHA_RESPONSE_FIELD"),
+	}
+	switch {
+	case provider == captcha.Siteverify:
+		if err := widget.Validate(); err != nil {
+			return nil, fmt.Errorf("SIGNARI_CAPTCHA_PROVIDER is siteverify: %w", err)
+		}
+	case widget != captcha.Widget{}:
+		return nil, fmt.Errorf("SIGNARI_CAPTCHA_VERIFY_URL and its neighbours describe a siteverify "+
+			"service, and SIGNARI_CAPTCHA_PROVIDER is %q, which would ignore them", provider)
 	}
 	site := os.Getenv("SIGNARI_CAPTCHA_SITE_KEY")
 	secret := os.Getenv("SIGNARI_CAPTCHA_SECRET")
@@ -1363,6 +1390,7 @@ func captchaFromEnv() (*captcha.Verifier, error) {
 		Provider:                provider,
 		SiteKey:                 site,
 		Secret:                  secret,
+		Widget:                  widget,
 		FailuresBeforeChallenge: threshold,
 		// Opt-in. See captcha.Config for why the default is to stay available.
 		FailClosed: os.Getenv("SIGNARI_CAPTCHA_FAIL_CLOSED") == "1",

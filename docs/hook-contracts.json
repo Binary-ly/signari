@@ -1,0 +1,141 @@
+{
+  "hooks": [
+    {
+      "hook": "authorize",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "action": {
+            "additionalProperties": true,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "context": {
+            "type": "object"
+          },
+          "resource": {
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "subject": {
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "subject",
+          "resource",
+          "action"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "context": {
+            "type": "object"
+          },
+          "decision": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "hook": "token_issue",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "grant_type": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "client_id",
+          "scopes",
+          "grant_type",
+          "org_id"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "claims": {
+            "type": "object"
+          },
+          "decision": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    }
+  ],
+  "version": "1"
+}

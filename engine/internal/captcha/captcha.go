@@ -37,11 +37,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"signari.dev/engine/internal/clientip"
+	"signari.dev/engine/internal/safedial"
 )
 
 // Mode is when a challenge is required.
@@ -55,16 +57,47 @@ const (
 
 // Provider is which service verifies the response.
 //
-// All three take the same shape -- POST secret and response, receive JSON with a
-// `success` boolean -- so they differ only in a URL. Supporting one and calling
-// it pluggable would be a claim rather than a feature.
+// All of them take the same shape -- POST secret and response, receive JSON with
+// a `success` boolean -- so they differ only in a URL. Siteverify is that shape at
+// an address the operator names, for a service they run themselves, and its widget
+// is theirs too (Widget).
 type Provider string
 
 const (
-	Turnstile Provider = "turnstile"
-	HCaptcha  Provider = "hcaptcha"
-	ReCaptcha Provider = "recaptcha"
+	Turnstile  Provider = "turnstile"
+	HCaptcha   Provider = "hcaptcha"
+	ReCaptcha  Provider = "recaptcha"
+	Siteverify Provider = "siteverify"
 )
+
+// Widget is what the fixed providers have written into this package and a
+// Siteverify service must say: where it verifies, what the page loads and the
+// element that script fills, and the form field the answer comes back in.
+type Widget struct {
+	VerifyURL     string
+	ScriptURL     string
+	Class         string
+	ResponseField string
+}
+
+// WidgetName is the shape of a class or field name, which a page renders.
+var WidgetName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
+
+// Validate refuses a widget that would render an empty box or send the secret in
+// the clear.
+func (w Widget) Validate() error {
+	for name, u := range map[string]string{"verify": w.VerifyURL, "widget": w.ScriptURL} {
+		parsed, err := url.Parse(u)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return fmt.Errorf("the captcha %s URL must be https, got %q", name, u)
+		}
+	}
+	if !WidgetName.MatchString(w.Class) || !WidgetName.MatchString(w.ResponseField) {
+		return fmt.Errorf("the captcha widget class and response field must be plain names, got %q and %q",
+			w.Class, w.ResponseField)
+	}
+	return nil
+}
 
 var verifyURLs = map[Provider]string{
 	Turnstile: "https://challenges.cloudflare.com/turnstile/v0/siteverify",
@@ -78,6 +111,8 @@ type Config struct {
 	Provider Provider
 	SiteKey  string
 	Secret   string
+	// Widget describes a Siteverify service; the others leave it empty.
+	Widget Widget
 	// FailuresBeforeChallenge is the adaptive threshold, per source address.
 	FailuresBeforeChallenge int
 	// FailClosed decides what happens when the provider cannot be reached.
@@ -155,8 +190,9 @@ func New(cfg Config, client *http.Client) *Verifier {
 	}
 	if client == nil {
 		// Short, because this is in front of a login. A provider that takes ten
-		// seconds has already cost more than it is worth.
-		client = &http.Client{Timeout: 5 * time.Second}
+		// seconds has already cost more than it is worth. safedial, because a
+		// Siteverify address is configuration and carries the secret.
+		client = safedial.Client(5 * time.Second)
 	}
 	return &Verifier{cfg: cfg, client: client, failures: map[string]*counter{}}
 }
@@ -186,6 +222,14 @@ func (v *Verifier) Provider() Provider {
 		return ""
 	}
 	return v.cfg.Provider
+}
+
+// Widget is what a Siteverify page renders. Nil-safe, as SiteKey is.
+func (v *Verifier) Widget() Widget {
+	if v == nil {
+		return Widget{}
+	}
+	return v.cfg.Widget
 }
 
 // Required reports whether this request must carry a solved challenge.
@@ -273,6 +317,9 @@ func (v *Verifier) Verify(ctx context.Context, response, remoteAddr string) erro
 	}
 
 	endpoint, ok := verifyURLs[v.cfg.Provider]
+	if v.cfg.Provider == Siteverify {
+		endpoint, ok = v.cfg.Widget.VerifyURL, v.cfg.Widget.VerifyURL != ""
+	}
 	if !ok {
 		return fmt.Errorf("unknown captcha provider %q", v.cfg.Provider)
 	}
@@ -353,8 +400,8 @@ func ParseMode(s string) (Mode, error) {
 // ParseProvider likewise.
 func ParseProvider(s string) (Provider, error) {
 	p := Provider(strings.ToLower(strings.TrimSpace(s)))
-	if _, ok := verifyURLs[p]; ok {
+	if _, ok := verifyURLs[p]; ok || p == Siteverify {
 		return p, nil
 	}
-	return "", fmt.Errorf("unknown captcha provider %q: use turnstile, hcaptcha or recaptcha", s)
+	return "", fmt.Errorf("unknown captcha provider %q: use turnstile, hcaptcha, recaptcha or siteverify", s)
 }

@@ -151,7 +151,7 @@ func (s *Server) refuseRecoveryStage(w http.ResponseWriter, r *http.Request, sta
 // is the one place that convenience helps an enumerator more than a user.
 func (s *Server) recoverCaptcha(w http.ResponseWriter, r *http.Request) bool {
 	ctx := r.Context()
-	if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
+	if cerr := s.captcha.Verify(ctx, s.captchaResponse(r), r.RemoteAddr); cerr != nil {
 		s.captcha.RecordFailure(ctx, r.RemoteAddr)
 		s.log.Info("captcha refused at recovery", "err", cerr,
 			"correlation_id", correlationID(ctx))

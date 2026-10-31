@@ -1843,7 +1843,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// hold the address's counter still by submitting a blank challenge forever,
 	// and adaptive mode would never escalate.
 	if s.captcha.Required(ctx, r.RemoteAddr) {
-		if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
+		if cerr := s.captcha.Verify(ctx, s.captchaResponse(r), r.RemoteAddr); cerr != nil {
 			s.captcha.RecordFailure(ctx, r.RemoteAddr)
 			s.recordSignInFailure(ctx, r)
 			s.log.Info("captcha refused", "err", cerr,
@@ -3575,8 +3575,13 @@ func (s *Server) sessionIdentity(ctx context.Context, cookie string) (sid, userI
 // captchaResponse reads whichever field the configured widget submits.
 //
 // The three providers use three different names for the same value, and a
-// deployment that switches provider should not have to change anything here.
-func captchaResponse(r *http.Request) string {
+// deployment that switches provider should not have to change anything here. A
+// Siteverify widget names its own, and that one is read alone: a form field the
+// service never set is nothing it was asked about.
+func (s *Server) captchaResponse(r *http.Request) string {
+	if field := s.captcha.Widget().ResponseField; field != "" {
+		return r.PostForm.Get(field)
+	}
 	for _, f := range []string{
 		"cf-turnstile-response",
 		"h-captcha-response",

@@ -455,7 +455,7 @@ func (s *Server) renderPageStatus(w http.ResponseWriter, r *http.Request, status
 		script, connect = append(script, "'self'"), append(connect, "'self'")
 	}
 	if on, _ := data["Captcha"].(bool); on {
-		if origins := captchaOrigins(s.captcha.Provider()); origins != "" {
+		if origins := captchaOrigins(s.captcha); origins != "" {
 			script, connect = append(script, origins), append(connect, origins)
 			policy += `; frame-src ` + origins
 		}

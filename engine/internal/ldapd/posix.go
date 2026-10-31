@@ -4,11 +4,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
-// POSIX accounts (7.03): what a host reading its users from a directory needs. The
-// attribute names and object identifiers are RFC 2307's, which is not in specs/; they
-// were read from a published schema, not from memory, and the review note says which.
+// POSIX accounts (7.03): what a host reading its users from a directory needs. RFC
+// 2307 is not in specs/, so the attributes and classes in subschema.go were checked
+// against OpenLDAP's nis.schema, lines 38-67, 97-100 and 165-183, with one difference:
+// posixGroup is auxiliary here where that file has it structural, because a group's
+// structural class is groupOfNames and an entry has one.
 //
 // A person's gidNumber is their own number, the group private to them. The directory
 // publishes no such group, so a host shows the number where it would show a name.
@@ -49,7 +52,14 @@ func (s *Server) addPosixAccount(attrs map[string][]string, id *Identity) {
 	attrs["gidNumber"] = []string{number}
 	attrs["homeDirectory"] = []string{s.homeDirectory(id.Username)}
 	attrs["loginShell"] = []string{s.cfg.LoginShell}
-	attrs["gecos"] = []string{firstNonEmpty(id.DisplayName, id.Username)}
+	// gecos is IA5 (nis.schema:53), so a name in any other script stays in cn.
+	if gecos := firstNonEmpty(id.DisplayName, id.Username); isASCII(gecos) {
+		attrs["gecos"] = []string{gecos}
+	}
+}
+
+func isASCII(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool { return r > unicode.MaxASCII }) < 0
 }
 
 // homeDirectory fills the template. A name is whatever was registered, so it is held

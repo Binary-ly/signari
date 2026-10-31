@@ -48,6 +48,14 @@ func TestAPersonWithNoNumberIsNoAccount(t *testing.T) {
 	}
 }
 
+// gecos is IA5, and the subschema says so: a name outside it stays in cn.
+func TestANameThatIsNotASCIIStaysOutOfGecos(t *testing.T) {
+	a := posixServer(true).entryFor(&Identity{Username: "salma", DisplayName: "سلمى", UIDNumber: 2000000007}).Attrs
+	if a["gecos"] != nil || a["cn"][0] != "سلمى" || a["uidNumber"] == nil {
+		t.Errorf("the account reads %v", a)
+	}
+}
+
 func TestAHomeIsOnePathSegment(t *testing.T) {
 	s := posixServer(true)
 	for name, want := range map[string]string{"ada": "/home/ada", "..": "/home/_", ".": "/home/_",

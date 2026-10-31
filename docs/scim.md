@@ -135,6 +135,20 @@ expires, and asked for once more if the target answers 401 anyway. Changing the
 grant through a configuration file needs the secret in the same file, for the
 reason a new base URL does.
 
+## A target that does not quite speak SCIM
+
+`-compatibility`, or `compatibility` through the Admin API or a configuration file,
+names what a target needs that the protocol does not say it should. They are named
+for what they do rather than which product needs them, because that changes with
+the product's version and a target can need several: a target that answers PATCH
+with a 405 is `no-patch`, whatever it is.
+
+| | What changes |
+|---|---|
+| `no-patch` | A change reads the resource and puts it back whole, changed only where it had to be: `active`, or exactly the members that moved. An attribute this engine knows nothing about, and a member added at the target by hand, go back as they came. Somebody else's change between the read and the write is lost, which no PUT can avoid. |
+| `no-filter` | Finding an account after a 409 walks the target's list instead of asking `userName eq`, about a page per hundred accounts. |
+| `typed-members` | A group member carries `"type": "user"`. |
+
 ## An account that vanished at the target
 
 By default `sync` leaves it alone. Verify reports it as a warning (*"should have

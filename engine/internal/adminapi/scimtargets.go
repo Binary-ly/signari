@@ -13,6 +13,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/provision"
 	"signari.dev/engine/internal/safedial"
+	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
 )
 
@@ -41,6 +42,7 @@ type scimTargetView struct {
 	OAuthTokenURL   string    `json:"oauth_token_url"`
 	OAuthClientID   string    `json:"oauth_client_id"`
 	OAuthScope      string    `json:"oauth_scope"`
+	Compatibility   []string  `json:"compatibility"`
 	Linked          int       `json:"linked"`
 	ShouldBeGone    int       `json:"should_be_gone"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -68,14 +70,18 @@ type addSCIMTargetRequest struct {
 	OAuthTokenURL string `json:"oauth_token_url"`
 	OAuthClientID string `json:"oauth_client_id"`
 	OAuthScope    string `json:"oauth_scope"`
+	// Compatibility names what it needs that the protocol does not say it should.
+	Compatibility []string `json:"compatibility"`
 }
 
-// patchSCIMTargetRequest changes what is given: enabled, recreate_missing, and
-// scope_group, the group whose members alone it provisions ("" for everybody).
+// patchSCIMTargetRequest changes what is given: enabled, recreate_missing,
+// compatibility, and scope_group, the group whose members alone it provisions
+// ("" for everybody).
 type patchSCIMTargetRequest struct {
-	Enabled         *bool   `json:"enabled"`
-	ScopeGroup      *string `json:"scope_group"`
-	RecreateMissing *bool   `json:"recreate_missing"`
+	Enabled         *bool    `json:"enabled"`
+	ScopeGroup      *string  `json:"scope_group"`
+	RecreateMissing *bool    `json:"recreate_missing"`
+	Compatibility   []string `json:"compatibility"`
 }
 
 type syncRequest struct {
@@ -102,7 +108,8 @@ func (s *Server) listSCIMTargets(w http.ResponseWriter, r *http.Request) {
 		out = append(out, scimTargetView{ID: t.ID, Slug: t.Slug, Name: t.Name, Kind: t.Kind, BaseURL: t.BaseURL,
 			OnDeactivate: t.OnDeactivate, ScopeGroup: t.ScopeGroup, DryRun: t.DryRun, Enabled: t.Enabled,
 			RecreateMissing: t.RecreateMissing, OAuthTokenURL: t.OAuthTokenURL, OAuthClientID: t.OAuthClientID,
-			OAuthScope: t.OAuthScope, Linked: t.Linked, ShouldBeGone: t.ShouldBeGone, CreatedAt: t.CreatedAt})
+			OAuthScope: t.OAuthScope, Compatibility: t.Compatibility, Linked: t.Linked,
+			ShouldBeGone: t.ShouldBeGone, CreatedAt: t.CreatedAt})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "targets": out})
 }
@@ -119,7 +126,7 @@ func (s *Server) addSCIMTarget(w http.ResponseWriter, r *http.Request) {
 		Impersonate: strings.TrimSpace(req.Impersonate), Domain: strings.TrimSpace(req.TargetDomain),
 		OnDeactivate: req.OnDeactivate, DryRun: req.DryRun, RecreateMissing: req.RecreateMissing,
 		OAuthTokenURL: strings.TrimSpace(req.OAuthTokenURL), OAuthClientID: strings.TrimSpace(req.OAuthClientID),
-		OAuthScope: strings.TrimSpace(req.OAuthScope)}
+		OAuthScope: strings.TrimSpace(req.OAuthScope), Compatibility: req.Compatibility}
 	if err := spec.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_target", "detail": err.Error()})
 		return
@@ -176,9 +183,13 @@ func (s *Server) patchSCIMTarget(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrict(w, r, &req) {
 		return
 	}
-	if req.Enabled == nil && req.ScopeGroup == nil && req.RecreateMissing == nil {
+	if req.Enabled == nil && req.ScopeGroup == nil && req.RecreateMissing == nil && req.Compatibility == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change",
-			"detail": "give enabled, scope_group or recreate_missing"})
+			"detail": "give enabled, scope_group, recreate_missing or compatibility"})
+		return
+	}
+	if err := scim.CheckCompatibility(req.Compatibility); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_target", "detail": err.Error()})
 		return
 	}
 	if narrowedTokenRefused(w, r, scimTargetRefusal) {
@@ -212,6 +223,12 @@ func (s *Server) patchSCIMTarget(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			out["recreate_missing"], detail["recreate_missing"] = *req.RecreateMissing, *req.RecreateMissing
+		}
+		if req.Compatibility != nil {
+			if err := store.SetSCIMTargetCompatibility(ctx, tx, orgID, slug, req.Compatibility); err != nil {
+				return err
+			}
+			out["compatibility"], detail["compatibility"] = req.Compatibility, req.Compatibility
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.scim_target_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})

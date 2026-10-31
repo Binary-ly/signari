@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0204 scim_target_compatibility
+
+Compatible with the release before: its binary may still serve this schema.
+
+What a provisioning target needs that the protocol does not say it should (7.11): one that refuses PATCH, one that refuses a filter, one that refuses a member with no type. By what they do rather than which product: a target can need several, and which needs which changes with its version.
+
 ## 0203 scim_target_oauth
 
 Compatible with the release before: its binary may still serve this schema.

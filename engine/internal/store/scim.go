@@ -22,7 +22,8 @@ func LoadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgI
 		       COALESCE(credentials_enc, ''::bytea),
 		       COALESCE(impersonate, ''), COALESCE(target_domain, ''),
 		       COALESCE(scope_group_id::text, ''), recreate_missing,
-		       COALESCE(oauth_token_url, ''), COALESCE(oauth_client_id, ''), COALESCE(oauth_scope, '')
+		       COALESCE(oauth_token_url, ''), COALESCE(oauth_client_id, ''), COALESCE(oauth_scope, ''),
+		       compatibility
 		FROM core.scim_targets
 		WHERE enabled AND ($1 = '' OR slug = $1) AND ($2 = '' OR org_id = $2::uuid)
 		ORDER BY slug`, only, orgID)
@@ -39,7 +40,7 @@ func LoadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgI
 		if err := rows.Scan(&t.ID, &t.OrgID, &t.Slug, &t.DisplayName, &t.BaseURL,
 			&sealed, &t.DryRun, &t.OnDeactivate, &t.Kind,
 			&sealedCreds, &t.Impersonate, &t.TargetDomain, &t.ScopeGroupID, &t.RecreateMissing,
-			&t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope); err != nil {
+			&t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope, &t.Compatibility); err != nil {
 			return nil, err
 		}
 		// A SCIM target's secret is a bearer token; a native one's is a service

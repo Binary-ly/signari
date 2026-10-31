@@ -750,6 +750,8 @@ func run(args []string) (err error) {
 	oauthTokenURL := fs.String("oauth-token-url", "", "where the SCIM target issues tokens by the client credentials grant")
 	oauthClientID := fs.String("oauth-client-id", "", "the client id for -oauth-token-url")
 	oauthScope := fs.String("oauth-scope", "", "the scope to ask -oauth-token-url for")
+	compatibility := fs.String("compatibility", "",
+		"comma-separated, what the SCIM target needs: no-patch, no-filter, typed-members")
 	onDeactivate := fs.String("on-deactivate", "deactivate", "deactivate, delete or nothing")
 	recreateMissing := fs.Bool("recreate-missing", false,
 		"give somebody a new account at the target when the one linked to them is gone from it")
@@ -1729,7 +1731,7 @@ func run(args []string) (err error) {
 			*mapOverwrite, *mapMaxLength, *removeMember)
 	case "scim add":
 		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2, *recreateMissing,
-			*oauthTokenURL, *oauthClientID, *oauthScope)
+			*oauthTokenURL, *oauthClientID, *oauthScope, *compatibility)
 	case "provision add":
 		return provisionAdd(ctx, conn, *orgID, *slug, *name, *outpostKind,
 			*credsFile, *dirImpersonate, *targetDomain, *onDeactivate, *dryRun2, *recreateMissing)
@@ -4288,7 +4290,8 @@ func scimHTTPClient() (*http.Client, error) { return provision.HTTPClient() }
 
 // scimAdd registers a provisioning target.
 func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, token,
-	onDeactivate string, dryRun, recreateMissing bool, oauthTokenURL, oauthClientID, oauthScope string) error {
+	onDeactivate string, dryRun, recreateMissing bool,
+	oauthTokenURL, oauthClientID, oauthScope, compatibility string) error {
 
 	switch {
 	case orgID == "":
@@ -4303,7 +4306,8 @@ func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, to
 	}
 	spec := provision.TargetSpec{Kind: "scim", Slug: slug, Name: name, BaseURL: baseURL, Token: token,
 		OnDeactivate: onDeactivate, DryRun: dryRun, RecreateMissing: recreateMissing,
-		OAuthTokenURL: oauthTokenURL, OAuthClientID: oauthClientID, OAuthScope: oauthScope}
+		OAuthTokenURL: oauthTokenURL, OAuthClientID: oauthClientID, OAuthScope: oauthScope,
+		Compatibility: splitList(compatibility)}
 	if err := spec.Validate(); err != nil {
 		return err
 	}

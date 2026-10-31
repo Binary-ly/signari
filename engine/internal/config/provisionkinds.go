@@ -9,6 +9,7 @@ import (
 
 	"signari.dev/engine/internal/provision"
 	"signari.dev/engine/internal/safedial"
+	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
 )
 
@@ -49,6 +50,9 @@ type SCIMTarget struct {
 	OAuthTokenURL string `yaml:"oauth_token_url,omitempty"`
 	OAuthClientID string `yaml:"oauth_client_id,omitempty"`
 	OAuthScope    string `yaml:"oauth_scope,omitempty"`
+	// Compatibility names what a SCIM target needs that the protocol does not say
+	// it should; left as it is when absent, and [] for none.
+	Compatibility []string `yaml:"compatibility,omitempty"`
 }
 
 func (w SCIMTarget) targetKind() string {
@@ -80,7 +84,8 @@ func (w SCIMTarget) spec() provision.TargetSpec {
 	s := provision.TargetSpec{Kind: w.targetKind(), Slug: w.Slug, Name: w.Name, BaseURL: w.BaseURL,
 		Impersonate: w.Impersonate, Domain: w.TargetDomain, OnDeactivate: w.OnDeactivate,
 		DryRun: w.DryRun != nil && *w.DryRun, RecreateMissing: w.RecreateMissing != nil && *w.RecreateMissing,
-		OAuthTokenURL: w.OAuthTokenURL, OAuthClientID: w.OAuthClientID, OAuthScope: w.OAuthScope}
+		OAuthTokenURL: w.OAuthTokenURL, OAuthClientID: w.OAuthClientID, OAuthScope: w.OAuthScope,
+		Compatibility: w.Compatibility}
 	if r, _ := w.secretRef(); r != nil && s.Kind == "scim" {
 		s.Token = r.value
 	} else if r != nil {
@@ -115,6 +120,9 @@ func (scimSection) validate(f *File, add func(string, ...any)) {
 			if w.Credentials != nil || w.Impersonate != "" || w.TargetDomain != "" {
 				add("%s: a SCIM target has a base_url and a token, not credentials, impersonate or target_domain", at)
 			}
+			if err := scim.CheckCompatibility(w.Compatibility); err != nil {
+				add("%s: %v", at, err)
+			}
 			switch {
 			case w.OAuthTokenURL == "" && w.OAuthClientID == "" && w.OAuthScope == "":
 			case !strings.HasPrefix(w.OAuthTokenURL, "https://") || w.OAuthClientID == "":
@@ -130,6 +138,9 @@ func (scimSection) validate(f *File, add func(string, ...any)) {
 			}
 			if w.OAuthTokenURL != "" || w.OAuthClientID != "" || w.OAuthScope != "" {
 				add("%s: only a SCIM target takes the client credentials grant", at)
+			}
+			if len(w.Compatibility) > 0 {
+				add("%s: only a SCIM target has compatibility settings", at)
 			}
 			if k == "google" && (w.Impersonate == "" || w.TargetDomain == "") {
 				add("%s: a Google target needs impersonate, the administrator to act as, and target_domain, "+
@@ -220,6 +231,7 @@ func (scimSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, p
 			c.note(w.ScopeGroup != nil && h.ScopeGroup != *w.ScopeGroup, "scope_group")
 			c.note(w.RecreateMissing != nil && h.RecreateMissing != *w.RecreateMissing, "recreate_missing")
 			c.note(h.Kind == "scim" && w.oauth() != heldOAuth(h), "oauth")
+			c.note(w.Compatibility != nil && !sameSet(h.Compatibility, w.Compatibility), "compatibility")
 			if r, where := w.secretRef(); r != nil && compared == nil {
 				if compared = p.needsRoot("scim_target", w.Slug, "comparing the secret the file names"); compared == nil {
 					var secret string
@@ -288,6 +300,7 @@ func (scimSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, 
 				change.Impersonate, change.Domain = &w.Impersonate, &w.TargetDomain
 			}
 			change.DryRun, change.RecreateMissing = w.DryRun, w.RecreateMissing
+			change.Compatibility = w.Compatibility
 			if h.Kind == "scim" && w.oauth() != heldOAuth(h) {
 				grant := w.oauth()
 				change.OAuth = &grant
@@ -364,7 +377,7 @@ func (scimSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File)
 		dryRun, enabled, scope, recreate := h.DryRun, h.Enabled, h.ScopeGroup, h.RecreateMissing
 		w := SCIMTarget{Slug: h.Slug, Kind: h.Kind, Name: h.Name, OnDeactivate: h.OnDeactivate, DryRun: &dryRun,
 			Enabled: &enabled, ScopeGroup: &scope, RecreateMissing: &recreate, OAuthTokenURL: h.OAuthTokenURL,
-			OAuthClientID: h.OAuthClientID, OAuthScope: h.OAuthScope}
+			OAuthClientID: h.OAuthClientID, OAuthScope: h.OAuthScope, Compatibility: h.Compatibility}
 		switch h.Kind {
 		case "scim":
 			w.Kind, w.BaseURL = "", h.BaseURL

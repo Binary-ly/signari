@@ -2954,6 +2954,7 @@ Takes:
 | Field | Type | |
 |---|---|---|
 | `base_url` | string |  |
+| `compatibility` | list of string |  |
 | `credentials` | any |  |
 | `dry_run` | boolean |  |
 | `impersonate` | string |  |
@@ -2987,6 +2988,7 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `compatibility` | list of string |  |
 | `enabled` | boolean |  |
 | `recreate_missing` | boolean |  |
 | `scope_group` | string |  |
@@ -2995,6 +2997,7 @@ Answers:
 
 | Field | Type | |
 |---|---|---|
+| `compatibility` | list of string |  |
 | `config_version` | integer | always |
 | `enabled` | boolean |  |
 | `recreate_missing` | boolean |  |

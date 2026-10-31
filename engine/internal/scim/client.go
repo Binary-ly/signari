@@ -83,6 +83,10 @@ type Target struct {
 	// credentials grant, as OAuthClientID with Token as the client's secret and
 	// OAuthScope as the scope, which may be empty.
 	OAuthTokenURL, OAuthClientID, OAuthScope string
+
+	// Compatibility names what this target needs that the protocol does not say
+	// it should (Compatibilities).
+	Compatibility []string
 }
 
 // User is the subset of the SCIM user schema we send.
@@ -237,6 +241,11 @@ func (c *Client) SetActive(ctx context.Context, remoteID string, active bool) er
 	if c.target.DryRun {
 		return nil
 	}
+	if c.target.needs(CompatNoPatch) {
+		return c.replaceResource(ctx, "/Users/"+url.PathEscape(remoteID), func(user map[string]any) {
+			user["active"] = active
+		})
+	}
 	patch := map[string]any{
 		"schemas": []string{schemaPatch},
 		"Operations": []map[string]any{
@@ -289,6 +298,18 @@ type ListResponse struct {
 // userName can change, and deleting whatever currently answers to a name is how
 // the wrong account gets removed.
 func (c *Client) FindByUserName(ctx context.Context, userName string) (*User, error) {
+	if c.target.needs(CompatNoFilter) {
+		everybody, err := c.ListUsers(ctx, 0)
+		if err != nil {
+			return nil, err
+		}
+		for i := range everybody {
+			if strings.EqualFold(everybody[i].UserName, userName) {
+				return &everybody[i], nil
+			}
+		}
+		return nil, nil
+	}
 	// The comparison value is a JSON string, not a Go one.
 	//
 	// RFC 7644 §3.4.2.2, of the filter grammar: "the `compValue` (comparison

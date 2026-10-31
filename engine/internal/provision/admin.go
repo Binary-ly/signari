@@ -83,6 +83,9 @@ type TargetSpec struct {
 	// client credentials grant, Token then being the client's secret, with
 	// OAuthScope as the scope.
 	OAuthTokenURL, OAuthClientID, OAuthScope string
+	// Compatibility names what a SCIM target needs that the protocol does not
+	// say it should.
+	Compatibility []string
 }
 
 // validateOAuth refuses half a grant, and a token URL that a secret should not
@@ -94,6 +97,16 @@ func validateOAuth(tokenURL, clientID, scope string) error {
 		return targetInvalid{"the client credentials grant needs both the token URL and the client id"}
 	case !strings.HasPrefix(tokenURL, "https://"):
 		return targetInvalid{"the token URL must be https: the client secret is sent to it"}
+	}
+	return nil
+}
+
+func validateCompatibility(kind string, names []string) error {
+	if len(names) > 0 && kind != "" && kind != "scim" {
+		return targetInvalid{"only a SCIM target has compatibility settings: a native target's API is the provider's"}
+	}
+	if err := scim.CheckCompatibility(names); err != nil {
+		return targetInvalid{err.Error()}
 	}
 	return nil
 }
@@ -121,6 +134,9 @@ func (s *TargetSpec) Validate() error {
 		return targetInvalid{"only a SCIM target takes the client credentials grant"}
 	}
 	if err := validateOAuth(s.OAuthTokenURL, s.OAuthClientID, s.OAuthScope); err != nil {
+		return err
+	}
+	if err := validateCompatibility(s.Kind, s.Compatibility); err != nil {
 		return err
 	}
 	switch s.Kind {
@@ -176,10 +192,11 @@ func AddTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID st
 		_, err = q.Exec(ctx, `
 			INSERT INTO core.scim_targets
 				(org_id, slug, display_name, base_url, token, on_deactivate, dry_run, recreate_missing,
-				 oauth_token_url, oauth_client_id, oauth_scope)
-			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''))`,
+				 oauth_token_url, oauth_client_id, oauth_scope, compatibility)
+			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''),
+			        COALESCE($12::text[], '{}'))`,
 			orgID, s.Slug, s.Name, s.BaseURL, sealed, s.OnDeactivate, s.DryRun, s.RecreateMissing,
-			s.OAuthTokenURL, s.OAuthClientID, s.OAuthScope)
+			s.OAuthTokenURL, s.OAuthClientID, s.OAuthScope, s.Compatibility)
 	} else {
 		var sealed []byte
 		if sealed, err = root.Seal(s.Credentials, "provision_credentials"); err != nil {
@@ -210,6 +227,8 @@ type TargetChange struct {
 	// OAuth is the grant a SCIM target authenticates with, all three together
 	// since half of one means nothing, and "" for a token URL ends it.
 	OAuth *TargetOAuth
+	// Compatibility replaces what a SCIM target needs, when not nil.
+	Compatibility []string
 }
 
 // TargetOAuth is a target's client credentials grant, without the secret.
@@ -257,6 +276,9 @@ func UpdateTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID
 		}
 		oauthURL, oauthClient, oauthScope = &c.OAuth.TokenURL, &c.OAuth.ClientID, &c.OAuth.Scope
 	}
+	if err := validateCompatibility(kind, c.Compatibility); err != nil {
+		return err
+	}
 	if c.BaseURL != nil {
 		if err := safedial.CheckURL(*c.BaseURL); err != nil {
 			return err
@@ -300,10 +322,11 @@ func UpdateTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID
 			recreate_missing = COALESCE($11::boolean, recreate_missing),
 			oauth_token_url = CASE WHEN $12::text IS NULL THEN oauth_token_url ELSE NULLIF($12, '') END,
 			oauth_client_id = CASE WHEN $13::text IS NULL THEN oauth_client_id ELSE NULLIF($13, '') END,
-			oauth_scope     = CASE WHEN $14::text IS NULL THEN oauth_scope ELSE NULLIF($14, '') END
+			oauth_scope     = CASE WHEN $14::text IS NULL THEN oauth_scope ELSE NULLIF($14, '') END,
+			compatibility   = COALESCE($15::text[], compatibility)
 		 WHERE org_id = $1::uuid AND slug = $2`,
 		orgID, slug, c.Name, c.BaseURL, c.OnDeactivate, c.Impersonate, c.Domain, c.DryRun, token, creds,
-		c.RecreateMissing, oauthURL, oauthClient, oauthScope)
+		c.RecreateMissing, oauthURL, oauthClient, oauthScope, c.Compatibility)
 	if err != nil {
 		return err
 	}

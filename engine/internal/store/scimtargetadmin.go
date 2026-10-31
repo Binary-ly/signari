@@ -81,6 +81,20 @@ func SetSCIMTargetRecreate(ctx context.Context, q Execer, orgID, slug string, re
 	return nil
 }
 
+// SetSCIMTargetCompatibility says what a target needs that the protocol does not
+// say it should.
+func SetSCIMTargetCompatibility(ctx context.Context, q Execer, orgID, slug string, compatibility []string) error {
+	tag, err := q.Exec(ctx, `UPDATE core.scim_targets SET compatibility = $3
+		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, compatibility)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSCIMTargetUnknown
+	}
+	return nil
+}
+
 // SCIMTargetRow is one target as an administrator sees it, without its
 // token or credentials.
 type SCIMTargetRow struct {
@@ -95,6 +109,8 @@ type SCIMTargetRow struct {
 	// OAuthTokenURL, OAuthClientID and OAuthScope are the client credentials
 	// grant it authenticates with, "" for a bearer token.
 	OAuthTokenURL, OAuthClientID, OAuthScope string
+	// Compatibility names what it needs that the protocol does not say it should.
+	Compatibility []string
 }
 
 // SCIMTargets lists an organisation's targets by slug, with how many people
@@ -107,7 +123,7 @@ func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow,
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id),
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id AND NOT l.should_be_active),
 		       t.created_at, COALESCE(t.oauth_token_url, ''), COALESCE(t.oauth_client_id, ''),
-		       COALESCE(t.oauth_scope, '')
+		       COALESCE(t.oauth_scope, ''), t.compatibility
 		  FROM core.scim_targets t
 		  LEFT JOIN core.groups g ON g.id = t.scope_group_id
 		 WHERE t.org_id = $1::uuid ORDER BY t.slug`, orgID)
@@ -120,7 +136,8 @@ func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow,
 		var t SCIMTargetRow
 		if err := rows.Scan(&t.ID, &t.Slug, &t.Name, &t.Kind, &t.BaseURL, &t.OnDeactivate, &t.ScopeGroup,
 			&t.Impersonate, &t.TargetDomain, &t.DryRun, &t.Enabled, &t.RecreateMissing, &t.Linked,
-			&t.ShouldBeGone, &t.CreatedAt, &t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope); err != nil {
+			&t.ShouldBeGone, &t.CreatedAt, &t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope,
+			&t.Compatibility); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

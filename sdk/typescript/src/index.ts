@@ -2336,6 +2336,7 @@ export interface GetOrganizationsOrgIDSCIMTargetsResponse {
 /** A JSON object of the Admin API. */
 export interface GetOrganizationsOrgIDSCIMTargetsResponseTargetsItem {
   base_url: string
+  compatibility: string[]
   created_at: string
   dry_run: boolean
   enabled: boolean
@@ -2892,6 +2893,7 @@ export interface PatchOrganizationsOrgIDSCIMSourcesSlugResponse {
 
 /** A JSON object of the Admin API. */
 export interface PatchOrganizationsOrgIDSCIMTargetsSlugRequest {
+  compatibility?: string[]
   enabled?: boolean
   recreate_missing?: boolean
   scope_group?: string
@@ -2899,6 +2901,7 @@ export interface PatchOrganizationsOrgIDSCIMTargetsSlugRequest {
 
 /** A JSON object of the Admin API. */
 export interface PatchOrganizationsOrgIDSCIMTargetsSlugResponse {
+  compatibility?: string[]
   config_version: number
   enabled?: boolean
   recreate_missing?: boolean
@@ -3472,6 +3475,7 @@ export interface PostOrganizationsOrgIDSCIMSourcesResponse {
 /** A JSON object of the Admin API. */
 export interface PostOrganizationsOrgIDSCIMTargetsRequest {
   base_url?: string
+  compatibility?: string[]
   credentials?: unknown
   dry_run?: boolean
   impersonate?: string

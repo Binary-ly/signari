@@ -17652,6 +17652,12 @@
                           "base_url": {
                             "type": "string"
                           },
+                          "compatibility": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
                           "created_at": {
                             "format": "date-time",
                             "type": "string"
@@ -17714,6 +17720,7 @@
                           "oauth_token_url",
                           "oauth_client_id",
                           "oauth_scope",
+                          "compatibility",
                           "linked",
                           "should_be_gone",
                           "created_at"
@@ -17802,6 +17809,12 @@
                 "properties": {
                   "base_url": {
                     "type": "string"
+                  },
+                  "compatibility": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
                   },
                   "credentials": {},
                   "dry_run": {
@@ -17966,6 +17979,12 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "compatibility": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "enabled": {
                     "type": "boolean"
                   },
@@ -17989,6 +18008,12 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
+                    "compatibility": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
                     "config_version": {
                       "type": "integer"
                     },

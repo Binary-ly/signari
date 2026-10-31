@@ -624,17 +624,18 @@ var opSchemas = map[string]opSchema{
 	"GET /admin/organizations/{orgID}/scim-targets": {http.StatusOK, nil, object([]string{"org_id", "targets"},
 		map[string]jsonSchema{"org_id": uuidStr(), "targets": arrayOf(object([]string{"id", "slug", "name", "kind",
 			"base_url", "on_deactivate", "scope_group", "dry_run", "enabled", "recreate_missing", "oauth_token_url",
-			"oauth_client_id", "oauth_scope", "linked", "should_be_gone", "created_at"},
+			"oauth_client_id", "oauth_scope", "compatibility", "linked", "should_be_gone", "created_at"},
 			map[string]jsonSchema{"id": uuidStr(), "slug": str(), "name": str(), "kind": str(), "base_url": str(),
 				"on_deactivate": str(), "scope_group": str(), "dry_run": boolean(), "enabled": boolean(),
 				"recreate_missing": boolean(), "oauth_token_url": str(), "oauth_client_id": str(), "oauth_scope": str(),
-				"linked": integer(), "should_be_gone": integer(), "created_at": dateTime()}))})},
+				"compatibility": arrayOf(str()), "linked": integer(), "should_be_gone": integer(),
+				"created_at": dateTime()}))})},
 	"POST /admin/organizations/{orgID}/scim-targets": {http.StatusCreated, typeOf[addSCIMTargetRequest](), object(
 		[]string{"slug", "kind", "dry_run", "config_version"}, withVersion(map[string]jsonSchema{"slug": str(),
 			"kind": str(), "dry_run": boolean()}))},
 	"PATCH /admin/organizations/{orgID}/scim-targets/{slug}": {http.StatusOK, typeOf[patchSCIMTargetRequest](), object(
 		[]string{"slug", "config_version"}, withVersion(map[string]jsonSchema{"slug": str(), "enabled": boolean(),
-			"scope_group": str(), "recreate_missing": boolean()}))},
+			"scope_group": str(), "recreate_missing": boolean(), "compatibility": arrayOf(str())}))},
 	"PUT /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}":    {http.StatusOK, nil, scimGroupSchema},
 	"DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}": {http.StatusOK, nil, scimGroupSchema},
 	"POST /admin/organizations/{orgID}/scim-targets/{slug}/sync": {http.StatusOK, typeOf[syncRequest](), object(

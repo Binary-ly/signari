@@ -187,6 +187,53 @@ A token has to name a `sub`. One that names only a `sid` is refused, since nothi
 records the provider's session ids. A retry of a token already used, and a subject
 nobody here is linked to, are both answered as done.
 
+## Calling the provider's API as the person
+
+Some applications sign in with a provider so that they can then use it: reading a
+person's repositories, their calendar. The token for that is the one the provider
+handed over at sign-in, which is normally thrown away. To keep it:
+
+```sh
+signari idp store-tokens -slug github
+```
+
+and declare a scope named `broker.<slug>`, in a [configuration file](config-as-code.md) or
+with `PUT /admin/organizations/{orgID}/scopes`:
+
+```yaml
+scopes:
+  - name: broker.github
+    display_name: Use your GitHub account
+```
+
+From each person's next sign-in, what the provider hands over is kept, sealed under
+the root key, one row a person a provider. An application then asks for it with an
+access token carrying that scope, which you grant a client as you would any other:
+
+```
+GET /account/broker/github/token
+Authorization: Bearer <an access token with the scope broker.github>
+
+{"access_token": "gho_…", "token_type": "bearer", "scope": "repo", "expires_in": 3600}
+```
+
+The scope names one provider, so being allowed a person's GitHub is not being allowed
+their Google. The application gets the access token and nothing else: no refresh token
+and no ID token. A token with less than thirty seconds left is renewed first if the
+provider gave a refresh token, and a provider that gave none, or will not renew it, is
+`409 reauthentication_required`: the person has to sign in at the provider again. Ask
+the provider for offline access in `-idp-scopes` if you want to avoid that. Two requests
+renewing the same token at once can lose one to a provider that rotates refresh tokens,
+and that request gets the same answer.
+
+Every read is recorded as `federation.token_read`. The tokens go when the person is
+erased, when the link is removed, by them or by you, or for everybody at the provider
+with `signari idp store-tokens -slug github -store-tokens=false`. A SAML upstream hands
+over no token, so it cannot be set.
+
+**Think before turning this on.** These are credentials at somebody else's service, held
+here until they end. A client that may ask for the scope can act as the person there.
+
 ## Signing in to the provider without a secret
 
 By default this engine sends the client secret in the form at the provider's token

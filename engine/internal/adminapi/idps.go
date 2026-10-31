@@ -43,6 +43,7 @@ type identityProviderView struct {
 	HasClientKey           bool             `json:"has_client_key"`
 	Linked                 int              `json:"linked"`
 	AttributeMap           []map[string]any `json:"attribute_map"`
+	StoreTokens            bool             `json:"store_tokens"`
 }
 
 // patchIdentityProviderRequest is `idp enable|disable`, `idp assertions`,
@@ -61,6 +62,9 @@ type patchIdentityProviderRequest struct {
 	ForwardParameters *[]string `json:"forward_parameters"`
 	// GroupClaim is the claim the provider's groups arrive in.
 	GroupClaim *string `json:"group_claim"`
+	// StoreTokens keeps what the provider hands over at a sign-in, sealed. Turned off,
+	// everything kept is removed.
+	StoreTokens *bool `json:"store_tokens"`
 }
 
 // idpGroupMapRequest says one of a provider's groups grants a local one.
@@ -249,7 +253,7 @@ func (s *Server) listIdentityProviders(w http.ResponseWriter, r *http.Request) {
 			RequireVerifiedEmail: p.RequireVerifiedEmail, MFAAMR: p.MFAAMR, MFAACR: p.MFAACR, Linked: p.Linked,
 			LoginDomains: p.LoginDomains, EndSessionURL: p.EndSessionURL, TokenAuthMethod: p.TokenAuthMethod,
 			HasClientKey: p.HasClientKey, AttributeMap: maps, ForwardParameters: p.ForwardParameters,
-			GroupClaim: p.GroupClaim, GroupMap: groups})
+			GroupClaim: p.GroupClaim, GroupMap: groups, StoreTokens: p.StoreTokens})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "providers": out})
 }
@@ -262,7 +266,8 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	change := store.IdentityProviderChange{Enabled: req.Enabled, AllowAssertions: req.AllowAssertions,
-		TrustEmailVerification: req.TrustEmailVerification, RequireVerifiedEmail: req.RequireVerifiedEmail}
+		TrustEmailVerification: req.TrustEmailVerification, RequireVerifiedEmail: req.RequireVerifiedEmail,
+		StoreTokens: req.StoreTokens}
 	if req.MFAAMR != nil {
 		l := cleanList(*req.MFAAMR, false)
 		change.MFAAMR = &l
@@ -317,6 +322,9 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.GroupClaim != nil {
 			detail["group_claim"] = *req.GroupClaim
+		}
+		if req.StoreTokens != nil {
+			detail["store_tokens"] = *req.StoreTokens
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.identity_provider_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})

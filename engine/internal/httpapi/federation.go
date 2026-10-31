@@ -228,6 +228,7 @@ func (s *Server) handleFederatedCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	ext.Tokens = tokens
 	s.completeFederation(w, r, provider, pending, ext)
 }
 
@@ -357,6 +358,17 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		}
 		fail(decision.Reason)
 		return
+	}
+
+	// What the provider handed over, if the operator asked to keep it. In this
+	// transaction, so a sign-in that does not finish keeps nothing.
+	if provider.StoreTokens && ext.Tokens != nil && userID != "" {
+		if err := store.KeepFederatedTokens(ctx, tx, s.root, provider.ID, userID, provider.OrgID, *ext.Tokens); err != nil {
+			s.log.Error("keeping a provider's tokens", "err", err, "provider", provider.Slug,
+				"correlation_id", correlationID(ctx))
+			fail("Something went wrong. Please try again.")
+			return
+		}
 	}
 
 	// The provider's mapped attributes, if the operator configured any.

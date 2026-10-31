@@ -179,6 +179,7 @@ var cliAPI = map[string]string{
 	"idp add-issuer":     "POST /admin/organizations/{orgID}/identity-providers",
 	"idp apple-secret":   cliOnly("signs with the .p8 key Apple issued, read from the operator's disk"),
 	"idp trust-mfa":      "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp store-tokens":   "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp verified-email": "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp attribute-map":  "PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map",
 

@@ -44,6 +44,9 @@ type Config struct {
 	EndSessionURL string
 	// TokenAuth is how this engine proves itself at the token endpoint.
 	TokenAuth TokenAuth
+	// StoreTokens keeps what this provider hands over at a sign-in, sealed, for an
+	// application to call its API as the person (store.KeepFederatedTokens).
+	StoreTokens bool
 	// Forward names what a sign-in here passes on to this provider (`signari idp
 	// forward`). Empty tells it nothing.
 	Forward []string
@@ -238,20 +241,44 @@ func (c Config) AuthorizeURL(redirectURI, state, nonce, verifier string, asks ur
 
 // TokenSet is what the provider returned from the token endpoint.
 type TokenSet struct {
-	AccessToken string `json:"access_token"`
-	IDToken     string `json:"id_token"`
-	TokenType   string `json:"token_type"`
+	AccessToken  string `json:"access_token"`
+	IDToken      string `json:"id_token,omitempty"`
+	TokenType    string `json:"token_type"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresIn    int    `json:"expires_in,omitempty"`
+	Scope        string `json:"scope,omitempty"`
 }
 
 // ExchangeCode swaps the authorization code for tokens.
 func (c Config) ExchangeCode(ctx context.Context, hc *http.Client, redirectURI, code, verifier string) (*TokenSet, error) {
-	form := url.Values{
+	return c.tokenRequest(ctx, hc, url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {redirectURI},
 		"client_id":     {c.ClientID},
 		"code_verifier": {verifier},
+	})
+}
+
+// RefreshTokens asks the provider for a new access token. A provider that sends no new
+// refresh token leaves the old one good, so it is carried over.
+func (c Config) RefreshTokens(ctx context.Context, hc *http.Client, refreshToken string) (*TokenSet, error) {
+	ts, err := c.tokenRequest(ctx, hc, url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {c.ClientID},
+	})
+	if err != nil {
+		return nil, err
 	}
+	if ts.RefreshToken == "" {
+		ts.RefreshToken = refreshToken
+	}
+	return ts, nil
+}
+
+// tokenRequest is one call to the provider's token endpoint, as this client.
+func (c Config) tokenRequest(ctx context.Context, hc *http.Client, form url.Values) (*TokenSet, error) {
 	onRequest, err := c.authenticate(form, time.Now())
 	if err != nil {
 		return nil, err

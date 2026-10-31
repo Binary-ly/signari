@@ -586,6 +586,9 @@
         "slug": {
           "type": "string"
         },
+        "store_tokens": {
+          "type": "boolean"
+        },
         "token_url": {
           "type": "string"
         },

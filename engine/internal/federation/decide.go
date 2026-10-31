@@ -46,6 +46,11 @@ type ExternalIdentity struct {
 	EmailVerified bool
 	Name          string
 
+	// Tokens is what the provider handed over, kept when the provider is set to
+	// (Config.StoreTokens). Nil for a sign-in with no token behind it, as a SAML
+	// upstream's is.
+	Tokens *TokenSet
+
 	// RawClaims is the verified upstream payload, for operator-configured
 	// attribute mapping only.
 	//

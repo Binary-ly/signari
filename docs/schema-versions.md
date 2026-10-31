@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0236 federated_tokens
+
+Compatible with the release before: its binary may still serve this schema.
+
+What an upstream provider handed over at sign-in, kept when the operator says to (8.17), for an application that needs to call that provider's own API as the person. Off until a provider says otherwise: these are credentials at somebody else's service, and the safest one to hold is the one not held. Sealed under the root key, one row a person a provider, and gone with the person, the provider or the link.
+
 ## 0235 flow_condition_hook
 
 Not compatible with the release before: stop it before migrating.

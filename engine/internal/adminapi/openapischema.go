@@ -509,8 +509,9 @@ var opSchemas = map[string]opSchema{
 		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "slug", "name", "kind",
 			"issuer", "enabled", "allow_signup", "allow_linking", "allow_assertions", "trust_email_verification",
 			"require_verified_email", "mfa_amr", "mfa_acr", "login_domains", "end_session_url", "token_auth_method", "has_client_key",
-			"linked", "attribute_map", "forward_parameters", "group_claim", "group_map"}, map[string]jsonSchema{
+			"linked", "attribute_map", "forward_parameters", "group_claim", "group_map", "store_tokens"}, map[string]jsonSchema{
 			"id": uuidStr(), "slug": str(), "name": str(), "kind": str(), "issuer": str(), "enabled": boolean(),
+			"store_tokens": boolean(),
 			"allow_signup": boolean(), "allow_linking": boolean(), "allow_assertions": boolean(),
 			"trust_email_verification": boolean(), "require_verified_email": boolean(), "mfa_amr": arrayOf(str()), "mfa_acr": arrayOf(str()),
 			"login_domains": arrayOf(str()), "end_session_url": str(), "token_auth_method": str(), "has_client_key": boolean(),

@@ -51,6 +51,7 @@ var columnClass = map[string]string{
 	"scim_targets.token":                "rootSealed",
 	"scim_targets.credentials_enc":      "rootSealed",
 	"ssf_streams.auth_token":            "rootSealed",
+	"federated_tokens.sealed":           "rootSealed",
 
 	// Sealed under the subject's own DEK. Re-wrapping the DEK covers these, and
 	// touching them here would try to open them with the wrong key.
@@ -118,6 +119,7 @@ var columnClass = map[string]string{
 	"clients.access_token_signed_alg":    "public",
 	"clients.tls_thumbprint":             "public",
 	"credential_proof_roots.certificate": "public",
+	"identity_providers.store_tokens":    "public", // a switch, whatever its name says
 	"signing_keys.certificate":           "public",
 	"users.user_handle":                  "public",
 	"webauthn_credentials.aaguid":        "public",

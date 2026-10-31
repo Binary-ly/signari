@@ -91,16 +91,20 @@ func UnlinkSubject(ctx context.Context, q outpostDB, orgID, slug, userID, subjec
 	if userID == "" && subject == "" {
 		return "", errors.New("unlinking needs the subject or the person, or it would be every link")
 	}
-	var removed string
+	var removed, person, providerID string
 	err := q.QueryRow(ctx, `
 		DELETE FROM core.federated_identities f USING core.identity_providers p
 		 WHERE p.id = f.provider_id AND p.org_id = $1::uuid AND p.slug = $2
 		   AND ($3 = '' OR f.subject = $3) AND ($4 = '' OR f.user_id::text = $4)
-		RETURNING f.subject`, orgID, slug, subject, userID).Scan(&removed)
+		RETURNING f.subject, f.user_id::text, f.provider_id::text`, orgID, slug, subject, userID).Scan(&removed, &person, &providerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrIdPLinkUnknown
 	}
-	return removed, err
+	if err != nil {
+		return "", err
+	}
+	// The tokens came with the link.
+	return removed, ForgetFederatedTokens(ctx, q, providerID, person)
 }
 
 // IdentityLink is one provider a person is linked to.

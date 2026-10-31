@@ -299,12 +299,12 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var provider string
+	var provider, providerID string
 	err = tx.QueryRow(ctx, `
 		DELETE FROM core.federated_identities f
 		USING core.identity_providers p
 		WHERE f.provider_id = p.id AND f.user_id = $1::uuid AND p.slug = $2
-		RETURNING p.display_name`, userID, slug).Scan(&provider)
+		RETURNING p.display_name, p.id::text`, userID, slug).Scan(&provider, &providerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Not linked: nothing to remove, record or tell.
 		http.Redirect(w, r, "/account", http.StatusSeeOther)
@@ -312,6 +312,12 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.log.Error("unlinking provider", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	// The tokens came with the link.
+	if err := store.ForgetFederatedTokens(ctx, tx, providerID, userID); err != nil {
+		s.log.Error("forgetting a provider's tokens", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}

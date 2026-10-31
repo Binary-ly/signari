@@ -51,7 +51,8 @@ var notConfiguration = map[string]string{
 		"membership is: the model they are checked against is configuration, the tuples are not",
 
 	"auth_locations": person, "duo_enrollments": person, "email_changes": person, "email_otp_credentials": person,
-	"federated_identities": person, "group_members": person, "pairwise_subjects": person, "passkey_links": person,
+	"federated_identities": person, "federated_tokens": person, "group_members": person,
+	"pairwise_subjects": person, "passkey_links": person,
 	"password_credentials": person, "password_history": person, "prompt_responses": person,
 	"recovery_codes": person, "saml_name_ids": person, "sms_otp_credentials": person,
 	"totp_credentials": person, "totp_enrolments": person, "trusted_devices": person,

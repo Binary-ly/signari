@@ -77,9 +77,22 @@ func TestUnlinkingCountsAPasswordNotYetRehashed(t *testing.T) {
 		f.userID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.pool.Exec(ctx, `INSERT INTO core.federated_tokens (provider_id, user_id, org_id, sealed)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, 'x'::bytea)`, providerID, f.userID, f.orgID); err != nil {
+		t.Fatal(err)
+	}
 	if rec := unlink(); rec.Code != http.StatusSeeOther || linked() != 0 {
 		t.Fatalf("unlinking with an imported password left answered %d and kept %d link(s); want it removed",
 			rec.Code, linked())
+	}
+	// What the link brought goes with it.
+	var kept int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM core.federated_tokens WHERE provider_id = $1::uuid`,
+		providerID).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if kept != 0 {
+		t.Error("unlinking kept the provider's tokens")
 	}
 	// A way in went: audited, and the holder told (5.04).
 	var audited int

@@ -560,6 +560,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /static/passkey-signal.js", s.handlePasskeySignalJS)
 	mux.HandleFunc("GET /static/passkey-unknown.js", s.handleUnknownCredentialJS)
 	mux.HandleFunc("GET /account", s.handleAccount)
+	mux.HandleFunc("GET /account/broker/{slug}/token", s.handleBrokerToken)
 	mux.HandleFunc("GET /account/connected", s.handleConnectedApps)
 	// SPNEGO is registered only when a keytab is loaded. A route that answers
 	// 401 Negotiate with no keytab behind it makes every domain browser show a

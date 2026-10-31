@@ -2079,6 +2079,23 @@ func idpTrustMFA(ctx context.Context, conn *pgx.Conn, slug, amr, acr string) err
 	return nil
 }
 
+// idpStoreTokensSet says whether what a provider hands over at a sign-in is kept.
+func idpStoreTokensSet(ctx context.Context, conn *pgx.Conn, slug string, on bool) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{StoreTokens: &on}); err != nil {
+		return err
+	}
+	if on {
+		fmt.Printf("%s: what it hands over is kept, sealed, from each person's next sign-in. An application reads "+
+			"it with a token carrying the scope broker.%s\n", slug, slug)
+		return nil
+	}
+	fmt.Printf("%s: nothing is kept, and what was has been removed\n", slug)
+	return nil
+}
+
 // idpTokenAuthSet says how this engine proves itself at a provider's token endpoint.
 func idpTokenAuthSet(ctx context.Context, conn *pgx.Conn, slug, method, keyFile, certFile string) error {
 	if slug == "" || method == "" {

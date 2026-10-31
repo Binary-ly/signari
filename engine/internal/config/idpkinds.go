@@ -66,6 +66,7 @@ type IdentityProvider struct {
 	EndSessionURL          *string       `yaml:"end_session_url,omitempty"`
 	ForwardParameters      *[]string     `yaml:"forward_parameters,omitempty"`
 	GroupClaim             *string       `yaml:"group_claim,omitempty"`
+	StoreTokens            *bool         `yaml:"store_tokens,omitempty"`
 	AttributeMap           *[]IdPMapping `yaml:"attribute_map,omitempty"`
 	// GroupMap is what the provider's groups grant here, replaced whole.
 	GroupMap *[]IdPGroupMapping `yaml:"group_map,omitempty"`
@@ -151,7 +152,7 @@ func (w IdentityProvider) change() store.IdentityProviderChange {
 	return store.IdentityProviderChange{Enabled: w.Enabled, AllowAssertions: w.AllowAssertions,
 		TrustEmailVerification: w.TrustEmailVerification, RequireVerifiedEmail: w.RequireVerifiedEmail,
 		MFAAMR: w.MFAAMR, MFAACR: w.MFAACR, LoginDomains: w.LoginDomains, EndSessionURL: w.EndSessionURL,
-		ForwardParameters: w.ForwardParameters, GroupClaim: w.GroupClaim}
+		ForwardParameters: w.ForwardParameters, GroupClaim: w.GroupClaim, StoreTokens: w.StoreTokens}
 }
 
 type idpSection struct{}
@@ -347,6 +348,7 @@ func (idpSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, pr
 			c.note(w.ForwardParameters != nil && !sameSet(h.ForwardParameters, *w.ForwardParameters),
 				"forward_parameters")
 			c.note(w.GroupClaim != nil && h.GroupClaim != *w.GroupClaim, "group_claim")
+			c.note(w.StoreTokens != nil && h.StoreTokens != *w.StoreTokens, "store_tokens")
 			if w.GroupMap != nil {
 				var have, want []string
 				for _, m := range h.GroupMap {

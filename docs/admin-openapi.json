@@ -11312,6 +11312,9 @@
                           "slug": {
                             "type": "string"
                           },
+                          "store_tokens": {
+                            "type": "boolean"
+                          },
                           "token_auth_method": {
                             "type": "string"
                           },
@@ -11341,7 +11344,8 @@
                           "attribute_map",
                           "forward_parameters",
                           "group_claim",
-                          "group_map"
+                          "group_map",
+                          "store_tokens"
                         ],
                         "type": "object"
                       },
@@ -11686,6 +11690,9 @@
                     "type": "array"
                   },
                   "require_verified_email": {
+                    "type": "boolean"
+                  },
+                  "store_tokens": {
                     "type": "boolean"
                   },
                   "trust_email_verification": {

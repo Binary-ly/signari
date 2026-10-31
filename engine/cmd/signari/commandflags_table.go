@@ -108,6 +108,7 @@ var commandFlags = map[string][]string{
 	"idp logout":                      {"slug", "url"},
 	"idp list":                        {"o"},
 	"idp trust-mfa":                   {"slug", "upstream-acr", "upstream-amr"},
+	"idp store-tokens":                {"slug", "store-tokens"},
 	"idp unlink":                      {"slug", "subject"},
 	"idp verified-email":              {"require-verified-email", "slug", "trust-email-verification"},
 	"import authentik":                {"apply", "file", "install-id", "org"},

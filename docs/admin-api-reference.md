@@ -1459,6 +1459,7 @@ Takes:
 | `mfa_acr` | list of string |  |
 | `mfa_amr` | list of string |  |
 | `require_verified_email` | boolean |  |
+| `store_tokens` | boolean |  |
 | `trust_email_verification` | boolean |  |
 
 Answers:

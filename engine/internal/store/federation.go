@@ -100,7 +100,7 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		       scopes, allow_signup, allow_linking, require_verified_email, enabled,
 		       trust_email_verification, mfa_amr, mfa_acr, COALESCE(end_session_url, ''),
 		       token_auth_method, client_key, COALESCE(client_certificate, ''), forward_parameters,
-		       userinfo_subject, userinfo_email, userinfo_email_verified, userinfo_name
+		       userinfo_subject, userinfo_email, userinfo_email_verified, userinfo_name, store_tokens
 		FROM core.identity_providers
 		WHERE slug = $1`, slug).Scan(
 		&c.ID, &c.OrgID, &c.Slug, &c.DisplayName, &kind, &c.ClientID,
@@ -109,7 +109,7 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		&c.Scopes, &c.Policy.AllowSignup, &c.Policy.AllowLinking,
 		&c.Policy.RequireVerifiedEmail, &enabled, &trustEmail, &c.MFAAMR, &c.MFAACR, &c.EndSessionURL,
 		&c.TokenAuth.Method, &keySealed, &certificate, &c.Forward,
-		&c.Userinfo.Subject, &c.Userinfo.Email, &c.Userinfo.EmailVerified, &c.Userinfo.Name)
+		&c.Userinfo.Subject, &c.Userinfo.Email, &c.Userinfo.EmailVerified, &c.Userinfo.Name, &c.StoreTokens)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProviderUnknown

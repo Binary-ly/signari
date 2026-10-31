@@ -2172,6 +2172,7 @@ export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem {
   name: string
   require_verified_email: boolean
   slug: string
+  store_tokens: boolean
   token_auth_method: string
   trust_email_verification: boolean
 }
@@ -2954,6 +2955,7 @@ export interface PatchOrganizationsOrgIDIdentityProvidersSlugRequest {
   mfa_acr?: string[]
   mfa_amr?: string[]
   require_verified_email?: boolean
+  store_tokens?: boolean
   trust_email_verification?: boolean
 }
 

@@ -276,6 +276,7 @@ federation in:
   idp unlink                detach an upstream subject from its person
   idp links                 a provider's subjects and the people they act as
   idp trust-mfa             which upstream amr and acr values count as multi-factor
+  idp store-tokens          keep what a provider hands over, for applications to call it
   idp domains               the address domains a provider signs in
   idp logout                sign out at the provider too, at its end_session_endpoint
   idp forward               what a sign-in here passes on to the provider
@@ -878,6 +879,8 @@ func run(args []string) (err error) {
 		"comma-separated amr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
 	idpMFAACR := fs.String("upstream-acr", "",
 		"comma-separated acr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
+	idpStoreTokens := fs.Bool("store-tokens", true, "`idp store-tokens`: keep what the provider hands over; "+
+		"false removes everything kept")
 	migrationTokenEndpoint := fs.String("token-endpoint", "",
 		"the old provider's https token endpoint, whose password grant verifies a migrating user "+
 			"(migration-source add -kind oidc_password)")
@@ -1849,6 +1852,8 @@ func run(args []string) (err error) {
 		return idpTokenAuthSet(ctx, conn, *slug, *idpAuthMethod, *idpClientKeyFile, *idpClientCertFile)
 	case "idp trust-mfa":
 		return idpTrustMFA(ctx, conn, *slug, *idpMFAAMR, *idpMFAACR)
+	case "idp store-tokens":
+		return idpStoreTokensSet(ctx, conn, *slug, *idpStoreTokens)
 	case "idp disable":
 		return idpSetEnabled(ctx, conn, *slug, false)
 	case "idp enable":

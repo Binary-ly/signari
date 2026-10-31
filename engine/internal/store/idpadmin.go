@@ -76,6 +76,9 @@ type IdentityProviderChange struct {
 	ForwardParameters *[]string
 	// GroupClaim is the claim the provider's groups arrive in.
 	GroupClaim *string
+	// StoreTokens keeps what the provider hands over at a sign-in. Turning it off
+	// keeps nobody's sign-in from working and removes everything already kept.
+	StoreTokens *bool
 }
 
 // Empty reports whether the change names nothing.
@@ -242,6 +245,15 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 	if c.GroupClaim != nil && strings.TrimSpace(*c.GroupClaim) == "" {
 		return idpInvalid{"the group claim is the name of a claim"}
 	}
+	if c.StoreTokens != nil && *c.StoreTokens && (kind == "saml" || kind == "assertion") {
+		return idpInvalid{fmt.Sprintf("%s is a %s provider, which hands over no token to keep", slug, kind)}
+	}
+	if c.StoreTokens != nil && !*c.StoreTokens {
+		if _, err := q.Exec(ctx, `DELETE FROM core.federated_tokens t USING core.identity_providers p
+			WHERE t.provider_id = p.id AND p.org_id = $1::uuid AND p.slug = $2`, orgID, slug); err != nil {
+			return err
+		}
+	}
 	_, err := q.Exec(ctx, `
 		UPDATE core.identity_providers
 		   SET enabled                  = COALESCE($3::boolean, enabled),
@@ -255,9 +267,10 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 		                                       ELSE NULLIF($10, '') END,
 		       forward_parameters       = COALESCE($11::text[], forward_parameters),
 		       group_claim              = COALESCE($12::text, group_claim),
+		       store_tokens             = COALESCE($13::boolean, store_tokens),
 		       updated_at               = now()
 		 WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, c.Enabled, c.AllowAssertions, c.TrustEmailVerification,
-		c.RequireVerifiedEmail, amr, acr, domains, c.EndSessionURL, forward, c.GroupClaim)
+		c.RequireVerifiedEmail, amr, acr, domains, c.EndSessionURL, forward, c.GroupClaim, c.StoreTokens)
 	return err
 }
 
@@ -340,6 +353,8 @@ type IdentityProviderRow struct {
 	// GroupClaim is the claim its groups arrive in, and GroupMap what they grant here.
 	GroupClaim string
 	GroupMap   []IdPGroupMapping
+	// StoreTokens is whether what the provider hands over is kept.
+	StoreTokens bool
 }
 
 // IdPGroupMapping is one of a provider's groups and the local group it grants.
@@ -359,7 +374,7 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		       p.allow_linking, p.allow_jwt_bearer, p.trust_email_verification, p.require_verified_email,
 		       p.mfa_amr, p.mfa_acr, (SELECT count(*) FROM core.federated_identities f WHERE f.provider_id = p.id),
 		       p.login_domains, COALESCE(p.end_session_url, ''), p.token_auth_method, p.client_key IS NOT NULL,
-		       p.forward_parameters, p.group_claim
+		       p.forward_parameters, p.group_claim, p.store_tokens
 		  FROM core.identity_providers p WHERE p.org_id = $1::uuid ORDER BY p.slug`, orgID)
 	if err != nil {
 		return nil, err
@@ -370,7 +385,7 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Kind, &p.Issuer, &p.Enabled, &p.AllowSignup,
 			&p.AllowLinking, &p.AllowAssertions, &p.TrustEmailVerification, &p.RequireVerifiedEmail, &p.MFAAMR,
 			&p.MFAACR, &p.Linked, &p.LoginDomains, &p.EndSessionURL, &p.TokenAuthMethod, &p.HasClientKey,
-			&p.ForwardParameters, &p.GroupClaim); err != nil {
+			&p.ForwardParameters, &p.GroupClaim, &p.StoreTokens); err != nil {
 			rows.Close()
 			return nil, err
 		}

@@ -105,6 +105,7 @@ var exportSections = []exportSection{
 	{table: "email_changes", by: "user_id"},
 	{table: "email_sign_in_codes", by: "user_id"},
 	{table: "federated_identities", by: "user_id"},
+	{table: "federated_tokens", by: "user_id"},
 	{table: "federated_logins", by: "link_user_id"},
 
 	// Sessions, and what each one reached.

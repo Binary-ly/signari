@@ -11,9 +11,21 @@ import (
 )
 
 func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
+	claims, ok := s.acceptedToken(w, r, "openid", "userinfo")
+	if !ok {
+		return
+	}
+	s.answerUserinfo(w, r, claims)
+}
 
+// acceptedToken takes the access token on a request to an endpoint this server is
+// the resource server for, and answers for itself when it will not: every question a
+// token is asked here, in one place, so a second endpoint cannot ask fewer. scope is what
+// the endpoint needs. where names it in the log.
+func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, where string) (
+	claims *tokens.AccessTokenClaims, ok bool) {
+	ctx := r.Context()
 	raw, scheme := bearerTokenAndScheme(r)
 	if raw == "" {
 		// RFC 9449 §7.2: a resource supporting both schemes should advertise
@@ -34,7 +46,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), raw)
 	if err != nil {
 		// Logged with the reason, returned without it.
-		s.log.Info("userinfo token rejected", "err", err)
+		s.log.Info("a token was rejected", "where", where, "err", err)
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", `+s.resourceMetadataChallenge()+
 				`, error="invalid_token", error_description="The access token is invalid"`)
@@ -47,7 +59,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	// server here, and the mint path honours RFC 8707 `resource`, so a token
 	// audience-restricted to a downstream API must not also open this endpoint.
 	if !tokens.AudienceAccepted(claims, s.cfg.Issuer) {
-		s.log.Info("userinfo refused a token audienced elsewhere",
+		s.log.Info("refused a token audienced elsewhere", "where", where,
 			"aud", claims.Audience, "correlation_id", correlationID(ctx))
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", error_description="`+
@@ -56,9 +68,9 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !tokens.HasScope(claims.Scope, "openid") {
+	if !tokens.HasScope(claims.Scope, scope) {
 		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="signari", error="insufficient_scope", scope="openid"`)
+			`Bearer realm="signari", error="insufficient_scope", scope="`+scope+`"`)
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -71,7 +83,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		// from the same grant. Checked alongside the per-jti denylist because a
 		// client revokes the refresh token far more often than each access token.
 		if err != nil {
-			s.log.Error("userinfo grant revocation check failed", "err", err)
+			s.log.Error("grant revocation check failed", "where", where, "err", err)
 		}
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", error_description="The authorization behind this token has been revoked"`)
@@ -80,7 +92,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if revoked, err := store.JTIRevoked(ctx, s.db, claims.JTI); err != nil || revoked {
 		if err != nil {
-			s.log.Error("userinfo revocation check failed", "err", err)
+			s.log.Error("revocation check failed", "where", where, "err", err)
 		}
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", error_description="The access token has been revoked"`)
@@ -103,7 +115,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	// person is checked below, where their claims are read.
 	if live, err := store.TokenHolderLive(ctx, s.db, claims.ClientID, claims.Subject); err != nil || !live {
 		if err != nil {
-			s.log.Error("userinfo holder check failed", "err", err)
+			s.log.Error("holder check failed", "where", where, "err", err)
 		}
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", error_description="The client or subject of this token is no longer active"`)
@@ -131,10 +143,15 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The proof for a DPoP-bound token, the certificate for one bound to it.
-	if s.boundTokenRefused(w, r, raw, claims.Cnf, "userinfo") {
+	if s.boundTokenRefused(w, r, raw, claims.Cnf, where) {
 		return
 	}
+	return claims, true
+}
 
+// answerUserinfo says what a token that was accepted may hear.
+func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *tokens.AccessTokenClaims) {
+	ctx := r.Context()
 	out := map[string]any{"sub": claims.Presented()}
 
 	// Claims are released strictly by granted scope. `profile` and `email` are

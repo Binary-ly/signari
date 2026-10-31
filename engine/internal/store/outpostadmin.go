@@ -165,6 +165,14 @@ func RotateOutpostToken(ctx context.Context, q outpostDB, orgID, name string) (s
 	return token, nil
 }
 
+// OutpostHeartbeat is how often a running outpost says hello, whether or not
+// anybody is using it, and OutpostStaleAfter how long it can miss before it is
+// reported: three, so one lost call or a restart is not an alarm.
+const (
+	OutpostHeartbeat  = time.Minute
+	OutpostStaleAfter = 3 * OutpostHeartbeat
+)
+
 // Outpost is one registration, without its token, which is kept only hashed.
 type Outpost struct {
 	ID, Name, Kind string
@@ -172,13 +180,24 @@ type Outpost struct {
 	SearchGroup    string
 	LastSeenAt     *time.Time
 	LastSeenIP     string
+	// Version is what it last said it was running, empty if it never said.
+	Version string
+}
+
+// Stale reports a running outpost the core has stopped hearing from. Only the
+// kinds `outpost run` starts say hello: a desktop or decision token is presented
+// by something else, whenever somebody signs in, so its silence means nothing.
+// One that has never called has not stopped.
+func (o Outpost) Stale(now time.Time) bool {
+	return o.Enabled && (o.Kind == "ldap" || o.Kind == "radius") && o.LastSeenAt != nil &&
+		now.Sub(*o.LastSeenAt) > OutpostStaleAfter
 }
 
 // Outposts lists an organisation's outposts by name.
 func Outposts(ctx context.Context, q Querier, orgID string) ([]Outpost, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id::text, name, kind, enabled, COALESCE(search_group, ''), last_seen_at,
-		       COALESCE(last_seen_ip, '')
+		       COALESCE(last_seen_ip, ''), COALESCE(last_seen_version, '')
 		  FROM core.outposts WHERE org_id = $1::uuid ORDER BY name`, orgID)
 	if err != nil {
 		return nil, err
@@ -188,7 +207,7 @@ func Outposts(ctx context.Context, q Querier, orgID string) ([]Outpost, error) {
 	for rows.Next() {
 		var o Outpost
 		if err := rows.Scan(&o.ID, &o.Name, &o.Kind, &o.Enabled, &o.SearchGroup, &o.LastSeenAt,
-			&o.LastSeenIP); err != nil {
+			&o.LastSeenIP, &o.Version); err != nil {
 			return nil, err
 		}
 		out = append(out, o)

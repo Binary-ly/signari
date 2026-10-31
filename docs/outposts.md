@@ -133,28 +133,119 @@ reset passwords they typed correctly, which turns a five-minute outage into an
 afternoon. Until November 2026 that is what a bind did: the outpost knew the
 difference and the directory in front of it did not.
 
+A RADIUS outpost that cannot ask the core answers nothing at all, so a device goes
+on to its next server. An Access-Reject would tell the person their password is
+wrong and tell the device not to bother.
+
 ## Liveness
 
 ```sh
 signari outpost list -org <uuid>
 
-  dmz-ldap    ldap    enabled   last seen 18s ago from 203.0.113.7
+  dmz-ldap    ldap    enabled   search: own entry only   last seen 18s ago from 203.0.113.7, running 1.4.0
+  branch-2    radius  STALE                              last seen 41m0s ago from 198.51.100.4, running 1.3.2
 ```
 
 An outpost that stops calling is an outage nobody is told about otherwise: the
-protocol simply stops answering somewhere the operator is not looking.
+protocol simply stops answering somewhere the operator is not looking. So a
+running outpost says hello to the core once a minute whether anybody is using it
+or not, with the release it is, and logs when it loses the core and when it gets
+it back. After three minutes of silence it is reported `STALE` here, by `stale`
+in the Admin API and by `signari doctor`. One that has never called, one taken out
+of service, and the kinds nothing runs are not reported.
 
-## Status
+It warns at start when it and its core are different releases, and starts anyway,
+since a rolling upgrade looks exactly like that.
 
-**LDAP outposts work**, verified with a real LDAP client binding and searching
-through one started in a shell with no database credentials in its environment.
+## Where a bind came from
 
-**RADIUS outposts are not runnable yet.** RADIUS needs the shared secret for
-each network device, and those are not carried by the outpost token — deciding
-how they reach the outpost is a real decision rather than an oversight, and
-`signari outpost run -kind-outpost radius` says so instead of starting something
-half-configured.
+An outpost tells the core the address a bind reached it from. The socket at the
+core is the outpost's, so without this everybody behind it had no per-address
+budget, and one host could go on guessing by changing usernames. Now the failed
+sign-in budget applies to that address as it does on the engine's own listener,
+and when it is spent the client is answered `busy`.
 
-**Forward-auth outposts** are unnecessary in the same sense: `/proxy/verify` is
-already an HTTP endpoint a reverse proxy anywhere can call, so a proxy-kind
-token exists mainly to be refused where it should be.
+It is the outpost's word for it. Whoever holds a stolen token can name any address,
+which costs them that budget and nothing else: the budget on each account and the
+limit on the outpost still hold.
+
+RADIUS sends no address, because the peer there is the device, and one budget
+across everybody on an access point would lock a building out.
+
+## RADIUS
+
+```sh
+signari outpost create -org <uuid> -name branch-2 -kind-outpost radius
+
+# devices.conf: name, the network it sends from, its shared secret
+#   ap-floor-2   10.20.0.0/24   a-long-random-shared-secret
+
+chmod 600 devices.conf
+signari outpost run -core https://auth.example.com \
+  -outpost-token $SIGNARI_OUTPOST_TOKEN -kind-outpost radius -radius-clients devices.conf
+```
+
+It listens on `:1812` unless `-addr` says otherwise, and answers password requests
+through the core. Each device's secret is in a local file because a secret is a
+credential for that device, and this is the machine by design less trusted than
+the core: it holds the secrets of the devices it serves and no others. The file is
+refused if anybody but its owner can read it, and it is read once, at start, so
+restart the outpost after changing it.
+
+What a RADIUS outpost does not do: EAP-TLS, a challenge for a second factor, and the
+VLAN attributes of [network authorisation](radius.md). Those need the engine's own
+listener. Somebody under an MFA mandate is refused, as they are through an LDAP
+outpost.
+
+## Running it as a service
+
+Nothing here needs a database, or anything from the core but the token:
+
+```ini
+# /etc/systemd/system/signari-outpost.service
+[Unit]
+Description=Signari outpost
+After=network-online.target
+
+[Service]
+# SIGNARI_OUTPOST_TOKEN=..., owned by root and mode 600
+EnvironmentFile=/etc/signari/outpost.env
+ExecStart=/usr/local/bin/signari outpost run -core https://auth.example.com \
+  -kind-outpost ldap -ldap-base-dn dc=example,dc=com \
+  -tls-cert /etc/signari/ldap.pem -tls-key /etc/signari/ldap-key.pem
+User=signari
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```yaml
+# compose.yaml, with the image built from engine/Dockerfile
+services:
+  outpost:
+    build: ./engine
+    command: [outpost, run, -core, "https://auth.example.com", -kind-outpost, radius,
+              -radius-clients, /run/secrets/devices]
+    environment:
+      SIGNARI_OUTPOST_TOKEN: ${SIGNARI_OUTPOST_TOKEN}
+    # devices.conf is 600, so this is its owner.
+    user: "1000:1000"
+    secrets: [devices]
+    ports: ["1812:1812/udp"]
+    restart: always
+secrets:
+  devices:
+    file: ./devices.conf
+```
+
+## What is not run
+
+**Desktop and decision tokens** are presented by something else: the credential
+provider or PAM module of [desktop login](desktop-login.md), or the application
+asking the [evaluation API](authorization.md). `outpost run` says so.
+
+**Forward-auth outposts** are unnecessary: `/proxy/verify` is already an HTTP
+endpoint a reverse proxy anywhere can call, so a proxy-kind token exists mainly to
+be refused where it should be.

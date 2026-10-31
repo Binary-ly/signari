@@ -157,7 +157,7 @@ var commandFlags = map[string][]string{
 	"outpost list":                    {"o", "org"},
 	"outpost remove":                  {"name", "org"},
 	"outpost rotate":                  {"name", "org"},
-	"outpost run":                     {"addr", "core", "kind-outpost", "ldap-base-dn", "ldap-insecure", "outpost-token", "tls-cert", "tls-key"},
+	"outpost run":                     {"addr", "core", "kind-outpost", "ldap-base-dn", "ldap-insecure", "outpost-token", "radius-clients", "tls-cert", "tls-key"},
 	"outpost search-group":            {"name", "org", "search-group"},
 	"passwords calibrate":             {"target"},
 	"plan":                            {"f", "org", "prune"},

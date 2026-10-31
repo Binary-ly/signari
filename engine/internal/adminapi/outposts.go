@@ -26,6 +26,8 @@ type outpostView struct {
 	SearchGroup string     `json:"search_group"`
 	LastSeenAt  *time.Time `json:"last_seen_at"`
 	LastSeenIP  string     `json:"last_seen_ip"`
+	Version     string     `json:"version"`
+	Stale       bool       `json:"stale"`
 }
 
 type createOutpostRequest struct {
@@ -58,9 +60,11 @@ func (s *Server) listOutposts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]outpostView, 0, len(got))
+	now := time.Now()
 	for _, o := range got {
 		out = append(out, outpostView{ID: o.ID, Name: o.Name, Kind: o.Kind, Enabled: o.Enabled,
-			SearchGroup: o.SearchGroup, LastSeenAt: o.LastSeenAt, LastSeenIP: o.LastSeenIP})
+			SearchGroup: o.SearchGroup, LastSeenAt: o.LastSeenAt, LastSeenIP: o.LastSeenIP, Version: o.Version,
+			Stale: o.Stale(now)})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "outposts": out})
 }

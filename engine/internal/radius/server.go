@@ -25,6 +25,11 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, username, password string) error
 }
 
+// ErrUnavailable is an Authenticator that could not ask, as an outpost whose
+// core has gone cannot. It is answered with silence, so the device goes on to
+// its next server.
+var ErrUnavailable = errors.New("the service behind this RADIUS server cannot be reached")
+
 // ClientNetwork reads a RADIUS client's source range, as the operator gives it
 // and as the database returns it, and refuses one that covers every address.
 //
@@ -468,6 +473,12 @@ func (s *Server) answer(ctx context.Context, conn net.PacketConn, r request) {
 	err = s.auth.Authenticate(ctx, strings.TrimSpace(string(username)), password)
 	if errors.Is(err, ErrSecondFactor) {
 		s.askForCode(conn, addr, p, secret, client, strings.TrimSpace(string(username)))
+		return
+	}
+	if errors.Is(err, ErrUnavailable) {
+		// No answer at all, where an Access-Reject would tell the person their
+		// password is wrong and the device not to ask anybody else.
+		s.log.Error("RADIUS request could not be judged", "client", client.Name, "err", err)
 		return
 	}
 	if err != nil {

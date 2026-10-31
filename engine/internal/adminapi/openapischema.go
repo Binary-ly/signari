@@ -757,9 +757,9 @@ var opSchemas = map[string]opSchema{
 			"parameters": mapOf(str()), "max_connections": integer(), "max_duration_seconds": integer()}))},
 	"GET /admin/organizations/{orgID}/outposts": {http.StatusOK, nil, object([]string{"org_id", "outposts"},
 		map[string]jsonSchema{"org_id": uuidStr(), "outposts": arrayOf(object([]string{"id", "name", "kind", "enabled",
-			"search_group", "last_seen_at", "last_seen_ip"}, map[string]jsonSchema{"id": uuidStr(), "name": str(),
-			"kind": str(), "enabled": boolean(), "search_group": str(), "last_seen_at": nullable(dateTime()),
-			"last_seen_ip": str()}))})},
+			"search_group", "last_seen_at", "last_seen_ip", "version", "stale"}, map[string]jsonSchema{"id": uuidStr(),
+			"name": str(), "kind": str(), "enabled": boolean(), "search_group": str(),
+			"last_seen_at": nullable(dateTime()), "last_seen_ip": str(), "version": str(), "stale": boolean()}))})},
 	"POST /admin/organizations/{orgID}/outposts": {http.StatusCreated, typeOf[createOutpostRequest](), object(
 		[]string{"id", "name", "kind", "token", "config_version"}, withVersion(map[string]jsonSchema{
 			"id": uuidStr(), "name": str(), "kind": str(), "token": str()}))},

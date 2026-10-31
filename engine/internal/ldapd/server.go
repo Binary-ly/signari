@@ -250,7 +250,8 @@ func WithPeerAddr(ctx context.Context, addr string) context.Context {
 //
 // It exists so an Authenticator can rate-limit a bind by origin. It is the
 // address of the socket and never a value the client supplied, because a limit
-// an attacker can re-key by setting a field is not a limit.
+// an attacker can re-key by setting a field is not a limit. An outpost passes
+// on the address of its own socket, which is the same thing one step away.
 func PeerAddr(ctx context.Context) string {
 	addr, _ := ctx.Value(peerKey{}).(string)
 	return addr

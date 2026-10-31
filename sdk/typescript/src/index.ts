@@ -2208,6 +2208,8 @@ export interface GetOrganizationsOrgIDOutpostsResponseOutpostsItem {
   last_seen_ip: string
   name: string
   search_group: string
+  stale: boolean
+  version: string
 }
 
 /** A JSON object of the Admin API. */

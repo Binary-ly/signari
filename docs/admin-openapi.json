@@ -12882,6 +12882,12 @@
                           },
                           "search_group": {
                             "type": "string"
+                          },
+                          "stale": {
+                            "type": "boolean"
+                          },
+                          "version": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -12891,7 +12897,9 @@
                           "enabled",
                           "search_group",
                           "last_seen_at",
-                          "last_seen_ip"
+                          "last_seen_ip",
+                          "version",
+                          "stale"
                         ],
                         "type": "object"
                       },

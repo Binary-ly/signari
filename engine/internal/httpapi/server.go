@@ -174,6 +174,9 @@ type Server struct {
 	// serves ordinary OIDC rather than failing.
 	root *keys.RootKey
 
+	// release is SetRelease's.
+	release string
+
 	// dpopNonces makes every DPoP proof carry a nonce from this server.
 	dpopNonces bool
 
@@ -241,6 +244,10 @@ func (s *Server) failureLimit() int {
 // unaffected and mapped claims are silently absent, which is the right failure
 // for a capability an unconfigured deployment is not using.
 func (s *Server) SetRootKey(root *keys.RootKey) { s.root = root }
+
+// SetRelease names the release this binary was built as, which an outpost
+// compares with its own.
+func (s *Server) SetRelease(release string) { s.release = release }
 
 // SetMetrics supplies the metric handles, or nil for none.
 //

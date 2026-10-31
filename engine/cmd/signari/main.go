@@ -371,7 +371,7 @@ extension providers:
 outposts and remote access:
   outpost create         register an LDAP, RADIUS, proxy or desktop outpost
   outpost list           the organisation's outposts and when each last called
-  outpost run            run an LDAP outpost, which holds no database credentials
+  outpost run            run an LDAP or RADIUS outpost, which holds no database credentials
   outpost disable        refuse an outpost's token
   outpost enable         accept an outpost's token again
   outpost rotate         give an outpost a new token, and stop the old one
@@ -675,6 +675,8 @@ func run(args []string) (err error) {
 	// without -tls-cert refuses to start rather than take passwords in clear.
 	outpostLDAPInsecure := fs.Bool("ldap-insecure", os.Getenv("SIGNARI_OUTPOST_LDAP_INSECURE") == "1",
 		"`outpost run`: serve LDAP without TLS (only behind a TLS terminator on loopback)")
+	outpostRADIUSClients := fs.String("radius-clients", "",
+		"`outpost run`: a file of `name network secret` lines, the devices a RADIUS outpost answers")
 	subURL := fs.String("url", "", "https endpoint events are POSTed to, or a provider's end_session_endpoint")
 	resourceURI := fs.String("resource", "", "an RFC 8707 resource indicator: the absolute URI a resource server is known by")
 	srcIssuer := fs.String("source-issuer", "", "the transmitter's issuer")
@@ -1108,7 +1110,7 @@ func run(args []string) (err error) {
 	// would defeat the feature entirely.
 	if cmd == "outpost run" {
 		return outpostRun(*outpostCore, *outpostToken, *outpostKind, *addr, *ldapBaseDN,
-			*tlsCert, *tlsKey, *outpostLDAPInsecure)
+			*tlsCert, *tlsKey, *outpostLDAPInsecure, *outpostRADIUSClients)
 	}
 
 	// `kerberos check` needs no database. It answers "will this keytab work",
@@ -2544,6 +2546,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		// Supplied here because this is where TLS is configured; nil is a valid
 		// answer and means tls_client_auth is refused.
 		srv.SetClientCAs(clientCAPool())
+		srv.SetRelease(version)
 		// Which instance's clients, sessions and accounts it serves: every
 		// lookup without a token asks.
 		srv.SetInstance(inst.id)
@@ -7178,13 +7181,22 @@ func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind, searc
 
 	fmt.Printf("outpost %s (%s)\n\n", name, kind)
 	fmt.Printf("  SIGNARI_OUTPOST_TOKEN=%s\n\n", token)
-	fmt.Println("Run it where the protocol is needed, with NO database credentials:")
-	fmt.Printf("  signari outpost run -core https://<this engine> \\\n")
-	fmt.Printf("    -outpost-token $SIGNARI_OUTPOST_TOKEN -kind-outpost %s \\\n", kind)
-	if kind == "ldap" {
-		fmt.Printf("    -addr :389 -ldap-base-dn dc=example,dc=com\n")
-	} else {
-		fmt.Printf("    -addr :1812\n")
+	switch kind {
+	case "ldap", "radius":
+		fmt.Println("Run it where the protocol is needed, with NO database credentials:")
+		fmt.Printf("  signari outpost run -core https://<this engine> \\\n")
+		fmt.Printf("    -outpost-token $SIGNARI_OUTPOST_TOKEN -kind-outpost %s \\\n", kind)
+		if kind == "ldap" {
+			fmt.Printf("    -tls-cert ldap.pem -tls-key ldap-key.pem -ldap-base-dn dc=example,dc=com\n")
+		} else {
+			fmt.Printf("    -radius-clients devices.conf\n")
+		}
+	case "desktop":
+		fmt.Println("Give it to the credential provider or PAM module; there is nothing to run.")
+	case "pdp":
+		fmt.Println("Give it to the application that asks the evaluation API; there is nothing to run.")
+	default:
+		fmt.Println("There is nothing to run: a reverse proxy asks /proxy/verify itself.")
 	}
 	fmt.Println("\nThe token is shown once. It is stored hashed.")
 	fmt.Println("It verifies passwords and nothing else: it cannot change anything,")
@@ -7200,49 +7212,41 @@ func outpostList(ctx context.Context, conn *pgx.Conn, orgID, format string) erro
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
-	rows, err := conn.Query(ctx, `
-		SELECT name, kind, enabled, last_seen_at, COALESCE(last_seen_ip,''),
-		       COALESCE(search_group, '')
-		  FROM core.outposts WHERE org_id = $1::uuid ORDER BY name`, orgID)
+	outposts, err := store.Outposts(ctx, conn, orgID)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	n := 0
-	for rows.Next() {
-		var name, kind, ip, group string
-		var enabled bool
-		var seen *time.Time
-		if err := rows.Scan(&name, &kind, &enabled, &seen, &ip, &group); err != nil {
-			return err
-		}
+	now := time.Now()
+	for _, o := range outposts {
 		state := "enabled"
-		if !enabled {
+		switch {
+		case !o.Enabled:
 			state = "DISABLED"
+		case o.Stale(now):
+			state = "STALE"
 		}
 		last := "never called"
-		if seen != nil {
-			last = fmt.Sprintf("last seen %s ago from %s",
-				time.Since(*seen).Round(time.Second), ip)
+		if o.LastSeenAt != nil {
+			last = fmt.Sprintf("last seen %s ago from %s", now.Sub(*o.LastSeenAt).Round(time.Second), o.LastSeenIP)
+		}
+		if o.Version != "" {
+			last += ", running " + o.Version
 		}
 		search := ""
-		if kind == "ldap" {
+		if o.Kind == "ldap" {
 			search = "search: own entry only"
-			if group != "" {
-				search = "search: members of " + group
+			if o.SearchGroup != "" {
+				search = "search: members of " + o.SearchGroup
 			}
 		}
-		n++
-		out.add(map[string]any{"name": name, "kind": kind, "enabled": enabled, "search_group": group,
-			"last_seen_at": utcPtr(seen), "last_seen_ip": ip})
+		out.add(map[string]any{"name": o.Name, "kind": o.Kind, "enabled": o.Enabled, "search_group": o.SearchGroup,
+			"last_seen_at": utcPtr(o.LastSeenAt), "last_seen_ip": o.LastSeenIP, "version": o.Version,
+			"stale": o.Stale(now)})
 		if out.text() {
-			fmt.Printf("  %-20s %-7s %-9s %-36s %s\n", name, kind, state, search, last)
+			fmt.Printf("  %-20s %-7s %-9s %-36s %s\n", o.Name, o.Kind, state, search, last)
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if n == 0 && out.text() {
+	if len(outposts) == 0 && out.text() {
 		fmt.Println("  no outposts registered")
 	}
 	return out.flush()
@@ -7273,7 +7277,7 @@ func outpostSetSearchGroup(ctx context.Context, conn *pgx.Conn, orgID, name, gro
 // No database handle exists in this process. That is the entire point: the
 // machine running this can sit in a DMZ, a branch office or an airgapped
 // segment, and a compromise of it does not yield the directory.
-func outpostRun(core, token, kind, addr, baseDN, tlsCert, tlsKey string, ldapInsecure bool) error {
+func outpostRun(core, token, kind, addr, baseDN, tlsCert, tlsKey string, ldapInsecure bool, radiusClients string) error {
 	if kind == "" {
 		return fmt.Errorf("give -kind-outpost: ldap or radius")
 	}
@@ -7284,6 +7288,7 @@ func outpostRun(core, token, kind, addr, baseDN, tlsCert, tlsKey string, ldapIns
 	if err != nil {
 		return err
 	}
+	client.Identify(version)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -7294,12 +7299,22 @@ func outpostRun(core, token, kind, addr, baseDN, tlsCert, tlsKey string, ldapIns
 	if err := client.Check(ctx); err != nil {
 		return err
 	}
+	if client.Kind() != kind {
+		return fmt.Errorf("this token was issued for a %s outpost, and it is bound to that protocol: "+
+			"`signari outpost create` issues one for %s", client.Kind(), kind)
+	}
 	log, err := logging.New(os.Stderr, os.Getenv)
 	if err != nil {
 		return err
 	}
 	log.Info("outpost registered with the core", "name", client.Name(), "kind", kind,
 		"core", core)
+	// Named and not refused: a core and its outposts are not upgraded in one
+	// moment, and this much difference is what a rolling upgrade looks like.
+	if theirs := client.CoreVersion(); theirs != "" && version != "" && theirs != version {
+		log.Warn("this outpost and its core are different releases", "outpost", version, "core", theirs)
+	}
+	go client.Heartbeat(ctx, store.OutpostHeartbeat, log)
 
 	switch kind {
 	case "ldap":
@@ -7342,12 +7357,44 @@ func outpostRun(core, token, kind, addr, baseDN, tlsCert, tlsKey string, ldapIns
 		log.Info("LDAP outpost listening", "addr", addr, "base_dn", baseDN, "tls", !ldapInsecure)
 		return srv.Serve(ctx, ln)
 	case "radius":
-		return fmt.Errorf("the RADIUS outpost needs its shared secrets, which are " +
-			"per network device and are not carried by the outpost token. Configure " +
-			"them locally and this will start; see docs/outposts.md")
+		return outpostRunRADIUS(ctx, client, addr, radiusClients, log)
+	case "desktop":
+		return fmt.Errorf("nothing runs a desktop outpost: its token is given to the credential provider or " +
+			"PAM module, which asks POST /outpost/desktop itself; see docs/desktop-login.md")
+	case "pdp":
+		return fmt.Errorf("nothing runs a decision outpost: its token is given to the application that asks " +
+			"the evaluation API; see docs/authorization.md")
 	default:
-		return fmt.Errorf("-kind-outpost %q cannot be run yet", kind)
+		return fmt.Errorf("nothing runs a %s outpost: a reverse proxy anywhere can already ask /proxy/verify, "+
+			"which is an HTTP endpoint; see docs/outposts.md", kind)
 	}
+}
+
+// outpostRunRADIUS answers Access-Requests for the devices in a local file, asking
+// the core about each password.
+func outpostRunRADIUS(ctx context.Context, client *outpost.Client, addr, clientsFile string, log *slog.Logger) error {
+	if clientsFile == "" {
+		return fmt.Errorf("give -radius-clients: a file of `name network secret` lines, one for each " +
+			"device. A device's secret is not carried by the outpost token; see docs/outposts.md")
+	}
+	devices, err := outpost.ReadRADIUSClients(clientsFile)
+	if err != nil {
+		return err
+	}
+	srv, err := radius.New(radius.Config{Clients: devices}, outpost.RADIUS{Client: client}, log)
+	if err != nil {
+		return err
+	}
+	if addr == ":8080" {
+		addr = ":1812"
+	}
+	conn, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	log.Info("RADIUS outpost listening", "addr", addr, "devices", len(devices))
+	return srv.Serve(ctx, conn)
 }
 
 // clientSetHybrid permits response_type "code id_token" for one client.

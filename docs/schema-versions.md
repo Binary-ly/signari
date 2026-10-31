@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0225 outpost_version
+
+Compatible with the release before: its binary may still serve this schema.
+
+What an outpost is running (8.31). last_seen_at said it had called and nothing said what called, while an outpost older than its core loses what it does not know to ask for without saying so: one that predates bind proofs binds and cannot search. Each call now says, and last_seen_version keeps the latest. NULL is an outpost that never has.
+
 ## 0224 password_verify_hook
 
 Not compatible with the release before: stop it before migrating.

@@ -191,6 +191,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkProviderHooks(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkOutposts(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	if err := checkAuthenticatorAllowList(ctx, conn, r); err != nil {
 		return nil, err
 	}
@@ -495,6 +498,46 @@ func checkProviderHooks(ctx context.Context, conn *pgx.Conn, r *Report) error {
 				"governs nothing.")
 	}
 	return rows.Err()
+}
+
+// checkOutposts reports a running outpost the core has stopped hearing from. It
+// says hello once a minute whether or not anybody uses it, so its silence is not
+// a quiet branch office: the protocol it served has stopped answering somewhere
+// nobody is looking.
+func checkOutposts(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("outposts")
+	rows, err := conn.Query(ctx, `SELECT DISTINCT o.id::text, o.slug
+		  FROM core.organizations o JOIN core.outposts p ON p.org_id = o.id WHERE p.enabled`)
+	if err != nil {
+		return err
+	}
+	type org struct{ id, slug string }
+	orgs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (org, error) {
+		var o org
+		err := row.Scan(&o.id, &o.slug)
+		return o, err
+	})
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, o := range orgs {
+		outposts, err := store.Outposts(ctx, conn, o.id)
+		if err != nil {
+			return err
+		}
+		for _, p := range outposts {
+			if !p.Stale(now) {
+				continue
+			}
+			r.add(Warning, "outposts",
+				fmt.Sprintf("%s's %s outpost %s was last heard from %s ago", o.slug, p.Kind, p.Name,
+					now.Sub(*p.LastSeenAt).Round(time.Minute)),
+				"a running outpost says hello once a minute, so this one has stopped or lost "+
+					"its way here. `signari outpost disable` it if it is meant to be gone.")
+		}
+	}
+	return nil
 }
 
 func checkNotificationChannels(ctx context.Context, conn *pgx.Conn, r *Report) error {

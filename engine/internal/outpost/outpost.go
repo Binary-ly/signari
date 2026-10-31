@@ -35,20 +35,29 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"signari.dev/engine/internal/ldapd"
+	"signari.dev/engine/internal/radius"
 )
+
+// VersionHeader is how a call says which release made it (8.31).
+const VersionHeader = "Signari-Outpost-Version"
 
 // Client asks a core to verify credentials.
 type Client struct {
 	core        string
 	token       string
 	http        *http.Client
+	version     string
 	origin      string
+	kind        string
 	searchGroup string
+	coreVersion string
 }
 
 // New returns a client for a core.
@@ -81,39 +90,94 @@ func New(core, token string, timeout time.Duration) (*Client, error) {
 // configuration error into an outage, and the person who finds out is somebody
 // trying to log in.
 func (c *Client) Check(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.core+"/outpost/hello", nil)
+	out, err := c.hello(ctx)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	c.origin, c.kind, c.searchGroup, c.coreVersion = out.Name, out.Kind, out.SearchGroup, out.CoreVersion
+	return nil
+}
+
+type helloAnswer struct {
+	Name        string `json:"name"`
+	Kind        string `json:"kind"`
+	SearchGroup string `json:"search_group"`
+	CoreVersion string `json:"core_version"`
+}
+
+func (c *Client) hello(ctx context.Context) (helloAnswer, error) {
+	var out helloAnswer
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.core+"/outpost/hello", nil)
+	if err != nil {
+		return out, err
+	}
+	c.identify(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("cannot reach the core at %s: %w", c.core, err)
+		return out, fmt.Errorf("cannot reach the core at %s: %w", c.core, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	switch resp.StatusCode {
 	case http.StatusOK:
-		var out struct {
-			Name        string `json:"name"`
-			Kind        string `json:"kind"`
-			SearchGroup string `json:"search_group"`
-		}
 		_ = json.NewDecoder(resp.Body).Decode(&out)
-		c.origin, c.searchGroup = out.Name, out.SearchGroup
-		return nil
+		return out, nil
 	case http.StatusForbidden:
-		return fmt.Errorf("the core has this outpost out of service: `signari outpost enable` puts "+
+		return out, fmt.Errorf("the core has this outpost out of service: `signari outpost enable` puts "+
 			"it back (core said %s)", resp.Status)
 	case http.StatusUnauthorized:
-		return fmt.Errorf("the core refused this outpost token. It may have been "+
+		return out, fmt.Errorf("the core refused this outpost token. It may have been "+
 			"rotated or removed, or never issued by this core (core said %s)", resp.Status)
 	default:
-		return fmt.Errorf("the core answered %s", resp.Status)
+		return out, fmt.Errorf("the core answered %s", resp.Status)
+	}
+}
+
+// Heartbeat says hello to the core until ctx ends. Without it an outpost nobody
+// happens to be using looks the same as one that has gone, and one that has lost
+// its core says nothing until somebody tries to sign in.
+func (c *Client) Heartbeat(ctx context.Context, every time.Duration, log *slog.Logger) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	lost := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		_, err := c.hello(ctx)
+		switch {
+		case err != nil && ctx.Err() != nil:
+			return
+		case err != nil && !lost:
+			log.Error("the outpost has lost its core", "err", err)
+		case err == nil && lost:
+			log.Info("the outpost has its core back")
+		}
+		lost = err != nil
+	}
+}
+
+// Identify names the release this outpost is, which every call then tells the core.
+func (c *Client) Identify(version string) { c.version = version }
+
+// identify puts on a request what says who is asking.
+func (c *Client) identify(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.version != "" {
+		req.Header.Set(VersionHeader, c.version)
 	}
 }
 
 // Name is what the core calls this outpost, once Check has run.
 func (c *Client) Name() string { return c.origin }
+
+// Kind is the protocol the token was issued for, once Check has run.
+func (c *Client) Kind() string { return c.kind }
+
+// CoreVersion is the release of the core, once Check has run. Empty from a core
+// that predates saying.
+func (c *Client) CoreVersion() string { return c.coreVersion }
 
 // SearchGroup is the group the core records for this outpost, once Check has
 // run: whose members may search the whole directory. The core enforces it
@@ -165,17 +229,67 @@ func (c *Client) Authenticate(ctx context.Context, username, password string) (
 
 	var out identityJSON
 	if err := c.post(ctx, "/outpost/authenticate", map[string]string{
-		"username": username, "password": password,
+		"username": username, "password": password, "client_ip": ldapd.PeerAddr(ctx),
 	}, &out); err != nil {
 		return nil, err
 	}
 	return out.toLDAP(), nil
 }
 
-// AuthenticatePassword is the RADIUS interface: correct or not, nothing more.
-func (c *Client) AuthenticatePassword(ctx context.Context, username, password string) error {
-	_, err := c.Authenticate(ctx, username, password)
+// RADIUS is this client as a RADIUS server's Authenticator: correct or not,
+// nothing more.
+type RADIUS struct{ *Client }
+
+// Authenticate verifies a password through the core.
+func (r RADIUS) Authenticate(ctx context.Context, username, password string) error {
+	_, err := r.Client.Authenticate(ctx, username, password)
+	if errors.Is(err, ldapd.ErrUnavailable) {
+		return fmt.Errorf("%w: %w", radius.ErrUnavailable, err)
+	}
 	return err
+}
+
+// ReadRADIUSClients reads the devices a RADIUS outpost answers, a file of
+// `name network secret` lines, blank lines and #-comments aside.
+//
+// A local file and not the core's own list, because each device's secret is a
+// credential for that device, and an outpost is by design somewhere less trusted
+// than the core: it holds the secrets of the devices it serves and no others. So
+// the file has to be as private as a key, and a loose one is refused.
+func ReadRADIUSClients(path string) ([]radius.Client, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("%s holds shared secrets and is readable beyond its owner (%v): chmod 600 it",
+			path, info.Mode().Perm())
+	}
+	raw, err := os.ReadFile(path) // #nosec G304 -- the operator's own -radius-clients.
+	if err != nil {
+		return nil, err
+	}
+	var out []radius.Client
+	for i, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			// The line number and not the line: it holds a secret.
+			return nil, fmt.Errorf("%s line %d: want `name network secret`", path, i+1)
+		}
+		network, err := radius.ClientNetwork(fields[1])
+		if err != nil {
+			return nil, fmt.Errorf("%s line %d: %w", path, i+1, err)
+		}
+		if err := radius.ValidSecret(fields[2]); err != nil {
+			return nil, fmt.Errorf("%s line %d: %w", path, i+1, err)
+		}
+		out = append(out, radius.Client{Name: fields[0], Net: network, Secret: fields[2]})
+	}
+	return out, nil
 }
 
 // Lookup finds a user without a credential, for LDAP search. The core answers
@@ -245,7 +359,7 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	c.identify(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)

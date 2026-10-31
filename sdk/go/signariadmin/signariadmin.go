@@ -1062,6 +1062,8 @@ type GetOrganizationsOrgIDOutpostsResponseOutpostsItem struct {
 	LastSeenIP  string  `json:"last_seen_ip"`
 	Name        string  `json:"name"`
 	SearchGroup string  `json:"search_group"`
+	Stale       bool    `json:"stale"`
+	Version     string  `json:"version"`
 }
 
 // GetOrganizationsOrgIDPromptsResponse is a JSON object of the Admin API.

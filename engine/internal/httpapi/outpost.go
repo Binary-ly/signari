@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/ldapd"
+	"signari.dev/engine/internal/outpost"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -193,20 +195,38 @@ func (s *Server) outpostCall(w http.ResponseWriter, r *http.Request) (*outpostCa
 	// Bounded at five seconds so a detached goroutine cannot accumulate.
 	//
 	// #nosec G118 -- deliberate detachment, bounded above.
-	go func(ip string) {
+	go func(ip, version string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if _, err := s.db.Exec(ctx, `
-			UPDATE core.outposts SET last_seen_at = now(), last_seen_ip = $2
-			 WHERE id = $1::uuid`, id, ip); err != nil {
+			UPDATE core.outposts SET last_seen_at = now(), last_seen_ip = $2,
+			       last_seen_version = COALESCE(NULLIF($3, ''), last_seen_version)
+			 WHERE id = $1::uuid`, id, ip, version); err != nil {
 			s.log.Debug("recording outpost activity", "err", err)
 		}
-	}(clientIP(r))
+	}(clientIP(r), outpostVersion(r))
 
 	return &c, true
 }
 
-// handleOutpostHello lets an outpost check its token before opening a listener.
+// outpostVersion is the version a call says it was made by, or "" for one that
+// does not say or says something no release is called: it goes on a page an
+// operator reads, from wherever the token has got to.
+func outpostVersion(r *http.Request) string {
+	v := r.Header.Get(outpost.VersionHeader)
+	if len(v) > 64 {
+		return ""
+	}
+	for _, c := range v {
+		if c <= ' ' || c > '~' {
+			return ""
+		}
+	}
+	return v
+}
+
+// handleOutpostHello lets an outpost check its token before opening a listener,
+// and says it is alive once a minute after that.
 //
 // It also tells the outpost its search group, which the core enforces whatever
 // the outpost does, so the outpost decides with the same value rather than one
@@ -217,7 +237,7 @@ func (s *Server) handleOutpostHello(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": c.Name, "kind": c.Kind, "search_group": c.SearchGroup,
+		"name": c.Name, "kind": c.Kind, "search_group": c.SearchGroup, "core_version": s.release,
 	})
 }
 
@@ -308,15 +328,33 @@ func (s *Server) handleOutpostAuthenticate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var body struct{ Username, Password string }
+	var body struct {
+		Username, Password string
+		// ClientIP is where the bind reached the outpost from, which the socket
+		// here cannot say: it is the outpost's.
+		ClientIP string `json:"client_ip"`
+	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "unreadable body")
 		return
 	}
 
+	// Without it nobody behind an outpost had a per-address budget, and all of them
+	// shared what this outpost may ask. It is the outpost's word, and the token is
+	// what makes that good enough: whoever holds one and lies goes back to what
+	// everybody had, the per-account budget and the limit on the outpost.
+	ctx := r.Context()
+	if a, err := netip.ParseAddr(body.ClientIP); err == nil {
+		ctx = ldapd.WithPeerAddr(ctx, a.String())
+	}
 	auth := NewLDAPAuthenticator(s.db, passwords.Shared(), orgID, s.log).
 		WithMFAGate(s.BindDemandsMFA).WithCodes(s.BindCodeOK)
-	ident, err := auth.Authenticate(r.Context(), body.Username, body.Password)
+	ident, err := auth.Authenticate(ctx, body.Username, body.Password)
+	if errors.Is(err, ldapd.ErrBusy) {
+		// Not a judgement of the password, so not answered as one.
+		writeError(w, http.StatusTooManyRequests, "slow_down", "too many recent authentication failures")
+		return
+	}
 	if err != nil {
 		// One answer for every reason. An outpost sits somewhere less trusted by
 		// definition, and a response that distinguished "no such user" from

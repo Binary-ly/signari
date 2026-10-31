@@ -49,6 +49,14 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.renderAuthzFailure(w, r, perr.Error())
 		return
 	}
+	// Everything below hands the request on by its URL's query: to the sign-in page,
+	// the consent page and back here. A POST carries none, so the person signed in
+	// and arrived nowhere. On a copy, so the wrappers around this handler go on
+	// seeing what was sent.
+	if r.Method == http.MethodPost {
+		r = r.Clone(ctx)
+		r.URL.RawQuery = query.Encode()
+	}
 
 	// RFC 6749 §3.1, before anything reads a parameter.
 	//

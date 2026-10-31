@@ -92,6 +92,9 @@ type SCIMTargetRow struct {
 	RecreateMissing           bool
 	Linked, ShouldBeGone      int
 	CreatedAt                 time.Time
+	// OAuthTokenURL, OAuthClientID and OAuthScope are the client credentials
+	// grant it authenticates with, "" for a bearer token.
+	OAuthTokenURL, OAuthClientID, OAuthScope string
 }
 
 // SCIMTargets lists an organisation's targets by slug, with how many people
@@ -103,7 +106,8 @@ func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow,
 		       t.dry_run, t.enabled, t.recreate_missing,
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id),
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id AND NOT l.should_be_active),
-		       t.created_at
+		       t.created_at, COALESCE(t.oauth_token_url, ''), COALESCE(t.oauth_client_id, ''),
+		       COALESCE(t.oauth_scope, '')
 		  FROM core.scim_targets t
 		  LEFT JOIN core.groups g ON g.id = t.scope_group_id
 		 WHERE t.org_id = $1::uuid ORDER BY t.slug`, orgID)
@@ -116,7 +120,7 @@ func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow,
 		var t SCIMTargetRow
 		if err := rows.Scan(&t.ID, &t.Slug, &t.Name, &t.Kind, &t.BaseURL, &t.OnDeactivate, &t.ScopeGroup,
 			&t.Impersonate, &t.TargetDomain, &t.DryRun, &t.Enabled, &t.RecreateMissing, &t.Linked,
-			&t.ShouldBeGone, &t.CreatedAt); err != nil {
+			&t.ShouldBeGone, &t.CreatedAt, &t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

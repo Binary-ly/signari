@@ -2959,6 +2959,9 @@ Takes:
 | `impersonate` | string |  |
 | `kind` | string |  |
 | `name` | string |  |
+| `oauth_client_id` | string |  |
+| `oauth_scope` | string |  |
+| `oauth_token_url` | string |  |
 | `on_deactivate` | string |  |
 | `recreate_missing` | boolean |  |
 | `slug` | string |  |

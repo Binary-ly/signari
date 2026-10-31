@@ -136,6 +136,7 @@ var columnClass = map[string]string{
 	"organizations.token_budget_per_minute":   "public",
 	"outbox.subject_key":                      "public",
 	"rate_limits.bucket_key":                  "public",
+	"scim_targets.oauth_token_url":            "public",
 	"webauthn_policy.resident_key":            "public",
 	// A token's identifier, not the token: it is in the token's own claims,
 	// and knowing it lets nobody present the token.

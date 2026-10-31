@@ -236,6 +236,12 @@ scim_targets:                 # where people are provisioned to
     scope_group: platform     # only its members; "" for everybody
     dry_run: false
     recreate_missing: false   # a new account for somebody whose linked one is gone
+  - slug: billing
+    base_url: https://billing.example.com/scim/v2
+    token: {env: BILLING_CLIENT_SECRET}   # the client secret, with a token URL
+    oauth_token_url: https://billing.example.com/oauth/token
+    oauth_client_id: signari
+    oauth_scope: scim.write   # may be left out
   - slug: workspace
     kind: google              # or entra; fixed once made
     credentials: {file: google-sa.json}

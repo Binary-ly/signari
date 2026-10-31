@@ -115,6 +115,26 @@ Internal targets often sit behind a private CA, and the alternative operators
 reach for is disabling verification entirely. It *adds* to the system pool, so
 trusting an internal CA does not stop public targets from verifying.
 
+## A target that issues its own tokens
+
+A target that takes OAuth 2.0 client credentials instead of a long-lived bearer
+token is registered with where to ask, and `-token` is then the client secret:
+
+```sh
+signari scim add -org <uuid> -slug billing \
+  -base-url https://billing.example.com/scim/v2 \
+  -oauth-token-url https://billing.example.com/oauth/token \
+  -oauth-client-id signari -oauth-scope scim.write -token <client secret>
+```
+
+The token URL is held to what the base URL is: `https`, and refused if it points
+inside this network, because the secret goes there. The secret is sent by HTTP Basic,
+sealed at rest like a bearer token, and never read back. A token is asked for when
+a pass first needs one, kept in memory for that pass, replaced 30 seconds before it
+expires, and asked for once more if the target answers 401 anyway. Changing the
+grant through a configuration file needs the secret in the same file, for the
+reason a new base URL does.
+
 ## An account that vanished at the target
 
 By default `sync` leaves it alone. Verify reports it as a warning (*"should have

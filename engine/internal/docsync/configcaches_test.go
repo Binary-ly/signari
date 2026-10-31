@@ -374,6 +374,8 @@ var componentTimeHeld = map[string]string{
 		"list it starts with is replaced by the one-minute reload the ticker test accounts for",
 	"radius.Server.sessions": "EAP conversations in flight, each with its own expiry: protocol " +
 		"state, not configuration",
+	"scim.Client.accessUntil": "when a token the target issued runs out. A client lives for one pass, " +
+		"so a change of grant takes effect at the next: nothing here outlasts a sync",
 	"radius.Server.codes": "passwords proved and waiting for a code, for two minutes at most: " +
 		"protocol state. Nothing about the person is held: whether they may sign in is read again " +
 		"when the code arrives (TestARADIUSPasswordAsksForItsCode)",

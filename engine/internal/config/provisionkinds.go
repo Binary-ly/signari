@@ -44,6 +44,11 @@ type SCIMTarget struct {
 	// RecreateMissing has a sync give somebody a new account when the one
 	// linked to them is gone from the target.
 	RecreateMissing *bool `yaml:"recreate_missing,omitempty"`
+	// OAuthTokenURL and OAuthClientID have a SCIM target authenticate by the
+	// client credentials grant, token then naming the client's secret.
+	OAuthTokenURL string `yaml:"oauth_token_url,omitempty"`
+	OAuthClientID string `yaml:"oauth_client_id,omitempty"`
+	OAuthScope    string `yaml:"oauth_scope,omitempty"`
 }
 
 func (w SCIMTarget) targetKind() string {
@@ -62,11 +67,20 @@ func (w SCIMTarget) secretRef() (*SecretRef, string) {
 	return w.Credentials, fmt.Sprintf("scim_targets[%s].credentials", w.Slug)
 }
 
+func (w SCIMTarget) oauth() provision.TargetOAuth {
+	return provision.TargetOAuth{TokenURL: w.OAuthTokenURL, ClientID: w.OAuthClientID, Scope: w.OAuthScope}
+}
+
+func heldOAuth(h store.SCIMTargetRow) provision.TargetOAuth {
+	return provision.TargetOAuth{TokenURL: h.OAuthTokenURL, ClientID: h.OAuthClientID, Scope: h.OAuthScope}
+}
+
 // spec is the target as provision.AddTarget takes it, its secret resolved.
 func (w SCIMTarget) spec() provision.TargetSpec {
 	s := provision.TargetSpec{Kind: w.targetKind(), Slug: w.Slug, Name: w.Name, BaseURL: w.BaseURL,
 		Impersonate: w.Impersonate, Domain: w.TargetDomain, OnDeactivate: w.OnDeactivate,
-		DryRun: w.DryRun != nil && *w.DryRun, RecreateMissing: w.RecreateMissing != nil && *w.RecreateMissing}
+		DryRun: w.DryRun != nil && *w.DryRun, RecreateMissing: w.RecreateMissing != nil && *w.RecreateMissing,
+		OAuthTokenURL: w.OAuthTokenURL, OAuthClientID: w.OAuthClientID, OAuthScope: w.OAuthScope}
 	if r, _ := w.secretRef(); r != nil && s.Kind == "scim" {
 		s.Token = r.value
 	} else if r != nil {
@@ -101,10 +115,21 @@ func (scimSection) validate(f *File, add func(string, ...any)) {
 			if w.Credentials != nil || w.Impersonate != "" || w.TargetDomain != "" {
 				add("%s: a SCIM target has a base_url and a token, not credentials, impersonate or target_domain", at)
 			}
+			switch {
+			case w.OAuthTokenURL == "" && w.OAuthClientID == "" && w.OAuthScope == "":
+			case !strings.HasPrefix(w.OAuthTokenURL, "https://") || w.OAuthClientID == "":
+				add("%s: the client credentials grant needs oauth_client_id and an https oauth_token_url, where "+
+					"the secret is sent", at)
+			case safedial.CheckURL(w.OAuthTokenURL) != nil:
+				add("%s: %v", at, safedial.CheckURL(w.OAuthTokenURL))
+			}
 		case "google", "entra":
 			if w.BaseURL != "" || w.Token != nil {
 				add("%s: a %s target is reached through its own API with credentials, not a base_url and token",
 					at, k)
+			}
+			if w.OAuthTokenURL != "" || w.OAuthClientID != "" || w.OAuthScope != "" {
+				add("%s: only a SCIM target takes the client credentials grant", at)
 			}
 			if k == "google" && (w.Impersonate == "" || w.TargetDomain == "") {
 				add("%s: a Google target needs impersonate, the administrator to act as, and target_domain, "+
@@ -194,6 +219,7 @@ func (scimSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, p
 			c.note(w.Enabled != nil && h.Enabled != *w.Enabled, "enabled")
 			c.note(w.ScopeGroup != nil && h.ScopeGroup != *w.ScopeGroup, "scope_group")
 			c.note(w.RecreateMissing != nil && h.RecreateMissing != *w.RecreateMissing, "recreate_missing")
+			c.note(h.Kind == "scim" && w.oauth() != heldOAuth(h), "oauth")
 			if r, where := w.secretRef(); r != nil && compared == nil {
 				if compared = p.needsRoot("scim_target", w.Slug, "comparing the secret the file names"); compared == nil {
 					var secret string
@@ -262,6 +288,10 @@ func (scimSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, 
 				change.Impersonate, change.Domain = &w.Impersonate, &w.TargetDomain
 			}
 			change.DryRun, change.RecreateMissing = w.DryRun, w.RecreateMissing
+			if h.Kind == "scim" && w.oauth() != heldOAuth(h) {
+				grant := w.oauth()
+				change.OAuth = &grant
+			}
 			if r, _ := w.secretRef(); r != nil && h.Kind == "scim" {
 				change.Token = &r.value
 			} else if r != nil {
@@ -333,7 +363,8 @@ func (scimSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File)
 	for _, h := range have {
 		dryRun, enabled, scope, recreate := h.DryRun, h.Enabled, h.ScopeGroup, h.RecreateMissing
 		w := SCIMTarget{Slug: h.Slug, Kind: h.Kind, Name: h.Name, OnDeactivate: h.OnDeactivate, DryRun: &dryRun,
-			Enabled: &enabled, ScopeGroup: &scope, RecreateMissing: &recreate}
+			Enabled: &enabled, ScopeGroup: &scope, RecreateMissing: &recreate, OAuthTokenURL: h.OAuthTokenURL,
+			OAuthClientID: h.OAuthClientID, OAuthScope: h.OAuthScope}
 		switch h.Kind {
 		case "scim":
 			w.Kind, w.BaseURL = "", h.BaseURL

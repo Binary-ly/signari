@@ -20,11 +20,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"signari.dev/engine/internal/safedial"
@@ -76,6 +78,11 @@ type Target struct {
 	// RecreateMissing has a sync give somebody active here a new account when
 	// the one linked to them is gone from the target.
 	RecreateMissing bool
+
+	// OAuthTokenURL, when set, is where a bearer token is asked for by the client
+	// credentials grant, as OAuthClientID with Token as the client's secret and
+	// OAuthScope as the scope, which may be empty.
+	OAuthTokenURL, OAuthClientID, OAuthScope string
 }
 
 // User is the subset of the SCIM user schema we send.
@@ -162,6 +169,11 @@ func NewUser(externalID, userName, displayName, email string, active bool) User 
 type Client struct {
 	target Target
 	http   *http.Client
+
+	// tokenMu guards a token asked for by the client credentials grant.
+	tokenMu     sync.Mutex
+	access      string
+	accessUntil time.Time
 }
 
 // NewClient talks to t over hc, or over safedial's client when hc is nil.
@@ -345,38 +357,29 @@ func (c *Client) ListUsers(ctx context.Context, pageSize int) ([]User, error) {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, into any) error {
-	var reader io.Reader
+	var payload []byte
 	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if payload, err = json.Marshal(body); err != nil {
 			return err
 		}
-		reader = bytes.NewReader(b)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method,
-		strings.TrimSuffix(c.target.BaseURL, "/")+path, reader)
+	status, raw, err := c.send(ctx, method, path, payload, false)
+	if err == nil && status == http.StatusUnauthorized && c.target.OAuthTokenURL != "" {
+		// A token can be revoked before its time. Asked for once more, and then
+		// the target's answer stands: this is not a loop to spend a credential in.
+		status, raw, err = c.send(ctx, method, path, payload, true)
+	}
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.target.Token)
-	req.Header.Set("Accept", contentType)
-	if body != nil {
-		req.Header.Set("Content-Type", contentType)
-	}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("calling the target: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-
-	if resp.StatusCode >= 400 {
+	if status >= 400 {
 		return &Error{
-			Status:   resp.StatusCode,
+			Status:   status,
 			Detail:   scimErrorDetail(raw),
-			Conflict: resp.StatusCode == http.StatusConflict,
+			Conflict: status == http.StatusConflict,
 		}
 	}
 	if into != nil && len(raw) > 0 {
@@ -385,6 +388,114 @@ func (c *Client) do(ctx context.Context, method, path string, body, into any) er
 		}
 	}
 	return nil
+}
+
+func (c *Client) send(ctx context.Context, method, path string, payload []byte, renew bool) (int, []byte, error) {
+	bearer, err := c.bearer(ctx, renew)
+	if err != nil {
+		return 0, nil, err
+	}
+	var reader io.Reader
+	if payload != nil {
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method,
+		strings.TrimSuffix(c.target.BaseURL, "/")+path, reader)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("Accept", contentType)
+	if payload != nil {
+		req.Header.Set("Content-Type", contentType)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("calling the target: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	return resp.StatusCode, raw, nil
+}
+
+// tokenSlack is how long before it expires a token is replaced, so one is not
+// sent to die on the way.
+const tokenSlack = 30 * time.Second
+
+// bearer is what a request authenticates with: the target's token, or one asked
+// for and kept until it nears its end. Kept here and not anywhere longer, since a
+// client lives for one pass: what a target issues is never written down.
+func (c *Client) bearer(ctx context.Context, renew bool) (string, error) {
+	if c.target.OAuthTokenURL == "" {
+		return c.target.Token, nil
+	}
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	if !renew && c.access != "" && time.Now().Before(c.accessUntil) {
+		return c.access, nil
+	}
+	form := url.Values{"grant_type": {"client_credentials"}}
+	if c.target.OAuthScope != "" {
+		form.Set("scope", c.target.OAuthScope)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.target.OAuthTokenURL,
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	// Form-encoded first, which HTTP Basic alone is not: a secret with a colon or
+	// a percent sign in it is otherwise a different secret at the far end.
+	req.SetBasicAuth(url.QueryEscape(c.target.OAuthClientID), url.QueryEscape(c.target.Token))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("asking the target's token endpoint: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", &Error{Status: resp.StatusCode, Detail: "the token endpoint: " + tokenErrorDetail(raw)}
+	}
+	var issued struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(raw, &issued); err != nil {
+		return "", fmt.Errorf("the token endpoint's response did not parse: %w", err)
+	}
+	if issued.AccessToken == "" {
+		return "", errors.New("the token endpoint answered no access_token")
+	}
+	if !strings.EqualFold(issued.TokenType, "bearer") {
+		return "", fmt.Errorf("the token endpoint issued a %q token, and a SCIM target is sent a bearer one",
+			issued.TokenType)
+	}
+	life := time.Duration(issued.ExpiresIn) * time.Second
+	if life <= 0 {
+		life = time.Hour
+	}
+	c.access, c.accessUntil = issued.AccessToken, time.Now().Add(life-tokenSlack)
+	return c.access, nil
+}
+
+// tokenErrorDetail is the part of a token endpoint's refusal fit to repeat: what
+// it says went wrong, and never a body that could echo what it was sent.
+func tokenErrorDetail(raw []byte) string {
+	var e struct {
+		Error       string `json:"error"`
+		Description string `json:"error_description"`
+	}
+	if err := json.Unmarshal(raw, &e); err != nil || e.Error == "" {
+		return "(no error it could name)"
+	}
+	if e.Description == "" {
+		return e.Error
+	}
+	return e.Error + ": " + e.Description
 }
 
 // scimErrorDetail pulls the human-readable part out of a SCIM error.

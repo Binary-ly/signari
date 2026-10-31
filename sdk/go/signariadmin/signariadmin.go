@@ -1239,6 +1239,9 @@ type GetOrganizationsOrgIDSCIMTargetsResponseTargetsItem struct {
 	Kind            string `json:"kind"`
 	Linked          int64  `json:"linked"`
 	Name            string `json:"name"`
+	OauthClientID   string `json:"oauth_client_id"`
+	OauthScope      string `json:"oauth_scope"`
+	OauthTokenURL   string `json:"oauth_token_url"`
 	OnDeactivate    string `json:"on_deactivate"`
 	RecreateMissing bool   `json:"recreate_missing"`
 	ScopeGroup      string `json:"scope_group"`
@@ -2370,6 +2373,9 @@ type PostOrganizationsOrgIDSCIMTargetsRequest struct {
 	Impersonate     *string         `json:"impersonate,omitempty"`
 	Kind            *string         `json:"kind,omitempty"`
 	Name            *string         `json:"name,omitempty"`
+	OauthClientID   *string         `json:"oauth_client_id,omitempty"`
+	OauthScope      *string         `json:"oauth_scope,omitempty"`
+	OauthTokenURL   *string         `json:"oauth_token_url,omitempty"`
 	OnDeactivate    *string         `json:"on_deactivate,omitempty"`
 	RecreateMissing *bool           `json:"recreate_missing,omitempty"`
 	Slug            *string         `json:"slug,omitempty"`

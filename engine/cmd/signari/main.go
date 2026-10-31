@@ -746,7 +746,10 @@ func run(args []string) (err error) {
 	requireVerified := fs.Bool("require-verified-email", true,
 		"`idp verified-email`: a new account through the provider needs an address it verified and is believed about")
 	baseURL := fs.String("base-url", "", "SCIM base URL of the target application")
-	scimToken := fs.String("token", "", "bearer token the SCIM target issued")
+	scimToken := fs.String("token", "", "bearer token the SCIM target issued, or with -oauth-token-url the client secret")
+	oauthTokenURL := fs.String("oauth-token-url", "", "where the SCIM target issues tokens by the client credentials grant")
+	oauthClientID := fs.String("oauth-client-id", "", "the client id for -oauth-token-url")
+	oauthScope := fs.String("oauth-scope", "", "the scope to ask -oauth-token-url for")
 	onDeactivate := fs.String("on-deactivate", "deactivate", "deactivate, delete or nothing")
 	recreateMissing := fs.Bool("recreate-missing", false,
 		"give somebody a new account at the target when the one linked to them is gone from it")
@@ -1725,7 +1728,8 @@ func run(args []string) (err error) {
 		return idpAttributeMap(ctx, conn, *slug, *upstreamClaim, *localAttribute,
 			*mapOverwrite, *mapMaxLength, *removeMember)
 	case "scim add":
-		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2, *recreateMissing)
+		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2, *recreateMissing,
+			*oauthTokenURL, *oauthClientID, *oauthScope)
 	case "provision add":
 		return provisionAdd(ctx, conn, *orgID, *slug, *name, *outpostKind,
 			*credsFile, *dirImpersonate, *targetDomain, *onDeactivate, *dryRun2, *recreateMissing)
@@ -4284,7 +4288,7 @@ func scimHTTPClient() (*http.Client, error) { return provision.HTTPClient() }
 
 // scimAdd registers a provisioning target.
 func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, token,
-	onDeactivate string, dryRun, recreateMissing bool) error {
+	onDeactivate string, dryRun, recreateMissing bool, oauthTokenURL, oauthClientID, oauthScope string) error {
 
 	switch {
 	case orgID == "":
@@ -4295,10 +4299,11 @@ func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, to
 		return fmt.Errorf("give -base-url, the target's SCIM base URL, e.g. " +
 			"https://api.slack.com/scim/v2")
 	case token == "":
-		return fmt.Errorf("give -token, the bearer token the target issued")
+		return fmt.Errorf("give -token, the bearer token the target issued, or with -oauth-token-url the client secret")
 	}
 	spec := provision.TargetSpec{Kind: "scim", Slug: slug, Name: name, BaseURL: baseURL, Token: token,
-		OnDeactivate: onDeactivate, DryRun: dryRun, RecreateMissing: recreateMissing}
+		OnDeactivate: onDeactivate, DryRun: dryRun, RecreateMissing: recreateMissing,
+		OAuthTokenURL: oauthTokenURL, OAuthClientID: oauthClientID, OAuthScope: oauthScope}
 	if err := spec.Validate(); err != nil {
 		return err
 	}

@@ -26,7 +26,14 @@ type fakeTarget struct {
 	// an empty list, and strict answers 404 for what is not there.
 	lists, listNothing, strict bool
 	listed                     int
+	// bearers are what each POST /Users authenticated with, clientID and
+	// clientSecret what the token endpoint was asked as.
+	bearers                []string
+	clientID, clientSecret string
 }
+
+// fakeIssuedToken is what the fake's token endpoint issues.
+const fakeIssuedToken = "issued-by-the-fake"
 
 func newFakeTarget(t *testing.T) *fakeTarget {
 	t.Helper()
@@ -45,7 +52,14 @@ func newFakeTarget(t *testing.T) *fakeTarget {
 		f.next++
 		id := fmt.Sprintf("u-%d", f.next)
 		f.users[id] = true
+		f.bearers = append(f.bearers, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		answer(w, http.StatusCreated, map[string]any{"id": id})
+	})
+	mux.HandleFunc("POST /oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.clientID, f.clientSecret, _ = r.BasicAuth()
+		answer(w, http.StatusOK, map[string]any{"access_token": fakeIssuedToken, "token_type": "Bearer", "expires_in": 3600})
 	})
 	mux.HandleFunc("PATCH /Users/{id}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()

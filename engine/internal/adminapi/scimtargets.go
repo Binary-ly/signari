@@ -38,6 +38,9 @@ type scimTargetView struct {
 	DryRun          bool      `json:"dry_run"`
 	Enabled         bool      `json:"enabled"`
 	RecreateMissing bool      `json:"recreate_missing"`
+	OAuthTokenURL   string    `json:"oauth_token_url"`
+	OAuthClientID   string    `json:"oauth_client_id"`
+	OAuthScope      string    `json:"oauth_scope"`
 	Linked          int       `json:"linked"`
 	ShouldBeGone    int       `json:"should_be_gone"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -60,6 +63,11 @@ type addSCIMTargetRequest struct {
 	// RecreateMissing is whether a sync gives somebody a new account when the
 	// one linked to them is gone from the target.
 	RecreateMissing bool `json:"recreate_missing"`
+	// OAuthTokenURL and OAuthClientID have it authenticate by the client
+	// credentials grant, token then being the client's secret.
+	OAuthTokenURL string `json:"oauth_token_url"`
+	OAuthClientID string `json:"oauth_client_id"`
+	OAuthScope    string `json:"oauth_scope"`
 }
 
 // patchSCIMTargetRequest changes what is given: enabled, recreate_missing, and
@@ -93,7 +101,8 @@ func (s *Server) listSCIMTargets(w http.ResponseWriter, r *http.Request) {
 	for _, t := range got {
 		out = append(out, scimTargetView{ID: t.ID, Slug: t.Slug, Name: t.Name, Kind: t.Kind, BaseURL: t.BaseURL,
 			OnDeactivate: t.OnDeactivate, ScopeGroup: t.ScopeGroup, DryRun: t.DryRun, Enabled: t.Enabled,
-			RecreateMissing: t.RecreateMissing, Linked: t.Linked, ShouldBeGone: t.ShouldBeGone, CreatedAt: t.CreatedAt})
+			RecreateMissing: t.RecreateMissing, OAuthTokenURL: t.OAuthTokenURL, OAuthClientID: t.OAuthClientID,
+			OAuthScope: t.OAuthScope, Linked: t.Linked, ShouldBeGone: t.ShouldBeGone, CreatedAt: t.CreatedAt})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "targets": out})
 }
@@ -108,7 +117,9 @@ func (s *Server) addSCIMTarget(w http.ResponseWriter, r *http.Request) {
 	spec := provision.TargetSpec{Kind: req.Kind, Slug: req.Slug, Name: strings.TrimSpace(req.Name),
 		BaseURL: strings.TrimSpace(req.BaseURL), Token: req.Token, Credentials: []byte(req.Credentials),
 		Impersonate: strings.TrimSpace(req.Impersonate), Domain: strings.TrimSpace(req.TargetDomain),
-		OnDeactivate: req.OnDeactivate, DryRun: req.DryRun, RecreateMissing: req.RecreateMissing}
+		OnDeactivate: req.OnDeactivate, DryRun: req.DryRun, RecreateMissing: req.RecreateMissing,
+		OAuthTokenURL: strings.TrimSpace(req.OAuthTokenURL), OAuthClientID: strings.TrimSpace(req.OAuthClientID),
+		OAuthScope: strings.TrimSpace(req.OAuthScope)}
 	if err := spec.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_target", "detail": err.Error()})
 		return
@@ -120,6 +131,13 @@ func (s *Server) addSCIMTarget(w http.ResponseWriter, r *http.Request) {
 		if err := safedial.CheckURL(spec.BaseURL); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_url", "detail": err.Error()})
 			return
+		}
+		// The client secret goes to the token URL, so it is held to the same.
+		if spec.OAuthTokenURL != "" {
+			if err := safedial.CheckURL(spec.OAuthTokenURL); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_url", "detail": err.Error()})
+				return
+			}
 		}
 	}
 	if narrowedTokenRefused(w, r, scimTargetRefusal) {
@@ -139,7 +157,8 @@ func (s *Server) addSCIMTarget(w http.ResponseWriter, r *http.Request) {
 		// Never the token or the credentials.
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.scim_target_added", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: map[string]any{"slug": spec.Slug, "kind": spec.Kind, "base_url": spec.BaseURL,
-				"on_deactivate": spec.OnDeactivate, "dry_run": spec.DryRun, "recreate_missing": spec.RecreateMissing}})
+				"on_deactivate": spec.OnDeactivate, "dry_run": spec.DryRun, "recreate_missing": spec.RecreateMissing,
+				"oauth_token_url": spec.OAuthTokenURL}})
 	})
 	if s.writeSCIMTargetFailure(w, err, orgID) {
 		return

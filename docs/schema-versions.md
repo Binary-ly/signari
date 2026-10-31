@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0203 scim_target_oauth
+
+Compatible with the release before: its binary may still serve this schema.
+
+A SCIM target that takes a client credentials grant rather than a long-lived bearer token (7.14). The client secret is held where the token is, in the sealed token column, so nothing new has to be sealed, rotated or kept out of an export.
+
 ## 0202 scim_target_recreate
 
 Compatible with the release before: its binary may still serve this schema.

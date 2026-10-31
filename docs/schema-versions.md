@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0216 idp_token_auth
+
+Compatible with the release before: its binary may still serve this schema.
+
+How this engine proves itself at an upstream provider's token endpoint (8.16). It sent a client secret in the form and could do nothing else, so a provider set up with a certificate and no secret, which a good many are as a matter of policy, could not be used at all.
+
 ## 0215 proxy_host_identity
 
 Compatible with the release before: its binary may still serve this schema.

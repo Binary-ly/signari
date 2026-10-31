@@ -1178,6 +1178,12 @@ export class SignariAdmin {
     return this.call<PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/attribute-map`, body, opts)
   }
 
+  // PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth: Say how this engine
+  // proves itself at the provider's token endpoint. Needs organizations:write.
+  putOrganizationsOrgIDIdentityProvidersSlugTokenAuth(orgID: string, slug: string, body: PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse>> {
+    return this.call<PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/token-auth`, body, opts)
+  }
+
   // PUT /admin/organizations/{orgID}/migration-source: Configure the old directory or provider
   // that verifies a migrating person's password. Needs organizations:write.
   putOrganizationsOrgIDMigrationSource(orgID: string, body: PutOrganizationsOrgIDMigrationSourceRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDMigrationSourceResponse>> {
@@ -2095,6 +2101,7 @@ export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem {
   attribute_map: GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemAttributeMapItem[]
   enabled: boolean
   end_session_url: string
+  has_client_key: boolean
   id: string
   issuer: string
   kind: string
@@ -2105,6 +2112,7 @@ export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem {
   name: string
   require_verified_email: boolean
   slug: string
+  token_auth_method: string
   trust_email_verification: boolean
 }
 
@@ -4018,6 +4026,20 @@ export interface PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse 
   claim: string
   config_version: number
   mapped: boolean
+  slug: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest {
+  client_certificate?: string
+  client_key?: string
+  method?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse {
+  config_version: number
+  method: string
   slug: string
 }
 

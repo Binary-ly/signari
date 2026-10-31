@@ -41,6 +41,8 @@ type Config struct {
 	// EndSessionURL is where a sign-out here sends the browser next (`signari idp
 	// logout`). Empty stops at this side.
 	EndSessionURL string
+	// TokenAuth is how this engine proves itself at the token endpoint.
+	TokenAuth TokenAuth
 }
 
 // UpstreamMFA reports whether a verified upstream payload asserts
@@ -163,8 +165,12 @@ func (c Config) ExchangeCode(ctx context.Context, hc *http.Client, redirectURI, 
 		"client_id":     {c.ClientID},
 		"code_verifier": {verifier},
 	}
-	if c.ClientSecret != "" {
-		form.Set("client_secret", c.ClientSecret)
+	onRequest, err := c.authenticate(form, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if hc, err = c.tokenClient(hc); err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL(),
@@ -172,6 +178,7 @@ func (c Config) ExchangeCode(ctx context.Context, hc *http.Client, redirectURI, 
 	if err != nil {
 		return nil, err
 	}
+	onRequest(req)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// GitHub returns form-encoded unless asked otherwise, and silently: you get
 	// a 200 with a body that json.Unmarshal turns into an empty struct.

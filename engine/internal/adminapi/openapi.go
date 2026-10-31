@@ -254,6 +254,7 @@ var summaries = map[string]string{
 	"GET /admin/organizations/{orgID}/identity-providers":                         "The providers people sign in through and the issuers assertions come from.",
 	"POST /admin/organizations/{orgID}/identity-providers":                        "Register a provider to sign in through, or an issuer whose assertions may be accepted.",
 	"PATCH /admin/organizations/{orgID}/identity-providers/{slug}":                "Take a provider out of service, allow its assertions, or say what of it is trusted.",
+	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth":       "Say how this engine proves itself at the provider's token endpoint.",
 	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map":    "Route a provider's claim into a declared attribute.",
 	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map": "Stop a provider's claim reaching an attribute.",
 	"GET /admin/users/{userID}/identity-links":                                    "The upstream subjects a person is linked to.",

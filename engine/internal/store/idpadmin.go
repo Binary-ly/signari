@@ -292,8 +292,8 @@ func mappingIDs(ctx context.Context, q outpostDB, orgID, slug, attribute string)
 // IdentityProviderRow is one provider as an administrator sees it, without
 // its client secret.
 type IdentityProviderRow struct {
-	ID, Slug, Name, Kind, Issuer, EndSessionURL                   string
-	Enabled, AllowSignup, AllowLinking                            bool
+	ID, Slug, Name, Kind, Issuer, EndSessionURL, TokenAuthMethod  string
+	Enabled, AllowSignup, AllowLinking, HasClientKey              bool
 	AllowAssertions, TrustEmailVerification, RequireVerifiedEmail bool
 	MFAAMR, MFAACR, LoginDomains                                  []string
 	Linked                                                        int
@@ -313,7 +313,7 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		SELECT p.id::text, p.slug, p.display_name, p.kind, COALESCE(p.issuer, ''), p.enabled, p.allow_signup,
 		       p.allow_linking, p.allow_jwt_bearer, p.trust_email_verification, p.require_verified_email,
 		       p.mfa_amr, p.mfa_acr, (SELECT count(*) FROM core.federated_identities f WHERE f.provider_id = p.id),
-		       p.login_domains, COALESCE(p.end_session_url, '')
+		       p.login_domains, COALESCE(p.end_session_url, ''), p.token_auth_method, p.client_key IS NOT NULL
 		  FROM core.identity_providers p WHERE p.org_id = $1::uuid ORDER BY p.slug`, orgID)
 	if err != nil {
 		return nil, err
@@ -323,7 +323,7 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		var p IdentityProviderRow
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Kind, &p.Issuer, &p.Enabled, &p.AllowSignup,
 			&p.AllowLinking, &p.AllowAssertions, &p.TrustEmailVerification, &p.RequireVerifiedEmail, &p.MFAAMR,
-			&p.MFAACR, &p.Linked, &p.LoginDomains, &p.EndSessionURL); err != nil {
+			&p.MFAACR, &p.Linked, &p.LoginDomains, &p.EndSessionURL, &p.TokenAuthMethod, &p.HasClientKey); err != nil {
 			rows.Close()
 			return nil, err
 		}

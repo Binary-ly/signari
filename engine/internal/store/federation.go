@@ -88,6 +88,8 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		c            federation.Config
 		kind         string
 		secretSealed []byte
+		keySealed    []byte
+		certificate  string
 		enabled      bool
 		trustEmail   bool
 	)
@@ -96,14 +98,16 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		       client_secret, COALESCE(issuer,''), COALESCE(authorize_url,''),
 		       COALESCE(token_url,''), COALESCE(userinfo_url,''), COALESCE(jwks_url,''),
 		       scopes, allow_signup, allow_linking, require_verified_email, enabled,
-		       trust_email_verification, mfa_amr, mfa_acr, COALESCE(end_session_url, '')
+		       trust_email_verification, mfa_amr, mfa_acr, COALESCE(end_session_url, ''),
+		       token_auth_method, client_key, COALESCE(client_certificate, '')
 		FROM core.identity_providers
 		WHERE slug = $1`, slug).Scan(
 		&c.ID, &c.OrgID, &c.Slug, &c.DisplayName, &kind, &c.ClientID,
 		&secretSealed, &c.IssuerOverride, &c.AuthorizeOverride,
 		&c.TokenOverride, &c.UserinfoOverride, &c.JWKSOverride,
 		&c.Scopes, &c.Policy.AllowSignup, &c.Policy.AllowLinking,
-		&c.Policy.RequireVerifiedEmail, &enabled, &trustEmail, &c.MFAAMR, &c.MFAACR, &c.EndSessionURL)
+		&c.Policy.RequireVerifiedEmail, &enabled, &trustEmail, &c.MFAAMR, &c.MFAACR, &c.EndSessionURL,
+		&c.TokenAuth.Method, &keySealed, &certificate)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProviderUnknown
@@ -152,7 +156,102 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		}
 		c.ClientSecret = string(plain)
 	}
+	if len(keySealed) > 0 {
+		plain, err := root.Open(keySealed, sealContextIdPClientKey)
+		if err != nil {
+			return nil, fmt.Errorf("unsealing the provider's client key: %w", err)
+		}
+		if c.TokenAuth.Key, c.TokenAuth.Certificate, err = federation.ParseClientKey(plain, []byte(certificate)); err != nil {
+			return nil, err
+		}
+	}
 	return &c, nil
+}
+
+const sealContextIdPClientKey = "idp_client_key"
+
+// IdPTokenAuth is how this engine proves itself at a provider's token endpoint.
+// ClientKey and ClientCertificate are PEM; absent, what is held is kept.
+type IdPTokenAuth struct {
+	Method                       string
+	ClientKey, ClientCertificate []byte
+}
+
+// SetIdPTokenAuth records it, refusing a method the provider would refuse on
+// somebody's first sign-in: one with nothing held to prove it with.
+func SetIdPTokenAuth(ctx context.Context, q outpostDB, root *keys.RootKey, orgID, slug string, a IdPTokenAuth) error {
+	var kind string
+	var secret, heldKey []byte
+	var heldCert string
+	err := q.QueryRow(ctx, `SELECT kind, client_secret, client_key, COALESCE(client_certificate, '')
+		FROM core.identity_providers WHERE org_id = $1::uuid AND slug = $2`, orgID, slug).
+		Scan(&kind, &secret, &heldKey, &heldCert)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrProviderUnknown
+	}
+	if err != nil {
+		return err
+	}
+	if kind == "saml" || kind == "assertion" {
+		return idpInvalid{fmt.Sprintf("%s is a %s provider, which has no token endpoint to sign in to", slug, kind)}
+	}
+
+	certificate := heldCert
+	if len(a.ClientCertificate) > 0 {
+		certificate = string(a.ClientCertificate)
+	}
+	var sealed any
+	switch {
+	case len(a.ClientKey) > 0:
+		if _, _, err := federation.ParseClientKey(a.ClientKey, []byte(certificate)); err != nil {
+			return idpInvalid{err.Error()}
+		}
+		if root == nil {
+			return errors.New("sealing a client key needs the root key")
+		}
+		s, err := root.Seal(a.ClientKey, sealContextIdPClientKey)
+		if err != nil {
+			return fmt.Errorf("sealing the client key: %w", err)
+		}
+		sealed = s
+	case len(heldKey) > 0 && len(a.ClientCertificate) > 0:
+		if root == nil {
+			return errors.New("checking the certificate against the held key needs the root key")
+		}
+		plain, err := root.Open(heldKey, sealContextIdPClientKey)
+		if err != nil {
+			return fmt.Errorf("unsealing the provider's client key: %w", err)
+		}
+		if _, _, err := federation.ParseClientKey(plain, a.ClientCertificate); err != nil {
+			return idpInvalid{err.Error()}
+		}
+	}
+
+	hasKey := sealed != nil || len(heldKey) > 0
+	switch a.Method {
+	case federation.AuthSecretPost:
+		// With no secret this is the public client it has always been able to be.
+	case federation.AuthSecretBasic:
+		if len(secret) == 0 {
+			return idpInvalid{fmt.Sprintf("%s has no client secret to send", slug)}
+		}
+	case federation.AuthPrivateKeyJWT:
+		if !hasKey {
+			return idpInvalid{"private_key_jwt needs a client key"}
+		}
+	case federation.AuthTLS:
+		if !hasKey || certificate == "" {
+			return idpInvalid{"tls_client_auth needs a client key and its certificate"}
+		}
+	default:
+		return idpInvalid{fmt.Sprintf("%q is not a token authentication method: use %s, %s, %s or %s", a.Method,
+			federation.AuthSecretPost, federation.AuthSecretBasic, federation.AuthPrivateKeyJWT, federation.AuthTLS)}
+	}
+	_, err = q.Exec(ctx, `UPDATE core.identity_providers
+		   SET token_auth_method = $3, client_key = COALESCE($4::bytea, client_key),
+		       client_certificate = NULLIF($5, ''), updated_at = now()
+		 WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, a.Method, sealed, certificate)
+	return err
 }
 
 // PendingLogin is the server-side state of an external login in flight.

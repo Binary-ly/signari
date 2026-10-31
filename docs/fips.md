@@ -119,6 +119,14 @@ check cannot run under `fips140=only`. `serve` refuses to start with
 `SIGNARI_PASSWORD_BREACH_CHECK` or `SIGNARI_PASSWORD_BREACH_LIST` set, and a check
 reached anyway reports itself unavailable instead of panicking.
 
+### A certificate's thumbprint in a client assertion — `internal/federation`
+
+`signari idp auth -method private_key_jwt` with a certificate names it in the
+assertion's header by `x5t`, which is defined over SHA-1, as well as `x5t#S256`.
+It is a name and protects nothing, but SHA-1 is not available under
+`fips140=only`, so there only `x5t#S256` is sent. A provider that looks a key up
+by `x5t` alone will not find it.
+
 ### Verifying passwords from another IdP — `internal/passwords`
 
 

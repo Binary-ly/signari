@@ -35,6 +35,8 @@ type identityProviderView struct {
 	MFAACR                 []string         `json:"mfa_acr"`
 	LoginDomains           []string         `json:"login_domains"`
 	EndSessionURL          string           `json:"end_session_url"`
+	TokenAuthMethod        string           `json:"token_auth_method"`
+	HasClientKey           bool             `json:"has_client_key"`
 	Linked                 int              `json:"linked"`
 	AttributeMap           []map[string]any `json:"attribute_map"`
 }
@@ -213,7 +215,8 @@ func (s *Server) listIdentityProviders(w http.ResponseWriter, r *http.Request) {
 			Enabled: p.Enabled, AllowSignup: p.AllowSignup, AllowLinking: p.AllowLinking,
 			AllowAssertions: p.AllowAssertions, TrustEmailVerification: p.TrustEmailVerification,
 			RequireVerifiedEmail: p.RequireVerifiedEmail, MFAAMR: p.MFAAMR, MFAACR: p.MFAACR, Linked: p.Linked,
-			LoginDomains: p.LoginDomains, EndSessionURL: p.EndSessionURL, AttributeMap: maps})
+			LoginDomains: p.LoginDomains, EndSessionURL: p.EndSessionURL, TokenAuthMethod: p.TokenAuthMethod,
+			HasClientKey: p.HasClientKey, AttributeMap: maps})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "providers": out})
 }
@@ -282,6 +285,48 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	setETag(w, version)
 	writeJSON(w, http.StatusOK, map[string]any{"slug": slug, "config_version": version})
+}
+
+// idpTokenAuthRequest is `idp auth`. The key is write-only: nothing reads it back.
+type idpTokenAuthRequest struct {
+	Method            string `json:"method"`
+	ClientKey         string `json:"client_key"`
+	ClientCertificate string `json:"client_certificate"`
+}
+
+// putIdPTokenAuth says how this engine proves itself at the provider's token
+// endpoint, as `signari idp auth` does.
+func (s *Server) putIdPTokenAuth(w http.ResponseWriter, r *http.Request) {
+	var req idpTokenAuthRequest
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	ctx := r.Context()
+	orgID, slug := r.PathValue("orgID"), r.PathValue("slug")
+	if narrowedTokenRefused(w, r, idpRefusal) {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
+			return err
+		}
+		if err := store.SetIdPTokenAuth(ctx, tx, s.root, orgID, slug, store.IdPTokenAuth{Method: req.Method,
+			ClientKey: []byte(req.ClientKey), ClientCertificate: []byte(req.ClientCertificate)}); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.idp_token_auth_set", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, Detail: map[string]any{"provider": slug, "method": req.Method,
+				"client_key_given": req.ClientKey != ""}})
+	})
+	if s.writeIdPFailure(w, err, orgID) {
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"slug": slug, "method": req.Method, "config_version": version})
 }
 
 func (s *Server) putIdPAttributeMap(w http.ResponseWriter, r *http.Request) {

@@ -31,7 +31,7 @@ refused with `412` when the configuration moved since the version it names.
 | [groups](#groups) | 5 |
 | [groups / members](#groups--members) | 3 |
 | [groups / radius](#groups--radius) | 2 |
-| [identity-providers](#identity-providers) | 5 |
+| [identity-providers](#identity-providers) | 6 |
 | [instances](#instances) | 1 |
 | [instances / brand](#instances--brand) | 3 |
 | [instances / federation](#instances--federation) | 2 |
@@ -1473,6 +1473,28 @@ Answers:
 | `claim` | string | always |
 | `config_version` | integer | always |
 | `mapped` | boolean | always |
+| `slug` | string | always |
+
+### `PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth`
+
+Say how this engine proves itself at the provider's token endpoint. Needs organizations:write.
+
+Go `PutOrganizationsOrgIDIdentityProvidersSlugTokenAuth`, TypeScript `putOrganizationsOrgIDIdentityProvidersSlugTokenAuth`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `client_certificate` | string |  |
+| `client_key` | string |  |
+| `method` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `method` | string | always |
 | `slug` | string | always |
 
 ## instances

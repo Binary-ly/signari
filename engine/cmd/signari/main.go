@@ -274,6 +274,7 @@ federation in:
   idp trust-mfa             which upstream amr and acr values count as multi-factor
   idp domains               the address domains a provider signs in
   idp logout                sign out at the provider too, at its end_session_endpoint
+  idp auth                  how this engine proves itself at a provider's token endpoint
   idp verified-email        whether to believe a provider's email_verified, and require it
   idp attribute-map         route a provider's claim into a local attribute
   idp apple-secret          mint the client secret Apple requires
@@ -757,6 +758,10 @@ func run(args []string) (err error) {
 	kind := fs.String("kind", "oidc", strings.Join(kindNamesForHelp(), ", "))
 	extClientID := fs.String("client-id-ext", "", "client id issued by the external provider")
 	extSecret := fs.String("client-secret", "", "client secret issued by the external provider")
+	idpAuthMethod := fs.String("method", "", "how to sign in to the provider's token endpoint: client_secret_post, "+
+		"client_secret_basic, private_key_jwt or tls_client_auth")
+	idpClientKeyFile := fs.String("client-key-file", "", "PEM private key for private_key_jwt or tls_client_auth")
+	idpClientCertFile := fs.String("client-cert-file", "", "PEM certificate of that key")
 	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
 	allowLinking := fs.Bool("allow-linking", true, "let users add this provider to an existing account")
 	trustEmail := fs.Bool("trust-email-verification", false, "generic OIDC only: believe this provider's email_verified claim")
@@ -1732,6 +1737,8 @@ func run(args []string) (err error) {
 		return idpDomainsSet(ctx, conn, *slug, *signupDomains)
 	case "idp logout":
 		return idpLogoutSet(ctx, conn, *slug, *subURL)
+	case "idp auth":
+		return idpTokenAuthSet(ctx, conn, *slug, *idpAuthMethod, *idpClientKeyFile, *idpClientCertFile)
 	case "idp trust-mfa":
 		return idpTrustMFA(ctx, conn, *slug, *idpMFAAMR, *idpMFAACR)
 	case "idp disable":

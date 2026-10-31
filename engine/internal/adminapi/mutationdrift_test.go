@@ -513,6 +513,14 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftIdP(t, s, "google")
+				return p + "/token-auth"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"method":"client_secret_post"}` },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				_, _, p := newDriftIdP(t, s, "google")

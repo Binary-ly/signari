@@ -2078,6 +2078,41 @@ func idpTrustMFA(ctx context.Context, conn *pgx.Conn, slug, amr, acr string) err
 	return nil
 }
 
+// idpTokenAuthSet says how this engine proves itself at a provider's token endpoint.
+func idpTokenAuthSet(ctx context.Context, conn *pgx.Conn, slug, method, keyFile, certFile string) error {
+	if slug == "" || method == "" {
+		return fmt.Errorf("give -slug and -method")
+	}
+	a := store.IdPTokenAuth{Method: method}
+	var err error
+	if keyFile != "" {
+		if a.ClientKey, err = os.ReadFile(keyFile); err != nil {
+			return fmt.Errorf("reading the client key: %w", err)
+		}
+	}
+	if certFile != "" {
+		if a.ClientCertificate, err = os.ReadFile(certFile); err != nil {
+			return fmt.Errorf("reading the client certificate: %w", err)
+		}
+	}
+	orgID, _, err := store.IdentityProviderOrg(ctx, conn, slug)
+	if errors.Is(err, store.ErrProviderUnknown) {
+		return fmt.Errorf("no identity provider with slug %q", slug)
+	}
+	if err != nil {
+		return err
+	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	if err := store.SetIdPTokenAuth(ctx, conn, root, orgID, slug, a); err != nil {
+		return err
+	}
+	fmt.Printf("%s: this engine signs in to its token endpoint with %s\n", slug, method)
+	return nil
+}
+
 // idpLogoutSet says where a sign-out here goes next, at the provider a person came
 // through; no address stops it at this side.
 func idpLogoutSet(ctx context.Context, conn *pgx.Conn, slug, address string) error {

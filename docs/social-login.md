@@ -107,6 +107,31 @@ A token has to name a `sub`. One that names only a `sid` is refused, since nothi
 records the provider's session ids. A retry of a token already used, and a subject
 nobody here is linked to, are both answered as done.
 
+## Signing in to the provider without a secret
+
+By default this engine sends the client secret in the form at the provider's token
+endpoint. A provider set up to refuse that, or with no secret at all, takes one of
+the others:
+
+```sh
+signari idp auth -slug corp -method client_secret_basic
+signari idp auth -slug corp -method private_key_jwt -client-key-file client.key -client-cert-file client.crt
+signari idp auth -slug corp -method tls_client_auth -client-key-file client.key -client-cert-file client.crt
+```
+
+| Method | What the provider receives |
+|---|---|
+| `client_secret_post` | The secret in the form. The default |
+| `client_secret_basic` | The secret in `Authorization: Basic`, and not in the form |
+| `private_key_jwt` | A signed assertion, from this client, for this token endpoint, good for a minute and used once. With a certificate its header names it by `x5t` and `x5t#S256`, for a provider that holds certificates and finds the key by thumbprint; under `fips140=only`, `x5t#S256` alone ([fips.md](fips.md)). RSA, P-256 and Ed25519 keys |
+| `tls_client_auth` | The certificate, at the connection. Sent to the token endpoint alone |
+
+The key is sealed under the root key, rewrapped with the rest of it by `keys
+rewrap-root`, and never shown again; the listing says only that one is held. A key
+and a certificate that do not belong together are refused here rather than at the
+provider on somebody's first sign-in, and so is a method with nothing held to prove
+it. No secret travels with the last two. Giving a new `-method` keeps the key held.
+
 ## Apple, and the secret that expires
 
 Every other provider issues a client secret: a string you paste in and forget.

@@ -979,6 +979,7 @@ type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem struct {
 	AttributeMap           []GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemAttributeMapItem `json:"attribute_map"`
 	Enabled                bool                                                                          `json:"enabled"`
 	EndSessionURL          string                                                                        `json:"end_session_url"`
+	HasClientKey           bool                                                                          `json:"has_client_key"`
 	ID                     string                                                                        `json:"id"`
 	Issuer                 string                                                                        `json:"issuer"`
 	Kind                   string                                                                        `json:"kind"`
@@ -989,6 +990,7 @@ type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem struct {
 	Name                   string                                                                        `json:"name"`
 	RequireVerifiedEmail   bool                                                                          `json:"require_verified_email"`
 	Slug                   string                                                                        `json:"slug"`
+	TokenAuthMethod        string                                                                        `json:"token_auth_method"`
 	TrustEmailVerification bool                                                                          `json:"trust_email_verification"`
 }
 
@@ -2902,6 +2904,20 @@ type PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse struct {
 	Claim         string `json:"claim"`
 	ConfigVersion int64  `json:"config_version"`
 	Mapped        bool   `json:"mapped"`
+	Slug          string `json:"slug"`
+}
+
+// PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest is a JSON object of the Admin API.
+type PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest struct {
+	ClientCertificate *string `json:"client_certificate,omitempty"`
+	ClientKey         *string `json:"client_key,omitempty"`
+	Method            *string `json:"method,omitempty"`
+}
+
+// PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse is a JSON object of the Admin API.
+type PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Method        string `json:"method"`
 	Slug          string `json:"slug"`
 }
 
@@ -5283,6 +5299,18 @@ func (c *Client) PutOrganizationsOrgIDDuo(ctx context.Context, orgID string, bod
 func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugAttributeMap(ctx context.Context, orgID string, slug string, body PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapRequest, opts ...Option) (*PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse, int64, error) {
 	var out PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse
 	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/attribute-map", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutOrganizationsOrgIDIdentityProvidersSlugTokenAuth is PUT
+// /admin/organizations/{orgID}/identity-providers/{slug}/token-auth: Say how this engine proves
+// itself at the provider's token endpoint. Needs organizations:write.
+func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugTokenAuth(ctx context.Context, orgID string, slug string, body PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest, opts ...Option) (*PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse, int64, error) {
+	var out PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse
+	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/token-auth", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

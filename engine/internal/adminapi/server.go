@@ -338,6 +338,8 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/identity-providers", ScopeConfigRead, s.listIdentityProviders)
 	route("PATCH /admin/organizations/{orgID}/identity-providers/{slug}", ScopeOrganizationsWrite,
 		s.patchIdentityProvider)
+	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth", ScopeOrganizationsWrite,
+		s.putIdPTokenAuth)
 	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", ScopeOrganizationsWrite,
 		s.putIdPAttributeMap)
 	route("DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", ScopeOrganizationsWrite,

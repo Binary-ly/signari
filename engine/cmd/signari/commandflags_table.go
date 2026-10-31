@@ -91,6 +91,7 @@ var commandFlags = map[string][]string{
 	"idp apple-secret":                {"apple-key", "apple-key-id", "apple-team", "slug"},
 	"idp assertions":                  {"allow-assertions", "slug"},
 	"idp attribute-map":               {"attribute", "claim", "max-length", "overwrite", "remove", "slug"},
+	"idp auth":                        {"client-cert-file", "client-key-file", "method", "slug"},
 	"idp check":                       {"slug"},
 	"idp disable":                     {"slug"},
 	"idp domains":                     {"domains", "slug"},

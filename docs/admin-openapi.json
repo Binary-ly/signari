@@ -11148,6 +11148,9 @@
                           "end_session_url": {
                             "type": "string"
                           },
+                          "has_client_key": {
+                            "type": "boolean"
+                          },
                           "id": {
                             "format": "uuid",
                             "type": "string"
@@ -11188,6 +11191,9 @@
                           "slug": {
                             "type": "string"
                           },
+                          "token_auth_method": {
+                            "type": "string"
+                          },
                           "trust_email_verification": {
                             "type": "boolean"
                           }
@@ -11208,6 +11214,8 @@
                           "mfa_acr",
                           "login_domains",
                           "end_session_url",
+                          "token_auth_method",
+                          "has_client_key",
                           "linked",
                           "attribute_map"
                         ],
@@ -11860,6 +11868,137 @@
           }
         ],
         "summary": "Route a provider's claim into a declared attribute."
+      }
+    },
+    "/admin/organizations/{orgID}/identity-providers/{slug}/token-auth": {
+      "put": {
+        "operationId": "put_organizations_orgID_identity_providers_slug_token_auth",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "client_certificate": {
+                    "type": "string"
+                  },
+                  "client_key": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "method": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "slug",
+                    "method",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Say how this engine proves itself at the provider's token endpoint."
       }
     },
     "/admin/organizations/{orgID}/migration-source": {

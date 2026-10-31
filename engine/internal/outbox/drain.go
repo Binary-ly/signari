@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 )
 
@@ -37,7 +36,7 @@ import (
 //	         whole point. Concurrency is bounded so one hanging receiver does
 //	         not delay every notice queued behind it.
 //
-//	record   one short statement per result.
+//	record   one short statement per kind of result, however many there are.
 //
 // The cost is that a crash between claiming and recording leaves rows hidden
 // for the lease before another instance retries them: a delay, not a loss.
@@ -87,69 +86,82 @@ func (w *Worker) drainTopic(ctx context.Context, spec drainSpec) (int, error) {
 		return 0, err
 	}
 
-	type outcome struct {
-		row claimed
-		err error
+	results := make([]error, len(batch))
+	inParallel(len(batch), func(i int) { results[i] = spec.deliver(ctx, batch[i].raw) })
+
+	var delivered []int64
+	var held, dropped, failed resultRows
+	for i, err := range results {
+		row := batch[i]
+		var hold *heldError
+		var drop *droppedError
+		switch {
+		case err == nil:
+			delivered = append(delivered, row.id)
+		case errors.As(err, &hold):
+			held.add(row.id, hold.wait, hold.reason)
+		case errors.As(err, &drop):
+			dropped.add(row.id, 0, drop.reason)
+		default:
+			failed.add(row.id, spec.backoff(row.attempts), err.Error())
+		}
 	}
-	results := make([]outcome, len(batch))
 
-	sem := make(chan struct{}, deliveryConcurrency)
-	var wg sync.WaitGroup
-	for i, row := range batch {
-		wg.Add(1)
-		go func(i int, row claimed) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			results[i] = outcome{row: row, err: spec.deliver(ctx, row.raw)}
-		}(i, row)
+	if len(delivered) > 0 {
+		if _, err := w.db.Exec(ctx,
+			`UPDATE core.outbox SET delivered_at = now(), last_error = NULL WHERE id = ANY($1)`,
+			delivered); err != nil {
+			return 0, err
+		}
 	}
-	wg.Wait()
-
-	delivered := 0
-	for _, r := range results {
-		if r.err == nil {
-			if _, e := w.db.Exec(ctx,
-				`UPDATE core.outbox SET delivered_at = now(), last_error = NULL WHERE id = $1`,
-				r.row.id); e != nil {
-				return delivered, e
-			}
-			delivered++
-			continue
+	if len(held.ids) > 0 {
+		if _, err := w.db.Exec(ctx, `
+			UPDATE core.outbox o SET next_attempt_at = now() + v.wait::interval, last_error = v.reason
+			  FROM unnest($1::bigint[], $2::text[], $3::text[]) AS v(id, wait, reason)
+			 WHERE o.id = v.id`, held.ids, held.waits, held.reasons); err != nil {
+			return len(delivered), err
 		}
-		var held *heldError
-		if errors.As(r.err, &held) {
-			if _, e := w.db.Exec(ctx, `
-				UPDATE core.outbox SET next_attempt_at = now() + $2::interval, last_error = $3
-				WHERE id = $1`, r.row.id, held.wait.String(), held.reason); e != nil {
-				return delivered, e
-			}
-			continue
+	}
+	if len(dropped.ids) > 0 {
+		if _, err := w.db.Exec(ctx, `
+			UPDATE core.outbox o SET delivered_at = now(), last_error = v.reason
+			  FROM unnest($1::bigint[], $2::text[]) AS v(id, reason)
+			 WHERE o.id = v.id`, dropped.ids, dropped.reasons); err != nil {
+			return len(delivered), err
 		}
-		var dropped *droppedError
-		if errors.As(r.err, &dropped) {
-			if _, e := w.db.Exec(ctx,
-				`UPDATE core.outbox SET delivered_at = now(), last_error = $2 WHERE id = $1`,
-				r.row.id, dropped.reason); e != nil {
-				return delivered, e
-			}
-			continue
-		}
-
-		wait := spec.backoff(r.row.attempts)
-		if _, e := w.db.Exec(ctx, `
-			UPDATE core.outbox
-			SET attempts = attempts + 1,
-			    next_attempt_at = now() + $2::interval,
-			    last_error = $3
-			WHERE id = $1`, r.row.id, wait.String(), r.err.Error()); e != nil {
-			return delivered, e
+	}
+	if len(failed.ids) > 0 {
+		if _, err := w.db.Exec(ctx, `
+			UPDATE core.outbox o SET attempts = o.attempts + 1, next_attempt_at = now() + v.wait::interval,
+			       last_error = v.reason
+			  FROM unnest($1::bigint[], $2::text[], $3::text[]) AS v(id, wait, reason)
+			 WHERE o.id = v.id`, failed.ids, failed.waits, failed.reasons); err != nil {
+			return len(delivered), err
 		}
 		if spec.onFailure != nil {
-			spec.onFailure(r.row.raw, r.row.attempts, r.err)
+			for i, err := range results {
+				var hold *heldError
+				var drop *droppedError
+				if err != nil && !errors.As(err, &hold) && !errors.As(err, &drop) {
+					spec.onFailure(batch[i].raw, batch[i].attempts, err)
+				}
+			}
 		}
 	}
-	return delivered, nil
+	return len(delivered), nil
+}
+
+// resultRows are rows that went one way, for a statement to record together.
+type resultRows struct {
+	ids     []int64
+	waits   []string
+	reasons []string
+}
+
+func (r *resultRows) add(id int64, wait time.Duration, reason string) {
+	r.ids = append(r.ids, id)
+	r.waits = append(r.waits, wait.String())
+	r.reasons = append(r.reasons, reason)
 }
 
 // claimTopic takes a batch and hides it from other instances.

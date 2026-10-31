@@ -377,8 +377,10 @@ type PendingWebhook struct {
 	Body           []byte
 }
 
-// ClaimWebhooks takes a batch, locking them against other workers.
-func ClaimWebhooks(ctx context.Context, tx pgx.Tx, root *keys.RootKey, limit int) (
+// ClaimWebhooks takes a batch, and hides what it took from other workers for the
+// lease: the locks go when the caller commits, which it must do before it makes
+// any network call.
+func ClaimWebhooks(ctx context.Context, tx pgx.Tx, root *keys.RootKey, limit int, lease time.Duration) (
 	[]PendingWebhook, error) {
 
 	rows, err := tx.Query(ctx, `
@@ -418,6 +420,7 @@ func ClaimWebhooks(ctx context.Context, tx pgx.Tx, root *keys.RootKey, limit int
 	}
 
 	out := make([]PendingWebhook, 0, len(found))
+	leased := make([]int64, 0, len(found))
 	for _, c := range found {
 		var sealed []byte
 		var enabled bool
@@ -460,6 +463,13 @@ func ClaimWebhooks(ctx context.Context, tx pgx.Tx, root *keys.RootKey, limit int
 			URL: c.job.URL, OrgID: c.job.OrgID, Envelope: c.job.Envelope,
 			Secret: string(secret), Body: body,
 		})
+		leased = append(leased, c.id)
+	}
+	if len(leased) > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE core.outbox SET next_attempt_at = now() + $2::interval WHERE id = ANY($1)`,
+			leased, lease.String()); err != nil {
+			return nil, fmt.Errorf("leasing event deliveries: %w", err)
+		}
 	}
 	return out, nil
 }

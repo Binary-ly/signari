@@ -169,8 +169,12 @@ held a database connection for up to **250 seconds**, and the pool is shared
 with everything else the engine does.
 
 Now three phases — claim, deliver, record — with no transaction open across the
-network, and delivery bounded at 8 concurrent POSTs so one hanging receiver no
-longer delays every notice queued behind it.
+network, and delivery bounded at 32 concurrent POSTs so one hanging receiver no
+longer delays every notice queued behind it. Event deliveries work the same way:
+they kept the old shape longest, one transaction across 32 calls in a row. Each
+kind of delivery has a goroutine of its own, so a receiver that is down holds up
+nothing but its own kind, and each drains until its queue is empty rather than
+taking one batch every two seconds.
 
 Keeping the two instances apart after the locks are released is the other half:
 claiming pushes `next_attempt_at` forward by a lease. Without that, committing in

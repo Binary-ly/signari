@@ -23,6 +23,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -69,7 +70,7 @@ func New(db *pgxpool.Pool, keySet *keys.Set, issuer string, root *keys.RootKey,
 		issuer: issuer,
 		root:   root,
 		log:    log,
-		batch:  25,
+		batch:  100,
 		// A relying party's endpoint is a third-party service that may be down,
 		// slow, or hostile. The timeout bounds the wait so one bad receiver
 		// cannot stall every other delivery.
@@ -89,56 +90,72 @@ func withNoRedirects(c *http.Client) *http.Client {
 	return c
 }
 
+// drainer is one topic and what its drain is called in the log.
+type drainer struct {
+	what  string
+	batch int
+	drain func(context.Context) (int, error)
+}
+
+// drainers are the topics. Each has a goroutine of its own, so a receiver that is
+// down holds up nothing but its own topic: they used to share one, in turn, and a
+// batch timing out at one receiver delayed every logout notice behind it.
+func (w *Worker) drainers() []drainer {
+	return []drainer{
+		{"logout notices", w.batch, w.drainOnce},
+		{"security events", w.batch, w.DrainSSF},
+		// Parked rows are invisible to the claim query, so only decided requests
+		// are drained here.
+		{"CIBA ping notifications", w.batch, w.drainCIBAPings},
+		// Separate from pings because they carry tokens rather than an identifier.
+		{"CIBA token pushes", w.batch, w.drainCIBAPushes},
+		{"events", webhookBatch, w.DrainWebhooks},
+		// Notices to account holders the Admin API and the CLI raised.
+		{"account notices", w.batch, w.DrainAccountNotices},
+	}
+}
+
 // Run drains the outbox until the context is cancelled.
 func (w *Worker) Run(ctx context.Context, interval time.Duration) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
+	w.runEach(ctx, interval, w.drainers())
+}
+
+func (w *Worker) runEach(ctx context.Context, interval time.Duration, topics []drainer) {
+	var wg sync.WaitGroup
+	for _, d := range topics {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t := time.NewTicker(interval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					w.drainAll(ctx, d)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// drainAll drains a topic until a batch comes back short, which is when the queue
+// has run out or the rest has to wait for its backoff. One batch to a tick capped
+// a mass logout at 12 notices a second, however fast the receivers were.
+func (w *Worker) drainAll(ctx context.Context, d drainer) {
+	for ctx.Err() == nil {
+		n, err := d.drain(ctx)
+		if err != nil {
+			w.log.Error("draining "+d.what, "err", err)
 			return
-		case <-t.C:
-			if n, err := w.drainOnce(ctx); err != nil {
-				w.log.Error("draining outbox", "err", err)
-			} else if n > 0 {
-				w.log.Info("delivered logout notices", "count", n)
-			}
-			// Security events drain on the same tick and independently: a
-			// receiver that is down must not hold up logout delivery to everybody
-			// else, and vice versa.
-			if n, err := w.DrainSSF(ctx); err != nil {
-				w.log.Error("draining security events", "err", err)
-			} else if n > 0 {
-				w.log.Info("delivered security events", "count", n)
-			}
-			// CIBA ping notifications, same tick, same independence. Parked
-			// rows are invisible to the claim query, so only decided requests
-			// are drained here.
-			if n, err := w.drainCIBAPings(ctx); err != nil {
-				w.log.Error("draining CIBA pings", "err", err)
-			} else if n > 0 {
-				w.log.Info("delivered CIBA ping notifications", "count", n)
-			}
-			// CIBA push deliveries. Separate from pings because they carry
-			// tokens rather than an identifier, and a failure in one topic must
-			// not stall the other.
-			if n, err := w.drainCIBAPushes(ctx); err != nil {
-				w.log.Error("draining CIBA pushes", "err", err)
-			} else if n > 0 {
-				w.log.Info("delivered CIBA token pushes", "count", n)
-			}
-			// Event subscriptions, on the same tick and equally independently.
-			if n, err := w.DrainWebhooks(ctx); err != nil {
-				w.log.Error("draining event subscriptions", "err", err)
-			} else if n > 0 {
-				w.log.Info("delivered events", "count", n)
-			}
-			// Notices to account holders the Admin API and the CLI raised.
-			if n, err := w.DrainAccountNotices(ctx); err != nil {
-				w.log.Error("draining account notices", "err", err)
-			} else if n > 0 {
-				w.log.Info("delivered account notices", "count", n)
-			}
+		}
+		if n > 0 {
+			w.log.Info("delivered "+d.what, "count", n)
+		}
+		if n < d.batch {
+			return
 		}
 	}
 }
@@ -154,8 +171,8 @@ type pending struct {
 // Long enough that a batch in flight is never picked up twice, short enough
 // that an instance which dies mid-batch does not strand a logout for long. With
 // delivery running concurrently and bounded by the HTTP timeout, a batch
-// finishes in about that timeout rather than the sum of them, so a minute is
-// generous.
+// finishes in about that timeout rather than the sum of them: a full batch of
+// dead receivers is three rounds of concurrency, so a minute is generous.
 const claimLease = 60 * time.Second
 
 // deliveryConcurrency bounds parallel POSTs within one batch.
@@ -164,7 +181,23 @@ const claimLease = 60 * time.Second
 // the batch behind it: 25 notices at a 10 second timeout is over four minutes
 // during which a slow receiver blocks everybody else's logout. The failure that
 // matters here is exactly the one where somebody is down.
-const deliveryConcurrency = 8
+const deliveryConcurrency = 32
+
+// inParallel runs each of n, deliveryConcurrency at a time, and waits for them.
+func inParallel(n int, each func(i int)) {
+	sem := make(chan struct{}, deliveryConcurrency)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			each(i)
+		}()
+	}
+	wg.Wait()
+}
 
 // backoffFor is the capped exponential wait after a failed delivery.
 //

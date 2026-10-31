@@ -73,28 +73,42 @@ func Sign(secret string, at time.Time, body []byte) string {
 // still a hole unless something checks the door is shut in production.
 var webhookClient = func() *http.Client { return safedial.Client(15 * time.Second) }
 
-// DrainWebhooks attempts every event delivery that is due.
+// webhookBatch is how many deliveries one drain takes. A batch finishes in about
+// one delivery timeout, well inside the claim's lease.
+const webhookBatch = 32
+
+// DrainWebhooks attempts the event deliveries that are due, in the three phases
+// drainTopic has: claim, deliver with no transaction open, record. It held one
+// transaction across as many as 32 calls in a row, each up to 15 seconds, with
+// the row locks and a pooled connection taken for the length of them. Its own
+// mechanism still, because claiming here unseals a secret and recording touches
+// two tables and can switch a subscription off.
 func (w *Worker) DrainWebhooks(ctx context.Context) (int, error) {
+	pending, err := w.claimWebhooks(ctx)
+	if err != nil || len(pending) == 0 {
+		return 0, err
+	}
+	type outcome struct {
+		status int
+		err    error
+	}
+	results := make([]outcome, len(pending))
+	inParallel(len(pending), func(i int) {
+		status, err := w.deliverWebhook(ctx, pending[i])
+		results[i] = outcome{status, err}
+	})
+
 	tx, err := w.db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	pending, err := store.ClaimWebhooks(ctx, tx, w.root, 32)
-	if err != nil {
-		return 0, err
-	}
-	if len(pending) == 0 {
-		return 0, tx.Commit(ctx)
-	}
-
 	sent := 0
-	for _, p := range pending {
-		status, derr := w.deliverWebhook(ctx, p)
+	for i, p := range pending {
+		status, derr := results[i].status, results[i].err
 		if derr == nil && status >= 200 && status < 300 {
 			if err := store.MarkWebhookDelivered(ctx, tx, p, status); err != nil {
-				return sent, err
+				return 0, err
 			}
 			sent++
 			continue
@@ -107,7 +121,7 @@ func (w *Worker) DrainWebhooks(ctx context.Context) (int, error) {
 		giveUp := p.Attempts+1 >= MaxWebhookAttempts
 		if err := store.MarkWebhookFailed(ctx, tx, p, status, reason,
 			backoffFor(p.Attempts+1).String(), giveUp); err != nil {
-			return sent, err
+			return 0, err
 		}
 		if giveUp {
 			// The subscription itself is switched off, with the reason. A
@@ -117,13 +131,30 @@ func (w *Worker) DrainWebhooks(ctx context.Context) (int, error) {
 			if err := store.DisableSubscription(ctx, tx, p.SubscriptionID,
 				"deliveries failed "+strconv.Itoa(MaxWebhookAttempts)+
 					" times in a row: "+reason); err != nil {
-				return sent, err
+				return 0, err
 			}
 			w.log.Warn("event subscription disabled after repeated failures",
 				"subscription", p.SubscriptionID, "url", p.URL, "err", reason)
 		}
 	}
-	return sent, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return sent, nil
+}
+
+// claimWebhooks takes a batch and hides it from other instances for the lease.
+func (w *Worker) claimWebhooks(ctx context.Context) ([]store.PendingWebhook, error) {
+	tx, err := w.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	pending, err := store.ClaimWebhooks(ctx, tx, w.root, webhookBatch, claimLease)
+	if err != nil {
+		return nil, err
+	}
+	return pending, tx.Commit(ctx)
 }
 
 // deliverWebhook makes one attempt.

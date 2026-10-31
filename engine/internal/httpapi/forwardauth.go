@@ -3,11 +3,14 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/store"
@@ -76,6 +79,18 @@ func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 
 	c, err := r.Cookie(ProxyCookieName)
 	if err != nil || c.Value == "" {
+		// No browser session here, so this may be a program with a token. Only
+		// then: a browser's cookie is the proxy's own and says more, and an
+		// application behind the proxy may have an Authorization of its own.
+		if raw := bearerToken(r); raw != "" {
+			pc, reason := s.proxyClaimsFromToken(r, raw)
+			if reason != "" {
+				s.denyProxy(w, r, reason)
+				return
+			}
+			s.answerProxy(w, r, pc)
+			return
+		}
 		s.denyProxy(w, r, "no proxy session")
 		return
 	}
@@ -112,7 +127,59 @@ func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 		s.denyProxy(w, r, "the session behind this proxy token has ended")
 		return
 	}
+	s.answerProxy(w, r, pc)
+}
 
+// proxyClaimsFromToken reads who an access token speaks for, and answers why not
+// when it cannot be honoured here. The audience is the host, as RFC 8707 has a
+// client ask for: a token for anything else, this client's own or the issuer
+// included, is not for this application. A sender-constrained token is refused
+// because what proves it is bound to the application's address and only the
+// application could check it, so a proxy would be taking possession on trust.
+// What ends a token is read now, as userinfo reads it (ADR-007).
+func (s *Server) proxyClaimsFromToken(r *http.Request, raw string) (proxyClaims, string) {
+	ctx := r.Context()
+	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(ctx), raw)
+	if err != nil {
+		return proxyClaims{}, "the access token did not verify"
+	}
+	host := strings.ToLower(firstHeader(r, "X-Forwarded-Host"))
+	if host == "" || !audienceIncludes(claims.Audience, "https://"+host) {
+		return proxyClaims{}, "the access token was not issued for this application"
+	}
+	if claims.Cnf != nil {
+		return proxyClaims{}, "a sender-constrained access token cannot be presented through a proxy"
+	}
+	if revoked, err := store.GrantRevoked(ctx, s.db, claims.GrantID); err != nil || revoked {
+		return proxyClaims{}, "the authorization behind this access token has been revoked"
+	}
+	if revoked, err := store.JTIRevoked(ctx, s.db, claims.JTI); err != nil || revoked {
+		return proxyClaims{}, "the access token has been revoked"
+	}
+	if claims.SessionID != "" {
+		if live, err := store.TokenSessionLive(ctx, s.db, claims.SessionID, claims.GrantID); err != nil || !live {
+			return proxyClaims{}, "the session behind this access token has ended"
+		}
+	}
+	if live, err := store.TokenHolderLive(ctx, s.db, claims.ClientID, claims.Subject); err != nil || !live {
+		return proxyClaims{}, "the client or subject of this access token is no longer active"
+	}
+	c, err := s.lookupClient(ctx, claims.ClientID)
+	if err != nil || c == nil {
+		return proxyClaims{}, "the client of this access token could not be found"
+	}
+	pc := proxyClaims{Subject: claims.Subject, SID: claims.SessionID, OrgID: c.OrgID}
+	if id, ok := store.CanonicalUUID(claims.Subject); ok {
+		if err := s.db.QueryRow(ctx, `SELECT COALESCE(email, '') FROM core.users WHERE id = $1::uuid`, id).
+			Scan(&pc.Email); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return proxyClaims{}, "the subject of this access token could not be read"
+		}
+	}
+	return pc, ""
+}
+
+// answerProxy decides whoever pc names against the host, and says who they are.
+func (s *Server) answerProxy(w http.ResponseWriter, r *http.Request, pc proxyClaims) {
 	// Authorization, which this endpoint did not do at all. A valid cookie
 	// passed every protected host of every organisation: anybody who could
 	// sign in anywhere in the deployment reached the payroll dashboard of a

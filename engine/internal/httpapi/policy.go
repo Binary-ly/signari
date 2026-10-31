@@ -169,14 +169,20 @@ func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.R
 	// Groups read fresh, like every other authorization decision that depends on
 	// them. A policy consulting a cached membership would enforce yesterday's
 	// answer.
-	groups, err := store.AllGroupsForUser(ctx, q, userID)
-	if err != nil {
-		s.log.Error("reading groups for a policy decision", "err", err)
-		// Fail CLOSED only when a policy exists: we cannot evaluate a rule that
-		// depends on membership, and guessing "not a member" would deny while
-		// guessing "a member" would grant. Refusing is the honest answer.
-		return &policy.Decision{Allowed: false, Rule: "(internal)",
-			Message: "Access could not be checked. Please try again."}
+	//
+	// A service reaching a protected host is no person and belongs to nothing,
+	// which is a fact and not a failure to read one.
+	var groups []string
+	if _, person := store.CanonicalUUID(userID); person {
+		var err error
+		if groups, err = store.AllGroupsForUser(ctx, q, userID); err != nil {
+			s.log.Error("reading groups for a policy decision", "err", err)
+			// Fail CLOSED only when a policy exists: we cannot evaluate a rule that
+			// depends on membership, and guessing "not a member" would deny while
+			// guessing "a member" would grant. Refusing is the honest answer.
+			return &policy.Decision{Allowed: false, Rule: "(internal)",
+				Message: "Access could not be checked. Please try again."}
+		}
 	}
 
 	req := policy.Request{

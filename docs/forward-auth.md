@@ -279,6 +279,36 @@ in the deployment passed every protected host of every organisation.
 The user id is sent rather than the email because an email can change and can be
 reassigned; the uuid is the stable identity.
 
+## Programs: an access token instead of a cookie
+
+A script or a service has no browser to sign in with. When a request carries no
+proxy cookie and does carry `Authorization: Bearer`, that token is checked instead:
+
+```sh
+signari resource add -org <uuid> -resource https://app.example.com
+
+curl -H "Authorization: Bearer $TOKEN" https://app.example.com/report
+```
+
+The token's `aud` has to be `https://<the host>`, so ask for it with
+`resource=https://app.example.com`. A token for anything else is refused, and that
+includes one for the client itself or for another protected host. What ends a token
+ends it here on the next request: revoking it, revoking its grant, ending its
+session, deactivating the person or disabling the client.
+
+After that it goes through the same decision as a cookie: the host has to be one of
+the organisation's, enabled, and the access policy has to allow it. A
+`client_credentials` token passes as its client, so `X-Forwarded-User` is the client
+id and `X-Forwarded-Email` is empty; to a policy it is a client in no groups, so a
+rule requiring a group or a second factor refuses it.
+
+A cookie decides when both arrive, because the application behind the proxy may use
+`Authorization` for something of its own. A sender-constrained token, DPoP or
+certificate-bound, is refused: what proves it is bound to the application's address
+and only the application could check that, so a proxy would be taking it on trust.
+Your proxy has to pass `Authorization` to `/proxy/verify`, which nginx's
+`auth_request` does unless it has been told not to.
+
 ## Session lifetime
 
 The proxy cookie lasts 30 minutes and is refreshed by the flow, but **the live

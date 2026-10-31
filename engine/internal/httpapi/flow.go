@@ -2146,9 +2146,14 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// Checked BEFORE spending an Argon2 evaluation. Verifying first would make
 	// the throttle an amplifier: every rejected attempt would still cost the
 	// server 19MB and a CPU burst, which is what the limiter exists to prevent.
-	throttle, terr := store.CheckLoginThrottle(ctx, s.db, userID)
+	throttle, terr := store.ReserveLoginAttempt(ctx, s.db, userID)
 	if terr != nil {
-		s.log.Error("checking login throttle", "err", terr)
+		// Refused, for the reason allowSignInAttempt gives: nothing was going to
+		// work against a database that cannot answer this, and going on would be
+		// a guess nobody counted.
+		s.log.Error("spending a guess at an account", "err", terr)
+		s.renderLogin(w, r, authzQuery, generic)
+		return
 	}
 	if throttle.Throttled {
 		// The generic message is kept: revealing that an account is throttled
@@ -2169,9 +2174,6 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	if verr != nil {
 		s.captcha.RecordFailure(ctx, r.RemoteAddr)
 		s.recordSignInFailure(ctx, r)
-		if err := store.RecordLoginFailure(ctx, s.db, userID); err != nil {
-			s.log.Error("recording login failure", "err", err)
-		}
 		s.auditDetached(ctx, audit.Event{
 			Type:          audit.EventLoginFailed,
 			OrgID:         orgID,

@@ -97,71 +97,59 @@ type ThrottleState struct {
 	Failures   int
 }
 
-// CheckLoginThrottle reads the current state for a user.
+// ReserveLoginAttempt spends one guess at an account, before the password is
+// checked, or answers that there is none to spend.
 //
-// Called BEFORE password verification, so a throttled account costs an attacker
-// a lookup rather than an Argon2 evaluation -- which is the difference between
-// rate limiting and a memory-exhaustion amplifier.
-func CheckLoginThrottle(ctx context.Context, db *pgxpool.Pool, userID string) (ThrottleState, error) {
-	var failures int
-	var throttledUntil, lastFailure *time.Time
-
+// Before, so a throttled account costs an attacker a lookup rather than an Argon2
+// evaluation, which is the difference between rate limiting and a
+// memory-exhaustion amplifier. And spent rather than looked at: reading the
+// throttle and recording a failure were separate statements with a password hash
+// between them, so a burst of guesses all read it before any was recorded, and
+// the only bound on the burst was how many hashes the server would run at once.
+// One statement holding the row is what makes the budget a budget. The guess is
+// charged as a failure, and ClearLoginThrottle gives it back if it was right.
+//
+// The decay is applied here so the counter cannot be inflated by an attacker who
+// spaces attempts out beyond the decay window: each burst starts from a clean
+// count, which is correct, and each burst is still throttled. Read-side rather
+// than a sweep job, since it is exact at the moment it matters.
+//
+// The delay is LoginDelayFor's, in SQL so it lands in the same statement.
+func ReserveLoginAttempt(ctx context.Context, db *pgxpool.Pool, userID string) (ThrottleState, error) {
+	var st ThrottleState
+	var wait float64
 	err := db.QueryRow(ctx, `
-		SELECT failed_attempts, throttled_until, last_failure_at
-		FROM core.password_credentials WHERE user_id = $1::uuid`, userID).
-		Scan(&failures, &throttledUntil, &lastFailure)
+		WITH held AS (
+			SELECT pc.user_id,
+			       CASE WHEN pc.last_failure_at IS NULL OR pc.last_failure_at < now() - $2::interval
+			            THEN 0 ELSE pc.failed_attempts END AS failures,
+			       CASE WHEN pc.last_failure_at >= now() - $2::interval AND pc.throttled_until > now()
+			            THEN pc.throttled_until END AS until,
+			       o.login_free_attempts AS free, o.login_max_delay_s AS longest
+			  FROM core.password_credentials pc JOIN core.organizations o ON o.id = pc.org_id
+			 WHERE pc.user_id = $1::uuid
+			   FOR UPDATE OF pc
+		), spent AS (
+			UPDATE core.password_credentials pc
+			   SET failed_attempts = h.failures + 1, last_failure_at = now(),
+			       throttled_until = CASE WHEN h.failures + 1 > h.free
+			                              THEN now() + make_interval(secs => LEAST(h.longest, power(2, LEAST(h.failures - h.free, 40))))
+			                         END
+			  FROM held h WHERE pc.user_id = h.user_id AND h.until IS NULL
+		)
+		SELECT failures, COALESCE(EXTRACT(EPOCH FROM until - now()), 0)::float8 FROM held`,
+		userID, FailureDecay.String()).Scan(&st.Failures, &wait)
 	if err == pgx.ErrNoRows {
 		return ThrottleState{}, nil
 	}
 	if err != nil {
-		return ThrottleState{}, fmt.Errorf("checking login throttle: %w", err)
+		return ThrottleState{}, fmt.Errorf("spending a guess at an account: %w", err)
 	}
-
-	// Stale failures do not count. Read-side decay rather than a sweep job: it is
-	// exact at the moment it matters and needs nothing scheduled.
-	if lastFailure != nil && time.Since(*lastFailure) > FailureDecay {
-		return ThrottleState{}, nil
-	}
-
-	st := ThrottleState{Failures: failures}
-	if throttledUntil != nil && time.Now().Before(*throttledUntil) {
+	if wait > 0 {
 		st.Throttled = true
-		st.RetryAfter = time.Until(*throttledUntil).Round(time.Second)
+		st.RetryAfter = time.Duration(wait * float64(time.Second)).Round(time.Second)
 	}
 	return st, nil
-}
-
-// RecordLoginFailure increments the counter and sets the next backoff window.
-func RecordLoginFailure(ctx context.Context, db *pgxpool.Pool, userID string) error {
-	// The decay is applied in SQL so the counter cannot be inflated by an
-	// attacker who spaces attempts out beyond the decay window: each burst starts
-	// from a clean count, which is correct, and each burst is still throttled.
-	var failures, free, maxSeconds int
-	err := db.QueryRow(ctx, `
-		UPDATE core.password_credentials pc
-		SET failed_attempts = CASE
-				WHEN pc.last_failure_at IS NULL OR pc.last_failure_at < now() - $2::interval
-				THEN 1 ELSE pc.failed_attempts + 1 END,
-		    last_failure_at = now()
-		FROM core.organizations o
-		WHERE pc.user_id = $1::uuid AND o.id = pc.org_id
-		RETURNING pc.failed_attempts, o.login_free_attempts, o.login_max_delay_s`,
-		userID, FailureDecay.String()).Scan(&failures, &free, &maxSeconds)
-	if err == pgx.ErrNoRows {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("recording login failure: %w", err)
-	}
-
-	if d := LoginDelayFor(failures, free, time.Duration(maxSeconds)*time.Second); d > 0 {
-		if _, err := db.Exec(ctx, `
-			UPDATE core.password_credentials SET throttled_until = now() + $2::interval
-			WHERE user_id = $1::uuid`, userID, d.String()); err != nil {
-			return fmt.Errorf("setting throttle window: %w", err)
-		}
-	}
-	return nil
 }
 
 // UnlockAccount clears every count a wrong guess at one person charged: the

@@ -767,12 +767,13 @@ func (s *Server) mux() *http.ServeMux {
 }
 
 func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
-	s.renderLogin(w, r, r.URL.Query().Get("authz"), "")
+	s.renderLogin(w, r.WithContext(withLoginOrgMemo(r.Context())), r.URL.Query().Get("authz"), "")
 }
 
 // rateLimitedLogin rejects forged submissions and caps attempts before any
 // hashing happens.
 func (s *Server) rateLimitedLogin(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(withLoginOrgMemo(r.Context()))
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "malformed form", http.StatusBadRequest)
 		return
@@ -872,7 +873,15 @@ func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool
 	// 20 per five minutes, then capping at exactly the generous ceiling that
 	// replaced it. The flood protection belongs where it already was, and this
 	// belongs to guessing.
-	byIP, err := store.CountRate(ctx, s.db, "signin:fail:ip:"+budgetIP(ip), signInPerIPWindow)
+	budgets := []store.RateWindow{{Key: "signin:fail:ip:" + budgetIP(ip), Window: signInPerIPWindow}}
+	// The identifier is lowercased so that Alice@example.com and
+	// alice@example.com share one budget rather than giving an attacker a fresh
+	// one per spelling.
+	identifier := strings.ToLower(strings.TrimSpace(r.PostForm.Get("username")))
+	if identifier != "" {
+		budgets = append(budgets, store.RateWindow{Key: "signin:fail:user:" + identifier, Window: signInPerAccountWindow})
+	}
+	spent, err := store.CountRates(ctx, s.db, budgets...)
 	if err != nil {
 		// Refused, not waved through. Signing in needs the database anyway -- the
 		// credential lookup is one query later -- so failing closed here costs
@@ -882,26 +891,11 @@ func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
 		return false
 	}
-	if byIP >= signInPerIPLimit {
+	if spent[0] >= signInPerIPLimit {
 		s.tooManyAttempts(w, signInPerIPWindow)
 		return false
 	}
-
-	// The identifier is lowercased so that Alice@example.com and
-	// alice@example.com share one budget rather than giving an attacker a fresh
-	// one per spelling.
-	identifier := strings.ToLower(strings.TrimSpace(r.PostForm.Get("username")))
-	if identifier == "" {
-		return true
-	}
-	byAccount, err := store.CountRate(ctx, s.db, "signin:fail:user:"+identifier,
-		signInPerAccountWindow)
-	if err != nil {
-		s.log.Error("checking the per-account sign-in rate limit", "err", err)
-		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
-		return false
-	}
-	if byAccount >= signInPerAccountLimit {
+	if identifier != "" && spent[1] >= signInPerAccountLimit {
 		s.tooManyAttempts(w, signInPerAccountWindow)
 		return false
 	}

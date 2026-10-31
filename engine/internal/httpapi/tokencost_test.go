@@ -40,8 +40,8 @@ func (s *statements) take() []string {
 	return got
 }
 
-// traced puts a recording pool under the fixture's server.
-func traced(t *testing.T, f *tokenFixture) *statements {
+// traced puts a recording pool under a server.
+func traced(t *testing.T, srv *Server) *statements {
 	t.Helper()
 	cfg, err := pgxpool.ParseConfig(os.Getenv("SIGNARI_TEST_DSN"))
 	if err != nil {
@@ -54,7 +54,7 @@ func traced(t *testing.T, f *tokenFixture) *statements {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	f.srv.db = pool
+	srv.db = pool
 	return spent
 }
 
@@ -87,6 +87,33 @@ func underLimit(t *testing.T, what string, got []string, limit int) {
 	}
 }
 
+// transactions counts those a pool was asked to begin.
+func transactions(got []string) int {
+	n := 0
+	for _, s := range got {
+		if strings.EqualFold(s, "begin") {
+			n++
+		}
+	}
+	return n
+}
+
+// A password sign-in, form to session: each transaction is a commit somebody waits
+// for, and each statement a round trip.
+func TestAPasswordSignInTakesFewTransactions(t *testing.T) {
+	f := newSignInFixture(t)
+	clearSignInBucket(t, f.pool)
+	spent := traced(t, f.srv)
+	if got := f.attempt(t, f.email, signInTestPassword); !got.signedIn() {
+		t.Fatalf("signing in: %+v", got)
+	}
+	seen := spent.take()
+	underLimit(t, "the form and a password sign-in", seen, 27)
+	if transactions(seen) > 1 {
+		t.Errorf("a sign-in opened %d transactions", transactions(seen))
+	}
+}
+
 // These two are what a resource server calls on every request it serves, so a
 // statement here is one for each of those.
 func TestIntrospectionAndUserinfoAskTheDatabaseLittle(t *testing.T) {
@@ -103,7 +130,7 @@ func TestIntrospectionAndUserinfoAskTheDatabaseLittle(t *testing.T) {
 		WHERE id = $1::uuid`, f.orgID).Scan(&f.srv.instanceID); err != nil {
 		t.Fatal(err)
 	}
-	spent := traced(t, f)
+	spent := traced(t, f.srv)
 
 	if got := f.introspect(t, access, f.clientID, secret); got["active"] != true {
 		t.Fatalf("introspection answered %v", got)

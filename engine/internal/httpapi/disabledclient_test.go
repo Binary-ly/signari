@@ -72,7 +72,7 @@ var lookupsThatAdmitADisabledClient = map[string]string{
 	"flow.go lookupClientAnyState":       "the loader the declared callers share",
 	"flow.go handleAuthorize":            "oauth.ValidateAuthz refuses a disabled client first, telling the person why",
 	"accounts.go errorToClient":          "oauth.ValidateAuthz again, before any redirect to the client",
-	"account.go loginOrg":                "only which organisation's sign-in page to show; nothing is granted",
+	"account.go findLoginOrg":            "only which organisation's sign-in page to show; nothing is granted",
 	"connected.go handleConnectedRevoke": "the person removing the application, which reads its token lifetime to say when its tokens stop",
 }
 

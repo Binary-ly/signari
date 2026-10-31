@@ -27,6 +27,31 @@ type externalProvider struct {
 // or the deployment's only organisation. Empty when neither applies -- a bare
 // /login on a deployment with several.
 func (s *Server) loginOrg(ctx context.Context, authzQuery string) string {
+	memo, _ := ctx.Value(loginOrgKey{}).(*loginOrgMemo)
+	if memo != nil && memo.asked && memo.query == authzQuery {
+		return memo.org
+	}
+	org := s.findLoginOrg(ctx, authzQuery)
+	if memo != nil {
+		memo.asked, memo.query, memo.org = true, authzQuery, org
+	}
+	return org
+}
+
+type loginOrgKey struct{}
+
+// loginOrgMemo is one sign-in's answer. The form's handling asks whose page it is
+// six times over, and the organisation does not change within a request.
+type loginOrgMemo struct {
+	asked      bool
+	query, org string
+}
+
+func withLoginOrgMemo(ctx context.Context) context.Context {
+	return context.WithValue(ctx, loginOrgKey{}, &loginOrgMemo{})
+}
+
+func (s *Server) findLoginOrg(ctx context.Context, authzQuery string) string {
 	if s.db == nil {
 		return ""
 	}

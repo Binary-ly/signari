@@ -1,6 +1,7 @@
 package rac
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sort"
@@ -68,10 +69,23 @@ type Session struct {
 // should not be reachable from anywhere else: guacd will connect wherever it is
 // asked, so anything that can talk to it can reach every host it can.
 func Dial(addr string, c Connection, timeout time.Duration) (*Session, error) {
+	return DialTLS(addr, c, timeout, nil)
+}
+
+// DialTLS is Dial over TLS. The protocol carries a target's credentials in the
+// clear, so a guacd on another machine is reached this way: guacd -C and -K serve
+// it, and tlsConfig is what this side trusts. nil is plaintext, for loopback.
+func DialTLS(addr string, c Connection, timeout time.Duration, tlsConfig *tls.Config) (*Session, error) {
 	if c.Protocol == "" {
 		return nil, fmt.Errorf("no protocol given")
 	}
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	var conn net.Conn
+	var err error
+	if tlsConfig != nil {
+		conn, err = tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, tlsConfig)
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, timeout)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("connecting to guacd at %s: %w", addr, err)
 	}

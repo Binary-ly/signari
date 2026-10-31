@@ -1,7 +1,14 @@
 package rac
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"io"
+	"math/big"
 	"net"
 	"strings"
 	"testing"
@@ -32,6 +39,11 @@ func startFakeGuacd(t *testing.T, args []string) *fakeGuacd {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return serveFakeGuacd(t, ln, args)
+}
+
+func serveFakeGuacd(t *testing.T, ln net.Listener, args []string) *fakeGuacd {
+	t.Helper()
 	g := &fakeGuacd{ln: ln, args: args}
 	t.Cleanup(func() { _ = ln.Close() })
 
@@ -75,6 +87,63 @@ func startFakeGuacd(t *testing.T, args []string) *fakeGuacd {
 }
 
 func (g *fakeGuacd) addr() string { return g.ln.Addr().String() }
+
+// A guacd on another machine is reached over TLS and its certificate is checked (8.29):
+// the protocol carries the target's password, so a guacd this side cannot verify is told
+// nothing.
+func TestGuacdOverTLSIsCheckedBeforeItIsToldAnything(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "guacd"},
+		DNSNames: []string{"guacd.test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guacd := func() *fakeGuacd {
+		ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{MinVersion: tls.VersionTLS12,
+			Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return serveFakeGuacd(t, ln, []string{"hostname", "password"})
+	}
+	secret := Connection{Protocol: "rdp", Parameters: map[string]string{"hostname": "h", "password": "hunter2"}}
+
+	trusted := x509.NewCertPool()
+	trusted.AddCert(cert)
+	for name, c := range map[string]*tls.Config{
+		"a certificate from nobody it trusts": {ServerName: "guacd.test"},
+		"a certificate for another name":      {ServerName: "other.test", RootCAs: trusted},
+	} {
+		g := guacd()
+		if s, err := DialTLS(g.addr(), secret, 2*time.Second, c); err == nil {
+			_ = s.Close()
+			t.Errorf("%s was accepted", name)
+		}
+		if g.gotConnect != nil {
+			t.Errorf("%s was sent %v", name, g.gotConnect)
+		}
+	}
+
+	g := guacd()
+	s, err := DialTLS(g.addr(), secret, 2*time.Second, &tls.Config{ServerName: "guacd.test", RootCAs: trusted})
+	if err != nil {
+		t.Fatalf("a guacd with a certificate this side trusts: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if s.ID != "$fake-connection" || len(g.gotConnect) != 2 || g.gotConnect[1] != "hunter2" {
+		t.Errorf("the handshake over TLS gave %q and sent %v", s.ID, g.gotConnect)
+	}
+}
 
 func TestHandshakeCompletes(t *testing.T) {
 	g := startFakeGuacd(t, []string{"hostname", "port", "username", "password"})

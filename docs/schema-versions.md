@@ -7,6 +7,18 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0218 rac_sessions_open
+
+Compatible with the release before: its binary may still serve this schema.
+
+The open sessions of a connection, which a connection with a cap counts on every attempt (8.29), while holding the lock that puts attempts in order. Only the open ones are indexed: the table keeps every session anybody ever had, and the count asks about a handful of them.
+
+## 0217 rac_limits
+
+Compatible with the release before: its binary may still serve this schema.
+
+How many may hold a remote connection at once, and for how long (8.29). A jump host with a licence for two seats and a session left open over a weekend are the same problem: nothing here could say no.
+
 ## 0216 idp_token_auth
 
 Compatible with the release before: its binary may still serve this schema.

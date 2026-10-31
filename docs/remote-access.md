@@ -102,6 +102,22 @@ is an unauthenticated proxy into the estate. Signari does not talk to a
 container runtime and does not need a mounted Docker socket — that is root on
 the host, handed to a service that accepts connections from browsers.
 
+**A guacd on another machine is reached over TLS.** The protocol carries a
+target's login and password in the clear, so a guacd that is not on loopback runs
+with `-C` and `-K` and the engine is told to expect it:
+
+```
+SIGNARI_GUACD_ADDR=guacd.internal:4822
+SIGNARI_GUACD_TLS=1
+SIGNARI_GUACD_CA=/etc/signari/guacd-ca.pem
+```
+
+The certificate has to name the host in the address. `SIGNARI_GUACD_CA` is for a
+private CA and is left out for one the system already trusts. There is no setting
+that skips the check: a certificate that cannot be verified would protect the
+credentials from nobody who could read them, and guacd, unlike the machines
+behind it, can be given a certificate of its own.
+
 ## Registering a connection
 
 ```
@@ -138,6 +154,29 @@ shell on the deployment: `-recording-path`, and any parameter whose name
 contains `path`. Each is a location on the machine guacd runs on, so choosing
 one decides where that machine writes, and that belongs to whoever runs the
 deployment rather than to an organisation's administrator.
+
+## Limiting a connection
+
+```
+signari rac limits -org <org-uuid> -slug finance-desk -max-connections 2 -max-duration 8h
+```
+
+`-max-connections` is how many may hold the connection at once. A place is taken
+before guacd is asked, so the machine is never asked for one more than it has
+room for; the next person gets `429 connection_full`. A session that is already
+over gives its place back straight away. So does one whose process died without
+saying so, three minutes after anybody last saw it, because an open channel says
+it is still there every thirty seconds.
+
+`-max-duration` is how long one session may last. It ends the channel at the first
+check after that time, so a session can run up to thirty seconds over, and it is
+recorded with that reason in `core.rac_sessions` and in `rac.session_ended`. The
+person can connect again: this limits one session, not how long they may work,
+which is what the access policy and the group are for.
+
+A new limit does not end anybody's session for being over a new cap, and a
+session already open keeps the duration it started with. The Admin API sets both
+as `max_connections` and `max_duration_seconds`, and so does a configuration file.
 
 ## The API
 

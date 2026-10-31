@@ -710,6 +710,12 @@
         "login": {
           "$ref": "#/$defs/SecretRef"
         },
+        "max_connections": {
+          "type": "integer"
+        },
+        "max_duration_seconds": {
+          "type": "integer"
+        },
         "name": {
           "type": "string"
         },

@@ -14347,6 +14347,12 @@
                             "format": "uuid",
                             "type": "string"
                           },
+                          "max_connections": {
+                            "type": "integer"
+                          },
+                          "max_duration_seconds": {
+                            "type": "integer"
+                          },
                           "name": {
                             "type": "string"
                           },
@@ -14383,7 +14389,9 @@
                           "recorded",
                           "enabled",
                           "has_credentials",
-                          "parameters"
+                          "parameters",
+                          "max_connections",
+                          "max_duration_seconds"
                         ],
                         "type": "object"
                       },
@@ -14621,6 +14629,12 @@
                   "enabled": {
                     "type": "boolean"
                   },
+                  "max_connections": {
+                    "type": "integer"
+                  },
+                  "max_duration_seconds": {
+                    "type": "integer"
+                  },
                   "parameters": {
                     "additionalProperties": {
                       "type": "string"
@@ -14646,6 +14660,12 @@
                     },
                     "enabled": {
                       "type": "boolean"
+                    },
+                    "max_connections": {
+                      "type": "integer"
+                    },
+                    "max_duration_seconds": {
+                      "type": "integer"
                     },
                     "parameters": {
                       "additionalProperties": {

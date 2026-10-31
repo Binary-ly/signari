@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,6 +32,10 @@ type RACConnection struct {
 	Port          int
 	RequireGroup  string
 	RecordingPath string
+	// MaxConnections is how many may hold it at once, and MaxDuration how long
+	// each may; zero for no limit.
+	MaxConnections int
+	MaxDuration    time.Duration
 
 	// Parameters are guacd's parameters WITHOUT the secrets, which are merged
 	// separately by Resolve so they never appear in a value returned to a
@@ -46,16 +52,20 @@ func LoadRACConnection(ctx context.Context, db *pgxpool.Pool, orgID, slug string
 	c := &RACConnection{}
 	var params []byte
 	var requireGroup, recordingPath *string
+	var maxSeconds int
 	err := db.QueryRow(ctx, `
 		SELECT id::text, org_id::text, slug, display_name, protocol, hostname, port,
-		       parameters, secrets_enc, require_group, recording_path
+		       parameters, secrets_enc, require_group, recording_path,
+		       max_connections, max_duration_seconds
 		FROM core.rac_connections
 		WHERE org_id = $1::uuid AND slug = $2 AND enabled`, orgID, slug).
 		Scan(&c.ID, &c.OrgID, &c.Slug, &c.DisplayName, &c.Protocol, &c.Hostname,
-			&c.Port, &params, &c.secrets, &requireGroup, &recordingPath)
+			&c.Port, &params, &c.secrets, &requireGroup, &recordingPath,
+			&c.MaxConnections, &maxSeconds)
 	if err != nil {
 		return nil, err
 	}
+	c.MaxDuration = time.Duration(maxSeconds) * time.Second
 	if requireGroup != nil {
 		c.RequireGroup = *requireGroup
 	}
@@ -182,18 +192,64 @@ func (c *RACConnection) Resolve(root *keys.RootKey, width, height, dpi int) (
 	}, nil
 }
 
-// StartRACSession records that somebody connected.
-func StartRACSession(ctx context.Context, db *pgxpool.Pool, c *RACConnection,
-	userID, guacdID string) (string, error) {
+// ErrRACFull is a connection already held by as many as it allows.
+var ErrRACFull = errors.New("this connection is in use by as many people as it allows")
 
+// racSessionStale is how long a session may go unseen before it stops counting:
+// three of the checks an open channel makes, so one that is merely late is not
+// taken for one whose process died.
+const racSessionStale = 3 * time.Minute
+
+// ReserveRACSession takes a place on a connection and records that somebody is
+// connecting, before guacd is asked, so the count is of places taken and not of
+// connections that happened to finish first. Two arriving together are put in
+// order by the lock, in this transaction and held for no longer. A session nobody
+// has seen for a while does not count, so a process that died holding a place
+// gives it back.
+func ReserveRACSession(ctx context.Context, db *pgxpool.Pool, c *RACConnection, userID string) (string, error) {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if c.MaxConnections > 0 {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, c.ID); err != nil {
+			return "", err
+		}
+		var held int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM core.rac_sessions
+			 WHERE connection_id = $1::uuid AND ended_at IS NULL
+			   AND last_seen_at > now() - make_interval(secs => $2)`,
+			c.ID, racSessionStale.Seconds()).Scan(&held); err != nil {
+			return "", err
+		}
+		if held >= c.MaxConnections {
+			return "", ErrRACFull
+		}
+	}
 	var id string
-	err := db.QueryRow(ctx, `
-		INSERT INTO core.rac_sessions
-			(connection_id, org_id, user_id, guacd_id, recording_path)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, NULLIF($4,''), NULLIF($5,''))
-		RETURNING id::text`,
-		c.ID, c.OrgID, userID, guacdID, c.RecordingPath).Scan(&id)
-	return id, err
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.rac_sessions (connection_id, org_id, user_id, recording_path, last_seen_at)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, NULLIF($4,''), now())
+		RETURNING id::text`, c.ID, c.OrgID, userID, c.RecordingPath).Scan(&id); err != nil {
+		return "", err
+	}
+	return id, tx.Commit(ctx)
+}
+
+// NoteRACSession records guacd's id for a session it has now opened.
+func NoteRACSession(ctx context.Context, db *pgxpool.Pool, sessionID, guacdID string) error {
+	_, err := db.Exec(ctx, `UPDATE core.rac_sessions SET guacd_id = NULLIF($2, '') WHERE id = $1::uuid`,
+		sessionID, guacdID)
+	return err
+}
+
+// TouchRACSession says an open channel is still there.
+func TouchRACSession(ctx context.Context, db *pgxpool.Pool, sessionID string) error {
+	_, err := db.Exec(ctx, `UPDATE core.rac_sessions SET last_seen_at = now()
+		WHERE id = $1::uuid AND ended_at IS NULL`, sessionID)
+	return err
 }
 
 // EndRACSession records that it finished, and why.

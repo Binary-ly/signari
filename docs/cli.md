@@ -280,6 +280,7 @@ An operator's own service, called to extend a decision this engine makes. See
 | `signari rac add -protocol rdp` / `vnc` / `ssh` | The protocol is a value of `-protocol`, not a command. Sessions are started from `/rac` in a browser |
 | `signari rac disable` / `rac enable` | `-slug <s>`: a disabled connection is neither listed nor connectable from the next request; a session already open runs until it closes |
 | `signari rac set-parameters` | `-slug <s> -rac-params security=nla,ignore-cert=true`: replace the guacd parameters the protocol takes; empty clears them. The host, port, credentials and recording path are refused here, because the connection's own settings supply them and a credential is sealed, never a parameter. guacd refuses a name it does not take at the next connect |
+| `signari rac limits` | `-slug <s> -max-connections <n> -max-duration 8h`: how many may hold the connection at once, and how long each session may last, 0 for no limit, and what is not given is kept. `rac list` shows both. A new limit applies from the next connection; a session already open keeps the one it started with |
 
 ## Policy, prompts, branding
 

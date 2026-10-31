@@ -2778,6 +2778,35 @@ var racReservedParameters = map[string]string{
 // set them, so every connection ran with guacd's defaults. Empty clears them.
 // guacd refuses a name it does not take for the protocol at the next connect,
 // by name, which is where the protocol's own list is known.
+// racLimits says how many may hold a connection, and for how long; 0 for no limit.
+// What is not given is kept.
+func racLimits(ctx context.Context, conn *pgx.Conn, orgID, slug string, maxConnections *int, maxDuration *time.Duration) error {
+	orgID, err := resolveOrg(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	if maxConnections == nil && maxDuration == nil {
+		return fmt.Errorf("give -max-connections, -max-duration or both")
+	}
+	var seconds *int
+	if maxDuration != nil {
+		s := int(maxDuration.Seconds())
+		seconds = &s
+	}
+	err = store.SetRACLimits(ctx, conn, orgID, slug, maxConnections, seconds)
+	if errors.Is(err, store.ErrRACUnknown) {
+		return fmt.Errorf("no connection %q in this organisation", slug)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: limits set\n", slug)
+	return nil
+}
+
 func racSetParameters(ctx context.Context, conn *pgx.Conn, orgID, slug, raw string) error {
 	orgID, err := resolveOrg(ctx, conn, orgID)
 	if err != nil {

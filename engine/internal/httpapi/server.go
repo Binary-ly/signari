@@ -4,6 +4,7 @@ package httpapi
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -142,6 +143,8 @@ type Server struct {
 	// has not asked for browser-based remote desktop, and an endpoint that
 	// exists but always errors is worse than one that says it is off.
 	guacdAddr string
+	// guacdTLS, when set, is how guacd is reached. nil is plaintext.
+	guacdTLS *tls.Config
 
 	// Kerberos, when configured. A nil keytab means the SPNEGO route is not
 	// registered at all rather than registered and always failing.
@@ -297,6 +300,10 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 	// for exactly one instance, and silently stops escalating with more than
 	// one -- the same shape of bug the sign-in rate limiter had.
 	cap = cap.WithCounter(&sharedCaptchaCounter{db: db, log: log})
+	guacdTLS, err := guacdTLSFromEnv(os.Getenv("SIGNARI_GUACD_ADDR"))
+	if err != nil {
+		return nil, err
+	}
 
 	// The HTML pages, from the embedded filesystem, with SIGNARI_THEME_DIR
 	// layered over them when one is set.
@@ -364,6 +371,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		mailer:     mailer,
 		texter:     texter,
 		guacdAddr:  os.Getenv("SIGNARI_GUACD_ADDR"),
+		guacdTLS:   guacdTLS,
 		krbConfig: kerberos.Config{
 			KeytabPath:       os.Getenv("SIGNARI_KERBEROS_KEYTAB"),
 			Realm:            os.Getenv("SIGNARI_KERBEROS_REALM"),

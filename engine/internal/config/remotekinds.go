@@ -37,6 +37,10 @@ type RACConnection struct {
 	// Parameters are guacd's, never one the connection's own settings supply.
 	Parameters *map[string]string `yaml:"parameters,omitempty"`
 	Enabled    *bool              `yaml:"enabled,omitempty"`
+	// MaxConnections and MaxDurationSeconds limit it, 0 for no limit, each left as
+	// it is when absent.
+	MaxConnections     *int `yaml:"max_connections,omitempty"`
+	MaxDurationSeconds *int `yaml:"max_duration_seconds,omitempty"`
 }
 
 func (w RACConnection) at() string { return "rac_connections[" + w.Slug + "]" }
@@ -94,6 +98,9 @@ func (racSection) validate(f *File, add func(string, ...any)) {
 					add("%s: %s is not a parameter: the connection's own settings supply it", w.at(), k)
 				}
 			}
+		}
+		if err := store.CheckRACLimits(w.MaxConnections, w.MaxDurationSeconds); err != nil {
+			add("%s: %v", w.at(), err)
 		}
 		if w.Login != nil {
 			w.Login.check(w.at()+".login", add)
@@ -159,6 +166,8 @@ func (racSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, pr
 			c.note(w.RequireGroup != nil && h.RequireGroup != *w.RequireGroup, "require_group")
 			c.note(w.Parameters != nil && !maps.Equal(h.Parameters, *w.Parameters), "parameters")
 			c.note(w.Enabled != nil && h.Enabled != *w.Enabled, "enabled")
+			c.note(w.MaxConnections != nil && h.MaxConnections != *w.MaxConnections, "max_connections")
+			c.note(w.MaxDurationSeconds != nil && h.MaxDurationSeconds != *w.MaxDurationSeconds, "max_duration_seconds")
 			if w.RecordingPath != nil && failed == nil {
 				var path string
 				path, failed = store.RACRecordingPath(ctx, tx, orgID, w.Slug)
@@ -252,6 +261,11 @@ func (racSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p
 				return err
 			}
 		}
+		if w.MaxConnections != nil || w.MaxDurationSeconds != nil {
+			if err := store.SetRACLimits(ctx, tx, orgID, w.Slug, w.MaxConnections, w.MaxDurationSeconds); err != nil {
+				return err
+			}
+		}
 	}
 	for slug := range held {
 		if c, ok := p.planned("rac_connection", slug); ok && !inFile[slug] && c.Detail == keptConnection {
@@ -281,9 +295,10 @@ func (racSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File) 
 			return err
 		}
 		group, params, enabled := h.RequireGroup, h.Parameters, h.Enabled
+		limit, longest := h.MaxConnections, h.MaxDurationSeconds
 		f.RACConnections = append(f.RACConnections, RACConnection{Slug: h.Slug, Name: h.Name, Protocol: h.Protocol,
 			Host: h.Host, Port: h.Port, RequireGroup: &group, RecordingPath: &path, Parameters: &params,
-			Enabled: &enabled})
+			Enabled: &enabled, MaxConnections: &limit, MaxDurationSeconds: &longest})
 	}
 	return nil
 }

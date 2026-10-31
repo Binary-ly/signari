@@ -2234,6 +2234,8 @@ export interface GetOrganizationsOrgIDRACConnectionsResponseConnectionsItem {
   has_credentials: boolean
   host: string
   id: string
+  max_connections: number
+  max_duration_seconds: number
   name: string
   parameters: Record<string, unknown>
   port: number
@@ -2890,6 +2892,8 @@ export interface PatchOrganizationsOrgIDPromptsSlugResponse {
 /** A JSON object of the Admin API. */
 export interface PatchOrganizationsOrgIDRACConnectionsSlugRequest {
   enabled?: boolean
+  max_connections?: number
+  max_duration_seconds?: number
   parameters?: Record<string, unknown>
 }
 
@@ -2897,6 +2901,8 @@ export interface PatchOrganizationsOrgIDRACConnectionsSlugRequest {
 export interface PatchOrganizationsOrgIDRACConnectionsSlugResponse {
   config_version: number
   enabled?: boolean
+  max_connections?: number
+  max_duration_seconds?: number
   parameters?: Record<string, unknown>
   slug: string
 }

@@ -155,13 +155,52 @@ type RACListing struct {
 	RequireGroup                   string
 	Recorded, Enabled, HasLogin    bool
 	Parameters                     map[string]string
+	// MaxConnections and MaxDurationSeconds are 0 for no limit.
+	MaxConnections, MaxDurationSeconds int
+}
+
+// racMaxDuration is the longest a connection may be limited to, a month, which is
+// past the point where the limit is still one.
+const racMaxDuration = 30 * 24 * 3600
+
+// CheckRACLimits refuses a limit that could not mean what it says.
+func CheckRACLimits(maxConnections, maxDurationSeconds *int) error {
+	if maxConnections != nil && *maxConnections < 0 {
+		return fmt.Errorf("%w: max_connections must not be negative", ErrRACLimit)
+	}
+	if maxDurationSeconds != nil && (*maxDurationSeconds < 0 || *maxDurationSeconds > racMaxDuration) {
+		return fmt.Errorf("%w: max_duration must be between 0 and %d seconds", ErrRACLimit, racMaxDuration)
+	}
+	return nil
+}
+
+// ErrRACLimit is a connection limit refused.
+var ErrRACLimit = errors.New("that limit cannot be set")
+
+// SetRACLimits sets how many may hold a connection, and for how long.
+func SetRACLimits(ctx context.Context, q Execer, orgID, slug string, maxConnections, maxDurationSeconds *int) error {
+	if err := CheckRACLimits(maxConnections, maxDurationSeconds); err != nil {
+		return err
+	}
+	tag, err := q.Exec(ctx, `UPDATE core.rac_connections
+		   SET max_connections = COALESCE($3::integer, max_connections),
+		       max_duration_seconds = COALESCE($4::integer, max_duration_seconds)
+		 WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, maxConnections, maxDurationSeconds)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrRACUnknown
+	}
+	return nil
 }
 
 // RACConnections lists an organisation's connections by slug.
 func RACConnections(ctx context.Context, q Querier, orgID string) ([]RACListing, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id::text, slug, display_name, protocol, hostname, port, COALESCE(require_group, ''),
-		       recording_path IS NOT NULL, enabled, secrets_enc IS NOT NULL, parameters
+		       recording_path IS NOT NULL, enabled, secrets_enc IS NOT NULL, parameters,
+		       max_connections, max_duration_seconds
 		  FROM core.rac_connections WHERE org_id = $1::uuid ORDER BY slug`, orgID)
 	if err != nil {
 		return nil, err
@@ -172,7 +211,7 @@ func RACConnections(ctx context.Context, q Querier, orgID string) ([]RACListing,
 		var c RACListing
 		var params []byte
 		if err := rows.Scan(&c.ID, &c.Slug, &c.Name, &c.Protocol, &c.Host, &c.Port, &c.RequireGroup,
-			&c.Recorded, &c.Enabled, &c.HasLogin, &params); err != nil {
+			&c.Recorded, &c.Enabled, &c.HasLogin, &params, &c.MaxConnections, &c.MaxDurationSeconds); err != nil {
 			return nil, err
 		}
 		c.Parameters = map[string]string{}

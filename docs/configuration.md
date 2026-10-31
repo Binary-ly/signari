@@ -527,6 +527,8 @@ See [remote-access.md](remote-access.md).
 | | |
 |---|---|
 | `SIGNARI_GUACD_ADDR` | guacd's TCP listener, typically `127.0.0.1:4822`. Absent, remote access answers 503 |
+| `SIGNARI_GUACD_TLS` | `1` reaches guacd over TLS, checking its certificate against the address's host. For a guacd on another machine, because the protocol carries a target's credentials |
+| `SIGNARI_GUACD_CA` | A PEM file of what guacd's certificate is checked against, instead of the system's roots. Refused at startup when `SIGNARI_GUACD_TLS` is not `1`, rather than ignored |
 
 ## LDAP (applications binding to this engine)
 

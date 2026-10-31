@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"signari.dev/engine/internal/store"
 )
@@ -86,6 +87,29 @@ func TestARemoteAccessConnectionIsManagedThroughTheAPI(t *testing.T) {
 			t.Errorf("%s answered %q, want %q", params, e, want)
 		}
 	}
+	// A limit is kept when another is set, and one that cannot mean what it says is
+	// refused before it changes anything.
+	for _, body := range []map[string]any{{"max_connections": -1}, {"max_duration_seconds": -1},
+		{"max_duration_seconds": 31 * 24 * 3600}} {
+		if e := errorOf(http.MethodPatch, base+"/desk", body, http.StatusBadRequest); e != "invalid_limit" {
+			t.Errorf("%v answered %q", body, e)
+		}
+	}
+	for _, body := range []map[string]any{{"max_connections": 2}, {"max_duration_seconds": 28800}} {
+		if rec := call(t, s, http.MethodPatch, base+"/desk", testToken, body); rec.Code != http.StatusOK {
+			t.Fatalf("limiting %v: %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	if c, err := store.LoadRACConnection(ctx, s.db, org, "desk"); err != nil {
+		t.Fatal(err)
+	} else if c.MaxConnections != 2 || c.MaxDuration != 8*time.Hour {
+		t.Errorf("the connection holds %d and %v", c.MaxConnections, c.MaxDuration)
+	}
+	if list := call(t, s, http.MethodGet, base, testToken, nil); !strings.Contains(list.Body.String(),
+		`"max_connections":2,"max_duration_seconds":28800`) {
+		t.Errorf("the limits are not listed: %s", list.Body.String())
+	}
+
 	if rec := call(t, s, http.MethodPatch, base+"/desk", testToken, map[string]any{"enabled": false,
 		"parameters": map[string]string{"ignore-cert": "true"}}); rec.Code != http.StatusOK {
 		t.Fatalf("disabling with parameters: %d %s", rec.Code, rec.Body.String())

@@ -2466,6 +2466,8 @@ Takes:
 | Field | Type | |
 |---|---|---|
 | `enabled` | boolean |  |
+| `max_connections` | integer |  |
+| `max_duration_seconds` | integer |  |
 | `parameters` | object |  |
 
 Answers:
@@ -2474,6 +2476,8 @@ Answers:
 |---|---|---|
 | `config_version` | integer | always |
 | `enabled` | boolean |  |
+| `max_connections` | integer |  |
+| `max_duration_seconds` | integer |  |
 | `parameters` | object |  |
 | `slug` | string | always |
 

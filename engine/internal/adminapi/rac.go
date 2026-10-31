@@ -35,6 +35,9 @@ type racView struct {
 	Enabled      bool              `json:"enabled"`
 	HasLogin     bool              `json:"has_credentials"`
 	Parameters   map[string]string `json:"parameters"`
+	// MaxConnections and MaxDurationSeconds are 0 for no limit.
+	MaxConnections     int `json:"max_connections"`
+	MaxDurationSeconds int `json:"max_duration_seconds"`
 }
 
 // addRACRequest registers a connection. require_group names the group whose
@@ -57,6 +60,9 @@ type addRACRequest struct {
 type patchRACRequest struct {
 	Enabled    *bool              `json:"enabled"`
 	Parameters *map[string]string `json:"parameters"`
+	// MaxConnections and MaxDurationSeconds are 0 for no limit.
+	MaxConnections     *int `json:"max_connections"`
+	MaxDurationSeconds *int `json:"max_duration_seconds"`
 }
 
 const racRefusal = "register or change a machine people in the organisation reach"
@@ -78,7 +84,8 @@ func (s *Server) listRAC(w http.ResponseWriter, r *http.Request) {
 	for _, c := range got {
 		out = append(out, racView{ID: c.ID, Slug: c.Slug, Name: c.Name, Protocol: c.Protocol, Host: c.Host,
 			Port: c.Port, RequireGroup: c.RequireGroup, Recorded: c.Recorded, Enabled: c.Enabled,
-			HasLogin: c.HasLogin, Parameters: c.Parameters})
+			HasLogin: c.HasLogin, Parameters: c.Parameters, MaxConnections: c.MaxConnections,
+			MaxDurationSeconds: c.MaxDurationSeconds})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "connections": out})
 }
@@ -169,9 +176,13 @@ func (s *Server) patchRAC(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
 		return
 	}
-	if req.Enabled == nil && req.Parameters == nil {
+	if req.Enabled == nil && req.Parameters == nil && req.MaxConnections == nil && req.MaxDurationSeconds == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change",
-			"detail": "give enabled, parameters or both"})
+			"detail": "give enabled, parameters, max_connections or max_duration_seconds"})
+		return
+	}
+	if err := store.CheckRACLimits(req.MaxConnections, req.MaxDurationSeconds); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_limit", "detail": err.Error()})
 		return
 	}
 	var params map[string]string
@@ -220,6 +231,17 @@ func (s *Server) patchRAC(w http.ResponseWriter, r *http.Request) {
 				names = append(names, k)
 			}
 			out["parameters"], detail["parameters"] = params, names
+		}
+		if req.MaxConnections != nil || req.MaxDurationSeconds != nil {
+			if err := store.SetRACLimits(ctx, tx, orgID, slug, req.MaxConnections, req.MaxDurationSeconds); err != nil {
+				return err
+			}
+			for name, value := range map[string]*int{"max_connections": req.MaxConnections,
+				"max_duration_seconds": req.MaxDurationSeconds} {
+				if value != nil {
+					out[name], detail[name] = *value, *value
+				}
+			}
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.rac_connection_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})

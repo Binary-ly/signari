@@ -388,6 +388,7 @@ outposts and remote access:
   rac disable            take a connection out of service
   rac enable             put a connection back in service
   rac set-parameters     replace a connection's guacd parameters
+  rac limits             how many may hold a connection, and for how long
 
 policy, prompts and branding:
   policy test     check a policy file (no database needed -- for CI)
@@ -848,6 +849,8 @@ func run(args []string) (err error) {
 	racParams := fs.String("rac-params", "",
 		"comma-separated name=value guacd parameters for a remote-access connection, e.g. "+
 			"security=nla,ignore-cert=true; empty clears them (rac set-parameters)")
+	racMaxConnections := fs.Int("max-connections", 0, "how many may hold it at once, 0 for no limit (rac limits)")
+	racMaxDuration := fs.Duration("max-duration", 0, "how long one session may last, 0 for no limit (rac limits)")
 	credRequireAttestation := fs.Bool("require-key-attestation", false,
 		"issue this credential only to a key a trusted attester vouches for (credential define)")
 	localeTag := fs.String("locale", "",
@@ -1440,6 +1443,18 @@ func run(args []string) (err error) {
 		return racSetEnabled(ctx, conn, *orgID, *slug, true)
 	case "rac set-parameters":
 		return racSetParameters(ctx, conn, *orgID, *slug, *racParams)
+	case "rac limits":
+		var limit *int
+		var longest *time.Duration
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "max-connections" {
+				limit = racMaxConnections
+			}
+			if f.Name == "max-duration" {
+				longest = racMaxDuration
+			}
+		})
+		return racLimits(ctx, conn, *orgID, *slug, limit, longest)
 	case "audit checkpoint":
 		return auditCheckpoint(ctx, conn, *orgID, *declaredBy, *reason)
 	case "audit verify":
@@ -6695,7 +6710,7 @@ func racList(ctx context.Context, conn *pgx.Conn, format string) error {
 	rows, err := conn.Query(ctx, `
 		SELECT slug, display_name, protocol, hostname, port,
 		       COALESCE(require_group, '(anyone)'),
-		       recording_path IS NOT NULL, enabled
+		       recording_path IS NOT NULL, enabled, max_connections, max_duration_seconds
 		FROM core.rac_connections ORDER BY display_name`)
 	if err != nil {
 		return err
@@ -6703,23 +6718,24 @@ func racList(ctx context.Context, conn *pgx.Conn, format string) error {
 	defer rows.Close()
 
 	if out.text() {
-		fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9s %s\n",
-			"SLUG", "NAME", "PROTO", "TARGET", "GROUP", "RECORDED", "ENABLED")
+		fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9s %-8s %-8s %s\n",
+			"SLUG", "NAME", "PROTO", "TARGET", "GROUP", "RECORDED", "ENABLED", "AT-ONCE", "LONGEST")
 	}
 	for rows.Next() {
 		var slug, name, protocol, host, group string
-		var port int
+		var port, maxConnections, maxDuration int
 		var recorded, enabled bool
 		if err := rows.Scan(&slug, &name, &protocol, &host, &port, &group,
-			&recorded, &enabled); err != nil {
+			&recorded, &enabled, &maxConnections, &maxDuration); err != nil {
 			return err
 		}
 		out.add(map[string]any{"slug": slug, "name": name, "protocol": protocol, "host": host, "port": port,
-			"group": group, "recorded": recorded, "enabled": enabled})
+			"group": group, "recorded": recorded, "enabled": enabled, "max_connections": maxConnections,
+			"max_duration_seconds": maxDuration})
 		if out.text() {
-			fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9t %t\n",
+			fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9t %-8t %-8d %s\n",
 				slug, name, protocol, fmt.Sprintf("%s:%d", host, port), group,
-				recorded, enabled)
+				recorded, enabled, maxConnections, time.Duration(maxDuration)*time.Second)
 		}
 	}
 	if err := rows.Err(); err != nil {

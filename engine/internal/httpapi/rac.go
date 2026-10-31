@@ -2,9 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -56,6 +61,34 @@ import (
 
 // racHandshakeTimeout bounds the guacd handshake.
 const racHandshakeTimeout = 10 * time.Second
+
+// guacdTLSFromEnv reads how guacd is reached. A value that does not work is
+// refused here, because the fallback would be credentials in the clear.
+func guacdTLSFromEnv(addr string) (*tls.Config, error) {
+	ca := os.Getenv("SIGNARI_GUACD_CA")
+	if os.Getenv("SIGNARI_GUACD_TLS") != "1" {
+		if ca != "" {
+			return nil, errors.New("SIGNARI_GUACD_CA is set and SIGNARI_GUACD_TLS is not 1, so it would be ignored")
+		}
+		return nil, nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("SIGNARI_GUACD_ADDR %q needs a host and port for TLS: %w", addr, err)
+	}
+	config := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}
+	if ca != "" {
+		pem, err := os.ReadFile(ca)
+		if err != nil {
+			return nil, fmt.Errorf("reading SIGNARI_GUACD_CA: %w", err)
+		}
+		config.RootCAs = x509.NewCertPool()
+		if !config.RootCAs.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("SIGNARI_GUACD_CA %s holds no certificate", ca)
+		}
+	}
+	return config, nil
+}
 
 // handleRACConnect proxies a browser to guacd.
 func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
@@ -140,19 +173,38 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	guac, err := rac.Dial(s.guacdAddr, target, racHandshakeTimeout)
+	// A place first, so a machine with room for two is never asked for a third.
+	// A failure to record is a refusal when there is a cap to keep, and when
+	// there is none it costs only the record, as it always did.
+	sessionID, err := store.ReserveRACSession(ctx, s.db, conn, userID)
+	switch {
+	case errors.Is(err, store.ErrRACFull):
+		writeError(w, http.StatusTooManyRequests, "connection_full", err.Error())
+		return
+	case err != nil && conn.MaxConnections > 0:
+		s.log.Error("reserving a remote session", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	case err != nil:
+		s.log.Error("recording a remote session", "err", err)
+	}
+	guac, err := rac.DialTLS(s.guacdAddr, target, racHandshakeTimeout, s.guacdTLS)
 	if err != nil {
 		s.log.Error("connecting to guacd", "err", err, "connection", slug)
+		if sessionID != "" {
+			_ = store.EndRACSession(ctx, s.db, sessionID, "the remote host could not be reached")
+		}
 		writeError(w, http.StatusBadGateway, "upstream_error",
 			"the remote host could not be reached")
 		return
 	}
 	defer func() { _ = guac.Close() }()
-
-	sessionID, err := store.StartRACSession(ctx, s.db, conn, userID, guac.ID)
-	if err != nil {
-		s.log.Error("recording a remote session", "err", err)
+	if sessionID != "" {
+		if err := store.NoteRACSession(ctx, s.db, sessionID, guac.ID); err != nil {
+			s.log.Error("recording a remote session", "err", err)
+		}
 	}
+	started := time.Now()
 
 	// The tunnel outlives the listener's request timeouts by design: the upgrade
 	// hijacks the connection, which clears them (see listener.go), and its
@@ -171,7 +223,9 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.log.Info("websocket upgrade refused", "err", err)
-		_ = store.EndRACSession(ctx, s.db, sessionID, "upgrade failed")
+		if sessionID != "" {
+			_ = store.EndRACSession(ctx, s.db, sessionID, "upgrade failed")
+		}
 		return
 	}
 
@@ -183,6 +237,14 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 	// already open. A check that cannot be made ends the channel rather than
 	// assuming it would have passed.
 	recheck := func(ctx context.Context) (bool, string) {
+		if conn.MaxDuration > 0 && time.Since(started) >= conn.MaxDuration {
+			return false, "the connection's maximum duration passed"
+		}
+		if sessionID != "" {
+			if err := store.TouchRACSession(ctx, s.db, sessionID); err != nil {
+				s.log.Error("noting a remote session", "err", err)
+			}
+		}
 		live, err := store.SessionLive(ctx, s.db, sid)
 		if err != nil {
 			s.log.Error("re-checking a remote session", "err", err)

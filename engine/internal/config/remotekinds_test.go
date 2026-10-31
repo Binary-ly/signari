@@ -85,6 +85,34 @@ func TestARemoteAccessConnectionIsDeclaredWithItsCredentialsByReference(t *testi
 		t.Error("the connection kept the password the file no longer names")
 	}
 
+	// A limit is planned, written and left alone by a file that does not name it, and
+	// one that cannot mean what it says is refused before anything is asked.
+	limited := strings.Replace(fmt.Sprintf(machine, "build.internal"), "slug: build,",
+		"slug: build, max_connections: 2, max_duration_seconds: 3600,", 1)
+	if !strings.Contains(limited, "max_connections") {
+		t.Fatalf("the file did not take the limit:\n%s", limited)
+	}
+	if p := apply(org, limited, false); !strings.Contains(p.String(), "max_connections") ||
+		!strings.Contains(p.String(), "max_duration_seconds") {
+		t.Errorf("the limits were planned as\n%s", p)
+	}
+	if h, _ := held(org); h.MaxConnections != 2 || h.MaxDurationSeconds != 3600 {
+		t.Errorf("the connection is limited to %d for %d seconds", h.MaxConnections, h.MaxDurationSeconds)
+	}
+	if _, p, _ := plan(org, limited, false); !p.Empty() {
+		t.Errorf("applied again it plans\n%s", p)
+	}
+	if _, p, _ := plan(org, fmt.Sprintf(machine, "build.internal"), false); !p.Empty() {
+		t.Errorf("a file that names no limit plans\n%s", p)
+	}
+	negative, err := Parse([]byte("version: 1\nrac_connections: [{slug: build, protocol: ssh, host: h, max_connections: -1}]\n"))
+	if err == nil {
+		err = negative.Validate()
+	}
+	if err == nil || !strings.Contains(err.Error(), "max_connections must not be negative") {
+		t.Errorf("a negative cap answered %v", err)
+	}
+
 	// Moved without its credentials, guacd would type them into the new host.
 	moved := "rac_connections: [{slug: build, protocol: ssh, host: elsewhere.internal}]\n"
 	if _, _, err := plan(org, moved, false); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "typed into") {

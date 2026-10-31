@@ -181,6 +181,7 @@ var commandFlags = map[string][]string{
 	"rac add":                         {"group", "host", "login", "login-password", "name", "org", "port", "protocol", "recording-path", "slug"},
 	"rac disable":                     {"org", "slug"},
 	"rac enable":                      {"org", "slug"},
+	"rac limits":                      {"max-connections", "max-duration", "org", "slug"},
 	"rac list":                        {"o"},
 	"rac set-parameters":              {"org", "rac-params", "slug"},
 	"radius add-client":               {"name", "network", "org", "secret"},

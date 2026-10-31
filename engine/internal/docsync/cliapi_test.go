@@ -288,6 +288,7 @@ var cliAPI = map[string]string{
 	"rac add":            "POST /admin/organizations/{orgID}/rac-connections",
 	"rac disable":        "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
 	"rac enable":         "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
+	"rac limits":         "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
 	"rac list":           reads,
 	"rac set-parameters": "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
 

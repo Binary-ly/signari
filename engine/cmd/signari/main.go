@@ -539,6 +539,8 @@ func run(args []string) (err error) {
 		"fetch each person's group memberships, so mapped groups are reconciled (dir add, dir set)")
 	groupAttribute := fs.String("group-attribute", "",
 		"the LDAP attribute listing a person's groups; empty reads memberOf (dir add, dir set)")
+	attributeMap := fs.String("attribute-map", "",
+		"LDAP attributes to read: remote=local,... a local name is a declared attribute, email or name; empty clears it (dir set)")
 	dirDomain := fs.String("domain", "", "Google Workspace domain; `import shadow`: the domain each account's address is made with")
 	dirImpersonate := fs.String("impersonate", "", "administrator the service account acts as")
 	dirTenant := fs.String("tenant", "", "Entra tenant id (read from the credential file)")
@@ -1399,7 +1401,7 @@ func run(args []string) (err error) {
 		return dirGroupMap(ctx, conn, *orgID, *slug, *remoteGroup, *groupName, *removeMember)
 	case "dir set":
 		return dirSet(ctx, conn, *orgID, *slug, *onMissing, *maxDeactivate, fs, *setEnabled, *dryRun,
-			*fetchGroups, *groupAttribute)
+			*fetchGroups, *groupAttribute, *attributeMap)
 	case "dir list":
 		return dirList(ctx, conn, *orgID, *outputFormat)
 	case "rac add":
@@ -5943,6 +5945,9 @@ func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply b
 	if r.Plan != "" {
 		fmt.Printf("\n  %d users upstream, %d active here\n\n", r.Upstream, r.ActiveBefore)
 		fmt.Print(r.Plan)
+	}
+	if r.Attributes != "" {
+		fmt.Printf("\n  Attributes: %s\n", r.Attributes)
 	}
 	switch {
 	case errors.Is(err, directory.ErrSourceUnknown):

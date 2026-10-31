@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -43,6 +44,9 @@ type DirectorySource struct {
 	StartTLS       bool   `yaml:"start_tls,omitempty"`
 	CA             string `yaml:"ca,omitempty"`
 	GroupAttribute string `yaml:"group_attribute,omitempty"`
+	// AttributeMap is what else an LDAP source reads, LDAP name to a declared
+	// attribute, email or name: exactly these when given.
+	AttributeMap *map[string]string `yaml:"attribute_map,omitempty"`
 	// How it syncs; each left as it is when absent, and a new source starts
 	// in dry run, reporting rather than deactivating.
 	FetchGroups   *bool   `yaml:"fetch_groups,omitempty"`
@@ -89,12 +93,16 @@ func (w DirectorySource) spec() directory.SourceSpec {
 
 func (w DirectorySource) change() directory.SourceChange {
 	c := directory.SourceChange{OnMissing: w.OnMissing, MaxDeactivate: w.MaxDeactivate, Enabled: w.Enabled,
-		DryRun: w.DryRun, FetchGroups: w.FetchGroups}
+		DryRun: w.DryRun, FetchGroups: w.FetchGroups, AttributeMap: w.AttributeMap}
 	if w.Kind == "ldap" {
 		attr := w.GroupAttribute
 		c.GroupAttribute = &attr
 	}
 	return c
+}
+
+func (w DirectorySource) attributeMapDiffers(h directory.SourceSettings) bool {
+	return w.AttributeMap != nil && !maps.Equal(h.AttributeMap, *w.AttributeMap)
 }
 
 // registrationDiffers reports whether how the source is reached differs from
@@ -133,6 +141,9 @@ func (directorySection) validate(f *File, add func(string, ...any)) {
 		case "google", "entra":
 			if w.Password != nil || w.URL != "" || w.BindDN != "" || w.BaseDN != "" {
 				add("%s: a %s source is read through its API with credentials, not an LDAP bind", w.at(), w.Kind)
+			}
+			if w.AttributeMap != nil && len(*w.AttributeMap) > 0 {
+				add("%s: an attribute map is for an ldap source; Google and Entra report what their APIs do", w.at())
 			}
 		default:
 			add("%s: kind is google, entra or ldap, not %q", w.at(), w.Kind)
@@ -207,6 +218,7 @@ func (directorySection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *Fi
 			var c changed
 			c.note(w.registrationDiffers(h), "registration")
 			c.note(w.Kind == "ldap" && h.GroupAttribute != w.GroupAttribute, "group_attribute")
+			c.note(w.attributeMapDiffers(h), "attribute_map")
 			c.note(w.FetchGroups != nil && h.FetchGroups != *w.FetchGroups, "fetch_groups")
 			c.note(w.OnMissing != nil && h.OnMissing != *w.OnMissing, "on_missing")
 			c.note(w.MaxDeactivate != nil && h.MaxDeactivate != *w.MaxDeactivate, "max_deactivate_percent")
@@ -350,11 +362,15 @@ func (directorySection) export(ctx context.Context, tx pgx.Tx, orgID string, f *
 		h := held[slug]
 		fetch, onMissing, ceiling, dry, enabled, groupMap := h.FetchGroups, h.OnMissing, h.MaxDeactivate, h.DryRun,
 			h.Enabled, maps[slug]
+		var attributeMap *map[string]string
+		if len(h.AttributeMap) > 0 {
+			attributeMap = &h.AttributeMap
+		}
 		f.DirectorySources = append(f.DirectorySources, DirectorySource{Slug: slug, Kind: h.Kind, Name: h.Name,
 			Impersonate: h.Impersonate, Domain: h.Domain, Filter: h.Filter, URL: h.LDAPURL, BindDN: h.LDAPBindDN,
 			BaseDN: h.LDAPBaseDN, Flavour: h.LDAPFlavour, StartTLS: h.LDAPStartTLS, CA: h.LDAPCAPEM,
-			GroupAttribute: h.GroupAttribute, FetchGroups: &fetch, OnMissing: &onMissing, MaxDeactivate: &ceiling,
-			DryRun: &dry, Enabled: &enabled, GroupMap: &groupMap})
+			GroupAttribute: h.GroupAttribute, AttributeMap: attributeMap, FetchGroups: &fetch, OnMissing: &onMissing,
+			MaxDeactivate: &ceiling, DryRun: &dry, Enabled: &enabled, GroupMap: &groupMap})
 	}
 	return nil
 }

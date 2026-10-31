@@ -285,6 +285,134 @@ func SetUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name, value
 	return nil
 }
 
+// CheckAttributeValue reports whether a value is one the attribute's type accepts.
+func CheckAttributeValue(a Attribute, value string) error {
+	return checkAttributeValue(a.Name, a.ValueType, value)
+}
+
+// AttributeWrite is one of a person's values, for the calls that take many.
+type AttributeWrite struct{ UserID, Name, Value string }
+
+// SetUserAttributes is SetUserAttribute for many people in a few statements, for a
+// sync, whose first run writes every value of everybody. A person seen twice has
+// the later value. Somebody whose key was erased is left out, for the reason given
+// in SetUserAttribute, and counted.
+func SetUserAttributes(ctx context.Context, tx pgx.Tx, orgID string, writes []AttributeWrite,
+	root *keys.RootKey) (erased int, err error) {
+
+	if len(writes) == 0 {
+		return 0, nil
+	}
+	names := make([]string, 0, len(writes))
+	last := make(map[[2]string]int, len(writes))
+	for i, w := range writes {
+		names = append(names, w.Name)
+		last[[2]string{w.UserID, w.Name}] = i
+	}
+	type declaration struct {
+		id, valueType string
+		personal      bool
+	}
+	declared := map[string]declaration{}
+	rows, err := tx.Query(ctx, `
+		SELECT name, id::text, value_type, personal FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = ANY($2::text[])
+		FOR SHARE`, orgID, names)
+	if err != nil {
+		return 0, fmt.Errorf("reading the attribute declarations: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var d declaration
+		if err := rows.Scan(&name, &d.id, &d.valueType, &d.personal); err != nil {
+			return 0, err
+		}
+		declared[name] = d
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	var subjects []string
+	for i, w := range writes {
+		d, ok := declared[w.Name]
+		if !ok {
+			return 0, fmt.Errorf("%w: %q", ErrNoSuchAttribute, w.Name)
+		}
+		if err := checkAttributeValue(w.Name, d.valueType, w.Value); err != nil {
+			return 0, err
+		}
+		if d.personal && last[[2]string{w.UserID, w.Name}] == i {
+			subjects = append(subjects, w.UserID)
+		}
+	}
+	subjectKeys := map[string]*keys.SubjectKey{}
+	if len(subjects) > 0 {
+		if subjectKeys, err = keys.LoadSubjectKeys(ctx, tx, subjects, root); err != nil {
+			return 0, err
+		}
+	}
+
+	var users, attrs []string
+	var clear []*string
+	var sealed [][]byte
+	for i, w := range writes {
+		if last[[2]string{w.UserID, w.Name}] != i {
+			continue
+		}
+		d := declared[w.Name]
+		if !d.personal {
+			value := w.Value
+			users, attrs, clear, sealed = append(users, w.UserID), append(attrs, d.id), append(clear, &value),
+				append(sealed, nil)
+			continue
+		}
+		sk := subjectKeys[w.UserID]
+		if sk == nil {
+			sk, err = keys.LoadOrCreateSubjectKey(ctx, tx, w.UserID, root)
+			if errors.Is(err, keys.ErrErased) {
+				erased++
+				continue
+			}
+			if err != nil {
+				return 0, fmt.Errorf("subject key for attribute %q: %w", w.Name, err)
+			}
+			subjectKeys[w.UserID] = sk
+		}
+		s, err := sk.Seal([]byte(w.Value), attributeContext(w.Name))
+		if err != nil {
+			return 0, fmt.Errorf("sealing attribute %q: %w", w.Name, err)
+		}
+		users, attrs, clear, sealed = append(users, w.UserID), append(attrs, d.id), append(clear, nil), append(sealed, s)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.user_attributes (user_id, attribute_id, org_id, value, value_sealed)
+		SELECT u, a, $1::uuid, v, s FROM unnest($2::uuid[], $3::uuid[], $4::text[], $5::bytea[]) AS t(u, a, v, s)
+		ON CONFLICT (user_id, attribute_id) DO UPDATE SET
+			value = EXCLUDED.value, value_sealed = EXCLUDED.value_sealed, updated_at = now()`,
+		orgID, users, attrs, clear, sealed); err != nil {
+		return 0, fmt.Errorf("writing attributes: %w", err)
+	}
+	return erased, nil
+}
+
+// ClearUserAttributes is ClearUserAttribute for many people in one statement.
+func ClearUserAttributes(ctx context.Context, tx pgx.Tx, orgID string, clears []AttributeWrite) error {
+	users, names := make([]string, 0, len(clears)), make([]string, 0, len(clears))
+	for _, c := range clears {
+		users, names = append(users, c.UserID), append(names, c.Name)
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM core.user_attributes a USING core.user_attribute_schema s,
+		       unnest($2::uuid[], $3::text[]) AS t(u, n)
+		 WHERE a.attribute_id = s.id AND s.org_id = $1::uuid AND s.name = t.n AND a.user_id = t.u`,
+		orgID, users, names); err != nil {
+		return fmt.Errorf("clearing attributes: %w", err)
+	}
+	return nil
+}
+
 // ClearUserAttribute removes one of a person's values.
 func ClearUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name string) error {
 	if _, err := tx.Exec(ctx, `

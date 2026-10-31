@@ -2004,6 +2004,7 @@ export interface GetOrganizationsOrgIDDirectoriesResponse {
 
 /** A JSON object of the Admin API. */
 export interface GetOrganizationsOrgIDDirectoriesResponseSourcesItem {
+  attribute_map: Record<string, unknown>
   dry_run: boolean
   enabled: boolean
   fetch_groups: boolean
@@ -2785,6 +2786,7 @@ export interface PatchOrganizationsOrgIDResponse {
 
 /** A JSON object of the Admin API. */
 export interface PatchOrganizationsOrgIDDirectoriesSlugRequest {
+  attribute_map?: Record<string, unknown>
   dry_run?: boolean
   enabled?: boolean
   fetch_groups?: boolean
@@ -3260,6 +3262,7 @@ export interface PostOrganizationsOrgIDDirectoriesSlugSyncRequest {
 export interface PostOrganizationsOrgIDDirectoriesSlugSyncResponse {
   active_before: number
   applied: boolean
+  attributes: string
   config_version: number
   dry_run_configured: boolean
   error?: string

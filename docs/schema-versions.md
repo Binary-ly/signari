@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0206 directory_attribute_map
+
+Compatible with the release before: its binary may still serve this schema.
+
+Which LDAP attribute feeds which declared attribute (7.15), remote name to local name. A sync read only what a flavour's conventions named, so a company's employee number or department stayed behind in the directory, and an address kept anywhere but `mail` was not found at all.
+
 ## 0205 scim_target_scope_groups
 
 Not compatible with the release before: stop it before migrating.

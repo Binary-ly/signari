@@ -235,6 +235,12 @@
     "DirectorySource": {
       "additionalProperties": false,
       "properties": {
+        "attribute_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
         "base_dn": {
           "type": "string"
         },

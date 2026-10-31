@@ -51,7 +51,7 @@ var commandFlags = map[string][]string{
 	"dir add":                         {"domain", "fetch-groups", "file", "filter", "group-attribute", "impersonate", "kind", "ldap-base-dn", "ldap-bind-dn", "ldap-ca", "ldap-flavour", "ldap-password", "ldap-start-tls", "ldap-url", "name", "org", "slug", "tenant"},
 	"dir group-map":                   {"group", "org", "remote-group", "remove", "slug"},
 	"dir list":                        {"o", "org"},
-	"dir set":                         {"dry-run", "enabled", "fetch-groups", "group-attribute", "max-deactivate", "on-missing", "org", "slug"},
+	"dir set":                         {"attribute-map", "dry-run", "enabled", "fetch-groups", "group-attribute", "max-deactivate", "on-missing", "org", "slug"},
 	"dir sync":                        {"apply", "org", "slug"},
 	"dir test":                        {"org", "slug"},
 	"doctor":                          {"issuer", "json"},

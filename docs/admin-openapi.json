@@ -9025,6 +9025,12 @@
                       "items": {
                         "additionalProperties": false,
                         "properties": {
+                          "attribute_map": {
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "type": "object"
+                          },
                           "dry_run": {
                             "type": "boolean"
                           },
@@ -9107,7 +9113,8 @@
                           "last_updated",
                           "last_deactivated",
                           "last_error",
-                          "group_map"
+                          "group_map",
+                          "attribute_map"
                         ],
                         "type": "object"
                       },
@@ -9368,6 +9375,12 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "attribute_map": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
                   "dry_run": {
                     "type": "boolean"
                   },
@@ -9778,6 +9791,9 @@
                     "applied": {
                       "type": "boolean"
                     },
+                    "attributes": {
+                      "type": "string"
+                    },
                     "config_version": {
                       "type": "integer"
                     },
@@ -9812,6 +9828,7 @@
                     "active_before",
                     "plan",
                     "groups",
+                    "attributes",
                     "applied",
                     "dry_run_configured",
                     "groups_skipped",

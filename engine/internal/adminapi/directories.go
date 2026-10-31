@@ -41,6 +41,7 @@ type directoryView struct {
 	LastDeactivated int                 `json:"last_deactivated"`
 	LastError       string              `json:"last_error"`
 	GroupMap        []map[string]string `json:"group_map"`
+	AttributeMap    map[string]string   `json:"attribute_map"`
 }
 
 // addDirectoryRequest registers a source: google by its service account key
@@ -74,6 +75,8 @@ type patchDirectoryRequest struct {
 	DryRun         *bool   `json:"dry_run"`
 	FetchGroups    *bool   `json:"fetch_groups"`
 	GroupAttribute *string `json:"group_attribute"`
+	// AttributeMap replaces the map whole, LDAP name to local name; {} clears it.
+	AttributeMap *map[string]string `json:"attribute_map"`
 }
 
 type groupMapRequest struct {
@@ -105,7 +108,7 @@ func (s *Server) listDirectories(w http.ResponseWriter, r *http.Request) {
 		out = append(out, directoryView{ID: d.ID, Slug: d.Slug, Name: d.Name, Kind: d.Kind, OnMissing: d.OnMissing,
 			Enabled: d.Enabled, DryRun: d.DryRun, FetchGroups: d.FetchGroups, MaxDeactivate: d.MaxDeactivate,
 			LastSyncAt: d.LastSyncAt, LastCreated: d.LastCreated, LastUpdated: d.LastUpdated,
-			LastDeactivated: d.LastDeactivated, LastError: d.LastError, GroupMap: maps})
+			LastDeactivated: d.LastDeactivated, LastError: d.LastError, GroupMap: maps, AttributeMap: d.AttributeMap})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "sources": out})
 }
@@ -172,7 +175,8 @@ func (s *Server) patchDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	change := directory.SourceChange{OnMissing: req.OnMissing, MaxDeactivate: req.MaxDeactivate,
-		Enabled: req.Enabled, DryRun: req.DryRun, FetchGroups: req.FetchGroups, GroupAttribute: req.GroupAttribute}
+		Enabled: req.Enabled, DryRun: req.DryRun, FetchGroups: req.FetchGroups, GroupAttribute: req.GroupAttribute,
+		AttributeMap: req.AttributeMap}
 	if change.Empty() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change"})
 		return
@@ -213,6 +217,9 @@ func (s *Server) patchDirectory(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.GroupAttribute != nil {
 			detail["group_attribute"] = *req.GroupAttribute
+		}
+		if req.AttributeMap != nil {
+			detail["attribute_map"] = *req.AttributeMap
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.directory_source_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})
@@ -370,7 +377,7 @@ func (s *Server) syncDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]any{"slug": slug, "upstream": report.Upstream, "active_before": report.ActiveBefore,
-		"plan": report.Plan, "groups": report.Groups, "applied": report.Applied,
+		"plan": report.Plan, "groups": report.Groups, "attributes": report.Attributes, "applied": report.Applied,
 		"dry_run_configured": report.DryRunConfigured, "groups_skipped": report.GroupsSkipped}
 	version, err := s.mutate(ctx, func(tx pgx.Tx) error {
 		detail := map[string]any{"slug": slug, "apply": req.Apply, "applied": report.Applied,

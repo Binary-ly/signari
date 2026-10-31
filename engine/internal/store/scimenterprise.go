@@ -105,6 +105,14 @@ func SCIMEnterpriseValues(ctx context.Context, db *pgxpool.Pool, orgID string, u
 	for _, a := range scim.EnterpriseAttributes {
 		names = append(names, a.Attribute)
 	}
+	return UserAttributeValues(ctx, db, orgID, names, userIDs, root)
+}
+
+// UserAttributeValues reads the named attributes of a page of people, by person
+// and attribute, in a few statements however many there are.
+func UserAttributeValues(ctx context.Context, db *pgxpool.Pool, orgID string, names, userIDs []string,
+	root *keys.RootKey) (map[string]map[string]string, error) {
+
 	rows, err := db.Query(ctx, `
 		SELECT a.user_id::text, s.name, a.value, a.value_sealed
 		  FROM core.user_attribute_schema s
@@ -112,7 +120,7 @@ func SCIMEnterpriseValues(ctx context.Context, db *pgxpool.Pool, orgID string, u
 		 WHERE s.org_id = $1::uuid AND s.name = ANY($2::text[]) AND a.user_id = ANY($3::uuid[])`,
 		orgID, names, userIDs)
 	if err != nil {
-		return nil, fmt.Errorf("reading the enterprise extension: %w", err)
+		return nil, fmt.Errorf("reading attributes: %w", err)
 	}
 	defer rows.Close()
 

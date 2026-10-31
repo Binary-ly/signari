@@ -47,6 +47,10 @@ type RemoteUser struct {
 	// it as such would propose removing every governed membership in the
 	// organisation.
 	Groups []string
+
+	// Attributes are the values an attribute map reads for this person, by the
+	// local name, those the directory holds for them and no others.
+	Attributes map[string]string
 }
 
 // LocalUser is one person as this engine currently has them.

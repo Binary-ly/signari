@@ -906,6 +906,7 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `attribute_map` | object |  |
 | `dry_run` | boolean |  |
 | `enabled` | boolean |  |
 | `fetch_groups` | boolean |  |
@@ -977,6 +978,7 @@ Answers:
 |---|---|---|
 | `active_before` | integer | always |
 | `applied` | boolean | always |
+| `attributes` | string | always |
 | `config_version` | integer | always |
 | `dry_run_configured` | boolean | always |
 | `error` | string |  |

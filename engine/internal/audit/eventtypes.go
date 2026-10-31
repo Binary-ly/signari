@@ -72,7 +72,7 @@ var EventTypes = []string{
 	"config.applied",
 	"consent.withdrawn",
 	"desktop.login",
-	"directory.groups_synced", "directory.privileged_skipped",
+	"directory.attributes_synced", "directory.groups_synced", "directory.privileged_skipped",
 	"federation.account_linked", "federation.account_unlinked", "federation.refused",
 	"federation.user_created",
 	"impersonation.ended", "impersonation.refused", "impersonation.started",

@@ -81,6 +81,10 @@ type LDAPSource struct {
 	// 1.2.840.113556.1.4.1941: one search per mapped group.
 	NestedGroups []string
 
+	// AttributeMap is what else to read, LDAP name to local name (7.15). See
+	// attributes.go.
+	AttributeMap map[string]string
+
 	// StartTLS upgrades a plaintext connection. Ignored for ldaps://.
 	StartTLS bool
 	// CAs verifies the server. nil uses the system roots.
@@ -115,12 +119,22 @@ type ldapConn interface {
 func (s *LDAPSource) attributes() (uidAttr, mailAttr, nameAttr, idAttr, disabledAttr string) {
 	switch s.Flavour {
 	case FlavourAD:
-		return "sAMAccountName", "mail", "displayName", "objectGUID", "userAccountControl"
+		uidAttr, mailAttr, nameAttr, idAttr, disabledAttr = "sAMAccountName", "mail", "displayName", "objectGUID",
+			"userAccountControl"
 	case FlavourFreeIPA:
-		return "uid", "mail", "displayName", "ipaUniqueID", "nsAccountLock"
+		uidAttr, mailAttr, nameAttr, idAttr, disabledAttr = "uid", "mail", "displayName", "ipaUniqueID", "nsAccountLock"
 	default:
-		return "uid", "mail", "cn", "entryUUID", ""
+		uidAttr, mailAttr, nameAttr, idAttr = "uid", "mail", "cn", "entryUUID"
 	}
+	for remote, local := range s.AttributeMap {
+		switch local {
+		case MapEmail:
+			mailAttr = remote
+		case MapName:
+			nameAttr = remote
+		}
+	}
+	return uidAttr, mailAttr, nameAttr, idAttr, disabledAttr
 }
 
 func (s *LDAPSource) defaultFilter() string {
@@ -173,6 +187,13 @@ func (s *LDAPSource) Fetch(ctx context.Context) ([]RemoteUser, error) {
 	if s.GroupAttribute != "" {
 		attrs = append(attrs, s.GroupAttribute)
 	}
+	mapped := make(map[string]string, len(s.AttributeMap))
+	for remote, local := range s.AttributeMap {
+		if local != MapEmail && local != MapName {
+			mapped[remote] = local
+			attrs = append(attrs, remote)
+		}
+	}
 
 	pageSize := s.PageSize
 	if pageSize == 0 {
@@ -203,7 +224,9 @@ func (s *LDAPSource) Fetch(ctx context.Context) ([]RemoteUser, error) {
 			missingID++
 			continue
 		}
-		email := e.GetAttributeValue(mailAttr)
+		// By any case: a server answers with the schema's spelling, and an operator
+		// typed this one.
+		email := e.GetEqualFoldAttributeValue(mailAttr)
 		if email == "" {
 			// Some directories keep mail elsewhere or nowhere. The uid is not an
 			// address, so it is used only as a last resort and the caller can see
@@ -218,13 +241,24 @@ func (s *LDAPSource) Fetch(ctx context.Context) ([]RemoteUser, error) {
 			// removing the rest.
 			groups = e.GetAttributeValues(s.GroupAttribute)
 		}
+		var values map[string]string
+		for remote, local := range mapped {
+			// The first of several: an attribute here holds one value.
+			if v := e.GetEqualFoldAttributeValue(remote); v != "" {
+				if values == nil {
+					values = make(map[string]string, len(mapped))
+				}
+				values[local] = v
+			}
+		}
 
 		out = append(out, RemoteUser{
-			ID:        id,
-			Email:     email,
-			Name:      e.GetAttributeValue(nameAttr),
-			Suspended: s.disabled(e, disabledAttr),
-			Groups:    groups,
+			ID:         id,
+			Email:      email,
+			Name:       e.GetEqualFoldAttributeValue(nameAttr),
+			Suspended:  s.disabled(e, disabledAttr),
+			Groups:     groups,
+			Attributes: values,
 		})
 	}
 

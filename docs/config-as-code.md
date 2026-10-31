@@ -176,6 +176,7 @@ directory_sources:            # where people are synced from
     max_deactivate_percent: 10
     dry_run: true             # a new source starts in dry run
     group_map: [{remote: "CN=Engineering,OU=Groups,DC=corp,DC=example,DC=com", group: platform}]
+    attribute_map: {employeeNumber: employee_number, userPrincipalName: email}   # ldap only
 
 duo:                          # Duo for multi-factor sign-in
   client_id: DIXXXXXXXXXXXXXXXXXX

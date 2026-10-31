@@ -183,12 +183,14 @@ type SourceChange struct {
 	DryRun         *bool
 	FetchGroups    *bool
 	GroupAttribute *string
+	// AttributeMap replaces the map whole; an empty one clears it.
+	AttributeMap *map[string]string
 }
 
 // Empty reports whether the change names nothing.
 func (c SourceChange) Empty() bool {
 	return c.OnMissing == nil && c.MaxDeactivate == nil && c.Enabled == nil && c.DryRun == nil &&
-		c.FetchGroups == nil && c.GroupAttribute == nil
+		c.FetchGroups == nil && c.GroupAttribute == nil && c.AttributeMap == nil
 }
 
 // Validate refuses a change before anything is written.
@@ -199,6 +201,9 @@ func (c SourceChange) Validate() error {
 	if c.MaxDeactivate != nil && (*c.MaxDeactivate < 0 || *c.MaxDeactivate > 100) {
 		return sourceInvalid{"the deactivation ceiling is a percentage, 0 to 100"}
 	}
+	if c.AttributeMap != nil {
+		return checkAttributeMap(*c.AttributeMap)
+	}
 	return nil
 }
 
@@ -208,9 +213,15 @@ func ChangeSource(ctx context.Context, q DB, orgID, slug string, c SourceChange)
 	if err := c.Validate(); err != nil {
 		return err
 	}
-	var groupAttr any
+	var groupAttr, attributeMap any
 	if c.GroupAttribute != nil {
 		groupAttr = *c.GroupAttribute
+	}
+	if c.AttributeMap != nil {
+		if err := checkMapFits(ctx, q, orgID, slug, *c.AttributeMap); err != nil {
+			return err
+		}
+		attributeMap = *c.AttributeMap
 	}
 	tag, err := q.Exec(ctx, `
 		UPDATE core.directory_sources
@@ -220,10 +231,11 @@ func ChangeSource(ctx context.Context, q DB, orgID, slug string, c SourceChange)
 		       dry_run                = COALESCE($6::boolean, dry_run),
 		       fetch_groups           = COALESCE($7::boolean, fetch_groups),
 		       ldap_group_attribute   = CASE WHEN $8 THEN NULLIF($9::text, '') ELSE ldap_group_attribute END,
+		       attribute_map          = COALESCE($10::jsonb, attribute_map),
 		       updated_at             = now()
 		 WHERE org_id = $1::uuid AND slug = $2`,
 		orgID, slug, c.OnMissing, c.MaxDeactivate, c.Enabled, c.DryRun, c.FetchGroups,
-		c.GroupAttribute != nil, groupAttr)
+		c.GroupAttribute != nil, groupAttr, attributeMap)
 	if err != nil {
 		if strings.Contains(err.Error(), "ldap_group_attribute") {
 			return sourceInvalid{"the group attribute is an attribute name, such as memberOf"}
@@ -274,6 +286,7 @@ type Source struct {
 	LastDeactivated                 int
 	LastError                       string
 	Mappings                        []Mapping
+	AttributeMap                    map[string]string
 }
 
 // Mapping is one remote group and the local group it grants.
@@ -289,7 +302,7 @@ func Sources(ctx context.Context, q interface {
 		       COALESCE(s.last_error, ''),
 		       COALESCE((SELECT array_agg(m.remote_group || E'\t' || g.name ORDER BY m.remote_group, g.name)
 		                   FROM core.directory_group_map m JOIN core.groups g ON g.id = m.group_id
-		                  WHERE m.source_id = s.id), '{}')
+		                  WHERE m.source_id = s.id), '{}'), s.attribute_map
 		  FROM core.directory_sources s WHERE s.org_id = $1::uuid ORDER BY s.slug`, orgID)
 	if err != nil {
 		return nil, err
@@ -301,7 +314,7 @@ func Sources(ctx context.Context, q interface {
 		var maps []string
 		if err := rows.Scan(&s.ID, &s.Slug, &s.Name, &s.Kind, &s.OnMissing, &s.Enabled, &s.DryRun, &s.FetchGroups,
 			&s.MaxDeactivate, &s.LastSyncAt, &s.LastCreated, &s.LastUpdated, &s.LastDeactivated, &s.LastError,
-			&maps); err != nil {
+			&maps, &s.AttributeMap); err != nil {
 			return nil, err
 		}
 		s.Mappings = []Mapping{}
@@ -366,8 +379,9 @@ func mappingEnds(ctx context.Context, q DB, orgID, slug, local string) (sourceID
 type SyncReport struct {
 	Upstream, ActiveBefore int
 	// Plan describes what the people pass would do, Groups what the group
-	// pass did, each as the command prints it.
-	Plan, Groups string
+	// pass did, Attributes what the attribute pass would do or did, each as the
+	// command prints it.
+	Plan, Groups, Attributes string
 	// Applied is false for a dry run: asked for, or configured on the source.
 	Applied, DryRunConfigured bool
 	// GroupsSkipped is set when mappings exist and the source does not fetch
@@ -431,6 +445,11 @@ func Sync(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, sl
 		return r, ErrSyncRefused
 	}
 	if src.dryRun || !apply {
+		preview, err := planAttributes(ctx, pool, root, src.id, orgID, src.attributeMap, remote)
+		if err != nil {
+			return r, err
+		}
+		r.Attributes = preview.describe()
 		return r, nil
 	}
 	if err := Apply(ctx, pool, src.id, orgID, plan); err != nil {
@@ -438,6 +457,16 @@ func Sync(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, sl
 		return r, err
 	}
 	r.Applied = true
+	// After the people pass, so somebody it just created has theirs.
+	attrs, err := planAttributes(ctx, pool, root, src.id, orgID, src.attributeMap, remote)
+	if err == nil {
+		err = applyAttributes(ctx, pool, root, src.id, orgID, attrs)
+	}
+	if err != nil {
+		RecordFailure(ctx, pool, src.id, err)
+		return r, err
+	}
+	r.Attributes = attrs.describe()
 	if err := syncGroups(ctx, pool, src.id, orgID, remote, src.maxPct, src.fetchGroups, &r); err != nil {
 		RecordFailure(ctx, pool, src.id, err)
 		return r, err
@@ -452,6 +481,7 @@ type loadedSource struct {
 	lStartTLS, fetchGroups, dryRun                    bool
 	maxPct                                            int
 	raw                                               []byte
+	attributeMap                                      map[string]string
 }
 
 func loadSource(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, slug string,
@@ -463,11 +493,12 @@ func loadSource(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, org
 		       on_missing, dry_run, max_deactivate_percent,
 		       COALESCE(ldap_url,''), COALESCE(ldap_bind_dn,''), COALESCE(ldap_base_dn,''),
 		       COALESCE(ldap_flavour,''), ldap_start_tls, COALESCE(ldap_ca_pem,''), fetch_groups,
-		       COALESCE(ldap_group_attribute, 'memberOf')
+		       COALESCE(ldap_group_attribute, 'memberOf'), attribute_map
 		FROM core.directory_sources WHERE org_id = $1::uuid AND slug = $2 AND (enabled OR NOT $3)`,
 		orgID, slug, enabledOnly).
 		Scan(&s.id, &s.kind, &sealed, &s.domain, &s.impersonate, &s.filter, &s.onMissing, &s.dryRun, &s.maxPct,
-			&s.lURL, &s.lBindDN, &s.lBaseDN, &s.lFlavour, &s.lStartTLS, &s.lCA, &s.fetchGroups, &s.lGroupAttr)
+			&s.lURL, &s.lBindDN, &s.lBaseDN, &s.lFlavour, &s.lStartTLS, &s.lCA, &s.fetchGroups, &s.lGroupAttr,
+			&s.attributeMap)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrSourceUnknown
 	}
@@ -507,7 +538,7 @@ func (s *loadedSource) ldapSource() (*LDAPSource, error) {
 		}
 	}
 	src := &LDAPSource{CAs: cas, URL: s.lURL, BindDN: s.lBindDN, Password: string(s.raw), BaseDN: s.lBaseDN,
-		Filter: s.filter, Flavour: LDAPFlavour(s.lFlavour), StartTLS: s.lStartTLS}
+		Filter: s.filter, Flavour: LDAPFlavour(s.lFlavour), StartTLS: s.lStartTLS, AttributeMap: s.attributeMap}
 	if s.fetchGroups {
 		src.GroupAttribute = s.lGroupAttr
 	}

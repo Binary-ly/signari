@@ -894,6 +894,7 @@ type GetOrganizationsOrgIDDirectoriesResponse struct {
 
 // GetOrganizationsOrgIDDirectoriesResponseSourcesItem is a JSON object of the Admin API.
 type GetOrganizationsOrgIDDirectoriesResponseSourcesItem struct {
+	AttributeMap         map[string]any                                                    `json:"attribute_map"`
 	DryRun               bool                                                              `json:"dry_run"`
 	Enabled              bool                                                              `json:"enabled"`
 	FetchGroups          bool                                                              `json:"fetch_groups"`
@@ -1675,12 +1676,13 @@ type PatchOrganizationsOrgIDResponse struct {
 
 // PatchOrganizationsOrgIDDirectoriesSlugRequest is a JSON object of the Admin API.
 type PatchOrganizationsOrgIDDirectoriesSlugRequest struct {
-	DryRun               *bool   `json:"dry_run,omitempty"`
-	Enabled              *bool   `json:"enabled,omitempty"`
-	FetchGroups          *bool   `json:"fetch_groups,omitempty"`
-	GroupAttribute       *string `json:"group_attribute,omitempty"`
-	MaxDeactivatePercent *int64  `json:"max_deactivate_percent,omitempty"`
-	OnMissing            *string `json:"on_missing,omitempty"`
+	AttributeMap         *map[string]any `json:"attribute_map,omitempty"`
+	DryRun               *bool           `json:"dry_run,omitempty"`
+	Enabled              *bool           `json:"enabled,omitempty"`
+	FetchGroups          *bool           `json:"fetch_groups,omitempty"`
+	GroupAttribute       *string         `json:"group_attribute,omitempty"`
+	MaxDeactivatePercent *int64          `json:"max_deactivate_percent,omitempty"`
+	OnMissing            *string         `json:"on_missing,omitempty"`
 }
 
 // PatchOrganizationsOrgIDDirectoriesSlugResponse is a JSON object of the Admin API.
@@ -2150,6 +2152,7 @@ type PostOrganizationsOrgIDDirectoriesSlugSyncRequest struct {
 type PostOrganizationsOrgIDDirectoriesSlugSyncResponse struct {
 	ActiveBefore     int64  `json:"active_before"`
 	Applied          bool   `json:"applied"`
+	Attributes       string `json:"attributes"`
 	ConfigVersion    int64  `json:"config_version"`
 	DryRunConfigured bool   `json:"dry_run_configured"`
 	Error            string `json:"error,omitempty"`

@@ -171,6 +171,37 @@ func TestADirectorySourceIsManagedThroughTheAPI(t *testing.T) {
 	}
 }
 
+// A map is set and cleared through the API as `dir set` does it, and one naming an
+// attribute nobody declared is refused there rather than at a sync.
+func TestAnAttributeMapIsSetThroughTheAPI(t *testing.T) {
+	s, _ := newTestServer(t)
+	org := newDriftDirectory(t, s)
+	if rec := call(t, s, http.MethodPut, "/admin/organizations/"+org+"/attributes", testToken, map[string]any{
+		"name": "department", "display_name": "Department"}); rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("declaring: %d %s", rec.Code, rec.Body.String())
+	}
+	path := "/admin/organizations/" + org + "/directories/drift"
+	patch := func(m map[string]string, want int) string {
+		t.Helper()
+		rec := call(t, s, http.MethodPatch, path, testToken, map[string]any{"attribute_map": m})
+		if rec.Code != want {
+			t.Fatalf("patching %v: %d %s", m, rec.Code, rec.Body.String())
+		}
+		return call(t, s, http.MethodGet, "/admin/organizations/"+org+"/directories", testToken, nil).Body.String()
+	}
+	if listed := patch(map[string]string{"departmentNumber": "department", "userPrincipalName": "email"},
+		http.StatusOK); !strings.Contains(listed, `"departmentNumber":"department"`) {
+		t.Errorf("the sources read %s", listed)
+	}
+	if listed := patch(map[string]string{"grade": "level"}, http.StatusBadRequest); !strings.Contains(listed,
+		`"departmentNumber":"department"`) {
+		t.Errorf("a refused map changed what was held: %s", listed)
+	}
+	if listed := patch(map[string]string{}, http.StatusOK); !strings.Contains(listed, `"attribute_map":{}`) {
+		t.Errorf("an empty map left %s", listed)
+	}
+}
+
 // Asking a directory whether it can be read is how a source is checked before it
 // is turned on, so a disabled one answers; a directory that will not is an answer
 // and not an error, and the record says how far it got and nothing it found.

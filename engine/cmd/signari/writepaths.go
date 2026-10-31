@@ -2183,7 +2183,7 @@ func dirList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
 		SELECT slug, kind, enabled, dry_run, on_missing, max_deactivate_percent,
 		       COALESCE(to_char(last_sync_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI UTC'), 'never'),
 		       COALESCE(last_created, 0), COALESCE(last_updated, 0), COALESCE(last_deactivated, 0),
-		       COALESCE(last_error, '')
+		       COALESCE(last_error, ''), attribute_map
 		  FROM core.directory_sources WHERE org_id = $1::uuid ORDER BY slug`, orgID)
 	if err != nil {
 		return err
@@ -2194,8 +2194,9 @@ func dirList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
 		var slug, kind, onMissing, last, lastErr string
 		var enabled, dry bool
 		var ceiling, created, updated, deactivated int
+		var attributeMap map[string]string
 		if err := rows.Scan(&slug, &kind, &enabled, &dry, &onMissing, &ceiling, &last,
-			&created, &updated, &deactivated, &lastErr); err != nil {
+			&created, &updated, &deactivated, &lastErr, &attributeMap); err != nil {
 			return err
 		}
 		state := "enabled"
@@ -2207,7 +2208,8 @@ func dirList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
 		}
 		n++
 		row := map[string]any{"slug": slug, "kind": kind, "enabled": enabled, "dry_run": dry,
-			"on_missing": onMissing, "max_deactivate_percent": ceiling, "last_sync": nil, "last_error": lastErr}
+			"on_missing": onMissing, "max_deactivate_percent": ceiling, "last_sync": nil, "last_error": lastErr,
+			"attribute_map": attributeMap}
 		if last != "never" {
 			row["last_sync"] = map[string]any{"at": last, "created": created, "updated": updated,
 				"deactivated": deactivated}
@@ -2416,7 +2418,7 @@ func scimSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, ena
 // a sensible default and no way to change it, so an operator who found 20% wrong
 // for their organisation had no move at all.
 func dirSet(ctx context.Context, conn *pgx.Conn, orgID, slug, onMissing string, maxPercent int,
-	fs *flag.FlagSet, enabled, dryRun, fetchGroups bool, groupAttr string) error {
+	fs *flag.FlagSet, enabled, dryRun, fetchGroups bool, groupAttr, attributeMap string) error {
 
 	if slug == "" {
 		return fmt.Errorf("give -slug")
@@ -2453,9 +2455,23 @@ func dirSet(ctx context.Context, conn *pgx.Conn, orgID, slug, onMissing string, 
 	if set["group-attribute"] {
 		change.GroupAttribute = &groupAttr
 	}
+	if set["attribute-map"] {
+		m := map[string]string{}
+		for _, pair := range strings.Split(attributeMap, ",") {
+			if pair = strings.TrimSpace(pair); pair == "" {
+				continue
+			}
+			remote, local, ok := strings.Cut(pair, "=")
+			if !ok {
+				return fmt.Errorf("-attribute-map is remote=local, comma separated, not %q", pair)
+			}
+			m[strings.TrimSpace(remote)] = strings.TrimSpace(local)
+		}
+		change.AttributeMap = &m
+	}
 	if change.Empty() {
 		return fmt.Errorf("give at least one of -on-missing, -max-deactivate, -enabled, " +
-			"-dry-run, -fetch-groups or -group-attribute")
+			"-dry-run, -fetch-groups, -group-attribute or -attribute-map")
 	}
 	if err := directory.ChangeSource(ctx, conn, org, slug, change); err != nil {
 		return err

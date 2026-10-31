@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/store"
 )
@@ -88,6 +89,16 @@ type addIdentityProviderRequest struct {
 	ClientSecret string `json:"client_secret"`
 	Issuer       string `json:"issuer"`
 	JWKSURL      string `json:"jwks_url"`
+	// An OAuth 2.0 provider's endpoints, what it is asked for, and the paths
+	// into its userinfo answer that hold the person.
+	AuthorizeURL          string   `json:"authorize_url"`
+	TokenURL              string   `json:"token_url"`
+	UserinfoURL           string   `json:"userinfo_url"`
+	Scopes                []string `json:"scopes"`
+	UserinfoSubject       string   `json:"userinfo_subject"`
+	UserinfoEmail         string   `json:"userinfo_email"`
+	UserinfoEmailVerified string   `json:"userinfo_email_verified"`
+	UserinfoName          string   `json:"userinfo_name"`
 	// AllowSignup and AllowLinking default to on, as `idp add` has them, and
 	// to off for an assertion issuer, which signs nobody in.
 	AllowSignup  *bool `json:"allow_signup"`
@@ -137,7 +148,10 @@ func (s *Server) addIdentityProvider(w http.ResponseWriter, r *http.Request) {
 		AllowLinking: or(req.AllowLinking, signIn), TrustEmailVerification: or(req.TrustEmailVerification,
 			req.Kind == "saml"), EntityID: req.EntityID, SSOURL: req.SSOURL, CertPEM: req.Certificate,
 		NameIDFormat: req.NameIDFormat, AllowUnsolicited: req.AllowUnsolicited, ForceAuthn: req.ForceAuthn,
-		SkewSeconds: 30}
+		SkewSeconds: 30, AuthorizeURL: strings.TrimSpace(req.AuthorizeURL), TokenURL: strings.TrimSpace(req.TokenURL),
+		UserinfoURL: strings.TrimSpace(req.UserinfoURL), Scopes: req.Scopes,
+		Userinfo: federation.UserinfoClaims{Subject: req.UserinfoSubject, Email: req.UserinfoEmail,
+			EmailVerified: req.UserinfoEmailVerified, Name: req.UserinfoName}}
 	if req.SkewSeconds != nil {
 		spec.SkewSeconds = *req.SkewSeconds
 	}

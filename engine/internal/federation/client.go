@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -46,6 +47,38 @@ type Config struct {
 	// Forward names what a sign-in here passes on to this provider (`signari idp
 	// forward`). Empty tells it nothing.
 	Forward []string
+	// Userinfo says where a KindOAuth2 provider's answer holds the person.
+	Userinfo UserinfoClaims
+}
+
+// UserinfoClaims are paths into a userinfo answer, read as ClaimAt reads them.
+type UserinfoClaims struct {
+	// Subject is what a person is linked by, a string or a whole number. Make it
+	// the provider's stable id and not a login, which can be given up and taken
+	// by somebody else.
+	Subject string
+	Email   string
+	// EmailVerified is a JSON true at this path, or empty for a provider that
+	// never says. Whether it is believed is the provider's trust setting.
+	EmailVerified string
+	Name          string
+}
+
+// ClaimAt finds a claim by name, or by a dotted path into nested objects, as a
+// provider that groups its claims needs (8.13). The whole name is tried first,
+// since many claim names hold dots of their own: a URL, or a SAML attribute's OID.
+func ClaimAt(claims map[string]any, name string) any {
+	if v, ok := claims[name]; ok {
+		return v
+	}
+	head, rest, nested := strings.Cut(name, ".")
+	if !nested {
+		return nil
+	}
+	if inner, ok := claims[head].(map[string]any); ok {
+		return ClaimAt(inner, rest)
+	}
+	return nil
 }
 
 // The parameters a provider can be told, each opted in. Nothing else on a request
@@ -265,11 +298,66 @@ func (c Config) FetchIdentity(ctx context.Context, hc *http.Client, ts *TokenSet
 	if c.Kind == KindGitHub {
 		return c.githubIdentity(ctx, hc, ts)
 	}
+	if c.Kind == KindOAuth2 {
+		return c.oauth2Identity(ctx, hc, ts)
+	}
 	if c.Preset.OIDC && ts.IDToken != "" {
 		return c.oidcIdentity(ctx, hc, ts, nonce)
 	}
 	return ExternalIdentity{}, fmt.Errorf("the provider returned no id_token and this " +
 		"kind has no other way to establish identity")
+}
+
+// oauth2Identity asks the userinfo endpoint who the token is for. There is no
+// signature to check, so everything here rests on TLS to the endpoint an operator
+// named, and a sign-in goes no further without a subject: linking somebody by an
+// empty identifier would hand every such person the same account.
+func (c Config) oauth2Identity(ctx context.Context, hc *http.Client, ts *TokenSet) (ExternalIdentity, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.userinfoURL(), nil)
+	if err != nil {
+		return ExternalIdentity{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+ts.AccessToken)
+	req.Header.Set("Accept", "application/json")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return ExternalIdentity{}, fmt.Errorf("calling %s: %w", c.userinfoURL(), err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return ExternalIdentity{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ExternalIdentity{}, fmt.Errorf("%s answered %d", c.userinfoURL(), resp.StatusCode)
+	}
+	// Numbers kept as written: an id read through a float64 loses its low digits
+	// past 2^53, and two people would share one.
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var claims map[string]any
+	if err := dec.Decode(&claims); err != nil {
+		return ExternalIdentity{}, fmt.Errorf("%s did not answer an object: %w", c.userinfoURL(), err)
+	}
+	var subject string
+	switch v := ClaimAt(claims, c.Userinfo.Subject).(type) {
+	case string:
+		subject = v
+	case json.Number:
+		if _, err := v.Int64(); err == nil {
+			subject = v.String()
+		}
+	}
+	if subject == "" {
+		return ExternalIdentity{}, fmt.Errorf("%s gave no identifier at %q", c.userinfoURL(), c.Userinfo.Subject)
+	}
+	id := ExternalIdentity{Subject: subject, RawClaims: body}
+	id.Email, _ = ClaimAt(claims, c.Userinfo.Email).(string)
+	id.Name, _ = ClaimAt(claims, c.Userinfo.Name).(string)
+	if c.Userinfo.EmailVerified != "" {
+		id.EmailVerified, _ = ClaimAt(claims, c.Userinfo.EmailVerified).(bool)
+	}
+	return id, nil
 }
 
 // oidcIdentity verifies the id_token and reads the identity from it.

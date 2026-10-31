@@ -18,6 +18,7 @@ signari idp add -org <uuid> -slug google -name "Google" -kind google \
 | `slack` | Scoped to the workspace the app is installed in |
 | `atlassian` | Needs `audience=api.atlassian.com` and `prompt=consent` |
 | `oidc` | Anything else with a discovery document |
+| `oauth2` | Anything else, with no ID token: see [below](#a-provider-with-no-id-token) |
 | `saml` | An upstream SAML identity provider |
 
 **Every endpoint above was read from that provider's own
@@ -28,7 +29,38 @@ fails at the moment a user is trying to sign in.
 Facebook was considered and **not added** for exactly that reason: its discovery
 document omits the token endpoint. Building the preset would have meant filling
 that in from memory, which is the thing this rule exists to prevent. Use the
-generic `oidc` kind with endpoints you have checked yourself.
+generic `oauth2` kind with endpoints you have checked yourself.
+
+## A provider with no ID token
+
+A forge, a small community site, an internal service: something that speaks OAuth 2.0
+and answers who somebody is from a userinfo endpoint. There is nothing to discover, so
+you name the endpoints, and you say where in the answer the person is:
+
+```sh
+signari idp add -org <uuid> -slug forge -name "Our forge" -kind oauth2 \
+  -client-id-ext <id> -client-secret <secret> \
+  -authorize-url https://git.example.com/login/oauth/authorize \
+  -token-url https://git.example.com/login/oauth/access_token \
+  -userinfo-url https://git.example.com/api/v1/user \
+  -idp-scopes read:user -userinfo-subject id -userinfo-name full_name
+```
+
+Each path reads as `idp attribute-map` reads a claim, by name and then by a dotted path
+into nested objects, and they default to `sub`, `email` and `name`.
+
+`-userinfo-subject` is what a person is linked by, a string or a whole number. Point it
+at the provider's stable id and not a login, which can be given up and taken by somebody
+else. A sign-in with nothing at that path is refused: nobody is linked by an empty
+identifier.
+
+Nothing here is signed. Who somebody is rests on the TLS connection to the endpoint you
+named, and the three must all be `https`. An address is not believed verified unless you
+say so with `-trust-email-verification`, which needs `-userinfo-email-verified`, the path
+to a JSON `true` from the provider. Without it, `allow_signup` with
+`require_verified_email` refuses such a person, which is the safe way round. `idp
+trust-mfa` is refused too, since there is no ID token for an `amr` to be read from. The
+endpoints are set when the provider is made; `apply` does not move them.
 
 ## A provider's multi-factor authentication
 

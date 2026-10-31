@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0228 generic_oauth2
+
+Not compatible with the release before: stop it before migrating.
+
+A sign-in provider that speaks plain OAuth 2.0 (8.15). There is no ID token to verify and no discovery document, so an operator names its three endpoints and says where in its userinfo answer the person is: userinfo_subject is the one that matters, the identifier a person is linked by, and it defaults to `sub`. The other three default to nothing asked of the provider beyond an `email` and a `name`, and an address is not believed verified unless userinfo_email_verified names where the provider says so and the operator has chosen to trust it.
+
 ## 0227 signing_algorithms
 
 Not compatible with the release before: stop it before migrating.

@@ -515,6 +515,7 @@
             "google",
             "linkedin",
             "microsoft",
+            "oauth2",
             "oidc",
             "saml",
             "slack",
@@ -549,6 +550,12 @@
         "saml": {
           "$ref": "#/$defs/SAMLUpstream"
         },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "slug": {
           "type": "string"
         },
@@ -557,6 +564,9 @@
         },
         "trust_email_verification": {
           "type": "boolean"
+        },
+        "userinfo": {
+          "$ref": "#/$defs/UserinfoClaims"
         },
         "userinfo_url": {
           "type": "string"
@@ -1195,6 +1205,24 @@
         },
         "poll_interval": {
           "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "UserinfoClaims": {
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "email_verified": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "subject": {
           "type": "string"
         }
       },

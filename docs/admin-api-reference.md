@@ -1383,6 +1383,7 @@ Takes:
 | `allow_linking` | boolean |  |
 | `allow_signup` | boolean |  |
 | `allow_unsolicited` | boolean |  |
+| `authorize_url` | string |  |
 | `certificate` | string |  |
 | `client_id` | string |  |
 | `client_secret` | string |  |
@@ -1393,10 +1394,17 @@ Takes:
 | `kind` | string |  |
 | `name` | string |  |
 | `name_id_format` | string |  |
+| `scopes` | list of string |  |
 | `skew_seconds` | integer |  |
 | `slug` | string |  |
 | `sso_url` | string |  |
+| `token_url` | string |  |
 | `trust_email_verification` | boolean |  |
+| `userinfo_email` | string |  |
+| `userinfo_email_verified` | string |  |
+| `userinfo_name` | string |  |
+| `userinfo_subject` | string |  |
+| `userinfo_url` | string |  |
 
 Answers:
 

@@ -779,6 +779,16 @@ func run(args []string) (err error) {
 	idpClientCertFile := fs.String("client-cert-file", "", "PEM certificate of that key")
 	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
 	allowLinking := fs.Bool("allow-linking", true, "let users add this provider to an existing account")
+	oauth2Authorize := fs.String("authorize-url", "", "`idp add -kind oauth2`: the provider's authorization endpoint")
+	oauth2Token := fs.String("token-url", "", "`idp add -kind oauth2`: the provider's token endpoint")
+	oauth2Userinfo := fs.String("userinfo-url", "", "`idp add -kind oauth2`: where its access token says who somebody is")
+	oauth2Scopes := fs.String("idp-scopes", "", "`idp add -kind oauth2`: comma-separated scopes the provider is asked for")
+	oauth2Subject := fs.String("userinfo-subject", "", "`idp add -kind oauth2`: the path to a person's stable id, "+
+		"default sub")
+	oauth2Email := fs.String("userinfo-email", "", "`idp add -kind oauth2`: the path to their address, default email")
+	oauth2Verified := fs.String("userinfo-email-verified", "", "`idp add -kind oauth2`: the path to a JSON true saying "+
+		"the address is confirmed, needed to trust one")
+	oauth2Name := fs.String("userinfo-name", "", "`idp add -kind oauth2`: the path to their name, default name")
 	trustEmail := fs.Bool("trust-email-verification", false, "generic OIDC only: believe this provider's email_verified claim")
 	requireVerified := fs.Bool("require-verified-email", true,
 		"`idp verified-email`: a new account through the provider needs an address it verified and is believed about")
@@ -1835,7 +1845,11 @@ func run(args []string) (err error) {
 		return idpAdd(ctx, conn, *orgID, *slug, *name, *kind, *extClientID, *extSecret,
 			*issuer, *allowSignup, *allowLinking, *trustEmail,
 			*entityID, *srcSSOURL, *spCert, *nameIDFormat,
-			*srcUnsolicited, *srcForceAuthn, *srcSkew)
+			*srcUnsolicited, *srcForceAuthn, *srcSkew, store.IdentityProviderSpec{
+				AuthorizeURL: *oauth2Authorize, TokenURL: *oauth2Token, UserinfoURL: *oauth2Userinfo,
+				Scopes: strings.FieldsFunc(*oauth2Scopes, func(r rune) bool { return r == ',' || r == ' ' }),
+				Userinfo: federation.UserinfoClaims{Subject: *oauth2Subject, Email: *oauth2Email,
+					EmailVerified: *oauth2Verified, Name: *oauth2Name}})
 	case "idp apple-secret":
 		return idpAppleSecret(ctx, conn, *slug, *appleTeam, *appleKeyID, *appleKeyFile)
 	case "idp list":
@@ -3990,7 +4004,7 @@ func truncateMiddle(s string, n int) string {
 func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, clientID, secret,
 	issuer string, allowSignup, allowLinking, trustEmail bool,
 	samlEntityID, samlSSOURL, samlCertPath, samlNameID string,
-	samlUnsolicited, samlForceAuthn bool, samlSkew int) error {
+	samlUnsolicited, samlForceAuthn bool, samlSkew int, oauth2 store.IdentityProviderSpec) error {
 
 	switch {
 	case orgID == "":
@@ -4014,13 +4028,14 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 		return fmt.Errorf("a generic OIDC provider needs -issuer, so its endpoints " +
 			"and signing keys can be discovered")
 	}
-	if trustEmail && kind != "oidc" {
-		return fmt.Errorf("-trust-email-verification is for a generic OIDC provider: a %s provider's "+
+	if trustEmail && kind != "oidc" && kind != "oauth2" {
+		return fmt.Errorf("-trust-email-verification is for a generic provider: a %s provider's "+
 			"email_verified is believed or not as that provider is known to behave", kind)
 	}
 	spec := store.IdentityProviderSpec{Slug: slug, Name: name, Kind: kind, ClientID: clientID,
 		ClientSecret: secret, Issuer: issuer, AllowSignup: allowSignup, AllowLinking: allowLinking,
-		TrustEmailVerification: trustEmail}
+		TrustEmailVerification: trustEmail, AuthorizeURL: oauth2.AuthorizeURL, TokenURL: oauth2.TokenURL,
+		UserinfoURL: oauth2.UserinfoURL, Scopes: oauth2.Scopes, Userinfo: oauth2.Userinfo}
 	if err := spec.Validate(); err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/store"
 )
@@ -18,7 +19,16 @@ import (
 // it; `signari idp add` discovers them, and an export writes what it found.
 // The client secret is named by reference, and never exported.
 
-// IdentityProvider is one upstream.
+// UserinfoClaims are paths into an OAuth 2.0 provider's userinfo answer. Left out,
+// sub, email and name, and no address believed verified.
+type UserinfoClaims struct {
+	Subject       string `yaml:"subject,omitempty"`
+	Email         string `yaml:"email,omitempty"`
+	EmailVerified string `yaml:"email_verified,omitempty"`
+	Name          string `yaml:"name,omitempty"`
+}
+
+// IdentityProvideris one upstream.
 type IdentityProvider struct {
 	Slug string `yaml:"slug"`
 	// Kind is a named provider (google, github, microsoft and the rest of
@@ -38,6 +48,10 @@ type IdentityProvider struct {
 	UserinfoURL  string        `yaml:"userinfo_url,omitempty"`
 	JWKSURL      string        `yaml:"jwks_url,omitempty"`
 	SAML         *SAMLUpstream `yaml:"saml,omitempty"`
+	// An OAuth 2.0 provider's, set when it is made: what it is asked for, and
+	// where its userinfo answer holds the person.
+	Scopes   []string        `yaml:"scopes,omitempty"`
+	Userinfo *UserinfoClaims `yaml:"userinfo,omitempty"`
 	// Each left as it is when absent; a new provider takes the defaults
 	// `signari idp add` gives it.
 	AllowSignup            *bool         `yaml:"allow_signup,omitempty"`
@@ -116,9 +130,13 @@ func (w IdentityProvider) spec() store.IdentityProviderSpec {
 		AllowSignup: on(w.AllowSignup, w.Kind != "assertion"), AllowLinking: on(w.AllowLinking, w.Kind != "assertion"),
 		// A SAML assertion has no field to say an address is unverified,
 		// which is why `idp add` believes a SAML upstream's by default.
-		TrustEmailVerification: on(w.TrustEmailVerification, w.Kind == "saml")}
+		TrustEmailVerification: on(w.TrustEmailVerification, w.Kind == "saml"), Scopes: w.Scopes}
 	if w.ClientSecret != nil {
 		s.ClientSecret = w.ClientSecret.value
+	}
+	if u := w.Userinfo; u != nil {
+		s.Userinfo = federation.UserinfoClaims{Subject: u.Subject, Email: u.Email, EmailVerified: u.EmailVerified,
+			Name: u.Name}
 	}
 	if w.SAML != nil {
 		s.EntityID, s.SSOURL, s.CertPEM, s.NameIDFormat = w.SAML.EntityID, w.SAML.SSOURL, w.SAML.Certificate,
@@ -192,7 +210,7 @@ func (idpSection) validate(f *File, add func(string, ...any)) {
 				}
 			}
 		}
-		if (w.Kind == "github" || w.Kind == "saml") && ((w.MFAAMR != nil && len(*w.MFAAMR) > 0) ||
+		if (w.Kind == "github" || w.Kind == "oauth2" || w.Kind == "saml") && ((w.MFAAMR != nil && len(*w.MFAAMR) > 0) ||
 			(w.MFAACR != nil && len(*w.MFAACR) > 0)) {
 			add("%s: a %s provider sends no ID token for an amr or acr to be read from", w.at(), w.Kind)
 		}
@@ -519,7 +537,7 @@ func (idpSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File) 
 			signup, linking, require := h.AllowSignup, h.AllowLinking, h.RequireVerifiedEmail
 			w.AllowSignup, w.AllowLinking, w.RequireVerifiedEmail = &signup, &linking, &require
 		}
-		if h.Kind == "oidc" || h.Kind == "saml" {
+		if h.Kind == "oidc" || h.Kind == "oauth2" || h.Kind == "saml" {
 			trust := h.TrustEmailVerification
 			w.TrustEmailVerification = &trust
 		}

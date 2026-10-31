@@ -19,7 +19,11 @@ import (
 type Kind string
 
 const (
-	KindOIDC      Kind = "oidc"
+	KindOIDC Kind = "oidc"
+	// KindOAuth2 is a provider that speaks plain OAuth 2.0: no ID token, no
+	// discovery, and an identity read from its userinfo endpoint by the paths
+	// Config.Userinfo names. It covers whatever has no preset and no OIDC.
+	KindOAuth2    Kind = "oauth2"
 	KindGoogle    Kind = "google"
 	KindGitHub    Kind = "github"
 	KindMicrosoft Kind = "microsoft"
@@ -313,6 +317,11 @@ var presets = map[Kind]Preset{
 		EmailNeedsSeparateCheck: false,
 		Note: "Verification is not trusted by default for an unknown provider. " +
 			"Enable it only if you know how that provider verifies addresses.",
+	},
+	KindOAuth2: {
+		Note: "Nothing is signed here: who somebody is rests on the TLS connection to the " +
+			"userinfo endpoint you named. Verification is not trusted by default, and enabling " +
+			"it needs a path to where the provider says so.",
 	},
 }
 

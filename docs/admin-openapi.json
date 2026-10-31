@@ -11362,6 +11362,9 @@
                   "allow_unsolicited": {
                     "type": "boolean"
                   },
+                  "authorize_url": {
+                    "type": "string"
+                  },
                   "certificate": {
                     "type": "string"
                   },
@@ -11392,6 +11395,12 @@
                   "name_id_format": {
                     "type": "string"
                   },
+                  "scopes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "skew_seconds": {
                     "type": "integer"
                   },
@@ -11401,8 +11410,26 @@
                   "sso_url": {
                     "type": "string"
                   },
+                  "token_url": {
+                    "type": "string"
+                  },
                   "trust_email_verification": {
                     "type": "boolean"
+                  },
+                  "userinfo_email": {
+                    "type": "string"
+                  },
+                  "userinfo_email_verified": {
+                    "type": "string"
+                  },
+                  "userinfo_name": {
+                    "type": "string"
+                  },
+                  "userinfo_subject": {
+                    "type": "string"
+                  },
+                  "userinfo_url": {
+                    "type": "string"
                   }
                 },
                 "type": "object"

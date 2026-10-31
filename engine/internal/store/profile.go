@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
 )
 
@@ -727,17 +727,7 @@ func ApplyIDPAttributeMapping(ctx context.Context, tx pgx.Tx, userID, orgID, pro
 // that groups its claims needs (8.13). The whole name is tried first, since many claim
 // names hold dots of their own: a URL, or a SAML attribute's OID.
 func claimAt(claims map[string]any, name string) any {
-	if v, ok := claims[name]; ok {
-		return v
-	}
-	head, rest, nested := strings.Cut(name, ".")
-	if !nested {
-		return nil
-	}
-	if inner, ok := claims[head].(map[string]any); ok {
-		return claimAt(inner, rest)
-	}
-	return nil
+	return federation.ClaimAt(claims, name)
 }
 
 // claimToString renders a JSON claim as the text an attribute stores.

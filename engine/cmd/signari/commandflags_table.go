@@ -86,7 +86,7 @@ var commandFlags = map[string][]string{
 	"i18n keys":                       {"theme-dir"},
 	"i18n list":                       {"theme-dir"},
 	"i18n status":                     {"theme-dir"},
-	"idp add":                         {"allow-linking", "allow-signup", "allow-unsolicited", "client-id-ext", "client-secret", "entity-id", "force-authn", "issuer", "kind", "name", "nameid-format", "org", "skew", "slug", "sp-cert", "sso-url", "trust-email-verification"},
+	"idp add":                         {"allow-linking", "allow-signup", "allow-unsolicited", "authorize-url", "client-id-ext", "client-secret", "entity-id", "force-authn", "idp-scopes", "issuer", "kind", "name", "nameid-format", "org", "skew", "slug", "sp-cert", "sso-url", "token-url", "trust-email-verification", "userinfo-email", "userinfo-email-verified", "userinfo-name", "userinfo-subject", "userinfo-url"},
 	"idp add-issuer":                  {"issuer", "jwks-url", "name", "org", "slug"},
 	"idp apple-secret":                {"apple-key", "apple-key-id", "apple-team", "slug"},
 	"idp assertions":                  {"allow-assertions", "slug"},

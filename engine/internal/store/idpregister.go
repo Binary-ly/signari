@@ -40,11 +40,17 @@ type IdentityProviderSpec struct {
 	// discovery found a generic provider's.
 	JWKSURL string
 	// AuthorizeURL, TokenURL and UserinfoURL are a generic provider's, filled
-	// by Resolve.
+	// by Resolve for OIDC and given for OAuth 2.0, which has nothing to discover.
 	AuthorizeURL, TokenURL, UserinfoURL string
-	AllowSignup, AllowLinking           bool
+	// Scopes are what a generic OAuth 2.0 provider is asked for; a preset knows
+	// its own.
+	Scopes []string
+	// Userinfo says where a generic OAuth 2.0 provider's answer holds the
+	// person. Left empty, sub, email and name, and no verified address.
+	Userinfo                  federation.UserinfoClaims
+	AllowSignup, AllowLinking bool
 	// TrustEmailVerification believes the provider's email_verified, for a
-	// generic OIDC provider or a SAML upstream.
+	// generic OIDC or OAuth 2.0 provider or a SAML upstream.
 	TrustEmailVerification bool
 	// A SAML upstream's: the entity ID every assertion's Issuer is matched
 	// against, where AuthnRequests go, the certificate assertions are
@@ -94,9 +100,35 @@ func (s *IdentityProviderSpec) Validate() error {
 	case s.Kind == "oidc" && s.Issuer == "":
 		return s.invalid("a generic OIDC provider needs its issuer, so its endpoints and signing keys can be " +
 			"discovered")
-	case s.TrustEmailVerification && s.Kind != "oidc":
+	case s.TrustEmailVerification && s.Kind != "oidc" && s.Kind != "oauth2":
 		return s.invalid("a %s provider's email_verified is believed or not as that provider is known to "+
-			"behave; only a generic OIDC provider's is set here", s.Kind)
+			"behave; only a generic provider's is set here", s.Kind)
+	}
+	if s.Kind == "oauth2" {
+		return s.validateOAuth2()
+	}
+	return nil
+}
+
+func (s *IdentityProviderSpec) validateOAuth2() error {
+	for _, e := range []struct{ name, url string }{{"authorization", s.AuthorizeURL}, {"token", s.TokenURL},
+		{"userinfo", s.UserinfoURL}} {
+		if !strings.HasPrefix(e.url, "https://") {
+			return s.invalid("an OAuth 2.0 provider has nothing to discover, so it needs its %s endpoint, over "+
+				"https, got %q", e.name, e.url)
+		}
+	}
+	if s.TrustEmailVerification && s.Userinfo.EmailVerified == "" {
+		return s.invalid("trusting a provider's verification needs the path where it says so")
+	}
+	if s.Userinfo.Subject == "" {
+		s.Userinfo.Subject = "sub"
+	}
+	if s.Userinfo.Email == "" {
+		s.Userinfo.Email = "email"
+	}
+	if s.Userinfo.Name == "" {
+		s.Userinfo.Name = "name"
 	}
 	return nil
 }
@@ -237,15 +269,25 @@ func AddIdentityProvider(ctx context.Context, q outpostDB, root *keys.RootKey, o
 		if perr != nil {
 			return "", perr
 		}
+		scopes := preset.Scopes
+		if len(s.Scopes) > 0 {
+			scopes = s.Scopes
+		}
+		if scopes == nil {
+			scopes = []string{}
+		}
+		claims := s.Userinfo
 		err = q.QueryRow(ctx, `
 			INSERT INTO core.identity_providers
 				(org_id, slug, display_name, kind, client_id, client_secret, issuer, authorize_url, token_url,
-				 userinfo_url, jwks_url, scopes, allow_signup, allow_linking, trust_email_verification)
+				 userinfo_url, jwks_url, scopes, allow_signup, allow_linking, trust_email_verification,
+				 userinfo_subject, userinfo_email, userinfo_email_verified, userinfo_name)
 			VALUES ($1::uuid, $2, $3, $4, $5, $6, NULLIF($7,''), NULLIF($8,''), NULLIF($9,''), NULLIF($10,''),
-			        NULLIF($11,''), $12, $13, $14, $15)
+			        NULLIF($11,''), $12, $13, $14, $15, COALESCE(NULLIF($16,''), 'sub'),
+			        COALESCE(NULLIF($17,''), 'email'), $18, COALESCE(NULLIF($19,''), 'name'))
 			RETURNING id::text`, orgID, s.Slug, s.Name, s.Kind, s.ClientID, sealed, s.Issuer, s.AuthorizeURL,
-			s.TokenURL, s.UserinfoURL, s.JWKSURL, preset.Scopes, s.AllowSignup, s.AllowLinking,
-			s.TrustEmailVerification).Scan(&id)
+			s.TokenURL, s.UserinfoURL, s.JWKSURL, scopes, s.AllowSignup, s.AllowLinking,
+			s.TrustEmailVerification, claims.Subject, claims.Email, claims.EmailVerified, claims.Name).Scan(&id)
 	}
 	if err != nil {
 		if isUniqueViolation(err) {

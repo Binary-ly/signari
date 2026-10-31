@@ -99,7 +99,8 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		       COALESCE(token_url,''), COALESCE(userinfo_url,''), COALESCE(jwks_url,''),
 		       scopes, allow_signup, allow_linking, require_verified_email, enabled,
 		       trust_email_verification, mfa_amr, mfa_acr, COALESCE(end_session_url, ''),
-		       token_auth_method, client_key, COALESCE(client_certificate, ''), forward_parameters
+		       token_auth_method, client_key, COALESCE(client_certificate, ''), forward_parameters,
+		       userinfo_subject, userinfo_email, userinfo_email_verified, userinfo_name
 		FROM core.identity_providers
 		WHERE slug = $1`, slug).Scan(
 		&c.ID, &c.OrgID, &c.Slug, &c.DisplayName, &kind, &c.ClientID,
@@ -107,7 +108,8 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		&c.TokenOverride, &c.UserinfoOverride, &c.JWKSOverride,
 		&c.Scopes, &c.Policy.AllowSignup, &c.Policy.AllowLinking,
 		&c.Policy.RequireVerifiedEmail, &enabled, &trustEmail, &c.MFAAMR, &c.MFAACR, &c.EndSessionURL,
-		&c.TokenAuth.Method, &keySealed, &certificate, &c.Forward)
+		&c.TokenAuth.Method, &keySealed, &certificate, &c.Forward,
+		&c.Userinfo.Subject, &c.Userinfo.Email, &c.Userinfo.EmailVerified, &c.Userinfo.Name)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProviderUnknown
@@ -143,7 +145,7 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 	//
 	// For a generic OIDC provider there is nothing to know in advance, so the
 	// operator's setting is the only available answer -- off unless they say so.
-	if c.Kind == federation.KindOIDC {
+	if c.Kind == federation.KindOIDC || c.Kind == federation.KindOAuth2 {
 		c.Policy.TrustsEmailVerification = trustEmail
 	} else {
 		c.Policy.TrustsEmailVerification = preset.TrustsEmailVerification
@@ -403,12 +405,12 @@ func CreateUserFromExternal(ctx context.Context, tx pgx.Tx, orgID string, ext fe
 	// through the external provider until its owner sets one, which is correct:
 	// inventing a password nobody chose would be a credential nobody controls.
 	err := tx.QueryRow(ctx, `
-		INSERT INTO core.users (org_id, email, user_handle, status)
-		VALUES ($1::uuid, NULLIF($2,''),
+		INSERT INTO core.users (org_id, email, display_name, user_handle, status)
+		VALUES ($1::uuid, NULLIF($2,''), NULLIF(btrim($3), ''),
 		        decode(md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text)||
 		               md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text),'hex'),
 		        'active')
-		RETURNING id::text`, orgID, ext.Email).Scan(&userID)
+		RETURNING id::text`, orgID, ext.Email, ext.Name).Scan(&userID)
 	if err != nil {
 		return "", fmt.Errorf("creating a user from the external identity: %w", err)
 	}

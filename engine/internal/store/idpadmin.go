@@ -206,7 +206,7 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 	if c.MFAACR != nil {
 		acr = nonNil(*c.MFAACR)
 	}
-	if (kind == "github" || kind == "saml") && ((c.MFAAMR != nil && len(*c.MFAAMR) > 0) ||
+	if (kind == "github" || kind == "oauth2" || kind == "saml") && ((c.MFAAMR != nil && len(*c.MFAAMR) > 0) ||
 		(c.MFAACR != nil && len(*c.MFAACR) > 0)) {
 		return idpInvalid{fmt.Sprintf("%s is a %s provider, which sends no ID token for an amr or acr to be read from",
 			slug, kind)}

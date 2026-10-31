@@ -13,6 +13,53 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
+// A person arrives with the name their provider gave (0.63). Every kind read it, and
+// nothing wrote it, so everybody created through a provider had no name here at all.
+func TestAPersonArrivesWithTheNameTheirProviderGave(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+	var providerID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO core.identity_providers (org_id, slug, display_name, kind, client_id, allow_linking, allow_signup)
+		VALUES ($1::uuid, 'named-' || substr(gen_random_uuid()::text, 1, 8), 'Upstream', 'oidc', 'signari', true, true)
+		RETURNING id::text`, f.orgID).Scan(&providerID); err != nil {
+		t.Fatal(err)
+	}
+	n := time.Now().UnixNano()
+	named, unnamed := fmt.Sprintf("named-%d@example.test", n), fmt.Sprintf("unnamed-%d@example.test", n)
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = f.pool.Exec(ctx, `DELETE FROM core.identity_providers WHERE id = $1::uuid`, providerID)
+		_, _ = f.pool.Exec(ctx, `DELETE FROM core.users WHERE email = ANY($1)`, []string{named, unnamed})
+	})
+	arrive := func(subject, email, name string) string {
+		t.Helper()
+		cfg := federation.Config{ID: providerID, OrgID: f.orgID, Slug: "upstream", Kind: federation.KindOIDC,
+			Policy: federation.Policy{AllowSignup: true, AllowLinking: true, TrustsEmailVerification: true}}
+		rec := httptest.NewRecorder()
+		f.srv.completeFederation(rec, httptest.NewRequest(http.MethodGet, "/login/callback", nil), &cfg,
+			&store.PendingLogin{ProviderID: providerID, OrgID: f.orgID},
+			federation.ExternalIdentity{Subject: subject, Email: email, EmailVerified: true, Name: name})
+		if !strings.Contains(rec.Body.String(), "signed in") {
+			t.Fatalf("%s did not sign in: %d %.200s", subject, rec.Code, rec.Body.String())
+		}
+		var got string
+		if err := f.pool.QueryRow(ctx, `SELECT COALESCE(display_name, '') FROM core.users WHERE email = $1`,
+			email).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := arrive("named", named, "Ada Example"); got != "Ada Example" {
+		t.Errorf("the name is %q", got)
+	}
+	// Blank is no name: the column refuses one, and a provider that sends spaces must
+	// not stop somebody signing in.
+	if got := arrive("unnamed", unnamed, "   "); got != "" {
+		t.Errorf("a blank name was kept as %q", got)
+	}
+}
+
 // An address a provider vouches for is verified here (2.46). `verified` reached the
 // writer and stopped there, so everybody who arrived through a provider was told to
 // applications as `email_verified: false`, however sure the provider was.

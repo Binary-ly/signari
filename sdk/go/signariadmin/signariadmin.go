@@ -2307,23 +2307,31 @@ type PostOrganizationsOrgIDEventSubscriptionsNameTestResponse struct {
 
 // PostOrganizationsOrgIDIdentityProvidersRequest is a JSON object of the Admin API.
 type PostOrganizationsOrgIDIdentityProvidersRequest struct {
-	AllowLinking           *bool   `json:"allow_linking,omitempty"`
-	AllowSignup            *bool   `json:"allow_signup,omitempty"`
-	AllowUnsolicited       *bool   `json:"allow_unsolicited,omitempty"`
-	Certificate            *string `json:"certificate,omitempty"`
-	ClientID               *string `json:"client_id,omitempty"`
-	ClientSecret           *string `json:"client_secret,omitempty"`
-	EntityID               *string `json:"entity_id,omitempty"`
-	ForceAuthn             *bool   `json:"force_authn,omitempty"`
-	Issuer                 *string `json:"issuer,omitempty"`
-	JWKSURL                *string `json:"jwks_url,omitempty"`
-	Kind                   *string `json:"kind,omitempty"`
-	Name                   *string `json:"name,omitempty"`
-	NameIDFormat           *string `json:"name_id_format,omitempty"`
-	SkewSeconds            *int64  `json:"skew_seconds,omitempty"`
-	Slug                   *string `json:"slug,omitempty"`
-	SsoURL                 *string `json:"sso_url,omitempty"`
-	TrustEmailVerification *bool   `json:"trust_email_verification,omitempty"`
+	AllowLinking           *bool     `json:"allow_linking,omitempty"`
+	AllowSignup            *bool     `json:"allow_signup,omitempty"`
+	AllowUnsolicited       *bool     `json:"allow_unsolicited,omitempty"`
+	AuthorizeURL           *string   `json:"authorize_url,omitempty"`
+	Certificate            *string   `json:"certificate,omitempty"`
+	ClientID               *string   `json:"client_id,omitempty"`
+	ClientSecret           *string   `json:"client_secret,omitempty"`
+	EntityID               *string   `json:"entity_id,omitempty"`
+	ForceAuthn             *bool     `json:"force_authn,omitempty"`
+	Issuer                 *string   `json:"issuer,omitempty"`
+	JWKSURL                *string   `json:"jwks_url,omitempty"`
+	Kind                   *string   `json:"kind,omitempty"`
+	Name                   *string   `json:"name,omitempty"`
+	NameIDFormat           *string   `json:"name_id_format,omitempty"`
+	Scopes                 *[]string `json:"scopes,omitempty"`
+	SkewSeconds            *int64    `json:"skew_seconds,omitempty"`
+	Slug                   *string   `json:"slug,omitempty"`
+	SsoURL                 *string   `json:"sso_url,omitempty"`
+	TokenURL               *string   `json:"token_url,omitempty"`
+	TrustEmailVerification *bool     `json:"trust_email_verification,omitempty"`
+	UserinfoEmail          *string   `json:"userinfo_email,omitempty"`
+	UserinfoEmailVerified  *string   `json:"userinfo_email_verified,omitempty"`
+	UserinfoName           *string   `json:"userinfo_name,omitempty"`
+	UserinfoSubject        *string   `json:"userinfo_subject,omitempty"`
+	UserinfoURL            *string   `json:"userinfo_url,omitempty"`
 }
 
 // PostOrganizationsOrgIDIdentityProvidersResponse is a JSON object of the Admin API.

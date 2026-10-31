@@ -11,6 +11,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/audit"
 )
 
 // An entry naming a command that is not dispatched -- a typo, or a command
@@ -58,6 +62,41 @@ func TestTheTimeoutIsWhatWasAskedForOrTheCommandsOwn(t *testing.T) {
 	}
 }
 
+// growTheTrail writes to the audit trail until it holds about size bytes, so a
+// test of a long export does not depend on what other runs left there. Through
+// audit.Write, as any test's records must be.
+func growTheTrail(t *testing.T, dsn string, size int) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	var held int
+	if err := conn.QueryRow(ctx, `SELECT coalesce(sum(length(detail::text)), 0)::int FROM core.audit_events`).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if held >= size {
+		return
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	padding := strings.Repeat("x", 4096)
+	for ; held < size; held += len(padding) {
+		if err := audit.Write(ctx, tx, audit.Event{Type: "admin.cli_command",
+			Detail: map[string]any{"padding": padding}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // An audit export runs for as long as the trail takes to verify and write.
 // The deadline is shortened to 300 ms and the export written into a pipe
 // whose reader waits a second and a half before draining it, standing in for
@@ -71,6 +110,7 @@ func TestAnAuditExportOutlivesTheConfigurationDeadline(t *testing.T) {
 	saved := defaultCommandTimeout
 	defaultCommandTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { defaultCommandTimeout = saved })
+	growTheTrail(t, dsn, 2<<20)
 
 	export := func(extra ...string) (int64, error) {
 		t.Helper()

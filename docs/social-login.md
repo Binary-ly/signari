@@ -57,6 +57,27 @@ whether its `email_verified` is believed and its attribute mapping, are
 `attribute-map` in the [Admin API](admin-api.md#organisations), for a console or
 automation that has no shell.
 
+## When somebody signs out at the provider
+
+A provider that sends OpenID Connect back-channel logout can tell this engine:
+
+```
+https://<issuer>/login/callback/<slug>/backchannel-logout
+```
+
+Register that as the application's back-channel logout URI at the provider. A valid
+logout token ends every session the person has here, because a session does not
+record which provider it came through, and a person signed out upstream keeping one
+here is what this exists to stop. It is a `POST` from the provider, with no cookie
+and no user present, so the token is the whole of the authentication. Its signature is
+always checked against the provider's own keys, and it must name this application and
+carry the logout event, a `jti`, no `nonce`, and an `iat` under five minutes old. A
+provider with no fixed issuer cannot use it.
+
+A token has to name a `sub`. One that names only a `sid` is refused, since nothing here
+records the provider's session ids. A retry of a token already used, and a subject
+nobody here is linked to, are both answered as done.
+
 ## Apple, and the secret that expires
 
 Every other provider issues a client secret: a string you paste in and forget.

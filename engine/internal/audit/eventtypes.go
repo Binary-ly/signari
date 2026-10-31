@@ -74,7 +74,7 @@ var EventTypes = []string{
 	"desktop.login",
 	"directory.attributes_synced", "directory.groups_synced", "directory.privileged_skipped",
 	"directory.scheduled_sync",
-	"federation.account_linked", "federation.account_unlinked", "federation.refused",
+	"federation.account_linked", "federation.account_unlinked", "federation.backchannel_logout", "federation.refused",
 	"federation.user_created",
 	"impersonation.ended", "impersonation.refused", "impersonation.started",
 	"keys.rotated",

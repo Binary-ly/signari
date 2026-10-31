@@ -265,40 +265,55 @@ type idTokenClaims struct {
 	XMSEdov *bool `json:"xms_edov"`
 }
 
+// verifiedPayload is what a token from this provider says, once a key in its JWKS has
+// verified the signature. kind names the token in an error.
+func (c Config) verifiedPayload(ctx context.Context, hc *http.Client, raw, kind string) ([]byte, error) {
+	jwks, err := c.fetchJWKS(ctx, hc)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := parseSignedToken(raw, kind)
+	if err != nil {
+		return nil, err
+	}
+	return verifiedBy(sig, jwks, kind)
+}
+
+// parseSignedToken reads a token, of the algorithms allow-listed. Passing the token's
+// own header algorithm to the parser is how "alg: none" and HMAC-with-the-public-key
+// confusion get in -- the attacker chooses the algorithm.
+func parseSignedToken(raw, kind string) (*jose.JSONWebSignature, error) {
+	sig, err := jose.ParseSigned(raw, []jose.SignatureAlgorithm{
+		jose.RS256, jose.RS384, jose.RS512, jose.ES256, jose.ES384, jose.PS256,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("the %s did not parse: %w", kind, err)
+	}
+	return sig, nil
+}
+
+// verifiedBy is a token's payload, once a key in the set has verified it.
+func verifiedBy(sig *jose.JSONWebSignature, jwks *jose.JSONWebKeySet, kind string) ([]byte, error) {
+	var lastErr error
+	for _, key := range jwks.Keys {
+		p, err := sig.Verify(key)
+		if err == nil {
+			return p, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("the %s signature did not verify against any key in the provider's JWKS: %w", kind, lastErr)
+}
+
 // verifyIDToken checks the signature and every binding claim.
 //
 // Written out rather than delegated, because the failure mode of a
 // half-verified id_token is silent: it parses, the claims look right, and the
 // only thing missing is any reason to believe them.
 func (c Config) verifyIDToken(ctx context.Context, hc *http.Client, raw, nonce string) (*idTokenClaims, error) {
-	jwks, err := c.fetchJWKS(ctx, hc)
+	payload, err := c.verifiedPayload(ctx, hc, raw, "id_token")
 	if err != nil {
 		return nil, err
-	}
-
-	// Algorithms are allow-listed. Passing the token's own header algorithm to
-	// the parser is how "alg: none" and HMAC-with-the-public-key confusion get
-	// in -- the attacker chooses the algorithm.
-	sig, err := jose.ParseSigned(raw, []jose.SignatureAlgorithm{
-		jose.RS256, jose.RS384, jose.RS512, jose.ES256, jose.ES384, jose.PS256,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("the id_token did not parse: %w", err)
-	}
-
-	var payload []byte
-	var lastErr error
-	for _, key := range jwks.Keys {
-		if p, err := sig.Verify(key); err == nil {
-			payload = p
-			break
-		} else {
-			lastErr = err
-		}
-	}
-	if payload == nil {
-		return nil, fmt.Errorf("the id_token signature did not verify against any key in "+
-			"the provider's JWKS: %w", lastErr)
 	}
 
 	var claims idTokenClaims

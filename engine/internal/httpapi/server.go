@@ -521,6 +521,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST "+oidc.PathIntrospection, s.handleIntrospect)
 	mux.HandleFunc("GET /login/with/{slug}", s.handleFederatedStart)
 	mux.HandleFunc("GET /login/callback/{slug}", s.handleFederatedCallback)
+	mux.HandleFunc("POST /login/callback/{slug}/backchannel-logout", s.handleFederatedBackchannelLogout)
 	// WebAuthn Level 3 signal methods. See internal/httpapi/passkeysignal.go.
 	mux.HandleFunc("GET /account/passkeys/signal", s.handlePasskeySignal)
 	mux.HandleFunc("GET /static/passkey-signal.js", s.handlePasskeySignalJS)

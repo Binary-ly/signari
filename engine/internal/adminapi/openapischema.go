@@ -314,7 +314,8 @@ var opSchemas = map[string]opSchema{
 	"GET /admin/organizations/{orgID}/claim-mappers": {http.StatusOK, nil, object([]string{"mappers"}, map[string]jsonSchema{
 		"mappers": arrayOf(object([]string{"id", "attribute", "claim_name", "destination", "all_clients"}, map[string]jsonSchema{
 			"id": uuidStr(), "attribute": str(), "personal": boolean(), "claim_name": str(), "destination": str(),
-			"required_scope": str(), "all_clients": boolean(), "client_id": str()}))})},
+			"required_scope": str(), "all_clients": boolean(), "client_id": str(), "source": str(),
+			"source_value": str(), "transform": str(), "transform_arg": str()}))})},
 	"GET /admin/organizations/{orgID}/migration-source": {http.StatusOK, nil, migrationSourceSchema},
 	"GET /admin/organizations/{orgID}/proxy-hosts": {http.StatusOK, nil, object([]string{"proxy_hosts"}, map[string]jsonSchema{
 		"proxy_hosts": arrayOf(object([]string{"host", "enabled", "release_groups", "signed_identity"}, map[string]jsonSchema{"host": str(), "enabled": boolean(), "release_groups": arrayOf(str()), "signed_identity": boolean()}))})},

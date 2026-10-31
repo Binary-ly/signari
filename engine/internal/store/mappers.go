@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -54,16 +56,19 @@ func MappedClaims(ctx context.Context, tx pgx.Tx, userID, orgID, clientID string
 	dest ClaimDestination, granted string, root *keys.RootKey) (map[string]any, error) {
 
 	rows, err := tx.Query(ctx, `
-		SELECT m.claim_name, m.required_scope, s.name, s.personal, s.value_type,
+		SELECT m.claim_name, m.required_scope, m.source, m.source_value, m.transform, m.transform_arg,
+		       COALESCE(s.name, ''), COALESCE(s.personal, false), COALESCE(s.value_type, ''),
 		       a.value, a.value_sealed
 		FROM core.claim_mappers m
-		JOIN core.user_attribute_schema s ON s.id = m.attribute_id
-		JOIN core.user_attributes a
+		LEFT JOIN core.user_attribute_schema s ON s.id = m.attribute_id
+		LEFT JOIN core.user_attributes a
 		  ON a.attribute_id = s.id AND a.user_id = $1::uuid
 		WHERE m.org_id = $2::uuid
 		  AND m.destination = $3
 		  -- NULL client_id means every client in the organisation.
-		  AND (m.client_id IS NULL OR m.client_id = $4)`,
+		  AND (m.client_id IS NULL OR m.client_id = $4)
+		  -- An attribute the person does not hold says nothing.
+		  AND (m.attribute_id IS NULL OR a.user_id IS NOT NULL)`,
 		userID, orgID, string(dest), clientID)
 	if err != nil {
 		return nil, fmt.Errorf("resolving mapped claims: %w", err)
@@ -72,6 +77,10 @@ func MappedClaims(ctx context.Context, tx pgx.Tx, userID, orgID, clientID string
 	type pending struct {
 		claim     string
 		reqScope  string
+		source    string
+		value     string
+		transform string
+		arg       string
 		attrName  string
 		personal  bool
 		valueType string
@@ -81,8 +90,8 @@ func MappedClaims(ctx context.Context, tx pgx.Tx, userID, orgID, clientID string
 	var batch []pending
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.claim, &p.reqScope, &p.attrName, &p.personal,
-			&p.valueType, &p.clear, &p.sealed); err != nil {
+		if err := rows.Scan(&p.claim, &p.reqScope, &p.source, &p.value, &p.transform, &p.arg, &p.attrName,
+			&p.personal, &p.valueType, &p.clear, &p.sealed); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -103,9 +112,51 @@ func MappedClaims(ctx context.Context, tx pgx.Tx, userID, orgID, clientID string
 	var sk *keys.SubjectKey
 	var skTried bool
 
+	// A person's own record, read once, for the mappers that ask.
+	var record map[string]string
+
 	out := map[string]any{}
 	for _, p := range batch {
 		if p.reqScope != "" && !tokens.HasScope(granted, p.reqScope) {
+			continue
+		}
+
+		var list []string
+		switch p.source {
+		case "constant":
+			if v, ok := applyTransform(p.value, p.transform, p.arg); ok {
+				out[p.claim] = v
+			}
+			continue
+		case "user_field":
+			if record == nil {
+				if record, err = userRecord(ctx, tx, userID); err != nil {
+					return nil, err
+				}
+			}
+			if v, ok := applyTransform(record[p.value], p.transform, p.arg); ok && v != "" {
+				out[p.claim] = v
+			}
+			continue
+		case "groups":
+			if list, err = GroupsForUser(ctx, tx, userID, clientID); err != nil {
+				return nil, fmt.Errorf("reading groups for a claim: %w", err)
+			}
+		case "relation":
+			if list, err = ApplicationRoles(ctx, tx, orgID, userID, clientID); err != nil {
+				return nil, fmt.Errorf("reading roles for a claim: %w", err)
+			}
+		}
+		if p.source == "groups" || p.source == "relation" {
+			kept := make([]string, 0, len(list))
+			for _, v := range list {
+				if t, ok := applyTransform(v, p.transform, p.arg); ok {
+					kept = append(kept, t)
+				}
+			}
+			if len(kept) > 0 {
+				out[p.claim] = kept
+			}
 			continue
 		}
 
@@ -130,10 +181,58 @@ func MappedClaims(ctx context.Context, tx pgx.Tx, userID, orgID, clientID string
 			value = string(plain)
 		}
 
-		out[p.claim] = typedValue(value, p.valueType)
+		transformed, ok := applyTransform(value, p.transform, p.arg)
+		if !ok {
+			continue
+		}
+		out[p.claim] = typedValue(transformed, p.valueType)
 	}
 	if len(out) == 0 {
 		return nil, nil
+	}
+	return out, nil
+}
+
+// applyTransform shapes a claim's value, and says false when nothing is left of it:
+// a pattern that does not match releases nothing, rather than the value it was
+// meant to reduce.
+func applyTransform(value, transform, arg string) (string, bool) {
+	switch transform {
+	case "lower":
+		return strings.ToLower(value), true
+	case "prefix":
+		return arg + value, true
+	case "extract":
+		re, err := regexp.Compile(arg)
+		if err != nil {
+			return "", false
+		}
+		m := re.FindStringSubmatch(value)
+		switch {
+		case m == nil:
+			return "", false
+		case len(m) > 1:
+			return m[1], true
+		}
+		return m[0], true
+	}
+	return value, true
+}
+
+// userRecord reads the fields a claim can be made from.
+func userRecord(ctx context.Context, tx pgx.Tx, userID string) (map[string]string, error) {
+	var email, username, display, given, surname, locale *string
+	if err := tx.QueryRow(ctx, `SELECT email, username, display_name, given_name, surname, locale
+		FROM core.users WHERE id = $1::uuid`, userID).Scan(&email, &username, &display, &given, &surname,
+		&locale); err != nil {
+		return nil, fmt.Errorf("reading a person's record for a claim: %w", err)
+	}
+	out := map[string]string{}
+	for name, v := range map[string]*string{"email": email, "username": username, "display_name": display,
+		"given_name": given, "surname": surname, "locale": locale} {
+		if v != nil {
+			out[name] = *v
+		}
 	}
 	return out, nil
 }

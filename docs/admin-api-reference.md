@@ -427,6 +427,10 @@ Takes:
 | `client_id` | string |  |
 | `destination` | string |  |
 | `required_scope` | string |  |
+| `source` | string |  |
+| `source_value` | string |  |
+| `transform` | string |  |
+| `transform_arg` | string |  |
 
 Answers:
 

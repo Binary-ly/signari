@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0230 claim_sources
+
+Not compatible with the release before: stop it before migrating.
+
+What a claim can be made from (10.04). A mapper read one attribute, so a token could not say which tenant it belongs to in a name a relying party already expects, or carry somebody's groups under a claim of the application's choosing. source says where the value comes from: attribute as before, a constant, the groups released to the client, a field of the person's own record, or their roles in the application. transform is a short closed list and no language: lower, a prefix, or the first thing an RE2 pattern finds.
+
 ## 0229 application_roles
 
 Compatible with the release before: its binary may still serve this schema.

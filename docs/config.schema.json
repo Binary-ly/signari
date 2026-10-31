@@ -75,6 +75,18 @@
         },
         "required_scope": {
           "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "transform": {
+          "type": "string"
+        },
+        "transform_arg": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
         }
       },
       "type": "object"

@@ -888,6 +888,10 @@ type GetOrganizationsOrgIDClaimMappersResponseMappersItem struct {
 	ID            string `json:"id"`
 	Personal      bool   `json:"personal,omitempty"`
 	RequiredScope string `json:"required_scope,omitempty"`
+	Source        string `json:"source,omitempty"`
+	SourceValue   string `json:"source_value,omitempty"`
+	Transform     string `json:"transform,omitempty"`
+	TransformArg  string `json:"transform_arg,omitempty"`
 }
 
 // GetOrganizationsOrgIDCredentialConfigurationsResponse is a JSON object of the Admin API.
@@ -2167,6 +2171,10 @@ type PostOrganizationsOrgIDClaimMappersRequest struct {
 	ClientID      *string `json:"client_id,omitempty"`
 	Destination   *string `json:"destination,omitempty"`
 	RequiredScope *string `json:"required_scope,omitempty"`
+	Source        *string `json:"source,omitempty"`
+	SourceValue   *string `json:"source_value,omitempty"`
+	Transform     *string `json:"transform,omitempty"`
+	TransformArg  *string `json:"transform_arg,omitempty"`
 }
 
 // PostOrganizationsOrgIDClaimMappersResponse is a JSON object of the Admin API.

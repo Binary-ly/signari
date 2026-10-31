@@ -2040,6 +2040,10 @@ export interface GetOrganizationsOrgIDClaimMappersResponseMappersItem {
   id: string
   personal?: boolean
   required_scope?: string
+  source?: string
+  source_value?: string
+  transform?: string
+  transform_arg?: string
 }
 
 /** A JSON object of the Admin API. */
@@ -3319,6 +3323,10 @@ export interface PostOrganizationsOrgIDClaimMappersRequest {
   client_id?: string
   destination?: string
   required_scope?: string
+  source?: string
+  source_value?: string
+  transform?: string
+  transform_arg?: string
 }
 
 /** A JSON object of the Admin API. */

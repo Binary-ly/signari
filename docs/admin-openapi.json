@@ -8056,6 +8056,18 @@
                           },
                           "required_scope": {
                             "type": "string"
+                          },
+                          "source": {
+                            "type": "string"
+                          },
+                          "source_value": {
+                            "type": "string"
+                          },
+                          "transform": {
+                            "type": "string"
+                          },
+                          "transform_arg": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -8162,6 +8174,18 @@
                     "type": "string"
                   },
                   "required_scope": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "source_value": {
+                    "type": "string"
+                  },
+                  "transform": {
+                    "type": "string"
+                  },
+                  "transform_arg": {
                     "type": "string"
                   }
                 },

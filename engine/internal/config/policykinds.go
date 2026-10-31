@@ -29,18 +29,23 @@ type ClaimMapper struct {
 	ClientID      string `yaml:"client_id,omitempty"`
 	AllClients    bool   `yaml:"all_clients,omitempty"`
 	RequiredScope string `yaml:"required_scope,omitempty"`
+	// Source is where the value comes from, attribute when absent; Value is a
+	// constant's text or which field of a person's record.
+	Source string `yaml:"source,omitempty"`
+	Value  string `yaml:"value,omitempty"`
+	// Transform is lower, prefix or extract, and TransformArg its text or RE2.
+	Transform    string `yaml:"transform,omitempty"`
+	TransformArg string `yaml:"transform_arg,omitempty"`
 }
 
-// key is what makes a mapper the one it is: its audience, attribute and
-// destination, as the schema makes them unique.
-func (m ClaimMapper) key() string { return mapperKey(m.ClientID, m.Attribute, m.Destination) }
-
-func mapperKey(client, attribute, destination string) string {
-	if client == "" {
-		client = "*"
-	}
-	return attribute + " to " + destination + " for " + client
+func (m ClaimMapper) store() store.ClaimMapper {
+	return store.ClaimMapper{Attribute: m.Attribute, ClaimName: m.Claim, Destination: m.Destination,
+		ClientID: m.ClientID, RequiredScope: m.RequiredScope, Source: m.Source, SourceValue: m.Value,
+		Transform: m.Transform, TransformArg: m.TransformArg}
 }
+
+// key is what makes a mapper the one it is, as the schema makes them unique.
+func (m ClaimMapper) key() string { return m.store().Key() }
 
 type mapperSection struct{}
 
@@ -53,8 +58,8 @@ func (mapperSection) validate(f *File, add func(string, ...any)) {
 	keys := map[string]bool{}
 	for i, m := range f.ClaimMappers {
 		switch {
-		case m.Attribute == "" || m.Claim == "" || m.Destination == "":
-			add("claim_mappers[%d]: attribute, claim and destination are all required", i)
+		case m.Claim == "" || m.Destination == "" || (m.Attribute == "" && (m.Source == "" || m.Source == "attribute")):
+			add("claim_mappers[%d]: claim and destination are required, and attribute for an attribute source", i)
 			continue
 		case !slices.Contains([]string{"id_token", "userinfo", "access_token"}, m.Destination):
 			add("claim_mappers[%d]: destination is id_token, userinfo or access_token, not %q", i, m.Destination)
@@ -74,12 +79,13 @@ func (mapperSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File,
 	if err != nil {
 		return err
 	}
-	planKeyed(p, "claim_mapper", keyBy(f.ClaimMappers, ClaimMapper.key),
-		keyBy(have, func(m store.ClaimMapper) string { return mapperKey(m.ClientID, m.Attribute, m.Destination) }),
+	planKeyed(p, "claim_mapper", keyBy(f.ClaimMappers, ClaimMapper.key), keyBy(have, store.ClaimMapper.Key),
 		prune, func(h store.ClaimMapper, w ClaimMapper) string {
 			var c changed
 			c.note(h.ClaimName != w.Claim, "claim")
 			c.note(h.RequiredScope != w.RequiredScope, "required_scope")
+			c.note(h.SourceValue != w.Value, "value")
+			c.note(h.Transform != w.Transform || h.TransformArg != w.TransformArg, "transform")
 			return c.String()
 		}, "the claim stops being released")
 	return nil
@@ -90,9 +96,7 @@ func (mapperSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File
 		if c, ok := p.planned("claim_mapper", m.key()); !ok || c.Action == "delete" {
 			continue
 		}
-		if _, _, err := store.SetClaimMapper(ctx, tx, orgID, store.ClaimMapper{Attribute: m.Attribute,
-			ClaimName: m.Claim, Destination: m.Destination, ClientID: m.ClientID,
-			RequiredScope: m.RequiredScope}); err != nil {
+		if _, _, err := store.SetClaimMapper(ctx, tx, orgID, m.store()); err != nil {
 			return refuse("claim mapper %s: %v", m.key(), err)
 		}
 	}
@@ -105,7 +109,7 @@ func (mapperSection) remove(ctx context.Context, tx pgx.Tx, orgID, name string) 
 		return err
 	}
 	for _, m := range have {
-		if mapperKey(m.ClientID, m.Attribute, m.Destination) == name {
+		if m.Key() == name {
 			return store.RemoveClaimMapper(ctx, tx, orgID, m.ID)
 		}
 	}
@@ -118,9 +122,14 @@ func (mapperSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *Fil
 		return err
 	}
 	for _, m := range have {
+		source := m.Source
+		if source == "attribute" {
+			source = ""
+		}
 		f.ClaimMappers = append(f.ClaimMappers, ClaimMapper{Attribute: m.Attribute, Claim: m.ClaimName,
 			Destination: m.Destination, ClientID: m.ClientID, AllClients: m.ClientID == "",
-			RequiredScope: m.RequiredScope})
+			RequiredScope: m.RequiredScope, Source: source, Value: m.SourceValue, Transform: m.Transform,
+			TransformArg: m.TransformArg})
 	}
 	return nil
 }

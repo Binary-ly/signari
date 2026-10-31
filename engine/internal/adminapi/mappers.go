@@ -46,6 +46,14 @@ type mapperRequest struct {
 	// of a JSON body must never be the one that widens it.
 	AllClients    bool   `json:"all_clients"`
 	RequiredScope string `json:"required_scope"`
+	// Source is where the value comes from: attribute, the default, constant,
+	// groups, user_field or relation. SourceValue is a constant's text, or which
+	// field.
+	Source      string `json:"source"`
+	SourceValue string `json:"source_value"`
+	// Transform is lower, prefix or extract, and TransformArg its text or RE2.
+	Transform    string `json:"transform"`
+	TransformArg string `json:"transform_arg"`
 }
 
 // createMapper declares that an attribute is released as a claim.
@@ -58,10 +66,11 @@ func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	if req.Attribute == "" || req.ClaimName == "" || req.Destination == "" {
+	attributeSource := req.Source == "" || req.Source == "attribute"
+	if (attributeSource && req.Attribute == "") || req.ClaimName == "" || req.Destination == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error":  "incomplete",
-			"detail": "attribute, claim_name and destination are all required",
+			"detail": "claim_name and destination are required, and attribute for an attribute source",
 		})
 		return
 	}
@@ -93,7 +102,8 @@ func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 		var err error
 		if mapperID, personal, err = store.SetClaimMapper(ctx, tx, orgID, store.ClaimMapper{
 			Attribute: req.Attribute, ClaimName: req.ClaimName, Destination: req.Destination,
-			ClientID: req.ClientID, RequiredScope: req.RequiredScope}); err != nil {
+			ClientID: req.ClientID, RequiredScope: req.RequiredScope, Source: req.Source,
+			SourceValue: req.SourceValue, Transform: req.Transform, TransformArg: req.TransformArg}); err != nil {
 			return err
 		}
 
@@ -103,7 +113,7 @@ func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 			// The four fields that together ARE the disclosure. No value: this
 			// records that a fact will be released, not the fact itself.
 			Detail: map[string]any{
-				"attribute": req.Attribute, "claim_name": req.ClaimName,
+				"attribute": req.Attribute, "source": req.Source, "claim_name": req.ClaimName,
 				"destination": req.Destination, "required_scope": req.RequiredScope,
 				"all_clients": req.ClientID == "",
 				// Whether the released attribute is personal, because an audit
@@ -133,6 +143,9 @@ func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 				"organisation declares, so no grant can carry it and the mapper " +
 				"would release nothing. Declare it first",
 		})
+		return
+	case errors.Is(err, store.ErrMapperSource):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_source", "detail": err.Error()})
 		return
 	case errors.Is(err, store.ErrMapperProtocolClaim):
 		writeJSON(w, http.StatusBadRequest, map[string]string{
@@ -191,6 +204,8 @@ func (s *Server) listMappers(w http.ResponseWriter, r *http.Request) {
 			"claim_name": m.ClaimName, "destination": m.Destination,
 			"required_scope": m.RequiredScope,
 			"all_clients":    m.ClientID == "",
+			"source":         m.Source, "source_value": m.SourceValue,
+			"transform": m.Transform, "transform_arg": m.TransformArg,
 		}
 		if m.ClientID != "" {
 			entry["client_id"] = m.ClientID

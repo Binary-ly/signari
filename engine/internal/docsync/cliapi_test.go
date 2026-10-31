@@ -161,6 +161,7 @@ var cliAPI = map[string]string{
 	"idp disable":        "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp enable":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp list":           reads,
+	"idp check":          reads,
 	"idp assertions":     "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp link":           "PUT /admin/users/{userID}/identity-links/{slug}",
 	"idp unlink":         "DELETE /admin/users/{userID}/identity-links/{slug}",

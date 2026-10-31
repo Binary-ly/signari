@@ -263,6 +263,7 @@ keys and audit:
 federation in:
   idp add                   register an external sign-in provider (Google, GitHub, ...)
   idp list                  show external sign-in providers
+  idp check                 probe a provider's discovery document and keys
   idp disable               take an upstream provider out of service
   idp enable                put an upstream provider back in service
   idp assertions            allow or refuse RFC 7523 assertions from a provider
@@ -1738,6 +1739,8 @@ func run(args []string) (err error) {
 		return idpAppleSecret(ctx, conn, *slug, *appleTeam, *appleKeyID, *appleKeyFile)
 	case "idp list":
 		return idpList(ctx, conn, *outputFormat)
+	case "idp check":
+		return idpCheck(ctx, conn, *slug)
 	case "idp assertions":
 		return idpAssertions(ctx, conn, *slug, *allowAssertions)
 	case "idp add-issuer":
@@ -3977,6 +3980,42 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 }
 
 // idpList shows configured providers.
+// idpCheck asks a provider what a sign-in would rely on. It exits non-zero when
+// something is wrong, so a deployment can check one.
+func idpCheck(ctx context.Context, conn *pgx.Conn, slug string) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	pool, err := openPool(ctx, conn, root.PoolTag())
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	p, err := store.LoadIdentityProvider(ctx, pool, root, slug)
+	if errors.Is(err, store.ErrProviderUnknown) {
+		return fmt.Errorf("%w; `signari idp list` shows the registered ones", err)
+	}
+	if err != nil {
+		return err
+	}
+	r := p.Check(ctx, safedial.Client(15*time.Second))
+	if !r.OK {
+		return fmt.Errorf("%s failed: %s", r.Step, r.Detail)
+	}
+	if r.Detail != "" {
+		fmt.Printf("  %s\n", r.Detail)
+		return nil
+	}
+	fmt.Printf("  discovery and %d signing keys read.\n\n", r.Keys)
+	fmt.Println("  That proves the provider is where it is said to be. Only a sign-in shows the")
+	fmt.Println("  client id and secret are right.")
+	return nil
+}
+
 func idpList(ctx context.Context, conn *pgx.Conn, format string) error {
 	out, err := newOutput(format)
 	if err != nil {

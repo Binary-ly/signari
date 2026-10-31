@@ -52,6 +52,13 @@ const (
 	// or events_delivered fields", specs/ssf-1_0.txt:3387-3389).
 	StreamUpdated = "https://schemas.openid.net/secevent/ssf/event-type/stream-updated"
 
+	// Verification is SSF 1.0 §8.1.4.1's event, sent when a receiver asks whether
+	// its stream works. Not in SupportedEvents for the same reason: "A Transmitter
+	// MAY respond to Verification Event requests even if the event is not present
+	// in the events_supported, events_requested and / or events_delivered fields"
+	// (specs/ssf-1_0.txt:3198-3200).
+	Verification = "https://schemas.openid.net/secevent/ssf/event-type/verification"
+
 	// TypSET is the media type a SET carries (RFC 8417 §2.3). Checked by
 	// receivers, and set here so a SET cannot be confused with an ID token by
 	// anything that inspects `typ`.
@@ -280,6 +287,31 @@ func MintStreamUpdated(s Signer, issuer, audience, jti, streamID, status, reason
 		Audience: []string{audience},
 		SubID:    map[string]any{"format": "opaque", "id": streamID},
 		Events:   map[string]map[string]any{StreamUpdated: payload},
+	}, TypSET)
+}
+
+// MintVerification builds the Verification Event: §8.1.4.1 makes its subject the
+// stream itself, "a simple value of type opaque" whose id "MUST be the stream_id of
+// the stream being verified", and the receiver's state comes back as it went in.
+func MintVerification(s Signer, issuer, audience, jti, streamID, state string, now time.Time) (string, error) {
+	if audience == "" {
+		return "", fmt.Errorf("refusing to mint a security event token with no audience: " +
+			"it could be forwarded to any other receiver")
+	}
+	if streamID == "" {
+		return "", fmt.Errorf("refusing to verify no stream")
+	}
+	payload := map[string]any{}
+	if state != "" {
+		payload["state"] = state
+	}
+	return s.SignJSON(setClaims{
+		Issuer:   issuer,
+		JTI:      jti,
+		IssuedAt: now.Unix(),
+		Audience: []string{audience},
+		SubID:    map[string]any{"format": "opaque", "id": streamID},
+		Events:   map[string]map[string]any{Verification: payload},
 	}, TypSET)
 }
 

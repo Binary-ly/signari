@@ -46,10 +46,11 @@ type TransmitterMetadata struct {
 
 	DeliveryMethodsSupported []string `json:"delivery_methods_supported,omitempty"`
 
-	// The management API endpoints (§8) are all OPTIONAL and all absent here:
-	// this engine's streams are administered by its operator, not configured
-	// over HTTP by receivers. Their absence is the honest signal that a
-	// receiver cannot self-serve.
+	// The management API endpoints (§8) are all OPTIONAL and, but for verification,
+	// all absent here: this engine's streams are administered by its operator, not
+	// configured over HTTP by receivers. Their absence is the honest signal that a
+	// receiver cannot self-serve. Verification changes nothing about a stream, it
+	// only asks whether one works, so it is the one a receiver is offered.
 	ConfigurationEndpoint string `json:"configuration_endpoint,omitempty"`
 	StatusEndpoint        string `json:"status_endpoint,omitempty"`
 	AddSubjectEndpoint    string `json:"add_subject_endpoint,omitempty"`
@@ -60,9 +61,14 @@ type TransmitterMetadata struct {
 	DefaultSubjects        string   `json:"default_subjects,omitempty"`
 
 	// AuthorizationSchemes (§7.1.1) describes how a receiver authenticates to
-	// the management API. With no management API there is nothing to describe.
+	// the management API. Left out: verification takes the stream's client, as
+	// polling does, with HTTP Basic or a certificate, and neither is the access
+	// token §7.1.1's OAuth URN would promise.
 	AuthorizationSchemes []map[string]any `json:"authorization_schemes,omitempty"`
 }
+
+// VerifyPath is where a receiver asks for a Verification Event.
+const VerifyPath = "/ssf/verify"
 
 // Metadata builds the transmitter configuration for an issuer.
 //
@@ -94,6 +100,7 @@ func Metadata(issuer, jwksURI string) TransmitterMetadata {
 		// method enters this list once its endpoint works, which is the rule that
 		// kept push here alone until poll was built.
 		DeliveryMethodsSupported: []string{DeliveryPush, DeliveryPoll},
+		VerificationEndpoint:     issuer + VerifyPath,
 
 		// default_subjects is deliberately absent.
 		//

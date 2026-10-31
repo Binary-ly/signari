@@ -5360,7 +5360,7 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn, format string) error {
 		return err
 	}
 	rows, err := conn.Query(ctx, `
-		SELECT s.client_id, s.delivery_method, COALESCE(s.endpoint_url, ''),
+		SELECT s.id::text, s.client_id, s.delivery_method, COALESCE(s.endpoint_url, ''),
 		       s.status, (s.auth_token IS NOT NULL), cardinality(s.events_requested)
 		FROM core.ssf_streams s ORDER BY s.client_id`)
 	if err != nil {
@@ -5370,18 +5370,18 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn, format string) error {
 
 	n := 0
 	if out.text() {
-		fmt.Printf("\n  %-24s %-6s %-40s %-10s %s\n", "CLIENT", "MODE", "ENDPOINT", "STATUS", "AUTH")
+		fmt.Printf("\n  %-36s %-24s %-6s %-40s %-10s %s\n", "STREAM", "CLIENT", "MODE", "ENDPOINT", "STATUS", "AUTH")
 	}
 	for rows.Next() {
-		var client, method, endpoint, status string
+		var id, client, method, endpoint, status string
 		var hasToken bool
 		var events int
-		if err := rows.Scan(&client, &method, &endpoint, &status, &hasToken, &events); err != nil {
+		if err := rows.Scan(&id, &client, &method, &endpoint, &status, &hasToken, &events); err != nil {
 			return err
 		}
 		n++
-		out.add(map[string]any{"client_id": client, "delivery": method, "endpoint": endpoint, "status": status,
-			"has_receiver_token": hasToken, "event_types": events})
+		out.add(map[string]any{"stream_id": id, "client_id": client, "delivery": method, "endpoint": endpoint,
+			"status": status, "has_receiver_token": hasToken, "event_types": events})
 		if !out.text() {
 			continue
 		}
@@ -5395,8 +5395,8 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn, format string) error {
 			// does not apply.
 			endpoint, auth = "(pulled from /ssf/poll)", "client"
 		}
-		fmt.Printf("  %-24s %-6s %-40s %-10s %s (%d event types)\n",
-			truncate(client, 24), method, truncate(endpoint, 40), status, auth, events)
+		fmt.Printf("  %-36s %-24s %-6s %-40s %-10s %s (%d event types)\n",
+			id, truncate(client, 24), method, truncate(endpoint, 40), status, auth, events)
 	}
 	if err := rows.Err(); err != nil {
 		return err

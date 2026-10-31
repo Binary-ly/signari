@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/keys"
-	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -65,31 +64,8 @@ type pollResponse struct {
 func (s *Server) handleSSFPoll(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Authenticate the receiver as the stream's OAuth client, over the
-	// Authorization header (Basic) or the connection (mutual-TLS). The poll body
-	// is JSON, so the form-carried methods -- client_secret_post, private_key_jwt
-	// -- have nowhere to put their parameters and are not offered here; a stream
-	// meant for poll is configured on a client that authenticates one of these two
-	// ways.
-	creds, cerr := oauth.ParseClientCredentials(r.Header, nil)
-	if cerr != nil {
-		writeError(w, http.StatusUnauthorized, "invalid_client", cerr.Description)
-		return
-	}
-	c, err := s.lookupClient(ctx, creds.ClientID)
-	if err != nil || c == nil {
-		writeError(w, http.StatusUnauthorized, "invalid_client", "unknown client")
-		return
-	}
-	if c.Type != "confidential" {
-		writeError(w, http.StatusUnauthorized, "invalid_client",
-			"polling a security event stream requires a confidential client")
-		return
-	}
-	if aerr := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); aerr != nil {
-		s.log.Info("ssf poll authentication failed", "client_id", creds.ClientID, "err", aerr,
-			"correlation_id", correlationID(ctx))
-		writeError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+	clientID, ok := s.authenticateStreamClient(w, r)
+	if !ok {
 		return
 	}
 
@@ -116,7 +92,7 @@ func (s *Server) handleSSFPoll(w http.ResponseWriter, r *http.Request) {
 		maxEvents = hardPollMaxEvents
 	}
 
-	streamID, status, ok, err := store.PollStreamForClient(ctx, s.db, creds.ClientID)
+	streamID, status, ok, err := store.PollStreamForClient(ctx, s.db, clientID)
 	if err != nil {
 		s.log.Error("locating a poll stream", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
@@ -143,7 +119,7 @@ func (s *Server) handleSSFPoll(w http.ResponseWriter, r *http.Request) {
 	// of true." So a receiver that says nothing gets an immediate answer.
 	returnImmediately := req.ReturnImmediately == nil || *req.ReturnImmediately
 
-	sets, more, err := s.pollDeliver(ctx, streamID, creds.ClientID, req.Ack, maxEvents, returnImmediately, onlyOfType)
+	sets, more, err := s.pollDeliver(ctx, streamID, clientID, req.Ack, maxEvents, returnImmediately, onlyOfType)
 	if err != nil {
 		s.log.Error("delivering polled events", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
@@ -237,10 +213,14 @@ func (s *Server) pollFetchAndMint(ctx context.Context, streamID, audience string
 	for _, e := range events {
 		var jws string
 		var merr error
-		if e.EventType == ssf.StreamUpdated {
+		switch e.EventType {
+		case ssf.StreamUpdated:
 			jws, merr = ssf.MintStreamUpdated(signer, s.cfg.Issuer, audience, e.JTI, streamID,
 				e.Status, e.Reason, time.Now())
-		} else {
+		case ssf.Verification:
+			jws, merr = ssf.MintVerification(signer, s.cfg.Issuer, audience, e.JTI, streamID,
+				e.State, time.Now())
+		default:
 			// The same builder the push worker uses, so a receiver gets the same
 			// event whichever way it arrives. EventTime is the queue time (when the
 			// session was revoked), not now (when the SET is minted) -- for poll the

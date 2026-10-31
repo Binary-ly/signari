@@ -37,6 +37,8 @@ type ssfPending struct {
 	Reason   string `json:"reason"`
 	// Status is a stream-updated event's new status; empty for any other.
 	Status string `json:"status"`
+	// State is what a receiver asked to have echoed in a verification event.
+	State string `json:"state"`
 }
 
 // ssfHoldInterval is how often a paused stream's held events are looked at
@@ -131,10 +133,14 @@ func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
 	// purposes. Poll, which can hand over an event hours later, passes the queued
 	// time instead -- see the shared builder.
 	var token string
-	if p.Event == ssf.StreamUpdated {
+	switch p.Event {
+	case ssf.StreamUpdated:
 		token, err = ssf.MintStreamUpdated(tokens.NewSigner(key), as.issuer, p.ClientID, jti,
 			p.StreamID, p.Status, p.Reason, time.Now())
-	} else {
+	case ssf.Verification:
+		token, err = ssf.MintVerification(tokens.NewSigner(key), as.issuer, p.ClientID, jti,
+			p.StreamID, p.State, time.Now())
+	default:
 		event := ssf.RevocationEvent(as.issuer, p.Subject, p.Reason, time.Now())
 		event.Type = p.Event
 		token, err = ssf.Mint(tokens.NewSigner(key), as.issuer, p.ClientID, jti, event, time.Now())

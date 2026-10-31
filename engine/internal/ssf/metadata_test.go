@@ -81,7 +81,7 @@ func TestUnimplementedEndpointsAreOmittedEntirely(t *testing.T) {
 	}
 	for _, k := range []string{
 		"configuration_endpoint", "status_endpoint", "add_subject_endpoint",
-		"remove_subject_endpoint", "verification_endpoint", "authorization_schemes",
+		"remove_subject_endpoint", "authorization_schemes",
 	} {
 		if v, present := doc[k]; present {
 			t.Errorf("%s is present (%v) but this engine has no management API; "+

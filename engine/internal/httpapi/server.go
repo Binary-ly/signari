@@ -557,6 +557,7 @@ func (s *Server) mux() *http.ServeMux {
 	// queued SETs here and acknowledges them, authenticating as the stream's
 	// client. See internal/httpapi/ssfpoll.go.
 	mux.HandleFunc("POST /ssf/poll", s.handleSSFPoll)
+	mux.HandleFunc("POST "+ssf.VerifyPath, s.handleSSFVerify)
 
 	mux.HandleFunc("GET /.well-known/authzen-configuration", s.handleAuthzMetadata)
 	mux.HandleFunc("GET /.well-known/webauthn", s.handleWebAuthnWellKnown)

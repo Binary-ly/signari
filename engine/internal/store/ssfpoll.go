@@ -25,7 +25,9 @@ type QueuedPollEvent struct {
 	SID       string
 	Reason    string
 	// Status is a stream-updated event's new status; empty for any other.
-	Status   string
+	Status string
+	// State is what a receiver asked to have echoed in a verification event.
+	State    string
 	QueuedAt time.Time
 }
 
@@ -89,7 +91,7 @@ func PollFetch(ctx context.Context, tx pgx.Tx, streamID string, max int, onlyOfT
 	rows, err := tx.Query(ctx, `
 		SELECT jti, event_type,
 		       COALESCE(payload->>'subject',''), COALESCE(payload->>'sid',''), COALESCE(payload->>'reason',''),
-		       COALESCE(payload->>'status',''), queued_at
+		       COALESCE(payload->>'status',''), COALESCE(payload->>'state',''), queued_at
 		FROM core.ssf_poll_queue
 		WHERE stream_id = $1::uuid AND ($3 = '' OR event_type = $3)
 		ORDER BY id
@@ -100,7 +102,7 @@ func PollFetch(ctx context.Context, tx pgx.Tx, streamID string, max int, onlyOfT
 	defer rows.Close()
 	for rows.Next() {
 		var e QueuedPollEvent
-		if err := rows.Scan(&e.JTI, &e.EventType, &e.Subject, &e.SID, &e.Reason, &e.Status, &e.QueuedAt); err != nil {
+		if err := rows.Scan(&e.JTI, &e.EventType, &e.Subject, &e.SID, &e.Reason, &e.Status, &e.State, &e.QueuedAt); err != nil {
 			return nil, false, err
 		}
 		events = append(events, e)

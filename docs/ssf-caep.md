@@ -108,6 +108,35 @@ receiver that later switches from push to poll sees no change in what a SET says
 An abandoned poll stream cannot grow without bound — the janitor drops events that
 have waited far longer than any live receiver would leave them (30 days).
 
+## Asking whether a stream works
+
+A quiet stream and a broken one look the same from the receiver's side, so a
+receiver can ask for an event (§8.1.4). `signari ssf list` shows each stream's id:
+
+```
+POST /ssf/verify                     -> 204 No Content
+Authorization: Basic <client creds>
+{ "stream_id": "<id>", "state": "<anything>" }
+```
+
+The receiver authenticates as it does to poll, as the stream's own client, with
+HTTP Basic or a certificate. The event is an ordinary SET: its `sub_id` is the
+stream, `{"format": "opaque", "id": "<stream_id>"}`, and its `state` is what the
+request sent. It travels by the stream's own delivery method, so `204` means it
+is queued and not that it arrived, and receiving it is the proof.
+
+| The request | The answer |
+|---|---|
+| a body that does not parse, or no `stream_id` | `400` |
+| a disabled stream, which holds nothing and would never send it | `400` |
+| no credentials, or the wrong ones | `401` |
+| a stream that does not exist or belongs to another client | `404` |
+| a second request for a stream within 30 seconds | `429`, with `Retry-After` |
+
+A paused stream answers `204` and holds the event with the rest of what it is
+holding. The 30 seconds would be `min_verification_interval`, which belongs to a
+stream configuration this engine does not serve, so it is stated here.
+
 ## The token that was never sent
 
 `ssf_streams.auth_token` existed from the first migration, with a comment saying

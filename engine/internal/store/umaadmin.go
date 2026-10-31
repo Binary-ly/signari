@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -100,8 +101,10 @@ func pendingIn(ctx context.Context, tx pgx.Tx, orgID, requestID string) (*Pendin
 // and records the approval, together: separately, a failure between them
 // leaves access nobody approved, or an approval that granted nothing and a
 // client polling against it. Refused, rather than granted and warned about,
-// when the relation would not let the whole request through.
-func ApproveUMARequest(ctx context.Context, tx pgx.Tx, orgID, requestID, relation, decidedBy string) (*PendingRequest, error) {
+// when the relation would not let the whole request through. expires, when
+// given, ends what is granted; a person named as deciding is who granted it.
+func ApproveUMARequest(ctx context.Context, tx pgx.Tx, orgID, requestID, relation, decidedBy string,
+	expires *time.Time) (*PendingRequest, error) {
 	p, err := pendingIn(ctx, tx, orgID, requestID)
 	if err != nil {
 		return nil, err
@@ -124,8 +127,8 @@ func ApproveUMARequest(ctx context.Context, tx pgx.Tx, orgID, requestID, relatio
 	for _, perm := range p.Permissions {
 		if err := GrantRelation(ctx, tx, p.OrgID, Relation{
 			SubjectType: "user", SubjectID: who, Relation: relation,
-			ObjectType: perm.ResourceType, ObjectID: perm.ResourceID,
-		}, ""); err != nil {
+			ObjectType: perm.ResourceType, ObjectID: perm.ResourceID, ExpiresAt: expires,
+		}, decidedBy); err != nil {
 			return nil, fmt.Errorf("granting %s on %s:%s: %w", relation, perm.ResourceType, perm.ResourceID, err)
 		}
 	}

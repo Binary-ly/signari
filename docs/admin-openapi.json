@@ -15633,6 +15633,10 @@
                     "config_version": {
                       "type": "integer"
                     },
+                    "expires_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
                     "granted": {
                       "type": "boolean"
                     },
@@ -15736,6 +15740,11 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "expires_at": {
+                    "additionalProperties": false,
+                    "properties": {},
+                    "type": "object"
+                  },
                   "object": {
                     "type": "string"
                   },
@@ -15761,6 +15770,10 @@
                   "properties": {
                     "config_version": {
                       "type": "integer"
+                    },
+                    "expires_at": {
+                      "format": "date-time",
+                      "type": "string"
                     },
                     "granted": {
                       "type": "boolean"
@@ -20903,6 +20916,11 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "expires_at": {
+                    "additionalProperties": false,
+                    "properties": {},
+                    "type": "object"
+                  },
                   "relation": {
                     "type": "string"
                   }

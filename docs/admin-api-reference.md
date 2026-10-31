@@ -2625,6 +2625,7 @@ Answers:
 | Field | Type | |
 |---|---|---|
 | `config_version` | integer | always |
+| `expires_at` | string |  |
 | `granted` | boolean | always |
 | `object` | string | always |
 | `relation` | string | always |
@@ -2640,6 +2641,7 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `expires_at` | object |  |
 | `object` | string |  |
 | `relation` | string |  |
 | `subject` | string |  |
@@ -2649,6 +2651,7 @@ Answers:
 | Field | Type | |
 |---|---|---|
 | `config_version` | integer | always |
+| `expires_at` | string |  |
 | `granted` | boolean | always |
 | `object` | string | always |
 | `relation` | string | always |
@@ -3630,6 +3633,7 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `expires_at` | object |  |
 | `relation` | string |  |
 
 Answers:

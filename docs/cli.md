@@ -234,15 +234,16 @@ existed, and the test that exists to catch exactly that could not see this table
 | | |
 |---|---|
 | `signari authz set-model` / `authz show-model` | The authorization model. Setting one **runs its own tests** — see [authorization.md](authorization.md) |
+| `signari authz test` | `-model-file <path>`. The same parse and the same tests, with no database, for CI |
 | `signari trust-mark issue` / `trust-mark revoke` / `trust-mark list` | Issue, withdraw and inspect OpenID Federation Trust Marks. See [trust-marks.md](trust-marks.md) |
 | `signari trust-mark accept` / `trust-mark drop` | Publish, or stop publishing, a Trust Mark somebody granted this entity |
 | `signari trust-mark delegate` | Authorise another entity to issue a Trust Mark type this one owns (§7.2) |
 | `signari trust-mark issuers` / `trust-mark owners` | The Trust Anchor's two governing claims. Setting either is refused for now: this engine cannot be a Trust Anchor until it serves the `federation_fetch_endpoint` every anchor MUST publish, and every reader ignores them from an entity with a Superior. A file containing `{}` still clears them. See [OpenID Federation](openid-federation.md#enabling-it) |
 | `signari federation enable` / `federation show` | Join an OpenID Federation. Generates a **separate** Entity Statement signing key and publishes `/.well-known/openid-federation` — see [openid-federation.md](openid-federation.md). `-trust-anchor-hints`, `-federation-contacts` and `-entity-lifetime` (5m to 168h) are kept when not given |
-| `signari authz grant` / `authz revoke` | Relations: `-principal user:alice -relation owner -object document:42` |
+| `signari authz grant` / `authz revoke` | Relations: `-principal user:alice -relation owner -object document:42`. `grant -expires-in 72h` ends it then; without, it stands until revoked, and granting again replaces the end |
 | `signari authz check` | Answer a question from the command line, with the reason |
 | `signari uma settings` | Offer, or stop offering, resource-owner intervention on refused UMA requests (§3.3.6 `request_submitted`). Off means a refusal is final. See [uma.md](uma.md) |
-| `signari uma requests` / `uma approve` / `uma deny` | Requests waiting for a resource owner. Approving **grants a relation** in the authorization model, so the access lives where all other access lives |
+| `signari uma requests` / `uma approve` / `uma deny` | Requests waiting for a resource owner. Approving **grants a relation** in the authorization model, so the access lives where all other access lives; `approve -expires-in 720h` grants it for that long |
 
 ## Extension providers
 

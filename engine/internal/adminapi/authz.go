@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -21,11 +22,13 @@ type putModelRequest struct {
 	Source string `json:"source"`
 }
 
-// relationRequest names one tuple: subject and object as type:id.
+// relationRequest names one tuple: subject and object as type:id. ExpiresAt, on a
+// grant, is when it stops counting; absent, it stands until revoked.
 type relationRequest struct {
-	Subject  string `json:"subject"`
-	Relation string `json:"relation"`
-	Object   string `json:"object"`
+	Subject   string     `json:"subject"`
+	Relation  string     `json:"relation"`
+	Object    string     `json:"object"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 const authzRefusal = "change who may do what to everything in the organisation"
@@ -129,6 +132,17 @@ func (s *Server) revokeRelation(w http.ResponseWriter, r *http.Request) {
 		Object: q.Get("object")}, false)
 }
 
+// expiryPassed refuses a grant that would have ended before it was made, and
+// answers for itself: it would read as done and grant nothing.
+func expiryPassed(w http.ResponseWriter, at *time.Time) bool {
+	if at == nil || at.After(time.Now()) {
+		return false
+	}
+	writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_expiry",
+		"detail": "expires_at has passed, so this would grant nothing"})
+	return true
+}
+
 // changeRelation grants or revokes one relation, as `signari authz grant` and
 // `revoke` do. It takes effect on the next decision, which reads relations
 // per request.
@@ -143,6 +157,9 @@ func (s *Server) changeRelation(w http.ResponseWriter, r *http.Request, req rela
 			"detail": "give subject and object as type:id, and a relation"})
 		return
 	}
+	if expiryPassed(w, req.ExpiresAt) {
+		return
+	}
 	if narrowedTokenRefused(w, r, authzRefusal) {
 		return
 	}
@@ -150,8 +167,12 @@ func (s *Server) changeRelation(w http.ResponseWriter, r *http.Request, req rela
 	if !ok {
 		return
 	}
-	rel := store.Relation{SubjectType: styp, SubjectID: sid, Relation: relation, ObjectType: otyp, ObjectID: oid}
+	rel := store.Relation{SubjectType: styp, SubjectID: sid, Relation: relation, ObjectType: otyp, ObjectID: oid,
+		ExpiresAt: req.ExpiresAt}
 	detail := map[string]any{"subject": styp + ":" + sid, "relation": relation, "object": otyp + ":" + oid}
+	if req.ExpiresAt != nil {
+		detail["expires_at"] = req.ExpiresAt.UTC()
+	}
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
 			return err

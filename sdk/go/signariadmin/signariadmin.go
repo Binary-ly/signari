@@ -317,6 +317,7 @@ type DeleteOrganizationsOrgIDRegistrationTokensTokenIDResponse struct {
 // DeleteOrganizationsOrgIDRelationsResponse is a JSON object of the Admin API.
 type DeleteOrganizationsOrgIDRelationsResponse struct {
 	ConfigVersion int64  `json:"config_version"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
 	Granted       bool   `json:"granted"`
 	Object        string `json:"object"`
 	Relation      string `json:"relation"`
@@ -2473,7 +2474,8 @@ type PostOrganizationsOrgIDSSFStreamsResponse struct {
 
 // PostOrganizationsOrgIDUMARequestsRequestIDApproveRequest is a JSON object of the Admin API.
 type PostOrganizationsOrgIDUMARequestsRequestIDApproveRequest struct {
-	Relation *string `json:"relation,omitempty"`
+	ExpiresAt *map[string]any `json:"expires_at,omitempty"`
+	Relation  *string         `json:"relation,omitempty"`
 }
 
 // PostOrganizationsOrgIDUMARequestsRequestIDApproveResponse is a JSON object of the Admin API.
@@ -3010,14 +3012,16 @@ type PutOrganizationsOrgIDRegistrationResponse struct {
 
 // PutOrganizationsOrgIDRelationsRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDRelationsRequest struct {
-	Object   *string `json:"object,omitempty"`
-	Relation *string `json:"relation,omitempty"`
-	Subject  *string `json:"subject,omitempty"`
+	ExpiresAt *map[string]any `json:"expires_at,omitempty"`
+	Object    *string         `json:"object,omitempty"`
+	Relation  *string         `json:"relation,omitempty"`
+	Subject   *string         `json:"subject,omitempty"`
 }
 
 // PutOrganizationsOrgIDRelationsResponse is a JSON object of the Admin API.
 type PutOrganizationsOrgIDRelationsResponse struct {
 	ConfigVersion int64  `json:"config_version"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
 	Granted       bool   `json:"granted"`
 	Object        string `json:"object"`
 	Relation      string `json:"relation"`

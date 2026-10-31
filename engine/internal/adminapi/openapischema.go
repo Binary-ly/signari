@@ -211,7 +211,8 @@ var (
 	scimGroupSchema = object([]string{"slug", "group", "remote_id", "provisioned", "config_version"},
 		withVersion(map[string]jsonSchema{"slug": str(), "group": str(), "remote_id": str(), "provisioned": boolean()}))
 	relationSchema = object([]string{"subject", "relation", "object", "granted", "config_version"},
-		withVersion(map[string]jsonSchema{"subject": str(), "relation": str(), "object": str(), "granted": boolean()}))
+		withVersion(map[string]jsonSchema{"subject": str(), "relation": str(), "object": str(), "granted": boolean(),
+			"expires_at": dateTime()}))
 	clientSummarySchema = object([]string{"client_id", "org_id", "display_name", "client_type", "enabled", "created_at"},
 		map[string]jsonSchema{"client_id": str(), "org_id": uuidStr(), "display_name": str(),
 			"client_type": str(), "enabled": boolean(), "created_at": dateTime()})

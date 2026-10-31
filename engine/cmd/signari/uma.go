@@ -126,9 +126,13 @@ func umaRequests(ctx context.Context, conn *pgx.Conn, orgID, format string) erro
 }
 
 // umaApprove grants a relation and closes the request.
-func umaApprove(ctx context.Context, conn *pgx.Conn, requestID, relation string) error {
+func umaApprove(ctx context.Context, conn *pgx.Conn, requestID, relation string, expiresIn time.Duration) error {
 	if requestID == "" {
 		return fmt.Errorf("-uma-request is required; run `signari uma requests` for the list")
+	}
+	expires, err := grantExpiry(expiresIn)
+	if err != nil {
+		return err
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -139,7 +143,7 @@ func umaApprove(ctx context.Context, conn *pgx.Conn, requestID, relation string)
 	// The grant and the decision, in one transaction, refused rather than
 	// granted-and-warned when the relation would not let the whole request
 	// through: the approval the Admin API shares.
-	p, err := store.ApproveUMARequest(ctx, tx, "", requestID, relation, "")
+	p, err := store.ApproveUMARequest(ctx, tx, "", requestID, relation, "", expires)
 	var rel store.UMARelationError
 	switch {
 	case errors.Is(err, store.ErrPendingUnknown):
@@ -165,6 +169,9 @@ func umaApprove(ctx context.Context, conn *pgx.Conn, requestID, relation string)
 	fmt.Printf("approved: %s is now %s of\n", who, relation)
 	for _, perm := range p.Permissions {
 		fmt.Printf("  %s:%s\n", perm.ResourceType, perm.ResourceID)
+	}
+	if expires != nil {
+		fmt.Printf("until %s\n", expires.Format(time.RFC3339))
 	}
 	fmt.Println("\nThe grant lives in the authorization model, so `signari authz " +
 		"check` sees it and `signari authz revoke` undoes it. The client's next " +

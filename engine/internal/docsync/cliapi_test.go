@@ -228,6 +228,7 @@ var cliAPI = map[string]string{
 	// Authorization, federation and UMA.
 	"authz set-model":     "PUT /admin/organizations/{orgID}/authorization-model",
 	"authz show-model":    reads,
+	"authz test":          reads,
 	"authz grant":         "PUT /admin/organizations/{orgID}/relations",
 	"authz revoke":        "DELETE /admin/organizations/{orgID}/relations",
 	"authz check":         reads,

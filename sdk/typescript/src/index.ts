@@ -1427,6 +1427,7 @@ export interface DeleteOrganizationsOrgIDRegistrationTokensTokenIDResponse {
 /** A JSON object of the Admin API. */
 export interface DeleteOrganizationsOrgIDRelationsResponse {
   config_version: number
+  expires_at?: string
   granted: boolean
   object: string
   relation: string
@@ -3583,6 +3584,7 @@ export interface PostOrganizationsOrgIDSSFStreamsResponse {
 
 /** A JSON object of the Admin API. */
 export interface PostOrganizationsOrgIDUMARequestsRequestIDApproveRequest {
+  expires_at?: Record<string, unknown>
   relation?: string
 }
 
@@ -4120,6 +4122,7 @@ export interface PutOrganizationsOrgIDRegistrationResponse {
 
 /** A JSON object of the Admin API. */
 export interface PutOrganizationsOrgIDRelationsRequest {
+  expires_at?: Record<string, unknown>
   object?: string
   relation?: string
   subject?: string
@@ -4128,6 +4131,7 @@ export interface PutOrganizationsOrgIDRelationsRequest {
 /** A JSON object of the Admin API. */
 export interface PutOrganizationsOrgIDRelationsResponse {
   config_version: number
+  expires_at?: string
   granted: boolean
   object: string
   relation: string

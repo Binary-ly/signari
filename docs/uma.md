@@ -281,6 +281,9 @@ for. Granting one that covers three of four leaves the client polling forever
 against a decision somebody believes they made, and the pending row would say
 `approved`.
 
+`-expires-in 720h` grants it for thirty days instead of until revoked. Access
+someone needed for a project then ends without anyone having to remember it.
+
 Denial reaches the client on its next poll, as `request_denied`. There is no way
 to tell it sooner — the ticket flow is the only channel the protocol has.
 

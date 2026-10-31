@@ -61,13 +61,15 @@ tests:
 ```
 
 ```sh
+signari authz test -model-file model.yaml               # no database, for CI
 signari authz set-model -org <uuid> -model-file model.yaml
 ```
 
 **Parsing runs the tests.** A model whose own examples fail does not load, so it
 cannot be stored and discovered wrong in production. Same rule as the access
 policy: a security control nobody can check is a security control nobody has
-checked.
+checked. `authz test` is that parse with nothing behind it, so passing it and
+loading are the same statement.
 
 Refused at parse time, each because it would otherwise load and be quietly wrong:
 
@@ -201,10 +203,16 @@ reports it as critical.
 ```sh
 signari authz grant  -org <uuid> -principal user:alice@example.com -relation owner -object document:42
 signari authz grant  -org <uuid> -principal group:finance -relation viewer -object document:99
+signari authz grant  -org <uuid> -principal user:bob@example.com -relation viewer -object document:42 -expires-in 72h
 signari authz check  -org <uuid> -principal user:alice@example.com -action read -object document:42
 signari authz revoke -org <uuid> -principal user:alice@example.com -relation owner -object document:42
 signari authz show-model -org <uuid>
 ```
+
+A grant with `-expires-in` stops counting at that moment, checked in the query
+that reads it rather than swept up later, so temporary access is temporary
+without anyone having to remember it. Granting the same tuple again replaces the
+expiry, and without `-expires-in` removes it.
 
 The Admin API stores the model and grants and revokes relations the same way,
 under `/admin/organizations/{orgID}/authorization-model` and

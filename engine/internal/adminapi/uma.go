@@ -45,6 +45,8 @@ type umaRequestView struct {
 
 type approveUMARequest struct {
 	Relation string `json:"relation"`
+	// ExpiresAt ends what is granted; absent, it stands until revoked.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // decider is the person deciding, recorded on the request; none for a token.
@@ -168,14 +170,18 @@ func (s *Server) approveUMA(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
 		return
 	}
-	s.decideUMA(w, r, orgID, requestID, req.Relation, true)
+	if expiryPassed(w, req.ExpiresAt) {
+		return
+	}
+	s.decideUMA(w, r, orgID, requestID, req.Relation, req.ExpiresAt, true)
 }
 
 func (s *Server) denyUMA(w http.ResponseWriter, r *http.Request) {
-	s.decideUMA(w, r, r.PathValue("orgID"), r.PathValue("requestID"), "", false)
+	s.decideUMA(w, r, r.PathValue("orgID"), r.PathValue("requestID"), "", nil, false)
 }
 
-func (s *Server) decideUMA(w http.ResponseWriter, r *http.Request, orgID, requestID, relation string, approve bool) {
+func (s *Server) decideUMA(w http.ResponseWriter, r *http.Request, orgID, requestID, relation string,
+	expires *time.Time, approve bool) {
 	ctx := r.Context()
 	pre, ok := s.readPrecondition(w, r)
 	if !ok {
@@ -186,7 +192,7 @@ func (s *Server) decideUMA(w http.ResponseWriter, r *http.Request, orgID, reques
 			return err
 		}
 		if approve {
-			p, err := store.ApproveUMARequest(ctx, tx, orgID, requestID, relation, decider(ctx))
+			p, err := store.ApproveUMARequest(ctx, tx, orgID, requestID, relation, decider(ctx), expires)
 			if err != nil {
 				return err
 			}

@@ -332,7 +332,8 @@ federation out:
 authorization and federation:
   authz set-model      store an authorization model once its own tests pass
   authz show-model     print the authorization model in force
-  authz grant          grant a relation
+  authz test           check a model file and run its tests, with no database
+  authz grant          grant a relation, for good or for -expires-in
   authz revoke         revoke a relation
   authz check          answer an authorization question, with the reason
   uma settings         offer, or stop offering, resource-owner intervention on refused UMA requests
@@ -580,7 +581,7 @@ func run(args []string) (err error) {
 		"`instance org-budgets`: sign-ins the organisation's pages may take a minute (0 restores the default)")
 	bindingID := fs.String("binding", "", "a role binding's uuid, from `signari role list`")
 	tokenExpires := fs.Duration("expires-in", 0,
-		"how long an admin token stays valid, e.g. 2160h for 90 days (0 = never)")
+		"how long an admin token or a granted relation stays valid, e.g. 2160h for 90 days (0 = never)")
 	tokenID := fs.String("token-id", "", "admin token uuid to revoke, or a registration token's (registration revoke)")
 	tlsSubjectDN := fs.String("tls-subject-dn", "", "certificate subject DN that must match (RFC 4514)")
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
@@ -1036,6 +1037,8 @@ func run(args []string) (err error) {
 		return policyTest(*policyFile)
 	case "policy graph":
 		return policyGraph(*policyFile, *outFile)
+	case "authz test":
+		return authzTest(*modelFile)
 	// The flow commands read a file and nothing else, for the same reason: a
 	// flow that would not load must fail in CI, not on the next restart.
 	case "flow test":
@@ -1602,7 +1605,7 @@ func run(args []string) (err error) {
 	case "uma requests":
 		return umaRequests(ctx, conn, *orgID, *outputFormat)
 	case "uma approve":
-		return umaApprove(ctx, conn, *umaRequestID, *relRelation)
+		return umaApprove(ctx, conn, *umaRequestID, *relRelation, *tokenExpires)
 	case "uma deny":
 		return umaDeny(ctx, conn, *umaRequestID)
 	case "client set-claims-redirects":
@@ -1612,7 +1615,7 @@ func run(args []string) (err error) {
 	case "authz show-model":
 		return authzModelShow(ctx, conn, *orgID)
 	case "authz grant":
-		return authzGrant(ctx, conn, *orgID, *relSubject, *relRelation, *relObject)
+		return authzGrant(ctx, conn, *orgID, *relSubject, *relRelation, *relObject, *tokenExpires)
 	case "authz revoke":
 		return authzRevoke(ctx, conn, *orgID, *relSubject, *relRelation, *relObject)
 	case "authz check":
@@ -8047,6 +8050,36 @@ func authzModelSet(ctx context.Context, conn *pgx.Conn, orgID, file string) erro
 	return nil
 }
 
+// authzTest checks a model file with no database, in CI, by the parse that storing
+// it would run: so "it passes here" and "it will load" are the same statement.
+func authzTest(path string) error {
+	if path == "" {
+		return fmt.Errorf("give -model-file, the model to check")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	m, err := authzen.ParseModel(data)
+	if err != nil {
+		return err
+	}
+	actions := 0
+	for _, t := range m.Types {
+		actions += len(t.Permissions)
+	}
+	fmt.Printf("  %s: %d type(s), %d action(s)\n", path, len(m.Types), actions)
+	for i, tc := range m.Tests {
+		name := tc.Name
+		if name == "" {
+			name = fmt.Sprintf("test %d", i+1)
+		}
+		fmt.Printf("    ok   %s\n", name)
+	}
+	fmt.Println("\n  This file will load. Its permissions do what its tests say.")
+	return nil
+}
+
 // authzModelShow prints the model as written.
 func authzModelShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	if orgID == "" {
@@ -8073,7 +8106,19 @@ func splitRef(flag, ref string) (typ, id string, err error) {
 	return typ, id, nil
 }
 
-func authzGrant(ctx context.Context, conn *pgx.Conn, orgID, subject, relation, object string) error {
+// grantExpiry turns -expires-in into the moment a grant ends; nil for good.
+func grantExpiry(expiresIn time.Duration) (*time.Time, error) {
+	if expiresIn < 0 {
+		return nil, fmt.Errorf("-expires-in must not be negative: a grant that has already ended grants nothing")
+	}
+	if expiresIn == 0 {
+		return nil, nil
+	}
+	at := time.Now().Add(expiresIn).UTC()
+	return &at, nil
+}
+
+func authzGrant(ctx context.Context, conn *pgx.Conn, orgID, subject, relation, object string, expiresIn time.Duration) error {
 	if orgID == "" || subject == "" || relation == "" || object == "" {
 		return fmt.Errorf("-org, -principal, -relation and -object are all required")
 	}
@@ -8085,11 +8130,19 @@ func authzGrant(ctx context.Context, conn *pgx.Conn, orgID, subject, relation, o
 	if err != nil {
 		return err
 	}
+	expires, err := grantExpiry(expiresIn)
+	if err != nil {
+		return err
+	}
 	if err := store.GrantRelation(ctx, conn, orgID, store.Relation{
 		SubjectType: styp, SubjectID: sid, Relation: relation,
-		ObjectType: otyp, ObjectID: oid,
+		ObjectType: otyp, ObjectID: oid, ExpiresAt: expires,
 	}, ""); err != nil {
 		return err
+	}
+	if expires != nil {
+		fmt.Printf("%s is %s of %s until %s\n", subject, relation, object, expires.Format(time.RFC3339))
+		return nil
 	}
 	fmt.Printf("%s is %s of %s\n", subject, relation, object)
 	return nil

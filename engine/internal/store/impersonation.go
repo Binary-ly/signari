@@ -289,13 +289,7 @@ func PrivilegedUser(ctx context.Context, q rowQuerier, userID string) (orgID str
 	if !ok {
 		return "", false, false, nil
 	}
-	err = q.QueryRow(ctx, `
-		SELECT u.org_id::text, EXISTS (
-			SELECT 1
-			  FROM core.group_members m
-			  JOIN core.groups g ON g.id = m.group_id
-			 WHERE m.user_id = u.id AND g.org_id = u.org_id AND g.may_impersonate)
-		    OR EXISTS (SELECT 1 FROM core.admin_role_bindings b WHERE b.user_id = u.id)
+	err = q.QueryRow(ctx, `SELECT u.org_id::text, `+privilegedPerson+`
 		  FROM core.users u
 		 WHERE u.id = $1::uuid`, userID).Scan(&orgID, &privileged)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -305,6 +299,36 @@ func PrivilegedUser(ctx context.Context, q rowQuerier, userID string) (orgID str
 		return "", false, false, err
 	}
 	return orgID, privileged, true, nil
+}
+
+// privilegedPerson is the one definition, for the person u.
+const privilegedPerson = `(EXISTS (
+			SELECT 1
+			  FROM core.group_members m
+			  JOIN core.groups g ON g.id = m.group_id
+			 WHERE m.user_id = u.id AND g.org_id = u.org_id AND g.may_impersonate)
+		    OR EXISTS (SELECT 1 FROM core.admin_role_bindings b WHERE b.user_id = u.id))`
+
+// PrivilegedUsers is PrivilegedUser for many people in one query: which of
+// userIDs, each an id read from the database, may act as other people.
+func PrivilegedUsers(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, userIDs []string) (map[string]bool, error) {
+	rows, err := q.Query(ctx, `SELECT u.id::text FROM core.users u
+		 WHERE u.id = ANY($1::uuid[]) AND `+privilegedPerson, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
 }
 
 // PrivilegedClient reports whether a client is designated for the Admin API

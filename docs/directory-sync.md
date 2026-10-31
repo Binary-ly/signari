@@ -72,6 +72,15 @@ directory. Each skip is recorded as `directory.privileged_skipped`, and the rest
 of the run carries on. Deactivation is never skipped, because a departed
 administrator must stop getting in.
 
+Somebody a paged fetch returns twice is one person, and the later entry is the
+one kept. Two different entries with one address are two people claiming one
+account: a source links a person once, so the run stops, names the address and
+changes nothing. Fix it upstream and sync again.
+
+A run is one transaction, and writers of addresses and usernames in that
+organisation wait for it to commit: 100,000 people are created in about eight
+seconds, measured on a laptop, and a later run touches only what changed.
+
 ## A short list is never success
 
 Both adapters treat a failure part-way through pagination as an **error**, never

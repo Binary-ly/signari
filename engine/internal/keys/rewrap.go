@@ -173,6 +173,21 @@ func RewrapRoot(ctx context.Context, tx pgx.Tx, old, next *RootKey) ([]RewrapRep
 	return reports, nil
 }
 
+// keyType is the type of a table's key column, for an update to compare the
+// column itself. Through key::text no index can serve it, so a rotation of
+// subject_keys read the table once for every person (0.53).
+func keyType(ctx context.Context, tx pgx.Tx, table, column string) (string, error) {
+	var name string
+	err := tx.QueryRow(ctx, `
+		SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a
+		 WHERE a.attrelid = ('core.' || $1)::regclass AND a.attname = $2 AND NOT a.attisdropped`,
+		table, column).Scan(&name)
+	if err != nil {
+		return "", fmt.Errorf("reading the type of core.%s.%s: %w", table, column, err)
+	}
+	return name, nil
+}
+
 // rewrapField is rewrapColumn for a sealed value inside a JSON column, where
 // it is held as standard base64 because ciphertext is not valid UTF-8.
 func rewrapField(ctx context.Context, tx pgx.Tx, f sealedField, old, next *RootKey) (RewrapReport, error) {
@@ -199,6 +214,10 @@ func rewrapField(ctx context.Context, tx pgx.Tx, f sealedField, old, next *RootK
 		return rep, fmt.Errorf("reading core.%s.%s: %w", f.table, rep.Column, err)
 	}
 
+	keyAs, err := keyType(ctx, tx, f.table, f.key)
+	if err != nil {
+		return rep, err
+	}
 	for _, r := range batch {
 		sealed, err := base64.StdEncoding.DecodeString(r.encoded)
 		if err != nil {
@@ -222,7 +241,7 @@ func rewrapField(ctx context.Context, tx pgx.Tx, f sealedField, old, next *RootK
 		}
 		if _, err := tx.Exec(ctx, fmt.Sprintf(
 			`UPDATE core.%s SET %s = jsonb_set(%s::jsonb, '{%s}', to_jsonb($1::text))
-			  WHERE %s::text = $2`, f.table, f.column, f.column, f.field, f.key),
+			  WHERE %s = $2::%s`, f.table, f.column, f.column, f.field, f.key, keyAs),
 			base64.StdEncoding.EncodeToString(resealed), r.id); err != nil {
 			return rep, fmt.Errorf("writing core.%s row %s: %w", f.table, r.id, err)
 		}
@@ -262,6 +281,10 @@ func rewrapColumn(ctx context.Context, tx pgx.Tx, c sealedColumn, old, next *Roo
 		return rep, fmt.Errorf("reading core.%s.%s: %w", c.table, c.column, err)
 	}
 
+	keyAs, err := keyType(ctx, tx, c.table, c.key)
+	if err != nil {
+		return rep, err
+	}
 	for _, r := range batch {
 		plain, err := openWith(old, r.sealed, c.context)
 		if err != nil {
@@ -294,7 +317,7 @@ func rewrapColumn(ctx context.Context, tx pgx.Tx, c sealedColumn, old, next *Roo
 			args = append(args, next.Ref())
 		}
 		if _, err := tx.Exec(ctx, fmt.Sprintf(
-			`UPDATE core.%s SET %s WHERE %s::text = $2`, c.table, set, c.key), args...); err != nil {
+			`UPDATE core.%s SET %s WHERE %s = $2::%s`, c.table, set, c.key, keyAs), args...); err != nil {
 			return rep, fmt.Errorf("writing core.%s row %s: %w", c.table, r.id, err)
 		}
 		rep.Rows++

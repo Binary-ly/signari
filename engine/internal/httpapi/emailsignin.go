@@ -178,10 +178,10 @@ func (s *Server) handleEmailSignInStart(w http.ResponseWriter, r *http.Request) 
 func (s *Server) emailSignInAccount(ctx context.Context, identifier, orgID string) (userID, userOrg string, ok bool) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id::text, org_id::text FROM core.users
-		 WHERE ($1 = '' OR org_id::text = $1) AND status = 'active' AND email IS NOT NULL
+		 WHERE ($1 = '' OR org_id = $4::uuid) AND status = 'active' AND email IS NOT NULL
 		   AND `+store.InInstance("org_id", "$3")+`
 		   AND (email_fold = lower($2) OR username_fold = lower($2))
-		 ORDER BY org_id LIMIT 2`, orgID, identifier, s.instanceID)
+		 ORDER BY org_id LIMIT 2`, orgID, identifier, s.instanceID, store.ExactUUIDOrNil(orgID))
 	if err != nil {
 		s.log.Error("looking up an emailed sign-in's account", "err", err)
 		return "", "", false

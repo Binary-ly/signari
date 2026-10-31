@@ -428,7 +428,7 @@ func requireReach(ctx context.Context, q interface {
 	}
 	var member bool
 	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.group_members
-		WHERE user_id::text = $1 AND group_id = ANY($2::uuid[]))`, userID, groups).Scan(&member); err != nil {
+		WHERE user_id = $1::uuid AND group_id = ANY($2::uuid[]))`, store.ExactUUIDOrNil(userID), groups).Scan(&member); err != nil {
 		return err
 	}
 	if !member {

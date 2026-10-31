@@ -33,9 +33,8 @@ type consentView struct {
 func (s *Server) consentUser(w http.ResponseWriter, r *http.Request) (string, bool) {
 	ctx := r.Context()
 	userID := r.PathValue("userID")
-	var orgID string
-	if err := s.db.QueryRow(ctx, `SELECT org_id::text FROM core.users WHERE id::text = $1`, userID).
-		Scan(&orgID); err != nil {
+	orgID, err := store.OrgOfUser(ctx, s.db, userID)
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user_not_found"})
 			return "", false

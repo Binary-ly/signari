@@ -125,9 +125,9 @@ func (s *Server) resolveAccessToken(ctx context.Context, raw string) (*Principal
 	var userOrg string
 	err = s.db.QueryRow(ctx, `
 		SELECT s.amr, u.org_id::text FROM core.sessions s JOIN core.users u ON u.id = s.user_id
-		 WHERE s.sid = $1 AND s.user_id::text = $2 AND s.revoked_at IS NULL AND s.not_after > now()
+		 WHERE s.sid = $1 AND s.user_id = $2::uuid AND s.revoked_at IS NULL AND s.not_after > now()
 		   AND u.status = 'active' AND `+store.OrgInService("u.org_id"),
-		claims.SessionID, claims.Subject).Scan(&amr, &userOrg)
+		claims.SessionID, store.ExactUUIDOrNil(claims.Subject)).Scan(&amr, &userOrg)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && userOrg != orgID) {
 		return nil, errTokenRejected
 	}

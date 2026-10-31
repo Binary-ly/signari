@@ -293,7 +293,7 @@ func GetSCIMUser(ctx context.Context, db *pgxpool.Pool, sourceID, resourceID str
 	SCIMUser, error) {
 
 	var u SCIMUser
-	if !isResourceID(resourceID) {
+	if !ExactUUID(resourceID) {
 		return u, pgx.ErrNoRows
 	}
 	err := db.QueryRow(ctx, `
@@ -619,7 +619,7 @@ func scimLinkByResourceID(ctx context.Context, tx pgx.Tx, sourceID, resourceID s
 	scimLink, error) {
 
 	var l scimLink
-	if !isResourceID(resourceID) {
+	if !ExactUUID(resourceID) {
 		return l, pgx.ErrNoRows
 	}
 	err := tx.QueryRow(ctx, `

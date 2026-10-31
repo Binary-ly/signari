@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"signari.dev/engine/internal/store"
 )
 
 // Reading the audit trail over HTTP.
@@ -171,13 +173,13 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		   AND ($2::timestamptz IS NULL OR
 		        (occurred_at, id) < ($2::timestamptz, $3::bigint))
 		   AND ($4 = '' OR event_type = $4)
-		   AND ($5 = '' OR subject_id::text = $5)
+		   AND ($5 = '' OR subject_id = $14::uuid)
 		   AND ($6 = '' OR client_id = $6)
 		   AND ($7::timestamptz IS NULL OR occurred_at >= $7::timestamptz)
 		   AND ($8::timestamptz IS NULL OR occurred_at <= $8::timestamptz)
 		   -- What one admin token did, which an investigation of a leaked one
 		   -- starts from (6.05).
-		   AND ($13 = '' OR admin_token_id::text = $13)
+		   AND ($13 = '' OR admin_token_id = $15::uuid)
 		   -- A token restricted to named clients or groups reads only the
 		   -- events about them: reads are narrowed as writes are
 		   -- (docs/admin-tokens.md). It read the whole organisation's trail,
@@ -195,7 +197,8 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		q.Get("event_type"), q.Get("subject_id"), q.Get("client_id"),
 		since, until, limit+1,
 		clientFilter(ctx) != nil || groupFilter(ctx) != nil, clientFilter(ctx), groupFilter(ctx),
-		q.Get("admin_token_id"))
+		q.Get("admin_token_id"), store.ExactUUIDOrNil(q.Get("subject_id")),
+		store.ExactUUIDOrNil(q.Get("admin_token_id")))
 	if err != nil {
 		s.log.Error("listing audit events", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})

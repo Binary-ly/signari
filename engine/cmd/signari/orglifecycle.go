@@ -69,12 +69,15 @@ func readCensus(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, orgID string, lock bool) (orgCensus, error) {
 	var c orgCensus
+	if !store.ExactUUID(orgID) {
+		return c, fmt.Errorf("no organisation %s", orgID)
+	}
 	forUpdate := ""
 	if lock {
 		forUpdate = " FOR UPDATE"
 	}
 	err := q.QueryRow(ctx, `SELECT slug, display_name, status FROM core.organizations
-		WHERE id::text = $1`+forUpdate, orgID).Scan(&c.slug, &c.name, &c.status)
+		WHERE id = $1::uuid`+forUpdate, orgID).Scan(&c.slug, &c.name, &c.status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, fmt.Errorf("no organisation %s", orgID)
 	}
@@ -82,10 +85,10 @@ func readCensus(ctx context.Context, q interface {
 		return c, err
 	}
 	err = q.QueryRow(ctx, `SELECT
-		(SELECT count(*) FROM core.users WHERE org_id::text = $1),
-		(SELECT count(*) FROM core.clients WHERE org_id::text = $1),
-		(SELECT count(*) FROM core.groups WHERE org_id::text = $1),
-		(SELECT count(*) FROM core.sessions WHERE org_id::text = $1 AND revoked_at IS NULL AND not_after > now())`,
+		(SELECT count(*) FROM core.users WHERE org_id = $1::uuid),
+		(SELECT count(*) FROM core.clients WHERE org_id = $1::uuid),
+		(SELECT count(*) FROM core.groups WHERE org_id = $1::uuid),
+		(SELECT count(*) FROM core.sessions WHERE org_id = $1::uuid AND revoked_at IS NULL AND not_after > now())`,
 		orgID).Scan(&c.users, &c.clients, &c.groups, &c.sessions)
 	return c, err
 }
@@ -147,7 +150,7 @@ func instanceOrgDelete(ctx context.Context, conn *pgx.Conn, orgID, confirm strin
 			"to see what it holds and the code for it. Nothing was deleted", c.slug)
 	}
 
-	rows, err := tx.Query(ctx, `SELECT id::text FROM core.users WHERE org_id::text = $1`, orgID)
+	rows, err := tx.Query(ctx, `SELECT id::text FROM core.users WHERE org_id = $1::uuid`, orgID)
 	if err != nil {
 		return err
 	}
@@ -172,10 +175,10 @@ func instanceOrgDelete(ctx context.Context, conn *pgx.Conn, orgID, confirm strin
 		}
 		ended += rep.SessionsEnded
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM core.clients WHERE org_id::text = $1`, orgID); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM core.clients WHERE org_id = $1::uuid`, orgID); err != nil {
 		return fmt.Errorf("removing the clients: %w. Nothing was deleted", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM core.organizations WHERE id::text = $1`, orgID); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM core.organizations WHERE id = $1::uuid`, orgID); err != nil {
 		return fmt.Errorf("removing the organisation: %w. Nothing was deleted", err)
 	}
 	if err := audit.Write(ctx, tx, audit.Event{Type: "admin.organization_deleted", OrgID: orgID,

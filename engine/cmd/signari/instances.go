@@ -66,7 +66,7 @@ func accountNotifier(db *pgxpool.Pool, byInstance map[string]*httpapi.Server) ou
 		err := db.QueryRow(ctx, `
 			SELECT o.instance_id::text FROM core.users u
 			  JOIN core.organizations o ON o.id = u.org_id
-			 WHERE u.id::text = $1`, n.UserID).Scan(&instanceID)
+			 WHERE u.id = $1::uuid`, store.ExactUUIDOrNil(n.UserID)).Scan(&instanceID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return outbox.ErrNoSuchAccount
 		}

@@ -45,3 +45,32 @@ func TestNoLookupFoldsAnIdentifierColumn(t *testing.T) {
 		t.Fatalf("read %d files; this test is reading the wrong thing", found)
 	}
 }
+
+// No large table is searched through the text of a uuid (0.53). `id::text = $1`
+// can use no index on any role, the primary key included, so it reads the whole
+// table: granting a token did that to core.users, every time. Most such lookups
+// are on tables of a few rows and stay as they are; these are the tables that
+// grow with the people.
+func TestNoPersonIsFoundThroughTheTextOfAnID(t *testing.T) {
+	asText := regexp.MustCompile(`(?s)core\.(users|group_members|audit_events|sessions|subject_keys)\b[^` + "`" +
+		`]{0,200}?\b(id|user_id|org_id|subject_id|admin_token_id)::text\s*=`)
+	for _, dir := range []string{"engine/internal", "engine/cmd"} {
+		err := filepath.WalkDir(filepath.Join(repoRoot(t), dir), func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			for _, m := range asText.FindAll(raw, -1) {
+				t.Errorf("%s searches a large table through a uuid's text, which no index can serve; "+
+					"compare the column and bind store.ExactUUIDOrNil:\n\t%s", path, strings.Join(strings.Fields(string(m)), " "))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}

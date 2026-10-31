@@ -109,8 +109,8 @@ func (s *Server) heldAccounts(ctx context.Context, r *http.Request, orgID string
 		  JOIN core.organizations o ON o.id = s.org_id
 		 WHERE s.cookie_hash = ANY($1) AND s.revoked_at IS NULL AND s.not_after > now()
 		   AND u.status = 'active' AND s.impersonator_id IS NULL
-		   AND ($2 = '' OR s.org_id::text = $2)
-		   AND ($3::text = '' OR o.instance_id::text = $3)`, hashes, orgID, s.instanceID)
+		   AND ($2 = '' OR s.org_id = $4::uuid)
+		   AND ($3::text = '' OR o.instance_id::text = $3)`, hashes, orgID, s.instanceID, store.ExactUUIDOrNil(orgID))
 	if err != nil {
 		return nil, err
 	}

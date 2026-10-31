@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/keys"
@@ -36,15 +38,14 @@ func (s *Server) txnSubjectRefused(w http.ResponseWriter, r *http.Request, c *cl
 	subject, sid, scope string) bool {
 
 	ctx := r.Context()
-	var isPerson bool
-	if err := s.db.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM core.users WHERE id::text = $1)`, subject).Scan(&isPerson); err != nil {
+	_, err := store.OrgOfUser(ctx, s.db, subject)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		s.log.Error("txn-token: resolving the subject", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
 		return true
 	}
-	if isPerson {
+	if err == nil {
 		return s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, subject, sid, scope, "txn_token")
 	}
 	// A machine subject, from a client-credentials token: the client it names

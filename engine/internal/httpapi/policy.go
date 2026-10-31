@@ -277,9 +277,7 @@ func (s *Server) grantRefusedByPolicy(w http.ResponseWriter, r *http.Request, or
 	userID, sid, scope, via string) bool {
 
 	ctx := r.Context()
-	var userOrg string
-	if err := s.db.QueryRow(ctx, `SELECT org_id::text FROM core.users WHERE id::text = $1`,
-		userID).Scan(&userOrg); err != nil || userOrg != orgID {
+	if userOrg, err := store.OrgOfUser(ctx, s.db, userID); err != nil || userOrg != orgID {
 		s.log.Info("a grant named a person outside the client's organisation",
 			"client_id", clientID, "via", via, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",

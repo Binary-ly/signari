@@ -1,6 +1,11 @@
 package store
 
-import "strings"
+import (
+	"context"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+)
 
 // CanonicalUUID reads a uuid the way PostgreSQL's uuid_in does and returns it
 // in canonical form (lower case, 8-4-4-4-12). ok is false exactly when
@@ -49,4 +54,39 @@ func CanonicalUUID(s string) (string, bool) {
 	}
 	h := string(hex)
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32], true
+}
+
+// ExactUUID says whether s is a uuid as the database writes one, which is what
+// `id::text = $1` asked, and lets the question go to the column itself. Through
+// its text a uuid column can use no index, its primary key included, so every
+// such lookup read the whole table (0.53); cast instead, a malformed id is an
+// error from the driver rather than nobody, and an upstream retries a 500
+// forever.
+//
+// Stricter than PostgreSQL reads a uuid, which CanonicalUUID warns about in a
+// guard. Here nothing follows a refusal: the id reaches no statement at all,
+// so no write can find the row the guard said was not there.
+func ExactUUID(s string) bool {
+	canonical, ok := CanonicalUUID(s)
+	return ok && canonical == s
+}
+
+// ExactUUIDOrNil is s as a bind for a uuid column: NULL, which matches nobody,
+// when it cannot be one.
+func ExactUUIDOrNil(s string) *string {
+	if !ExactUUID(s) {
+		return nil
+	}
+	return &s
+}
+
+// OrgOfUser reads which organisation a person belongs to. pgx.ErrNoRows when
+// there is no such person, as for an id that could not be one.
+func OrgOfUser(ctx context.Context, q rowQuerier, userID string) (string, error) {
+	if !ExactUUID(userID) {
+		return "", pgx.ErrNoRows
+	}
+	var orgID string
+	err := q.QueryRow(ctx, `SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID)
+	return orgID, err
 }

@@ -176,20 +176,6 @@ func addMembersTx(ctx context.Context, tx pgx.Tx, src *SCIMSource, groupID strin
 	return err
 }
 
-// isResourceID says whether id is one this engine could have issued: a uuid as
-// the database writes it. Anything else is no such resource. Comparing the
-// column's text answered that for nothing, and read past the index to do it;
-// cast instead, a malformed id is an error from the driver, and an upstream
-// retries a 500 forever.
-//
-// Stricter than PostgreSQL reads a uuid, which CanonicalUUID warns about in a
-// guard. Here nothing follows a refusal: the id reaches no statement at all,
-// so no write can find the row the guard said was not there.
-func isResourceID(id string) bool {
-	canonical, ok := CanonicalUUID(id)
-	return ok && canonical == id
-}
-
 // usersForResourceIDs maps /Users resource ids to local user ids, in one query
 // on the index however long the list: this asked once per member, which is
 // what a ten-thousand-member PUT spent its time on.
@@ -203,7 +189,7 @@ func usersForResourceIDs(ctx context.Context, tx pgx.Tx, src *SCIMSource,
 
 	wellFormed := make([]string, 0, len(resourceIDs))
 	for _, rid := range resourceIDs {
-		if isResourceID(rid) {
+		if ExactUUID(rid) {
 			wellFormed = append(wellFormed, rid)
 		}
 	}
@@ -245,7 +231,7 @@ func GetSCIMGroup(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 	resourceID string) (SCIMGroup, error) {
 
 	var g SCIMGroup
-	if !isResourceID(resourceID) {
+	if !ExactUUID(resourceID) {
 		return g, pgx.ErrNoRows
 	}
 	err := db.QueryRow(ctx, `
@@ -369,7 +355,7 @@ func PatchSCIMGroup(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 	resourceID string, p *scim.GroupPatch) (SCIMGroup, error) {
 
 	var out SCIMGroup
-	if !isResourceID(resourceID) {
+	if !ExactUUID(resourceID) {
 		return out, pgx.ErrNoRows
 	}
 	tx, err := db.Begin(ctx)

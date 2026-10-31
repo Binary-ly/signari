@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0200 audit_by_admin_token
+
+Compatible with the release before: its binary may still serve this schema.
+
+The trail of one admin token (6.05, 0.53), which an investigation of a leaked one starts from. Nothing served it: the search read the organisation's whole trail, or the deployment's, through the column's text.
+
 ## 0199 users_folded_identifiers
 
 Not compatible with the release before: stop it before migrating.

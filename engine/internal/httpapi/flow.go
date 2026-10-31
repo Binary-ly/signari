@@ -2421,11 +2421,11 @@ func (s *Server) lookupCredentials(ctx context.Context, identifier, orgID string
 		FROM core.users u
 		JOIN core.password_credentials pc ON pc.user_id = u.id
 		WHERE u.status IN ('active', 'pending')
-		  AND ($2 = '' OR u.org_id::text = $2)
+		  AND ($2 = '' OR u.org_id = $4::uuid)
 		  AND `+store.InInstance("u.org_id", "$3")+`
 		  AND (u.email_fold = lower($1) OR u.username_fold = lower($1))
 		ORDER BY u.org_id
-		LIMIT 5`, identifier, orgID, s.instanceID)
+		LIMIT 5`, identifier, orgID, s.instanceID, store.ExactUUIDOrNil(orgID))
 	if err != nil {
 		return nil, err
 	}

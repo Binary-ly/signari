@@ -265,9 +265,9 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 		JOIN core.password_credentials pc ON pc.user_id = u.id
 		WHERE u.status = 'active'
 		  AND `+store.OrgInService("u.org_id")+`
-		  AND ($2 = '' OR u.org_id::text = $2)
+		  AND ($2 = '' OR u.org_id = $3::uuid)
 		  AND (u.email_fold = lower($1) OR u.username_fold = lower($1))`,
-		username, a.orgID).Scan(&userID, &orgID, &hash)
+		username, a.orgID, store.ExactUUIDOrNil(a.orgID)).Scan(&userID, &orgID, &hash)
 	found := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("looking up the credential: %w", err)

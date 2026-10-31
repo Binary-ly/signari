@@ -425,33 +425,44 @@ func (m *Model) validate() error {
 	return nil
 }
 
+// Validate checks a window can be evaluated and restricts something, where naming
+// what it is on in an error. The access policy holds its windows to the same.
+func (w *TimeWindow) Validate(where string) error {
+	if (w.From != "" || w.To != "") && w.Zone == "" {
+		return fmt.Errorf("%s: a time window needs a `zone` -- \"%s\" without "+
+			"one means that hour somewhere, which is not a control", where, w.From+w.To)
+	}
+	if w.Zone != "" {
+		if _, err := time.LoadLocation(w.Zone); err != nil {
+			return fmt.Errorf("%s: %q is not an IANA time zone", where, w.Zone)
+		}
+	}
+	for _, f := range []string{w.From, w.To} {
+		if f != "" && !validHM(f) {
+			return fmt.Errorf("%s: %q is not HH:MM", where, f)
+		}
+	}
+	for _, d := range w.Days {
+		if !validDay(d) {
+			return fmt.Errorf("%s: %q is not a day (use mon, tue, wed, thu, "+
+				"fri, sat, sun)", where, d)
+		}
+	}
+	if len(w.Days) == 0 && w.From == "" && w.To == "" {
+		return fmt.Errorf("%s: the time window restricts nothing", where)
+	}
+	return nil
+}
+
+// Contains reports whether t falls inside the window.
+func (w *TimeWindow) Contains(t time.Time) bool { return w.contains(t) }
+
 // validate checks a condition can actually be evaluated.
 func (c Condition) validate(typeName, action string) error {
 	where := typeName + "." + action
 	if c.Time != nil {
-		w := c.Time
-		if (w.From != "" || w.To != "") && w.Zone == "" {
-			return fmt.Errorf("%s: a time window needs a `zone` -- \"%s\" without "+
-				"one means that hour somewhere, which is not a control", where, w.From+w.To)
-		}
-		if w.Zone != "" {
-			if _, err := time.LoadLocation(w.Zone); err != nil {
-				return fmt.Errorf("%s: %q is not an IANA time zone", where, w.Zone)
-			}
-		}
-		for _, f := range []string{w.From, w.To} {
-			if f != "" && !validHM(f) {
-				return fmt.Errorf("%s: %q is not HH:MM", where, f)
-			}
-		}
-		for _, d := range w.Days {
-			if !validDay(d) {
-				return fmt.Errorf("%s: %q is not a day (use mon, tue, wed, thu, "+
-					"fri, sat, sun)", where, d)
-			}
-		}
-		if len(w.Days) == 0 && w.From == "" && w.To == "" {
-			return fmt.Errorf("%s: the time window restricts nothing", where)
+		if err := c.Time.Validate(where); err != nil {
+			return err
 		}
 	}
 	if c.Asserted != nil {

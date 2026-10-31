@@ -33,6 +33,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/migrate"
 	"signari.dev/engine/internal/pages"
+	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/store"
@@ -898,7 +899,31 @@ func checkPolicy(ctx context.Context, conn *pgx.Conn, r *Report) error {
 			"to every user",
 			"that may be correct. If not, write one and apply it with `signari policy apply`")
 	}
-	return nil
+	if os.Getenv("SIGNARI_GEOIP_DB") != "" || os.Getenv("SIGNARI_GEOIP_STATIC") != "" {
+		return nil
+	}
+	// Nothing to place an address with, and a rule that asks where it is: from_countries
+	// is not met by an address it cannot place, so everybody it covers is refused, and
+	// not_from_countries refuses nobody.
+	rows, err := conn.Query(ctx, `SELECT o.slug, p.document FROM core.access_policies p
+		JOIN core.organizations o ON o.id = p.org_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug, doc string
+		if err := rows.Scan(&slug, &doc); err != nil {
+			return err
+		}
+		if f, err := policy.Parse([]byte(doc)); err == nil && f.UsesCountries() {
+			r.add(Warning, "policy", fmt.Sprintf("%s's access policy asks where an address is, and no GeoIP "+
+				"source is configured, so nothing can be placed", slug),
+				"set SIGNARI_GEOIP_DB or SIGNARI_GEOIP_STATIC: until then from_countries refuses "+
+					"everybody it covers and not_from_countries refuses nobody")
+		}
+	}
+	return rows.Err()
 }
 
 // checkSignInFlows reports a stored flow the engine refuses to load.

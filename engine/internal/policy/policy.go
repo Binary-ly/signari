@@ -29,8 +29,11 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"signari.dev/engine/internal/authzen"
 )
 
 // File is a parsed policy document.
@@ -91,6 +94,20 @@ type Conditions struct {
 	MFA bool `yaml:"mfa"`
 	// FromNetworks limits the request to these CIDR ranges.
 	FromNetworks []string `yaml:"from_networks"`
+	// FromCountries limits the request to these ISO 3166 codes, as the GeoIP
+	// database places its address. Unplaced, it is not met, as FromNetworks is
+	// not: "we do not know" must not read as "inside".
+	FromCountries []string `yaml:"from_countries"`
+	// NotFromCountries refuses these. An address nothing can place passes: this
+	// is evidence against a request, and there is none.
+	NotFromCountries []string `yaml:"not_from_countries"`
+	// MaxRecentFailures refuses an address that has failed more sign-ins than
+	// this lately, across every account: a reputation this deployment earned
+	// for it, read from the budget the sign-in form already keeps.
+	MaxRecentFailures int `yaml:"max_recent_failures"`
+	// Time limits the request to a window, by this server's clock. It is checked
+	// at a refresh too: access for office hours stops at the end of them.
+	Time *authzen.TimeWindow `yaml:"time"`
 	// NoImpossibleTravel refuses when the previous sign-in was somewhere this
 	// person could not have travelled from in the time available.
 	//
@@ -152,6 +169,15 @@ type Request struct {
 	// file's own tests without a phone.
 	AMR []string `yaml:"amr"`
 	IP  string   `yaml:"ip"`
+	// Country is where the GeoIP database places IP, empty when it cannot, and
+	// RecentFailures how many sign-ins that address has failed lately. Each is
+	// set by the caller only when a rule asks, and by a test case directly.
+	Country        string `yaml:"country"`
+	RecentFailures int    `yaml:"recent_failures"`
+	// At is the moment of the decision as RFC 3339, for a test case: a window
+	// whose tests only pass between nine and five is a test nobody can run. A
+	// real request leaves it empty and is decided by this server's clock.
+	At string `yaml:"at"`
 	// ImpossibleTravel is set by the caller from a risk check that RAN. A test
 	// case can set it directly, which is how the condition is covered by the
 	// file's own tests without a GeoIP database.
@@ -251,6 +277,20 @@ func (f *File) validate() error {
 				return fmt.Errorf("policy %q: %q is not a network in CIDR form", r.Name, cidr)
 			}
 		}
+		for _, code := range append(slices.Clone(r.Require.FromCountries), r.Require.NotFromCountries...) {
+			if len(code) != 2 || strings.ToUpper(code) != code {
+				return fmt.Errorf("policy %q: %q is not an ISO 3166 country code, two capital letters: "+
+					"it would match nothing, and nobody would see why", r.Name, code)
+			}
+		}
+		if r.Require.MaxRecentFailures < 0 {
+			return fmt.Errorf("policy %q: max_recent_failures of %d", r.Name, r.Require.MaxRecentFailures)
+		}
+		if r.Require.Time != nil {
+			if err := r.Require.Time.Validate("policy " + r.Name); err != nil {
+				return err
+			}
+		}
 	}
 	if len(f.Tests) == 0 {
 		// Refused, not warned about. A policy with no tests is a policy whose
@@ -267,7 +307,8 @@ func (c Conditions) isEmpty() bool {
 	return len(c.Groups) == 0 && len(c.AnyGroup) == 0 && len(c.UserAttributes) == 0 && !c.MFA &&
 		!c.PhishingResistant && len(c.FactorsAnyOf) == 0 &&
 		len(c.FromNetworks) == 0 && !c.NoImpossibleTravel &&
-		!c.DeviceManaged && !c.DeviceCompliant
+		!c.DeviceManaged && !c.DeviceCompliant &&
+		len(c.FromCountries) == 0 && len(c.NotFromCountries) == 0 && c.MaxRecentFailures == 0 && c.Time == nil
 }
 
 // RunTests evaluates every case in the file.
@@ -401,6 +442,18 @@ func (c Conditions) satisfiedBy(req Request) bool {
 	if c.MFA && !req.MFA {
 		return false
 	}
+	if c.Time != nil {
+		now := time.Now()
+		if req.At != "" {
+			var err error
+			if now, err = time.Parse(time.RFC3339, req.At); err != nil {
+				return false
+			}
+		}
+		if !c.Time.Contains(now) {
+			return false
+		}
+	}
 	if req.Refresh {
 		// The where-from conditions below were checked at sign-in; see Request.
 		return true
@@ -421,6 +474,15 @@ func (c Conditions) satisfiedBy(req Request) bool {
 		return false
 	}
 	if c.NoImpossibleTravel && req.ImpossibleTravel {
+		return false
+	}
+	if len(c.FromCountries) > 0 && !contains(c.FromCountries, req.Country) {
+		return false
+	}
+	if contains(c.NotFromCountries, req.Country) {
+		return false
+	}
+	if c.MaxRecentFailures > 0 && req.RecentFailures > c.MaxRecentFailures {
 		return false
 	}
 	if len(c.FromNetworks) > 0 {
@@ -450,7 +512,8 @@ func (c Conditions) satisfiedBy(req Request) bool {
 // asksWhereFrom reports whether c has a condition about where the person is or
 // what they are holding, which only a request from the person can answer.
 func (c Conditions) asksWhereFrom() bool {
-	return c.DeviceManaged || c.DeviceCompliant || c.NoImpossibleTravel || len(c.FromNetworks) > 0
+	return c.DeviceManaged || c.DeviceCompliant || c.NoImpossibleTravel || len(c.FromNetworks) > 0 ||
+		len(c.FromCountries) > 0 || len(c.NotFromCountries) > 0 || c.MaxRecentFailures > 0
 }
 
 func contains(hay []string, needle string) bool {
@@ -484,6 +547,28 @@ func (f *File) Summary() string {
 func (f *File) UsesImpossibleTravel() bool {
 	for _, r := range f.Policies {
 		if r.Require.NoImpossibleTravel {
+			return true
+		}
+	}
+	return false
+}
+
+// UsesCountries reports whether any rule asks where an address is, for the same
+// reason, and for `signari doctor`: with no GeoIP database nothing can be placed,
+// so from_countries refuses everybody.
+func (f *File) UsesCountries() bool {
+	for _, r := range f.Policies {
+		if len(r.Require.FromCountries) > 0 || len(r.Require.NotFromCountries) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// UsesRecentFailures reports whether any rule asks about an address's record.
+func (f *File) UsesRecentFailures() bool {
+	for _, r := range f.Policies {
+		if r.Require.MaxRecentFailures > 0 {
 			return true
 		}
 	}

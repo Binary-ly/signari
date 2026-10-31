@@ -104,6 +104,38 @@ could meet, and a personal value is sealed under its subject's key and would be
 opened for every decision. A test case gives a person's attributes with `attributes:`.
 It is about who somebody is, so it is checked at a refresh too.
 
+**A rule can ask when, and from where.**
+
+```yaml
+- name: payroll-in-office-hours
+  when: {client: payroll}
+  require:
+    time: {days: [mon, tue, wed, thu, fri], from: "09:00", to: "17:00", zone: Europe/London}
+    from_countries: [GB, IE]
+- name: not-from-there
+  require:
+    not_from_countries: [KP]
+- name: not-from-a-bad-address
+  require:
+    max_recent_failures: 20
+```
+
+`time` goes by this server's clock and holds at a refresh too, so access for office
+hours stops at the end of them, and a test case pins the moment with `at:`.
+
+The countries need a GeoIP source, `SIGNARI_GEOIP_DB` or `SIGNARI_GEOIP_STATIC`, and
+`signari doctor` warns when a policy asks and there is none. An address nothing can
+place does **not** meet `from_countries`, for the reason it does not meet
+`from_networks`, and it passes `not_from_countries`, which is evidence against a request
+and has none. Test cases give `country:`.
+
+`max_recent_failures` refuses an address that has failed more sign-ins than this in the
+last five minutes across every account, from the budget the sign-in form keeps. Test
+cases give `recent_failures:`.
+
+All three are about where somebody is, so they are checked at sign-in, not at a
+refresh, and not met on a grant nobody watched.
+
 **Unknown fields are an error.** `any_groups` is not a field; `any_group` is.
 Silently ignoring the typo leaves a rule that appears to restrict and demands
 nothing — the most dangerous possible mistake in a file like this.

@@ -207,6 +207,20 @@ func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.R
 		if f.UsesImpossibleTravel() {
 			req.ImpossibleTravel = s.impossibleTravel(ctx, userID, req.IP)
 		}
+		if f.UsesCountries() {
+			req.Country = s.geo.Resolve(req.IP).Country
+		}
+		if f.UsesRecentFailures() {
+			// The budget the sign-in form keeps. Unread is refused like anything
+			// else this rule cannot be sure of.
+			failures, err := store.CountRate(ctx, q, "signin:fail:ip:"+budgetIP(req.IP), signInPerIPWindow)
+			if err != nil {
+				s.log.Error("reading an address's failures for a policy decision", "err", err)
+				return &policy.Decision{Allowed: false, Rule: "(internal)",
+					Message: "Access could not be checked. Please try again."}
+			}
+			req.RecentFailures = failures
+		}
 
 		// Device posture, likewise only when a rule asks. Evaluating it always
 		// would verify a certificate chain on every authorization for the

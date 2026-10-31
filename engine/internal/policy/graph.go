@@ -233,6 +233,18 @@ func describeConditions(c Conditions) []string {
 	for _, name := range slices.Sorted(maps.Keys(c.UserAttributes)) {
 		out = append(out, "the attribute "+name)
 	}
+	if len(c.FromCountries) > 0 {
+		out = append(out, "from "+strings.Join(c.FromCountries, ", "))
+	}
+	if len(c.NotFromCountries) > 0 {
+		out = append(out, "not from "+strings.Join(c.NotFromCountries, ", "))
+	}
+	if c.MaxRecentFailures > 0 {
+		out = append(out, fmt.Sprintf("an address with at most %d recent failures", c.MaxRecentFailures))
+	}
+	if c.Time != nil {
+		out = append(out, "inside its hours")
+	}
 	return out
 }
 

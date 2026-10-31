@@ -40,6 +40,7 @@ var commandFlags = map[string][]string{
 	"client set-lifetimes":            {"access-ttl", "client-id", "consent-ttl", "refresh-ttl"},
 	"client set-logout":               {"backchannel-sid", "backchannel-uri", "client-id", "frontchannel-sid", "frontchannel-uri", "post-logout-redirects"},
 	"client set-par":                  {"client-id", "require-par"},
+	"client set-state":                {"client-id", "require-state"},
 	"client set-pkce":                 {"client-id", "require-pkce"},
 	"client set-tls":                  {"client-id", "sp-cert", "tls-bound-tokens", "tls-san-dns", "tls-san-email", "tls-san-ip", "tls-san-uri", "tls-subject-dn"},
 	"credential define":               {"always", "brand-name", "credential-configuration", "org", "require-key-attestation", "selective", "valid-for", "vct"},

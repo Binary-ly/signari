@@ -110,6 +110,14 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A client held to `state` (9.13): redirected, the redirect_uri being valid, so
+	// the relying party hears of it rather than a person seeing a dead end.
+	if c != nil && c.RequireState && req.State == "" {
+		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "invalid_request",
+			Description: "this client must send state", Disposition: oauth.DispositionRedirect})
+		return
+	}
+
 	// RFC 9396: validated here, after the client is known, because §5's
 	// unknown-field rule is enforced against the types this CLIENT may request.
 	//
@@ -482,6 +490,11 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	if err := store.IssueCode(ctx, tx, orgID, c.ClientID, sid, userID, grant, hash,
 		req.Resources, details); err != nil {
 		s.log.Error("issuing code", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := s.noteChallengeReuse(ctx, tx, orgID, c.ClientID, userID, req.CodeChallenge); err != nil {
+		s.log.Error("noting a PKCE challenge", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -1437,17 +1450,17 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 			Status:      http.StatusBadRequest})
 		return
 	}
-	// The Admin API's audience (6.01), for a client the deployment designated,
-	// asked for alone: the token acts at the Admin API with the client's own
-	// roles. Any other resource is still not read by this grant, whose token is
-	// audienced to the client.
+	// RFC 8707, as every other grant: the resources asked for are the audience, each
+	// registered, or the Admin API's alone for a client the deployment designated
+	// (6.01). Unread here until 0.27, so a service asking for the billing API got a
+	// token audienced to itself and valid wherever that was accepted.
 	audience := []string{c.ClientID}
-	if admin := tokens.AdminAudience(s.cfg.Issuer); slices.Contains(req.Resources, admin) {
+	if len(req.Resources) > 0 {
 		if err := s.checkResources(r.Context(), s.db, c, c.OrgID, req.Resources); err != nil {
 			writeMintError(w, err)
 			return
 		}
-		audience = []string{admin}
+		audience = req.Resources
 	}
 	// The subject is the client itself.
 	hookCtx, ok := s.consultTokenHook(r.Context(), w, store.TokenHookRequest{

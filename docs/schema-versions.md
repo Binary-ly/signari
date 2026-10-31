@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0210 client_require_state
+
+Compatible with the release before: its binary may still serve this schema.
+
+A client held to sending `state` (9.13). PKCE protects the code here by default, so the parameter is optional, and a relying party whose own CSRF defence is `state` has no way to learn it stopped sending one. Off by default, since turning it on refuses a client that has not been changed.
+
 ## 0209 saml_nameid_source
 
 Compatible with the release before: its binary may still serve this schema.

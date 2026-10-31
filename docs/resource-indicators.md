@@ -2,7 +2,8 @@
 
 A client may ask for an access token meant for one API rather than for itself,
 by sending RFC 8707's `resource` parameter at `/oauth2/authorize`, at
-`/oauth2/par` or at `/oauth2/device_authorization`. The values it sends become
+`/oauth2/par`, at `/oauth2/device_authorization`, or at the token endpoint with
+the `client_credentials` grant. The values it sends become
 the token's `aud`, which is what a resource server checks before it serves the
 request. With no `resource`, the audience is the client's own id.
 
@@ -48,3 +49,8 @@ audienced to any API that trusts this issuer, another organisation's included.
 After upgrading, a client that sends `resource` is refused until its resource
 servers are registered. `signari resource list` with nothing registered says
 so.
+
+`client_credentials` used to ignore `resource` and audience the token to the client,
+the Admin API's audience aside. A service sending one for a resource nobody registered
+was given a token and is now refused `invalid_target`, and one sending a registered
+resource now gets a token audienced to it, no longer to its own client id.

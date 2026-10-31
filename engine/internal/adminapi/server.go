@@ -820,6 +820,7 @@ type patchClientRequest struct {
 	// RequirePushedAuthorizationRequests is RFC 9126 §6's name; FirstParty
 	// skips the consent screen.
 	RequirePushedAuthorizationRequests *bool `json:"require_pushed_authorization_requests"`
+	RequireState                       *bool `json:"require_state"`
 	FirstParty                         *bool `json:"first_party"`
 	// AdminAPI designates the client for the Admin API (6.01): it may obtain
 	// tokens that act with their holder's roles. Needs privileged-users:write,
@@ -1038,6 +1039,7 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 	}
 	s.IDTokenAlg = r.IDTokenSignedResponseAlg
 	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
+	s.RequireState = r.RequireState
 	s.MinimumACR = r.MinimumACR
 	if r.ConsentLifetimeSeconds != nil {
 		d := time.Duration(*r.ConsentLifetimeSeconds) * time.Second
@@ -1194,6 +1196,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				"refresh_token_ttl_s":                   int(got.RefreshTokenTTL.Seconds()),
 				"id_token_signed_response_alg":          got.IDTokenAlg,
 				"require_pushed_authorization_requests": got.RequirePAR,
+				"require_state":                         got.RequireState,
 				"first_party":                           got.FirstParty,
 				"issuer_alias":                          got.IssuerAlias,
 				"minimum_acr":                           got.MinimumACR,

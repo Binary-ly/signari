@@ -54,12 +54,12 @@ are different addresses), and path, query and fragment must match exactly.
 | Mitigate PKCE downgrade: verifier accepted only if a challenge was present | MUST | **fixed this session** — see `protocol-review-oauth.md` |
 | Provide a way to detect PKCE support | MUST | `code_challenge_methods_supported` in metadata |
 | Prefer challenge methods that do not expose the verifier | SHOULD | S256 only; `plain` refused outright |
-| Detect constant PKCE challenge / nonce values | encouraged | **not implemented** — see below |
+| Detect constant PKCE challenge / nonce values | encouraged | challenges, yes; nonces, no — see below |
 
-The one §2.1.1 item not covered is the encouragement to detect constant
-challenge values. It is not a MUST and it is genuinely awkward — distinguishing
-a client that reuses a challenge from one that legitimately retries needs state
-per client over time. Recorded as a gap rather than quietly omitted.
+A client sending a code challenge it sent in the last day is recorded as
+`oauth.pkce_challenge_reused`. It is a signal and not a refusal, because a person
+reloading a page can repeat one honestly, and telling that from a hard-coded pair
+needs a human looking at how often it happens. A repeated `nonce` is not tracked.
 
 ## §2.2 Token replay prevention
 

@@ -2,12 +2,16 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
@@ -62,6 +66,32 @@ func (s *Server) checkResources(ctx context.Context, q interface {
 		return errUnregisteredResource
 	}
 	return nil
+}
+
+// challengeReuseWindow is how long a code challenge is remembered per client.
+const challengeReuseWindow = 24 * time.Hour
+
+// noteChallengeReuse records a client sending a challenge it sent before (9.14). A
+// challenge is meant to be new each time, and one that is not protects nothing: whoever
+// saw the verifier once can redeem any later code, so a client hard-coding a pair has
+// PKCE in name only. A signal and not a refusal, since a person reloading a page can
+// repeat one honestly, and that must not stop them signing in. In the transaction that
+// issued the code, so a code rolled back leaves no record.
+func (s *Server) noteChallengeReuse(ctx context.Context, tx pgx.Tx, orgID, clientID, userID, challenge string) error {
+	if challenge == "" {
+		return nil
+	}
+	sum := sha256.Sum256([]byte(clientID + "\x00" + challenge))
+	seen, err := store.AllowRate(ctx, tx, "pkce:"+base64.RawURLEncoding.EncodeToString(sum[:]), 1, challengeReuseWindow)
+	if err != nil {
+		return err
+	}
+	if seen.Allowed {
+		return nil
+	}
+	s.log.Warn("a client repeated a PKCE challenge", "client_id", clientID)
+	return audit.Write(ctx, tx, audit.Event{Type: "oauth.pkce_challenge_reused", OrgID: orgID, SubjectID: userID,
+		Detail: map[string]any{"client_id": clientID}})
 }
 
 // writeMintError answers a failed mint: a resource refused is the client's

@@ -536,6 +536,7 @@ type GetClientsClientIDResponse struct {
 	RegisteredAt                          *string        `json:"registered_at,omitempty"`
 	RequirePkce                           bool           `json:"require_pkce,omitempty"`
 	RequirePushedAuthorization            bool           `json:"require_pushed_authorization,omitempty"`
+	RequireState                          bool           `json:"require_state,omitempty"`
 	ResponseTypes                         []string       `json:"response_types,omitempty"`
 	Scopes                                []string       `json:"scopes"`
 	TlsBoundTokens                        bool           `json:"tls_bound_tokens,omitempty"`
@@ -1598,6 +1599,7 @@ type PatchClientsClientIDRequest struct {
 	RefreshTokenTTLS                      *int64          `json:"refresh_token_ttl_s,omitempty"`
 	RequirePkce                           *bool           `json:"require_pkce,omitempty"`
 	RequirePushedAuthorizationRequests    *bool           `json:"require_pushed_authorization_requests,omitempty"`
+	RequireState                          *bool           `json:"require_state,omitempty"`
 	Scopes                                *[]string       `json:"scopes,omitempty"`
 	TlsBoundTokens                        *bool           `json:"tls_bound_tokens,omitempty"`
 	TlsCertificate                        *string         `json:"tls_certificate,omitempty"`
@@ -1627,6 +1629,7 @@ type PatchClientsClientIDResponse struct {
 	RefreshTokenTTLS                   int64    `json:"refresh_token_ttl_s,omitempty"`
 	RequirePkce                        bool     `json:"require_pkce"`
 	RequirePushedAuthorizationRequests bool     `json:"require_pushed_authorization_requests,omitempty"`
+	RequireState                       bool     `json:"require_state,omitempty"`
 }
 
 // PatchClientsClientIDSSFStreamRequest is a JSON object of the Admin API.

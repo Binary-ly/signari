@@ -145,8 +145,9 @@ type Client struct {
 	// IDTokenAlg signs the client's ID and access tokens; absent leaves it.
 	IDTokenAlg *string `yaml:"id_token_signed_response_alg"`
 	// RequirePAR and FirstParty are the switches; each absent leaves it.
-	RequirePAR *bool `yaml:"require_pushed_authorization_requests"`
-	FirstParty *bool `yaml:"first_party"`
+	RequirePAR   *bool `yaml:"require_pushed_authorization_requests"`
+	RequireState *bool `yaml:"require_state"`
+	FirstParty   *bool `yaml:"first_party"`
 	// IssuerAlias pins the client to a legacy issuer the instance claims;
 	// empty clears it, absent leaves it.
 	IssuerAlias *string `yaml:"issuer_alias"`
@@ -158,7 +159,7 @@ type Client struct {
 // settings is the client's part for store.SetClientSettings.
 func (c Client) settings() store.ClientSettings {
 	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL,
-		IDTokenAlg: c.IDTokenAlg, RequirePAR: c.RequirePAR, FirstParty: c.FirstParty,
+		IDTokenAlg: c.IDTokenAlg, RequirePAR: c.RequirePAR, RequireState: c.RequireState, FirstParty: c.FirstParty,
 		IssuerAlias: c.IssuerAlias, MinimumACR: c.MinimumACR}
 }
 

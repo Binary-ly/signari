@@ -214,6 +214,7 @@ clients:
   client set-dpop                  require a DPoP proof on every token request
   client set-pkce                  whether its authorization requests must carry PKCE
   client set-par                   refuse an authorization request not pushed first
+  client set-state                 refuse an authorization request with no state
   client set-logout                post-logout redirects and front- and back-channel logout
   client set-lifetimes             token lifetimes, and how long consent lasts
   client set-alg                   what signs the client's ID and access tokens
@@ -600,6 +601,8 @@ func run(args []string) (err error) {
 	aliasRetire := fs.String("retire-after", "",
 		"`instance add-alias`: when the alias stops being accepted, YYYY-MM-DD or RFC 3339 "+
 			"(`retire-alias`: default now)")
+	requireState := fs.Bool("require-state", true,
+		"`client set-state`: refuse an authorization request with no state (false lifts it)")
 	requirePAR := fs.Bool("require-par", true,
 		"`client set-par`: refuse any authorization the client did not push first (false lifts it)")
 	firstParty := fs.Bool("first-party", true,
@@ -1346,6 +1349,10 @@ func run(args []string) (err error) {
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RequirePAR: requirePAR},
 			map[bool]string{true: "authorization must be pushed first (RFC 9126)",
 				false: "authorization may start without pushing"}[*requirePAR])
+	case "client set-state":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RequireState: requireState},
+			map[bool]string{true: "an authorization request must carry state",
+				false: "state is the client's own choice"}[*requireState])
 	case "client set-admin-api":
 		return clientSetAdminAPI(ctx, conn, *clientID, *adminAPI)
 	case "client set-first-party":

@@ -1646,6 +1646,7 @@ export interface GetClientsClientIDResponse {
   registered_at?: string | null
   require_pkce?: boolean
   require_pushed_authorization?: boolean
+  require_state?: boolean
   response_types?: string[]
   scopes: string[]
   tls_bound_tokens?: boolean
@@ -2708,6 +2709,7 @@ export interface PatchClientsClientIDRequest {
   refresh_token_ttl_s?: number
   require_pkce?: boolean
   require_pushed_authorization_requests?: boolean
+  require_state?: boolean
   scopes?: string[]
   tls_bound_tokens?: boolean
   tls_certificate?: string
@@ -2737,6 +2739,7 @@ export interface PatchClientsClientIDResponse {
   refresh_token_ttl_s?: number
   require_pkce: boolean
   require_pushed_authorization_requests?: boolean
+  require_state?: boolean
 }
 
 /** A JSON object of the Admin API. */

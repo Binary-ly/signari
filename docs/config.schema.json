@@ -144,6 +144,9 @@
         "require_pushed_authorization_requests": {
           "type": "boolean"
         },
+        "require_state": {
+          "type": "boolean"
+        },
         "scopes": {
           "items": {
             "type": "string"

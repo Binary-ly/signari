@@ -113,6 +113,7 @@ var cliAPI = map[string]string{
 	"client set-alg":                  "PATCH /admin/clients/{clientID}",
 	"client set-issuer-alias":         "PATCH /admin/clients/{clientID}",
 	"client set-par":                  "PATCH /admin/clients/{clientID}",
+	"client set-state":                "PATCH /admin/clients/{clientID}",
 	"client set-admin-api":            "PATCH /admin/clients/{clientID}",
 	"client set-first-party":          "PATCH /admin/clients/{clientID}",
 	"client set-acr":                  "PATCH /admin/clients/{clientID}",

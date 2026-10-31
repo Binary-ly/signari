@@ -76,6 +76,47 @@ func TestOnlyADesignatedClientIsIssuedATokenForTheAdminAPI(t *testing.T) {
 	}
 }
 
+// A service asking for an API gets a token for that API, as every other grant does,
+// and one asking for something the organisation never registered gets none. It was
+// audienced to the client whatever was asked, so a token meant for one API was valid
+// wherever that client's id was.
+func TestClientCredentialsHonoursAResource(t *testing.T) {
+	f := newTokenFixture(t)
+	ctx := context.Background()
+	secret, hash := newTestSecret(t)
+	if _, err := f.pool.Exec(ctx, `UPDATE core.clients SET grant_types = ARRAY['client_credentials'],
+		client_type = 'confidential', client_secret_hash = $2, scopes = ARRAY['api']
+		WHERE client_id = $1`, f.clientID, hash); err != nil {
+		t.Fatal(err)
+	}
+	const billing, ledger = "https://billing.example.test/v1", "https://ledger.example.test/v1"
+	for _, r := range []string{billing, ledger} {
+		if _, err := f.pool.Exec(ctx, `INSERT INTO core.resource_servers (org_id, resource) VALUES ($1::uuid, $2)`,
+			f.orgID, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ask := func(resources ...string) (int, map[string]any) {
+		t.Helper()
+		return f.post(t, url.Values{"grant_type": {"client_credentials"}, "client_id": {f.clientID},
+			"client_secret": {secret}, "scope": {"api"}, "resource": resources})
+	}
+	status, body := ask(billing)
+	if status != http.StatusOK || !slices.Equal(tokenAudience(t, body["access_token"].(string)), []string{billing}) {
+		t.Fatalf("a registered resource answered %d %v", status, body)
+	}
+	status, body = ask(billing, ledger)
+	if status != http.StatusOK || !slices.Equal(tokenAudience(t, body["access_token"].(string)), []string{billing, ledger}) {
+		t.Fatalf("two registered resources answered %d %v", status, body)
+	}
+	if status, body := ask("https://never-registered.example.test"); status != http.StatusBadRequest || body["error"] != "invalid_target" {
+		t.Errorf("an unregistered resource answered %d %v", status, body)
+	}
+	if status, body := ask(billing, "https://never-registered.example.test"); status != http.StatusBadRequest || body["error"] != "invalid_target" {
+		t.Errorf("a registered and an unregistered resource answered %d %v", status, body)
+	}
+}
+
 // The check every grant and every place a resource is accepted share.
 func TestTheAdminAudienceIsHeldToTheClientEverywhereAResourceIsAccepted(t *testing.T) {
 	f := newTokenFixture(t)

@@ -535,6 +535,7 @@ Answers:
 | `registered_at` | string or null |  |
 | `require_pkce` | boolean |  |
 | `require_pushed_authorization` | boolean |  |
+| `require_state` | boolean |  |
 | `response_types` | list of string |  |
 | `scopes` | list of string | always |
 | `tls_bound_tokens` | boolean |  |
@@ -590,6 +591,7 @@ Takes:
 | `refresh_token_ttl_s` | integer |  |
 | `require_pkce` | boolean |  |
 | `require_pushed_authorization_requests` | boolean |  |
+| `require_state` | boolean |  |
 | `scopes` | list of string |  |
 | `tls_bound_tokens` | boolean |  |
 | `tls_certificate` | string |  |
@@ -620,6 +622,7 @@ Answers:
 | `refresh_token_ttl_s` | integer |  |
 | `require_pkce` | boolean | always |
 | `require_pushed_authorization_requests` | boolean |  |
+| `require_state` | boolean |  |
 
 ## clients / group-release
 

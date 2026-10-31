@@ -829,6 +829,9 @@
                     "require_pushed_authorization": {
                       "type": "boolean"
                     },
+                    "require_state": {
+                      "type": "boolean"
+                    },
                     "response_types": {
                       "items": {
                         "type": "string"
@@ -1089,6 +1092,9 @@
                   "require_pushed_authorization_requests": {
                     "type": "boolean"
                   },
+                  "require_state": {
+                    "type": "boolean"
+                  },
                   "scopes": {
                     "items": {
                       "type": "string"
@@ -1185,6 +1191,9 @@
                       "type": "boolean"
                     },
                     "require_pushed_authorization_requests": {
+                      "type": "boolean"
+                    },
+                    "require_state": {
                       "type": "boolean"
                     }
                   },

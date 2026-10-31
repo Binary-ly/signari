@@ -543,6 +543,12 @@ See [remote-access.md](remote-access.md).
 | `SIGNARI_LDAP_POSIX_SHELL` | Everybody's login shell. Default `/bin/bash` |
 | `SIGNARI_LDAP_WRITE_GROUP` | Group whose members may Add, Modify, Delete and Modify DN. **Empty means nobody**, and the directory stays read-only. Members can create accounts, set any password, and delete entries — see [ldap.md](ldap.md) |
 
+## DPoP
+
+| Variable | Meaning |
+|---|---|
+| `SIGNARI_DPOP_NONCE` | `1` makes every DPoP proof carry a nonce this server issued. Needs the root key. See [dpop.md](dpop.md#server-nonces) |
+
 ## Device posture
 
 See [device posture](device-posture.md).

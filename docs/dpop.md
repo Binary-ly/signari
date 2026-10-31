@@ -92,6 +92,26 @@ end to end — bound at issuance, enforced at the resource. Binding without
 enforcement would be worse than plain bearer tokens: a relying party reading
 `cnf` would believe a claim nothing checks.
 
+## Server nonces
+
+`SIGNARI_DPOP_NONCE=1` makes every DPoP proof carry a nonce this server issued. A proof
+otherwise proves possession of the key at whatever time it was written, so whoever
+held the key for a moment could prepare proofs for later. Off by default: RFC 9449 §8
+makes it a MAY, and a client that cannot retry stops working.
+
+A proof with no nonce, or an old one, is answered at the token and pushed-authorization
+endpoints with `400 use_dpop_nonce` and a `DPoP-Nonce` header, and at a protected
+resource with `401` and the same header. A client retries with the value it was given.
+Each is good for five to ten minutes, and when it lapses the same refusal gives the
+next, so a long-running client takes one extra round trip now and then. Nonces are
+derived from the root key rather than stored, so any node accepts what another issued.
+Rotating the root key turns away every nonce out at the moment, which corrects itself
+the same way.
+
+`DPoP-Nonce` is exposed to browser clients through CORS. A proof that is also a client
+attestation's proof of possession keeps the attestation challenge in its `nonce`, which
+that path issues and checks, so it is not asked for a second one.
+
 ## Pinning a client to DPoP
 
 By default, whether a token comes out sender-constrained is decided per request,

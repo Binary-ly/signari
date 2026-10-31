@@ -3,11 +3,13 @@ package httpapi
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"signari.dev/engine/internal/abca"
 	"signari.dev/engine/internal/clientauth"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/dpop"
@@ -125,6 +127,14 @@ func (s *Server) boundTokenRefused(w http.ResponseWriter, r *http.Request, raw s
 		if derr := s.proofForBoundToken(r, raw, cnf.JKT); derr != nil {
 			s.log.Info("DPoP enforcement refused a request", "at", where, "reason", derr,
 				"correlation_id", correlationID(r.Context()))
+			if errors.Is(derr, errDPoPNonce) {
+				// §9: as at the token endpoint, with the status a resource uses.
+				s.offerDPoPNonce(w)
+				w.Header().Set("WWW-Authenticate", dpopChallenge("use_dpop_nonce",
+					"this resource requires a nonce in the DPoP proof"))
+				w.WriteHeader(http.StatusUnauthorized)
+				return true
+			}
 			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
 				"the access token is sender-constrained and the DPoP proof did not match"))
 			w.WriteHeader(http.StatusUnauthorized)
@@ -168,9 +178,16 @@ func (s *Server) verifyDPoPForRequest(r *http.Request, accessToken string) (stri
 	// choose what their proof authorises by lying about where they sent it.
 	uri := s.cfg.Issuer + r.URL.Path
 
-	proof, err := dpop.Verify(header, r.Method, uri, accessToken, time.Now())
+	now := time.Now()
+	proof, err := dpop.Verify(header, r.Method, uri, accessToken, now)
 	if err != nil {
 		return "", err
+	}
+
+	// Before the replay record, so the retry a client is asked for can reuse
+	// nothing and is refused nothing.
+	if s.dpopNonces && !combinedAttestation(r) && !s.dpopNonceRecent(proof.Nonce, now) {
+		return "", errDPoPNonce
 	}
 
 	// Replay. The proof is fresh, signed and correctly bound -- and still
@@ -193,7 +210,54 @@ func (s *Server) verifyDPoPForRequest(r *http.Request, accessToken string) (stri
 var (
 	errDPoPReplay      = errors.New("this DPoP proof has already been used")
 	errDPoPUnavailable = errors.New("DPoP replay detection is unavailable")
+	errDPoPNonce       = errors.New("this DPoP proof carries no recent nonce from this server")
 )
+
+// Server-provided nonces (RFC 9449 §8, specs/rfc9449.txt:1089-1099). A proof bounded
+// only by its own iat can be prepared ahead of time by whoever briefly has the key; one
+// carrying a value this server issued recently cannot.
+//
+// Derived rather than stored: every node derives the same one, so a client may land on
+// any of them, and the token path gains no write. The server keeps "a window of recent
+// nonces" (:1142) by accepting the last window's too, so a client that fetched one just
+// before the turn is not refused for it. Off unless asked for, since §8 makes it a MAY
+// and a client that cannot retry on use_dpop_nonce would stop working.
+
+// dpopNonceWindow is how long one nonce is current.
+const dpopNonceWindow = 5 * time.Minute
+
+// SetDPoPNonces makes every DPoP proof carry a nonce from this server. It needs the
+// root key, which is what makes one unpredictable.
+func (s *Server) SetDPoPNonces(on bool) { s.dpopNonces = on && s.root != nil }
+
+func (s *Server) dpopNonceAt(t time.Time) string {
+	window := t.Unix() / int64(dpopNonceWindow/time.Second)
+	sum := s.root.AddressHash(fmt.Sprintf("dpop-nonce:%s:%d", s.cfg.Issuer, window))
+	return base64.RawURLEncoding.EncodeToString(sum)
+}
+
+func (s *Server) dpopNonceRecent(got string, now time.Time) bool {
+	for _, want := range []string{s.dpopNonceAt(now), s.dpopNonceAt(now.Add(-dpopNonceWindow))} {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// combinedAttestation is a request whose one proof is also its attestation PoP, with
+// no separate PoP header. Its nonce is the attestation challenge, which the attestation
+// path issued and checks, and it cannot hold a second value.
+func combinedAttestation(r *http.Request) bool {
+	return r.Header.Get(abca.HeaderAttestation) != "" && r.Header.Get(abca.HeaderPoP) == ""
+}
+
+// offerDPoPNonce gives the client the value to retry with. Uncacheable, as §8.2 asks of
+// any response carrying one (:1197).
+func (s *Server) offerDPoPNonce(w http.ResponseWriter) {
+	w.Header().Set("DPoP-Nonce", s.dpopNonceAt(time.Now()))
+	w.Header().Set("Cache-Control", "no-store")
+}
 
 // bindingFor chooses the one confirmation a token may carry.
 //

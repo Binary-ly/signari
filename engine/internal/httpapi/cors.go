@@ -47,7 +47,7 @@ const (
 	corsAllowHeaders = "Authorization, Content-Type, DPoP, Accept"
 	// WWW-Authenticate carries the error for every 401 this server returns, so a
 	// script that cannot read it cannot tell an expired token from a revoked one.
-	corsExposeHeaders = "WWW-Authenticate"
+	corsExposeHeaders = "WWW-Authenticate, DPoP-Nonce"
 	corsMaxAge        = "600"
 )
 

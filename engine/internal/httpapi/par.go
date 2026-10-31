@@ -222,7 +222,11 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	// header to every authorization-server request -- which §10.1 explicitly
 	// exists to accommodate -- silently lose the binding.
 	jkt := r.PostForm.Get("dpop_jkt")
-	if proofJKT, derr := s.verifyDPoPForRequest(r, ""); derr != nil {
+	if proofJKT, derr := s.verifyDPoPForRequest(r, ""); errors.Is(derr, errDPoPNonce) {
+		s.offerDPoPNonce(w)
+		writeError(w, http.StatusBadRequest, "use_dpop_nonce", "this server requires a nonce in the DPoP proof")
+		return
+	} else if derr != nil {
 		writeError(w, http.StatusBadRequest, "invalid_dpop_proof", derr.Error())
 		return
 	} else if proofJKT != "" {

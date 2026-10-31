@@ -634,7 +634,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	// A proof at the token endpoint accompanies no access token yet, so `ath` is
 	// absent and only the key matters. Its thumbprint becomes the binding.
-	if jkt, err := s.verifyDPoPForRequest(r, ""); err != nil {
+	if jkt, err := s.verifyDPoPForRequest(r, ""); errors.Is(err, errDPoPNonce) {
+		s.offerDPoPNonce(w)
+		writeError(w, http.StatusBadRequest, "use_dpop_nonce", "this server requires a nonce in the DPoP proof")
+		return
+	} else if err != nil {
 		s.log.Info("DPoP proof refused at the token endpoint", "err", err,
 			"correlation_id", correlationID(r.Context()))
 		w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof"`)

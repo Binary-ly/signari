@@ -170,6 +170,9 @@ type Server struct {
 	// serves ordinary OIDC rather than failing.
 	root *keys.RootKey
 
+	// dpopNonces makes every DPoP proof carry a nonce from this server.
+	dpopNonces bool
+
 	// factorFailureLimit is how many consecutive wrong codes switch a second
 	// factor off. Zero -- a Server built as a literal -- means the NIST ceiling;
 	// read through failureLimit().

@@ -7644,6 +7644,115 @@
         "summary": "Store a model once its own tests pass."
       }
     },
+    "/admin/organizations/{orgID}/authorization/explain": {
+      "get": {
+        "operationId": "get_organizations_orgID_authorization_explain",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "allowed": {
+                      "type": "boolean"
+                    },
+                    "defined": {
+                      "type": "boolean"
+                    },
+                    "groups": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "org_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "relation": {
+                      "type": "string"
+                    },
+                    "relations": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "requires": {
+                      "type": "string"
+                    },
+                    "via": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "org_id",
+                    "allowed",
+                    "defined",
+                    "relation",
+                    "via",
+                    "relations",
+                    "groups",
+                    "requires"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks config:read, or is scoped to another organisation."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "config:read"
+            ]
+          }
+        ],
+        "summary": "How a question would come out on relations, and whose grant answers it."
+      }
+    },
     "/admin/organizations/{orgID}/budgets": {
       "get": {
         "operationId": "get_organizations_orgID_budgets",

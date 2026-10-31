@@ -154,6 +154,104 @@ func TuplesAmong(ctx context.Context, q Querier, orgID string, subjects, objects
 	return out, rows.Err()
 }
 
+// Explanation is how the relation half of a decision comes out, and why. What
+// a session or a provider would add is not in it: nobody here has one.
+type Explanation struct {
+	// Relations are the ones that grant the action.
+	Relations []string
+	// Held is the one the subject holds, empty when they hold none, and Via is
+	// whose grant it is: the subject as asked about, their id, or a group.
+	Held, Via string
+	// Groups are the groups of theirs that were considered.
+	Groups []string
+}
+
+// Explain walks a question the way a decision does: the subject as asked about,
+// then the person that resolves to, then their groups. defined is false when the
+// model has no such action.
+func Explain(ctx context.Context, q Querier, orgID string, model *authzen.Model,
+	subjectType, subjectID, action, objectType, objectID string) (e Explanation, defined bool, err error) {
+
+	if e.Relations, defined = model.RelationsFor(objectType, action); !defined {
+		return e, false, nil
+	}
+	subjects := [][2]string{{subjectType, subjectID}}
+	userID, err := ResolveSubject(ctx, q, orgID, subjectID)
+	if err != nil {
+		return e, true, err
+	}
+	if userID != "" {
+		facts, err := SubjectFacts(ctx, q, orgID, userID, "")
+		if err != nil {
+			return e, true, err
+		}
+		e.Groups = facts.Groups
+		if userID != subjectID {
+			subjects = append(subjects, [2]string{subjectType, userID})
+		}
+	}
+	for _, g := range e.Groups {
+		subjects = append(subjects, [2]string{"group", g})
+	}
+	tuples, err := TuplesAmong(ctx, q, orgID, subjects, [][2]string{{objectType, objectID}}, e.Relations)
+	if err != nil {
+		return e, true, err
+	}
+	for _, s := range subjects {
+		for _, relation := range e.Relations {
+			if tuples[Tuple{SubjectType: s[0], SubjectID: s[1], Relation: relation,
+				ObjectType: objectType, ObjectID: objectID}] {
+				e.Held, e.Via = relation, authzen.Ref(s[0], s[1])
+				return e, true, nil
+			}
+		}
+	}
+	return e, true, nil
+}
+
+// RelationRow is one live relation, as `signari authz list` shows it.
+type RelationRow struct {
+	Subject, Relation, Object string
+	ExpiresAt                 *time.Time
+}
+
+// ListRelations reads the live relations a subject holds, or held on an object,
+// or both; an empty type names no filter. The second answer says more were left
+// out at limit.
+func ListRelations(ctx context.Context, q Querier, orgID, subjectType, subjectID, objectType, objectID string,
+	limit int) ([]RelationRow, bool, error) {
+	rows, err := q.Query(ctx, `
+		SELECT subject_type, subject_id, relation, object_type, object_id, expires_at
+		  FROM core.relations
+		 WHERE org_id = $1::uuid
+		   AND (expires_at IS NULL OR expires_at > now())
+		   AND ($2 = '' OR (subject_type = $2 AND subject_id = $3))
+		   AND ($4 = '' OR (object_type = $4 AND object_id = $5))
+		 ORDER BY object_type, object_id, relation, subject_type, subject_id
+		 LIMIT $6`, orgID, subjectType, subjectID, objectType, objectID, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	out := []RelationRow{}
+	for rows.Next() {
+		var st, sid, relation, ot, oid string
+		var expires *time.Time
+		if err := rows.Scan(&st, &sid, &relation, &ot, &oid, &expires); err != nil {
+			return nil, false, err
+		}
+		out = append(out, RelationRow{Subject: authzen.Ref(st, sid), Relation: relation,
+			Object: authzen.Ref(ot, oid), ExpiresAt: expires})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(out) > limit {
+		return out[:limit], true, nil
+	}
+	return out, false, nil
+}
+
 // ObjectsWith returns the objects of a type on which the subject holds any of
 // these relations. For the resource-search endpoint.
 func ObjectsWith(ctx context.Context, q Querier, orgID, subjectType, subjectID string,

@@ -461,6 +461,12 @@ export class SignariAdmin {
     return this.call<GetOrganizationsOrgIDAuthorizationDetailTypesResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/authorization-detail-types`, undefined, opts)
   }
 
+  // GET /admin/organizations/{orgID}/authorization/explain: How a question would come out on
+  // relations, and whose grant answers it. Needs config:read.
+  getOrganizationsOrgIDAuthorizationExplain(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDAuthorizationExplainResponse>> {
+    return this.call<GetOrganizationsOrgIDAuthorizationExplainResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/authorization/explain`, undefined, opts)
+  }
+
   // GET /admin/organizations/{orgID}/authorization-model: The organisation's authorization model
   // as written; none permits nothing. Needs config:read.
   getOrganizationsOrgIDAuthorizationModel(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDAuthorizationModelResponse>> {
@@ -1935,6 +1941,18 @@ export interface GetOrganizationsOrgIDAuthorizationDetailTypesResponseAuthorizat
   fields: string[]
   required: string[]
   type: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDAuthorizationExplainResponse {
+  allowed: boolean
+  defined: boolean
+  groups: string[]
+  org_id: string
+  relation: string
+  relations: string[]
+  requires: string
+  via: string
 }
 
 /** A JSON object of the Admin API. */

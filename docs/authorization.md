@@ -207,7 +207,15 @@ signari authz grant  -org <uuid> -principal user:bob@example.com -relation viewe
 signari authz check  -org <uuid> -principal user:alice@example.com -action read -object document:42
 signari authz revoke -org <uuid> -principal user:alice@example.com -relation owner -object document:42
 signari authz show-model -org <uuid>
+signari authz list   -org <uuid> -principal user:alice@example.com
+signari authz list   -org <uuid> -object document:42
+signari authz expand -org <uuid> -action read -object document:42
 ```
+
+`check`, `list`, `expand` and the Admin API's `authorization/explain` answer from
+relations, the same way a decision walks them: the subject as asked about, the
+person that resolves to, then their groups. They name what a session would also
+have to show rather than guess at it, and they do not call a provider.
 
 A grant with `-expires-in` stops counting at that moment, checked in the query
 that reads it rather than swept up later, so temporary access is temporary

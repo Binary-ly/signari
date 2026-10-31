@@ -827,6 +827,18 @@ type GetOrganizationsOrgIDAuthorizationDetailTypesResponseAuthorizationDetailTyp
 	Type        string   `json:"type"`
 }
 
+// GetOrganizationsOrgIDAuthorizationExplainResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDAuthorizationExplainResponse struct {
+	Allowed   bool     `json:"allowed"`
+	Defined   bool     `json:"defined"`
+	Groups    []string `json:"groups"`
+	OrgID     string   `json:"org_id"`
+	Relation  string   `json:"relation"`
+	Relations []string `json:"relations"`
+	Requires  string   `json:"requires"`
+	Via       string   `json:"via"`
+}
+
 // GetOrganizationsOrgIDAuthorizationModelResponse is a JSON object of the Admin API.
 type GetOrganizationsOrgIDAuthorizationModelResponse struct {
 	OrgID  string `json:"org_id"`
@@ -3914,6 +3926,18 @@ func (c *Client) GetOrganizationsOrgIDAttributes(ctx context.Context, orgID stri
 func (c *Client) GetOrganizationsOrgIDAuthorizationDetailTypes(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDAuthorizationDetailTypesResponse, int64, error) {
 	var out GetOrganizationsOrgIDAuthorizationDetailTypesResponse
 	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/authorization-detail-types", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetOrganizationsOrgIDAuthorizationExplain is GET
+// /admin/organizations/{orgID}/authorization/explain: How a question would come out on relations,
+// and whose grant answers it. Needs config:read.
+func (c *Client) GetOrganizationsOrgIDAuthorizationExplain(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDAuthorizationExplainResponse, int64, error) {
+	var out GetOrganizationsOrgIDAuthorizationExplainResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/authorization/explain", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

@@ -365,6 +365,7 @@ func (s *Server) Routes() http.Handler {
 	route("PUT /admin/organizations/{orgID}/ssf-sources", ScopeOrganizationsWrite, s.putSource)
 	// Fine-grained authorization, `signari authz` (authz.go).
 	route("GET /admin/organizations/{orgID}/authorization-model", ScopeConfigRead, s.getAuthzModel)
+	route("GET /admin/organizations/{orgID}/authorization/explain", ScopeConfigRead, s.explainAuthz)
 	route("PUT /admin/organizations/{orgID}/authorization-model", ScopeOrganizationsWrite, s.putAuthzModel)
 	route("PUT /admin/organizations/{orgID}/relations", ScopeOrganizationsWrite, s.grantRelation)
 	route("DELETE /admin/organizations/{orgID}/relations", ScopeOrganizationsWrite, s.revokeRelation)

@@ -233,6 +233,8 @@ var cliAPI = map[string]string{
 	"authz grant":         "PUT /admin/organizations/{orgID}/relations",
 	"authz revoke":        "DELETE /admin/organizations/{orgID}/relations",
 	"authz check":         reads,
+	"authz list":          reads,
+	"authz expand":        reads,
 	"trust-mark issue":    "POST /admin/instances/{instanceID}/trust-marks",
 	"trust-mark revoke":   "POST /admin/instances/{instanceID}/trust-marks/revoke",
 	"trust-mark list":     reads,

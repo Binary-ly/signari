@@ -337,6 +337,8 @@ authorization and federation:
   authz grant          grant a relation, for good or for -expires-in
   authz revoke         revoke a relation
   authz check          answer an authorization question, with the reason
+  authz list           the relations a subject holds, or that are held on an object
+  authz expand         who may do something to an object
   uma settings         offer, or stop offering, resource-owner intervention on refused UMA requests
   uma requests         UMA requests waiting for a resource owner to decide
   uma approve          grant a relation and let a submitted UMA request through
@@ -1630,6 +1632,10 @@ func run(args []string) (err error) {
 		return authzRevoke(ctx, conn, *orgID, *relSubject, *relRelation, *relObject)
 	case "authz check":
 		return authzCheck(ctx, conn, *orgID, *relSubject, *relAction, *relObject)
+	case "authz list":
+		return authzList(ctx, conn, *orgID, *relSubject, *relObject, *outputFormat)
+	case "authz expand":
+		return authzExpand(ctx, conn, *orgID, *relAction, *relObject, *outputFormat)
 	case "events subscribe":
 		// -events is the name docs/events.md has always given, and it was the
 		// SSF flag here: a subscription made as documented ignored its list and
@@ -8222,55 +8228,139 @@ func authzCheck(ctx context.Context, conn *pgx.Conn, orgID, subject, action, obj
 		return fmt.Errorf("this organisation has no authorization model, so nothing " +
 			"is permitted -- set one with `signari authz set-model`")
 	}
-	relations, defined := m.RelationsFor(otyp, action)
-	if !defined {
-		return fmt.Errorf("the model defines no action %q on %s", action, otyp)
-	}
-
-	var groups []string
-	if userID, rerr := store.ResolveSubject(ctx, conn, orgID, sid); rerr == nil && userID != "" {
-		if f, ferr := store.SubjectFacts(ctx, conn, orgID, userID, ""); ferr == nil {
-			groups = f.Groups
-		}
-	}
-	held, err := store.HoldsAny(ctx, conn, orgID, styp, sid, relations, otyp, oid, groups)
+	e, defined, err := store.Explain(ctx, conn, orgID, m, styp, sid, action, otyp, oid)
 	if err != nil {
 		return err
 	}
-	if held == "" {
+	if !defined {
+		return fmt.Errorf("the model defines no action %q on %s", action, otyp)
+	}
+	if e.Held == "" {
 		fmt.Printf("DENIED  %s may not %s %s\n  %s.%s is granted to: %s\n",
-			subject, action, object, otyp, action, strings.Join(relations, ", "))
-		if len(groups) > 0 {
-			fmt.Printf("  groups considered: %s\n", strings.Join(groups, ", "))
+			subject, action, object, otyp, action, strings.Join(e.Relations, ", "))
+		if len(e.Groups) > 0 {
+			fmt.Printf("  groups considered: %s\n", strings.Join(e.Groups, ", "))
 		}
 		return nil
 	}
-	fmt.Printf("ALLOWED %s may %s %s\n  via relation: %s\n", subject, action, object, held)
+	fmt.Printf("ALLOWED %s may %s %s\n  via relation: %s, held by %s\n", subject, action, object, e.Held, e.Via)
 	if c, has := m.ConditionFor(otyp, action); has {
 		fmt.Printf("  NOTE: at runtime this also requires %s, which is a property of "+
-			"the session and cannot be checked from here\n", conditionSummary(c.Condition))
+			"the session and cannot be checked from here\n", c.Condition.Summary())
 	}
 	return nil
 }
 
-func conditionSummary(c authzen.Condition) string {
-	var parts []string
-	if c.MFA {
-		parts = append(parts, "a second factor")
+// authzListLimit is how many relations a listing shows before saying so.
+const authzListLimit = 1000
+
+// authzList prints the live relations of a subject, on an object, or both.
+func authzList(ctx context.Context, conn *pgx.Conn, orgID, subject, object, format string) error {
+	if orgID == "" {
+		return fmt.Errorf("-org is required")
 	}
-	if c.DeviceManaged {
-		parts = append(parts, "a managed device")
+	if subject == "" && object == "" {
+		return fmt.Errorf("give -principal, -object or both: an organisation's whole graph is not a listing")
 	}
-	if c.DeviceCompliant {
-		parts = append(parts, "a compliant device")
+	out, err := newOutput(format)
+	if err != nil {
+		return err
 	}
-	if c.MaxRisk > 0 {
-		parts = append(parts, fmt.Sprintf("risk at most %d", c.MaxRisk))
+	var styp, sid, otyp, oid string
+	if subject != "" {
+		if styp, sid, err = splitRef("-principal", subject); err != nil {
+			return err
+		}
 	}
-	if len(c.AnyGroup) > 0 {
-		parts = append(parts, "membership of "+strings.Join(c.AnyGroup, " or "))
+	if object != "" {
+		if otyp, oid, err = splitRef("-object", object); err != nil {
+			return err
+		}
 	}
-	return strings.Join(parts, " and ")
+	rows, more, err := store.ListRelations(ctx, conn, orgID, styp, sid, otyp, oid, authzListLimit)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		out.add(map[string]any{"subject": r.Subject, "relation": r.Relation, "object": r.Object,
+			"expires_at": utcPtr(r.ExpiresAt)})
+		if out.text() {
+			until := ""
+			if r.ExpiresAt != nil {
+				until = " until " + r.ExpiresAt.UTC().Format(time.RFC3339)
+			}
+			fmt.Printf("%s is %s of %s%s\n", r.Subject, r.Relation, r.Object, until)
+		}
+	}
+	if out.text() && len(rows) == 0 {
+		fmt.Println("no relations")
+	}
+	if out.text() && more {
+		fmt.Printf("\nthe first %d; narrow it with -principal and -object\n", authzListLimit)
+	}
+	return out.flush()
+}
+
+// authzExpand says who may do something to an object: each person a decision
+// would let through on relations alone, and each subject that is not a person,
+// since those hold relations as well and no search of people finds them.
+func authzExpand(ctx context.Context, conn *pgx.Conn, orgID, action, object, format string) error {
+	if orgID == "" || action == "" || object == "" {
+		return fmt.Errorf("-org, -action and -object are all required")
+	}
+	otyp, oid, err := splitRef("-object", object)
+	if err != nil {
+		return err
+	}
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	m, err := store.LoadModel(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if m == nil {
+		return fmt.Errorf("this organisation has no authorization model, so nothing is permitted")
+	}
+	relations, defined := m.RelationsFor(otyp, action)
+	if !defined {
+		return fmt.Errorf("the model defines no action %q on %s", action, otyp)
+	}
+	people, more, err := store.SubjectsWith(ctx, conn, orgID, relations, otyp, oid, authzListLimit, "")
+	if err != nil {
+		return err
+	}
+	if out.text() {
+		fmt.Printf("%s %s is granted by: %s\n", object, action, strings.Join(relations, ", "))
+	}
+	for _, p := range people {
+		out.add(map[string]any{"subject": "user:" + p})
+		if out.text() {
+			fmt.Printf("  user:%s\n", p)
+		}
+	}
+	rows, _, err := store.ListRelations(ctx, conn, orgID, "", "", otyp, oid, authzListLimit)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if strings.HasPrefix(r.Subject, "user:") || strings.HasPrefix(r.Subject, "group:") ||
+			!slices.Contains(relations, r.Relation) {
+			continue
+		}
+		out.add(map[string]any{"subject": r.Subject})
+		if out.text() {
+			fmt.Printf("  %s\n", r.Subject)
+		}
+	}
+	if c, has := m.ConditionFor(otyp, action); has && out.text() {
+		fmt.Printf("  NOTE: each also needs %s when they ask, which only a session can show\n", c.Condition.Summary())
+	}
+	if out.text() && more {
+		fmt.Printf("\nthe first %d\n", authzListLimit)
+	}
+	return out.flush()
 }
 
 // ssfAddSource registers a transmitter we will accept events from.

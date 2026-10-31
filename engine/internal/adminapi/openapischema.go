@@ -708,6 +708,10 @@ var opSchemas = map[string]opSchema{
 			"type": str(), "delegate": str(), "delegation": str()}))},
 	"GET /admin/organizations/{orgID}/authorization-model": {http.StatusOK, nil, object([]string{"org_id", "source"},
 		map[string]jsonSchema{"org_id": uuidStr(), "source": str()})},
+	"GET /admin/organizations/{orgID}/authorization/explain": {http.StatusOK, nil, object(
+		[]string{"org_id", "allowed", "defined", "relation", "via", "relations", "groups", "requires"},
+		map[string]jsonSchema{"org_id": uuidStr(), "allowed": boolean(), "defined": boolean(), "relation": str(),
+			"via": str(), "relations": arrayOf(str()), "groups": arrayOf(str()), "requires": str()})},
 	"PUT /admin/organizations/{orgID}/authorization-model": {http.StatusOK, typeOf[putModelRequest](), object(
 		[]string{"org_id", "types", "actions", "tests_passed", "config_version"}, withVersion(map[string]jsonSchema{
 			"org_id": uuidStr(), "types": integer(), "actions": integer(), "tests_passed": integer()}))},

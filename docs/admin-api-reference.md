@@ -11,6 +11,7 @@ refused with `412` when the configuration moved since the version it names.
 | [attesters](#attesters) | 3 |
 | [attributes](#attributes) | 2 |
 | [audit-events](#audit-events) | 1 |
+| [authorization](#authorization) | 1 |
 | [authorization-detail-types](#authorization-detail-types) | 3 |
 | [authorization-model](#authorization-model) | 2 |
 | [batch](#batch) | 1 |
@@ -224,6 +225,27 @@ Answers:
 | `chain_verified` | boolean | always |
 | `events` | list of object | always |
 | `next_cursor` | string |  |
+
+## authorization
+
+### `GET /admin/organizations/{orgID}/authorization/explain`
+
+How a question would come out on relations, and whose grant answers it. Needs config:read.
+
+Go `GetOrganizationsOrgIDAuthorizationExplain`, TypeScript `getOrganizationsOrgIDAuthorizationExplain`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `allowed` | boolean | always |
+| `defined` | boolean | always |
+| `groups` | list of string | always |
+| `org_id` | string | always |
+| `relation` | string | always |
+| `relations` | list of string | always |
+| `requires` | string | always |
+| `via` | string | always |
 
 ## authorization-detail-types
 

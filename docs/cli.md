@@ -242,7 +242,9 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari trust-mark issuers` / `trust-mark owners` | The Trust Anchor's two governing claims. Setting either is refused for now: this engine cannot be a Trust Anchor until it serves the `federation_fetch_endpoint` every anchor MUST publish, and every reader ignores them from an entity with a Superior. A file containing `{}` still clears them. See [OpenID Federation](openid-federation.md#enabling-it) |
 | `signari federation enable` / `federation show` | Join an OpenID Federation. Generates a **separate** Entity Statement signing key and publishes `/.well-known/openid-federation` — see [openid-federation.md](openid-federation.md). `-trust-anchor-hints`, `-federation-contacts` and `-entity-lifetime` (5m to 168h) are kept when not given |
 | `signari authz grant` / `authz revoke` | Relations: `-principal user:alice -relation owner -object document:42`. `grant -expires-in 72h` ends it then; without, it stands until revoked, and granting again replaces the end |
-| `signari authz check` | Answer a question from the command line, with the reason |
+| `signari authz check` | Answer a question from the command line, with the reason: which relation, held by whom. It is the relation half of a decision, so what a session or a provider would add is named and not tried |
+| `signari authz list` | `-org <uuid> [-principal <type:id>] [-object <type:id>]`: the live relations a subject holds, or that are held on an object, or both. At least one is required |
+| `signari authz expand` | `-org <uuid> -action <a> -object <type:id>`: who may do it, group members included, and any subject that is not a person |
 | `signari uma settings` | Offer, or stop offering, resource-owner intervention on refused UMA requests (§3.3.6 `request_submitted`). Off means a refusal is final. See [uma.md](uma.md) |
 | `signari uma requests` / `uma approve` / `uma deny` | Requests waiting for a resource owner. Approving **grants a relation** in the authorization model, so the access lives where all other access lives; `approve -expires-in 720h` grants it for that long |
 

@@ -164,6 +164,27 @@ func (c Condition) unpopulated() []string {
 	return out
 }
 
+// Summary says what a condition asks for, in words for an operator.
+func (c Condition) Summary() string {
+	var parts []string
+	if c.MFA {
+		parts = append(parts, "a second factor")
+	}
+	if c.DeviceManaged {
+		parts = append(parts, "a managed device")
+	}
+	if c.DeviceCompliant {
+		parts = append(parts, "a compliant device")
+	}
+	if c.MaxRisk > 0 {
+		parts = append(parts, fmt.Sprintf("risk at most %d", c.MaxRisk))
+	}
+	if len(c.AnyGroup) > 0 {
+		parts = append(parts, "membership of "+strings.Join(c.AnyGroup, " or "))
+	}
+	return strings.Join(parts, " and ")
+}
+
 // Unpopulated lists each requirement in the model on a fact the decision point
 // never has, as "where: fact", sorted. ParseModel refuses a model with any, and
 // `signari doctor` reads it from a model stored before that.

@@ -90,6 +90,10 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/organizations/{orgID}/rac-connections", org("/rac-connections")},
 		{"GET /admin/organizations/{orgID}/access-policy", org("/access-policy")},
 		{"GET /admin/organizations/{orgID}/authorization-model", org("/authorization-model")},
+		{"GET /admin/organizations/{orgID}/authorization/explain", func(t *testing.T, s *Server) string {
+			o := newExplainOrg(t, s)
+			return "/admin/organizations/" + o + "/authorization/explain?subject=user:a&action=read&object=document:1"
+		}},
 		{"GET /admin/organizations/{orgID}/ssf-streams", org("/ssf-streams")},
 		{"GET /admin/organizations/{orgID}/scim-targets", org("/scim-targets")},
 		{"GET /admin/organizations/{orgID}/scim-sources", org("/scim-sources")},

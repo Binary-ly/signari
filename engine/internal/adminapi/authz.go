@@ -54,6 +54,50 @@ func (s *Server) getAuthzModel(w http.ResponseWriter, r *http.Request) {
 	s.writeList(w, r, map[string]any{"org_id": orgID, "source": src})
 }
 
+// explainAuthz says how a question would come out on relations, as `signari authz
+// check` does: which relations grant the action and whose grant answers it. A
+// session and a provider have their say at the decision itself, so what they would
+// be asked is returned as `requires` and not as part of `allowed`.
+func (s *Server) explainAuthz(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.PathValue("orgID")
+	if err := requireOrg(ctx, orgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	q := r.URL.Query()
+	styp, sid, sok := authzen.ParseRef(strings.TrimSpace(q.Get("subject")))
+	otyp, oid, ook := authzen.ParseRef(strings.TrimSpace(q.Get("object")))
+	action := strings.TrimSpace(q.Get("action"))
+	if !sok || !ook || action == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_relation",
+			"detail": "give subject and object as type:id, and an action"})
+		return
+	}
+	model, err := store.LoadModel(ctx, s.db, orgID)
+	if err == nil && model == nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "no_authorization_model"})
+		return
+	}
+	var e store.Explanation
+	defined := false
+	if err == nil {
+		e, defined, err = store.Explain(ctx, s.db, orgID, model, styp, sid, action, otyp, oid)
+	}
+	if err != nil {
+		s.log.Error("explaining a decision", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	requires := ""
+	if c, has := model.ConditionFor(otyp, action); has {
+		requires = c.Condition.Summary()
+	}
+	s.writeList(w, r, map[string]any{"org_id": orgID, "allowed": e.Held != "", "defined": defined,
+		"relation": e.Held, "via": e.Via, "relations": nonNilStrings(e.Relations), "groups": nonNilStrings(e.Groups),
+		"requires": requires})
+}
+
 func (s *Server) putAuthzModel(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := r.PathValue("orgID")

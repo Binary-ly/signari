@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0213 relations_follow_a_changed_name
+
+Not compatible with the release before: stop it before migrating.
+
+A relation that names a person by address or username moves to their id when that name changes, so the access stays with the person and not with the name.
+
 ## 0212 security_events
 
 Not compatible with the release before: stop it before migrating.

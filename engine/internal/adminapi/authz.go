@@ -1,8 +1,10 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -143,6 +145,34 @@ func expiryPassed(w http.ResponseWriter, at *time.Time) bool {
 	return true
 }
 
+// relationRecord is what the trail keeps of a relation: what the response says,
+// but a person by their id, and never the address a grant may name them by. The
+// trail outlives an erasure, so anything personal written there survives it. An
+// address nobody here holds is left out; a group or a service is not a person.
+// It answers the record and the person the relation is held by.
+func relationRecord(ctx context.Context, q store.Querier, orgID string, rel store.Relation,
+	detail map[string]any) (map[string]any, string, error) {
+	recorded := maps.Clone(detail)
+	if rel.ObjectType == "user" {
+		delete(recorded, "object")
+		recorded["object_type"] = rel.ObjectType
+		onWhom, err := store.ResolveSubject(ctx, q, orgID, rel.ObjectID)
+		if err != nil {
+			return nil, "", err
+		}
+		if onWhom != "" {
+			recorded["object"] = "user:" + onWhom
+		}
+	}
+	if rel.SubjectType != "user" {
+		return recorded, "", nil
+	}
+	delete(recorded, "subject")
+	recorded["subject_type"] = rel.SubjectType
+	person, err := store.ResolveSubject(ctx, q, orgID, rel.SubjectID)
+	return recorded, person, err
+}
+
 // changeRelation grants or revokes one relation, as `signari authz grant` and
 // `revoke` do. It takes effect on the next decision, which reads relations
 // per request.
@@ -177,12 +207,16 @@ func (s *Server) changeRelation(w http.ResponseWriter, r *http.Request, req rela
 		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
 			return err
 		}
+		recorded, person, err := relationRecord(ctx, tx, orgID, rel, detail)
+		if err != nil {
+			return err
+		}
 		if grant {
 			if err := store.GrantRelation(ctx, tx, orgID, rel, actingUser(r)); err != nil {
 				return err
 			}
 			return audit.Write(ctx, tx, audit.Event{Type: "admin.relation_granted", AdminTokenID: TokenIDFrom(ctx),
-				OrgID: orgID, Detail: detail})
+				OrgID: orgID, SubjectID: person, Detail: recorded})
 		}
 		removed, err := store.RevokeRelation(ctx, tx, orgID, rel)
 		if err != nil {
@@ -192,7 +226,7 @@ func (s *Server) changeRelation(w http.ResponseWriter, r *http.Request, req rela
 			return errRelationNotFound
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.relation_revoked", AdminTokenID: TokenIDFrom(ctx),
-			OrgID: orgID, Detail: detail})
+			OrgID: orgID, SubjectID: person, Detail: recorded})
 	})
 	switch {
 	case err != nil && writePreconditionFailure(w, err):

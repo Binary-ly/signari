@@ -70,6 +70,22 @@ func TestAnErasedPersonLeavesNoIdentifierInTheAuditTrail(t *testing.T) {
 			t.Fatalf("PATCH %v: %d %s", patch, rec.Code, rec.Body.String())
 		}
 	}
+	// A relation may be granted to a person by address, and to one by an address
+	// nobody here holds, which is somebody's all the same.
+	stranger := "stranger" + tag + "@example.test"
+	identifiers = append(identifiers, stranger)
+	for _, who := range []string{identifiers[1], stranger} {
+		for _, grant := range [][2]string{{"user:" + who, "document:" + tag}, {"group:staff" + tag, "user:" + who}} {
+			if rec := call(t, s, http.MethodPut, "/admin/organizations/"+org+"/relations", testToken,
+				map[string]any{"subject": grant[0], "relation": "viewer", "object": grant[1]}); rec.Code != http.StatusOK {
+				t.Fatalf("granting: %d %s", rec.Code, rec.Body.String())
+			}
+			revoke := "/admin/organizations/" + org + "/relations?subject=" + grant[0] + "&relation=viewer&object=" + grant[1]
+			if rec := call(t, s, http.MethodDelete, revoke, testToken, nil); rec.Code != http.StatusOK {
+				t.Fatalf("revoking: %d %s", rec.Code, rec.Body.String())
+			}
+		}
+	}
 	if code, body := erase(t, s, created.ID, `{"confirm_subject_id":"`+created.ID+`"}`); code != http.StatusOK {
 		t.Fatalf("erasing: %d %v", code, body)
 	}
@@ -102,7 +118,8 @@ func TestAnErasedPersonLeavesNoIdentifierInTheAuditTrail(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"admin.user_created", "admin.user_updated", "admin.subject_erased"} {
+	for _, want := range []string{"admin.user_created", "admin.user_updated", "admin.relation_granted",
+		"admin.relation_revoked", "admin.subject_erased"} {
 		if !evidence[want] {
 			t.Errorf("the trail has no %s for the person: the evidence was lost, not only the identifiers", want)
 		}
@@ -146,6 +163,21 @@ func TestAnErasedPersonLeavesNoIdentifierAnywhere(t *testing.T) {
 		"display_name": identifiers[2], "surname": identifiers[3]}); rec.Code != http.StatusOK {
 		t.Fatalf("renaming: %d %s", rec.Code, rec.Body.String())
 	}
+	// A relation holds a subject as text, so nothing cascades to it: one granted
+	// to the address before it changed, and one to the address after, each both
+	// ways round.
+	grantTo := func(address string) {
+		t.Helper()
+		for _, grant := range []map[string]any{
+			{"subject": "user:" + address, "relation": "viewer", "object": "document:" + tag},
+			{"subject": "group:staff" + tag, "relation": "manager", "object": "user:" + address},
+		} {
+			if rec := call(t, s, http.MethodPut, "/admin/organizations/"+org+"/relations", testToken, grant); rec.Code != http.StatusOK {
+				t.Fatalf("granting: %d %s", rec.Code, rec.Body.String())
+			}
+		}
+	}
+	grantTo(identifiers[0])
 	// A changed address queues a notice to the old one, which carries it; the
 	// old address is one of the identifiers that must not survive (5.04).
 	moved := "moved" + tag + "@example.test"
@@ -154,6 +186,7 @@ func TestAnErasedPersonLeavesNoIdentifierAnywhere(t *testing.T) {
 		t.Fatalf("changing the address: %d %s", rec.Code, rec.Body.String())
 	}
 	identifiers = append(identifiers, moved)
+	grantTo(moved)
 	// Signed in, so erasure has a session to end.
 	if _, err := s.db.Exec(ctx, `
 		INSERT INTO core.sessions (sid, org_id, user_id, auth_time, not_after)

@@ -381,7 +381,7 @@ func TestAddEnforcesTheSchema(t *testing.T) {
 			want: ldapclient.LDAPResultUndefinedAttributeType,
 			attrs: map[string][]string{
 				"objectClass": {"inetOrgPerson"}, "cn": {"X"}, "sn": {"X"},
-				"loginShell": {"/bin/sh"}},
+				"shoeSize": {"44"}},
 		},
 		{
 			name: "a single-valued attribute given two values",
@@ -530,7 +530,7 @@ func TestModifyEnforcesTheSchema(t *testing.T) {
 
 	t.Run("an unknown attribute", func(t *testing.T) {
 		m := ldapclient.NewModifyRequest(dn, nil)
-		m.Replace("loginShell", []string{"/bin/sh"})
+		m.Replace("shoeSize", []string{"44"})
 		if got := codeOf(t, c.Modify(m)); got != ldapclient.LDAPResultUndefinedAttributeType {
 			t.Fatalf("result code %d, want undefinedAttributeType(17)", got)
 		}

@@ -85,8 +85,12 @@ func newDirectoryFixture(t *testing.T, n int) *directoryFixture {
 
 func (f *directoryFixture) serve(t *testing.T) *ldapclient.Conn {
 	t.Helper()
-	s := ldapd.New(ldapd.Config{BaseDN: "dc=example,dc=test", AllowAnonymousSearch: true, MaxResults: 100}, f.auth,
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return f.serveWith(t, ldapd.Config{BaseDN: "dc=example,dc=test", AllowAnonymousSearch: true, MaxResults: 100})
+}
+
+func (f *directoryFixture) serveWith(t *testing.T, cfg ldapd.Config) *ldapclient.Conn {
+	t.Helper()
+	s := ldapd.New(cfg, f.auth, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

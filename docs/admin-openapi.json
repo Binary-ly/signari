@@ -1890,6 +1890,9 @@
                           "org_id": {
                             "format": "uuid",
                             "type": "string"
+                          },
+                          "posix_gid": {
+                            "type": "integer"
                           }
                         },
                         "required": [
@@ -2215,6 +2218,9 @@
                     "org_id": {
                       "format": "uuid",
                       "type": "string"
+                    },
+                    "posix_gid": {
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -2304,6 +2310,9 @@
                   },
                   "display_name": {
                     "type": "string"
+                  },
+                  "posix_gid": {
+                    "type": "integer"
                   }
                 },
                 "type": "object"
@@ -22743,6 +22752,9 @@
                       "format": "uuid",
                       "type": "string"
                     },
+                    "posix_uid": {
+                      "type": "integer"
+                    },
                     "require_password_change": {
                       "type": "boolean"
                     },
@@ -22773,7 +22785,8 @@
                     "email_verified",
                     "require_password_change",
                     "updated_at",
-                    "locale"
+                    "locale",
+                    "posix_uid"
                   ],
                   "type": "object"
                 }
@@ -22865,6 +22878,9 @@
                   },
                   "password": {
                     "type": "string"
+                  },
+                  "posix_uid": {
+                    "type": "integer"
                   },
                   "require_password_change": {
                     "type": "boolean"

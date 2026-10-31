@@ -39,6 +39,8 @@ const (
 	CondMailPrefix  = "mail_prefix"
 	// CondMember is a group that holds the person who signs in as Value.
 	CondMember = "member"
+	// CondNumber is a person's or group's POSIX number.
+	CondNumber = "number"
 	// CondNone is nobody at all.
 	CondNone = "none"
 )
@@ -141,12 +143,17 @@ func (s *Server) personLeaf(f *filter) *Condition {
 	case filterEquality, filterApprox:
 		switch {
 		case equalFold(f.Attr, "objectClass"):
-			for _, class := range objectClasses {
+			for _, class := range s.personClasses() {
 				if equalFold(class, f.Value) {
 					return nil
 				}
 			}
 			return &Condition{Op: CondNone}
+		case s.cfg.POSIX && isIntegerAttr(f.Attr):
+			// A person's gidNumber is their own number.
+			return numberCondition(CondNumber, f.Value)
+		case s.cfg.POSIX && equalFold(f.Attr, "uid"):
+			return &Condition{Op: CondLogin, Value: f.Value}
 		case equalFold(f.Attr, "cn"):
 			// Before the naming attribute: entryFor writes cn over it when the
 			// two are the same attribute.
@@ -175,7 +182,7 @@ func (s *Server) groupLeaf(f *filter) *Condition {
 		return nil
 	case equalFold(f.Attr, "objectClass"):
 		if exact {
-			for _, class := range groupClasses {
+			for _, class := range s.groupClasses() {
 				if equalFold(class, f.Value) {
 					return nil
 				}
@@ -191,6 +198,14 @@ func (s *Server) groupLeaf(f *filter) *Condition {
 			if login, err := s.usernameFromDN(f.Value); err == nil {
 				return &Condition{Op: CondMember, Value: login}
 			}
+		}
+	case s.cfg.POSIX && equalFold(f.Attr, "gidNumber"):
+		if exact {
+			return numberCondition(CondNumber, f.Value)
+		}
+	case s.cfg.POSIX && equalFold(f.Attr, "memberUid"):
+		if exact {
+			return &Condition{Op: CondMember, Value: f.Value}
 		}
 	default:
 		return &Condition{Op: CondNone}

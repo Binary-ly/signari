@@ -77,6 +77,9 @@ func personConditionSQL(c *ldapd.Condition, bind func(any) int) (string, bool) {
 	case ldapd.CondMail:
 		return fmt.Sprintf("u.email_fold = lower($%d)", bind(c.Value)), true
 
+	case ldapd.CondNumber:
+		return fmt.Sprintf("u.posix_uid = $%d::int", bind(c.Value)), true
+
 	case ldapd.CondMailPrefix:
 		return foldPrefix("u.email_fold", bind(c.Value)), true
 
@@ -105,6 +108,8 @@ func groupConditionSQL(c *ldapd.Condition, bind func(any) int) (string, bool) {
 	switch c.Op {
 	case ldapd.CondName:
 		return fmt.Sprintf("lower(g.name) = lower($%d)", bind(c.Value)), true
+	case ldapd.CondNumber:
+		return fmt.Sprintf("g.posix_gid = $%d::int", bind(c.Value)), true
 	case ldapd.CondMember:
 		n := bind(c.Value)
 		return fmt.Sprintf(`g.id IN (SELECT m.group_id
@@ -150,7 +155,7 @@ func (a *LDAPAuthenticator) Groups(ctx context.Context, q ldapd.Query) ([]*ldapd
 	}
 	rows, err := a.db.Query(ctx, `
 		WITH page AS (
-			SELECT g.id, g.name
+			SELECT g.id, g.name, g.posix_gid
 			  FROM core.groups g
 			 WHERE g.org_id = $1::uuid AND `+store.OrgInService("g.org_id")+where.String()+`
 			   AND EXISTS (SELECT 1 FROM core.group_members m
@@ -158,7 +163,7 @@ func (a *LDAPAuthenticator) Groups(ctx context.Context, q ldapd.Query) ([]*ldapd
 			                WHERE m.group_id = g.id AND u.status = 'active')
 			 ORDER BY g.id
 			 LIMIT $2)
-		SELECT p.id::text, p.name,
+		SELECT p.id::text, p.name, p.posix_gid,
 		       (SELECT array_agg(COALESCE(NULLIF(u.username,''), u.email, u.id::text) ORDER BY u.id)
 		          FROM core.group_members m
 		          JOIN core.users u ON u.id = m.user_id
@@ -173,7 +178,7 @@ func (a *LDAPAuthenticator) Groups(ctx context.Context, q ldapd.Query) ([]*ldapd
 	var out []*ldapd.Group
 	for rows.Next() {
 		var g ldapd.Group
-		if err := rows.Scan(&g.Position, &g.Name, &g.Members); err != nil {
+		if err := rows.Scan(&g.Position, &g.Name, &g.GIDNumber, &g.Members); err != nil {
 			return nil, err
 		}
 		out = append(out, &g)

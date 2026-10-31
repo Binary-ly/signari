@@ -2684,7 +2684,10 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			AllowAnonymousSearch: os.Getenv("SIGNARI_LDAP_ANONYMOUS_SEARCH") == "1",
 			WriteGroup:           ldapWriteGroup,
 			// Who may search beyond their own entry. Empty means nobody.
-			SearchGroup: os.Getenv("SIGNARI_LDAP_SEARCH_GROUP"),
+			SearchGroup:  os.Getenv("SIGNARI_LDAP_SEARCH_GROUP"),
+			POSIX:        os.Getenv("SIGNARI_LDAP_POSIX") == "1",
+			HomeTemplate: envOr("SIGNARI_LDAP_POSIX_HOME", "/home/{username}"),
+			LoginShell:   envOr("SIGNARI_LDAP_POSIX_SHELL", "/bin/bash"),
 		}, httpapi.NewLDAPAuthenticator(pool, ldapHasher, ldapOrgID, log).
 			WithMFAGate(srv.BindDemandsMFA).WithCodes(srv.BindCodeOK), log)
 
@@ -7167,11 +7170,14 @@ func outpostRun(core, token, kind, addr, baseDN, tlsCert, tlsKey string, ldapIns
 				"environment", env, "registration", client.SearchGroup())
 		}
 		srv := ldapd.New(ldapd.Config{
-			BaseDN:      baseDN,
-			UserAttr:    envOr("SIGNARI_LDAP_USER_ATTR", "uid"),
-			MaxResults:  500,
-			ReadTimeout: 30 * time.Second,
-			SearchGroup: client.SearchGroup(),
+			BaseDN:       baseDN,
+			UserAttr:     envOr("SIGNARI_LDAP_USER_ATTR", "uid"),
+			MaxResults:   500,
+			ReadTimeout:  30 * time.Second,
+			SearchGroup:  client.SearchGroup(),
+			POSIX:        os.Getenv("SIGNARI_LDAP_POSIX") == "1",
+			HomeTemplate: envOr("SIGNARI_LDAP_POSIX_HOME", "/home/{username}"),
+			LoginShell:   envOr("SIGNARI_LDAP_POSIX_SHELL", "/bin/bash"),
 		}, client, log)
 		ln, err := outpost.ListenLDAP(addr, tlsCert, tlsKey, ldapInsecure)
 		if err != nil {

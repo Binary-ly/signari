@@ -200,6 +200,10 @@ type patchUserRequest struct {
 	// pages once they next sign in, as `signari user locale` sets it; empty
 	// clears it to the deployment's default.
 	Locale *string `json:"locale"`
+
+	// PosixUID is a number kept from a directory this one replaces, so that a
+	// person's files stay theirs.
+	PosixUID *int `json:"posix_uid"`
 }
 
 // nullableTrimmed maps an absent or blank field to SQL NULL.
@@ -229,10 +233,14 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Active == nil && req.Password == nil && req.RequirePasswordChange == nil &&
 		req.Email == nil && req.Username == nil && req.DisplayName == nil &&
-		req.GivenName == nil && req.Surname == nil && req.Locale == nil {
+		req.GivenName == nil && req.Surname == nil && req.Locale == nil && req.PosixUID == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
+		return
+	}
+	if req.PosixUID != nil && !store.PosixIDAssignable(*req.PosixUID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_posix_id", "detail": store.PosixIDRule})
 		return
 	}
 	// Validated before the transaction opens, so a malformed address is a 400
@@ -390,6 +398,13 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		if req.PosixUID != nil {
+			if _, err := tx.Exec(ctx, `UPDATE core.users SET posix_uid = $2, updated_at = now() WHERE id = $1::uuid`,
+				userID, *req.PosixUID); err != nil {
+				return err
+			}
+		}
+
 		// Display fields. No uniqueness, no authentication meaning: two people
 		// may share a name, and none of these is ever a login identifier.
 		for _, f := range []struct {
@@ -500,6 +515,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 				"given_name_set":         req.GivenName != nil,
 				"surname_set":            req.Surname != nil,
 				"locale_set":             req.Locale != nil,
+				"posix_uid_set":          req.PosixUID != nil,
 			},
 		})
 	})
@@ -520,6 +536,11 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		err != nil && strings.Contains(err.Error(), "users_org_username_key"):
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": "already_exists", "detail": "that email or username is taken in this organisation",
+		})
+		return
+	case err != nil && strings.Contains(err.Error(), "users_posix_uid"):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "already_exists", "detail": "another person in this organisation has that POSIX number",
 		})
 		return
 	// `CHECK (username IS NOT NULL OR email IS NOT NULL)`. Clearing the last

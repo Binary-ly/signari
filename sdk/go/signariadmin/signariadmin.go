@@ -575,6 +575,7 @@ type GetGroupsResponseGroupsItem struct {
 	MayImpersonate bool   `json:"may_impersonate"`
 	Name           string `json:"name"`
 	OrgID          string `json:"org_id"`
+	PosixGid       int64  `json:"posix_gid,omitempty"`
 }
 
 // GetGroupsGroupIDResponse is a JSON object of the Admin API.
@@ -586,6 +587,7 @@ type GetGroupsGroupIDResponse struct {
 	MayImpersonate bool   `json:"may_impersonate"`
 	Name           string `json:"name"`
 	OrgID          string `json:"org_id"`
+	PosixGid       int64  `json:"posix_gid,omitempty"`
 }
 
 // GetGroupsGroupIDMembersResponse is a JSON object of the Admin API.
@@ -1474,6 +1476,7 @@ type GetUsersUserIDResponse struct {
 	ID                    string `json:"id"`
 	Locale                string `json:"locale"`
 	OrgID                 string `json:"org_id"`
+	PosixUid              int64  `json:"posix_uid"`
 	RequirePasswordChange bool   `json:"require_password_change"`
 	Status                string `json:"status"`
 	Surname               string `json:"surname"`
@@ -1643,6 +1646,7 @@ type PatchClientsClientIDSSFStreamResponse struct {
 type PatchGroupsGroupIDRequest struct {
 	Description *string `json:"description,omitempty"`
 	DisplayName *string `json:"display_name,omitempty"`
+	PosixGid    *int64  `json:"posix_gid,omitempty"`
 }
 
 // PatchGroupsGroupIDResponse is a JSON object of the Admin API.
@@ -1860,6 +1864,7 @@ type PatchUsersUserIDRequest struct {
 	GivenName             *string `json:"given_name,omitempty"`
 	Locale                *string `json:"locale,omitempty"`
 	Password              *string `json:"password,omitempty"`
+	PosixUid              *int64  `json:"posix_uid,omitempty"`
 	RequirePasswordChange *bool   `json:"require_password_change,omitempty"`
 	Surname               *string `json:"surname,omitempty"`
 	Username              *string `json:"username,omitempty"`

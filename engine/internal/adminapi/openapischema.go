@@ -220,7 +220,7 @@ var (
 			"status": str(), "created_at": dateTime()})
 	groupSummarySchema = object([]string{"id", "org_id", "name", "display_name", "description", "may_impersonate", "created_at"},
 		map[string]jsonSchema{"id": uuidStr(), "org_id": uuidStr(), "name": str(), "display_name": str(),
-			"description": str(), "may_impersonate": boolean(), "created_at": dateTime()})
+			"description": str(), "may_impersonate": boolean(), "created_at": dateTime(), "posix_gid": integer()})
 	organizationSchema = object([]string{"id", "instance_id", "slug", "display_name", "status", "created_at"},
 		map[string]jsonSchema{"id": uuidStr(), "instance_id": uuidStr(), "slug": str(), "display_name": str(),
 			"status": str(), "created_at": dateTime()})
@@ -340,11 +340,11 @@ var opSchemas = map[string]opSchema{
 		"users": arrayOf(userSummarySchema), "next_cursor": str()})},
 	"GET /admin/users/{userID}": {http.StatusOK, nil, object([]string{"id", "org_id", "email", "username", "status",
 		"created_at", "display_name", "given_name", "surname", "email_verified", "require_password_change", "updated_at",
-		"locale"},
+		"locale", "posix_uid"},
 		map[string]jsonSchema{"id": uuidStr(), "org_id": uuidStr(), "email": str(), "username": str(),
 			"status": str(), "created_at": dateTime(), "display_name": str(), "given_name": str(), "surname": str(),
 			"email_verified": boolean(), "require_password_change": boolean(), "updated_at": dateTime(),
-			"locale": str()})},
+			"locale": str(), "posix_uid": integer()})},
 	"GET /admin/users/{userID}/attributes": {http.StatusOK, nil, object([]string{"user_id", "attributes"}, map[string]jsonSchema{
 		"user_id": uuidStr(), "attributes": arrayOf(openObject())})},
 	"GET /admin/users/{userID}/factors": {http.StatusOK, nil, object([]string{"user_id", "factors"}, map[string]jsonSchema{

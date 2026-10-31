@@ -113,6 +113,15 @@ var schema = []attrDef{
 	{Name: "member", Writable: false},
 	{Name: "ou", Writable: false},
 
+	// POSIX (7.03), and none of it writable here: a number is allocated, and a
+	// directory-shaped write to one would hand a person somebody else's files.
+	{Name: "uidNumber", Single: true, Writable: false},
+	{Name: "gidNumber", Single: true, Writable: false},
+	{Name: "homeDirectory", Single: true, Writable: false},
+	{Name: "loginShell", Single: true, Writable: false},
+	{Name: "gecos", Single: true, Writable: false},
+	{Name: "memberUid", Writable: false},
+
 	// Structural, and fixed. A client may send it on Add and it must name the
 	// classes this directory implements; it may not be changed afterwards, which
 	// RFC 4511 gives its own result code for (objectClassModsProhibited, 69).

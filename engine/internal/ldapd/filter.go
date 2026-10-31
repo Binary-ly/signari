@@ -1,6 +1,8 @@
 package ldapd
 
 import (
+	"cmp"
+	"strconv"
 	"strings"
 
 	ber "github.com/go-asn1-ber/asn1-ber"
@@ -202,6 +204,18 @@ func (f *filter) Matches(e *entry) bool {
 	return f == nil || f.eval(e) == isTrue
 }
 
+// order compares a value with the assertion's.
+func (f *filter) order(v string) int {
+	if isIntegerAttr(f.Attr) {
+		a, aerr := strconv.Atoi(v)
+		b, berr := strconv.Atoi(f.Value)
+		if aerr == nil && berr == nil {
+			return cmp.Compare(a, b)
+		}
+	}
+	return cmp.Compare(foldASCII(v), foldASCII(f.Value))
+}
+
 // eval is the filter's value. Three of them, because two fail open: an
 // assertion this directory cannot evaluate was FALSE, so the NOT of it was
 // TRUE, and `(!(shoeSize=12))` returned everybody. Undefined stays Undefined
@@ -248,9 +262,9 @@ func (f *filter) eval(e *entry) truth {
 	case filterPresent:
 		return assertion(e, f.Attr, func(string) bool { return true })
 	case filterGreaterOrEqual:
-		return assertion(e, f.Attr, func(v string) bool { return foldASCII(v) >= foldASCII(f.Value) })
+		return assertion(e, f.Attr, func(v string) bool { return f.order(v) >= 0 })
 	case filterLessOrEqual:
-		return assertion(e, f.Attr, func(v string) bool { return foldASCII(v) <= foldASCII(f.Value) })
+		return assertion(e, f.Attr, func(v string) bool { return f.order(v) <= 0 })
 	case filterSubstring:
 		return assertion(e, f.Attr, f.substringsOf)
 	case filterExtensible:

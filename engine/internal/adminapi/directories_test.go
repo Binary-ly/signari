@@ -171,6 +171,60 @@ func TestADirectorySourceIsManagedThroughTheAPI(t *testing.T) {
 	}
 }
 
+// A number kept from the directory being replaced is set by hand, so a person's files
+// stay theirs: below what is allocated, never a host's own, never somebody else's.
+func TestAPosixNumberCanBeKept(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	org := newDriftMigrationOrg(t, s, false)
+	person := func(name string) string {
+		var id string
+		if err := s.db.QueryRow(ctx, `INSERT INTO core.users (org_id, user_handle, username)
+			VALUES ($1::uuid, sha256(convert_to($1::text || $2, 'UTF8')), $2) RETURNING id::text`, org, name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = s.db.Exec(ctx, `DELETE FROM core.users WHERE id = $1::uuid`, id) })
+		return id
+	}
+	ada, bea := person("ada"), person("bea")
+	set := func(id string, n, want int) {
+		t.Helper()
+		if rec := call(t, s, http.MethodPatch, "/admin/users/"+id, testToken, map[string]any{"posix_uid": n}); rec.Code != want {
+			t.Errorf("setting %d: %d %s", n, rec.Code, rec.Body.String())
+		}
+	}
+	set(ada, 1500, http.StatusOK)
+	set(ada, 0, http.StatusBadRequest)
+	set(ada, 999, http.StatusBadRequest)
+	set(ada, 2000000000, http.StatusBadRequest)
+	set(bea, 1500, http.StatusConflict)
+	if body := call(t, s, http.MethodGet, "/admin/users/"+ada, testToken, nil).Body.String(); !strings.Contains(body, `"posix_uid":1500`) {
+		t.Errorf("the person reads %s", body)
+	}
+
+	group := func(name string) string {
+		var id string
+		if err := s.db.QueryRow(ctx, `INSERT INTO core.groups (org_id, name, display_name) VALUES ($1::uuid, $2, $2)
+			RETURNING id::text`, org, name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	staff, eng := group("staff"), group("eng")
+	setGroup := func(id string, n, want int) {
+		t.Helper()
+		if rec := call(t, s, http.MethodPatch, "/admin/groups/"+id, testToken, map[string]any{"posix_gid": n}); rec.Code != want {
+			t.Errorf("setting %d: %d %s", n, rec.Code, rec.Body.String())
+		}
+	}
+	setGroup(staff, 1500, http.StatusOK) // A group's numbers are their own.
+	setGroup(staff, 500, http.StatusBadRequest)
+	setGroup(eng, 1500, http.StatusConflict)
+	if body := call(t, s, http.MethodGet, "/admin/groups/"+staff, testToken, nil).Body.String(); !strings.Contains(body, `"posix_gid":1500`) {
+		t.Errorf("the group reads %s", body)
+	}
+}
+
 // A map is set and cleared through the API as `dir set` does it, and one naming an
 // attribute nobody declared is refused there rather than at a sync.
 func TestAnAttributeMapIsSetThroughTheAPI(t *testing.T) {

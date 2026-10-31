@@ -129,6 +129,9 @@ type identityJSON struct {
 	// fallback for `sn` rather than requiring one here.
 	Surname   string `json:"sn"`
 	GivenName string `json:"given_name"`
+	// Absent from a core that predates them, and the directory then claims no
+	// POSIX class for this person.
+	UIDNumber int `json:"uid_number"`
 	// Only on an authenticate answer: what this connection presents with every
 	// later lookup and list, so the core answers for the person who bound.
 	BindProof string `json:"bind_proof,omitempty"`
@@ -141,7 +144,7 @@ func (i identityJSON) toLDAP() *ldapd.Identity {
 	return &ldapd.Identity{
 		Username: i.Username, Email: i.Email, DisplayName: i.DisplayName,
 		Active: i.Active, Groups: i.Groups,
-		Surname: i.Surname, GivenName: i.GivenName,
+		Surname: i.Surname, GivenName: i.GivenName, UIDNumber: i.UIDNumber,
 		BindProof: i.BindProof, Position: i.Position,
 	}
 }

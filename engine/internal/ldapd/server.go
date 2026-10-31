@@ -55,6 +55,9 @@ type Identity struct {
 	Surname   string
 	GivenName string
 
+	// UIDNumber is the person's POSIX number, 0 from a core that predates them.
+	UIDNumber int
+
 	// BindProof is what an Authenticator that sits across a trust boundary
 	// returns from a successful bind, for the connection to hand back on every
 	// later Lookup and List (see WithBindProof). Never published as an
@@ -83,6 +86,16 @@ type Config struct {
 	// MaxResults caps a single search.
 	MaxResults  int
 	ReadTimeout time.Duration
+
+	// POSIX publishes people as posixAccount and groups as posixGroup (7.03), for
+	// hosts that take their accounts from here. Off by default: an application
+	// reading names and addresses has no use for it, and nothing is lost by a
+	// directory that does not claim classes it was not asked to.
+	POSIX bool
+	// HomeTemplate is a person's home directory, {username} replaced. LoginShell
+	// is everybody's shell.
+	HomeTemplate string
+	LoginShell   string
 
 	// WriteGroup names the group whose members may perform Add, Modify, Delete
 	// and Modify DN.
@@ -833,7 +846,7 @@ func (s *Server) entriesFor(ctx context.Context, req *searchRequest, after strin
 // else's code.
 func (s *Server) entryFor(id *Identity) *entry {
 	attrs := map[string][]string{
-		"objectClass":  objectClasses,
+		"objectClass":  s.personClasses(),
 		s.cfg.UserAttr: {id.Username},
 		"cn":           {firstNonEmpty(id.DisplayName, id.Username)},
 		// `sn` is a MUST attribute of `person` (RFC 4519), and this entry claims
@@ -867,6 +880,7 @@ func (s *Server) entryFor(id *Identity) *entry {
 		}
 		attrs["memberOf"] = dns
 	}
+	s.addPosixAccount(attrs, id)
 	return &entry{DN: s.dnFor(id.Username), Attrs: attrs}
 }
 

@@ -538,6 +538,9 @@ See [remote-access.md](remote-access.md).
 | `SIGNARI_LDAP_USER_ATTR` | Attribute carrying the username |
 | `SIGNARI_LDAP_ANONYMOUS_SEARCH` | Permit anonymous search. Off by default |
 | `SIGNARI_LDAP_SEARCH_GROUP` | Group whose members may search the whole directory. **Empty means nobody**: everyone else who binds gets back only their own entry. Read by the engine's LDAP listener. An LDAP outpost ignores it and logs that it did: its group is recorded on its registration (`signari outpost search-group`) and enforced by the core. See [ldap.md](ldap.md#other-decisions) and [outposts](outposts.md#what-an-outpost-token-is-worth) |
+| `SIGNARI_LDAP_POSIX` | `1` publishes people as `posixAccount` and groups as `posixGroup`, for hosts that read their accounts from the directory. Read by the engine's LDAP listener and an LDAP outpost. See [ldap.md](ldap.md#posix-accounts) |
+| `SIGNARI_LDAP_POSIX_HOME` | A person's home directory, `{username}` replaced. Default `/home/{username}` |
+| `SIGNARI_LDAP_POSIX_SHELL` | Everybody's login shell. Default `/bin/bash` |
 | `SIGNARI_LDAP_WRITE_GROUP` | Group whose members may Add, Modify, Delete and Modify DN. **Empty means nobody**, and the directory stays read-only. Members can create accounts, set any password, and delete entries — see [ldap.md](ldap.md) |
 
 ## Device posture

@@ -29,6 +29,12 @@ var (
 		"( 2.5.4.49 NAME 'distinguishedName' EQUALITY distinguishedNameMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 )",
 		"( 2.5.4.31 NAME 'member' SUP distinguishedName )",
 		"( 2.5.4.11 NAME ( 'ou' 'organizationalUnitName' ) SUP name )",
+		"( 1.3.6.1.1.1.1.0 NAME 'uidNumber' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )",
+		"( 1.3.6.1.1.1.1.1 NAME 'gidNumber' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )",
+		"( 1.3.6.1.1.1.1.2 NAME 'gecos' EQUALITY caseIgnoreIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 SINGLE-VALUE )",
+		"( 1.3.6.1.1.1.1.3 NAME 'homeDirectory' EQUALITY caseExactIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 SINGLE-VALUE )",
+		"( 1.3.6.1.1.1.1.4 NAME 'loginShell' EQUALITY caseExactIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 SINGLE-VALUE )",
+		"( 1.3.6.1.1.1.1.12 NAME 'memberUid' EQUALITY caseExactIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 )",
 	}
 	subschemaObjectClasses = []string{
 		"( 2.5.6.0 NAME 'top' ABSTRACT MUST objectClass )",
@@ -38,11 +44,15 @@ var (
 			"MAY ( displayName $ givenName $ mail $ uid ) )",
 		"( 2.5.6.9 NAME 'groupOfNames' SUP top STRUCTURAL MUST ( member $ cn ) )",
 		"( 2.5.6.5 NAME 'organizationalUnit' SUP top STRUCTURAL MUST ou )",
+		"( 1.3.6.1.1.1.2.0 NAME 'posixAccount' SUP top AUXILIARY MUST ( cn $ uid $ uidNumber $ gidNumber $ homeDirectory ) " +
+			"MAY ( loginShell $ gecos ) )",
+		"( 1.3.6.1.1.1.2.2 NAME 'posixGroup' SUP top AUXILIARY MUST ( cn $ gidNumber ) MAY memberUid )",
 	}
 	subschemaSyntaxes = []string{
 		"( 1.3.6.1.4.1.1466.115.121.1.12 DESC 'Distinguished Name' )",
 		"( 1.3.6.1.4.1.1466.115.121.1.15 DESC 'Directory String' )",
 		"( 1.3.6.1.4.1.1466.115.121.1.26 DESC 'IA5 String' )",
+		"( 1.3.6.1.4.1.1466.115.121.1.27 DESC 'INTEGER' )",
 		"( 1.3.6.1.4.1.1466.115.121.1.38 DESC 'OID' )",
 		"( 1.3.6.1.4.1.1466.115.121.1.40 DESC 'Octet String' )",
 	}

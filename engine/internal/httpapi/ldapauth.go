@@ -404,13 +404,13 @@ func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd
 		SELECT COALESCE(NULLIF(u.username,''), u.email, u.id::text),
 		       COALESCE(u.email,''), u.status = 'active',
 		       COALESCE(u.display_name,''), COALESCE(u.surname,''),
-		       COALESCE(u.given_name,'')
+		       COALESCE(u.given_name,''), u.posix_uid
 		FROM core.users u
 		WHERE u.org_id = $1::uuid
 		  AND (u.username_fold = lower($2) OR u.email_fold = lower($2))
 		  AND u.status = 'active' AND `+store.OrgInService("u.org_id"), a.orgID, username).
 		Scan(&id.Username, &id.Email, &id.Active,
-			&id.DisplayName, &id.Surname, &id.GivenName)
+			&id.DisplayName, &id.Surname, &id.GivenName, &id.UIDNumber)
 	if err != nil {
 		return nil, nil
 	}
@@ -466,14 +466,14 @@ func (a *LDAPAuthenticator) List(ctx context.Context, q ldapd.Query) ([]*ldapd.I
 	// call repeatedly, which is a denial of service with a valid bind.
 	rows, err := a.db.Query(ctx, `
 		WITH page AS (
-			SELECT u.id, u.username, u.email, u.display_name, u.surname, u.given_name
+			SELECT u.id, u.username, u.email, u.display_name, u.surname, u.given_name, u.posix_uid
 			  FROM core.users u
 			 WHERE u.org_id = $1::uuid AND u.status = 'active' AND `+store.OrgInService("u.org_id")+where.String()+`
 			 ORDER BY u.id
 			 LIMIT $2)
 		SELECT p.id::text, COALESCE(NULLIF(p.username,''), p.email, p.id::text), COALESCE(p.email,''),
 		       COALESCE(p.display_name,''), COALESCE(p.surname,''),
-		       COALESCE(p.given_name,''),
+		       COALESCE(p.given_name,''), p.posix_uid,
 		       COALESCE((SELECT array_agg(g.name ORDER BY g.name)
 		                   FROM core.group_members m
 		                   JOIN core.groups g ON g.id = m.group_id
@@ -489,7 +489,7 @@ func (a *LDAPAuthenticator) List(ctx context.Context, q ldapd.Query) ([]*ldapd.I
 	for rows.Next() {
 		var id ldapd.Identity
 		if err := rows.Scan(&id.Position, &id.Username, &id.Email, &id.DisplayName,
-			&id.Surname, &id.GivenName, &id.Groups); err != nil {
+			&id.Surname, &id.GivenName, &id.UIDNumber, &id.Groups); err != nil {
 			return nil, err
 		}
 		id.Active = true

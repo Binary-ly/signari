@@ -3,6 +3,7 @@ package ldapd
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -19,6 +20,8 @@ type Group struct {
 	Name string `json:"name"`
 	// Members are the login names of those in it, as dnFor names them.
 	Members []string `json:"members"`
+	// GIDNumber is its POSIX number, 0 from a core that predates them.
+	GIDNumber int `json:"gid_number,omitempty"`
 	// Position is where Groups found it, as Identity's is.
 	Position string `json:"position,omitempty"`
 }
@@ -49,11 +52,17 @@ func (s *Server) groupEntry(g *Group) *entry {
 	for i, m := range g.Members {
 		members[i] = s.dnFor(m)
 	}
-	return &entry{DN: s.groupDN(g.Name), Attrs: map[string][]string{
+	attrs := map[string][]string{
 		"objectClass": groupClasses,
 		"cn":          {g.Name},
 		"member":      members,
-	}}
+	}
+	if s.cfg.POSIX && g.GIDNumber > 0 {
+		attrs["objectClass"] = s.groupClasses()
+		attrs["gidNumber"] = []string{strconv.Itoa(g.GIDNumber)}
+		attrs["memberUid"] = g.Members
+	}
+	return &entry{DN: s.groupDN(g.Name), Attrs: attrs}
 }
 
 func (s *Server) walkGroups(ctx context.Context, req *searchRequest, after string, want int) (

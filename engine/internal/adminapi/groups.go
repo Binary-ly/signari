@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/store"
 )
 
 // Groups: the unit an operator actually administers.
@@ -41,15 +42,16 @@ type groupSummary struct {
 	// and cannot be SET. Read and write are deliberately asymmetric here.
 	MayImpersonate bool   `json:"may_impersonate"`
 	CreatedAt      string `json:"created_at"`
+	PosixGID       int    `json:"posix_gid"`
 }
 
 const groupColumns = `id::text, org_id::text, name, display_name,
 	coalesce(description, ''), may_impersonate,
-	to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')`
+	to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'), posix_gid`
 
 func scanGroup(row pgx.Row, g *groupSummary) error {
 	return row.Scan(&g.ID, &g.OrgID, &g.Name, &g.DisplayName, &g.Description,
-		&g.MayImpersonate, &g.CreatedAt)
+		&g.MayImpersonate, &g.CreatedAt, &g.PosixGID)
 }
 
 func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +198,8 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 type patchGroupRequest struct {
 	DisplayName *string `json:"display_name"`
 	Description *string `json:"description"`
+	// PosixGID is a number kept from a directory this one replaces.
+	PosixGID *int `json:"posix_gid"`
 }
 
 func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
@@ -211,12 +215,16 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	if req.DisplayName == nil && req.Description == nil {
+	if req.DisplayName == nil && req.Description == nil && req.PosixGID == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change",
 			"detail": "no supported field present. may_impersonate is deliberately not " +
 				"settable here; it is a CLI operation",
 		})
+		return
+	}
+	if req.PosixGID != nil && !store.PosixIDAssignable(*req.PosixGID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_posix_id", "detail": store.PosixIDRule})
 		return
 	}
 	pre, ok := s.readPrecondition(w, r)
@@ -240,13 +248,14 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
 			UPDATE core.groups
 			   SET display_name = coalesce($2, display_name),
 			       description  = coalesce($3, description),
+			       posix_gid    = coalesce($4, posix_gid),
 			       updated_at   = now()
-			 WHERE id = $1::uuid`, groupID, req.DisplayName, req.Description); err != nil {
+			 WHERE id = $1::uuid`, groupID, req.DisplayName, req.Description, req.PosixGID); err != nil {
 			return err
 		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.group_updated", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
-			Detail: map[string]any{"group_id": groupID},
+			Detail: map[string]any{"group_id": groupID, "posix_gid_set": req.PosixGID != nil},
 		})
 	})
 	s.finishGroupWrite(w, r, groupID, version, err, http.StatusOK,
@@ -320,6 +329,11 @@ func (s *Server) finishGroupWrite(w http.ResponseWriter, r *http.Request, groupI
 		return
 	case errors.Is(err, errNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "group_not_found"})
+		return
+	case err != nil && strings.Contains(err.Error(), "groups_posix_gid"):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "already_exists", "detail": "another group in this organisation has that POSIX number",
+		})
 		return
 	case err != nil:
 		s.log.Error("writing a group", "group_id", groupID, "err", err)

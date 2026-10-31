@@ -285,6 +285,21 @@ func SetUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name, value
 	return nil
 }
 
+// A POSIX number set by hand (7.03) is one kept from a directory being replaced. It
+// sits below what the sequence in 0208 allocates, so an allocated number can never
+// land on one, and at or above 1000, since below that a host's own accounts live and
+// one of them is root.
+const (
+	minPosixID = 1000
+	maxPosixID = 1999999999
+)
+
+// PosixIDRule says what PosixIDAssignable accepts.
+const PosixIDRule = "a POSIX number set by hand is 1000 to 1999999999: higher ones are allocated here"
+
+// PosixIDAssignable reports whether a number may be set by hand.
+func PosixIDAssignable(n int) bool { return n >= minPosixID && n <= maxPosixID }
+
 // CheckAttributeValue reports whether a value is one the attribute's type accepts.
 func CheckAttributeValue(a Attribute, value string) error {
 	return checkAttributeValue(a.Name, a.ValueType, value)

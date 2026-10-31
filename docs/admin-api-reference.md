@@ -1215,6 +1215,7 @@ Answers:
 | `may_impersonate` | boolean | always |
 | `name` | string | always |
 | `org_id` | string | always |
+| `posix_gid` | integer |  |
 
 ### `PATCH /admin/groups/{groupID}`
 
@@ -1228,6 +1229,7 @@ Takes:
 |---|---|---|
 | `description` | string |  |
 | `display_name` | string |  |
+| `posix_gid` | integer |  |
 
 Answers:
 
@@ -3718,6 +3720,7 @@ Answers:
 | `id` | string | always |
 | `locale` | string | always |
 | `org_id` | string | always |
+| `posix_uid` | integer | always |
 | `require_password_change` | boolean | always |
 | `status` | string | always |
 | `surname` | string | always |
@@ -3740,6 +3743,7 @@ Takes:
 | `given_name` | string |  |
 | `locale` | string |  |
 | `password` | string |  |
+| `posix_uid` | integer |  |
 | `require_password_change` | boolean |  |
 | `surname` | string |  |
 | `username` | string |  |

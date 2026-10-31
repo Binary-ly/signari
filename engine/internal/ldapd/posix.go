@@ -1,0 +1,78 @@
+package ldapd
+
+import (
+	"slices"
+	"strconv"
+	"strings"
+)
+
+// POSIX accounts (7.03): what a host reading its users from a directory needs. The
+// attribute names and object identifiers are RFC 2307's, which is not in specs/; they
+// were read from a published schema, not from memory, and the review note says which.
+//
+// A person's gidNumber is their own number, the group private to them. The directory
+// publishes no such group, so a host shows the number where it would show a name.
+// Everything a person is in beyond that comes through memberUid.
+
+const (
+	posixAccountClass = "posixAccount"
+	posixGroupClass   = "posixGroup"
+)
+
+// personClasses is what a person here is. objectClasses is the set an Add may claim,
+// and posixAccount is not in it: the numbers are allocated, not written.
+func (s *Server) personClasses() []string {
+	if !s.cfg.POSIX {
+		return objectClasses
+	}
+	return append(slices.Clone(objectClasses), posixAccountClass)
+}
+
+func (s *Server) groupClasses() []string {
+	if !s.cfg.POSIX {
+		return groupClasses
+	}
+	return append(slices.Clone(groupClasses), posixGroupClass)
+}
+
+// addPosixAccount completes a person's attributes. Somebody with no number comes from
+// a core that predates them, and claiming the class without one would publish an
+// account a host refuses or, worse, reads as uid 0.
+func (s *Server) addPosixAccount(attrs map[string][]string, id *Identity) {
+	if !s.cfg.POSIX || id.UIDNumber <= 0 {
+		attrs["objectClass"] = objectClasses
+		return
+	}
+	number := strconv.Itoa(id.UIDNumber)
+	attrs["uid"] = []string{id.Username}
+	attrs["uidNumber"] = []string{number}
+	attrs["gidNumber"] = []string{number}
+	attrs["homeDirectory"] = []string{s.homeDirectory(id.Username)}
+	attrs["loginShell"] = []string{s.cfg.LoginShell}
+	attrs["gecos"] = []string{firstNonEmpty(id.DisplayName, id.Username)}
+}
+
+// homeDirectory fills the template. A name is whatever was registered, so it is held
+// to one path segment: a person named `..` must not be given the parent of /home.
+func (s *Server) homeDirectory(username string) string {
+	segment := strings.NewReplacer("/", "_", "\x00", "_").Replace(username)
+	if strings.Trim(segment, ".") == "" {
+		segment = "_"
+	}
+	return strings.ReplaceAll(s.cfg.HomeTemplate, "{username}", segment)
+}
+
+// isIntegerAttr is an attribute that orders as a number. As text, 9 sorts after 10,
+// so a range over uidNumber finds the wrong people.
+func isIntegerAttr(name string) bool {
+	return equalFold(name, "uidNumber") || equalFold(name, "gidNumber")
+}
+
+// numberCondition says who an equality on a number could be. A value that is not one
+// matches nobody.
+func numberCondition(op, value string) *Condition {
+	if _, err := strconv.Atoi(value); err != nil {
+		return &Condition{Op: CondNone}
+	}
+	return &Condition{Op: op, Value: value}
+}

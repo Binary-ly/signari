@@ -429,6 +429,41 @@ with `unwillingToPerform`, as before. Adding one would mean putting directory
 mutation on the outpost API, which is deliberately a
 password-verification oracle and nothing more.
 
+## POSIX accounts
+
+A host can take its accounts from this directory, through SSSD or anything else that
+reads RFC 2307:
+
+```sh
+SIGNARI_LDAP_POSIX=1 SIGNARI_LDAP_POSIX_HOME=/home/{username} SIGNARI_LDAP_POSIX_SHELL=/bin/bash
+```
+
+People then also carry `posixAccount`, with `uid`, `uidNumber`, `gidNumber`,
+`homeDirectory`, `loginShell` and `gecos`, and groups carry `posixGroup`, with
+`gidNumber` and `memberUid` beside `member`. Nothing changes for a directory that does
+not ask. All of it is read-only here. The host still binds with a search account: a
+person who only binds sees their own entry, so name one in
+`SIGNARI_LDAP_SEARCH_GROUP`.
+
+**Every person and group has a number from when they are made.** It comes from a
+sequence that never goes back, so deleting somebody frees nothing, and a new employee
+can never be given an erased one's files. Numbers start at 2000000000, well above a
+host's own accounts. The sequence is the deployment's, so a tenant comparing two of
+its own numbers can estimate how many accounts were made between them.
+
+**A number you already have can be kept.** Moving from a directory whose hosts have
+files owned by uid 1234, set `posix_uid` on `PATCH /admin/users/{userID}` and
+`posix_gid` on `PATCH /admin/groups/{groupID}`. They take 1000 to 1999999999: nothing
+allocated can land there, and below it are a host's own accounts, root among them.
+Two people in an organisation cannot share one. A restore from a backup restores the
+sequence too, so numbers given out after that backup can be given out again; a host
+that kept their files should be treated with the same care as the people it restored.
+
+A person's `gidNumber` is their own number, the group private to them. This directory
+publishes no such group, so `id` shows the number where a name would be. Groups they
+belong to come through `memberUid` and show normally. A group with nobody in it is not
+published, here as anywhere in this directory.
+
 ## Not implemented
 
 Referrals, aliases, every request control but paged results, and SASL.

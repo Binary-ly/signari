@@ -1685,6 +1685,7 @@ export interface GetGroupsResponseGroupsItem {
   may_impersonate: boolean
   name: string
   org_id: string
+  posix_gid?: number
 }
 
 /** A JSON object of the Admin API. */
@@ -1696,6 +1697,7 @@ export interface GetGroupsGroupIDResponse {
   may_impersonate: boolean
   name: string
   org_id: string
+  posix_gid?: number
 }
 
 /** A JSON object of the Admin API. */
@@ -2584,6 +2586,7 @@ export interface GetUsersUserIDResponse {
   id: string
   locale: string
   org_id: string
+  posix_uid: number
   require_password_change: boolean
   status: string
   surname: string
@@ -2753,6 +2756,7 @@ export interface PatchClientsClientIDSSFStreamResponse {
 export interface PatchGroupsGroupIDRequest {
   description?: string
   display_name?: string
+  posix_gid?: number
 }
 
 /** A JSON object of the Admin API. */
@@ -2970,6 +2974,7 @@ export interface PatchUsersUserIDRequest {
   given_name?: string
   locale?: string
   password?: string
+  posix_uid?: number
   require_password_change?: boolean
   surname?: string
   username?: string

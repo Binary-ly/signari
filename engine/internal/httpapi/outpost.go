@@ -33,7 +33,7 @@ func asOutpostIdentity(i *ldapd.Identity) outpostIdentity {
 		// `person`; without it here the outpost would fall back to guessing one
 		// from the display name for every account, including the ones where we
 		// know the real answer.
-		Surname: i.Surname, GivenName: i.GivenName,
+		Surname: i.Surname, GivenName: i.GivenName, UIDNumber: i.UIDNumber,
 		Position: i.Position,
 	}
 }
@@ -95,6 +95,8 @@ type outpostIdentity struct {
 	// optional on the wire.
 	Surname   string `json:"sn,omitempty"`
 	GivenName string `json:"given_name,omitempty"`
+	// UIDNumber is the person's POSIX number, for an outpost's directory.
+	UIDNumber int `json:"uid_number,omitempty"`
 	// BindProof is set on an LDAP outpost's authenticate answer only.
 	BindProof string `json:"bind_proof,omitempty"`
 	// Position is set on a list answer, for the next page to carry on from.

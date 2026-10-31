@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0208 posix_ids
+
+Not compatible with the release before: stop it before migrating.
+
+A POSIX identity for every person and group (7.03), for hosts that read accounts from the directory. The identifiers here are UUIDs and a host needs an integer, one that owns files long after anybody remembers why.
+
 ## 0207 directory_sync_schedule
 
 Compatible with the release before: its binary may still serve this schema.

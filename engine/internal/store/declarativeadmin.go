@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -50,10 +51,24 @@ func ApplyAccessPolicy(ctx context.Context, q Execer, orgID string, doc []byte) 
 
 // ApplySignInFlow makes doc the organisation's sign-in flows. Engines pick it
 // up within thirty seconds (ADR-008's flow cache).
-func ApplySignInFlow(ctx context.Context, q Execer, orgID string, doc []byte) (*flow.File, error) {
+func ApplySignInFlow(ctx context.Context, q outpostDB, orgID string, doc []byte) (*flow.File, error) {
 	f, err := flow.Parse(doc)
 	if err != nil {
 		return nil, invalidDocument{err}
+	}
+	// Here and not at Parse, which reads a file with no database: a pin on a provider
+	// this organisation does not have would refuse everybody who signs in.
+	if fl, ok := f.For(flow.Authentication); ok {
+		for _, pin := range fl.PinnedProviders() {
+			found, _, err := SignInProvider(ctx, q, orgID, pin)
+			if err != nil {
+				return nil, err
+			}
+			if found == "" {
+				return nil, invalidDocument{fmt.Errorf("the flow pins provider %q, which this organisation "+
+					"does not have enabled", pin)}
+			}
+		}
 	}
 	if _, err := q.Exec(ctx, `
 		INSERT INTO core.sign_in_flows (org_id, document)

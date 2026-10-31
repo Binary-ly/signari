@@ -400,7 +400,8 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		amr = append(amr, oauth.AMRMFA)
 	}
 	s.rememberUpstream(w, provider)
-	s.completeSignIn(w, r, tx, userID, provider.OrgID, amr, federationAuthzQuery(pending.ReturnTo))
+	s.completeSignIn(w, r.WithContext(withFederatedProvider(ctx, provider.Slug)), tx, userID, provider.OrgID, amr,
+		federationAuthzQuery(pending.ReturnTo))
 }
 
 // federationAuthzQuery turns a stored return target into the parked-request

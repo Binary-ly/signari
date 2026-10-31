@@ -3,6 +3,7 @@ package flow
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 
@@ -113,6 +114,9 @@ type Step struct {
 	// takes one: an https URL with no user information, or a path on this
 	// server. Read from the operator's file, never from a request.
 	To string `yaml:"to,omitempty"`
+	// Provider pins a federated stage to one identity provider, by slug. See
+	// PinnedProviders.
+	Provider string `yaml:"provider,omitempty"`
 	// OneOf is a set of branches of which exactly one runs. The engine takes the
 	// first whose condition holds; the last branch must be unconditional, so
 	// that "exactly one" is a fact rather than a hope.
@@ -138,6 +142,8 @@ type Branch struct {
 	// When empty, this is the default branch: it runs when no earlier branch
 	// matched. Exactly one branch must have an empty When, and it must be last.
 	When string `yaml:"when,omitempty"`
+	// Provider pins a federated branch, as on Step.
+	Provider string `yaml:"provider,omitempty"`
 }
 
 // TestCase is a case the file makes about itself.
@@ -168,7 +174,7 @@ func (s *Step) UnmarshalYAML(n *yaml.Node) error {
 		s.Stage = StageName(name)
 		return nil
 	}
-	if err := checkKeys(n, "stage", "when", "one_of", "to"); err != nil {
+	if err := checkKeys(n, "stage", "when", "one_of", "to", "provider"); err != nil {
 		return err
 	}
 	// A named type, so decoding the mapping does not re-enter this method.
@@ -183,7 +189,7 @@ func (s *Step) UnmarshalYAML(n *yaml.Node) error {
 
 // UnmarshalYAML exists on Branch only to reject unknown keys. See checkKeys.
 func (b *Branch) UnmarshalYAML(n *yaml.Node) error {
-	if err := checkKeys(n, "stage", "when"); err != nil {
+	if err := checkKeys(n, "stage", "when", "provider"); err != nil {
 		return err
 	}
 	type raw Branch
@@ -301,6 +307,9 @@ func (fl *Flow) validate() error {
 			if err := checkRedirectTarget(st); err != nil {
 				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
 			}
+			if err := checkPin(st.Stage, st.Provider); err != nil {
+				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
+			}
 			if err := checkCondition(st.When); err != nil {
 				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
 			}
@@ -312,6 +321,9 @@ func (fl *Flow) validate() error {
 				return fmt.Errorf("step %d: %w", i+1, err)
 			}
 			for j, b := range st.OneOf {
+				if err := checkPin(b.Stage, b.Provider); err != nil {
+					return fmt.Errorf("step %d, one_of branch %d (%s): %w", i+1, j+1, b.Stage, err)
+				}
 				if err := checkAnswered(fl.On, b.Stage, b.When); err != nil {
 					return fmt.Errorf("step %d, one_of branch %d (%s): %w", i+1, j+1, b.Stage, err)
 				}
@@ -390,6 +402,61 @@ func checkRedirectTarget(st Step) error {
 			"this server", to)
 	}
 	return nil
+}
+
+// checkPin holds `provider` to a federated stage: on any other it would read as a
+// restriction and restrict nothing.
+func checkPin(stage StageName, provider string) error {
+	if provider != "" && stage != StageFederated {
+		return fmt.Errorf("`provider` is for a federated stage, and %s takes none", stage)
+	}
+	return nil
+}
+
+// PinnedProviders are the providers a federated sign-in under this flow must come
+// through, nil when any will do: one federated stage with no `provider` admits
+// them all, so a flow is pinned only when all of them name one.
+func (fl *Flow) PinnedProviders() []string {
+	var pins []string
+	for _, st := range fl.Stages {
+		branches := st.OneOf
+		if st.Stage != "" {
+			branches = []Branch{{Stage: st.Stage, Provider: st.Provider}}
+		}
+		for _, b := range branches {
+			if b.Stage != StageFederated {
+				continue
+			}
+			if b.Provider == "" {
+				return nil
+			}
+			if !slices.Contains(pins, b.Provider) {
+				pins = append(pins, b.Provider)
+			}
+		}
+	}
+	return pins
+}
+
+// AdmitsProvider reports whether a federated sign-in through slug passes this flow.
+func (fl *Flow) AdmitsProvider(slug string) bool {
+	pins := fl.PinnedProviders()
+	return pins == nil || slices.Contains(pins, slug)
+}
+
+// OnlyProvider is the one provider everybody under this flow signs in through, "" when
+// there is any other way in. A flow like that has no use for the sign-in page.
+func (fl *Flow) OnlyProvider() string {
+	pins := fl.PinnedProviders()
+	if len(pins) != 1 {
+		return ""
+	}
+	for stage := range signInProofs {
+		if stage != StageFederated && fl.AdmitsProof(stage) {
+			return ""
+		}
+	}
+	return pins[0]
 }
 
 // RedirectTarget is where the flow's redirect sends the browser, or "" when it

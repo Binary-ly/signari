@@ -374,7 +374,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		// Only with no session at all: one short of what is asked needs a factor
 		// here, which the provider cannot supply.
 		if sid == "" {
-			slug, kind, herr := s.homeRealm(ctx, c.OrgID, query)
+			slug, kind, herr := s.pinnedProvider(ctx, c.OrgID)
+			if slug == "" && herr == nil {
+				slug, kind, herr = s.homeRealm(ctx, c.OrgID, query)
+			}
 			if herr != nil {
 				s.log.Error("finding a home realm", "err", herr, "correlation_id", correlationID(ctx))
 			}

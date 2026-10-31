@@ -652,6 +652,19 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 					})
 					return decisionDeny
 				}
+				// Asked only of the walk the callback started: one resumed after a
+				// second factor passed this on the way there.
+				if slug := federatedProviderFrom(ctx); stage == flow.StageFederated && slug != "" &&
+					!fl.AdmitsProvider(slug) {
+					_ = tx.Rollback(ctx)
+					s.auditDetached(ctx, audit.Event{
+						Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+						CorrelationID: correlationID(ctx),
+						Detail: map[string]any{"reason": "flow_requires_another_provider", "flow": fl.Name,
+							"presented": slug},
+					})
+					return decisionDeny
+				}
 				continue
 			}
 			// Parse refuses a sign-in flow naming any other stage, so reaching
@@ -664,6 +677,34 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			return decisionDeny
 		}
 	}
+}
+
+// federatedProviderKey carries which provider a callback came from into the walk.
+type federatedProviderKey struct{}
+
+func withFederatedProvider(ctx context.Context, slug string) context.Context {
+	return context.WithValue(ctx, federatedProviderKey{}, slug)
+}
+
+func federatedProviderFrom(ctx context.Context) string {
+	slug, _ := ctx.Value(federatedProviderKey{}).(string)
+	return slug
+}
+
+// pinnedProvider is the provider this organisation's flow sends everybody through, with
+// its kind, when that is the only way in. The sign-in page would offer nothing else that
+// could succeed. One the file names that has since gone away shows the page, which says
+// so better than a redirect to nothing.
+func (s *Server) pinnedProvider(ctx context.Context, orgID string) (slug, kind string, err error) {
+	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
+	if fl == nil {
+		return "", "", nil
+	}
+	only := fl.OnlyProvider()
+	if only == "" {
+		return "", "", nil
+	}
+	return store.SignInProvider(ctx, s.db, orgID, only)
 }
 
 // signInSettledStages are the sign-in stages decided before the walk, by the

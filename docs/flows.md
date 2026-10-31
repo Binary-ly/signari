@@ -195,8 +195,9 @@ stage.
 | `recovery` | `captcha`, `identify`, `email_otp`, `mfa`, `password_change`, `deny`, `done`, `session`, `redirect` |
 | `unenrolment` | `password`, `passkey`, `kerberos`, `federated`, `email_otp`, settled by the recent sign-in that reached `/account/delete`, each only by its own proof; `deny`; `done`, where the account is erased |
 
-The rest wait for a driver: `delegated` and `certificate` (a source the flow
-would have to pin), and `sms_otp` as a first factor at sign-in.
+The rest wait for a driver: `certificate`, and `sms_otp` as a first factor at
+sign-in. `delegated` needs none: a password checked against the provider being
+migrated off arrives as `password`, so that stage is what names it.
 The safety rules still know them, so a file naming one is refused for the right
 reason rather than read as a typo.
 
@@ -313,6 +314,23 @@ parsed, naming both:
 `password, kerberos, session` is refused, and a second check belongs in `mfa`.
 In the example at the top of this page, a passkey holder must use their passkey,
 and Kerberos and provider sign-ins are refused, because neither is offered.
+
+A `federated` stage can be pinned to a provider by its slug:
+
+```yaml
+# Everybody signs in through Corp.
+stages:
+  - {stage: federated, provider: corp}
+  - session
+```
+
+A sign-in through any other provider is then refused, audited as `login.failed` with the
+reason `flow_requires_another_provider`. When a pinned provider is the only way in, the
+sign-in page is skipped and an authorization request goes straight to it, ahead of any
+`login_hint` routing. Several `federated` branches may each name one, and any of those
+will do; one that names none lets any provider through, whatever the others say. `flow
+apply` refuses a provider the organisation does not have enabled, since it would refuse
+everybody who signs in.
 
 **Until October 2026 the walker passed `password` and `passkey` whatever had
 been presented.** `passkey, session` admitted a password, and the `one_of` at

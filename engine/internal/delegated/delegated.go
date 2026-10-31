@@ -129,11 +129,19 @@ func (v *Verifier) Verify(ctx context.Context, s Source, username, password stri
 	default:
 		return fmt.Errorf("delegated: unsupported source kind %q", s.Kind)
 	}
+	_, err := v.exchange(ctx, s, username, password)
+	return err
+}
+
+// exchange is the token endpoint's verification, answering the step it
+// stopped at, as a test names it (7.18).
+func (v *Verifier) exchange(ctx context.Context, s Source, username, password string) (string, error) {
 	u, err := url.Parse(s.TokenEndpoint)
 	if err != nil || u.Scheme != "https" {
 		// Checked here, not only at configuration time: a source edited in the
 		// database directly must not be able to downgrade the transport.
-		return fmt.Errorf("%w: token endpoint must be https, got %q", ErrUnavailable, s.TokenEndpoint)
+		return StepConfiguration, fmt.Errorf("%w: token endpoint must be https, got %q", ErrUnavailable,
+			s.TokenEndpoint)
 	}
 
 	form := url.Values{
@@ -150,14 +158,15 @@ func (v *Verifier) Verify(ctx context.Context, s Source, username, password stri
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.TokenEndpoint,
 		strings.NewReader(form.Encode()))
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return StepConfiguration, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := v.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		// The connection or its TLS: named by the error itself.
+		return StepDial, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -172,9 +181,9 @@ func (v *Verifier) Verify(ctx context.Context, s Source, username, password stri
 			Error       string `json:"error"`
 		}
 		if json.Unmarshal(body, &ok) == nil && ok.AccessToken != "" && ok.Error == "" {
-			return nil
+			return "", nil
 		}
-		return ErrRejected
+		return StepAnswer, ErrRejected
 
 	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized:
 		// invalid_grant is a wrong password. invalid_client is OUR
@@ -187,18 +196,64 @@ func (v *Verifier) Verify(ctx context.Context, s Source, username, password stri
 		_ = json.Unmarshal(body, &e)
 		if e.Error == "invalid_client" || e.Error == "unauthorized_client" ||
 			e.Error == "unsupported_grant_type" {
-			return fmt.Errorf("%w: source rejected OUR client (%s)", ErrUnavailable, e.Error)
+			return StepAnswer, fmt.Errorf("%w: source rejected OUR client (%s)", ErrUnavailable, e.Error)
 		}
-		return ErrRejected
+		return StepAnswer, ErrRejected
 
 	case resp.StatusCode >= 500:
-		return fmt.Errorf("%w: source returned %d", ErrUnavailable, resp.StatusCode)
+		return StepAnswer, fmt.Errorf("%w: source returned %d", ErrUnavailable, resp.StatusCode)
 
 	case resp.StatusCode == http.StatusTooManyRequests:
 		// Being rate limited by the old provider is not evidence about the user.
-		return fmt.Errorf("%w: source rate limited us", ErrUnavailable)
+		return StepAnswer, fmt.Errorf("%w: source rate limited us", ErrUnavailable)
 
 	default:
-		return fmt.Errorf("%w: source returned %d", ErrUnavailable, resp.StatusCode)
+		return StepAnswer, fmt.Errorf("%w: source returned %d", ErrUnavailable, resp.StatusCode)
 	}
+}
+
+// Result is what a test of a source found (7.18).
+type Result struct {
+	// OK is a credential the source accepted.
+	OK bool
+	// Step is where it stopped when it did not: configuration, dial, tls or
+	// bind for a directory, configuration, dial or answer for a token
+	// endpoint.
+	Step string
+	// Detail says what happened, for the operator running the test.
+	Detail string
+}
+
+// Test asks the source whether a credential is correct, exactly as a pending
+// person's first sign-in does, and names the step that failed: a wrong CA
+// or template, a stopped directory, a refused client. Without it the first
+// sign-in after enabling a source was the test, failed on somebody else.
+//
+// A directory's refusal carries its result code here, which sign-in never
+// passes on, since a code that tells "no such user" from "wrong password" is
+// an enumeration oracle. The operator running a test chose the account.
+func (v *Verifier) Test(ctx context.Context, s Source, username, password string) Result {
+	var step, result string
+	var err error
+	switch s.Kind {
+	case "ldap":
+		conf, cerr := ldapTLS(s)
+		if cerr != nil {
+			return Result{Step: StepConfiguration, Detail: cerr.Error()}
+		}
+		step, result, err = bindLDAP(ctx, LDAPSource{URL: s.TokenEndpoint, StartTLS: s.StartTLS,
+			BindDNTemplate: s.BindDNTemplate, CACerts: conf}, username, password)
+	case "oidc_password":
+		step, err = v.exchange(ctx, s, username, password)
+	default:
+		return Result{Step: StepConfiguration, Detail: fmt.Sprintf("delegated: unsupported source kind %q", s.Kind)}
+	}
+	if err == nil {
+		return Result{OK: true, Detail: "the source accepted the credential"}
+	}
+	detail := err.Error()
+	if result != "" {
+		detail += " (the directory answered " + result + ")"
+	}
+	return Result{Step: step, Detail: detail}
 }

@@ -2223,6 +2223,20 @@ type PostOrganizationsOrgIDIdentityProvidersResponse struct {
 	Slug            string `json:"slug"`
 }
 
+// PostOrganizationsOrgIDMigrationSourceTestRequest is a JSON object of the Admin API.
+type PostOrganizationsOrgIDMigrationSourceTestRequest struct {
+	Password *string `json:"password,omitempty"`
+	Username *string `json:"username,omitempty"`
+}
+
+// PostOrganizationsOrgIDMigrationSourceTestResponse is a JSON object of the Admin API.
+type PostOrganizationsOrgIDMigrationSourceTestResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Detail        string `json:"detail"`
+	Ok            bool   `json:"ok"`
+	Step          string `json:"step"`
+}
+
 // PostOrganizationsOrgIDOutpostsRequest is a JSON object of the Admin API.
 type PostOrganizationsOrgIDOutpostsRequest struct {
 	Kind        *string `json:"kind,omitempty"`
@@ -4735,6 +4749,18 @@ func (c *Client) PostOrganizationsOrgIDEventSubscriptionsNameTest(ctx context.Co
 func (c *Client) PostOrganizationsOrgIDIdentityProviders(ctx context.Context, orgID string, body PostOrganizationsOrgIDIdentityProvidersRequest, opts ...Option) (*PostOrganizationsOrgIDIdentityProvidersResponse, int64, error) {
 	var out PostOrganizationsOrgIDIdentityProvidersResponse
 	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PostOrganizationsOrgIDMigrationSourceTest is POST
+// /admin/organizations/{orgID}/migration-source/test: Ask the migration source about a credential,
+// as a first sign-in would, and name the step that failed. Needs organizations:write.
+func (c *Client) PostOrganizationsOrgIDMigrationSourceTest(ctx context.Context, orgID string, body PostOrganizationsOrgIDMigrationSourceTestRequest, opts ...Option) (*PostOrganizationsOrgIDMigrationSourceTestResponse, int64, error) {
+	var out PostOrganizationsOrgIDMigrationSourceTestResponse
+	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/migration-source/test", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

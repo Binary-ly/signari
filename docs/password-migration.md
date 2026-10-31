@@ -29,12 +29,25 @@ signari migration-source add -org <uuid> -kind oidc_password -name "Old IdP" \
   -token-endpoint https://old.example.com/oauth2/token \
   -client-id-ext migration -client-secret <secret>
 
+# Test it with an account you know, before anyone depends on it:
+signari migration-source test -org <uuid> -username alice     # the password is read from stdin
+
 signari migration-source enable -org <uuid>
 signari migration-source show -org <uuid>
 ```
 
 The same is `PUT /admin/organizations/{orgID}/migration-source` in the
-[Admin API](admin-api.md).
+[Admin API](admin-api.md), and `POST …/migration-source/test` for the test.
+
+**Test before you enable.** The test asks the source exactly as a pending
+person's first sign-in will, and names the step that stopped it:
+`configuration` (an insecure URL, a template with no `{username}`), `dial`
+(the address cannot be reached, or is private and not allowed), `tls` (the
+certificate is not trusted: the CA, or StartTLS), `bind` (the directory refused
+the bind, with its result code, so a wrong template's `noSuchObject` reads
+differently from a wrong password) or `answer` (the token endpoint refused, as
+when it does not know our client). Until October 2026 the first person to sign
+in after `enable` was the test, and their sign-in was the one that failed.
 
 A source is created **disabled**. While it is enabled, the password a pending
 person types is sent to it, so switching it on is a decision rather than a

@@ -206,6 +206,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari migration-source add` | `-org <uuid> -kind ldap\|oidc_password -name <n>`, then `-ldap-url`, `-bind-dn-template` and optionally `-ldap-ca` for a directory, or `-token-endpoint`, `-client-id-ext`, `-client-secret` and `-migration-scope` for a provider's password grant. The provider a pending person's password is verified against at their first sign-in. Created disabled; a replaced one keeps its state. See [password-migration.md](password-migration.md) |
 | `signari migration-source enable` / `migration-source disable` | `-org <uuid>`: start or stop sending pending people's passwords to the source |
 | `signari migration-source show` / `migration-source remove` | `-org <uuid>`: the source and how the cutover is going, or delete it |
+| `signari migration-source test` | `-org <uuid> -username <name>`, the password read from standard input (prompted with echo off at a terminal, never on the command line): asks the source about that account exactly as a pending person's first sign-in would, enabled or not, and names the step that stopped it, `configuration`, `dial`, `tls`, `bind` or `answer`, with the directory's result code for a refused bind. Exits non-zero when the source does not verify the credential. Changes nothing; audited as `admin.migration_source_tested`, with the outcome and never the username |
 
 ## Federation out
 

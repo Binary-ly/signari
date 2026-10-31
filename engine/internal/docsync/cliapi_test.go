@@ -205,6 +205,7 @@ var cliAPI = map[string]string{
 	"migration-source disable": "PUT /admin/organizations/{orgID}/migration-source",
 	"migration-source show":    reads,
 	"migration-source remove":  "DELETE /admin/organizations/{orgID}/migration-source",
+	"migration-source test":    "POST /admin/organizations/{orgID}/migration-source/test",
 
 	// Signals and events.
 	"ssf add-stream":   "POST /admin/organizations/{orgID}/ssf-streams",

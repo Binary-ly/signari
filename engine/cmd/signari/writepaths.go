@@ -31,15 +31,18 @@ package main
 // an open question into a settled one.
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/user"
 	"sort"
 	"strconv"
@@ -49,6 +52,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mfa"
@@ -2675,6 +2679,78 @@ func migrationSourceRemove(ctx context.Context, conn *pgx.Conn, orgID string) er
 	fmt.Println("migration source removed. People still pending cannot sign in with a password")
 	fmt.Println("until they reset it or a source is configured again.")
 	return nil
+}
+
+// migrationSourceTest asks the source about one account exactly as a pending
+// person's first sign-in would, and names the step that failed (7.18): a
+// wrong template, CA or StartTLS setting was otherwise found by somebody's
+// failed sign-in. The password is read from standard input, never the
+// command line, where it would sit in the shell's history and the process
+// list. Changes nothing but the record that it ran.
+func migrationSourceTest(ctx context.Context, conn *pgx.Conn, orgID, username string) error {
+	if orgID == "" || username == "" {
+		return fmt.Errorf("give -org and -username; the password is read from standard input")
+	}
+	password, err := readSecretLine(os.Stdin, "password for "+username+": ")
+	if err != nil {
+		return err
+	}
+	if password == "" {
+		return fmt.Errorf("no password was given on standard input")
+	}
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
+	}
+	src, err := store.MigrationSourceToTest(ctx, conn, root, orgID)
+	if err != nil {
+		return err
+	}
+	r := delegated.New().Test(ctx, src, username, password)
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := audit.Write(ctx, tx, audit.Event{Type: "admin.migration_source_tested", OrgID: orgID,
+		Detail: map[string]any{"ok": r.OK, "step": r.Step, "via": "cli", "operator": cliOperator()}}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if r.OK {
+		fmt.Printf("%s (%s) accepted %s's credential: a pending person signing in will be verified the "+
+			"same way\n", src.DisplayName, src.Kind, username)
+		return nil
+	}
+	fmt.Printf("%s (%s) stopped at the %s step:\n  %s\n", src.DisplayName, src.Kind, r.Step, r.Detail)
+	return fmt.Errorf("the source did not verify the credential")
+}
+
+// readSecretLine reads one line from in, prompting on standard error and
+// with echo off when it is a terminal.
+func readSecretLine(in *os.File, prompt string) (string, error) {
+	if fi, err := in.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		fmt.Fprint(os.Stderr, prompt)
+		quiet := exec.Command("stty", "-echo")
+		quiet.Stdin = in
+		if err := quiet.Run(); err == nil {
+			defer func() {
+				loud := exec.Command("stty", "echo")
+				loud.Stdin = in
+				_ = loud.Run()
+				fmt.Fprintln(os.Stderr)
+			}()
+		}
+	}
+	// A last line without a newline is still the line; nothing at all is
+	// the caller's to refuse.
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 // migrationSourceShow reports the source and how the cutover is going.

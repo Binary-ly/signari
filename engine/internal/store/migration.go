@@ -372,6 +372,39 @@ func MigrationSourceOf(ctx context.Context, q interface {
 	return &s, nil
 }
 
+// MigrationSourceToTest is the organisation's source as sign-in would ask
+// it, enabled or not, its secret opened (7.18): a source is tested before
+// it is switched on.
+func MigrationSourceToTest(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, root *keys.RootKey, orgID string) (delegated.Source, error) {
+	var s delegated.Source
+	var sealed []byte
+	err := q.QueryRow(ctx, `
+		SELECT id::text, kind, display_name, token_endpoint, COALESCE(client_id, ''), client_secret_enc, scope,
+		       COALESCE(bind_dn_template, ''), start_tls, COALESCE(ca_pem, '')
+		FROM core.migration_sources WHERE org_id = $1::uuid`, orgID).
+		Scan(&s.ID, &s.Kind, &s.DisplayName, &s.TokenEndpoint, &s.ClientID, &sealed, &s.Scope,
+			&s.BindDNTemplate, &s.StartTLS, &s.CAPEM)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return s, ErrMigrationSourceUnknown
+	}
+	if err != nil {
+		return s, err
+	}
+	if len(sealed) > 0 {
+		if root == nil {
+			return s, fmt.Errorf("the source's client secret is sealed, and SIGNARI_ROOT_KEY is not loaded")
+		}
+		plain, err := root.Open(sealed, migrationSecretContext)
+		if err != nil {
+			return s, fmt.Errorf("unwrapping the migration source secret (is the root key correct?): %w", err)
+		}
+		s.ClientSecret = string(plain)
+	}
+	return s, nil
+}
+
 // CompleteMigration records a successful delegated sign-in.
 //
 // Writes the local hash, flips the user to 'complete', and stamps migrated_at --

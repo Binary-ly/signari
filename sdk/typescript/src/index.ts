@@ -936,6 +936,13 @@ export class SignariAdmin {
     return this.call<PostOrganizationsOrgIDIdentityProvidersResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers`, body, opts)
   }
 
+  // POST /admin/organizations/{orgID}/migration-source/test: Ask the migration source about a
+  // credential, as a first sign-in would, and name the step that failed. Needs
+  // organizations:write.
+  postOrganizationsOrgIDMigrationSourceTest(orgID: string, body: PostOrganizationsOrgIDMigrationSourceTestRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDMigrationSourceTestResponse>> {
+    return this.call<PostOrganizationsOrgIDMigrationSourceTestResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/migration-source/test`, body, opts)
+  }
+
   // POST /admin/organizations/{orgID}/outposts: Register an outpost; its token is shown once.
   // Needs organizations:write.
   postOrganizationsOrgIDOutposts(orgID: string, body: PostOrganizationsOrgIDOutpostsRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDOutpostsResponse>> {
@@ -3318,6 +3325,20 @@ export interface PostOrganizationsOrgIDIdentityProvidersResponse {
   metadata_path?: string
   sign_in_path?: string
   slug: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDMigrationSourceTestRequest {
+  password?: string
+  username?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDMigrationSourceTestResponse {
+  config_version: number
+  detail: string
+  ok: boolean
+  step: string
 }
 
 /** A JSON object of the Admin API. */

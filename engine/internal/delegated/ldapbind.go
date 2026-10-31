@@ -3,8 +3,10 @@ package delegated
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -82,21 +84,46 @@ var ErrInsecureTransport = fmt.Errorf(
 // unreachable directory for a wrong password, charged it to the person, and
 // told them their password was incorrect during somebody else's outage.
 func VerifyLDAP(ctx context.Context, s LDAPSource, username, password string) error {
+	_, _, err := bindLDAP(ctx, s, username, password)
+	return err
+}
+
+// The steps of a bind, as a test names the one that failed (7.18).
+const (
+	StepConfiguration = "configuration"
+	StepDial          = "dial"
+	StepTLS           = "tls"
+	StepBind          = "bind"
+	StepAnswer        = "answer"
+)
+
+// bindLDAP is VerifyLDAP, answering the step it stopped at and, when the
+// directory refused the bind, its result code: the test shows the operator
+// both, and sign-in neither.
+func bindLDAP(ctx context.Context, s LDAPSource, username, password string) (step, result string, err error) {
 	if password == "" {
 		// Before the dial, so an unauthenticated bind is never even attempted.
-		return fmt.Errorf("%w: an empty password is an unauthenticated bind, not an "+
+		return StepConfiguration, "", fmt.Errorf("%w: an empty password is an unauthenticated bind, not an "+
 			"authentication (RFC 4513 §5.1.2)", ErrRejected)
 	}
 	if !strings.Contains(s.BindDNTemplate, "{username}") {
-		return fmt.Errorf("%w: the bind DN template must contain {username}", ErrUnavailable)
+		return StepConfiguration, "", fmt.Errorf("%w: the bind DN template must contain {username}",
+			ErrUnavailable)
 	}
-
-	lower := strings.ToLower(s.URL)
+	u, err := url.Parse(s.URL)
+	if err != nil || u.Host == "" {
+		return StepConfiguration, "", fmt.Errorf("%w: the directory URL does not parse", ErrUnavailable)
+	}
+	ldaps := strings.EqualFold(u.Scheme, "ldaps")
 	switch {
-	case strings.HasPrefix(lower, "ldaps://"):
-	case strings.HasPrefix(lower, "ldap://") && s.StartTLS:
+	case ldaps:
+	case strings.EqualFold(u.Scheme, "ldap") && s.StartTLS:
 	default:
-		return fmt.Errorf("%w: %w", ErrUnavailable, ErrInsecureTransport)
+		return StepConfiguration, "", fmt.Errorf("%w: %w", ErrUnavailable, ErrInsecureTransport)
+	}
+	host := u.Host
+	if u.Port() == "" {
+		host = net.JoinHostPort(u.Hostname(), map[bool]string{true: "636", false: "389"}[ldaps])
 	}
 
 	// The DIAL is bounded, not just the operations afterwards.
@@ -112,25 +139,50 @@ func VerifyLDAP(ctx context.Context, s LDAPSource, username, password string) er
 	// the URL is a stored setting and the connection carries a password, so a
 	// directory in the private network is reached only when the operator named
 	// it in SIGNARI_OUTBOUND_ALLOW_PRIVATE. It dialled anywhere.
-	conn, err := ldap.DialURL(s.URL,
-		ldap.DialWithDialer(&net.Dialer{Timeout: dialTimeout, Control: safedial.Control}),
-		ldap.DialWithTLSConfig(s.CACerts))
+	raw, err := (&net.Dialer{Timeout: dialTimeout, Control: safedial.Control}).DialContext(ctx, "tcp", host)
 	if err != nil {
-		return fmt.Errorf("%w: connecting to the source directory: %w", ErrUnavailable, err)
+		return StepDial, "", fmt.Errorf("%w: connecting to the source directory: %w", ErrUnavailable, err)
 	}
+
+	var conn *ldap.Conn
+	if ldaps {
+		// The handshake as a step of its own, so a wrong CA is named as one
+		// rather than as a connection that failed. With no server name, the
+		// host's, as go-ldap's own dial took it.
+		conf := &tls.Config{}
+		if s.CACerts != nil {
+			conf = s.CACerts.Clone()
+		}
+		if conf.ServerName == "" {
+			conf.ServerName = u.Hostname()
+		}
+		tc := tls.Client(raw, conf)
+		hctx, cancel := context.WithTimeout(ctx, bindTimeout)
+		err := tc.HandshakeContext(hctx)
+		cancel()
+		if err != nil {
+			_ = raw.Close()
+			return StepTLS, "", fmt.Errorf("%w: the TLS handshake with the source directory failed: %w",
+				ErrUnavailable, err)
+		}
+		conn = ldap.NewConn(tc, true)
+	} else {
+		conn = ldap.NewConn(raw, false)
+	}
+	conn.Start()
 	defer conn.Close()
 
 	// And the operations after it, for the same reason the HTTP verifier has a
 	// timeout: a slow third party must not hold our own sign-in open.
 	conn.SetTimeout(bindTimeout)
 
-	if strings.HasPrefix(lower, "ldap://") {
+	if !ldaps {
 		if err := conn.StartTLS(s.CACerts); err != nil {
 			// Refused rather than continued. Falling back to plaintext because
 			// the upgrade failed is exactly the downgrade StartTLS exists to
 			// prevent, and it would send the password in the clear on the one
 			// path where it was explicitly asked not to be.
-			return fmt.Errorf("%w: StartTLS failed and a plaintext bind will not be "+
+			return StepTLS, "", fmt.Errorf("%w: StartTLS failed and a plaintext bind will not be "+
 				"attempted: %w", ErrUnavailable, err)
 		}
 	}
@@ -138,17 +190,21 @@ func VerifyLDAP(ctx context.Context, s LDAPSource, username, password string) er
 	dn := strings.ReplaceAll(s.BindDNTemplate, "{username}",
 		ldap.EscapeDN(username))
 	if err := conn.Bind(dn, password); err != nil {
+		var le *ldap.Error
+		if errors.As(err, &le) {
+			result = ldap.LDAPResultCodeMap[le.ResultCode]
+		}
 		// A directory that is busy, shutting down or unreachable mid-bind did
 		// not answer the question, and that is not the person's fault.
 		if ldap.IsErrorAnyOf(err, ldap.ErrorNetwork, ldap.LDAPResultBusy,
 			ldap.LDAPResultUnavailable, ldap.LDAPResultUnwillingToPerform, ldap.LDAPResultOther) {
-			return fmt.Errorf("%w: the source directory did not answer the bind", ErrUnavailable)
+			return StepBind, result, fmt.Errorf("%w: the source directory did not answer the bind", ErrUnavailable)
 		}
 		// Not wrapped with the DN or the directory's message. A bind failure
 		// distinguishes "no such user" from "wrong password" at some
 		// directories, and passing that through would make this a user
 		// enumeration oracle for a system we do not control.
-		return fmt.Errorf("%w: the source directory did not accept the credential", ErrRejected)
+		return StepBind, result, fmt.Errorf("%w: the source directory did not accept the credential", ErrRejected)
 	}
-	return nil
+	return "", "", nil
 }

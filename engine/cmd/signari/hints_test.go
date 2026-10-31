@@ -169,9 +169,35 @@ func TestEveryFlagTheCLINamesExists(t *testing.T) {
 	// with its help (6.15), and -eq is the shell's, in the completion script.
 	others := map[string]string{"c": "head ", "e": "ipa-getkeytab ", "u": "date ", "eq": "COMP_CWORD",
 		"h": "", "help": ""}
+	// And the arguments a command runs another program with, which are that
+	// program's argv and are shown to nobody: stty's -echo, for a password
+	// read at a terminal.
+	argv := map[token.Pos]bool{}
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || (sel.Sel.Name != "Command" && sel.Sel.Name != "CommandContext") {
+				return true
+			}
+			if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != "exec" {
+				return true
+			}
+			for _, a := range call.Args {
+				argv[a.Pos()] = true
+			}
+			return true
+		})
+	}
 	var missing []string
 	for _, f := range files {
 		ast.Inspect(f, func(n ast.Node) bool {
+			if e, ok := n.(ast.Expr); ok && argv[e.Pos()] {
+				return false
+			}
 			lit, ok := n.(*ast.BasicLit)
 			if !ok || lit.Kind != token.STRING {
 				return true

@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/store"
 )
 
@@ -107,6 +108,76 @@ func (s *Server) putMigrationSource(w http.ResponseWriter, r *http.Request) {
 	}
 	setETag(w, version)
 	writeJSON(w, http.StatusOK, src)
+}
+
+// migrationSourceTestRequest is the account a test asks the source about.
+type migrationSourceTestRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (s *Server) verifier() *delegated.Verifier {
+	if s.verify == nil {
+		return delegated.New()
+	}
+	return s.verify
+}
+
+// testMigrationSource asks the organisation's source whether a credential is
+// correct, as a pending person's first sign-in does, and answers the step that
+// failed (7.18): a wrong CA, template or client is seen before somebody's
+// sign-in meets it. It changes nothing but the record that it ran: the
+// outcome, never the username. The source is asked before the transaction
+// opens, so a slow directory does not hold the version lock.
+func (s *Server) testMigrationSource(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.PathValue("orgID")
+	if err := requireOrg(ctx, orgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	var req migrationSourceTestRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+		return
+	}
+	if req.Username == "" || req.Password == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_field",
+			"detail": "username and password are the account the source is asked about"})
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	src, err := store.MigrationSourceToTest(ctx, s.db, s.root, orgID)
+	switch {
+	case errors.Is(err, store.ErrMigrationSourceUnknown):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "migration_source_not_found"})
+		return
+	case err != nil:
+		s.log.Error("loading a migration source to test", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	result := s.verifier().Test(ctx, src, req.Username, req.Password)
+
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.migration_source_tested",
+			AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
+			Detail: map[string]any{"ok": result.OK, "step": result.Step}})
+	})
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case err != nil:
+		s.log.Error("recording a migration source test", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": result.OK, "step": result.Step, "detail": result.Detail,
+		"config_version": version})
 }
 
 func (s *Server) deleteMigrationSource(w http.ResponseWriter, r *http.Request) {

@@ -1179,6 +1179,15 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			// The source's directory is a reserved name, so the test answers at
+			// once, at the dial step; what is checked is the record it writes.
+			name: "POST /admin/organizations/{orgID}/migration-source/test", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, true) + "/migration-source/test"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"username":"alice","password":"drift"}` },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/resource-servers", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/resource-servers"

@@ -34,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/metrics"
@@ -73,6 +74,11 @@ type Server struct {
 	// ever answer "no key configured" is worse than an absent one, because it
 	// looks like a capability.
 	root *keys.RootKey
+
+	// verify asks a migration source about a credential, as sign-in does;
+	// nil is delegated.New(), through safedial. A test points it at its own
+	// trust root.
+	verify *delegated.Verifier
 
 	// accessIssuers verify this deployment's own access tokens audienced to
 	// the Admin API (accesstoken.go), one for each instance served. Empty until
@@ -467,6 +473,8 @@ func (s *Server) Routes() http.Handler {
 		route("GET /admin/organizations/{orgID}/migration-source", ScopeConfigRead, s.getMigrationSource)
 		route("PUT /admin/organizations/{orgID}/migration-source", ScopeOrganizationsWrite, s.putMigrationSource)
 		route("DELETE /admin/organizations/{orgID}/migration-source", ScopeOrganizationsWrite, s.deleteMigrationSource)
+		route("POST /admin/organizations/{orgID}/migration-source/test", ScopeOrganizationsWrite,
+			s.testMigrationSource)
 		route("GET /admin/organizations/{orgID}/resource-servers", ScopeConfigRead, s.listResourceServers)
 		route("PUT /admin/organizations/{orgID}/resource-servers", ScopeOrganizationsWrite, s.putResourceServer)
 		route("DELETE /admin/organizations/{orgID}/resource-servers", ScopeOrganizationsWrite, s.deleteResourceServer)

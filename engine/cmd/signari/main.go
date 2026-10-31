@@ -299,6 +299,7 @@ federation in:
   migration-source disable  stop sending pending passwords to the source
   migration-source show     the source, and how the cutover is going
   migration-source remove   delete the migration source
+  migration-source test     ask the source about one account, naming the step that failed
 
 federation out:
   scim add                register a SCIM provisioning target
@@ -518,6 +519,8 @@ func run(args []string) (err error) {
 	duoFailOpen := fs.Bool("duo-fail-open", false,
 		"sign users in WITHOUT a second factor when Duo is unreachable")
 	duoUsername := fs.String("duo-username", "", "the username this person has in Duo")
+	testUsername := fs.String("username", "", "`migration-source test`: the account the source is asked "+
+		"about; its password is read from standard input")
 	srcSSOURL := fs.String("sso-url", "", "upstream SAML SSO URL (idp add -kind saml)")
 	srcUnsolicited := fs.Bool("allow-unsolicited", false,
 		"accept IdP-initiated sign-in, which cannot be tied to a request this browser made")
@@ -1432,6 +1435,8 @@ func run(args []string) (err error) {
 		return migrationSourceSetEnabled(ctx, conn, *orgID, false)
 	case "migration-source show":
 		return migrationSourceShow(ctx, conn, *orgID)
+	case "migration-source test":
+		return migrationSourceTest(ctx, conn, *orgID, *testUsername)
 	case "migration-source remove":
 		return migrationSourceRemove(ctx, conn, *orgID)
 	case "ssf set-status":

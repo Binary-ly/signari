@@ -30,7 +30,7 @@ var EventTypes = []string{
 	"admin.identity_unlinked", "admin.idp_attribute_mapped", "admin.idp_attribute_unmapped",
 	"admin.instance_webauthn_set", "admin.invitation_created",
 	"admin.invitation_revoked", "admin.issuer_alias_added", "admin.issuer_alias_retired",
-	"admin.migration_source_removed", "admin.migration_source_set",
+	"admin.migration_source_removed", "admin.migration_source_set", "admin.migration_source_tested",
 	"admin.organization_budgets_set",
 	"admin.organization_created", "admin.organization_deleted",
 	"admin.organization_reactivated", "admin.organization_suspended",

@@ -42,7 +42,7 @@ refused with `412` when the configuration moved since the version it names.
 | [instances / webauthn](#instances--webauthn) | 2 |
 | [invitations](#invitations) | 3 |
 | [me](#me) | 1 |
-| [migration-source](#migration-source) | 3 |
+| [migration-source](#migration-source) | 4 |
 | [organizations](#organizations) | 4 |
 | [outposts](#outposts) | 3 |
 | [prompts](#prompts) | 3 |
@@ -1981,6 +1981,28 @@ Answers:
 | `url` | string | always |
 | `users_migrated` | integer | always |
 | `users_pending` | integer | always |
+
+### `POST /admin/organizations/{orgID}/migration-source/test`
+
+Ask the migration source about a credential, as a first sign-in would, and name the step that failed. Needs organizations:write.
+
+Go `PostOrganizationsOrgIDMigrationSourceTest`, TypeScript `postOrganizationsOrgIDMigrationSourceTest`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `password` | string |  |
+| `username` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `detail` | string | always |
+| `ok` | boolean | always |
+| `step` | string | always |
 
 ## organizations
 

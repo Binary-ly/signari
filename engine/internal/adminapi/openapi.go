@@ -129,6 +129,7 @@ var summaries = map[string]string{
 	"GET /admin/organizations/{orgID}/migration-source":            "The provider this organisation is migrating off, and how the cutover is going.",
 	"PUT /admin/organizations/{orgID}/migration-source":            "Configure the old directory or provider that verifies a migrating person's password.",
 	"DELETE /admin/organizations/{orgID}/migration-source":         "Remove the migration source.",
+	"POST /admin/organizations/{orgID}/migration-source/test":      "Ask the migration source about a credential, as a first sign-in would, and name the step that failed.",
 	"GET /admin/organizations/{orgID}/resource-servers":            "The RFC 8707 resources this organisation's tokens may be audienced to.",
 	"PUT /admin/organizations/{orgID}/resource-servers":            "Register a resource server, or rename one.",
 	"DELETE /admin/organizations/{orgID}/resource-servers":         "Withdraw a resource server; tokens for it are refused from the next request.",

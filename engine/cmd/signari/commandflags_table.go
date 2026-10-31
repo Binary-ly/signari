@@ -138,6 +138,7 @@ var commandFlags = map[string][]string{
 	"migration-source enable":         {"org"},
 	"migration-source remove":         {"org"},
 	"migration-source show":           {"org"},
+	"migration-source test":           {"org", "username"},
 	"outpost create":                  {"kind-outpost", "name", "org", "search-group"},
 	"outpost disable":                 {"name", "org"},
 	"outpost enable":                  {"name", "org"},

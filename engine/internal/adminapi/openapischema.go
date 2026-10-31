@@ -843,6 +843,9 @@ var opSchemas = map[string]opSchema{
 
 	"PUT /admin/organizations/{orgID}/migration-source":    {http.StatusOK, typeOf[migrationSourceRequest](), migrationSourceSchema},
 	"DELETE /admin/organizations/{orgID}/migration-source": {http.StatusOK, nil, removedSchema},
+	"POST /admin/organizations/{orgID}/migration-source/test": {http.StatusOK, typeOf[migrationSourceTestRequest](),
+		object([]string{"ok", "step", "detail", "config_version"}, withVersion(map[string]jsonSchema{
+			"ok": boolean(), "step": str(), "detail": str()}))},
 	"PUT /admin/organizations/{orgID}/resource-servers": {http.StatusOK, typeOf[resourceServerRequest](), object([]string{"resource", "config_version"},
 		withVersion(map[string]jsonSchema{"resource": str(), "name": str()}))},
 	"DELETE /admin/organizations/{orgID}/resource-servers": {http.StatusOK, nil, removedSchema},

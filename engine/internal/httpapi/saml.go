@@ -469,7 +469,12 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	nameID, err := store.EnsureNameID(ctx, tx, p.ID, userID, orgID, p.NameIDFormat)
+	var nameID string
+	if p.NameIDAttribute != "" {
+		nameID, err = store.NameIDFromAttribute(ctx, tx, userID, orgID, p.NameIDAttribute, s.root)
+	} else {
+		nameID, err = store.EnsureNameID(ctx, tx, p.ID, userID, orgID, p.NameIDFormat)
+	}
 	if err != nil {
 		return "", "", err
 	}
@@ -581,7 +586,8 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 		return "", "", err
 	}
 	defer func() { _ = record.Rollback(ctx) }()
-	if err := store.RecordSAMLParticipant(ctx, record, sid, p.ID, orgID, sessionIndex, nameID); err != nil {
+	if err := store.RecordSAMLParticipant(ctx, record, sid, p.ID, orgID, sessionIndex, nameID,
+		saml.FullNameIDFormat(p.NameIDFormat)); err != nil {
 		return "", "", err
 	}
 	if err := audit.Write(ctx, record, audit.Event{
@@ -599,20 +605,7 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 	return doc, v.ACSURL, nil
 }
 
-// samlAuthnContext reports what the user ACTUALLY did to sign in.
-//
-// The service provider makes access decisions on this. Overstating it -- saying
-// multi-factor when the user typed a password -- is not a cosmetic error; it
-// tells an SP that its step-up requirement was satisfied when it was not.
-//
-// The first version of this asserted MultiFactorAuthentication whenever acr was
-// anything other than "0", and a password-only session carries acr "1". So
-// every ordinary login claimed MFA. It was caught by comparing a live assertion
-// against the session row that produced it, not by reading the code.
-//
-// It then claimed MFA for a single hardware key, so a passkey used without user
-// verification -- one factor -- satisfied a service provider's step-up. Now the
-// one predicate every MFA decision uses (oauth.IsMultiFactor).
+// samlContextState is how a live session stands against a demand for a second factor.
 type samlContextState int
 
 const (
@@ -643,6 +636,20 @@ func (s *Server) samlSessionReaches(ctx context.Context, sid, userID, orgID stri
 	return samlContextShort, nil
 }
 
+// samlAuthnContext reports what the user ACTUALLY did to sign in.
+//
+// The service provider makes access decisions on this. Overstating it -- saying
+// multi-factor when the user typed a password -- is not a cosmetic error; it
+// tells an SP that its step-up requirement was satisfied when it was not.
+//
+// The first version of this asserted MultiFactorAuthentication whenever acr was
+// anything other than "0", and a password-only session carries acr "1". So
+// every ordinary login claimed MFA. It was caught by comparing a live assertion
+// against the session row that produced it, not by reading the code.
+//
+// It then claimed MFA for a single hardware key, so a passkey used without user
+// verification -- one factor -- satisfied a service provider's step-up. Now the
+// one predicate every MFA decision uses (oauth.IsMultiFactor).
 func samlAuthnContext(amr []string) string {
 	if oauth.IsMultiFactor(amr) {
 		return saml.AuthnContextMFA

@@ -16535,6 +16535,9 @@
                           "name": {
                             "type": "string"
                           },
+                          "name_id_attribute": {
+                            "type": "string"
+                          },
                           "name_id_format": {
                             "type": "string"
                           },
@@ -16562,6 +16565,7 @@
                           "entity_id",
                           "name",
                           "name_id_format",
+                          "name_id_attribute",
                           "signature_alg",
                           "enabled",
                           "sign_assertions",
@@ -16816,6 +16820,9 @@
                 "properties": {
                   "lifetime_s": {
                     "type": "integer"
+                  },
+                  "name_id_attribute": {
+                    "type": "string"
                   },
                   "sign_assertions": {
                     "type": "boolean"

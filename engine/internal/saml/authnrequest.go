@@ -59,6 +59,8 @@ type Provider struct {
 	// SignatureAlg is what this provider is signed with: SignatureAlgRSASHA256
 	// or SignatureAlgECDSASHA256.
 	SignatureAlg string
+	// NameIDAttribute is where the NameID comes from, when not from the format.
+	NameIDAttribute string
 
 	// SPEncryptionCert is the SEPARATE certificate the assertion is encrypted
 	// to. Empty means no encryption; TLS is the transport either way.

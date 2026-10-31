@@ -380,6 +380,7 @@ func StopSAMLGroupRelease(ctx context.Context, q outpostDB, orgID, providerID st
 // SAMLProviderRow is one service provider as an administrator sees it.
 type SAMLProviderRow struct {
 	ID, EntityID, Name, NameIDFormat, SignatureAlg string
+	NameIDAttribute                                string
 	Enabled, SignAssertions, SignResponses         bool
 	WantSignedRequests, Encrypted, HasSigningCert  bool
 	LifetimeSeconds                                int
@@ -398,7 +399,8 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 		       p.sp_encryption_cert IS NOT NULL, p.sp_signing_cert IS NOT NULL, p.lifetime_seconds,
 		       COALESCE((SELECT array_agg(a.url ORDER BY a.url) FROM core.saml_acs_urls a WHERE a.provider_id = p.id), '{}'),
 		       COALESCE((SELECT array_agg(s.url ORDER BY s.url) FROM core.saml_slo_urls s WHERE s.provider_id = p.id), '{}'),
-		       p.attributes, COALESCE(r.attribute_name, ''), r.provider_id IS NOT NULL, COALESCE(r.only_groups, '{}')
+		       p.attributes, COALESCE(r.attribute_name, ''), r.provider_id IS NOT NULL, COALESCE(r.only_groups, '{}'),
+		       COALESCE(p.name_id_attribute, '')
 		  FROM core.saml_providers p
 		  LEFT JOIN core.saml_group_release r ON r.provider_id = p.id
 		 WHERE p.org_id = $1::uuid ORDER BY p.entity_id`, orgID)
@@ -412,7 +414,7 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 		if err := rows.Scan(&p.ID, &p.EntityID, &p.Name, &p.NameIDFormat, &p.SignatureAlg, &p.Enabled,
 			&p.SignAssertions, &p.SignResponses, &p.WantSignedRequests, &p.Encrypted, &p.HasSigningCert,
 			&p.LifetimeSeconds, &p.ACSURLs, &p.SLOURLs, &p.Attributes, &p.GroupAttribute, &p.ReleasesGroups,
-			&p.OnlyGroups); err != nil {
+			&p.OnlyGroups, &p.NameIDAttribute); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

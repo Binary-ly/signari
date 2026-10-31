@@ -1891,6 +1891,32 @@ func samlSigning(ctx context.Context, conn *pgx.Conn, entityID string,
 	return nil
 }
 
+// samlNameID says where a service provider's NameID comes from, empty for what its
+// format alone decides.
+func samlNameID(ctx context.Context, conn *pgx.Conn, entityID, attribute string) error {
+	if entityID == "" {
+		return fmt.Errorf("give -entity-id")
+	}
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	if err != nil {
+		if errors.Is(err, store.ErrSAMLProviderUnknown) {
+			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+		}
+		return err
+	}
+	if err := store.SetSAMLNameIDAttribute(ctx, conn, orgID, providerID, attribute); err != nil {
+		return err
+	}
+	if attribute == "" {
+		fmt.Printf("%s: the NameID comes from its format again\n", entityID)
+		return nil
+	}
+	fmt.Printf("%s: the NameID now comes from %s\n", entityID, attribute)
+	fmt.Println("\n  A service provider keys accounts on this, so whoever shares a value shares an")
+	fmt.Println("  account there, and everybody who has signed in is about to look like somebody new.")
+	return nil
+}
+
 // samlGroupRelease says which groups a service provider is told about.
 //
 // An allow-list, matching `client group release` for OIDC clients and for the

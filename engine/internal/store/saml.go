@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/saml"
 )
 
@@ -33,13 +34,13 @@ func LoadSAMLProvider(ctx context.Context, db *pgxpool.Pool, entityID string) (*
 		       sign_assertions, sign_responses, want_authn_requests_signed,
 		       COALESCE(sp_signing_cert,''), COALESCE(sp_encryption_cert,''),
 		       sp_key_transport, signature_alg,
-		       lifetime_seconds, enabled
+		       lifetime_seconds, enabled, COALESCE(name_id_attribute, '')
 		FROM core.saml_providers
 		WHERE entity_id = $1`, entityID).Scan(
 		&p.ID, &p.OrgID, &p.EntityID, &p.DisplayName, &p.NameIDFormat,
 		&p.SignAssertions, &p.SignResponses, &p.WantAuthnRequestsSigned,
 		&p.SPSigningCert, &p.SPEncryptionCert, &p.SPKeyTransport, &p.SignatureAlg,
-		&p.LifetimeSeconds, &p.Enabled)
+		&p.LifetimeSeconds, &p.Enabled, &p.NameIDAttribute)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrSAMLProviderUnknown
@@ -124,14 +125,93 @@ func EnsureNameID(ctx context.Context, tx pgx.Tx, providerID, userID, orgID, for
 }
 
 // RecordSAMLParticipant notes that this session reached this provider, so
-// single logout can enumerate them later.
-func RecordSAMLParticipant(ctx context.Context, tx pgx.Tx, sid, providerID, orgID, sessionIndex, nameID string) error {
+// single logout can enumerate them later, with the NameID and its format as the
+// assertion carried them.
+func RecordSAMLParticipant(ctx context.Context, tx pgx.Tx, sid, providerID, orgID, sessionIndex, nameID,
+	nameIDFormat string) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO core.saml_session_participants
-			(sid, provider_id, org_id, session_index, name_id)
-		VALUES ($1, $2::uuid, $3::uuid, $4, $5)
+			(sid, provider_id, org_id, session_index, name_id, name_id_format)
+		VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6)
 		ON CONFLICT (sid, provider_id) DO NOTHING`,
-		sid, providerID, orgID, sessionIndex, nameID)
+		sid, providerID, orgID, sessionIndex, nameID, nameIDFormat)
+	return err
+}
+
+// NameIDFromAttribute reads a person's NameID from what a provider names. Refused
+// rather than falling back: another identifier would be a new, empty account at the
+// provider. Refused too when the attribute has since become one a person can edit,
+// since whoever writes this value signs in as whoever else holds it there.
+func NameIDFromAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, attribute string, root *keys.RootKey) (string, error) {
+	if attribute == nameIDFromUsername {
+		var username string
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(username, '') FROM core.users WHERE id = $1::uuid`,
+			userID).Scan(&username); err != nil {
+			return "", err
+		}
+		if username == "" {
+			return "", errors.New("this service provider takes its NameID from the username and the account has none")
+		}
+		return username, nil
+	}
+	var writable bool
+	if err := tx.QueryRow(ctx, `SELECT user_writable FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = $2`, orgID, attribute).Scan(&writable); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("this service provider takes its NameID from %q, which is no longer declared", attribute)
+		}
+		return "", err
+	}
+	if writable {
+		return "", fmt.Errorf("this service provider takes its NameID from %q, which a person can edit", attribute)
+	}
+	values, err := UserAttributes(ctx, tx, userID, orgID, root)
+	if err != nil {
+		return "", err
+	}
+	for _, v := range values {
+		if v.Name == attribute && v.Value != "" {
+			return v.Value, nil
+		}
+	}
+	return "", fmt.Errorf("this service provider takes its NameID from %q and the account has no value for it", attribute)
+}
+
+// nameIDFromUsername is the one source that is not a declared attribute.
+const nameIDFromUsername = "username"
+
+// SetSAMLNameIDAttribute says where a provider's NameID comes from; empty is what its
+// format alone decides. Refused for an attribute a person can edit, which would let
+// them choose who they are at the provider, and for a transient format, which is a
+// new identifier every session by definition.
+func SetSAMLNameIDAttribute(ctx context.Context, q outpostDB, orgID, providerID, attribute string) error {
+	var format string
+	if err := q.QueryRow(ctx, `SELECT name_id_format FROM core.saml_providers
+		WHERE id::text = $2 AND org_id = $1::uuid`, orgID, providerID).Scan(&format); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrSAMLProviderUnknown
+		}
+		return err
+	}
+	if attribute != "" && attribute != nameIDFromUsername {
+		var writable bool
+		err := q.QueryRow(ctx, `SELECT user_writable FROM core.user_attribute_schema
+			WHERE org_id = $1::uuid AND name = $2`, orgID, attribute).Scan(&writable)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return samlInvalid{fmt.Sprintf("the organisation declares no attribute %q", attribute)}
+		case err != nil:
+			return err
+		case writable:
+			return samlInvalid{fmt.Sprintf("people can edit %q, and a NameID from it would let them choose who "+
+				"they are at this service provider", attribute)}
+		}
+	}
+	if attribute != "" && format == "transient" {
+		return samlInvalid{"a transient NameID is new every session, so it cannot come from an attribute"}
+	}
+	_, err := q.Exec(ctx, `UPDATE core.saml_providers SET name_id_attribute = NULLIF($3, ''), updated_at = now()
+		WHERE id::text = $2 AND org_id = $1::uuid`, orgID, providerID, attribute)
 	return err
 }
 
@@ -191,6 +271,9 @@ type SAMLParticipant struct {
 	EntityID     string
 	SessionIndex string
 	NameID       string
+	// NameIDFormat is as the assertion carried it, empty on a row from before
+	// this was kept.
+	NameIDFormat string
 	SLOURLs      []string
 }
 
@@ -231,13 +314,13 @@ func FindSAMLSession(ctx context.Context, tx pgx.Tx, providerID, nameID, session
 // exchange back and forth.
 func SAMLParticipantsForSession(ctx context.Context, tx pgx.Tx, sid, exclude string) ([]SAMLParticipant, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT p.provider_id::text, sp.entity_id, p.session_index, p.name_id,
+		SELECT p.provider_id::text, sp.entity_id, p.session_index, p.name_id, COALESCE(p.name_id_format, ''),
 		       COALESCE(array_agg(u.url) FILTER (WHERE u.url IS NOT NULL), '{}')
 		FROM core.saml_session_participants p
 		JOIN core.saml_providers sp ON sp.id = p.provider_id
 		LEFT JOIN core.saml_slo_urls u ON u.provider_id = p.provider_id
 		WHERE p.sid = $1 AND ($2 = '' OR p.provider_id <> $2::uuid) AND sp.enabled
-		GROUP BY p.provider_id, sp.entity_id, p.session_index, p.name_id`, sid, exclude)
+		GROUP BY p.provider_id, sp.entity_id, p.session_index, p.name_id, p.name_id_format`, sid, exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +329,7 @@ func SAMLParticipantsForSession(ctx context.Context, tx pgx.Tx, sid, exclude str
 	var out []SAMLParticipant
 	for rows.Next() {
 		var p SAMLParticipant
-		if err := rows.Scan(&p.ProviderID, &p.EntityID, &p.SessionIndex, &p.NameID, &p.SLOURLs); err != nil {
+		if err := rows.Scan(&p.ProviderID, &p.EntityID, &p.SessionIndex, &p.NameID, &p.NameIDFormat, &p.SLOURLs); err != nil {
 			return nil, err
 		}
 		p.SID = sid
@@ -261,6 +344,7 @@ type LogoutStep struct {
 	EntityID     string `json:"entity_id"`
 	SLOURL       string `json:"slo_url"`
 	NameID       string `json:"name_id"`
+	NameIDFormat string `json:"name_id_format,omitempty"`
 	SessionIndex string `json:"session_index"`
 }
 

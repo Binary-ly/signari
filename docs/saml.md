@@ -495,6 +495,28 @@ The envelope was checked for leakage too: no `Assertion`, `Issuer`, `NameID` or
 `SignatureValue` appears in the clear, and each encryption uses a fresh session
 key and IV.
 
+## A NameID from an attribute
+
+A provider that keys its accounts on something you already hold can be given it:
+
+```sh
+signari saml nameid -entity-id https://app.example/saml -attribute employee_number
+signari saml nameid -entity-id https://app.example/saml        # back to the format alone
+```
+
+`-attribute` is a declared attribute or `username`, and `PATCH .../saml-providers/{id}`
+takes the same thing as `name_id_attribute`. The format the provider is registered with
+still goes out, and is carried in the logout request exactly as the assertion had it,
+since a provider matches on it.
+
+An attribute a person can edit is refused, when it is set and again at every sign-in in
+case the declaration has changed since: whoever writes that value chooses who they are
+at the provider. Somebody with no value is refused rather than given a different
+identifier, which would be a new, empty account there. A transient format cannot take
+an attribute. Nothing here can make the values unique: two people sharing one share an
+account at that provider. Set it before people sign in, or expect them to arrive there
+as new accounts.
+
 ## What a service provider asks of the sign-in
 
 `RequestedAuthnContext` is held to the session on every request, as `acr_values` is

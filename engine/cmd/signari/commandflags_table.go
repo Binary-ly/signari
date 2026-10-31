@@ -195,6 +195,7 @@ var commandFlags = map[string][]string{
 	"saml attribute-release":          {"attribute", "claim", "entity-id", "remove"},
 	"saml group-release":              {"attribute-name", "entity-id", "only", "remove"},
 	"saml list":                       {"o"},
+	"saml nameid":                     {"attribute", "entity-id"},
 	"saml signing":                    {"assertion-lifetime", "entity-id", "sign-assertions", "sign-responses", "signature-alg"},
 	"scim add":                        {"base-url", "compatibility", "name", "oauth-client-id", "oauth-scope", "oauth-token-url", "on-deactivate", "org", "recreate-missing", "scim-dry-run", "slug", "token"},
 	"scim deprovision-group":          {"group", "org", "slug"},

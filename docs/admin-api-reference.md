@@ -2805,6 +2805,7 @@ Takes:
 | Field | Type | |
 |---|---|---|
 | `lifetime_s` | integer |  |
+| `name_id_attribute` | string |  |
 | `sign_assertions` | boolean |  |
 | `sign_responses` | boolean |  |
 | `signature_alg` | string |  |

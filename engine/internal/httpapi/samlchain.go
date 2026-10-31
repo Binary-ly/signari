@@ -79,7 +79,7 @@ func (s *Server) beginSAMLLogoutChain(ctx context.Context, sid, userID, orgID, f
 		}
 		steps = append(steps, store.LogoutStep{
 			ProviderID: p.ProviderID, EntityID: p.EntityID, SLOURL: p.SLOURLs[0],
-			NameID: p.NameID, SessionIndex: p.SessionIndex,
+			NameID: p.NameID, NameIDFormat: p.NameIDFormat, SessionIndex: p.SessionIndex,
 		})
 	}
 	if len(unreachable) > 0 {
@@ -132,6 +132,11 @@ func (s *Server) logoutRedirectFor(ctx context.Context, step store.LogoutStep, t
 		return "", err
 	}
 
+	// A participant from before the format was kept went out as this.
+	format := step.NameIDFormat
+	if format == "" {
+		format = saml.NameIDFormatPersistent
+	}
 	doc, err := saml.BuildLogoutRequest(saml.LogoutRequestInput{
 		Issuer:      s.samlEntityID(),
 		Destination: step.SLOURL,
@@ -139,7 +144,7 @@ func (s *Server) logoutRedirectFor(ctx context.Context, step store.LogoutStep, t
 		// anything else is accepted and ends nothing, which reports success and
 		// leaves the session live.
 		NameID:       step.NameID,
-		NameIDFormat: saml.NameIDFormatPersistent,
+		NameIDFormat: format,
 		SessionIndex: step.SessionIndex,
 		Now:          time.Now(),
 	}, key.Signer(), certDER)

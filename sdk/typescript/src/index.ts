@@ -2307,6 +2307,7 @@ export interface GetOrganizationsOrgIDSAMLProvidersResponseProvidersItem {
   id: string
   lifetime_s: number
   name: string
+  name_id_attribute: string
   name_id_format: string
   sign_assertions: boolean
   sign_responses: boolean
@@ -2879,6 +2880,7 @@ export interface PatchOrganizationsOrgIDRADIUSClientsDeviceIDResponse {
 /** A JSON object of the Admin API. */
 export interface PatchOrganizationsOrgIDSAMLProvidersProviderIDRequest {
   lifetime_s?: number
+  name_id_attribute?: string
   sign_assertions?: boolean
   sign_responses?: boolean
   signature_alg?: string

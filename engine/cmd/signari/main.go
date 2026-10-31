@@ -276,6 +276,7 @@ federation in:
   saml add-sp               register a SAML service provider
   saml list                 show registered SAML service providers
   saml signing              what a service provider is sent signed, and how long it lasts
+  saml nameid               take a service provider's NameID from an attribute
   saml attribute-release    which local attribute a SAML attribute carries
   saml group-release        which groups a service provider is told of
   scim-source add           register an inbound SCIM source and mint its token
@@ -1684,6 +1685,8 @@ func run(args []string) (err error) {
 			responses = signResponses
 		}
 		return samlSigning(ctx, conn, *entityID, assertions, responses, *assertionLifetime, *signatureAlg)
+	case "saml nameid":
+		return samlNameID(ctx, conn, *entityID, *localAttribute)
 	case "saml group-release":
 		return samlGroupRelease(ctx, conn, *entityID, *samlAttrName, *onlyGroups, *removeMember)
 	case "idp verified-email":

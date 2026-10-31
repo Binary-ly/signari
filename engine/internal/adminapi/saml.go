@@ -19,6 +19,7 @@ type samlProviderView struct {
 	EntityID           string            `json:"entity_id"`
 	Name               string            `json:"name"`
 	NameIDFormat       string            `json:"name_id_format"`
+	NameIDAttribute    string            `json:"name_id_attribute"`
 	SignatureAlg       string            `json:"signature_alg"`
 	Enabled            bool              `json:"enabled"`
 	SignAssertions     bool              `json:"sign_assertions"`
@@ -53,6 +54,9 @@ type patchSAMLProviderRequest struct {
 	SignResponses   *bool  `json:"sign_responses"`
 	LifetimeSeconds int    `json:"lifetime_s"`
 	SignatureAlg    string `json:"signature_alg"`
+	// NameIDAttribute is where the NameID comes from: a declared attribute no
+	// person can edit, or username. Empty returns it to the format alone.
+	NameIDAttribute *string `json:"name_id_attribute"`
 }
 
 type samlAttributeRequest struct {
@@ -83,7 +87,8 @@ func (s *Server) listSAMLProviders(w http.ResponseWriter, r *http.Request) {
 	out := make([]samlProviderView, 0, len(got))
 	for _, p := range got {
 		v := samlProviderView{ID: p.ID, EntityID: p.EntityID, Name: p.Name, NameIDFormat: p.NameIDFormat,
-			SignatureAlg: p.SignatureAlg, Enabled: p.Enabled, SignAssertions: p.SignAssertions,
+			NameIDAttribute: p.NameIDAttribute,
+			SignatureAlg:    p.SignatureAlg, Enabled: p.Enabled, SignAssertions: p.SignAssertions,
 			SignResponses: p.SignResponses, WantSignedRequests: p.WantSignedRequests, Encrypted: p.Encrypted,
 			HasSigningCert: p.HasSigningCert, LifetimeSeconds: p.LifetimeSeconds, ACSURLs: p.ACSURLs,
 			SLOURLs: p.SLOURLs, Attributes: p.Attributes}
@@ -151,7 +156,8 @@ func (s *Server) patchSAMLProvider(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrict(w, r, &req) {
 		return
 	}
-	if req.SignAssertions == nil && req.SignResponses == nil && req.LifetimeSeconds == 0 && req.SignatureAlg == "" {
+	if req.SignAssertions == nil && req.SignResponses == nil && req.LifetimeSeconds == 0 && req.SignatureAlg == "" &&
+		req.NameIDAttribute == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change"})
 		return
 	}
@@ -174,9 +180,16 @@ func (s *Server) patchSAMLProvider(w http.ResponseWriter, r *http.Request) {
 			SignatureAlg: req.SignatureAlg}); err != nil {
 			return err
 		}
+		detail := map[string]any{"provider": providerID, "sign_assertions": signA,
+			"sign_responses": signR, "signature_alg": alg, "lifetime_s": req.LifetimeSeconds}
+		if req.NameIDAttribute != nil {
+			if err := store.SetSAMLNameIDAttribute(ctx, tx, orgID, providerID, *req.NameIDAttribute); err != nil {
+				return err
+			}
+			detail["name_id_attribute"] = *req.NameIDAttribute
+		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.saml_signing_set", AdminTokenID: TokenIDFrom(ctx),
-			OrgID: orgID, Detail: map[string]any{"provider": providerID, "sign_assertions": signA,
-				"sign_responses": signR, "signature_alg": alg, "lifetime_s": req.LifetimeSeconds}})
+			OrgID: orgID, Detail: detail})
 	})
 	if s.writeSAMLFailure(w, err, orgID) {
 		return

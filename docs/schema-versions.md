@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0209 saml_nameid_source
+
+Compatible with the release before: its binary may still serve this schema.
+
+Where a service provider's NameID comes from, and what format it went out in (8.06).
+
 ## 0208 posix_ids
 
 Not compatible with the release before: stop it before migrating.

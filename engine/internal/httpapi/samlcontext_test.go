@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -54,6 +55,101 @@ func (rf *realmFixture) answer(t *testing.T, rec *httptest.ResponseRecorder) str
 		t.Fatal(err)
 	}
 	return string(xml)
+}
+
+// A NameID from an attribute reaches the assertion, the logout request says what the
+// assertion said, and the attribute can never be one a person writes.
+func TestANameIDComesFromAnAttribute(t *testing.T) {
+	rf := newRealmFixture(t)
+	ctx := context.Background()
+	pool := rf.f.pool
+	var providerID string
+	if err := pool.QueryRow(ctx, `UPDATE core.saml_providers SET name_id_format = 'emailAddress' WHERE entity_id = $1
+		RETURNING id::text`, rf.own).Scan(&providerID); err != nil {
+		t.Fatal(err)
+	}
+	declare := func(writable bool) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `INSERT INTO core.user_attribute_schema
+			(org_id, name, display_name, value_type, personal, user_readable, user_writable)
+			VALUES ($1::uuid, 'employee_number', 'Employee number', 'string', false, true, $2)
+			ON CONFLICT (org_id, name) DO UPDATE SET user_writable = EXCLUDED.user_writable`, rf.f.orgID, writable); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set := func(attribute string) error {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if err := store.SetSAMLNameIDAttribute(ctx, tx, rf.f.orgID, providerID, attribute); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+
+	if err := set("nobody_declared_this"); !errors.Is(err, store.ErrSAMLInvalid) {
+		t.Errorf("an undeclared attribute answered %v", err)
+	}
+	declare(true)
+	if err := set("employee_number"); !errors.Is(err, store.ErrSAMLInvalid) {
+		t.Errorf("an attribute people can edit answered %v", err)
+	}
+	declare(false)
+	if err := set("employee_number"); err != nil {
+		t.Fatal(err)
+	}
+
+	// With no value: refused, not a different identifier.
+	if code, doc := rf.samlSSO(t, rf.own); strings.Contains(doc, ":Assertion") {
+		t.Fatalf("somebody with no value was answered: %d %.300s", code, doc)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserAttribute(ctx, tx, rf.f.userID, rf.f.orgID, "employee_number", "E-1042", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, doc := rf.samlSSO(t, rf.own)
+	if !strings.Contains(doc, ">E-1042</") {
+		t.Fatalf("the assertion reads %.600s", doc)
+	}
+
+	var format string
+	if err := pool.QueryRow(ctx, `SELECT name_id_format FROM core.saml_session_participants WHERE provider_id = $1::uuid
+		AND name_id = 'E-1042'`, providerID).Scan(&format); err != nil {
+		t.Fatal(err)
+	}
+	if format != saml.NameIDFormatEmail {
+		t.Errorf("the participant carries %q", format)
+	}
+	loose, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = loose.Rollback(ctx) }()
+	var sid string
+	if err := loose.QueryRow(ctx, `SELECT sid FROM core.saml_session_participants WHERE provider_id = $1::uuid`,
+		providerID).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+	participants, err := store.SAMLParticipantsForSession(ctx, loose, sid, "")
+	if err != nil || len(participants) == 0 || participants[0].NameIDFormat != saml.NameIDFormatEmail {
+		t.Errorf("logout would read %+v, %v", participants, err)
+	}
+	_ = loose.Rollback(ctx)
+
+	// A declaration turned editable after it was set stops it at the next sign-in.
+	declare(true)
+	if code, doc := rf.samlSSO(t, rf.own); strings.Contains(doc, ":Assertion") {
+		t.Errorf("an attribute a person can now write was issued: %d", code)
+	}
 }
 
 // A service provider asking for a second factor gets one, or is told it cannot, and

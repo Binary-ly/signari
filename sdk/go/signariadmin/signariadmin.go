@@ -1197,6 +1197,7 @@ type GetOrganizationsOrgIDSAMLProvidersResponseProvidersItem struct {
 	ID                 string                                                               `json:"id"`
 	LifetimeS          int64                                                                `json:"lifetime_s"`
 	Name               string                                                               `json:"name"`
+	NameIDAttribute    string                                                               `json:"name_id_attribute"`
 	NameIDFormat       string                                                               `json:"name_id_format"`
 	SignAssertions     bool                                                                 `json:"sign_assertions"`
 	SignResponses      bool                                                                 `json:"sign_responses"`
@@ -1768,10 +1769,11 @@ type PatchOrganizationsOrgIDRADIUSClientsDeviceIDResponse struct {
 
 // PatchOrganizationsOrgIDSAMLProvidersProviderIDRequest is a JSON object of the Admin API.
 type PatchOrganizationsOrgIDSAMLProvidersProviderIDRequest struct {
-	LifetimeS      *int64  `json:"lifetime_s,omitempty"`
-	SignAssertions *bool   `json:"sign_assertions,omitempty"`
-	SignResponses  *bool   `json:"sign_responses,omitempty"`
-	SignatureAlg   *string `json:"signature_alg,omitempty"`
+	LifetimeS       *int64  `json:"lifetime_s,omitempty"`
+	NameIDAttribute *string `json:"name_id_attribute,omitempty"`
+	SignAssertions  *bool   `json:"sign_assertions,omitempty"`
+	SignResponses   *bool   `json:"sign_responses,omitempty"`
+	SignatureAlg    *string `json:"signature_alg,omitempty"`
 }
 
 // PatchOrganizationsOrgIDSAMLProvidersProviderIDResponse is a JSON object of the Admin API.

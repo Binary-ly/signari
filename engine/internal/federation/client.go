@@ -43,6 +43,54 @@ type Config struct {
 	EndSessionURL string
 	// TokenAuth is how this engine proves itself at the token endpoint.
 	TokenAuth TokenAuth
+	// Forward names what a sign-in here passes on to this provider (`signari idp
+	// forward`). Empty tells it nothing.
+	Forward []string
+}
+
+// The parameters a provider can be told, each opted in. Nothing else on a request
+// here is any provider's business, and a parameter passed on by default would tell
+// every provider what each application asked.
+const (
+	ForwardPrompt    = "prompt"
+	ForwardLoginHint = "login_hint"
+	ForwardACR       = "acr_values"
+)
+
+// ForwardableParameters are those parameters.
+var ForwardableParameters = []string{ForwardACR, ForwardLoginHint, ForwardPrompt}
+
+// Asks is what this provider is told of a sign-in. `prompt=none` is never among it,
+// since a request that may not interact does not get as far as a provider. The
+// acr_values are its own values and not the request's, which mean something only
+// here: multiFactor says a second factor is wanted, and the values are those this
+// deployment takes from the provider to mean one. Asked or not, what it answers is
+// held to the same list when it comes back.
+func (c Config) Asks(request url.Values, multiFactor bool) url.Values {
+	asks := url.Values{}
+	for _, name := range c.Forward {
+		switch name {
+		case ForwardPrompt:
+			var kept []string
+			for _, p := range strings.Fields(request.Get("prompt")) {
+				if p == "login" || p == "consent" || p == "select_account" {
+					kept = append(kept, p)
+				}
+			}
+			if len(kept) > 0 {
+				asks.Set(ForwardPrompt, strings.Join(kept, " "))
+			}
+		case ForwardLoginHint:
+			if hint := request.Get(ForwardLoginHint); hint != "" {
+				asks.Set(ForwardLoginHint, hint)
+			}
+		case ForwardACR:
+			if multiFactor && len(c.MFAACR) > 0 {
+				asks.Set(ForwardACR, strings.Join(c.MFAACR, " "))
+			}
+		}
+	}
+	return asks
 }
 
 // UpstreamMFA reports whether a verified upstream payload asserts
@@ -121,16 +169,22 @@ func pick(a, b string) string {
 // require it. The code arrives back on a redirect the browser can see, and
 // PKCE is what stops a code intercepted there being exchanged by anybody else.
 // It costs one hash.
-func (c Config) AuthorizeURL(redirectURI, state, nonce, verifier string) string {
+func (c Config) AuthorizeURL(redirectURI, state, nonce, verifier string, asks url.Values) string {
 	sum := sha256.Sum256([]byte(verifier))
-	q := url.Values{
-		"response_type":         {"code"},
-		"client_id":             {c.ClientID},
-		"redirect_uri":          {redirectURI},
-		"scope":                 {strings.Join(c.scopes(), " ")},
-		"state":                 {state},
-		"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
-		"code_challenge_method": {"S256"},
+	q := url.Values{}
+	for name, values := range asks {
+		q[name] = values
+	}
+	for name, value := range map[string]string{
+		"response_type":         "code",
+		"client_id":             c.ClientID,
+		"redirect_uri":          redirectURI,
+		"scope":                 strings.Join(c.scopes(), " "),
+		"state":                 state,
+		"code_challenge":        base64.RawURLEncoding.EncodeToString(sum[:]),
+		"code_challenge_method": "S256",
+	} {
+		q.Set(name, value)
 	}
 	if c.Preset.OIDC {
 		// Binds the id_token to this flow. Without it an id_token obtained

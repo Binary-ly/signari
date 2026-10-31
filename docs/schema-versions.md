@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0220 idp_forward_parameters
+
+Compatible with the release before: its binary may still serve this schema.
+
+What a sign-in here passes on to the provider it goes through (8.36). A request that asked for a fresh sign-in or a second factor went upstream saying neither, so a provider that would have done it was never asked, and the person met a second prompt here instead, or none at all.
+
 ## 0219 saml_idp_initiated
 
 Compatible with the release before: its binary may still serve this schema.

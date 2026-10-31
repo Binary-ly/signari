@@ -164,6 +164,7 @@ var cliAPI = map[string]string{
 	"idp check":          reads,
 	"idp domains":        "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp logout":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp forward":        "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp auth":           "PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth",
 	"idp assertions":     "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp link":           "PUT /admin/users/{userID}/identity-links/{slug}",

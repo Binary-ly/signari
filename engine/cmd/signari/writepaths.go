@@ -2113,6 +2113,29 @@ func idpTokenAuthSet(ctx context.Context, conn *pgx.Conn, slug, method, keyFile,
 	return nil
 }
 
+// idpForwardSet says what a sign-in here passes on to a provider; nothing named
+// tells it nothing.
+func idpForwardSet(ctx context.Context, conn *pgx.Conn, slug, names string) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	forward := []string{}
+	for _, name := range strings.Split(names, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			forward = append(forward, name)
+		}
+	}
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{ForwardParameters: &forward}); err != nil {
+		return err
+	}
+	if len(forward) == 0 {
+		fmt.Printf("%s: a sign-in here tells it nothing\n", slug)
+		return nil
+	}
+	fmt.Printf("%s: a sign-in here passes on %s\n", slug, strings.Join(forward, ", "))
+	return nil
+}
+
 // idpLogoutSet says where a sign-out here goes next, at the provider a person came
 // through; no address stops it at this side.
 func idpLogoutSet(ctx context.Context, conn *pgx.Conn, slug, address string) error {

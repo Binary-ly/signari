@@ -50,6 +50,7 @@ type IdentityProvider struct {
 	MFAACR                 *[]string     `yaml:"mfa_acr,omitempty"`
 	LoginDomains           *[]string     `yaml:"login_domains,omitempty"`
 	EndSessionURL          *string       `yaml:"end_session_url,omitempty"`
+	ForwardParameters      *[]string     `yaml:"forward_parameters,omitempty"`
 	AttributeMap           *[]IdPMapping `yaml:"attribute_map,omitempty"`
 }
 
@@ -120,7 +121,8 @@ func (w IdentityProvider) spec() store.IdentityProviderSpec {
 func (w IdentityProvider) change() store.IdentityProviderChange {
 	return store.IdentityProviderChange{Enabled: w.Enabled, AllowAssertions: w.AllowAssertions,
 		TrustEmailVerification: w.TrustEmailVerification, RequireVerifiedEmail: w.RequireVerifiedEmail,
-		MFAAMR: w.MFAAMR, MFAACR: w.MFAACR, LoginDomains: w.LoginDomains, EndSessionURL: w.EndSessionURL}
+		MFAAMR: w.MFAAMR, MFAACR: w.MFAACR, LoginDomains: w.LoginDomains, EndSessionURL: w.EndSessionURL,
+		ForwardParameters: w.ForwardParameters}
 }
 
 type idpSection struct{}
@@ -301,6 +303,8 @@ func (idpSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, pr
 			c.note(w.MFAAMR != nil && !sameSet(h.MFAAMR, *w.MFAAMR), "mfa_amr")
 			c.note(w.LoginDomains != nil && !sameSet(h.LoginDomains, *w.LoginDomains), "login_domains")
 			c.note(w.EndSessionURL != nil && h.EndSessionURL != *w.EndSessionURL, "end_session_url")
+			c.note(w.ForwardParameters != nil && !sameSet(h.ForwardParameters, *w.ForwardParameters),
+				"forward_parameters")
 			c.note(w.MFAACR != nil && !sameSet(h.MFAACR, *w.MFAACR), "mfa_acr")
 			if w.AttributeMap != nil {
 				have := map[string]IdPMapping{}
@@ -480,6 +484,10 @@ func (idpSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File) 
 		if h.EndSessionURL != "" {
 			address := h.EndSessionURL
 			w.EndSessionURL = &address
+		}
+		if len(h.ForwardParameters) > 0 {
+			forward := sortedCopy(h.ForwardParameters)
+			w.ForwardParameters = &forward
 		}
 		if len(h.MFAACR) > 0 {
 			acr := sortedCopy(h.MFAACR)

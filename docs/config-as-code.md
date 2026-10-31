@@ -283,6 +283,7 @@ identity_providers:           # where people sign in from
     token_url: https://login.corp.example.com/token
     jwks_url: https://login.corp.example.com/jwks
     mfa_amr: [mfa]            # upstream values that count as multi-factor
+    forward_parameters: [prompt, login_hint]   # what a sign-in passes on; see social-login.md
   - slug: adfs
     kind: saml
     saml:

@@ -274,6 +274,7 @@ federation in:
   idp trust-mfa             which upstream amr and acr values count as multi-factor
   idp domains               the address domains a provider signs in
   idp logout                sign out at the provider too, at its end_session_endpoint
+  idp forward               what a sign-in here passes on to the provider
   idp auth                  how this engine proves itself at a provider's token endpoint
   idp verified-email        whether to believe a provider's email_verified, and require it
   idp attribute-map         route a provider's claim into a local attribute
@@ -793,6 +794,8 @@ func run(args []string) (err error) {
 	racKeyFile := fs.String("private-key-file", "", "a file holding a PEM private key, for an ssh connection (rac add)")
 	racPassphraseFile := fs.String("passphrase-file", "", "a file holding that key's passphrase (rac add)")
 	racRecording := fs.String("recording-path", "", "where guacd writes session recordings")
+	idpForward := fs.String("forward", "",
+		"comma-separated: prompt, login_hint, acr_values; none tells the provider nothing (idp forward)")
 	samlRelayState := fs.String("relay-state", "",
 		"what goes with a response nobody asked for, usually the page to land on (saml idp-initiated)")
 	declaredBy := fs.String("by", "", "who is declaring an audit checkpoint")
@@ -1770,6 +1773,8 @@ func run(args []string) (err error) {
 		return idpDomainsSet(ctx, conn, *slug, *signupDomains)
 	case "idp logout":
 		return idpLogoutSet(ctx, conn, *slug, *subURL)
+	case "idp forward":
+		return idpForwardSet(ctx, conn, *slug, *idpForward)
 	case "idp auth":
 		return idpTokenAuthSet(ctx, conn, *slug, *idpAuthMethod, *idpClientKeyFile, *idpClientCertFile)
 	case "idp trust-mfa":

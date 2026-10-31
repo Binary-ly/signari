@@ -129,8 +129,20 @@ func (s *Server) startFederation(w http.ResponseWriter, r *http.Request, linking
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   600,
 	})
-	http.Redirect(w, r, provider.AuthorizeURL(s.federationRedirectURI(slug), state, nonce, verifier),
-		http.StatusSeeOther)
+	http.Redirect(w, r, provider.AuthorizeURL(s.federationRedirectURI(slug), state, nonce, verifier,
+		upstreamAsks(provider, s.validFederationReturn(r.URL.Query().Get("return")))), http.StatusSeeOther)
+}
+
+// upstreamAsks is what a sign-in brought here passes on to the provider it goes
+// through, read from the request parked on the way. The stage still decides what was
+// done: a provider that ignores an acr it is asked for gets no credit for one.
+func upstreamAsks(provider *federation.Config, returnTo string) url.Values {
+	parked, err := url.Parse(returnTo)
+	if err != nil {
+		return nil
+	}
+	request := parked.Query()
+	return provider.Asks(request, oauth.RequiredRung(request.Get("acr_values"), "") >= 2)
 }
 
 func (s *Server) handleFederatedCallback(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +314,7 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 
 	case federation.CreateUser:
 		ext.Email = email
-		userID, err = store.CreateUserFromExternal(ctx, tx, provider.OrgID, ext, verified)
+		userID, err = store.CreateUserFromExternal(ctx, tx, provider.OrgID, ext)
 		if err != nil {
 			s.log.Error("creating a user from an external identity", "err", err)
 			fail("Something went wrong. Please try again.")

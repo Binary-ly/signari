@@ -35,6 +35,7 @@ type identityProviderView struct {
 	MFAACR                 []string         `json:"mfa_acr"`
 	LoginDomains           []string         `json:"login_domains"`
 	EndSessionURL          string           `json:"end_session_url"`
+	ForwardParameters      []string         `json:"forward_parameters"`
 	TokenAuthMethod        string           `json:"token_auth_method"`
 	HasClientKey           bool             `json:"has_client_key"`
 	Linked                 int              `json:"linked"`
@@ -52,6 +53,9 @@ type patchIdentityProviderRequest struct {
 	MFAACR                 *[]string `json:"mfa_acr"`
 	LoginDomains           *[]string `json:"login_domains"`
 	EndSessionURL          *string   `json:"end_session_url"`
+	// ForwardParameters names what a sign-in passes on to the provider: prompt,
+	// login_hint or acr_values. Empty tells it nothing.
+	ForwardParameters *[]string `json:"forward_parameters"`
 }
 
 type idpAttributeMapRequest struct {
@@ -216,7 +220,7 @@ func (s *Server) listIdentityProviders(w http.ResponseWriter, r *http.Request) {
 			AllowAssertions: p.AllowAssertions, TrustEmailVerification: p.TrustEmailVerification,
 			RequireVerifiedEmail: p.RequireVerifiedEmail, MFAAMR: p.MFAAMR, MFAACR: p.MFAACR, Linked: p.Linked,
 			LoginDomains: p.LoginDomains, EndSessionURL: p.EndSessionURL, TokenAuthMethod: p.TokenAuthMethod,
-			HasClientKey: p.HasClientKey, AttributeMap: maps})
+			HasClientKey: p.HasClientKey, AttributeMap: maps, ForwardParameters: p.ForwardParameters})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "providers": out})
 }
@@ -240,6 +244,7 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	change.LoginDomains = req.LoginDomains
 	change.EndSessionURL = req.EndSessionURL
+	change.ForwardParameters = req.ForwardParameters
 	if change.Empty() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change"})
 		return
@@ -276,6 +281,9 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		if change.MFAACR != nil {
 			detail["mfa_acr"] = *change.MFAACR
+		}
+		if req.ForwardParameters != nil {
+			detail["forward_parameters"] = *req.ForwardParameters
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.identity_provider_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})

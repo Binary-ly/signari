@@ -99,7 +99,7 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		       COALESCE(token_url,''), COALESCE(userinfo_url,''), COALESCE(jwks_url,''),
 		       scopes, allow_signup, allow_linking, require_verified_email, enabled,
 		       trust_email_verification, mfa_amr, mfa_acr, COALESCE(end_session_url, ''),
-		       token_auth_method, client_key, COALESCE(client_certificate, '')
+		       token_auth_method, client_key, COALESCE(client_certificate, ''), forward_parameters
 		FROM core.identity_providers
 		WHERE slug = $1`, slug).Scan(
 		&c.ID, &c.OrgID, &c.Slug, &c.DisplayName, &kind, &c.ClientID,
@@ -107,7 +107,7 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		&c.TokenOverride, &c.UserinfoOverride, &c.JWKSOverride,
 		&c.Scopes, &c.Policy.AllowSignup, &c.Policy.AllowLinking,
 		&c.Policy.RequireVerifiedEmail, &enabled, &trustEmail, &c.MFAAMR, &c.MFAACR, &c.EndSessionURL,
-		&c.TokenAuth.Method, &keySealed, &certificate)
+		&c.TokenAuth.Method, &keySealed, &certificate, &c.Forward)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProviderUnknown
@@ -378,11 +378,26 @@ func LinkFederatedIdentity(ctx context.Context, tx pgx.Tx, providerID, userID, o
 	if err != nil {
 		return fmt.Errorf("linking the external account: %w", err)
 	}
+	// The provider vouching for the address this account holds proves it, as a
+	// link followed from that mailbox does. Another address proves nothing here.
+	if verified && ext.Email != "" {
+		tag, err := tx.Exec(ctx, `UPDATE core.users SET email_verified_at = now()
+			WHERE id = $1::uuid AND org_id = $2::uuid AND email_verified_at IS NULL AND email_fold = lower($3)`,
+			userID, orgID, ext.Email)
+		if err != nil {
+			return fmt.Errorf("recording the address the provider vouched for: %w", err)
+		}
+		if tag.RowsAffected() > 0 {
+			if _, err := tx.Exec(ctx, `DELETE FROM core.email_verifications WHERE user_id = $1::uuid`, userID); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
 // CreateUserFromExternal creates a local account for a new external identity.
-func CreateUserFromExternal(ctx context.Context, tx pgx.Tx, orgID string, ext federation.ExternalIdentity, verified bool) (string, error) {
+func CreateUserFromExternal(ctx context.Context, tx pgx.Tx, orgID string, ext federation.ExternalIdentity) (string, error) {
 	var userID string
 	// No password credential is written. This account can only be reached
 	// through the external provider until its owner sets one, which is correct:

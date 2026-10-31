@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/federation"
 )
 
 // An upstream identity provider's settings as `signari idp` and the Admin API
@@ -68,13 +71,35 @@ type IdentityProviderChange struct {
 	// EndSessionURL is the provider's end_session_endpoint, where a sign-out here
 	// goes next; empty stops at this side.
 	EndSessionURL *string
+	// ForwardParameters names what a sign-in here passes on to the provider, from
+	// federation.ForwardableParameters; empty tells it nothing.
+	ForwardParameters *[]string
 }
 
 // Empty reports whether the change names nothing.
 func (c IdentityProviderChange) Empty() bool {
 	return c.Enabled == nil && c.AllowAssertions == nil && c.TrustEmailVerification == nil &&
 		c.RequireVerifiedEmail == nil && c.MFAAMR == nil && c.MFAACR == nil && c.LoginDomains == nil &&
-		c.EndSessionURL == nil
+		c.EndSessionURL == nil && c.ForwardParameters == nil
+}
+
+// checkForwardParameters refuses a name nothing would pass on, and a provider with no
+// authorization request to carry one. A list that reads as set and does nothing is
+// worse than none: the operator believes the provider is being asked.
+func checkForwardParameters(slug, kind string, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	if kind == "saml" || kind == "assertion" {
+		return idpInvalid{fmt.Sprintf("%s is a %s provider, which takes no authorization request", slug, kind)}
+	}
+	for _, name := range names {
+		if !slices.Contains(federation.ForwardableParameters, name) {
+			return idpInvalid{fmt.Sprintf("%q is not one of %s", name,
+				strings.Join(federation.ForwardableParameters, ", "))}
+		}
+	}
+	return nil
 }
 
 // checkEndSession refuses an address a browser should not be sent to, and a
@@ -205,6 +230,13 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 			return err
 		}
 	}
+	var forward any
+	if c.ForwardParameters != nil {
+		if err := checkForwardParameters(slug, kind, *c.ForwardParameters); err != nil {
+			return err
+		}
+		forward = nonNil(*c.ForwardParameters)
+	}
 	_, err := q.Exec(ctx, `
 		UPDATE core.identity_providers
 		   SET enabled                  = COALESCE($3::boolean, enabled),
@@ -216,9 +248,10 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 		       login_domains            = COALESCE($9::text[], login_domains),
 		       end_session_url          = CASE WHEN $10::text IS NULL THEN end_session_url
 		                                       ELSE NULLIF($10, '') END,
+		       forward_parameters       = COALESCE($11::text[], forward_parameters),
 		       updated_at               = now()
 		 WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, c.Enabled, c.AllowAssertions, c.TrustEmailVerification,
-		c.RequireVerifiedEmail, amr, acr, domains, c.EndSessionURL)
+		c.RequireVerifiedEmail, amr, acr, domains, c.EndSessionURL, forward)
 	return err
 }
 
@@ -295,7 +328,7 @@ type IdentityProviderRow struct {
 	ID, Slug, Name, Kind, Issuer, EndSessionURL, TokenAuthMethod  string
 	Enabled, AllowSignup, AllowLinking, HasClientKey              bool
 	AllowAssertions, TrustEmailVerification, RequireVerifiedEmail bool
-	MFAAMR, MFAACR, LoginDomains                                  []string
+	MFAAMR, MFAACR, LoginDomains, ForwardParameters               []string
 	Linked                                                        int
 	AttributeMap                                                  []IdPAttributeMapping
 }
@@ -313,7 +346,8 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		SELECT p.id::text, p.slug, p.display_name, p.kind, COALESCE(p.issuer, ''), p.enabled, p.allow_signup,
 		       p.allow_linking, p.allow_jwt_bearer, p.trust_email_verification, p.require_verified_email,
 		       p.mfa_amr, p.mfa_acr, (SELECT count(*) FROM core.federated_identities f WHERE f.provider_id = p.id),
-		       p.login_domains, COALESCE(p.end_session_url, ''), p.token_auth_method, p.client_key IS NOT NULL
+		       p.login_domains, COALESCE(p.end_session_url, ''), p.token_auth_method, p.client_key IS NOT NULL,
+		       p.forward_parameters
 		  FROM core.identity_providers p WHERE p.org_id = $1::uuid ORDER BY p.slug`, orgID)
 	if err != nil {
 		return nil, err
@@ -323,7 +357,8 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		var p IdentityProviderRow
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Kind, &p.Issuer, &p.Enabled, &p.AllowSignup,
 			&p.AllowLinking, &p.AllowAssertions, &p.TrustEmailVerification, &p.RequireVerifiedEmail, &p.MFAAMR,
-			&p.MFAACR, &p.Linked, &p.LoginDomains, &p.EndSessionURL, &p.TokenAuthMethod, &p.HasClientKey); err != nil {
+			&p.MFAACR, &p.Linked, &p.LoginDomains, &p.EndSessionURL, &p.TokenAuthMethod, &p.HasClientKey,
+			&p.ForwardParameters); err != nil {
 			rows.Close()
 			return nil, err
 		}

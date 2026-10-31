@@ -1421,6 +1421,7 @@ Takes:
 | `allow_assertions` | boolean |  |
 | `enabled` | boolean |  |
 | `end_session_url` | string |  |
+| `forward_parameters` | list of string |  |
 | `login_domains` | list of string |  |
 | `mfa_acr` | list of string |  |
 | `mfa_amr` | list of string |  |

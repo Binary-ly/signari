@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -395,7 +396,14 @@ func TestAuthorizeURLCarriesPKCEAndNonce(t *testing.T) {
 	c := fp.config()
 	c.AuthorizeOverride = "https://provider.test/authorize"
 
-	u := c.AuthorizeURL("https://auth.example.com/cb", "state1", "nonce1", "verifier1")
+	u := c.AuthorizeURL("https://auth.example.com/cb", "state1", "nonce1", "verifier1",
+		url.Values{"state": {"from-a-request"}, "client_id": {"another"}, "login_hint": {"ada@corp.example"}})
+	if strings.Contains(u, "from-a-request") || strings.Contains(u, "client_id=another") {
+		t.Errorf("a forwarded value took the place of the flow's own: %s", u)
+	}
+	if !strings.Contains(u, "login_hint=ada%40corp.example") {
+		t.Errorf("a forwarded value did not reach the URL: %s", u)
+	}
 	for _, want := range []string{
 		"code_challenge_method=S256", "code_challenge=", "state=state1", "nonce=nonce1",
 		"redirect_uri=https%3A%2F%2Fauth.example.com%2Fcb",

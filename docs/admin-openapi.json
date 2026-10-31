@@ -11148,6 +11148,12 @@
                           "end_session_url": {
                             "type": "string"
                           },
+                          "forward_parameters": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
                           "has_client_key": {
                             "type": "boolean"
                           },
@@ -11217,7 +11223,8 @@
                           "token_auth_method",
                           "has_client_key",
                           "linked",
-                          "attribute_map"
+                          "attribute_map",
+                          "forward_parameters"
                         ],
                         "type": "object"
                       },
@@ -11506,6 +11513,12 @@
                   },
                   "end_session_url": {
                     "type": "string"
+                  },
+                  "forward_parameters": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
                   },
                   "login_domains": {
                     "items": {

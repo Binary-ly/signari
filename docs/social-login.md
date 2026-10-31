@@ -86,6 +86,27 @@ through the ordinary form, so the account that must survive an outage at the pro
 can still sign in. Both hints apply only with no session at all: somebody short of a
 second factor needs it here, and the provider cannot supply it.
 
+## Telling the provider what the application asked
+
+By default a provider is told nothing about the request that sent somebody to it, so
+an application that wants a fresh sign-in or a second factor gets it from this side at
+best. A provider can be told, a parameter at a time:
+
+```
+signari idp forward -slug corp -forward prompt,login_hint,acr_values
+signari idp forward -slug corp            # tell it nothing again
+```
+
+| Named | What the provider gets |
+|---|---|
+| `prompt` | `login`, `consent` and `select_account`, when the request asked for them. `none` never gets this far: a request that may not interact is answered here |
+| `login_hint` | The hint, as it came |
+| `acr_values` | When the request wants a second factor, the values `idp trust-mfa -upstream-acr` trusts from this provider, because a request's values mean something only here. With none trusted, nothing is sent |
+
+Asking changes nothing about what is believed. What comes back is held to `idp
+trust-mfa` as ever, so a provider that ignores the `acr_values` it was sent gets no
+credit for a factor it did not use, and the sign-in asks for one here or is refused.
+
 ## When somebody signs out at the provider
 
 A provider that sends OpenID Connect back-channel logout can tell this engine:

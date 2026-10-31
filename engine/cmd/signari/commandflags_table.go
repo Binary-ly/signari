@@ -98,6 +98,7 @@ var commandFlags = map[string][]string{
 	"idp enable":                      {"slug"},
 	"idp link":                        {"email", "slug", "subject"},
 	"idp links":                       {"o", "slug"},
+	"idp forward":                     {"forward", "slug"},
 	"idp logout":                      {"slug", "url"},
 	"idp list":                        {"o"},
 	"idp trust-mfa":                   {"slug", "upstream-acr", "upstream-amr"},

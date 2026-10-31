@@ -2101,6 +2101,7 @@ export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem {
   attribute_map: GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemAttributeMapItem[]
   enabled: boolean
   end_session_url: string
+  forward_parameters: string[]
   has_client_key: boolean
   id: string
   issuer: string
@@ -2852,6 +2853,7 @@ export interface PatchOrganizationsOrgIDIdentityProvidersSlugRequest {
   allow_assertions?: boolean
   enabled?: boolean
   end_session_url?: string
+  forward_parameters?: string[]
   login_domains?: string[]
   mfa_acr?: string[]
   mfa_amr?: string[]

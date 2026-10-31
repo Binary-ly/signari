@@ -95,6 +95,7 @@ identity_providers:
     token_url: https://login.corp.example.test/token
     jwks_url: https://login.corp.example.test/jwks
     mfa_amr: [mfa]
+    forward_parameters: [prompt, acr_values]
   - slug: adfs-%[1]d
     kind: saml
     saml:
@@ -125,6 +126,9 @@ identity_providers:
 	}
 	if saml := byKind["saml"]; !saml.TrustEmailVerification {
 		t.Error("a SAML upstream was made without believing its addresses, as `idp add` would")
+	}
+	if corp := byKind["oidc"]; !sameSet(corp.ForwardParameters, []string{"prompt", "acr_values"}) {
+		t.Errorf("the provider is told %v", corp.ForwardParameters)
 	}
 	if ci := byKind["assertion"]; !ci.AllowAssertions || ci.AllowSignup {
 		t.Errorf("the assertion issuer is %+v", ci)

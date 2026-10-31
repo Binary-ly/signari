@@ -468,6 +468,12 @@
         "end_session_url": {
           "type": "string"
         },
+        "forward_parameters": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "issuer": {
           "type": "string"
         },

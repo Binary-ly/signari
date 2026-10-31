@@ -228,6 +228,48 @@ and a filter of more than 256 terms. A value is JSON, so a string is quoted and
 as a search for one user with an odd name, which matched nobody and invited a
 duplicate create.
 
+## The enterprise user extension
+
+`urn:ietf:params:scim:schemas:extension:enterprise:2.0:User` is kept in the
+organisation's own [user attributes](admin-api.md), so declare the ones you want
+with `PUT /admin/organizations/{orgID}/attributes`:
+
+| Extension attribute | User attribute |
+|---|---|
+| `employeeNumber` | `employee_number` |
+| `costCenter` | `cost_center` |
+| `organization` | `organization` |
+| `division` | `division` |
+| `department` | `department` |
+| `manager.value` | `manager` |
+
+Declaring is the whole decision. The declaration says whether a value is personal
+and so sealed under the person's key and destroyed with it, what type it has, and
+through a claim mapper whether it reaches a token, the same as for a value set any
+other way. `/Schemas` and `/ResourceTypes` offer the attributes this organisation
+declares and no others.
+
+A POST, PUT or PATCH can carry the extension, and a PATCH can write it any of the
+ways upstreams do: a full path, a pathless object of full names, a nested object,
+or the extension whole. A manager can be an id, `{"value": id}` or an array of one,
+and its `displayName` is not kept. `remove`, `null` and an empty string clear a
+value.
+
+- An attribute that is not declared is **not stored and not refused**: the request
+  succeeds, as it does for a phone number, and the log names it. Nobody has decided
+  anything about such a value, so it has no erasure story.
+- A value that does not fit the declared type, or that would clear a required
+  attribute, is a **400** with `scimType` `invalidValue`, and nothing in the request
+  is applied.
+- A PUT with the extension replaces it, so what it leaves out is cleared. A PUT
+  without it changes nothing, since a client that does not send it may not
+  understand it.
+- An upstream cannot change the attributes of a person who may act as other users:
+  a **403**, as for their address. Resending what they already hold succeeds.
+- The audit record names which attributes moved, never their values.
+- These attributes cannot be filtered on: a personal value is sealed, so a query
+  cannot read it.
+
 ## Verified against a running engine
 
 

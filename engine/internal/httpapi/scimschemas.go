@@ -1,8 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strings"
+
+	"signari.dev/engine/internal/scim"
+	"signari.dev/engine/internal/store"
 )
 
 // SCIM schema discovery, RFC 7644 §4.
@@ -107,9 +111,43 @@ func scimSchemaDefinitions() []map[string]any {
 	}
 }
 
+// scimEnterpriseSchema is the extension as this organisation can hold it, nil
+// when it declares none of the attributes: the rule above, per organisation, so
+// that a client is not told a department is kept where it would vanish.
+func (s *Server) scimEnterpriseSchema(ctx context.Context, src *store.SCIMSource) map[string]any {
+	declared, err := store.DeclaredSCIMEnterprise(ctx, s.db, src.OrgID)
+	if err != nil {
+		s.log.Error("reading what the SCIM enterprise extension can hold", "err", err)
+		return nil
+	}
+	if len(declared) == 0 {
+		return nil
+	}
+	attributes := make([]map[string]any, 0, len(declared))
+	for _, name := range declared {
+		if name == "manager" {
+			attributes = append(attributes, attr(name, "complex", false, subAttrs(attr("value", "string", false))))
+			continue
+		}
+		attributes = append(attributes, attr(name, "string", false))
+	}
+	return map[string]any{
+		"schemas":     []string{"urn:ietf:params:scim:schemas:core:2.0:Schema"},
+		"id":          scim.EnterpriseSchema,
+		"name":        "EnterpriseUser",
+		"description": "Enterprise User",
+		"attributes":  attributes,
+		"meta": map[string]any{
+			"resourceType": "Schema",
+			"location":     "/scim/v2/Schemas/" + scim.EnterpriseSchema,
+		},
+	}
+}
+
 // handleSCIMSchemas serves /Schemas and /Schemas/{id}.
 func (s *Server) handleSCIMSchemas(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.scimAuth(r); err != nil {
+	src, err := s.scimAuth(r)
+	if err != nil {
 		writeSCIMError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -118,6 +156,9 @@ func (s *Server) handleSCIMSchemas(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defs := scimSchemaDefinitions()
+	if extension := s.scimEnterpriseSchema(r.Context(), src); extension != nil {
+		defs = append(defs, extension)
+	}
 
 	// An individual schema by URI: "/Schemas/urn:ietf:params:scim:schemas:core:2.0:User".
 	if id := strings.TrimPrefix(r.PathValue("id"), "/"); id != "" {

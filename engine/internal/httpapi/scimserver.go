@@ -111,7 +111,8 @@ func (s *Server) handleSCIMServiceProviderConfig(w http.ResponseWriter, r *http.
 // to sync it, so advertising one that 404s produces failures the operator cannot
 // act on.
 func (s *Server) handleSCIMResourceTypes(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.scimAuth(r); err != nil {
+	src, err := s.scimAuth(r)
+	if err != nil {
 		writeSCIMError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -136,6 +137,9 @@ func (s *Server) handleSCIMResourceTypes(w http.ResponseWriter, r *http.Request)
 		"endpoint": "/Groups",
 		"schema":   "urn:ietf:params:scim:schemas:core:2.0:Group",
 	}}
+	if s.scimEnterpriseSchema(r.Context(), src) != nil {
+		types[0]["schemaExtensions"] = []map[string]any{{"schema": scim.EnterpriseSchema, "required": false}}
+	}
 	writeSCIM(w, http.StatusOK, map[string]any{
 		"schemas":      []string{"urn:ietf:params:scim:api:messages:2.0:ListResponse"},
 		"totalResults": len(types),
@@ -223,6 +227,7 @@ func (s *Server) scimListUsers(w http.ResponseWriter, r *http.Request, src *stor
 		return
 	}
 
+	s.withEnterprise(ctx, src, users)
 	resources := make([]map[string]any, 0, len(users))
 	for _, u := range users {
 		resources = append(resources, scimUserResource(u))
@@ -259,9 +264,9 @@ func (s *Server) scimCreateUser(w http.ResponseWriter, r *http.Request, src *sto
 		return
 	}
 
-	created, err := store.UpsertSCIMUser(ctx, s.db, src, in)
+	created, err := store.UpsertSCIMUser(ctx, s.db, src, in, s.root)
 	if err != nil {
-		if s.scimForbidden(w, r, src, err) {
+		if s.scimForbidden(w, r, src, err) || scimInvalidValue(w, err) {
 			return
 		}
 		var conflict *store.SCIMConflictError
@@ -281,12 +286,15 @@ func (s *Server) scimCreateUser(w http.ResponseWriter, r *http.Request, src *sto
 		return
 	}
 
+	detail := map[string]any{"source": src.Slug, "external_id": in.ExternalID}
+	if len(created.Written) > 0 {
+		detail["attributes"] = created.Written
+	}
 	s.auditDetached(ctx, audit.Event{
 		Type: "scim.user_provisioned", OrgID: src.OrgID, SubjectID: created.UserID,
-		CorrelationID: correlationID(ctx),
-		Detail:        map[string]any{"source": src.Slug, "external_id": in.ExternalID},
+		CorrelationID: correlationID(ctx), Detail: detail,
 	})
-	writeSCIM(w, http.StatusCreated, scimUserResource(created))
+	writeSCIM(w, http.StatusCreated, s.scimResource(ctx, src, created))
 }
 
 // handleSCIMUser is one resource: get, replace, patch and delete.
@@ -309,7 +317,7 @@ func (s *Server) handleSCIMUser(w http.ResponseWriter, r *http.Request) {
 			writeSCIMError(w, http.StatusNotFound, "no such user")
 			return
 		}
-		writeSCIM(w, http.StatusOK, scimUserResource(u))
+		writeSCIM(w, http.StatusOK, s.scimResource(r.Context(), src, u))
 
 	case http.MethodPut:
 		s.scimReplaceUser(w, r, src, id)
@@ -336,9 +344,9 @@ func (s *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request,
 	}
 	in := raw.Resolved()
 
-	u, err := store.ReplaceSCIMUser(ctx, s.db, src, id, in)
+	u, err := store.ReplaceSCIMUser(ctx, s.db, src, id, in, s.root)
 	if err != nil {
-		if s.scimForbidden(w, r, src, err) {
+		if s.scimForbidden(w, r, src, err) || scimInvalidValue(w, err) {
 			return
 		}
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -350,7 +358,7 @@ func (s *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	s.auditSCIMChange(ctx, src, u, "scim.user_replaced")
-	writeSCIM(w, http.StatusOK, scimUserResource(u))
+	writeSCIM(w, http.StatusOK, s.scimResource(ctx, src, u))
 }
 
 func (s *Server) scimPatchUser(w http.ResponseWriter, r *http.Request,
@@ -381,9 +389,9 @@ func (s *Server) scimPatchUser(w http.ResponseWriter, r *http.Request,
 			"paths", strings.Join(patch.Unsupported, ","), "source", src.Slug)
 	}
 
-	u, err := store.PatchSCIMUser(ctx, s.db, src, id, patch)
+	u, err := store.PatchSCIMUser(ctx, s.db, src, id, patch, s.root)
 	if err != nil {
-		if s.scimForbidden(w, r, src, err) {
+		if s.scimForbidden(w, r, src, err) || scimInvalidValue(w, err) {
 			return
 		}
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -395,7 +403,7 @@ func (s *Server) scimPatchUser(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	s.auditSCIMChange(ctx, src, u, "scim.user_patched")
-	writeSCIM(w, http.StatusOK, scimUserResource(u))
+	writeSCIM(w, http.StatusOK, s.scimResource(ctx, src, u))
 }
 
 func (s *Server) scimDeleteUser(w http.ResponseWriter, r *http.Request,
@@ -451,13 +459,57 @@ func (s *Server) scimForbidden(w http.ResponseWriter, r *http.Request,
 func (s *Server) auditSCIMChange(ctx context.Context, src *store.SCIMSource,
 	u store.SCIMUser, event string) {
 
+	detail := map[string]any{"source": src.Slug, "external_id": u.ExternalID, "active": u.Active}
+	if len(u.Written) > 0 {
+		// Which moved, never what to: an attribute may be personal, and this
+		// table outlives the person.
+		detail["attributes"] = u.Written
+	}
 	s.auditDetached(ctx, audit.Event{
 		Type: event, OrgID: src.OrgID, SubjectID: u.UserID,
-		CorrelationID: correlationID(ctx),
-		Detail: map[string]any{
-			"source": src.Slug, "external_id": u.ExternalID, "active": u.Active,
-		},
+		CorrelationID: correlationID(ctx), Detail: detail,
 	})
+}
+
+// scimInvalidValue answers a value an attribute cannot hold, and reports whether
+// it did.
+func scimInvalidValue(w http.ResponseWriter, err error) bool {
+	if !errors.Is(err, store.ErrSCIMValue) {
+		return false
+	}
+	writeSCIMErrorType(w, http.StatusBadRequest, "invalidValue", err.Error())
+	return true
+}
+
+// withEnterprise reads what the extension shows of these people. Left out when
+// that fails, and logged: the change a person's resource is answering has
+// already committed, and an upstream told it failed would send a deactivation
+// again.
+func (s *Server) withEnterprise(ctx context.Context, src *store.SCIMSource, users []store.SCIMUser) {
+	ids := make([]string, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.UserID)
+		if len(u.NotStored) > 0 {
+			// The operator's to act on, and nobody else can see it.
+			s.log.Warn("the SCIM enterprise extension gave attributes this organisation does not declare",
+				"attributes", strings.Join(u.NotStored, ","), "source", src.Slug)
+		}
+	}
+	values, err := store.SCIMEnterpriseValues(ctx, s.db, src.OrgID, ids, s.root)
+	if err != nil {
+		s.log.Error("reading the SCIM enterprise extension", "err", err)
+		return
+	}
+	for i := range users {
+		users[i].Enterprise = values[users[i].UserID]
+	}
+}
+
+// scimResource renders one person with the extension.
+func (s *Server) scimResource(ctx context.Context, src *store.SCIMSource, u store.SCIMUser) map[string]any {
+	one := []store.SCIMUser{u}
+	s.withEnterprise(ctx, src, one)
+	return scimUserResource(one[0])
 }
 
 // scimUserResource renders a user in the shape SCIM clients expect.
@@ -478,6 +530,20 @@ func scimUserResource(u store.SCIMUser) map[string]any {
 	}
 	if u.Email != "" {
 		res["emails"] = []map[string]any{{"value": u.Email, "primary": true}}
+	}
+	if len(u.Enterprise) > 0 {
+		extension := map[string]any{}
+		for _, a := range scim.EnterpriseAttributes {
+			switch v, ok := u.Enterprise[a.Attribute]; {
+			case ok && a.Attribute == "manager":
+				extension[a.SCIM] = map[string]any{"value": v}
+			case ok:
+				extension[a.SCIM] = v
+			}
+		}
+		res[scim.EnterpriseSchema] = extension
+		// A resource names the schemas it uses (specs/rfc7644.txt:1913).
+		res["schemas"] = []string{"urn:ietf:params:scim:schemas:core:2.0:User", scim.EnterpriseSchema}
 	}
 	return res
 }

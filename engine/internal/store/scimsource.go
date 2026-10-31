@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/scim"
 )
 
@@ -52,6 +53,12 @@ type SCIMUser struct {
 	// Kept is set by a delete that deactivated the person instead, because
 	// they may act as other users.
 	Kept bool
+	// Enterprise is what the extension shows of them, by user attribute, read
+	// by SCIMEnterpriseValues.
+	Enterprise map[string]string
+	// Written names the attributes a write of the extension changed, and
+	// NotStored what it gave that this organisation declares no attribute for.
+	Written, NotStored []string
 }
 
 // SCIMConflictError reports a uniqueness violation, so the handler can answer
@@ -321,9 +328,13 @@ func GetSCIMUser(ctx context.Context, db *pgxpool.Pool, sourceID, resourceID str
 // the SAME person arriving twice, not a second person: upstreams retry, and a
 // create that is not idempotent turns one retry into two accounts.
 func UpsertSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
-	in scim.User) (SCIMUser, error) {
+	in scim.User, root *keys.RootKey) (SCIMUser, error) {
 
 	var out SCIMUser
+	enterprise, err := in.EnterpriseValues(false)
+	if err != nil {
+		return out, fmt.Errorf("%w: %w", ErrSCIMValue, err)
+	}
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return out, err
@@ -350,10 +361,7 @@ func UpsertSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 			src.ID, in.ExternalID, in.UserName, display); err != nil {
 			return out, err
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return out, err
-		}
-		return GetSCIMUser(ctx, db, src.ID, existing.ResourceID)
+		return commitSCIMEnterprise(ctx, tx, db, src, existing.UserID, existing.ResourceID, enterprise, root)
 	} else if err != pgx.ErrNoRows {
 		return out, err
 	}
@@ -416,18 +424,35 @@ func UpsertSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		}
 		return out, err
 	}
+	return commitSCIMEnterprise(ctx, tx, db, src, userID, resourceID, enterprise, root)
+}
 
-	if err := tx.Commit(ctx); err != nil {
-		return out, err
+// commitSCIMEnterprise is the last of a write: the extension, the commit, and
+// the person as they now stand.
+func commitSCIMEnterprise(ctx context.Context, tx pgx.Tx, db *pgxpool.Pool, src *SCIMSource,
+	userID, resourceID string, values map[string]*string, root *keys.RootKey) (SCIMUser, error) {
+
+	written, notStored, err := applySCIMEnterprise(ctx, tx, src.OrgID, userID, values, root)
+	if err != nil {
+		return SCIMUser{}, err
 	}
-	return GetSCIMUser(ctx, db, src.ID, resourceID)
+	if err := tx.Commit(ctx); err != nil {
+		return SCIMUser{}, err
+	}
+	out, err := GetSCIMUser(ctx, db, src.ID, resourceID)
+	out.Written, out.NotStored = written, notStored
+	return out, err
 }
 
 // ReplaceSCIMUser applies a PUT: every attribute takes the value given.
 func ReplaceSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
-	resourceID string, in scim.User) (SCIMUser, error) {
+	resourceID string, in scim.User, root *keys.RootKey) (SCIMUser, error) {
 
 	var out SCIMUser
+	enterprise, err := in.EnterpriseValues(true)
+	if err != nil {
+		return out, fmt.Errorf("%w: %w", ErrSCIMValue, err)
+	}
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return out, err
@@ -455,10 +480,7 @@ func ReplaceSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		src.ID, resourceID, in.UserName, display); err != nil {
 		return out, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return out, err
-	}
-	return GetSCIMUser(ctx, db, src.ID, resourceID)
+	return commitSCIMEnterprise(ctx, tx, db, src, link.UserID, resourceID, enterprise, root)
 }
 
 // PatchSCIMUser applies the subset of changes a PATCH asked for.
@@ -466,7 +488,7 @@ func ReplaceSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 // Only what was mentioned. The pointers in UserPatch carry that distinction,
 // and losing it here would let a PATCH of the display name clear the address.
 func PatchSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
-	resourceID string, p *scim.UserPatch) (SCIMUser, error) {
+	resourceID string, p *scim.UserPatch, root *keys.RootKey) (SCIMUser, error) {
 
 	var out SCIMUser
 	tx, err := db.Begin(ctx)
@@ -496,11 +518,7 @@ func PatchSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 			return out, err
 		}
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return out, err
-	}
-	return GetSCIMUser(ctx, db, src.ID, resourceID)
+	return commitSCIMEnterprise(ctx, tx, db, src, link.UserID, resourceID, p.Enterprise, root)
 }
 
 // DeleteSCIMUser handles a DELETE according to the source's policy.

@@ -91,6 +91,10 @@ type User struct {
 
 	// ID is assigned BY THE TARGET and only ever read, never sent.
 	ID string `json:"id,omitempty"`
+
+	// Enterprise is the extension as an upstream sends it, read by
+	// EnterpriseValues. Never sent to a target.
+	Enterprise json.RawMessage `json:"urn:ietf:params:scim:schemas:extension:enterprise:2.0:User,omitempty"`
 }
 
 // InboundUser is a User as an UPSTREAM sends it.

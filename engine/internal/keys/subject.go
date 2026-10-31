@@ -84,6 +84,37 @@ func LoadSubjectKey(ctx context.Context, tx pgx.Tx, subjectID string, root *Root
 	return newSubjectKey(raw)
 }
 
+// LoadSubjectKeys is LoadSubjectKey for a page of people, in one statement.
+// Somebody with no key, or an erased one, is absent from the answer.
+func LoadSubjectKeys(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, subjectIDs []string, root *RootKey) (map[string]*SubjectKey, error) {
+	rows, err := q.Query(ctx, `
+		SELECT subject_id::text, wrapped_dek FROM core.subject_keys
+		 WHERE subject_id = ANY($1::uuid[]) AND erased_at IS NULL AND wrapped_dek IS NOT NULL`, subjectIDs)
+	if err != nil {
+		return nil, fmt.Errorf("loading subject keys: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]*SubjectKey{}
+	for rows.Next() {
+		var id string
+		var wrapped []byte
+		if err := rows.Scan(&id, &wrapped); err != nil {
+			return nil, err
+		}
+		raw, err := root.open(wrapped)
+		if err != nil {
+			return nil, fmt.Errorf("unwrapping subject key: %w", err)
+		}
+		if out[id], err = newSubjectKey(raw); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
 // LoadOrCreateSubjectKey fetches a subject's DEK, minting one on first use.
 //
 // It takes a transaction, not a pool, so the key and whatever it protects are

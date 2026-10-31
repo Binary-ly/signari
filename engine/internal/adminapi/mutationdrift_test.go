@@ -587,6 +587,26 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return `{"lifetime_s":600}` },
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/saml-providers/{providerID}/metadata", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				_, p := newDriftSAMLProvider(t, s)
+				return p + "/metadata"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				return metadataBody(t, spMetadata(t, s, strings.TrimSuffix(path, "/metadata")))
+			},
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftSAMLUpstream(t, s)
+				return p + "/metadata"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				return metadataBody(t, idpMetadata(t, s, strings.TrimSuffix(path, "/metadata")))
+			},
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				_, p := newDriftSAMLProvider(t, s)

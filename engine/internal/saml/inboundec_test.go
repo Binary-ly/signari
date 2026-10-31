@@ -107,6 +107,13 @@ func TestAnXmlsec1SignedECDSARequestVerifies(t *testing.T) {
 		!strings.Contains(err.Error(), "P-256") {
 		t.Errorf("an ECDSA request against an RSA certificate: %v", err)
 	}
+	// Partway through a rotation the one that signed may be the second tried, and
+	// trying the first must leave the signature as it found it: the conversion
+	// above rewrites it for the certificate it is given.
+	d = parseDoc(t, signed)
+	if _, err := verifySignedElement(d, d.Root(), newECSender(t).certPEM+rsaCert+s.certPEM, "AuthnRequest", "_ec-request"); err != nil {
+		t.Errorf("the signer last among three certificates: %v", err)
+	}
 }
 
 // An ECDSA value in DER, what a sender that skipped the conversion sends, is

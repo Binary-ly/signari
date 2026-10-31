@@ -11,7 +11,9 @@ signari saml add-sp \
   -acs        https://grafana.example.com/login/saml/acs
 ```
 
-Then point the application at `https://auth.example.com/saml/metadata`.
+Then point the application at `https://auth.example.com/saml/metadata`. If the
+application publishes metadata of its own, [register it from
+that](saml-metadata.md) instead of typing it in.
 
 The Admin API registers service providers and sets their signing and their
 attribute and group releases the same way, under

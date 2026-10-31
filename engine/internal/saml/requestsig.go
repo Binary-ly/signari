@@ -81,25 +81,42 @@ func verifySignedElement(doc *etree.Document, target *etree.Element, certPEM,
 		return nil, err
 	}
 
-	cert, err := parseCertPEM(certPEM)
+	certs, err := ParseCertificates(certPEM)
 	if err != nil {
 		return nil, err
 	}
 	// Placement has established exactly one Signature, a direct child.
-	if err := ecdsaValueToDER(target.SelectElement("Signature"), cert); err != nil {
-		return nil, err
+	sig := target.SelectElement("Signature")
+	var validated *etree.Element
+	// More than one during a rotation, and either may be the one in use. A
+	// certificate that fails leaves the document as it found it: the ECDSA step
+	// rewrites the signature value for the certificate it is given.
+	value := sig.SelectElement("SignatureValue")
+	var written string
+	if value != nil {
+		written = value.Text()
 	}
-	store := dsig.MemoryX509CertificateStore{Roots: []*x509.Certificate{cert}}
-	ctx := dsig.NewDefaultValidationContext(&store)
-	// Stated rather than left to the default, because the whole placement check
-	// above is written in terms of the ID attribute: if these two ever disagree,
-	// the structure verified and the structure checked are different things.
-	ctx.IdAttribute = "ID"
-
-	validated, err := ctx.Validate(target)
+	for _, cert := range certs {
+		if value != nil {
+			value.SetText(written)
+		}
+		if err = ecdsaValueToDER(sig, cert); err != nil {
+			continue
+		}
+		store := dsig.MemoryX509CertificateStore{Roots: []*x509.Certificate{cert}}
+		ctx := dsig.NewDefaultValidationContext(&store)
+		// Stated rather than left to the default, because the whole placement check
+		// above is written in terms of the ID attribute: if these two ever disagree,
+		// the structure verified and the structure checked are different things.
+		ctx.IdAttribute = "ID"
+		if validated, err = ctx.Validate(target); err == nil {
+			break
+		}
+		err = fmt.Errorf("the %s signature did not verify against the certificate "+
+			"registered for it: %w", wantTag, err)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("the %s signature did not verify against the "+
-			"certificate registered for this service provider: %w", wantTag, err)
+		return nil, err
 	}
 
 	// The element goxmldsig returns is the one it actually verified. Confirming it

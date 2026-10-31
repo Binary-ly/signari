@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -34,6 +35,10 @@ type samlProviderView struct {
 	GroupRelease       any               `json:"group_release"`
 	IdPInitiated       bool              `json:"idp_initiated"`
 	DefaultRelayState  string            `json:"default_relay_state"`
+	// MetadataURL is where it was read from, and MetadataReadAt when last:
+	// empty and null for a provider typed in by hand.
+	MetadataURL    string     `json:"metadata_url"`
+	MetadataReadAt *time.Time `json:"metadata_read_at"`
 }
 
 type addSAMLProviderRequest struct {
@@ -47,6 +52,15 @@ type addSAMLProviderRequest struct {
 	EncryptionCert     string `json:"encryption_cert"`
 	KeyTransport       string `json:"key_transport"`
 	WantSignedRequests bool   `json:"want_signed_requests"`
+	// The provider's metadata, in place of acs_url, slo_url and the certificates:
+	// the document itself or where to read it, the certificate it must be signed
+	// with, or metadata_unsigned, by name.
+	Metadata         string `json:"metadata"`
+	MetadataURL      string `json:"metadata_url"`
+	MetadataSigner   string `json:"metadata_signer"`
+	MetadataUnsigned bool   `json:"metadata_unsigned"`
+	// MetadataEncrypt encrypts assertions to the key the metadata offers.
+	MetadataEncrypt bool `json:"metadata_encrypt"`
 }
 
 // patchSAMLProviderRequest is `saml signing`: what is not given is left as
@@ -98,7 +112,7 @@ func (s *Server) listSAMLProviders(w http.ResponseWriter, r *http.Request) {
 			SignResponses: p.SignResponses, WantSignedRequests: p.WantSignedRequests, Encrypted: p.Encrypted,
 			HasSigningCert: p.HasSigningCert, LifetimeSeconds: p.LifetimeSeconds, ACSURLs: p.ACSURLs,
 			SLOURLs: p.SLOURLs, Attributes: p.Attributes, IdPInitiated: p.IdPInitiated,
-			DefaultRelayState: p.DefaultRelayState}
+			DefaultRelayState: p.DefaultRelayState, MetadataURL: p.MetadataURL, MetadataReadAt: p.MetadataReadAt}
 		if v.Attributes == nil {
 			v.Attributes = map[string]string{}
 		}
@@ -114,13 +128,41 @@ func (s *Server) addSAMLProvider(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := r.PathValue("orgID")
 	var req addSAMLProviderRequest
-	if !decodeStrict(w, r, &req) {
+	if !decodeStrictUpTo(w, r, &req, maxMetadataRequest) {
 		return
 	}
 	spec := store.SAMLProviderSpec{EntityID: strings.TrimSpace(req.EntityID), Name: strings.TrimSpace(req.Name),
 		ACSURL: strings.TrimSpace(req.ACSURL), NameIDFormat: req.NameIDFormat, SLOURL: strings.TrimSpace(req.SLOURL),
 		SLOBinding: req.SLOBinding, SigningCertPEM: req.SigningCert, EncryptionCertPEM: req.EncryptionCert,
 		KeyTransport: req.KeyTransport, WantSignedRequests: req.WantSignedRequests}
+	if req.Metadata != "" || req.MetadataURL != "" {
+		if spec.ACSURL != "" || spec.SLOURL != "" || spec.SigningCertPEM != "" || spec.EncryptionCertPEM != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_metadata",
+				"detail": "the metadata says where assertions go and which keys are believed; acs_url, slo_url and " +
+					"the certificates would be a second answer"})
+			return
+		}
+		if narrowedTokenRefused(w, r, samlRefusal) {
+			return
+		}
+		entity, origin, ok := s.partnerMetadata(w, r, orgID, samlMetadataRequest{Metadata: req.Metadata,
+			MetadataURL: req.MetadataURL, MetadataSigner: req.MetadataSigner, MetadataUnsigned: req.MetadataUnsigned},
+			spec.EntityID, store.SAMLMetadataOrigin{})
+		if !ok {
+			return
+		}
+		if entity.SP == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_metadata",
+				"detail": "the metadata declares no SAML 2.0 service provider"})
+			return
+		}
+		if req.MetadataEncrypt && entity.SP.EncryptionCertPEM == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_metadata",
+				"detail": "metadata_encrypt was given and the metadata offers no key for encryption"})
+			return
+		}
+		spec.ApplyMetadata(entity.EntityID, entity.SP, req.MetadataEncrypt, origin)
+	}
 	if err := spec.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_saml_provider", "detail": err.Error()})
 		return

@@ -156,7 +156,7 @@ func VerifyRedirectSignature(rawQuery string, certPEM string, param string) erro
 		return err
 	}
 
-	cert, err := parseCertPEM(certPEM)
+	certs, err := ParseCertificates(certPEM)
 	if err != nil {
 		return err
 	}
@@ -165,7 +165,16 @@ func VerifyRedirectSignature(rawQuery string, certPEM string, param string) erro
 		return fmt.Errorf("the signature is not valid base64: %w", err)
 	}
 	sum := sha256.Sum256([]byte(signed))
+	// More than one during a rotation, and either may be the one in use.
+	for _, cert := range certs {
+		if err = verifyRedirectDigest(cert, sigAlg, sum[:], sig); err == nil {
+			return nil
+		}
+	}
+	return err
+}
 
+func verifyRedirectDigest(cert *x509.Certificate, sigAlg string, sum, sig []byte) error {
 	// The key must be the kind SigAlg names. An ECDSA signature is r||s, as
 	// SignRedirectQuery writes it (3.36); one from a P-256 sender was refused
 	// as "not RSA".
@@ -178,7 +187,7 @@ func VerifyRedirectSignature(rawQuery string, certPEM string, param string) erro
 		if err != nil {
 			return err
 		}
-		if !ecdsa.Verify(pub, sum[:], r, s) {
+		if !ecdsa.Verify(pub, sum, r, s) {
 			return fmt.Errorf("the signature did not verify against the certificate " +
 				"registered for this service provider")
 		}
@@ -189,7 +198,7 @@ func VerifyRedirectSignature(rawQuery string, certPEM string, param string) erro
 		return fmt.Errorf("the message is signed with rsa-sha256 and the certificate " +
 			"registered for this service provider is not RSA")
 	}
-	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, sum[:], sig); err != nil {
+	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, sum, sig); err != nil {
 		return fmt.Errorf("the signature did not verify against the certificate registered "+
 			"for this service provider: %w", err)
 	}
@@ -243,6 +252,29 @@ func parseCertPEM(certPEM string) (*x509.Certificate, error) {
 		return nil, fmt.Errorf("the registered certificate did not parse: %w", err)
 	}
 	return cert, nil
+}
+
+// ParseCertificates reads every certificate in a PEM text. A partner publishes
+// two while it rotates a key, and keeping both is what lets it switch whenever it
+// likes.
+func ParseCertificates(certPEM string) ([]*x509.Certificate, error) {
+	first, err := parseCertPEM(certPEM)
+	if err != nil {
+		return nil, err
+	}
+	certs := []*x509.Certificate{first}
+	_, rest := pem.Decode([]byte(certPEM))
+	for {
+		var block *pem.Block
+		if block, rest = pem.Decode(rest); block == nil {
+			return certs, nil
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("the registered certificate did not parse: %w", err)
+		}
+		certs = append(certs, cert)
+	}
 }
 
 // LogoutResponseInput builds our answer to a LogoutRequest.

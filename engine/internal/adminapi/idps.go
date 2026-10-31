@@ -44,6 +44,9 @@ type identityProviderView struct {
 	Linked                 int              `json:"linked"`
 	AttributeMap           []map[string]any `json:"attribute_map"`
 	StoreTokens            bool             `json:"store_tokens"`
+	// A SAML upstream's metadata: where it was read from, and when last.
+	MetadataURL    string     `json:"metadata_url"`
+	MetadataReadAt *time.Time `json:"metadata_read_at"`
 }
 
 // patchIdentityProviderRequest is `idp enable|disable`, `idp assertions`,
@@ -117,6 +120,13 @@ type addIdentityProviderRequest struct {
 	AllowUnsolicited       bool   `json:"allow_unsolicited"`
 	ForceAuthn             bool   `json:"force_authn"`
 	SkewSeconds            *int   `json:"skew_seconds"`
+	// A SAML upstream's metadata, in place of sso_url and certificate: the
+	// document itself or where to read it, the certificate it must be signed
+	// with, or metadata_unsigned, by name.
+	Metadata         string `json:"metadata"`
+	MetadataURL      string `json:"metadata_url"`
+	MetadataSigner   string `json:"metadata_signer"`
+	MetadataUnsigned bool   `json:"metadata_unsigned"`
 }
 
 func providerHTTPClient() *http.Client { return safedial.Client(15 * time.Second) }
@@ -131,7 +141,7 @@ func (s *Server) addIdentityProvider(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := r.PathValue("orgID")
 	var req addIdentityProviderRequest
-	if !decodeStrict(w, r, &req) {
+	if !decodeStrictUpTo(w, r, &req, maxMetadataRequest) {
 		return
 	}
 	if !slugPattern.MatchString(req.Slug) {
@@ -158,6 +168,29 @@ func (s *Server) addIdentityProvider(w http.ResponseWriter, r *http.Request) {
 			EmailVerified: req.UserinfoEmailVerified, Name: req.UserinfoName}}
 	if req.SkewSeconds != nil {
 		spec.SkewSeconds = *req.SkewSeconds
+	}
+	if req.Metadata != "" || req.MetadataURL != "" {
+		if req.Kind != "saml" || req.SSOURL != "" || req.Certificate != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_metadata",
+				"detail": "metadata is for a SAML upstream, and says where sign-ins go and which keys are believed, " +
+					"so sso_url and certificate would be a second answer"})
+			return
+		}
+		if narrowedTokenRefused(w, r, idpRefusal) {
+			return
+		}
+		entity, origin, ok := s.partnerMetadata(w, r, orgID, samlMetadataRequest{Metadata: req.Metadata,
+			MetadataURL: req.MetadataURL, MetadataSigner: req.MetadataSigner, MetadataUnsigned: req.MetadataUnsigned},
+			req.EntityID, store.SAMLMetadataOrigin{})
+		if !ok {
+			return
+		}
+		if entity.IdP == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_metadata",
+				"detail": "the metadata declares no SAML 2.0 identity provider"})
+			return
+		}
+		spec.ApplyMetadata(entity.EntityID, entity.IdP, origin)
 	}
 	if err := spec.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_identity_provider", "detail": err.Error()})
@@ -253,7 +286,8 @@ func (s *Server) listIdentityProviders(w http.ResponseWriter, r *http.Request) {
 			RequireVerifiedEmail: p.RequireVerifiedEmail, MFAAMR: p.MFAAMR, MFAACR: p.MFAACR, Linked: p.Linked,
 			LoginDomains: p.LoginDomains, EndSessionURL: p.EndSessionURL, TokenAuthMethod: p.TokenAuthMethod,
 			HasClientKey: p.HasClientKey, AttributeMap: maps, ForwardParameters: p.ForwardParameters,
-			GroupClaim: p.GroupClaim, GroupMap: groups, StoreTokens: p.StoreTokens})
+			GroupClaim: p.GroupClaim, GroupMap: groups, StoreTokens: p.StoreTokens, MetadataURL: p.MetadataURL,
+			MetadataReadAt: p.MetadataReadAt})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "providers": out})
 }

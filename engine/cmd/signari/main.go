@@ -269,6 +269,7 @@ federation in:
   idp add                   register an external sign-in provider (Google, GitHub, ...)
   idp list                  show external sign-in providers
   idp check                 probe a provider's discovery document and keys
+  idp refresh-saml          read a SAML upstream's metadata again
   idp disable               take an upstream provider out of service
   idp enable                put an upstream provider back in service
   idp assertions            allow or refuse RFC 7523 assertions from a provider
@@ -288,6 +289,7 @@ federation in:
   idp attribute-map         route a provider's claim into a local attribute
   idp apple-secret          mint the client secret Apple requires
   saml add-sp               register a SAML service provider
+  saml refresh-sp           read a service provider's metadata again
   saml list                 show registered SAML service providers
   saml signing              what a service provider is sent signed, and how long it lasts
   saml nameid               take a service provider's NameID from an attribute
@@ -539,6 +541,12 @@ func run(args []string) (err error) {
 	probePath := fs.String("path", "", "extra path to probe, repeatable as a comma-separated list (proxy check)")
 	insecure := fs.Bool("insecure", false, "skip certificate verification (internal CA or self-signed only)")
 	entityID := fs.String("entity-id", "", "the service provider's SAML EntityID")
+	metadataSource := fs.String("metadata", "", "a SAML partner's metadata: a file, or an https URL")
+	metadataSigner := fs.String("metadata-signer", "", "path to the certificate that metadata must be signed with (PEM)")
+	metadataUnsigned := fs.Bool("metadata-unsigned", false,
+		"take metadata with no signature check, on the strength of where it came from")
+	metadataEncrypt := fs.Bool("metadata-encrypt", false,
+		"`saml add-sp`: encrypt assertions to the key the provider's metadata offers")
 	acsURL := fs.String("acs", "", "AssertionConsumerService URL, matched exactly (https only)")
 	nameIDFormat := fs.String("nameid-format", "persistent", "persistent (pairwise), emailAddress or transient")
 	sloURL := fs.String("slo", "", "the provider's SingleLogoutService URL (https)")
@@ -1649,8 +1657,19 @@ func run(args []string) (err error) {
 	case "keys rewrap-root":
 		return keysRewrapRoot(ctx, conn, *dryRun)
 	case "saml add-sp":
+		if *metadataSource != "" {
+			return samlAddSPFromMetadata(ctx, conn, *orgID, *entityID, *name, namedOnly(fs, "nameid-format", *nameIDFormat),
+				*acsURL, *sloURL, *spCert, *spEncCert, *spKeyTransport, *wantSignedReq, metadataFlags{
+					source: *metadataSource, signerPath: *metadataSigner, unsigned: *metadataUnsigned, encrypt: *metadataEncrypt})
+		}
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
+	case "saml refresh-sp":
+		return samlRefreshSP(ctx, conn, *entityID, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
+			unsigned: *metadataUnsigned}, *dryRun)
+	case "idp refresh-saml":
+		return idpRefreshSAML(ctx, conn, *slug, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
+			unsigned: *metadataUnsigned}, *dryRun)
 	case "logout-test":
 		return logoutTest(ctx, conn, *rpURL, *clientID, *issuer, *subject, *sidFlag)
 	case "federation enable":
@@ -1884,10 +1903,15 @@ func run(args []string) (err error) {
 	case "saml list":
 		return samlListSPs(ctx, conn, *outputFormat)
 	case "idp add":
+		nameID := *nameIDFormat
+		if *metadataSource != "" {
+			nameID = namedOnly(fs, "nameid-format", nameID)
+		}
 		return idpAdd(ctx, conn, *orgID, *slug, *name, *kind, *extClientID, *extSecret,
 			*issuer, *allowSignup, *allowLinking, *trustEmail,
-			*entityID, *srcSSOURL, *spCert, *nameIDFormat,
-			*srcUnsolicited, *srcForceAuthn, *srcSkew, store.IdentityProviderSpec{
+			*entityID, *srcSSOURL, *spCert, nameID,
+			*srcUnsolicited, *srcForceAuthn, *srcSkew, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
+				unsigned: *metadataUnsigned}, store.IdentityProviderSpec{
 				AuthorizeURL: *oauth2Authorize, TokenURL: *oauth2Token, UserinfoURL: *oauth2Userinfo,
 				Scopes: strings.FieldsFunc(*oauth2Scopes, func(r rune) bool { return r == ',' || r == ' ' }),
 				Userinfo: federation.UserinfoClaims{Subject: *oauth2Subject, Email: *oauth2Email,
@@ -3905,6 +3929,25 @@ func wrap(s string, width int, indent string) string {
 	return out.String()
 }
 
+// registerSP writes a checked registration.
+func registerSP(ctx context.Context, conn *pgx.Conn, orgID string, spec store.SAMLProviderSpec) error {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := store.AddSAMLProvider(ctx, tx, orgID, spec); err != nil {
+		if errors.Is(err, store.ErrSAMLEntityTaken) {
+			return fmt.Errorf("a service provider with entity id %q is already registered "+
+				"in this deployment. Entity IDs are unique across organisations: an "+
+				"AuthnRequest names only its entity ID and the SSO endpoint names no "+
+				"organisation, so two registrations would be answered at random", spec.EntityID)
+		}
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // samlAddSP registers a service provider.
 //
 // The validation here is the same as the authorization endpoint applies to a
@@ -3947,22 +3990,7 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	}
 	name, nameIDFormat, sloBinding = spec.Name, spec.NameIDFormat, spec.SLOBinding
 	encCertPEM := spec.EncryptionCertPEM
-
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := store.AddSAMLProvider(ctx, tx, orgID, spec); err != nil {
-		if errors.Is(err, store.ErrSAMLEntityTaken) {
-			return fmt.Errorf("a service provider with entity id %q is already registered "+
-				"in this deployment. Entity IDs are unique across organisations: an "+
-				"AuthnRequest names only its entity ID and the SSO endpoint names no "+
-				"organisation, so two registrations would be answered at random", entityID)
-		}
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := registerSP(ctx, conn, orgID, spec); err != nil {
 		return err
 	}
 
@@ -4046,7 +4074,8 @@ func truncateMiddle(s string, n int) string {
 func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, clientID, secret,
 	issuer string, allowSignup, allowLinking, trustEmail bool,
 	samlEntityID, samlSSOURL, samlCertPath, samlNameID string,
-	samlUnsolicited, samlForceAuthn bool, samlSkew int, oauth2 store.IdentityProviderSpec) error {
+	samlUnsolicited, samlForceAuthn bool, samlSkew int, meta metadataFlags,
+	oauth2 store.IdentityProviderSpec) error {
 
 	switch {
 	case orgID == "":
@@ -4063,7 +4092,10 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 	if kind == "saml" {
 		return idpAddSAML(ctx, conn, orgID, slug, name, samlEntityID, samlSSOURL,
 			samlCertPath, samlNameID, allowSignup, allowLinking, trustEmail,
-			samlUnsolicited, samlForceAuthn, samlSkew)
+			samlUnsolicited, samlForceAuthn, samlSkew, meta)
+	}
+	if meta.source != "" {
+		return fmt.Errorf("-metadata is for a SAML upstream, -kind saml")
 	}
 
 	if kind == "oidc" && issuer == "" {
@@ -6288,9 +6320,13 @@ func postureFromEnv() (*posture.Config, error) {
 // neither is written on its own.
 func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID,
 	ssoURL, certPath, nameIDFormat string, allowSignup, allowLinking, trustEmail,
-	unsolicited, forceAuthn bool, skew int) error {
+	unsolicited, forceAuthn bool, skew int, meta metadataFlags) error {
 
 	switch {
+	case meta.source != "" && (ssoURL != "" || certPath != ""):
+		return fmt.Errorf("-metadata says where sign-ins go and which keys are believed; " +
+			"-sso-url and -sp-cert would be a second answer")
+	case meta.source != "":
 	case entityID == "":
 		return fmt.Errorf("give -entity-id: the upstream's entity ID, which is matched " +
 			"exactly against the Issuer in every assertion")
@@ -6326,16 +6362,28 @@ func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID
 			"can sign in.\n\n")
 	}
 
-	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		return err
-	}
 	// The NameID format, the SSO URL's scheme and the certificate are checked
 	// in store.IdentityProviderSpec.Validate, as the Admin API checks them.
 	spec := store.IdentityProviderSpec{Slug: slug, Name: name, Kind: "saml", AllowSignup: allowSignup,
 		AllowLinking: allowLinking, TrustEmailVerification: trustEmail, EntityID: entityID, SSOURL: ssoURL,
-		CertPEM: string(certPEM), NameIDFormat: nameIDFormat, AllowUnsolicited: unsolicited,
-		ForceAuthn: forceAuthn, SkewSeconds: skew}
+		NameIDFormat: nameIDFormat, AllowUnsolicited: unsolicited, ForceAuthn: forceAuthn, SkewSeconds: skew}
+	if meta.source != "" {
+		entity, origin, err := meta.read(ctx, entityID, store.SAMLMetadataOrigin{})
+		if err != nil {
+			return err
+		}
+		if entity.IdP == nil {
+			return fmt.Errorf("the metadata of %q declares no SAML 2.0 identity provider", entity.EntityID)
+		}
+		spec.ApplyMetadata(entity.EntityID, entity.IdP, origin)
+		printMetadataNotes(entity.Notes)
+	} else {
+		certPEM, err := os.ReadFile(certPath)
+		if err != nil {
+			return err
+		}
+		spec.CertPEM = string(certPEM)
+	}
 	if err := spec.Validate(); err != nil {
 		return err
 	}

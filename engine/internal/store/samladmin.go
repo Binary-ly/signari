@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -47,6 +48,9 @@ type SAMLProviderSpec struct {
 	EncryptionCertPEM  string
 	KeyTransport       string
 	WantSignedRequests bool
+	// MoreACSURLs are its other endpoints, which a metadata document can name.
+	MoreACSURLs []string
+	Origin      SAMLMetadataOrigin
 }
 
 // Validate refuses a provider before anything is written. The ACS URL is
@@ -65,6 +69,9 @@ func (s *SAMLProviderSpec) Validate() error {
 	case strings.Contains(s.ACSURL, "*"):
 		return samlInvalid{fmt.Sprintf("%q contains a wildcard. ACS URLs are matched exactly, because anything "+
 			"looser lets a request steer where the assertion is delivered", s.ACSURL)}
+	}
+	if err := firstUnusableACS(s.MoreACSURLs); err != nil {
+		return err
 	}
 	if s.Name == "" {
 		s.Name = s.EntityID
@@ -94,6 +101,10 @@ func (s *SAMLProviderSpec) Validate() error {
 	}
 	if s.SigningCertPEM != "" {
 		if _, err := certificateIn(s.SigningCertPEM); err != nil {
+			return samlInvalid{"the signing certificate: " + err.Error()}
+		}
+		// A provider partway through a rotation publishes two.
+		if _, err := saml.ParseCertificates(s.SigningCertPEM); err != nil {
 			return samlInvalid{"the signing certificate: " + err.Error()}
 		}
 	}
@@ -165,18 +176,19 @@ func AddSAMLProvider(ctx context.Context, tx pgx.Tx, orgID string, s SAMLProvide
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO core.saml_providers (org_id, entity_id, display_name, name_id_format,
 		                                 sp_signing_cert, want_authn_requests_signed,
-		                                 sp_encryption_cert, sp_key_transport)
-		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''), $6, NULLIF($7,''), $8)
+		                                 sp_encryption_cert, sp_key_transport,
+		                                 metadata_url, metadata_signer, metadata_read_at)
+		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''), $6, NULLIF($7,''), $8, NULLIF($9,''), NULLIF($10,''),
+		        CASE WHEN $11 THEN now() END)
 		RETURNING id::text`, orgID, s.EntityID, s.Name, s.NameIDFormat, s.SigningCertPEM,
-		s.WantSignedRequests, s.EncryptionCertPEM, s.KeyTransport).Scan(&id); err != nil {
+		s.WantSignedRequests, s.EncryptionCertPEM, s.KeyTransport, s.Origin.URL, s.Origin.SignerPEM,
+		s.Origin.Read).Scan(&id); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return "", ErrSAMLEntityTaken
 		}
 		return "", err
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.saml_acs_urls (provider_id, url, binding, is_default)
-		VALUES ($1::uuid, $2, 'HTTP-POST', true)`, id, s.ACSURL); err != nil {
+	if err := insertACSURLs(ctx, tx, id, append([]string{s.ACSURL}, s.MoreACSURLs...)); err != nil {
 		return "", err
 	}
 	if s.SLOURL != "" {
@@ -413,6 +425,9 @@ type SAMLProviderRow struct {
 	GroupAttribute                                 string
 	ReleasesGroups                                 bool
 	OnlyGroups                                     []string
+	// MetadataURL is where it was read from, and MetadataReadAt when last.
+	MetadataURL    string
+	MetadataReadAt *time.Time
 }
 
 // SAMLProviders lists an organisation's service providers by entity id.
@@ -424,7 +439,8 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 		       COALESCE((SELECT array_agg(a.url ORDER BY a.url) FROM core.saml_acs_urls a WHERE a.provider_id = p.id), '{}'),
 		       COALESCE((SELECT array_agg(s.url ORDER BY s.url) FROM core.saml_slo_urls s WHERE s.provider_id = p.id), '{}'),
 		       p.attributes, COALESCE(r.attribute_name, ''), r.provider_id IS NOT NULL, COALESCE(r.only_groups, '{}'),
-		       COALESCE(p.name_id_attribute, ''), p.idp_initiated, p.default_relay_state
+		       COALESCE(p.name_id_attribute, ''), p.idp_initiated, p.default_relay_state,
+		       COALESCE(p.metadata_url, ''), p.metadata_read_at
 		  FROM core.saml_providers p
 		  LEFT JOIN core.saml_group_release r ON r.provider_id = p.id
 		 WHERE p.org_id = $1::uuid ORDER BY p.entity_id`, orgID)
@@ -438,7 +454,8 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 		if err := rows.Scan(&p.ID, &p.EntityID, &p.Name, &p.NameIDFormat, &p.SignatureAlg, &p.Enabled,
 			&p.SignAssertions, &p.SignResponses, &p.WantSignedRequests, &p.Encrypted, &p.HasSigningCert,
 			&p.LifetimeSeconds, &p.ACSURLs, &p.SLOURLs, &p.Attributes, &p.GroupAttribute, &p.ReleasesGroups,
-			&p.OnlyGroups, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState); err != nil {
+			&p.OnlyGroups, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState,
+			&p.MetadataURL, &p.MetadataReadAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

@@ -1015,6 +1015,8 @@ type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem struct {
 	Kind                   string                                                                        `json:"kind"`
 	Linked                 int64                                                                         `json:"linked"`
 	LoginDomains           []string                                                                      `json:"login_domains"`
+	MetadataReadAt         *string                                                                       `json:"metadata_read_at"`
+	MetadataURL            string                                                                        `json:"metadata_url"`
 	MfaACR                 []string                                                                      `json:"mfa_acr"`
 	MfaAMR                 []string                                                                      `json:"mfa_amr"`
 	Name                   string                                                                        `json:"name"`
@@ -1274,6 +1276,8 @@ type GetOrganizationsOrgIDSAMLProvidersResponseProvidersItem struct {
 	ID                 string                                                               `json:"id"`
 	IdPInitiated       bool                                                                 `json:"idp_initiated"`
 	LifetimeS          int64                                                                `json:"lifetime_s"`
+	MetadataReadAt     *string                                                              `json:"metadata_read_at"`
+	MetadataURL        string                                                               `json:"metadata_url"`
 	Name               string                                                               `json:"name"`
 	NameIDAttribute    string                                                               `json:"name_id_attribute"`
 	NameIDFormat       string                                                               `json:"name_id_format"`
@@ -2350,6 +2354,10 @@ type PostOrganizationsOrgIDIdentityProvidersRequest struct {
 	Issuer                 *string   `json:"issuer,omitempty"`
 	JWKSURL                *string   `json:"jwks_url,omitempty"`
 	Kind                   *string   `json:"kind,omitempty"`
+	Metadata               *string   `json:"metadata,omitempty"`
+	MetadataSigner         *string   `json:"metadata_signer,omitempty"`
+	MetadataUnsigned       *bool     `json:"metadata_unsigned,omitempty"`
+	MetadataURL            *string   `json:"metadata_url,omitempty"`
 	Name                   *string   `json:"name,omitempty"`
 	NameIDFormat           *string   `json:"name_id_format,omitempty"`
 	Scopes                 *[]string `json:"scopes,omitempty"`
@@ -2377,6 +2385,31 @@ type PostOrganizationsOrgIDIdentityProvidersResponse struct {
 	MetadataPath    string `json:"metadata_path,omitempty"`
 	SignInPath      string `json:"sign_in_path,omitempty"`
 	Slug            string `json:"slug"`
+}
+
+// PostOrganizationsOrgIDIdentityProvidersSlugMetadataRequest is a JSON object of the Admin API.
+type PostOrganizationsOrgIDIdentityProvidersSlugMetadataRequest struct {
+	DryRun           *bool   `json:"dry_run,omitempty"`
+	Metadata         *string `json:"metadata,omitempty"`
+	MetadataSigner   *string `json:"metadata_signer,omitempty"`
+	MetadataUnsigned *bool   `json:"metadata_unsigned,omitempty"`
+	MetadataURL      *string `json:"metadata_url,omitempty"`
+}
+
+// PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponse is a JSON object of the Admin API.
+type PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponse struct {
+	Applied       bool                                                                     `json:"applied"`
+	Changes       []PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponseChangesItem `json:"changes"`
+	ConfigVersion int64                                                                    `json:"config_version,omitempty"`
+	EntityID      string                                                                   `json:"entity_id"`
+	Notes         []string                                                                 `json:"notes"`
+}
+
+// PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponseChangesItem is a JSON object of the Admin API.
+type PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponseChangesItem struct {
+	Field string `json:"field"`
+	From  string `json:"from"`
+	To    string `json:"to"`
 }
 
 // PostOrganizationsOrgIDMigrationSourceTestRequest is a JSON object of the Admin API.
@@ -2493,6 +2526,11 @@ type PostOrganizationsOrgIDSAMLProvidersRequest struct {
 	EncryptionCert     *string `json:"encryption_cert,omitempty"`
 	EntityID           *string `json:"entity_id,omitempty"`
 	KeyTransport       *string `json:"key_transport,omitempty"`
+	Metadata           *string `json:"metadata,omitempty"`
+	MetadataEncrypt    *bool   `json:"metadata_encrypt,omitempty"`
+	MetadataSigner     *string `json:"metadata_signer,omitempty"`
+	MetadataUnsigned   *bool   `json:"metadata_unsigned,omitempty"`
+	MetadataURL        *string `json:"metadata_url,omitempty"`
 	Name               *string `json:"name,omitempty"`
 	NameIDFormat       *string `json:"name_id_format,omitempty"`
 	SigningCert        *string `json:"signing_cert,omitempty"`
@@ -2507,6 +2545,31 @@ type PostOrganizationsOrgIDSAMLProvidersResponse struct {
 	EntityID      string `json:"entity_id"`
 	ID            string `json:"id"`
 	NameIDFormat  string `json:"name_id_format"`
+}
+
+// PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataRequest is a JSON object of the Admin API.
+type PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataRequest struct {
+	DryRun           *bool   `json:"dry_run,omitempty"`
+	Metadata         *string `json:"metadata,omitempty"`
+	MetadataSigner   *string `json:"metadata_signer,omitempty"`
+	MetadataUnsigned *bool   `json:"metadata_unsigned,omitempty"`
+	MetadataURL      *string `json:"metadata_url,omitempty"`
+}
+
+// PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponse is a JSON object of the Admin API.
+type PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponse struct {
+	Applied       bool                                                                       `json:"applied"`
+	Changes       []PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponseChangesItem `json:"changes"`
+	ConfigVersion int64                                                                      `json:"config_version,omitempty"`
+	EntityID      string                                                                     `json:"entity_id"`
+	Notes         []string                                                                   `json:"notes"`
+}
+
+// PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponseChangesItem is a JSON object of the Admin API.
+type PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponseChangesItem struct {
+	Field string `json:"field"`
+	From  string `json:"from"`
+	To    string `json:"to"`
 }
 
 // PostOrganizationsOrgIDSCIMSourcesRequest is a JSON object of the Admin API.
@@ -5028,6 +5091,18 @@ func (c *Client) PostOrganizationsOrgIDIdentityProviders(ctx context.Context, or
 	return &out, v, nil
 }
 
+// PostOrganizationsOrgIDIdentityProvidersSlugMetadata is POST
+// /admin/organizations/{orgID}/identity-providers/{slug}/metadata: Read a SAML upstream's metadata
+// again, or see what that would change. Needs organizations:write.
+func (c *Client) PostOrganizationsOrgIDIdentityProvidersSlugMetadata(ctx context.Context, orgID string, slug string, body PostOrganizationsOrgIDIdentityProvidersSlugMetadataRequest, opts ...Option) (*PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponse, int64, error) {
+	var out PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponse
+	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/metadata", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
 // PostOrganizationsOrgIDMigrationSourceTest is POST
 // /admin/organizations/{orgID}/migration-source/test: Ask the migration source about a credential,
 // as a first sign-in would, and name the step that failed. Needs organizations:write.
@@ -5126,6 +5201,18 @@ func (c *Client) PostOrganizationsOrgIDRoleBindings(ctx context.Context, orgID s
 func (c *Client) PostOrganizationsOrgIDSAMLProviders(ctx context.Context, orgID string, body PostOrganizationsOrgIDSAMLProvidersRequest, opts ...Option) (*PostOrganizationsOrgIDSAMLProvidersResponse, int64, error) {
 	var out PostOrganizationsOrgIDSAMLProvidersResponse
 	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/saml-providers", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PostOrganizationsOrgIDSAMLProvidersProviderIDMetadata is POST
+// /admin/organizations/{orgID}/saml-providers/{providerID}/metadata: Read a service provider's
+// metadata again, or see what that would change. Needs organizations:write.
+func (c *Client) PostOrganizationsOrgIDSAMLProvidersProviderIDMetadata(ctx context.Context, orgID string, providerID string, body PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataRequest, opts ...Option) (*PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponse, int64, error) {
+	var out PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponse
+	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/saml-providers/"+url.PathEscape(providerID)+"/metadata", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

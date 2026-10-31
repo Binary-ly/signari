@@ -31,7 +31,7 @@ refused with `412` when the configuration moved since the version it names.
 | [groups](#groups) | 5 |
 | [groups / members](#groups--members) | 3 |
 | [groups / radius](#groups--radius) | 2 |
-| [identity-providers](#identity-providers) | 8 |
+| [identity-providers](#identity-providers) | 9 |
 | [instances](#instances) | 1 |
 | [instances / brand](#instances--brand) | 3 |
 | [instances / federation](#instances--federation) | 2 |
@@ -57,7 +57,7 @@ refused with `412` when the configuration moved since the version it names.
 | [relations](#relations) | 3 |
 | [resource-servers](#resource-servers) | 3 |
 | [role-bindings](#role-bindings) | 3 |
-| [saml-providers](#saml-providers) | 7 |
+| [saml-providers](#saml-providers) | 8 |
 | [scim-sources](#scim-sources) | 3 |
 | [scim-targets](#scim-targets) | 6 |
 | [scopes](#scopes) | 3 |
@@ -1411,6 +1411,10 @@ Takes:
 | `issuer` | string |  |
 | `jwks_url` | string |  |
 | `kind` | string |  |
+| `metadata` | string |  |
+| `metadata_signer` | string |  |
+| `metadata_unsigned` | boolean |  |
+| `metadata_url` | string |  |
 | `name` | string |  |
 | `name_id_format` | string |  |
 | `scopes` | list of string |  |
@@ -1548,6 +1552,32 @@ Answers:
 | `mapped` | boolean | always |
 | `remote_group` | string | always |
 | `slug` | string | always |
+
+### `POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata`
+
+Read a SAML upstream's metadata again, or see what that would change. Needs organizations:write.
+
+Go `PostOrganizationsOrgIDIdentityProvidersSlugMetadata`, TypeScript `postOrganizationsOrgIDIdentityProvidersSlugMetadata`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `dry_run` | boolean |  |
+| `metadata` | string |  |
+| `metadata_signer` | string |  |
+| `metadata_unsigned` | boolean |  |
+| `metadata_url` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `applied` | boolean | always |
+| `changes` | list of object | always |
+| `config_version` | integer |  |
+| `entity_id` | string | always |
+| `notes` | list of string | always |
 
 ### `PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth`
 
@@ -2955,6 +2985,11 @@ Takes:
 | `encryption_cert` | string |  |
 | `entity_id` | string |  |
 | `key_transport` | string |  |
+| `metadata` | string |  |
+| `metadata_encrypt` | boolean |  |
+| `metadata_signer` | string |  |
+| `metadata_unsigned` | boolean |  |
+| `metadata_url` | string |  |
 | `name` | string |  |
 | `name_id_format` | string |  |
 | `signing_cert` | string |  |
@@ -3072,6 +3107,32 @@ Answers:
 | `config_version` | integer | always |
 | `id` | string | always |
 | `only` | list of string | always |
+
+### `POST /admin/organizations/{orgID}/saml-providers/{providerID}/metadata`
+
+Read a service provider's metadata again, or see what that would change. Needs organizations:write.
+
+Go `PostOrganizationsOrgIDSAMLProvidersProviderIDMetadata`, TypeScript `postOrganizationsOrgIDSAMLProvidersProviderIDMetadata`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `dry_run` | boolean |  |
+| `metadata` | string |  |
+| `metadata_signer` | string |  |
+| `metadata_unsigned` | boolean |  |
+| `metadata_url` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `applied` | boolean | always |
+| `changes` | list of object | always |
+| `config_version` | integer |  |
+| `entity_id` | string | always |
+| `notes` | list of string | always |
 
 ## scim-sources
 

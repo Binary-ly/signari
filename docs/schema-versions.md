@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0238 saml_metadata_origin
+
+Compatible with the release before: its binary may still serve this schema.
+
+Where a SAML partner's details were read from (8.01), so that an operator can ask for them again and be held to the same terms: the URL, the certificate the document has to be signed with, and when it was last read. All three are empty for a partner typed in by hand. A refresh is something an operator does, not something a timer does: a partner's metadata says where assertions go, and that should not change while nobody is looking.
+
 ## 0237 org_mail_sender
 
 Compatible with the release before: its binary may still serve this schema.

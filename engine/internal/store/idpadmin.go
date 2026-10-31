@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -355,6 +356,9 @@ type IdentityProviderRow struct {
 	GroupMap   []IdPGroupMapping
 	// StoreTokens is whether what the provider hands over is kept.
 	StoreTokens bool
+	// A SAML upstream's metadata: where it was read from, and when last.
+	MetadataURL    string
+	MetadataReadAt *time.Time
 }
 
 // IdPGroupMapping is one of a provider's groups and the local group it grants.
@@ -374,8 +378,9 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		       p.allow_linking, p.allow_jwt_bearer, p.trust_email_verification, p.require_verified_email,
 		       p.mfa_amr, p.mfa_acr, (SELECT count(*) FROM core.federated_identities f WHERE f.provider_id = p.id),
 		       p.login_domains, COALESCE(p.end_session_url, ''), p.token_auth_method, p.client_key IS NOT NULL,
-		       p.forward_parameters, p.group_claim, p.store_tokens
-		  FROM core.identity_providers p WHERE p.org_id = $1::uuid ORDER BY p.slug`, orgID)
+		       p.forward_parameters, p.group_claim, p.store_tokens, COALESCE(x.metadata_url, ''), x.metadata_read_at
+		  FROM core.identity_providers p LEFT JOIN core.saml_sources x ON x.provider_id = p.id
+		 WHERE p.org_id = $1::uuid ORDER BY p.slug`, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -385,7 +390,7 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Kind, &p.Issuer, &p.Enabled, &p.AllowSignup,
 			&p.AllowLinking, &p.AllowAssertions, &p.TrustEmailVerification, &p.RequireVerifiedEmail, &p.MFAAMR,
 			&p.MFAACR, &p.Linked, &p.LoginDomains, &p.EndSessionURL, &p.TokenAuthMethod, &p.HasClientKey,
-			&p.ForwardParameters, &p.GroupClaim, &p.StoreTokens); err != nil {
+			&p.ForwardParameters, &p.GroupClaim, &p.StoreTokens, &p.MetadataURL, &p.MetadataReadAt); err != nil {
 			rows.Close()
 			return nil, err
 		}

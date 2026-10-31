@@ -167,6 +167,7 @@ var cliAPI = map[string]string{
 	"idp enable":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp list":           reads,
 	"idp check":          reads,
+	"idp refresh-saml":   "POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata",
 	"idp domains":        "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp logout":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp forward":        "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
@@ -187,6 +188,7 @@ var cliAPI = map[string]string{
 	// SAML service providers.
 	"saml add-sp":            "POST /admin/organizations/{orgID}/saml-providers",
 	"saml list":              reads,
+	"saml refresh-sp":        "POST /admin/organizations/{orgID}/saml-providers/{providerID}/metadata",
 	"saml attribute-release": "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release",
 	"saml signing":           "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
 	"saml nameid":            "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",

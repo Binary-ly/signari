@@ -421,7 +421,11 @@ func (s *Server) writeFederationFailure(w http.ResponseWriter, err error, instan
 // decodeStrict reads a JSON body refusing unknown fields, and answers when
 // it will not.
 func decodeStrict(w http.ResponseWriter, r *http.Request, into any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	return decodeStrictUpTo(w, r, into, 64<<10)
+}
+
+func decodeStrictUpTo(w http.ResponseWriter, r *http.Request, into any, limit int64) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(into); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})

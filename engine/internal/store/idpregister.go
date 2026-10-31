@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/saml"
 )
 
 // Registering an upstream identity provider, as `signari idp add`, `idp
@@ -58,6 +60,7 @@ type IdentityProviderSpec struct {
 	EntityID, SSOURL, CertPEM, NameIDFormat string
 	AllowUnsolicited, ForceAuthn            bool
 	SkewSeconds                             int
+	Origin                                  SAMLMetadataOrigin
 }
 
 func (s *IdentityProviderSpec) invalid(format string, a ...any) error {
@@ -177,18 +180,19 @@ func (s *IdentityProviderSpec) validateSAML() error {
 			"being signed in, and the response comes back over the same browser session; use https")
 	}
 	// Parsed now, so a PEM that is not a certificate is refused here rather
-	// than at every sign-in.
+	// than at every sign-in. Each one, since an upstream partway through a
+	// rotation publishes two, and every one of them being over is what stops it.
 	block, _ := pem.Decode([]byte(s.CertPEM))
 	if block == nil {
 		return s.invalid("the certificate is not PEM")
 	}
-	cert, err := x509.ParseCertificate(block.Bytes)
+	certs, err := saml.ParseCertificates(s.CertPEM)
 	if err != nil {
 		return s.invalid("the certificate does not parse: %v", err)
 	}
-	if time.Now().After(cert.NotAfter) {
+	if !slices.ContainsFunc(certs, func(c *x509.Certificate) bool { return time.Now().Before(c.NotAfter) }) {
 		return s.invalid("the certificate expired on %s, so every assertion it signs would be refused",
-			cert.NotAfter.Format("2006-01-02"))
+			certs[0].NotAfter.Format("2006-01-02"))
 	}
 	return nil
 }
@@ -248,9 +252,11 @@ func AddIdentityProvider(ctx context.Context, q outpostDB, root *keys.RootKey, o
 			_, err = q.Exec(ctx, `
 				INSERT INTO core.saml_sources
 					(provider_id, org_id, entity_id, sso_url, cert_pem, name_id_format, force_authn,
-					 allow_unsolicited, skew_seconds)
-				VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)`, id, orgID, s.EntityID, s.SSOURL,
-				s.CertPEM, s.NameIDFormat, s.ForceAuthn, s.AllowUnsolicited, s.SkewSeconds)
+					 allow_unsolicited, skew_seconds, metadata_url, metadata_signer, metadata_read_at)
+				VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), NULLIF($11, ''),
+				        CASE WHEN $12 THEN now() END)`, id, orgID, s.EntityID, s.SSOURL,
+				s.CertPEM, s.NameIDFormat, s.ForceAuthn, s.AllowUnsolicited, s.SkewSeconds, s.Origin.URL,
+				s.Origin.SignerPEM, s.Origin.Read)
 		}
 	case "assertion":
 		// Assertions stay refused until somebody allows them: registering

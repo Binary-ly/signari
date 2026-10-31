@@ -11291,6 +11291,16 @@
                             },
                             "type": "array"
                           },
+                          "metadata_read_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "metadata_url": {
+                            "type": "string"
+                          },
                           "mfa_acr": {
                             "items": {
                               "type": "string"
@@ -11345,7 +11355,9 @@
                           "forward_parameters",
                           "group_claim",
                           "group_map",
-                          "store_tokens"
+                          "store_tokens",
+                          "metadata_url",
+                          "metadata_read_at"
                         ],
                         "type": "object"
                       },
@@ -11463,6 +11475,18 @@
                     "type": "string"
                   },
                   "kind": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "string"
+                  },
+                  "metadata_signer": {
+                    "type": "string"
+                  },
+                  "metadata_unsigned": {
+                    "type": "boolean"
+                  },
+                  "metadata_url": {
                     "type": "string"
                   },
                   "name": {
@@ -12286,6 +12310,173 @@
           }
         ],
         "summary": "Say a provider's group grants a local one"
+      }
+    },
+    "/admin/organizations/{orgID}/identity-providers/{slug}/metadata": {
+      "post": {
+        "operationId": "post_organizations_orgID_identity_providers_slug_metadata",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "dry_run": {
+                    "type": "boolean"
+                  },
+                  "metadata": {
+                    "type": "string"
+                  },
+                  "metadata_signer": {
+                    "type": "string"
+                  },
+                  "metadata_unsigned": {
+                    "type": "boolean"
+                  },
+                  "metadata_url": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "applied": {
+                      "type": "boolean"
+                    },
+                    "changes": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "field": {
+                            "type": "string"
+                          },
+                          "from": {
+                            "type": "string"
+                          },
+                          "to": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "field",
+                          "from",
+                          "to"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "entity_id": {
+                      "type": "string"
+                    },
+                    "notes": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "entity_id",
+                    "applied",
+                    "changes",
+                    "notes"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Read a SAML upstream's metadata again, or see what that would change."
       }
     },
     "/admin/organizations/{orgID}/identity-providers/{slug}/token-auth": {
@@ -17625,6 +17816,16 @@
                           "lifetime_s": {
                             "type": "integer"
                           },
+                          "metadata_read_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "metadata_url": {
+                            "type": "string"
+                          },
                           "name": {
                             "type": "string"
                           },
@@ -17672,7 +17873,9 @@
                           "attribute_release",
                           "group_release",
                           "idp_initiated",
-                          "default_relay_state"
+                          "default_relay_state",
+                          "metadata_url",
+                          "metadata_read_at"
                         ],
                         "type": "object"
                       },
@@ -17766,6 +17969,21 @@
                     "type": "string"
                   },
                   "key_transport": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "string"
+                  },
+                  "metadata_encrypt": {
+                    "type": "boolean"
+                  },
+                  "metadata_signer": {
+                    "type": "string"
+                  },
+                  "metadata_unsigned": {
+                    "type": "boolean"
+                  },
+                  "metadata_url": {
                     "type": "string"
                   },
                   "name": {
@@ -18522,6 +18740,173 @@
           }
         ],
         "summary": "Say which groups the provider is told of."
+      }
+    },
+    "/admin/organizations/{orgID}/saml-providers/{providerID}/metadata": {
+      "post": {
+        "operationId": "post_organizations_orgID_saml_providers_providerID_metadata",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "providerID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "dry_run": {
+                    "type": "boolean"
+                  },
+                  "metadata": {
+                    "type": "string"
+                  },
+                  "metadata_signer": {
+                    "type": "string"
+                  },
+                  "metadata_unsigned": {
+                    "type": "boolean"
+                  },
+                  "metadata_url": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "applied": {
+                      "type": "boolean"
+                    },
+                    "changes": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "field": {
+                            "type": "string"
+                          },
+                          "from": {
+                            "type": "string"
+                          },
+                          "to": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "field",
+                          "from",
+                          "to"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "entity_id": {
+                      "type": "string"
+                    },
+                    "notes": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "entity_id",
+                    "applied",
+                    "changes",
+                    "notes"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Read a service provider's metadata again, or see what that would change."
       }
     },
     "/admin/organizations/{orgID}/scim-sources": {

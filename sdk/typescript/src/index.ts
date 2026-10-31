@@ -966,6 +966,12 @@ export class SignariAdmin {
     return this.call<PostOrganizationsOrgIDIdentityProvidersResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers`, body, opts)
   }
 
+  // POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata: Read a SAML upstream's
+  // metadata again, or see what that would change. Needs organizations:write.
+  postOrganizationsOrgIDIdentityProvidersSlugMetadata(orgID: string, slug: string, body: PostOrganizationsOrgIDIdentityProvidersSlugMetadataRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponse>> {
+    return this.call<PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/metadata`, body, opts)
+  }
+
   // POST /admin/organizations/{orgID}/migration-source/test: Ask the migration source about a
   // credential, as a first sign-in would, and name the step that failed. Needs
   // organizations:write.
@@ -1019,6 +1025,12 @@ export class SignariAdmin {
   // ACS URL. Needs organizations:write.
   postOrganizationsOrgIDSAMLProviders(orgID: string, body: PostOrganizationsOrgIDSAMLProvidersRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDSAMLProvidersResponse>> {
     return this.call<PostOrganizationsOrgIDSAMLProvidersResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/saml-providers`, body, opts)
+  }
+
+  // POST /admin/organizations/{orgID}/saml-providers/{providerID}/metadata: Read a service
+  // provider's metadata again, or see what that would change. Needs organizations:write.
+  postOrganizationsOrgIDSAMLProvidersProviderIDMetadata(orgID: string, providerID: string, body: PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponse>> {
+    return this.call<PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/saml-providers/${encodeURIComponent(providerID)}/metadata`, body, opts)
   }
 
   // POST /admin/organizations/{orgID}/scim-sources: Register an upstream; its bearer token is
@@ -2167,6 +2179,8 @@ export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem {
   kind: string
   linked: number
   login_domains: string[]
+  metadata_read_at: string | null
+  metadata_url: string
   mfa_acr: string[]
   mfa_amr: string[]
   name: string
@@ -2426,6 +2440,8 @@ export interface GetOrganizationsOrgIDSAMLProvidersResponseProvidersItem {
   id: string
   idp_initiated: boolean
   lifetime_s: number
+  metadata_read_at: string | null
+  metadata_url: string
   name: string
   name_id_attribute: string
   name_id_format: string
@@ -3502,6 +3518,10 @@ export interface PostOrganizationsOrgIDIdentityProvidersRequest {
   issuer?: string
   jwks_url?: string
   kind?: string
+  metadata?: string
+  metadata_signer?: string
+  metadata_unsigned?: boolean
+  metadata_url?: string
   name?: string
   name_id_format?: string
   scopes?: string[]
@@ -3529,6 +3549,31 @@ export interface PostOrganizationsOrgIDIdentityProvidersResponse {
   metadata_path?: string
   sign_in_path?: string
   slug: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDIdentityProvidersSlugMetadataRequest {
+  dry_run?: boolean
+  metadata?: string
+  metadata_signer?: string
+  metadata_unsigned?: boolean
+  metadata_url?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponse {
+  applied: boolean
+  changes: PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponseChangesItem[]
+  config_version?: number
+  entity_id: string
+  notes: string[]
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponseChangesItem {
+  field: string
+  from: string
+  to: string
 }
 
 /** A JSON object of the Admin API. */
@@ -3645,6 +3690,11 @@ export interface PostOrganizationsOrgIDSAMLProvidersRequest {
   encryption_cert?: string
   entity_id?: string
   key_transport?: string
+  metadata?: string
+  metadata_encrypt?: boolean
+  metadata_signer?: string
+  metadata_unsigned?: boolean
+  metadata_url?: string
   name?: string
   name_id_format?: string
   signing_cert?: string
@@ -3659,6 +3709,31 @@ export interface PostOrganizationsOrgIDSAMLProvidersResponse {
   entity_id: string
   id: string
   name_id_format: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataRequest {
+  dry_run?: boolean
+  metadata?: string
+  metadata_signer?: string
+  metadata_unsigned?: boolean
+  metadata_url?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponse {
+  applied: boolean
+  changes: PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponseChangesItem[]
+  config_version?: number
+  entity_id: string
+  notes: string[]
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataResponseChangesItem {
+  field: string
+  from: string
+  to: string
 }
 
 /** A JSON object of the Admin API. */

@@ -100,6 +100,7 @@ command or an environment variable exists in code and not on its page.
 |---|---|
 | [saml.md](saml.md) | Signari as a SAML identity provider |
 | [saml-source.md](saml-source.md) | Consuming somebody else's assertions |
+| [saml-metadata.md](saml-metadata.md) | Registering a partner from its metadata, signature checked, and reading it again |
 | [ws-federation.md](ws-federation.md) | SharePoint and pre-SAML .NET |
 | [ldap.md](ldap.md) | Applications that authenticate by binding |
 | [ldap-source.md](ldap-source.md) | Reading an existing directory |

@@ -203,6 +203,10 @@ func typeOf[T any]() reflect.Type { return reflect.TypeOf((*T)(nil)).Elem() }
 
 // The shapes several operations share.
 var (
+	samlMetadataReadSchema = object([]string{"entity_id", "applied", "changes", "notes"}, map[string]jsonSchema{
+		"entity_id": str(), "applied": boolean(), "notes": arrayOf(str()), "config_version": integer(),
+		"changes": arrayOf(object([]string{"field", "from", "to"}, map[string]jsonSchema{
+			"field": str(), "from": str(), "to": str()}))})
 	appliedDocumentSchema = object([]string{"org_id", "document", "applied_at"}, map[string]jsonSchema{
 		"org_id": uuidStr(), "document": str(), "applied_at": nullable(dateTime())})
 	idpMappingSchema = object([]string{"slug", "claim", "attribute", "mapped", "config_version"},
@@ -510,9 +514,10 @@ var opSchemas = map[string]opSchema{
 		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "slug", "name", "kind",
 			"issuer", "enabled", "allow_signup", "allow_linking", "allow_assertions", "trust_email_verification",
 			"require_verified_email", "mfa_amr", "mfa_acr", "login_domains", "end_session_url", "token_auth_method", "has_client_key",
-			"linked", "attribute_map", "forward_parameters", "group_claim", "group_map", "store_tokens"}, map[string]jsonSchema{
+			"linked", "attribute_map", "forward_parameters", "group_claim", "group_map", "store_tokens", "metadata_url",
+			"metadata_read_at"}, map[string]jsonSchema{
 			"id": uuidStr(), "slug": str(), "name": str(), "kind": str(), "issuer": str(), "enabled": boolean(),
-			"store_tokens": boolean(),
+			"store_tokens": boolean(), "metadata_url": str(), "metadata_read_at": nullable(dateTime()),
 			"allow_signup": boolean(), "allow_linking": boolean(), "allow_assertions": boolean(),
 			"trust_email_verification": boolean(), "require_verified_email": boolean(), "mfa_amr": arrayOf(str()), "mfa_acr": arrayOf(str()),
 			"login_domains": arrayOf(str()), "end_session_url": str(), "token_auth_method": str(), "has_client_key": boolean(),
@@ -579,7 +584,8 @@ var opSchemas = map[string]opSchema{
 		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "entity_id", "name",
 			"name_id_format", "name_id_attribute", "signature_alg", "enabled", "sign_assertions", "sign_responses",
 			"want_signed_requests", "encrypted", "has_signing_cert", "lifetime_s", "acs_urls", "slo_urls", "attribute_release",
-			"group_release", "idp_initiated", "default_relay_state"}, map[string]jsonSchema{"id": uuidStr(), "entity_id": str(), "name": str(),
+			"group_release", "idp_initiated", "default_relay_state", "metadata_url", "metadata_read_at"}, map[string]jsonSchema{"id": uuidStr(), "entity_id": str(), "name": str(),
+			"metadata_url": str(), "metadata_read_at": nullable(dateTime()),
 			"name_id_format": str(), "name_id_attribute": str(), "signature_alg": str(), "enabled": boolean(), "sign_assertions": boolean(),
 			"sign_responses": boolean(), "want_signed_requests": boolean(), "encrypted": boolean(),
 			"has_signing_cert": boolean(), "lifetime_s": integer(), "acs_urls": arrayOf(str()),
@@ -587,6 +593,10 @@ var opSchemas = map[string]opSchema{
 			"default_relay_state": str(),
 			"group_release": nullable(object([]string{"attribute_name", "only"}, map[string]jsonSchema{
 				"attribute_name": str(), "only": arrayOf(str())}))}))})},
+	"POST /admin/organizations/{orgID}/saml-providers/{providerID}/metadata": {http.StatusOK,
+		typeOf[samlMetadataRequest](), samlMetadataReadSchema},
+	"POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata": {http.StatusOK,
+		typeOf[samlMetadataRequest](), samlMetadataReadSchema},
 	"POST /admin/organizations/{orgID}/saml-providers": {http.StatusCreated, typeOf[addSAMLProviderRequest](), object(
 		[]string{"id", "entity_id", "name_id_format", "config_version"}, withVersion(map[string]jsonSchema{
 			"id": uuidStr(), "entity_id": str(), "name_id_format": str()}))},

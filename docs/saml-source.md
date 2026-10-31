@@ -18,7 +18,9 @@ metadata    : <issuer>/saml/source/corp/metadata
 
 Give the upstream the **metadata URL** rather than typing the entity ID and ACS
 URL into its console by hand. A mistyped audience produces an assertion this
-engine refuses correctly and unhelpfully.
+engine refuses correctly and unhelpfully. The same goes the other way: an upstream
+that publishes metadata can be [registered from it](saml-metadata.md), and read
+again when its key rotates.
 
 
 ## Consuming an assertion is a security boundary

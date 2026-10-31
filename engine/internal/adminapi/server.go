@@ -342,6 +342,8 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/identity-providers", ScopeConfigRead, s.listIdentityProviders)
 	route("PATCH /admin/organizations/{orgID}/identity-providers/{slug}", ScopeOrganizationsWrite,
 		s.patchIdentityProvider)
+	route("POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata", ScopeOrganizationsWrite,
+		s.refreshIdentityProviderMetadata)
 	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth", ScopeOrganizationsWrite,
 		s.putIdPTokenAuth)
 	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", ScopeOrganizationsWrite,
@@ -355,6 +357,8 @@ func (s *Server) Routes() http.Handler {
 	// SAML service providers, `signari saml` (saml.go).
 	route("GET /admin/organizations/{orgID}/saml-providers", ScopeConfigRead, s.listSAMLProviders)
 	route("POST /admin/organizations/{orgID}/saml-providers", ScopeOrganizationsWrite, s.addSAMLProvider)
+	route("POST /admin/organizations/{orgID}/saml-providers/{providerID}/metadata", ScopeOrganizationsWrite,
+		s.refreshSAMLProviderMetadata)
 	route("PATCH /admin/organizations/{orgID}/saml-providers/{providerID}", ScopeOrganizationsWrite,
 		s.patchSAMLProvider)
 	route("PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release", ScopeOrganizationsWrite,

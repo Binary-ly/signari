@@ -347,6 +347,11 @@ type AccessTokenClaims struct {
 	Scope     string `json:"scope,omitempty"`
 	SessionID string `json:"sid,omitempty"`
 
+	// ACR and AuthTime say how and when the person signed in, so a resource server
+	// can ask for more itself. Absent on a token with no session behind it.
+	ACR      string `json:"acr,omitempty"`
+	AuthTime int64  `json:"auth_time,omitempty"`
+
 	// Act is the RFC 8693 §4.1 actor claim: WHO is acting on the subject's
 	// behalf. It nests, so a chain of delegation stays visible rather than
 	// collapsing into "somebody did this".

@@ -1114,6 +1114,26 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		accessExtra = mapped
 	}
 
+	// How this person signed in, for a resource server deciding whether that is
+	// enough, as the ID token says it to the client. A token with no session says
+	// nothing rather than something assumed.
+	var authTime time.Time
+	var acr string
+	var amr []string
+	var accessAuthTime int64
+	if sid != "" {
+		if err := tx.QueryRow(ctx, `SELECT auth_time, acr, amr FROM core.sessions WHERE sid = $1`, sid).
+			Scan(&authTime, &acr, &amr); err != nil {
+			return nil, nil, fmt.Errorf("loading session context: %w", err)
+		}
+		// The rung the authorization request asked for and was given, above
+		// the session's own "1" or "2".
+		if granted := grantedACRFrom(ctx); granted != "" {
+			acr = granted
+		}
+		accessAuthTime = authTime.Unix()
+	}
+
 	at, err := signAccessToken(ctx, signer, tokens.AccessTokenClaims{
 		Issuer:    issuer,
 		Subject:   userID,
@@ -1124,6 +1144,8 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		ClientID:  c.ClientID,
 		Scope:     joinScopes(scopes),
 		SessionID: sid,
+		ACR:       acr,
+		AuthTime:  accessAuthTime,
 		Act:       act,
 		Cnf:       bindingFor(jkt, certThumb),
 
@@ -1154,18 +1176,8 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	// openid was granted -- a pure refresh of an API token should not re-assert
 	// who the user is.
 	if containsScope(scopes, "openid") {
-		var authTime time.Time
-		var acr string
-		var amr []string
-		if err := tx.QueryRow(ctx,
-			`SELECT auth_time, acr, amr FROM core.sessions WHERE sid = $1`, sid).
-			Scan(&authTime, &acr, &amr); err != nil {
-			return nil, nil, fmt.Errorf("loading session context: %w", err)
-		}
-		// The rung the authorization request asked for and was given, above
-		// the session's own "1" or "2".
-		if granted := grantedACRFrom(ctx); granted != "" {
-			acr = granted
+		if sid == "" {
+			return nil, nil, fmt.Errorf("loading session context: %w", pgx.ErrNoRows)
 		}
 		claims := tokens.IDTokenClaims{
 			Issuer:          issuer,

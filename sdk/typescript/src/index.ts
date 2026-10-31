@@ -2504,6 +2504,8 @@ export interface GetOrganizationsOrgIDScopesResponseScopesItem {
 export interface GetOrganizationsOrgIDSettingsResponse {
   login_free_attempts: number
   login_max_delay_s: number
+  mail_from: string
+  mail_from_name: string
   max_concurrent_sessions: number
   new_device_notice: boolean
   offline_lifetime_s: number
@@ -3076,6 +3078,8 @@ export interface PatchOrganizationsOrgIDSCIMTargetsSlugResponse {
 export interface PatchOrganizationsOrgIDSettingsRequest {
   login_free_attempts?: number
   login_max_delay_s?: number
+  mail_from?: string
+  mail_from_name?: string
   max_concurrent_sessions?: number
   new_device_notice?: boolean
   offline_lifetime_s?: number
@@ -3097,6 +3101,8 @@ export interface PatchOrganizationsOrgIDSettingsResponse {
   config_version: number
   login_free_attempts: number
   login_max_delay_s: number
+  mail_from: string
+  mail_from_name: string
   max_concurrent_sessions: number
   new_device_notice: boolean
   offline_lifetime_s: number

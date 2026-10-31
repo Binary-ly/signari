@@ -24,6 +24,7 @@ var settingChoices = map[string][2]any{
 	"sms_numbers": {"stored", "hashed"}, "totp_algorithm": {"SHA1", "SHA256"},
 	"totp_digits": {6, 8}, "totp_period_s": {30, 60},
 	"login_free_attempts": {3, 5}, "login_max_delay_s": {900, 1800},
+	"mail_from": {"id@acme.example", "accounts@acme.example"}, "mail_from_name": {"Acme", "Acme Identity"},
 }
 
 func TestEveryOrganisationSettingIsSetThroughTheAPI(t *testing.T) {
@@ -81,6 +82,10 @@ func TestEveryOrganisationSettingIsSetThroughTheAPI(t *testing.T) {
 		{"remember_device_days": 1, "totp_digits": 7},
 		{"remember_device_days": 1, "login_free_attempts": 0},
 		{"remember_device_days": 1, "password_only_binds": "sometimes"},
+		{"remember_device_days": 1, "mail_from": "Acme <id@acme.example>"},
+		{"remember_device_days": 1, "mail_from": "id@acme.example\r\nBcc: x@evil.test"},
+		{"remember_device_days": 1, "mail_from_name": "Acme\r\nBcc: x@evil.test"},
+		{"remember_device_days": 1, "mail_from": "", "mail_from_name": "Acme"},
 		{"remember_device_days": 91},
 	} {
 		rec := call(t, s, http.MethodPatch, path, testToken, bad)
@@ -100,9 +105,22 @@ func TestEveryOrganisationSettingIsSetThroughTheAPI(t *testing.T) {
 		WHERE org_id = $1::uuid AND event_type LIKE 'org.%' AND detail->>'via' = 'admin_api'`, org).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	// Session limit, binds, devices, notice, window, lifetimes, numbers, TOTP, throttle.
-	if n != 9 {
-		t.Errorf("changing every setting was recorded %d times, want 9", n)
+	// Session limit, binds, devices, notice, window, lifetimes, numbers, TOTP, throttle, sender.
+	if n != 10 {
+		t.Errorf("changing every setting was recorded %d times, want 10", n)
+	}
+
+	// The address alone taken back takes its name, since a name alone is no sender.
+	if rec := call(t, s, http.MethodPatch, path, testToken, map[string]any{"mail_from": ""}); rec.Code != http.StatusOK {
+		t.Fatalf("taking the sender back: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := read(); got["mail_from"] != "" || got["mail_from_name"] != "" {
+		t.Errorf("after taking the sender back it reads %q %q", got["mail_from_name"], got["mail_from"])
+	}
+	var kept *string
+	if err := s.db.QueryRow(context.Background(), `SELECT mail_from_name FROM core.organizations
+		WHERE id = $1::uuid`, org).Scan(&kept); err != nil || kept != nil {
+		t.Errorf("the name was left behind: %v, %v", kept, err)
 	}
 }
 

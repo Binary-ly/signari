@@ -196,7 +196,7 @@ func (s *Server) handleAccountDeletePost(w http.ResponseWriter, r *http.Request)
 	// this may not have been the account's holder, and they are the one who
 	// must hear it. Nothing is kept to send it again.
 	if email != "" {
-		if err := s.mailer.Send(ctx, mail.Message{To: email, Subject: tr.Text("mail.accountdeleted.subject"),
+		if err := s.sendMail(ctx, orgID, mail.Message{To: email, Subject: tr.Text("mail.accountdeleted.subject"),
 			Body: tr.Text("mail.accountdeleted.body")}); err != nil {
 			s.log.Warn("telling a deleted account's address it was deleted", "err", err)
 		}

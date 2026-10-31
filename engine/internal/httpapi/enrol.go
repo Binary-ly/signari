@@ -761,7 +761,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		_ = s.notifyAccount(ctx, userID, tr.Text("mail.emailotp.enrolled.subject"),
 			tr.Text("mail.emailotp.enrolled.body"), tr.Text("sms.emailotp.enrolled"))
 		if replaced != "" {
-			if err := s.mailer.Send(ctx, mail.Message{
+			if err := s.sendMail(ctx, orgID, mail.Message{
 				To:      replaced,
 				Subject: tr.Text("mail.emailotp.moved.subject"),
 				Body:    tr.Text("mail.emailotp.moved.body"),
@@ -810,7 +810,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		// The request's language: this person is enrolling right now, on this
 		// form, and will read the mail in a moment.
 		tr := s.tr(r)
-		if err := s.mailer.Send(ctx, mail.Message{
+		if err := s.sendMail(ctx, orgID, mail.Message{
 			To:      addr,
 			Subject: tr.Text("mail.confirmaddress.subject"),
 			Body: tr.Text("mail.confirmaddress.body", map[string]any{

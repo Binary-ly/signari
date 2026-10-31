@@ -41,6 +41,7 @@ command or an environment variable exists in code and not on its page.
 | [captcha.md](captcha.md) | Off by default, adaptive when on |
 | [theming.md](theming.md) | Every page is an HTML file you can replace |
 | [brands.md](brands.md) | Product name, logo, colours — with WCAG contrast enforced |
+| [mail.md](mail.md) | Both parts of every message, no buttons, and an organisation's own sender |
 | [i18n.md](i18n.md) | Adding a language is adding one file |
 | [app-portal.md](app-portal.md) | `/apps` — what a user can reach, and why not the rest |
 

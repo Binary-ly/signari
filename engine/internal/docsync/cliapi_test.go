@@ -71,6 +71,7 @@ var cliAPI = map[string]string{
 	"instance sms-numbers":       orgSettings,
 	"instance totp-policy":       orgSettings,
 	"instance login-throttle":    orgSettings,
+	"instance mail-sender":       orgSettings,
 
 	// People.
 	"user create":        "POST /admin/users",

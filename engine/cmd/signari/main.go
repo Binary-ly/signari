@@ -170,6 +170,7 @@ instances and organisations:
   instance reauth-window      how recent a sign-in must be to change the account
   instance password-binds     whether a password-only bind may sign in somebody needing MFA
   instance login-throttle     the sign-in delay: free attempts and the longest wait
+  instance mail-sender        the address an organisation's mail comes from, and its DNS checked
   instance sms-numbers        keep each SMS number, or only a keyed hash of it
   instance totp-policy        the algorithm, digits and period new authenticators use
 
@@ -998,6 +999,12 @@ func run(args []string) (err error) {
 		"`instance login-throttle`: wrong passwords for one account before the sign-in delay begins, 1 to 20")
 	maxLoginDelay := fs.Duration("max-delay", 0,
 		"`instance login-throttle`: the longest the sign-in delay grows to, 1m to 24h")
+	mailFrom := fs.String("mail-from", "", "`instance mail-sender`: the address this organisation's mail comes from")
+	mailFromName := fs.String("mail-from-name", "", "`instance mail-sender`: the name shown beside that address")
+	dkimSelector := fs.String("dkim-selector", "",
+		"`instance mail-sender`: the DKIM selector your mail provider signs with, so the key can be checked")
+	clearMailSender := fs.Bool("clear", false,
+		"`instance mail-sender`: take the organisation's mail back to the deployment's sender")
 	rememberDays := fs.Int("days", -1,
 		"`instance remember-device`: days a device a person chooses to remember after a second "+
 			"factor is not asked for one again, 1 to 90; 0 turns it off")
@@ -1315,6 +1322,8 @@ func run(args []string) (err error) {
 		return userPasskeyLink(ctx, conn, *orgID, *email, *linkExpires)
 	case "instance login-throttle":
 		return instanceLoginThrottle(ctx, conn, *orgID, *freeAttempts, *maxLoginDelay)
+	case "instance mail-sender":
+		return instanceMailSender(ctx, conn, *orgID, *mailFrom, *mailFromName, *dkimSelector, *clearMailSender)
 	case "instance sms-numbers":
 		return instanceSMSNumbers(ctx, conn, *orgID, *smsNumbers)
 	case "instance totp-policy":

@@ -331,7 +331,7 @@ to the log instead of sent**, with a warning on every send.
 | | |
 |---|---|
 | `SIGNARI_SMTP_HOST` | Required to send anything |
-| `SIGNARI_MAIL_FROM` | Required. The envelope sender |
+| `SIGNARI_MAIL_FROM` | Required. The envelope sender, for any organisation without [its own](mail.md#the-sender) |
 | `SIGNARI_SMTP_PORT` | Default 587 |
 | `SIGNARI_SMTP_USERNAME`, `SIGNARI_SMTP_PASSWORD` | For an authenticated relay |
 | `SIGNARI_MAIL_FROM_NAME` | Display name |

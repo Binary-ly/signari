@@ -3351,6 +3351,8 @@ Answers:
 |---|---|---|
 | `login_free_attempts` | integer | always |
 | `login_max_delay_s` | integer | always |
+| `mail_from` | string | always |
+| `mail_from_name` | string | always |
 | `max_concurrent_sessions` | integer | always |
 | `new_device_notice` | boolean | always |
 | `offline_lifetime_s` | integer | always |
@@ -3379,6 +3381,8 @@ Takes:
 |---|---|---|
 | `login_free_attempts` | integer |  |
 | `login_max_delay_s` | integer |  |
+| `mail_from` | string |  |
+| `mail_from_name` | string |  |
 | `max_concurrent_sessions` | integer |  |
 | `new_device_notice` | boolean |  |
 | `offline_lifetime_s` | integer |  |
@@ -3401,6 +3405,8 @@ Answers:
 | `config_version` | integer | always |
 | `login_free_attempts` | integer | always |
 | `login_max_delay_s` | integer | always |
+| `mail_from` | string | always |
+| `mail_from_name` | string | always |
 | `max_concurrent_sessions` | integer | always |
 | `new_device_notice` | boolean | always |
 | `offline_lifetime_s` | integer | always |

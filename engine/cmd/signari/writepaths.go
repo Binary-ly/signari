@@ -55,6 +55,7 @@ import (
 	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/passkeys"
 	"signari.dev/engine/internal/provider"
@@ -1071,6 +1072,59 @@ func instanceLoginThrottle(ctx context.Context, conn *pgx.Conn, orgID string, fr
 		gotFree, time.Duration(gotMax)*time.Second)
 	fmt.Println("\n  A delay, not a lockout: a lockout is a button that disables any account")
 	fmt.Println("  somebody can name. Each failure counts for an hour.")
+	return nil
+}
+
+// instanceMailSender sets the address an organisation's mail comes from (0237),
+// and reads that domain's DNS, because a sender whose domain says nothing of this
+// server is one whose sign-in codes land in the junk folder, and nothing else
+// would say so. The answer is advice and refuses nothing: a domain can be set up
+// after the sender is named.
+func instanceMailSender(ctx context.Context, conn *pgx.Conn, orgID, from, name, selector string, clear bool) error {
+	if orgID == "" || (from == "") == !clear {
+		return fmt.Errorf("give -org, and -mail-from or -clear")
+	}
+	if clear && name != "" {
+		return fmt.Errorf("-clear takes the sender away, so -mail-from-name has nothing to name")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetOrgMailSender(ctx, tx, orgID, store.MailSender{From: from, Name: name}); err != nil {
+		if errors.Is(err, store.ErrOrganizationNotFound) {
+			return fmt.Errorf("no organisation %s", orgID)
+		}
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "org.mail_sender_set", OrgID: orgID,
+		Detail: map[string]any{"mail_from": from, "mail_from_name": name, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if clear {
+		fmt.Println("this organisation's mail comes from the deployment's sender again")
+		return nil
+	}
+	fmt.Printf("this organisation's mail comes from %s\n", from)
+	dns, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	report := mail.Preflight(dns, from, selector)
+	fmt.Printf("\n  What the DNS of %s says:\n", report.Domain)
+	for _, f := range report.Findings {
+		fmt.Printf("  %-5s %-5s %s\n", f.Severity, f.Check, f.Detail)
+		if f.Fix != "" {
+			fmt.Printf("        publish: %s\n", f.Fix)
+		}
+	}
+	if !report.Deliverable() {
+		fmt.Println("\n  Mail from this address will be rejected or junked until that is put right.")
+	}
 	return nil
 }
 

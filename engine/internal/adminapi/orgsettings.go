@@ -39,6 +39,9 @@ type orgSettingsView struct {
 	TOTPPeriodS        int    `json:"totp_period_s"`
 	LoginFreeAttempts  int    `json:"login_free_attempts"`
 	LoginMaxDelayS     int    `json:"login_max_delay_s"`
+	// MailFrom is empty when the organisation's mail is the deployment's.
+	MailFrom     string `json:"mail_from"`
+	MailFromName string `json:"mail_from_name"`
 }
 
 func viewOrgSettings(orgID string, s store.OrgSettings) orgSettingsView {
@@ -54,7 +57,8 @@ func viewOrgSettings(orgID string, s store.OrgSettings) orgSettingsView {
 		OfflineLifetimeS: seconds(s.Sessions.Offline), PersistentSessions: s.Sessions.Persistent,
 		SMSNumbers: sms, TOTPAlgorithm: s.TOTP.Algorithm, TOTPDigits: s.TOTP.Digits,
 		TOTPPeriodS: seconds(s.TOTP.Period), LoginFreeAttempts: s.LoginFreeAttempts,
-		LoginMaxDelayS: seconds(s.LoginMaxDelay)}
+		LoginMaxDelayS: seconds(s.LoginMaxDelay),
+		MailFrom:       s.Mail.From, MailFromName: s.Mail.Name}
 }
 
 func seconds(d time.Duration) int { return int(d / time.Second) }
@@ -79,6 +83,8 @@ type patchOrgSettingsRequest struct {
 	TOTPPeriodS           *int    `json:"totp_period_s"`
 	LoginFreeAttempts     *int    `json:"login_free_attempts"`
 	LoginMaxDelayS        *int    `json:"login_max_delay_s"`
+	MailFrom              *string `json:"mail_from"`
+	MailFromName          *string `json:"mail_from_name"`
 }
 
 // errInvalidSetting carries a setter's own refusal to the caller as a 400.
@@ -88,7 +94,8 @@ func (e errInvalidSetting) Error() string { return e.err.Error() }
 
 // settingRefusals are the setters' refusals of a value out of bounds.
 var settingRefusals = []error{store.ErrSessionLimit, store.ErrPasswordBinds, store.ErrRememberDeviceDays,
-	store.ErrReauthWindow, store.ErrSessionLifetime, store.ErrOfflineLifetime, store.ErrLoginThrottle}
+	store.ErrReauthWindow, store.ErrSessionLifetime, store.ErrOfflineLifetime, store.ErrLoginThrottle,
+	store.ErrMailSender}
 
 func invalidSetting(err error) error {
 	for _, r := range settingRefusals {
@@ -301,6 +308,20 @@ func (s *Server) applyOrgSettings(ctx context.Context, tx pgx.Tx, orgID string, 
 		}
 		if err := record(audit.Event{Type: "org.login_throttle_set",
 			Detail: map[string]any{"free_attempts": free, "max_delay_s": delay}}); err != nil {
+			return err
+		}
+	}
+	if req.MailFrom != nil || req.MailFromName != nil {
+		sender := store.MailSender{From: pick(req.MailFrom, cur.Mail.From), Name: pick(req.MailFromName, cur.Mail.Name)}
+		// Taking the address away takes its name with it: a name alone is no sender.
+		if sender.From == "" && req.MailFromName == nil {
+			sender.Name = ""
+		}
+		if err := store.SetOrgMailSender(ctx, tx, orgID, sender); err != nil {
+			return err
+		}
+		if err := record(audit.Event{Type: "org.mail_sender_set",
+			Detail: map[string]any{"mail_from": sender.From, "mail_from_name": sender.Name}}); err != nil {
 			return err
 		}
 	}

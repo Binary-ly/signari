@@ -23,6 +23,7 @@ type OrgSettings struct {
 	TOTP                  TOTPPolicy
 	LoginFreeAttempts     int
 	LoginMaxDelay         time.Duration
+	Mail                  MailSender
 }
 
 // OrgSettingsOf reads an organisation's settings in one statement.
@@ -38,13 +39,15 @@ func OrgSettingsOf(ctx context.Context, q interface {
 		       remember_device_days, new_device_notice, reauth_window_s,
 		       session_lifetime_s, session_idle_s, offline_lifetime_s, persistent_sessions,
 		       sms_numbers, totp_algorithm, totp_digits, totp_period_s,
-		       login_free_attempts, login_max_delay_s
+		       login_free_attempts, login_max_delay_s,
+		       COALESCE(mail_from, ''), COALESCE(mail_from_name, '')
 		  FROM core.organizations WHERE id = $1::uuid`, orgID).
 		Scan(&s.MaxConcurrentSessions, &s.SessionLimitBehaviour, &s.PasswordOnlyBinds,
 			&s.RememberDeviceDays, &s.NewDeviceNotice, &reauth,
 			&lifetime, &idle, &offline, &s.Sessions.Persistent,
 			&sms, &s.TOTP.Algorithm, &s.TOTP.Digits, &period,
-			&s.LoginFreeAttempts, &maxDelay)
+			&s.LoginFreeAttempts, &maxDelay,
+			&s.Mail.From, &s.Mail.Name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OrgSettings{}, ErrOrganizationNotFound
 	}

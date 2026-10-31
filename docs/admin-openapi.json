@@ -20169,6 +20169,12 @@
                     "login_max_delay_s": {
                       "type": "integer"
                     },
+                    "mail_from": {
+                      "type": "string"
+                    },
+                    "mail_from_name": {
+                      "type": "string"
+                    },
                     "max_concurrent_sessions": {
                       "type": "integer"
                     },
@@ -20219,6 +20225,8 @@
                   "required": [
                     "login_free_attempts",
                     "login_max_delay_s",
+                    "mail_from",
+                    "mail_from_name",
                     "max_concurrent_sessions",
                     "new_device_notice",
                     "offline_lifetime_s",
@@ -20314,6 +20322,12 @@
                   "login_max_delay_s": {
                     "type": "integer"
                   },
+                  "mail_from": {
+                    "type": "string"
+                  },
+                  "mail_from_name": {
+                    "type": "string"
+                  },
                   "max_concurrent_sessions": {
                     "type": "integer"
                   },
@@ -20379,6 +20393,12 @@
                     "login_max_delay_s": {
                       "type": "integer"
                     },
+                    "mail_from": {
+                      "type": "string"
+                    },
+                    "mail_from_name": {
+                      "type": "string"
+                    },
                     "max_concurrent_sessions": {
                       "type": "integer"
                     },
@@ -20429,6 +20449,8 @@
                   "required": [
                     "login_free_attempts",
                     "login_max_delay_s",
+                    "mail_from",
+                    "mail_from_name",
                     "max_concurrent_sessions",
                     "new_device_notice",
                     "offline_lifetime_s",

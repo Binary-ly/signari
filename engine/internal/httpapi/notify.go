@@ -141,7 +141,7 @@ func (s *Server) notifyAccount(ctx context.Context, userID, subject, emailBody, 
 		var sendErr error
 		switch ch.Kind {
 		case "email":
-			sendErr = s.mailer.Send(ctx, mail.Message{
+			sendErr = s.sendMailTo(ctx, userID, mail.Message{
 				To: ch.Address, Subject: subject, Body: emailBody,
 			})
 		case "sms":

@@ -30,6 +30,7 @@ func TestAPersonDeletesTheirOwnAccount(t *testing.T) {
 	ctx := context.Background()
 	mailer := &captureMailer{}
 	f.srv.mailer = mailer
+	useMailSender(t, f, store.MailSender{From: "id@acme.example"})
 	sid, _, err := store.ResolveSessionCookie(ctx, f.pool, store.HashToken(cookie), "")
 	if err != nil || sid == "" {
 		t.Fatalf("the fixture's session: %v", err)
@@ -84,9 +85,10 @@ func TestAPersonDeletesTheirOwnAccount(t *testing.T) {
 	for _, c := range rec.Result().Cookies() {
 		cleared = cleared || (c.Name == SessionCookieName && c.MaxAge < 0)
 	}
+	// In the organisation's name still, with the account that named it gone.
 	told := false
 	for _, m := range mailer.messages() {
-		told = told || (m.To == f.email && m.Subject == "Your account was deleted")
+		told = told || (m.To == f.email && m.Subject == "Your account was deleted" && m.From == "id@acme.example")
 	}
 	if !cleared || !told {
 		t.Errorf("session cookie cleared %v, address told %v", cleared, told)

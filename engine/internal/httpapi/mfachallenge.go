@@ -194,7 +194,7 @@ func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
 	// case and uses the request instead: there, the person at the form is
 	// demonstrably the person who will read it.
 	tr := s.notifierFor(ctx, userID)
-	if err := s.mailer.Send(ctx, mail.Message{
+	if err := s.sendMailTo(ctx, userID, mail.Message{
 		To:      address,
 		Subject: tr.Text("mail.signincode.subject"),
 		Body: tr.Text("mail.signincode.body", map[string]any{

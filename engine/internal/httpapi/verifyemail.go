@@ -76,7 +76,7 @@ func (s *Server) sendVerificationCode(w http.ResponseWriter, r *http.Request, us
 	// To the address being proved and nowhere else: a code sent to another
 	// channel would prove that channel, not this.
 	tr := s.notifierFor(ctx, userID)
-	if err := s.mailer.Send(ctx, mail.Message{
+	if err := s.sendMailTo(ctx, userID, mail.Message{
 		To:      address,
 		Subject: tr.Text("mail.verifyemail.subject"),
 		Body:    tr.Text("mail.verifyemail.body", map[string]any{"Code": code}),

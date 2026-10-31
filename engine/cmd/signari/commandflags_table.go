@@ -119,6 +119,7 @@ var commandFlags = map[string][]string{
 	"instance aliases":                {"o"},
 	"instance create":                 {"issuer", "name"},
 	"instance login-throttle":         {"free-attempts", "max-delay", "org"},
+	"instance mail-sender":            {"clear", "dkim-selector", "mail-from", "mail-from-name", "org"},
 	"instance new-device-notice":      {"notice", "org"},
 	"instance org-budgets":            {"org", "sign-ins-per-minute", "tokens-per-minute"},
 	"instance org-delete":             {"confirm", "org"},

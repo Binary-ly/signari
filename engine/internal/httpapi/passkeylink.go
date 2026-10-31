@@ -142,7 +142,7 @@ func (s *Server) deliverPasskeyLink(ctx context.Context, n store.AccountNotice) 
 		return err
 	}
 	tr := s.notifierFor(ctx, n.UserID)
-	return s.mailer.Send(ctx, mail.Message{
+	return s.sendMailTo(ctx, n.UserID, mail.Message{
 		To:      email,
 		Subject: tr.Text("mail.passkeylink.subject"),
 		Body: tr.Text("mail.passkeylink.body", map[string]any{

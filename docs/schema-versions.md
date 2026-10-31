@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0237 org_mail_sender
+
+Compatible with the release before: its binary may still serve this schema.
+
+The address an organisation's mail comes from (10.10), when it is not the deployment's. Both columns are empty until an operator sets them, and an organisation with none keeps sending from SIGNARI_MAIL_FROM. The engine's setter holds the full rule; these hold the shape, since a line break in either would reach a message's headers.
+
 ## 0236 federated_tokens
 
 Compatible with the release before: its binary may still serve this schema.

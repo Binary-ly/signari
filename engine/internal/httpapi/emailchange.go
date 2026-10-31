@@ -141,7 +141,7 @@ func (s *Server) handleEmailChangePost(w http.ResponseWriter, r *http.Request) {
 			s.log.Error("telling the holder of a change of address", "err", err)
 		}
 		if old != "" {
-			if err := s.mailer.Send(ctx, mail.Message{To: old, Subject: subject, Body: body}); err != nil {
+			if err := s.sendMail(ctx, orgID, mail.Message{To: old, Subject: subject, Body: body}); err != nil {
 				s.log.Error("telling the old address of a change of address", "err", err)
 			}
 		}
@@ -175,7 +175,7 @@ func (s *Server) handleEmailChangePost(w http.ResponseWriter, r *http.Request) {
 		}
 		// To the new address alone: the code proves that mailbox and no other.
 		nt := s.notifierFor(ctx, userID)
-		if err := s.mailer.Send(ctx, mail.Message{To: address, Subject: nt.Text("mail.verifyemail.subject"),
+		if err := s.sendMail(ctx, orgID, mail.Message{To: address, Subject: nt.Text("mail.verifyemail.subject"),
 			Body: nt.Text("mail.verifyemail.body", map[string]any{"Code": code})}); err != nil {
 			s.log.Error("sending the code for a change of address", "err", err)
 			s.renderEmailChange(w, r, userID, "", tr.Text("error.verifyemail.unsent"))

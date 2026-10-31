@@ -1020,6 +1020,7 @@ type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem struct {
 	Name                   string                                                                        `json:"name"`
 	RequireVerifiedEmail   bool                                                                          `json:"require_verified_email"`
 	Slug                   string                                                                        `json:"slug"`
+	StoreTokens            bool                                                                          `json:"store_tokens"`
 	TokenAuthMethod        string                                                                        `json:"token_auth_method"`
 	TrustEmailVerification bool                                                                          `json:"trust_email_verification"`
 }
@@ -1351,6 +1352,8 @@ type GetOrganizationsOrgIDScopesResponseScopesItem struct {
 type GetOrganizationsOrgIDSettingsResponse struct {
 	LoginFreeAttempts     int64  `json:"login_free_attempts"`
 	LoginMaxDelayS        int64  `json:"login_max_delay_s"`
+	MailFrom              string `json:"mail_from"`
+	MailFromName          string `json:"mail_from_name"`
 	MaxConcurrentSessions int64  `json:"max_concurrent_sessions"`
 	NewDeviceNotice       bool   `json:"new_device_notice"`
 	OfflineLifetimeS      int64  `json:"offline_lifetime_s"`
@@ -1802,6 +1805,7 @@ type PatchOrganizationsOrgIDIdentityProvidersSlugRequest struct {
 	MfaACR                 *[]string `json:"mfa_acr,omitempty"`
 	MfaAMR                 *[]string `json:"mfa_amr,omitempty"`
 	RequireVerifiedEmail   *bool     `json:"require_verified_email,omitempty"`
+	StoreTokens            *bool     `json:"store_tokens,omitempty"`
 	TrustEmailVerification *bool     `json:"trust_email_verification,omitempty"`
 }
 
@@ -1922,6 +1926,8 @@ type PatchOrganizationsOrgIDSCIMTargetsSlugResponse struct {
 type PatchOrganizationsOrgIDSettingsRequest struct {
 	LoginFreeAttempts     *int64  `json:"login_free_attempts,omitempty"`
 	LoginMaxDelayS        *int64  `json:"login_max_delay_s,omitempty"`
+	MailFrom              *string `json:"mail_from,omitempty"`
+	MailFromName          *string `json:"mail_from_name,omitempty"`
 	MaxConcurrentSessions *int64  `json:"max_concurrent_sessions,omitempty"`
 	NewDeviceNotice       *bool   `json:"new_device_notice,omitempty"`
 	OfflineLifetimeS      *int64  `json:"offline_lifetime_s,omitempty"`
@@ -1943,6 +1949,8 @@ type PatchOrganizationsOrgIDSettingsResponse struct {
 	ConfigVersion         int64  `json:"config_version"`
 	LoginFreeAttempts     int64  `json:"login_free_attempts"`
 	LoginMaxDelayS        int64  `json:"login_max_delay_s"`
+	MailFrom              string `json:"mail_from"`
+	MailFromName          string `json:"mail_from_name"`
 	MaxConcurrentSessions int64  `json:"max_concurrent_sessions"`
 	NewDeviceNotice       bool   `json:"new_device_notice"`
 	OfflineLifetimeS      int64  `json:"offline_lifetime_s"`

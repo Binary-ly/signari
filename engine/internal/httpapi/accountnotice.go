@@ -69,7 +69,7 @@ func (s *Server) DeliverAccountNotice(ctx context.Context, n store.AccountNotice
 	if n.Notice == store.NoticeEmailChanged && n.OldAddress != "" {
 		// The old address too: if the change was not the holder's, it is the
 		// one they still read. Neither address is named in the message.
-		if merr := s.mailer.Send(ctx, mail.Message{To: n.OldAddress, Subject: subject, Body: body}); err == nil {
+		if merr := s.sendMailTo(ctx, n.UserID, mail.Message{To: n.OldAddress, Subject: subject, Body: body}); err == nil {
 			err = merr
 		}
 	}
@@ -93,7 +93,7 @@ func (s *Server) deliverInvitation(ctx context.Context, n store.AccountNotice) e
 		return err
 	}
 	tr := s.pageSet().Bundle().For(i18n.Default)
-	return s.mailer.Send(ctx, mail.Message{
+	return s.sendMail(ctx, orgID, mail.Message{
 		To:      email,
 		Subject: tr.Text("mail.invitation.subject", map[string]any{"Org": org}),
 		Body: tr.Text("mail.invitation.body", map[string]any{

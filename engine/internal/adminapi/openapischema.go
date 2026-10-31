@@ -83,7 +83,8 @@ func orgSettingsProps() map[string]jsonSchema {
 		"new_device_notice": boolean(), "reauth_window_s": integer(), "session_lifetime_s": integer(),
 		"session_idle_s": integer(), "offline_lifetime_s": integer(), "persistent_sessions": boolean(),
 		"sms_numbers": str(), "totp_algorithm": str(), "totp_digits": integer(), "totp_period_s": integer(),
-		"login_free_attempts": integer(), "login_max_delay_s": integer()}
+		"login_free_attempts": integer(), "login_max_delay_s": integer(), "mail_from": str(),
+		"mail_from_name": str()}
 }
 
 // signupProps is an organisation's self-sign-up rule as read and set (6.07).

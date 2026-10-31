@@ -232,7 +232,7 @@ func (s *Server) deliverSignInCode(ctx context.Context, n store.AccountNotice) e
 		return err
 	}
 	tr := s.notifierFor(ctx, n.UserID)
-	return s.mailer.Send(ctx, mail.Message{To: email, Subject: tr.Text("mail.emailsignin.subject"),
+	return s.sendMailTo(ctx, n.UserID, mail.Message{To: email, Subject: tr.Text("mail.emailsignin.subject"),
 		Body: tr.Text("mail.emailsignin.body", map[string]any{
 			"Code": code, "Until": expires.UTC().Format("15:04 MST"),
 		})})

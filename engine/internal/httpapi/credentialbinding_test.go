@@ -47,7 +47,7 @@ func (f *tokenFixture) mintBoundIssuanceToken(t *testing.T, jkt string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, _, err := f.srv.mintSet(withDPoPThumbprint(ctx, jkt), tx, c, f.orgID, f.userID,
+	resp, _, err := f.srv.mintSet(withIssuanceAudience(withDPoPThumbprint(ctx, jkt)), tx, c, f.orgID, f.userID,
 		"", "", []string{}, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)

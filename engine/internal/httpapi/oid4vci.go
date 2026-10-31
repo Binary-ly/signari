@@ -214,7 +214,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 	// No session id and no nonce: a pre-authorized code is issued out of band, so
 	// there is no browser session behind it. What the credential endpoint reads
 	// from the access token is its subject and its scope, which mintSet supplies,
-	// filtered above.
+	// filtered above, and its audience, which is that endpoint and nothing else.
 	tx, terr := s.db.Begin(ctx)
 	if terr != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
@@ -223,7 +223,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	resp, _, merr := s.mintSet(ctx, tx, c, stored.OrgID, stored.UserID, "", "",
+	resp, _, merr := s.mintSet(withIssuanceAudience(ctx), tx, c, stored.OrgID, stored.UserID, "", "",
 		scopes, nil, nil, "")
 	if merr != nil {
 		s.log.Error("minting tokens for a pre-authorized code grant", "err", merr,

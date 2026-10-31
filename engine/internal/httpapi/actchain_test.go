@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/tokens"
 )
 
 // RFC 8693 §4.1, the structural property of the actor claim:
@@ -51,6 +52,43 @@ func secondExchangeClient(t *testing.T, f *tokenFixture) (string, string) {
 			`DELETE FROM core.clients WHERE client_id = $1`, id)
 	})
 	return id, secret
+}
+
+// Two clients exchanging a token back and forth must not grow it without limit. The
+// chain stays whole up to the bound, and the exchange past it is refused rather than
+// dropping the oldest party, which would hide who delegated.
+func TestAnActorChainStopsAtItsBound(t *testing.T) {
+	f := newTokenFixture(t)
+	f.enableExchange(t)
+	clientB, clientBSecret := secondExchangeClient(t, f)
+	token := f.mintAccessTokenWithScope(t, []string{"read"})
+	for hop := 1; hop <= tokens.MaxActorDepth+1; hop++ {
+		client, secret := f.clientID, f.exchangeSecret
+		if hop%2 == 0 {
+			client, secret = clientB, clientBSecret
+		}
+		status, body := f.post(t, url.Values{"grant_type": {oauth.GrantTypeTokenExchange}, "client_id": {client},
+			"client_secret": {secret}, "subject_token": {token}, "audience": {exchangeAudience}, "scope": {"read"},
+			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"}})
+		if hop > tokens.MaxActorDepth {
+			if status != http.StatusBadRequest || body["error"] != "invalid_grant" {
+				t.Fatalf("exchange %d answered %d %v", hop, status, body)
+			}
+			return
+		}
+		if status != http.StatusOK {
+			t.Fatalf("exchange %d answered %d %v", hop, status, body)
+		}
+		token, _ = body["access_token"].(string)
+		depth := 0
+		for act, ok := decodeJWTPayload(t, token)["act"].(map[string]any); ok; act, ok = act["act"].(map[string]any) {
+			depth++
+		}
+		if depth != hop {
+			t.Fatalf("after %d exchanges the chain names %d", hop, depth)
+		}
+	}
+	t.Fatal("the bound was never reached")
 }
 
 func TestTheActorChainNestsOldestDeepest(t *testing.T) {

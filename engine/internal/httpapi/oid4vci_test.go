@@ -130,15 +130,19 @@ func TestAWalletRedeemsWithoutSendingAnyClientID(t *testing.T) {
 		t.Fatalf("no access token in the response: %v", body)
 	}
 
-	// The token is about the HOLDER and for the client the OFFER named, since
-	// the request named nobody. A `sub` of anything else means the subject was
-	// invented; an `aud` of anything else means the audience was.
+	// The token is about the HOLDER and was issued to the client the OFFER
+	// named, since the request named nobody, and it is for the credential
+	// endpoint alone. A `sub` of anything else means the subject was invented; an
+	// `aud` of anything else means the token works wherever the client's do.
 	claims := claimsOfJWT(t, at)
 	if claims["sub"] != f.userID {
 		t.Errorf("sub is %v, want the credential subject %s", claims["sub"], f.userID)
 	}
-	if aud, _ := claims["aud"].([]any); len(aud) != 1 || aud[0] != f.clientID {
-		t.Errorf("aud is %v, want [%s] from the offer", claims["aud"], f.clientID)
+	if claims["client_id"] != f.clientID {
+		t.Errorf("client_id is %v, want %s from the offer", claims["client_id"], f.clientID)
+	}
+	if aud, _ := claims["aud"].([]any); len(aud) != 1 || aud[0] != f.srv.credentialAudience() {
+		t.Errorf("aud is %v, want the credential endpoint alone", claims["aud"])
 	}
 
 	// No id_token: nothing here authenticated anybody. The operator vouched for

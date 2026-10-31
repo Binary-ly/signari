@@ -184,6 +184,12 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 				Description: "the subject token is not valid", Status: http.StatusBadRequest})
 			return
 		}
+		if s.issuanceOnly(subject) {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the subject token is good for issuing a credential and nothing else",
+				Status:      http.StatusBadRequest})
+			return
+		}
 		// Same rule as the exchange endpoint: a sender-constrained subject token
 		// is only exchangeable by the party that can prove the key.
 		if berr := s.requireSubjectTokenBinding(r, subject); berr != nil {

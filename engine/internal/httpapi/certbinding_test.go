@@ -99,7 +99,7 @@ func (f *tokenFixture) mintCertBoundIssuanceToken(t *testing.T, cert *x509.Certi
 		t.Fatal(err)
 	}
 	c.TLSBoundTokens = true
-	resp, _, err := f.srv.mintSet(withCertThumbprint(ctx, clientauth.CertificateThumbprint(cert)),
+	resp, _, err := f.srv.mintSet(withIssuanceAudience(withCertThumbprint(ctx, clientauth.CertificateThumbprint(cert))),
 		tx, c, f.orgID, f.userID, "", "", []string{}, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)

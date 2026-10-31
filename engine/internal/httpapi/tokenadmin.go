@@ -361,6 +361,14 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 
 	inactive := &introspectionResponse{Active: false}
 
+	// specs/rfc7662.txt:649: "If the token can be used only at certain resource
+	// servers, the authorization server MUST determine whether or not the token
+	// can be used at the resource server making the introspection call." This one
+	// can be used at the credential endpoint, which never calls here.
+	if s.issuanceOnly(claims) {
+		return inactive
+	}
+
 	if time.Now().After(time.Unix(claims.Expiry, 0)) {
 		return inactive
 	}

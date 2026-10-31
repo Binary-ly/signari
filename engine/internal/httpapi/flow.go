@@ -1069,6 +1069,9 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	if len(resources) > 0 {
 		audience = resources
 	}
+	if issuanceAudienceFrom(ctx) {
+		audience = []string{s.credentialAudience()}
+	}
 
 	// The actor behind this session, if an administrator started it.
 	//
@@ -3110,6 +3113,12 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 			Description: "the subject token is not valid", Status: http.StatusBadRequest})
 		return
 	}
+	if s.issuanceOnly(subject) {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "the subject token is good for issuing a credential and nothing else",
+			Status:      http.StatusBadRequest})
+		return
+	}
 
 	// A bound subject token may only be exchanged by whoever holds its key.
 	// Without this the token endpoint is the one door where possession alone
@@ -3181,6 +3190,12 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 				Description: "the actor token is not valid", Status: http.StatusBadRequest})
+			return
+		}
+		if s.issuanceOnly(actor) {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the actor token is good for issuing a credential and nothing else",
+				Status:      http.StatusBadRequest})
 			return
 		}
 		if gone, gerr := store.GrantRevoked(ctx, s.db, actor.GrantID); gerr != nil || gone {
@@ -3268,6 +3283,12 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	actorName := c.ClientID
 	if actorSubject != "" {
 		actorName = actorSubject
+	}
+	if subject.Act.Depth() >= tokens.MaxActorDepth {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: fmt.Sprintf("the subject token has been delegated %d times, the most allowed", tokens.MaxActorDepth),
+			Status:      http.StatusBadRequest})
+		return
 	}
 	act := &tokens.Actor{Subject: actorName, Act: subject.Act}
 

@@ -56,6 +56,35 @@ func (s *Server) handleCredentialNonce(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"c_nonce": nonce})
 }
 
+// credentialAudience is the one audience a token redeemed from an offer carries.
+// Not the client id, and not the issuer, which are what userinfo accepts: the
+// offer vouched for the holder of a code, nobody signed in, and a token that says
+// so must not pass for one that says otherwise anywhere else.
+func (s *Server) credentialAudience() string {
+	return s.cfg.Issuer + oidcPathCredential
+}
+
+// issuanceOnly reports whether a token is good for the credential endpoint and so
+// for nothing else: not an introspecting resource, and not a subject or actor at
+// the exchanges, which would hand back a token with an ordinary audience.
+func (s *Server) issuanceOnly(c *tokens.AccessTokenClaims) bool {
+	return audienceIncludes(c.Audience, s.credentialAudience())
+}
+
+type issuanceAudienceKey struct{}
+
+// withIssuanceAudience tells mintSet to audience the token to the credential
+// endpoint, carried as the DPoP thumbprint is: one caller in a dozen sets it, and
+// it is not a resource the client asked for, which mintSet would refuse.
+func withIssuanceAudience(ctx context.Context) context.Context {
+	return context.WithValue(ctx, issuanceAudienceKey{}, true)
+}
+
+func issuanceAudienceFrom(ctx context.Context) bool {
+	on, _ := ctx.Value(issuanceAudienceKey{}).(bool)
+	return on
+}
+
 // handleCredential implements §8, the Credential Endpoint.
 func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -81,7 +110,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	if !tokens.AudienceAccepted(claims, s.cfg.Issuer) {
+	if !s.issuanceOnly(claims) {
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", `+
 				`error_description="This token was issued for another resource"`)

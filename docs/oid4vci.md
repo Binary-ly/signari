@@ -208,7 +208,8 @@ token that does not enable the requested one with an RFC 6750 error. So:
 
 | The token | The answer |
 |---|---|
-| minted by no offer, such as a sign-in token for any client | `401`, `error="invalid_token"` |
+| audienced to anything but this endpoint, which is every sign-in token | `401`, `error="invalid_token"` |
+| audienced here and minted by no offer | `401`, `error="invalid_token"` |
 | from an offer that did not name the requested configuration | `403`, `error="insufficient_scope"` |
 | from an offer naming a configuration since removed | `400`, `unknown_credential_configuration` (§8.3.1.2) |
 | revoked, or from a revoked grant or an ended session | `401`, read at the request as userinfo reads it |
@@ -218,6 +219,12 @@ in the minting transaction. That is the binding, rather than an
 `authorization_details` claim: returning `openid_credential` details obliges the
 wallet to use the `credential_identifiers` that come with them (§6.2), which is
 the request form listed under what is still not built.
+
+The audience runs the other way too. A redeemed token's `aud` is the credential
+endpoint and nothing else, because nobody signed in to get it, so userinfo refuses
+it, introspection reports it inactive to every caller, and token exchange and
+transaction tokens refuse it as a subject or an actor. A wallet that wants an
+ordinary token has to sign somebody in.
 
 **Until October 2026 this endpoint accepted any access token audienced to the
 issuer.** A sign-in token from an unrelated client minted any configuration for

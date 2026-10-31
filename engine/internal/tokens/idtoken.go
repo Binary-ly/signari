@@ -473,6 +473,20 @@ type Actor struct {
 	Act     *Actor `json:"act,omitempty"`
 }
 
+// MaxActorDepth is how many parties a delegation chain may name. Each exchange adds
+// one, and two clients exchanging a token back and forth would otherwise grow it until
+// it no longer fits in a header, signing more every time.
+const MaxActorDepth = 8
+
+// Depth is how many parties the chain names; none is 0.
+func (a *Actor) Depth() int {
+	n := 0
+	for ; a != nil; a = a.Act {
+		n++
+	}
+	return n
+}
+
 // Lifetime bounds. Short access tokens are how revocation stays bounded without
 // forcing introspection on every request -- see ADR-007.
 const (

@@ -118,7 +118,7 @@ func (f *tokenFixture) mintAccessToken(t *testing.T, configIDs ...string) string
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, _, err := f.srv.mintSet(ctx, tx, c, f.orgID, f.userID, "", "", []string{}, nil, nil, "")
+	resp, _, err := f.srv.mintSet(withIssuanceAudience(ctx), tx, c, f.orgID, f.userID, "", "", []string{}, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func (f *tokenFixture) mintLoginToken(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, _, err := f.srv.mintSet(ctx, tx, c, f.orgID, f.userID, "", "", []string{"profile"}, nil, nil, "")
+	resp, _, err := f.srv.mintSet(withIssuanceAudience(ctx), tx, c, f.orgID, f.userID, "", "", []string{"profile"}, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

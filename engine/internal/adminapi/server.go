@@ -846,6 +846,8 @@ type patchClientRequest struct {
 	// Sector, the host name of the clients that share one.
 	SubjectType *string `json:"subject_type"`
 	Sector      *string `json:"sector"`
+	// SecurityProfile is none, or fapi2 to hold the client to that profile.
+	SecurityProfile *string `json:"security_profile"`
 	// RequirePushedAuthorizationRequests is RFC 9126 §6's name; FirstParty
 	// skips the consent screen.
 	RequirePushedAuthorizationRequests *bool `json:"require_pushed_authorization_requests"`
@@ -1072,7 +1074,7 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 	}
 	s.IDTokenAlg, s.AccessTokenAlg = r.IDTokenSignedResponseAlg, r.AccessTokenSignedResponseAlg
 	s.RolesClaim, s.AccessTokenFormat = r.RolesClaim, r.AccessTokenFormat
-	s.SubjectType, s.Sector = r.SubjectType, r.Sector
+	s.SubjectType, s.Sector, s.SecurityProfile = r.SubjectType, r.Sector, r.SecurityProfile
 	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
 	s.RequireState = r.RequireState
 	s.MinimumACR = r.MinimumACR
@@ -1083,7 +1085,7 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil ||
 		r.RefreshReuseGraceSeconds != nil || r.IDTokenSignedResponseAlg != nil ||
 		r.AccessTokenSignedResponseAlg != nil || r.RolesClaim != nil || r.AccessTokenFormat != nil ||
-		r.SubjectType != nil || r.Sector != nil || r.RequirePushedAuthorizationRequests != nil ||
+		r.SubjectType != nil || r.Sector != nil || r.SecurityProfile != nil || r.RequirePushedAuthorizationRequests != nil ||
 		r.FirstParty != nil || r.IssuerAlias != nil || r.MinimumACR != nil || r.ConsentLifetimeSeconds != nil
 }
 
@@ -1238,6 +1240,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				"access_token_format":                   got.AccessTokenFormat,
 				"subject_type":                          got.SubjectType,
 				"sector":                                got.Sector,
+				"security_profile":                      got.SecurityProfile,
 				"require_pushed_authorization_requests": got.RequirePAR,
 				"require_state":                         got.RequireState,
 				"first_party":                           got.FirstParty,

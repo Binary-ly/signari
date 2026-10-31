@@ -122,6 +122,10 @@ type Assertion struct {
 	ClientID string
 	JTI      string
 	Expiry   time.Time
+	// Algorithm is what signed it. Audience is `aud` when it is one string and
+	// empty when it is a list, for a profile that accepts only the string.
+	Algorithm string
+	Audience  string
 }
 
 type assertionClaims struct {
@@ -274,7 +278,12 @@ func VerifyPrivateKeyJWT(assertion, clientID, jwksJSON string, audiences []strin
 		}
 	}
 
-	return &Assertion{ClientID: clientID, JTI: c.JTI, Expiry: exp}, nil
+	var audience string
+	if json.Unmarshal(c.Audience, &audience) != nil {
+		audience = ""
+	}
+	return &Assertion{ClientID: clientID, JTI: c.JTI, Expiry: exp,
+		Algorithm: tok.Signatures[0].Header.Algorithm, Audience: audience}, nil
 }
 
 // audienceMatches accepts a string or an array, and requires an exact match.

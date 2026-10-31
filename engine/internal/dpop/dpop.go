@@ -294,6 +294,16 @@ func CheckPresentation(bound bool, scheme string) error {
 	return nil
 }
 
+// Algorithm is what signed a proof that has been verified, for a client held to
+// fewer than this package allows. "" for anything that does not parse.
+func Algorithm(header string) string {
+	tok, err := jose.ParseSigned(header, allowedAlgs)
+	if err != nil || len(tok.Signatures) != 1 {
+		return ""
+	}
+	return tok.Signatures[0].Header.Algorithm
+}
+
 // SupportedAlgs renders allowedAlgs for the `algs` parameter of a DPoP
 // WWW-Authenticate challenge (RFC 9449 §7.2). Built from the same list Verify
 // enforces, so the advertisement cannot drift from the policy.

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"signari.dev/engine/internal/abca"
@@ -384,6 +386,55 @@ func (s *Server) refuseUnboundTokenRequest(w http.ResponseWriter, ctx context.Co
 			"so every token request must carry a DPoP proof",
 		Status: http.StatusBadRequest})
 	return true
+}
+
+type refreshKeptKey struct{}
+
+// withRefreshKept says a grant is keeping the refresh token it came with, so the mint
+// issues none. On the context, as the thumbprint above is, for the one grant that sets it.
+func withRefreshKept(ctx context.Context) context.Context {
+	return context.WithValue(ctx, refreshKeptKey{}, true)
+}
+
+func refreshKeptFrom(ctx context.Context) bool {
+	kept, _ := ctx.Value(refreshKeptKey{}).(bool)
+	return kept
+}
+
+// refuseOutOfProfile holds a client marked for a security profile to it at the token
+// endpoint, before any grant. A client's settings can leave the profile by a command that
+// has never heard of one, and a client out of it is refused rather than served as if
+// nothing had happened, because the mark is somebody's promise about it.
+func (s *Server) refuseOutOfProfile(w http.ResponseWriter, r *http.Request, c *clients.Client) bool {
+	if c == nil || !c.FAPI2() {
+		return false
+	}
+	ctx := r.Context()
+	if problems := c.ProfileProblems(); len(problems) > 0 {
+		s.log.Error("a client out of its security profile was refused", "client_id", c.ClientID,
+			"problems", problems, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
+			Description: "this client does not meet its security profile", Status: http.StatusBadRequest})
+		return true
+	}
+	// FAPI 2.0 §5.3.2.1: "shall only issue sender-constrained access tokens". A client
+	// set for mutual TLS binding is otherwise given a bearer token when it arrives
+	// without a certificate, which is a cutover for any other client.
+	jkt := dpopThumbprintFrom(ctx)
+	if jkt == "" && certThumbprintFrom(ctx) == "" {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: "a client held to FAPI 2.0 is issued only sender-constrained tokens, and this " +
+				"request proves no key", Status: http.StatusBadRequest})
+		return true
+	}
+	if jkt != "" && !slices.Contains(clients.FAPI2Algorithms, dpop.Algorithm(r.Header.Get("DPoP"))) {
+		w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof"`)
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
+			Description: "a client held to FAPI 2.0 signs its proofs with " +
+				strings.Join(clients.FAPI2Algorithms, ", "), Status: http.StatusBadRequest})
+		return true
+	}
+	return false
 }
 
 func dpopChallenge(errCode, description string) string {

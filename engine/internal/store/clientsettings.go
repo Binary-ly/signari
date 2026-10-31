@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/tokens"
 )
 
@@ -49,6 +50,9 @@ type ClientSettings struct {
 	// Sector is who shares a pairwise subject. "" keeps the one it has, or takes
 	// the host of the client's redirect URIs when they have only one.
 	Sector *string
+	// SecurityProfile is none, or fapi2 to hold the client to that profile. Every
+	// change through here is checked against the profile the client ends up with.
+	SecurityProfile *string
 	// RequirePAR refuses any authorization the client did not push first (RFC
 	// 9126 §6, require_pushed_authorization_requests).
 	RequirePAR *bool
@@ -248,6 +252,34 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
+	if v := s.SecurityProfile; v != nil {
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET security_profile = $2,
+			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
+			return err
+		}
+	}
+	return checkSecurityProfile(ctx, tx, clientID)
+}
+
+// checkSecurityProfile refuses to leave a client out of the profile it is held to, last,
+// so a change to several settings at once is judged on where they end up.
+func checkSecurityProfile(ctx context.Context, tx pgx.Tx, clientID string) error {
+	var profile string
+	err := tx.QueryRow(ctx, `SELECT security_profile FROM core.clients WHERE client_id = $1`, clientID).Scan(&profile)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && profile == "none") {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	c, err := clients.Lookup(ctx, tx, clientID)
+	if err != nil {
+		return err
+	}
+	if problems := c.ProfileProblems(); len(problems) > 0 {
+		return fmt.Errorf("%w: this client would not meet the %s profile: %s", ErrInvalidClientSetting, profile,
+			strings.Join(problems, "; "))
+	}
 	return nil
 }
 
@@ -279,6 +311,10 @@ func CheckClientSettings(s ClientSettings) error {
 	}
 	if v := s.AccessTokenFormat; v != nil && *v != "jwt" && *v != "opaque" {
 		return fmt.Errorf("%w: an access token is jwt or opaque, not %q", ErrInvalidClientSetting, *v)
+	}
+	if v := s.SecurityProfile; v != nil && *v != "none" && *v != clients.ProfileFAPI2 {
+		return fmt.Errorf("%w: a security profile is none or %s, not %q", ErrInvalidClientSetting,
+			clients.ProfileFAPI2, *v)
 	}
 	if v := s.SubjectType; v != nil && *v != "public" && *v != "pairwise" {
 		return fmt.Errorf("%w: a subject is public or pairwise, not %q", ErrInvalidClientSetting, *v)
@@ -391,6 +427,7 @@ type ClientSettingsView struct {
 	AccessTokenFormat string
 	SubjectType       string
 	Sector            string
+	SecurityProfile   string
 	RequirePAR        bool
 	RequireState      bool
 	FirstParty        bool
@@ -408,12 +445,12 @@ func ClientSettingsOf(ctx context.Context, q interface {
 	var access, refresh, grace, consent int
 	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, refresh_reuse_grace_s, id_token_signed_alg,
 		       COALESCE(access_token_signed_alg, ''), COALESCE(roles_claim, ''), access_token_format,
-		       subject_type, sector,
+		       subject_type, sector, security_profile,
 		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr,
 		       COALESCE(consent_lifetime_s, 0), require_state
 		FROM core.clients WHERE client_id = $1`, clientID).
 		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RolesClaim, &v.AccessTokenFormat,
-			&v.SubjectType, &v.Sector, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent, &v.RequireState)
+			&v.SubjectType, &v.Sector, &v.SecurityProfile, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent, &v.RequireState)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

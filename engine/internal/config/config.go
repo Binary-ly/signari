@@ -160,6 +160,9 @@ type Client struct {
 	// Sector, the host name of the clients that share one; each absent leaves it.
 	SubjectType *string `yaml:"subject_type"`
 	Sector      *string `yaml:"sector"`
+	// SecurityProfile is none, or fapi2 to hold the client to that profile; absent
+	// leaves it.
+	SecurityProfile *string `yaml:"security_profile"`
 	// RequirePAR and FirstParty are the switches; each absent leaves it.
 	RequirePAR   *bool `yaml:"require_pushed_authorization_requests"`
 	RequireState *bool `yaml:"require_state"`
@@ -176,7 +179,8 @@ type Client struct {
 func (c Client) settings() store.ClientSettings {
 	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL,
 		IDTokenAlg: c.IDTokenAlg, AccessTokenAlg: c.AccessTokenAlg, RolesClaim: c.RolesClaim,
-		AccessTokenFormat: c.AccessTokenFormat, SubjectType: c.SubjectType, Sector: c.Sector, RequirePAR: c.RequirePAR,
+		AccessTokenFormat: c.AccessTokenFormat, SubjectType: c.SubjectType, Sector: c.Sector,
+		SecurityProfile: c.SecurityProfile, RequirePAR: c.RequirePAR,
 		RequireState: c.RequireState, FirstParty: c.FirstParty,
 		IssuerAlias: c.IssuerAlias, MinimumACR: c.MinimumACR}
 }

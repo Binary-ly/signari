@@ -144,9 +144,11 @@ type Client struct {
 	AccessFormat string
 	// SubjectType is how its tokens name a person: public, or pairwise for an
 	// identifier that means nothing outside Sector.
-	SubjectType  string
-	Sector       string
-	RedirectURIs []string
+	SubjectType string
+	Sector      string
+	// SecurityProfile is none, or fapi2 for a client held to ProfileProblems.
+	SecurityProfile string
+	RedirectURIs    []string
 
 	// ClaimsRedirectURIs is UMA 2.0 §3.3.2's separate list.
 	//
@@ -254,7 +256,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce,
 		       id_token_signed_alg, COALESCE(access_token_signed_alg, ''), COALESCE(roles_claim, ''),
-		       access_token_format, subject_type, sector, refresh_token_ttl_s, first_party,
+		       access_token_format, subject_type, sector, security_profile, refresh_token_ttl_s, first_party,
 		       -- The alias only while it is still claimed: past its retirement a
 		       -- token minted under it carries an issuer this deployment no longer
 		       -- accepts, so the client gets the instance's own.
@@ -281,7 +283,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
 			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE,
 			&c.IDTokenAlg, &c.AccessAlg, &c.RolesClaim, &c.AccessFormat, &c.SubjectType, &c.Sector,
-			&c.RefreshTTL, &c.FirstParty, &alias,
+			&c.SecurityProfile, &c.RefreshTTL, &c.FirstParty, &alias,
 			&c.MayExchange, &c.ExchangeAudiences, &c.JWTBearerProviders,
 			&tlsDN, &tlsDNS, &tlsURI, &tlsIP, &tlsEmail,
 			&c.TLSThumbprint, &c.TLSBoundTokens,

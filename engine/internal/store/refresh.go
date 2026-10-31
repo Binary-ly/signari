@@ -165,6 +165,45 @@ func RotateRefreshToken(ctx context.Context, tx pgx.Tx, hash []byte) (*RefreshGr
 	return &g, nil
 }
 
+// ReadRefreshGrant is RotateRefreshToken leaving the token as it found it, for a client
+// whose refresh tokens do not rotate: the same conditions, so the token stops working
+// at exactly the same moments, and a token already rotated is reuse here as there.
+func ReadRefreshGrant(ctx context.Context, tx pgx.Tx, hash []byte) (*RefreshGrant, error) {
+	var g RefreshGrant
+	err := tx.QueryRow(ctx, `
+		SELECT f.id::text, f.client_id, f.user_id::text,
+		       COALESCE(f.sid, ''), f.org_id::text, rt.scopes, rt.resources,
+		       f.authorization_details, COALESCE(f.dpop_jkt, ''),
+		       COALESCE(f.cert_thumbprint, '')
+		FROM core.refresh_tokens rt
+		JOIN core.refresh_token_families f ON f.id = rt.family_id
+		JOIN core.users u ON u.id = f.user_id
+		LEFT JOIN core.sessions s ON s.sid = f.sid
+		WHERE rt.token_hash = $1
+		  AND rt.consumed_at IS NULL
+		  AND rt.expires_at  > now()
+		  AND f.revoked_at IS NULL
+		  AND u.status = 'active'
+		  AND `+OrgInService("f.org_id")+`
+		  AND (f.offline_not_after > now() OR (s.revoked_at IS NULL AND s.not_after > now()))`, hash).
+		Scan(&g.FamilyID, &g.ClientID, &g.UserID, &g.SessionID, &g.OrgID, &g.Scopes,
+			&g.Resources, &g.Details, &g.DPoPJKT, &g.CertThumbprint)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var consumed bool
+		e := tx.QueryRow(ctx,
+			`SELECT consumed_at IS NOT NULL FROM core.refresh_tokens WHERE token_hash = $1`, hash).
+			Scan(&consumed)
+		if e == nil && consumed {
+			return nil, ErrRefreshReused
+		}
+		return nil, ErrRefreshInvalid
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading refresh token: %w", err)
+	}
+	return &g, nil
+}
+
 // LinkSuccessor records which token replaced another, so an audit can walk a
 // lineage after the fact and see exactly where a replay entered it. sealed is the
 // successor for a client with a retry grace (SealSuccessor), nil for any other.

@@ -561,6 +561,7 @@ type GetClientsClientIDResponse struct {
 	RolesClaim                            *string        `json:"roles_claim,omitempty"`
 	Scopes                                []string       `json:"scopes"`
 	Sector                                string         `json:"sector,omitempty"`
+	SecurityProfile                       string         `json:"security_profile,omitempty"`
 	SubjectType                           string         `json:"subject_type,omitempty"`
 	TlsBoundTokens                        bool           `json:"tls_bound_tokens,omitempty"`
 	TlsSanDns                             *string        `json:"tls_san_dns,omitempty"`
@@ -1681,6 +1682,7 @@ type PatchClientsClientIDRequest struct {
 	RolesClaim                            *string         `json:"roles_claim,omitempty"`
 	Scopes                                *[]string       `json:"scopes,omitempty"`
 	Sector                                *string         `json:"sector,omitempty"`
+	SecurityProfile                       *string         `json:"security_profile,omitempty"`
 	SubjectType                           *string         `json:"subject_type,omitempty"`
 	TlsBoundTokens                        *bool           `json:"tls_bound_tokens,omitempty"`
 	TlsCertificate                        *string         `json:"tls_certificate,omitempty"`
@@ -1715,6 +1717,7 @@ type PatchClientsClientIDResponse struct {
 	RequireState                       bool     `json:"require_state,omitempty"`
 	RolesClaim                         string   `json:"roles_claim,omitempty"`
 	Sector                             string   `json:"sector,omitempty"`
+	SecurityProfile                    string   `json:"security_profile,omitempty"`
 	SubjectType                        string   `json:"subject_type,omitempty"`
 }
 

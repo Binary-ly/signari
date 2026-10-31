@@ -154,6 +154,14 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Out of its profile, a client gets nothing to authorize.
+	if problems := c.ProfileProblems(); len(problems) > 0 {
+		s.log.Error("a client out of its security profile was refused", "client_id", clientID,
+			"problems", problems, "correlation_id", correlationID(ctx))
+		writeError(w, http.StatusBadRequest, "unauthorized_client", "this client does not meet its security profile")
+		return
+	}
+
 	// Paced before anything is stored. Every pushed request is a row, and a
 	// public client authenticates nothing here, so there was once no limit at
 	// all on how many rows a stranger could have this server write: a public

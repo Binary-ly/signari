@@ -177,6 +177,9 @@
         "sector": {
           "type": "string"
         },
+        "security_profile": {
+          "type": "string"
+        },
         "subject_type": {
           "type": "string"
         },

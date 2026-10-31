@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"signari.dev/engine/internal/abca"
@@ -99,6 +101,13 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 		a, err := clientauth.VerifyPrivateKeyJWT(assertion, c.ClientID, jwks, aud, time.Now())
 		if err != nil {
 			return err
+		}
+		// FAPI 2.0 §5.3.2.1: "shall only accept its issuer identifier value ... as
+		// a string in the aud claim received in client authentication assertions",
+		// which is the leniency above taken away, and §5.4.1's algorithms.
+		if c.FAPI2() && (a.Audience != s.cfg.Issuer || !slices.Contains(clients.FAPI2Algorithms, a.Algorithm)) {
+			return fmt.Errorf("a client held to FAPI 2.0 addresses its assertion to the issuer alone, "+
+				"as a string, and signs it with %s", strings.Join(clients.FAPI2Algorithms, ", "))
 		}
 
 		// Replay. The assertion is signed, fresh and correctly addressed -- and

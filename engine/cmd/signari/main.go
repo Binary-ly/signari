@@ -224,6 +224,7 @@ clients:
   client set-roles-claim           the claim a client's tokens carry a person's roles in it under
   client set-token-format          a client's access tokens as JWTs, or opaque handles to introspect
   client set-subject-type          name people to a client by their id, or by one only its sector knows
+  client set-profile               hold a client to the FAPI 2.0 Security Profile
   client set-acr                   the assurance every sign-in to the client must reach
   client set-grants                set which grant types a client may use
   client set-exchange              grant RFC 8693 token exchange, for itself and audiences
@@ -513,6 +514,8 @@ func run(args []string) (err error) {
 		"empty goes back to what signs its ID tokens")
 	tokenFormat := fs.String("token-format", "jwt", "`client set-token-format`: jwt, or opaque for a handle a "+
 		"resource server introspects")
+	securityProfile := fs.String("security-profile", "none", "`client set-profile`: none, or fapi2 to hold the "+
+		"client to the FAPI 2.0 Security Profile")
 	subjectType := fs.String("subject-type", "public", "`client set-subject-type`: public, or pairwise for a "+
 		"subject that means nothing outside the client's sector")
 	sector := fs.String("sector", "", "`client set-subject-type`: the host name of the clients that share a "+
@@ -1429,6 +1432,9 @@ func run(args []string) (err error) {
 	case "client set-token-format":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{AccessTokenFormat: tokenFormat},
 			"its access tokens are "+*tokenFormat+" from the next one issued")
+	case "client set-profile":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{SecurityProfile: securityProfile},
+			"held to the "+*securityProfile+" security profile")
 	case "client set-subject-type":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{SubjectType: subjectType, Sector: sector},
 			"its tokens name people as "+*subjectType+" subjects from the next one issued, and it will not "+

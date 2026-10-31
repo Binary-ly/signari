@@ -569,6 +569,7 @@ Answers:
 | `roles_claim` | string or null |  |
 | `scopes` | list of string | always |
 | `sector` | string |  |
+| `security_profile` | string |  |
 | `subject_type` | string |  |
 | `tls_bound_tokens` | boolean |  |
 | `tls_san_dns` | string or null |  |
@@ -630,6 +631,7 @@ Takes:
 | `roles_claim` | string |  |
 | `scopes` | list of string |  |
 | `sector` | string |  |
+| `security_profile` | string |  |
 | `subject_type` | string |  |
 | `tls_bound_tokens` | boolean |  |
 | `tls_certificate` | string |  |
@@ -665,6 +667,7 @@ Answers:
 | `require_state` | boolean |  |
 | `roles_claim` | string |  |
 | `sector` | string |  |
+| `security_profile` | string |  |
 | `subject_type` | string |  |
 
 ## clients / group-release

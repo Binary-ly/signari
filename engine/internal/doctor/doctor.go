@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/authzen"
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/i18n"
 	"signari.dev/engine/internal/keys"
@@ -193,6 +194,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 		return nil, err
 	}
 	if err := checkOutposts(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkClientProfiles(ctx, conn, r); err != nil {
 		return nil, err
 	}
 	if err := checkAuthenticatorAllowList(ctx, conn, r); err != nil {
@@ -505,6 +509,34 @@ func checkProviderHooks(ctx context.Context, conn *pgx.Conn, r *Report) error {
 // says hello once a minute whether or not anybody uses it, so its silence is not
 // a quiet branch office: the protocol it served has stopped answering somewhere
 // nobody is looking.
+// checkClientProfiles says which clients have left the security profile they are held
+// to, by a command that has never heard of one. Such a client is refused at the token
+// endpoint, safely and with no word to it of why, so this is where an operator hears.
+func checkClientProfiles(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("client profiles")
+	rows, err := conn.Query(ctx, `SELECT client_id FROM core.clients WHERE security_profile <> 'none' ORDER BY client_id`)
+	if err != nil {
+		return err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		c, err := clients.Lookup(ctx, conn, id)
+		if err != nil {
+			return err
+		}
+		if problems := c.ProfileProblems(); len(problems) > 0 {
+			r.add(Warning, "client profiles",
+				fmt.Sprintf("client %s is held to %s and does not meet it, so it is refused: %s", id,
+					c.SecurityProfile, strings.Join(problems, "; ")),
+				"put the setting back, or `signari client set-profile -security-profile none` to release it.")
+		}
+	}
+	return nil
+}
+
 func checkOutposts(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	r.ran("outposts")
 	rows, err := conn.Query(ctx, `SELECT DISTINCT o.id::text, o.slug

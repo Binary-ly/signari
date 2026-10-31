@@ -67,6 +67,20 @@ func TestApplySetsAClientsSubjectType(t *testing.T) {
 		t.Errorf("after going back: %q", got.SubjectType)
 	}
 
+	// A security profile by the same road: the file is refused for a client that does
+	// not meet it, and `none` is what a client read back says.
+	bad := parse("    security_profile: fapi2\n")
+	plan, err := BuildPlan(ctx, tx, org, bad, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fmt.Sprint(plan.Changes), "security_profile") {
+		t.Errorf("a new profile planned %+v", plan.Changes)
+	}
+	if plan := apply(parse("    security_profile: none\n")); !plan.Empty() {
+		t.Errorf("a file saying what is there planned %+v", plan.Changes)
+	}
+
 	f, err := Parse([]byte("version: 1\nclients:\n  - client_id: x\n    redirect_uris: [https://app.test/cb]\n" +
 		"    subject_type: secret\n"))
 	if err == nil {

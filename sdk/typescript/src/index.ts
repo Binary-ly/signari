@@ -1713,6 +1713,7 @@ export interface GetClientsClientIDResponse {
   roles_claim?: string | null
   scopes: string[]
   sector?: string
+  security_profile?: string
   subject_type?: string
   tls_bound_tokens?: boolean
   tls_san_dns?: string | null
@@ -2833,6 +2834,7 @@ export interface PatchClientsClientIDRequest {
   roles_claim?: string
   scopes?: string[]
   sector?: string
+  security_profile?: string
   subject_type?: string
   tls_bound_tokens?: boolean
   tls_certificate?: string
@@ -2867,6 +2869,7 @@ export interface PatchClientsClientIDResponse {
   require_state?: boolean
   roles_claim?: string
   sector?: string
+  security_profile?: string
   subject_type?: string
 }
 

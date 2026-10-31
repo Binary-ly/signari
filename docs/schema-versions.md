@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0233 security_profile
+
+Compatible with the release before: its binary may still serve this schema.
+
+A client held to a security profile (9.05). FAPI 2.0 is a set of restrictions a deployment turns on, not behaviour that is wrong by default, and most of what it restricts is already a setting of the client: a client marked fapi2 is refused until its settings meet the profile, and refused at the token endpoint if they stop meeting it. What is not a setting follows from the mark: an assertion addressed only to the issuer, a refresh token that does not rotate, a redirect_uri always pushed.
+
 ## 0232 pairwise_subjects
 
 Compatible with the release before: its binary may still serve this schema.

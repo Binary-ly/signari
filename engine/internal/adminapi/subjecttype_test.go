@@ -56,4 +56,27 @@ func TestAClientPATCHSetsTheSubjectType(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || out["error"] != "invalid_client_setting" {
 		t.Errorf("a bad sector gave %d %v", rec.Code, out["error"])
 	}
+
+	// And a security profile by the same writer, refused for a client that does not meet
+	// it, the refusal naming why, which rolls back everything sent with it.
+	rec = call(t, s, http.MethodPatch, "/admin/clients/"+id, testToken,
+		map[string]any{"security_profile": "fapi2", "sector": "kept.example.test"})
+	out = nil
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusBadRequest || out["error"] != "invalid_client_setting" {
+		t.Errorf("a profile it does not meet gave %d %v", rec.Code, out)
+	}
+	if got, _ := store.ClientSettingsOf(context.Background(), s.db, id); got.SecurityProfile != "none" || got.Sector != "example.test" {
+		t.Errorf("after the refusal: %q in %q", got.SecurityProfile, got.Sector)
+	}
+	rec = call(t, s, http.MethodPatch, "/admin/clients/"+id, testToken, map[string]any{"security_profile": "none"})
+	out = nil
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusOK || out["security_profile"] != "none" {
+		t.Errorf("none gave %d %v", rec.Code, out)
+	}
+	rec = call(t, s, http.MethodPatch, "/admin/clients/"+id, testToken, map[string]any{"security_profile": "gold"})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("a profile that does not exist gave %d", rec.Code)
+	}
 }

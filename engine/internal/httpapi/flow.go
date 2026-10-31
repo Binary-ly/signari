@@ -845,7 +845,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if s.refuseUnboundTokenRequest(w, ctx, c) {
+	if s.refuseUnboundTokenRequest(w, ctx, c) || s.refuseOutOfProfile(w, r, c) {
 		return
 	}
 
@@ -1373,7 +1373,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		resp.IDToken = idt
 	}
 
-	if !containsScope(scopes, "offline_access") {
+	if !containsScope(scopes, "offline_access") || refreshKeptFrom(ctx) {
 		return resp, nil, nil
 	}
 
@@ -1714,7 +1714,18 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	grant, rerr := store.RotateRefreshToken(ctx, tx, oldHash)
+	// FAPI 2.0 §5.3.2.1: "shall not use refresh token rotation except in
+	// extraordinary circumstances". The token stays good and the answer carries no
+	// new one, so an answer lost on the way back costs the client nothing.
+	var grant *store.RefreshGrant
+	var rerr error
+	kept := c.FAPI2()
+	if kept {
+		ctx = withRefreshKept(ctx)
+		grant, rerr = store.ReadRefreshGrant(ctx, tx, oldHash)
+	} else {
+		grant, rerr = store.RotateRefreshToken(ctx, tx, oldHash)
+	}
 
 	// A client that opted in gets one retry at the same answer, for an answer lost
 	// on the way back. Everything below still holds: this replaces the rotation and
@@ -1954,7 +1965,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		resp.RefreshToken = successor
-	} else {
+	} else if !kept {
 		var sealed []byte
 		if c.RefreshReuseGrace > 0 && resp.RefreshToken != "" {
 			var serr error

@@ -66,6 +66,7 @@ command or an environment variable exists in code and not on its page.
 | [resource-indicators.md](resource-indicators.md) | RFC 8707 — which APIs a token may be audienced to |
 | [opaque-access-tokens.md](opaque-access-tokens.md) | Access tokens that say nothing to whoever holds them, introspected per client |
 | [pairwise-subjects.md](pairwise-subjects.md) | A subject that means nothing outside the application it was given to, so applications cannot compare notes |
+| [fapi2.md](fapi2.md) | Holding a client to the FAPI 2.0 Security Profile, and what that changes |
 | [device-flow.md](device-flow.md) | RFC 8628 — televisions, CLIs, headless boxes |
 | [ciba.md](ciba.md) | Backchannel authentication |
 | [dynamic-registration.md](dynamic-registration.md) | RFC 7591/7592 |

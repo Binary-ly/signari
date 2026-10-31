@@ -67,10 +67,16 @@ func (p *proofKey) thumbprint(t *testing.T) string {
 // separate request.
 func (p *proofKey) proof(t *testing.T, jti string) string {
 	t.Helper()
+	return p.proofBy(t, jose.ES256, jti)
+}
+
+// proofBy is proof by an algorithm the key's curve has.
+func (p *proofKey) proofBy(t *testing.T, alg jose.SignatureAlgorithm, jti string) string {
+	t.Helper()
 	opts := (&jose.SignerOptions{}).
 		WithHeader(jose.HeaderType, "dpop+jwt").
 		WithHeader("jwk", p.jwk)
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: p.priv}, opts)
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: alg, Key: p.priv}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}

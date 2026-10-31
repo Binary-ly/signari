@@ -11,13 +11,13 @@ meet the stated attacker model".
 |---|---|
 | Distribute discovery metadata per OIDD/RFC 8414 | yes |
 | Reject the resource owner password credentials grant | yes |
-| Only support confidential clients | **profile mode** — we support public clients generally, which a FAPI deployment would disable |
-| Only issue sender-constrained access tokens | **profile mode** — supported, not mandatory |
+| Only support confidential clients | **per client** — we support public clients generally; a client held to [the profile](fapi2.md) must be confidential |
+| Only issue sender-constrained access tokens | **per client** — a client held to the profile is refused a token unless the request proves a key |
 | Sender-constraining via mTLS or DPoP | both implemented |
 | Client authentication via mTLS or `private_key_jwt` | both implemented |
 | Not expose open redirectors | yes |
-| Accept **only** the issuer identifier in a client assertion `aud` | **no** — see below |
-| Not use refresh token rotation | **no** — we rotate; see below |
+| Accept **only** the issuer identifier in a client assertion `aud` | **per client** — held to the profile, the issuer alone, as a string; otherwise see below |
+| Not use refresh token rotation | **per client** — held to the profile, a refresh token does not rotate; otherwise we rotate, see below |
 | Authorization codes with a maximum lifetime of 60 seconds | **yes, exactly 60** — and now pinned by `TestTheConstantsAConformanceClaimRestsOnHaveNotDrifted`, since nothing previously stopped the number drifting |
 | If using DPoP, support Authorization Code Binding to DPoP Key | **was missing — now implemented** |
 | Accept JWT `iat`/`nbf` 0–10s in the future, reject >60s | **was wrong in both directions — now implemented** |
@@ -155,10 +155,11 @@ Two MUST-level defects. The first was also an RFC 9449 §10.1 MUST that had gone
 unnoticed through an earlier DPoP review — because that review checked the proof
 and the binding at the resource, and never asked what binds the *code*.
 
-The remaining FAPI gaps are profile modes: restrictions a FAPI deployment must
+The remaining FAPI gaps were profile modes: restrictions a FAPI deployment must
 turn on (confidential clients only, sender-constrained tokens only, single
-assertion audience), not behaviours that are wrong by default. Making them a
-selectable profile is the honest next step, and is not built.
+assertion audience), not behaviours that are wrong by default. They are now a
+[selectable profile](fapi2.md), held per client with `client set-profile`. The
+OpenID Foundation's test plan has not been run against it.
 
 ## The requirements this review had not listed (August 2026)
 

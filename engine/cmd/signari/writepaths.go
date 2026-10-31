@@ -2418,7 +2418,7 @@ func scimSetEnabled(ctx context.Context, conn *pgx.Conn, orgID, slug string, ena
 // a sensible default and no way to change it, so an operator who found 20% wrong
 // for their organisation had no move at all.
 func dirSet(ctx context.Context, conn *pgx.Conn, orgID, slug, onMissing string, maxPercent int,
-	fs *flag.FlagSet, enabled, dryRun, fetchGroups bool, groupAttr, attributeMap string) error {
+	fs *flag.FlagSet, enabled, dryRun, fetchGroups bool, groupAttr, attributeMap string, syncInterval int) error {
 
 	if slug == "" {
 		return fmt.Errorf("give -slug")
@@ -2469,9 +2469,12 @@ func dirSet(ctx context.Context, conn *pgx.Conn, orgID, slug, onMissing string, 
 		}
 		change.AttributeMap = &m
 	}
+	if set["sync-interval"] {
+		change.SyncInterval = &syncInterval
+	}
 	if change.Empty() {
 		return fmt.Errorf("give at least one of -on-missing, -max-deactivate, -enabled, " +
-			"-dry-run, -fetch-groups, -group-attribute or -attribute-map")
+			"-dry-run, -fetch-groups, -group-attribute, -attribute-map or -sync-interval")
 	}
 	if err := directory.ChangeSource(ctx, conn, org, slug, change); err != nil {
 		return err
@@ -2481,16 +2484,24 @@ func dirSet(ctx context.Context, conn *pgx.Conn, orgID, slug, onMissing string, 
 	var mp int
 	var en, dr, fg bool
 	var ga string
+	var si int
 	_ = conn.QueryRow(ctx, `
 		SELECT on_missing, max_deactivate_percent, enabled, dry_run, fetch_groups,
-		       COALESCE(ldap_group_attribute, 'memberOf')
-		FROM core.directory_sources WHERE id = $1::uuid`, sourceID).Scan(&om, &mp, &en, &dr, &fg, &ga)
+		       COALESCE(ldap_group_attribute, 'memberOf'), COALESCE(sync_interval_seconds, 0)
+		FROM core.directory_sources WHERE id = $1::uuid`, sourceID).Scan(&om, &mp, &en, &dr, &fg, &ga, &si)
 
 	fmt.Printf("%s:\n  enabled        : %t\n  dry run        : %t\n"+
 		"  on missing     : %s\n  max deactivate : %d%%\n  fetch groups   : %t\n",
 		slug, en, dr, om, mp, fg)
 	if fg {
 		fmt.Printf("  group attribute: %s (ldap)\n", ga)
+	}
+	if si > 0 {
+		fmt.Printf("  sync interval  : %ds\n", si)
+		if dr || !en {
+			fmt.Println("\n  A schedule leaves a disabled source or one in dry run alone, so none will")
+			fmt.Println("  run until that changes.")
+		}
 	}
 	if om == "deactivate" {
 		fmt.Println("\n  People the directory stops returning will be DEACTIVATED here. Preview")

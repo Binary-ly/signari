@@ -2018,8 +2018,10 @@ export interface GetOrganizationsOrgIDDirectoriesResponseSourcesItem {
   last_updated: number
   max_deactivate_percent: number
   name: string
+  next_sync_at: string | null
   on_missing: string
   slug: string
+  sync_interval_seconds: number
 }
 
 /** A JSON object of the Admin API. */
@@ -2793,6 +2795,7 @@ export interface PatchOrganizationsOrgIDDirectoriesSlugRequest {
   group_attribute?: string
   max_deactivate_percent?: number
   on_missing?: string
+  sync_interval_seconds?: number
 }
 
 /** A JSON object of the Admin API. */

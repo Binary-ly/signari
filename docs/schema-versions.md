@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0207 directory_sync_schedule
+
+Compatible with the release before: its binary may still serve this schema.
+
+A directory source that syncs itself (7.15). A sync ran when somebody ran it, so a departed employee kept their account until the next cron job an operator had to write and watch. next_sync_at is claimed by the statement that moves it, so of several nodes one takes a source and the rest see it not yet due, and a sync that fails or dies waits for its next turn rather than being asked for every minute.
+
 ## 0206 directory_attribute_map
 
 Compatible with the release before: its binary may still serve this schema.

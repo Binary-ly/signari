@@ -42,6 +42,8 @@ type directoryView struct {
 	LastError       string              `json:"last_error"`
 	GroupMap        []map[string]string `json:"group_map"`
 	AttributeMap    map[string]string   `json:"attribute_map"`
+	SyncInterval    int                 `json:"sync_interval_seconds"`
+	NextSyncAt      *time.Time          `json:"next_sync_at"`
 }
 
 // addDirectoryRequest registers a source: google by its service account key
@@ -77,6 +79,8 @@ type patchDirectoryRequest struct {
 	GroupAttribute *string `json:"group_attribute"`
 	// AttributeMap replaces the map whole, LDAP name to local name; {} clears it.
 	AttributeMap *map[string]string `json:"attribute_map"`
+	// SyncInterval is seconds between scheduled syncs; 0 stops them.
+	SyncInterval *int `json:"sync_interval_seconds"`
 }
 
 type groupMapRequest struct {
@@ -108,7 +112,8 @@ func (s *Server) listDirectories(w http.ResponseWriter, r *http.Request) {
 		out = append(out, directoryView{ID: d.ID, Slug: d.Slug, Name: d.Name, Kind: d.Kind, OnMissing: d.OnMissing,
 			Enabled: d.Enabled, DryRun: d.DryRun, FetchGroups: d.FetchGroups, MaxDeactivate: d.MaxDeactivate,
 			LastSyncAt: d.LastSyncAt, LastCreated: d.LastCreated, LastUpdated: d.LastUpdated,
-			LastDeactivated: d.LastDeactivated, LastError: d.LastError, GroupMap: maps, AttributeMap: d.AttributeMap})
+			LastDeactivated: d.LastDeactivated, LastError: d.LastError, GroupMap: maps, AttributeMap: d.AttributeMap,
+			SyncInterval: d.SyncInterval, NextSyncAt: d.NextSyncAt})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "sources": out})
 }
@@ -176,7 +181,7 @@ func (s *Server) patchDirectory(w http.ResponseWriter, r *http.Request) {
 	}
 	change := directory.SourceChange{OnMissing: req.OnMissing, MaxDeactivate: req.MaxDeactivate,
 		Enabled: req.Enabled, DryRun: req.DryRun, FetchGroups: req.FetchGroups, GroupAttribute: req.GroupAttribute,
-		AttributeMap: req.AttributeMap}
+		AttributeMap: req.AttributeMap, SyncInterval: req.SyncInterval}
 	if change.Empty() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change"})
 		return
@@ -220,6 +225,9 @@ func (s *Server) patchDirectory(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.AttributeMap != nil {
 			detail["attribute_map"] = *req.AttributeMap
+		}
+		if req.SyncInterval != nil {
+			detail["sync_interval_seconds"] = *req.SyncInterval
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.directory_source_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})

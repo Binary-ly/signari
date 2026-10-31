@@ -318,6 +318,9 @@
         "start_tls": {
           "type": "boolean"
         },
+        "sync_interval_seconds": {
+          "type": "integer"
+        },
         "url": {
           "type": "string"
         }

@@ -908,8 +908,10 @@ type GetOrganizationsOrgIDDirectoriesResponseSourcesItem struct {
 	LastUpdated          int64                                                             `json:"last_updated"`
 	MaxDeactivatePercent int64                                                             `json:"max_deactivate_percent"`
 	Name                 string                                                            `json:"name"`
+	NextSyncAt           *string                                                           `json:"next_sync_at"`
 	OnMissing            string                                                            `json:"on_missing"`
 	Slug                 string                                                            `json:"slug"`
+	SyncIntervalSeconds  int64                                                             `json:"sync_interval_seconds"`
 }
 
 // GetOrganizationsOrgIDDirectoriesResponseSourcesItemGroupMapItem is a JSON object of the Admin API.
@@ -1683,6 +1685,7 @@ type PatchOrganizationsOrgIDDirectoriesSlugRequest struct {
 	GroupAttribute       *string         `json:"group_attribute,omitempty"`
 	MaxDeactivatePercent *int64          `json:"max_deactivate_percent,omitempty"`
 	OnMissing            *string         `json:"on_missing,omitempty"`
+	SyncIntervalSeconds  *int64          `json:"sync_interval_seconds,omitempty"`
 }
 
 // PatchOrganizationsOrgIDDirectoriesSlugResponse is a JSON object of the Admin API.

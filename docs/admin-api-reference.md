@@ -913,6 +913,7 @@ Takes:
 | `group_attribute` | string |  |
 | `max_deactivate_percent` | integer |  |
 | `on_missing` | string |  |
+| `sync_interval_seconds` | integer |  |
 
 Answers:
 

@@ -175,6 +175,7 @@ directory_sources:            # where people are synced from
     on_missing: report        # or deactivate
     max_deactivate_percent: 10
     dry_run: true             # a new source starts in dry run
+    sync_interval_seconds: 3600   # 0 for no schedule
     group_map: [{remote: "CN=Engineering,OU=Groups,DC=corp,DC=example,DC=com", group: platform}]
     attribute_map: {employeeNumber: employee_number, userPrincipalName: email}   # ldap only
 

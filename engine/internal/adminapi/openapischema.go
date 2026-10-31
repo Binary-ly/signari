@@ -592,11 +592,13 @@ var opSchemas = map[string]opSchema{
 	"GET /admin/organizations/{orgID}/directories": {http.StatusOK, nil, object([]string{"org_id", "sources"},
 		map[string]jsonSchema{"org_id": uuidStr(), "sources": arrayOf(object([]string{"id", "slug", "name", "kind",
 			"on_missing", "enabled", "dry_run", "fetch_groups", "max_deactivate_percent", "last_sync_at",
-			"last_created", "last_updated", "last_deactivated", "last_error", "group_map", "attribute_map"}, map[string]jsonSchema{
+			"last_created", "last_updated", "last_deactivated", "last_error", "group_map", "attribute_map",
+			"sync_interval_seconds", "next_sync_at"}, map[string]jsonSchema{
 			"id": uuidStr(), "slug": str(), "name": str(), "kind": str(), "on_missing": str(), "enabled": boolean(),
 			"dry_run": boolean(), "fetch_groups": boolean(), "max_deactivate_percent": integer(),
 			"last_sync_at": nullable(dateTime()), "last_created": integer(), "last_updated": integer(),
-			"last_deactivated": integer(), "last_error": str(), "attribute_map": mapOf(str()), "group_map": arrayOf(object(
+			"last_deactivated": integer(), "last_error": str(), "attribute_map": mapOf(str()),
+			"sync_interval_seconds": integer(), "next_sync_at": nullable(dateTime()), "group_map": arrayOf(object(
 				[]string{"remote_group", "group"}, map[string]jsonSchema{"remote_group": str(), "group": str()}))}))})},
 	"POST /admin/organizations/{orgID}/directories": {http.StatusCreated, typeOf[addDirectoryRequest](), object(
 		[]string{"id", "slug", "kind", "dry_run", "config_version"}, withVersion(map[string]jsonSchema{

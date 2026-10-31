@@ -100,6 +100,27 @@ Both cap pagination at 500 pages rather than looping without bound.
 Google's scope is `admin.directory.user.readonly`. A sync that can write to
 somebody's Workspace is a far larger blast radius than this feature needs.
 
+## On a schedule
+
+A source can sync itself, so that somebody who left stops signing in without anybody
+writing a cron job:
+
+```sh
+signari dir set -slug corp -sync-interval 3600    # hourly; 300 to 604800 seconds, 0 stops it
+```
+
+`signari serve` looks every minute for what is due and runs `dir sync -apply`, with
+every rule that has. The first run is one interval after the setting is made, so
+setting it applies nothing at once.
+
+A plan past the ceiling is refused, and with nobody at the terminal to read that, it
+goes on the source as its last error, where `dir list` and the Admin API show it, and
+into the trail as `directory.scheduled_sync`. A failed sync waits for its next turn
+rather than being asked again every minute. A disabled source, one in dry run and
+any in a suspended organisation are left alone, so a schedule is safe to set before
+a source is trusted. Of several nodes, one takes each source. A sync that runs past
+thirty minutes loses its turn.
+
 ## The churn bug, found by syncing twice
 
 The first version created users correctly and then proposed the **same two

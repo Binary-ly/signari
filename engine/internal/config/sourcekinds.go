@@ -54,6 +54,8 @@ type DirectorySource struct {
 	MaxDeactivate *int    `yaml:"max_deactivate_percent,omitempty"`
 	DryRun        *bool   `yaml:"dry_run,omitempty"`
 	Enabled       *bool   `yaml:"enabled,omitempty"`
+	// SyncInterval is seconds between scheduled syncs, 0 for none.
+	SyncInterval *int `yaml:"sync_interval_seconds,omitempty"`
 	// GroupMap is which local group each directory group grants: exactly
 	// these when given.
 	GroupMap *[]DirectoryMapping `yaml:"group_map,omitempty"`
@@ -93,7 +95,7 @@ func (w DirectorySource) spec() directory.SourceSpec {
 
 func (w DirectorySource) change() directory.SourceChange {
 	c := directory.SourceChange{OnMissing: w.OnMissing, MaxDeactivate: w.MaxDeactivate, Enabled: w.Enabled,
-		DryRun: w.DryRun, FetchGroups: w.FetchGroups, AttributeMap: w.AttributeMap}
+		DryRun: w.DryRun, FetchGroups: w.FetchGroups, AttributeMap: w.AttributeMap, SyncInterval: w.SyncInterval}
 	if w.Kind == "ldap" {
 		attr := w.GroupAttribute
 		c.GroupAttribute = &attr
@@ -219,6 +221,7 @@ func (directorySection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *Fi
 			c.note(w.registrationDiffers(h), "registration")
 			c.note(w.Kind == "ldap" && h.GroupAttribute != w.GroupAttribute, "group_attribute")
 			c.note(w.attributeMapDiffers(h), "attribute_map")
+			c.note(w.SyncInterval != nil && h.SyncInterval != *w.SyncInterval, "sync_interval_seconds")
 			c.note(w.FetchGroups != nil && h.FetchGroups != *w.FetchGroups, "fetch_groups")
 			c.note(w.OnMissing != nil && h.OnMissing != *w.OnMissing, "on_missing")
 			c.note(w.MaxDeactivate != nil && h.MaxDeactivate != *w.MaxDeactivate, "max_deactivate_percent")
@@ -366,11 +369,12 @@ func (directorySection) export(ctx context.Context, tx pgx.Tx, orgID string, f *
 		if len(h.AttributeMap) > 0 {
 			attributeMap = &h.AttributeMap
 		}
+		interval := h.SyncInterval
 		f.DirectorySources = append(f.DirectorySources, DirectorySource{Slug: slug, Kind: h.Kind, Name: h.Name,
 			Impersonate: h.Impersonate, Domain: h.Domain, Filter: h.Filter, URL: h.LDAPURL, BindDN: h.LDAPBindDN,
 			BaseDN: h.LDAPBaseDN, Flavour: h.LDAPFlavour, StartTLS: h.LDAPStartTLS, CA: h.LDAPCAPEM,
 			GroupAttribute: h.GroupAttribute, AttributeMap: attributeMap, FetchGroups: &fetch, OnMissing: &onMissing,
-			MaxDeactivate: &ceiling, DryRun: &dry, Enabled: &enabled, GroupMap: &groupMap})
+			MaxDeactivate: &ceiling, DryRun: &dry, Enabled: &enabled, SyncInterval: &interval, GroupMap: &groupMap})
 	}
 	return nil
 }

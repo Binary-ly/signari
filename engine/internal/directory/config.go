@@ -22,7 +22,7 @@ type SourceSettings struct {
 	LDAPURL, LDAPBindDN, LDAPBaseDN, LDAPFlavour    string
 	LDAPCAPEM, GroupAttribute, OnMissing            string
 	LDAPStartTLS, FetchGroups, Enabled, DryRun      bool
-	MaxDeactivate                                   int
+	MaxDeactivate, SyncInterval                     int
 	AttributeMap                                    map[string]string
 }
 
@@ -35,7 +35,7 @@ func SourceSettingsOf(ctx context.Context, q interface {
 		       COALESCE(user_filter, ''), COALESCE(ldap_url, ''), COALESCE(ldap_bind_dn, ''),
 		       COALESCE(ldap_base_dn, ''), COALESCE(ldap_flavour, ''), COALESCE(ldap_ca_pem, ''),
 		       COALESCE(ldap_group_attribute, ''), on_missing, ldap_start_tls, fetch_groups, enabled, dry_run,
-		       max_deactivate_percent, attribute_map
+		       max_deactivate_percent, attribute_map, COALESCE(sync_interval_seconds, 0)
 		  FROM core.directory_sources WHERE org_id = $1::uuid`, orgID)
 	if err != nil {
 		return nil, err
@@ -47,7 +47,8 @@ func SourceSettingsOf(ctx context.Context, q interface {
 		var s SourceSettings
 		if err := rows.Scan(&slug, &s.Kind, &s.Name, &s.Domain, &s.Impersonate, &s.Tenant, &s.Filter, &s.LDAPURL,
 			&s.LDAPBindDN, &s.LDAPBaseDN, &s.LDAPFlavour, &s.LDAPCAPEM, &s.GroupAttribute, &s.OnMissing,
-			&s.LDAPStartTLS, &s.FetchGroups, &s.Enabled, &s.DryRun, &s.MaxDeactivate, &s.AttributeMap); err != nil {
+			&s.LDAPStartTLS, &s.FetchGroups, &s.Enabled, &s.DryRun, &s.MaxDeactivate, &s.AttributeMap,
+			&s.SyncInterval); err != nil {
 			return nil, err
 		}
 		out[slug] = s

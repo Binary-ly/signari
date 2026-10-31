@@ -9091,11 +9091,21 @@
                           "name": {
                             "type": "string"
                           },
+                          "next_sync_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "on_missing": {
                             "type": "string"
                           },
                           "slug": {
                             "type": "string"
+                          },
+                          "sync_interval_seconds": {
+                            "type": "integer"
                           }
                         },
                         "required": [
@@ -9114,7 +9124,9 @@
                           "last_deactivated",
                           "last_error",
                           "group_map",
-                          "attribute_map"
+                          "attribute_map",
+                          "sync_interval_seconds",
+                          "next_sync_at"
                         ],
                         "type": "object"
                       },
@@ -9398,6 +9410,9 @@
                   },
                   "on_missing": {
                     "type": "string"
+                  },
+                  "sync_interval_seconds": {
+                    "type": "integer"
                   }
                 },
                 "type": "object"

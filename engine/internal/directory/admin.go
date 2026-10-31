@@ -185,12 +185,15 @@ type SourceChange struct {
 	GroupAttribute *string
 	// AttributeMap replaces the map whole; an empty one clears it.
 	AttributeMap *map[string]string
+	// SyncInterval is seconds between scheduled syncs; zero stops them. The next
+	// is one interval from now, so setting it applies nothing unattended at once.
+	SyncInterval *int
 }
 
 // Empty reports whether the change names nothing.
 func (c SourceChange) Empty() bool {
 	return c.OnMissing == nil && c.MaxDeactivate == nil && c.Enabled == nil && c.DryRun == nil &&
-		c.FetchGroups == nil && c.GroupAttribute == nil && c.AttributeMap == nil
+		c.FetchGroups == nil && c.GroupAttribute == nil && c.AttributeMap == nil && c.SyncInterval == nil
 }
 
 // Validate refuses a change before anything is written.
@@ -200,6 +203,11 @@ func (c SourceChange) Validate() error {
 	}
 	if c.MaxDeactivate != nil && (*c.MaxDeactivate < 0 || *c.MaxDeactivate > 100) {
 		return sourceInvalid{"the deactivation ceiling is a percentage, 0 to 100"}
+	}
+	if c.SyncInterval != nil && *c.SyncInterval != 0 &&
+		(*c.SyncInterval < MinSyncInterval || *c.SyncInterval > MaxSyncInterval) {
+		return sourceInvalid{fmt.Sprintf("the sync interval is %d to %d seconds, or 0 to stop scheduled syncs",
+			MinSyncInterval, MaxSyncInterval)}
 	}
 	if c.AttributeMap != nil {
 		return checkAttributeMap(*c.AttributeMap)
@@ -232,10 +240,14 @@ func ChangeSource(ctx context.Context, q DB, orgID, slug string, c SourceChange)
 		       fetch_groups           = COALESCE($7::boolean, fetch_groups),
 		       ldap_group_attribute   = CASE WHEN $8 THEN NULLIF($9::text, '') ELSE ldap_group_attribute END,
 		       attribute_map          = COALESCE($10::jsonb, attribute_map),
+		       sync_interval_seconds  = CASE WHEN $11::int IS NULL THEN sync_interval_seconds ELSE NULLIF($11::int, 0) END,
+		       next_sync_at           = CASE WHEN $11::int IS NULL THEN next_sync_at
+		                                     WHEN $11::int = 0 THEN NULL
+		                                     ELSE now() + make_interval(secs => $11::int) END,
 		       updated_at             = now()
 		 WHERE org_id = $1::uuid AND slug = $2`,
 		orgID, slug, c.OnMissing, c.MaxDeactivate, c.Enabled, c.DryRun, c.FetchGroups,
-		c.GroupAttribute != nil, groupAttr, attributeMap)
+		c.GroupAttribute != nil, groupAttr, attributeMap, c.SyncInterval)
 	if err != nil {
 		if strings.Contains(err.Error(), "ldap_group_attribute") {
 			return sourceInvalid{"the group attribute is an attribute name, such as memberOf"}
@@ -287,6 +299,9 @@ type Source struct {
 	LastError                       string
 	Mappings                        []Mapping
 	AttributeMap                    map[string]string
+	// SyncInterval is zero for a source with no schedule.
+	SyncInterval int
+	NextSyncAt   *time.Time
 }
 
 // Mapping is one remote group and the local group it grants.
@@ -302,7 +317,8 @@ func Sources(ctx context.Context, q interface {
 		       COALESCE(s.last_error, ''),
 		       COALESCE((SELECT array_agg(m.remote_group || E'\t' || g.name ORDER BY m.remote_group, g.name)
 		                   FROM core.directory_group_map m JOIN core.groups g ON g.id = m.group_id
-		                  WHERE m.source_id = s.id), '{}'), s.attribute_map
+		                  WHERE m.source_id = s.id), '{}'), s.attribute_map,
+		       COALESCE(s.sync_interval_seconds, 0), s.next_sync_at
 		  FROM core.directory_sources s WHERE s.org_id = $1::uuid ORDER BY s.slug`, orgID)
 	if err != nil {
 		return nil, err
@@ -314,7 +330,7 @@ func Sources(ctx context.Context, q interface {
 		var maps []string
 		if err := rows.Scan(&s.ID, &s.Slug, &s.Name, &s.Kind, &s.OnMissing, &s.Enabled, &s.DryRun, &s.FetchGroups,
 			&s.MaxDeactivate, &s.LastSyncAt, &s.LastCreated, &s.LastUpdated, &s.LastDeactivated, &s.LastError,
-			&maps, &s.AttributeMap); err != nil {
+			&maps, &s.AttributeMap, &s.SyncInterval, &s.NextSyncAt); err != nil {
 			return nil, err
 		}
 		s.Mappings = []Mapping{}
@@ -434,27 +450,35 @@ func Sync(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, sl
 		RecordFailure(ctx, pool, src.id, err)
 		return r, err
 	}
+	return r, reconcile(ctx, pool, root, src, orgID, remote, apply, &r)
+}
+
+// reconcile is a sync once the directory has answered. A refusal goes on the source
+// with every other failure: nobody is at a terminal to read it on a scheduled run.
+func reconcile(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, src *loadedSource, orgID string,
+	remote []RemoteUser, apply bool, r *SyncReport) error {
 
 	local, err := LoadLocal(ctx, pool, src.id, orgID)
 	if err != nil {
-		return r, err
+		return err
 	}
 	plan := BuildPlan(remote, local, src.onMissing, src.maxPct)
 	r.Upstream, r.ActiveBefore, r.Plan = len(remote), plan.ActiveBefore, plan.Describe()
 	if !plan.Safe() {
-		return r, ErrSyncRefused
+		RecordFailure(ctx, pool, src.id, fmt.Errorf("sync refused: %s", plan.Refused))
+		return ErrSyncRefused
 	}
 	if src.dryRun || !apply {
 		preview, err := planAttributes(ctx, pool, root, src.id, orgID, src.attributeMap, remote)
 		if err != nil {
-			return r, err
+			return err
 		}
 		r.Attributes = preview.describe()
-		return r, nil
+		return nil
 	}
 	if err := Apply(ctx, pool, src.id, orgID, plan); err != nil {
 		RecordFailure(ctx, pool, src.id, err)
-		return r, err
+		return err
 	}
 	r.Applied = true
 	// After the people pass, so somebody it just created has theirs.
@@ -464,14 +488,14 @@ func Sync(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, sl
 	}
 	if err != nil {
 		RecordFailure(ctx, pool, src.id, err)
-		return r, err
+		return err
 	}
 	r.Attributes = attrs.describe()
-	if err := syncGroups(ctx, pool, src.id, orgID, remote, src.maxPct, src.fetchGroups, &r); err != nil {
+	if err := syncGroups(ctx, pool, src.id, orgID, remote, src.maxPct, src.fetchGroups, r); err != nil {
 		RecordFailure(ctx, pool, src.id, err)
-		return r, err
+		return err
 	}
-	return r, nil
+	return nil
 }
 
 // loadedSource is a source as a sync or a test reads it, its credentials opened.

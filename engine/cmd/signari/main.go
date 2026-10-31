@@ -541,6 +541,7 @@ func run(args []string) (err error) {
 		"the LDAP attribute listing a person's groups; empty reads memberOf (dir add, dir set)")
 	attributeMap := fs.String("attribute-map", "",
 		"LDAP attributes to read: remote=local,... a local name is a declared attribute, email or name; empty clears it (dir set)")
+	syncInterval := fs.Int("sync-interval", 0, "seconds between scheduled syncs, 300 to 604800; 0 stops them (dir set)")
 	dirDomain := fs.String("domain", "", "Google Workspace domain; `import shadow`: the domain each account's address is made with")
 	dirImpersonate := fs.String("impersonate", "", "administrator the service account acts as")
 	dirTenant := fs.String("tenant", "", "Entra tenant id (read from the credential file)")
@@ -1401,7 +1402,7 @@ func run(args []string) (err error) {
 		return dirGroupMap(ctx, conn, *orgID, *slug, *remoteGroup, *groupName, *removeMember)
 	case "dir set":
 		return dirSet(ctx, conn, *orgID, *slug, *onMissing, *maxDeactivate, fs, *setEnabled, *dryRun,
-			*fetchGroups, *groupAttribute, *attributeMap)
+			*fetchGroups, *groupAttribute, *attributeMap, *syncInterval)
 	case "dir list":
 		return dirList(ctx, conn, *orgID, *outputFormat)
 	case "rac add":
@@ -2512,6 +2513,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	}
 	janitor.SetHeadSigner(auditHeadSigner(set, issuer, headInterval))
 	go janitor.Run(workerCtx, workerPool, log, janitor.DefaultInterval)
+	go (&directory.Scheduler{DB: workerPool, Root: root, Interval: time.Minute, Log: log}).Run(workerCtx)
 
 	// Audit streaming to a logically separate system (ASVS V16.4.3), off unless a
 	// destination is configured. Forwarding authentication events off the box is a

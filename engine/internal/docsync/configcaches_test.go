@@ -514,13 +514,21 @@ func TestEveryReloadLoopInTheEntrypointIsAccountedFor(t *testing.T) {
 	if !strings.Contains(string(src), "keys.Rotator{") {
 		t.Error("cmd/signari no longer starts the signing-key rotator")
 	}
+	// Scheduled directory syncs (7.15) are a job of the same kind.
+	scheduler, err := os.ReadFile(filepath.Join(root, "engine", "internal", "directory", "schedule.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "directory.Scheduler{") {
+		t.Error("cmd/signari no longer starts the directory sync scheduler")
+	}
 
-	const expected = 3 // signing keys, RADIUS clients, the rotator
+	const expected = 4 // signing keys, RADIUS clients, the rotator, directory syncs
 	got := strings.Count(string(src), "time.NewTicker") + strings.Count(string(refresher), "time.NewTicker") +
-		strings.Count(string(rotator), "time.NewTicker")
+		strings.Count(string(rotator), "time.NewTicker") + strings.Count(string(scheduler), "time.NewTicker")
 	if got != expected {
 		t.Errorf("cmd/signari/main.go starts %d ticker loops; %d are accounted "+
-			"for (signing keys, RADIUS clients, the key rotator). A new one is "+
+			"for (signing keys, RADIUS clients, the key rotator, directory syncs). A new one is "+
 			"another consumer polling on its own interval. Record what it reloads "+
 			"and how stale it may be in the ADR-008 table, or make the case that "+
 			"the config bus ADR-008 describes should finally be built.", got, expected)

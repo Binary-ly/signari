@@ -28,6 +28,8 @@ type Contract struct {
 	Response map[string]any `json:"response"`
 	// Sample names nobody real and nothing that exists.
 	Sample map[string]any `json:"-"`
+	// Verdict is the member of the response that decides.
+	Verdict string `json:"-"`
 }
 
 func objectSchema(required []string, properties map[string]any) map[string]any {
@@ -49,7 +51,7 @@ func Contracts() []Contract {
 	for _, h := range allHooks {
 		switch h {
 		case HookAuthorize:
-			out = append(out, Contract{Hook: h,
+			out = append(out, Contract{Hook: h, Verdict: "decision",
 				Request: objectSchema([]string{"subject", "resource", "action"}, map[string]any{
 					"subject": entity("type", "id"), "resource": entity("type"),
 					"action": objectSchema([]string{"name"}, map[string]any{"name": stringSchema(),
@@ -61,7 +63,7 @@ func Contracts() []Contract {
 					"resource": map[string]any{"type": "provider-test", "id": "provider-test"},
 					"action":   map[string]any{"name": "provider-test"}}})
 		case HookTokenIssue:
-			out = append(out, Contract{Hook: h,
+			out = append(out, Contract{Hook: h, Verdict: "decision",
 				Request: objectSchema([]string{"subject", "client_id", "scopes", "grant_type", "org_id"}, map[string]any{
 					"subject": stringSchema(), "client_id": stringSchema(),
 					"scopes":     map[string]any{"type": "array", "items": stringSchema()},
@@ -71,6 +73,14 @@ func Contracts() []Contract {
 					"claims": anyObjectSchema()}),
 				Sample: map[string]any{"subject": "provider-test", "client_id": "provider-test",
 					"scopes": []string{}, "grant_type": "provider-test", "org_id": "provider-test"}})
+		case HookPasswordVerify:
+			out = append(out, Contract{Hook: h, Verdict: "verified",
+				Request: objectSchema([]string{"username", "password", "org_id"}, map[string]any{
+					"username": stringSchema(), "password": stringSchema(), "org_id": stringSchema()}),
+				Response: objectSchema([]string{"verified"}, map[string]any{
+					"verified": map[string]any{"type": "boolean"}}),
+				Sample: map[string]any{"username": "provider-test", "password": "provider-test",
+					"org_id": "provider-test"}})
 		default:
 			panic(fmt.Sprintf("the %q hook has no contract", h))
 		}

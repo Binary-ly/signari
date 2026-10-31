@@ -508,12 +508,13 @@ func (duoSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File) 
 // MigrationSource is the old provider a person's first password sign-in is
 // verified against, as `signari migration-source add` sets it.
 type MigrationSource struct {
-	// Kind is oidc_password or ldap.
+	// Kind is oidc_password, ldap or hook.
 	Kind string `yaml:"kind"`
 	Name string `yaml:"name"`
 	// URL is the token endpoint (https) or the directory (ldaps://, or
-	// ldap:// with StartTLS).
-	URL string `yaml:"url"`
+	// ldap:// with StartTLS). A hook source has none: it is the provider
+	// registered for password_verify.
+	URL string `yaml:"url,omitempty"`
 	// An oidc_password source's client; its secret by reference, kept when
 	// left out and needed again for a new endpoint or client id.
 	ClientID     string     `yaml:"client_id,omitempty"`
@@ -587,8 +588,12 @@ func (migrationSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *Fi
 		return refuse("migration_source: %v", err)
 	}
 	if have == nil {
+		target := want.URL
+		if want.Kind == "hook" {
+			target = "the password_verify provider"
+		}
 		p.Add(Change{Action: "create", Kind: "migration_source", Name: "source",
-			Detail: "off until enabled: on, it forwards every unmigrated person's password to " + want.URL})
+			Detail: "off until enabled: on, it forwards every unmigrated person's password to " + target})
 		return nil
 	}
 	if have.HasSecret && want.ClientSecret == nil &&

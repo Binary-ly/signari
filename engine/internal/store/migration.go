@@ -13,6 +13,7 @@ import (
 
 	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/provider"
 )
 
 // migrationSecretContext binds an encrypted client secret to its purpose, so a
@@ -182,8 +183,15 @@ func (c *MigrationSourceConfig) validate() error {
 			}
 		}
 		c.Scope = "openid"
+	case "hook":
+		// Everything about reaching it is the provider's.
+		if c.URL != "" || c.ClientID != "" || c.ClientSecret != "" || c.BindDNTemplate != "" || c.CAPEM != "" ||
+			c.StartTLS {
+			return invalidSource("a hook source has no endpoint or credentials of its own: its provider holds them")
+		}
+		c.Scope = "openid"
 	default:
-		return invalidSource("the kind is oidc_password or ldap, not %q", c.Kind)
+		return invalidSource("the kind is oidc_password, ldap or hook, not %q", c.Kind)
 	}
 	return nil
 }
@@ -202,6 +210,17 @@ func SetMigrationSource(ctx context.Context, tx pgx.Tx, root *keys.RootKey, orgI
 	c MigrationSourceConfig) (string, error) {
 	if err := c.validate(); err != nil {
 		return "", err
+	}
+	// A source nothing can answer for would refuse everybody still to migrate.
+	if c.Kind == "hook" {
+		var registered bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.providers WHERE org_id = $1::uuid AND hook = $2)`,
+			orgID, string(provider.HookPasswordVerify)).Scan(&registered); err != nil {
+			return "", err
+		}
+		if !registered {
+			return "", invalidSource("register a provider for the password_verify hook first")
+		}
 	}
 	var sealed []byte
 	if c.ClientSecret != "" {
@@ -253,7 +272,7 @@ func SetMigrationSource(ctx context.Context, tx pgx.Tx, root *keys.RootKey, orgI
 		ON CONFLICT (org_id) DO UPDATE SET
 			kind = EXCLUDED.kind, display_name = EXCLUDED.display_name,
 			token_endpoint = EXCLUDED.token_endpoint, client_id = EXCLUDED.client_id,
-			client_secret_enc = CASE WHEN EXCLUDED.kind = 'ldap' THEN NULL
+			client_secret_enc = CASE WHEN EXCLUDED.kind <> 'oidc_password' THEN NULL
 			                         ELSE COALESCE(EXCLUDED.client_secret_enc, migration_sources.client_secret_enc) END,
 			scope = EXCLUDED.scope, bind_dn_template = EXCLUDED.bind_dn_template,
 			start_tls = EXCLUDED.start_tls, ca_pem = EXCLUDED.ca_pem, updated_at = now()

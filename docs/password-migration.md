@@ -15,7 +15,7 @@ with an enabled source.
 
 ## Configuring the source
 
-One per organisation, of one of two kinds.
+One per organisation, of one of three kinds.
 
 ```sh
 # The directory itself: a bind as the person.
@@ -28,6 +28,12 @@ signari migration-source add -org <uuid> -kind ldap -name "Old directory" \
 signari migration-source add -org <uuid> -kind oidc_password -name "Old IdP" \
   -token-endpoint https://old.example.com/oauth2/token \
   -client-id-ext migration -client-secret <secret>
+
+# Anything else: a small service of yours that can check a password against the old
+# system. Registered as a provider first, then named as the source.
+signari provider add -org <uuid> -hook password_verify \
+  -provider-url https://migrate.internal/verify -mode fail_closed
+signari migration-source add -org <uuid> -kind hook -name "Old system"
 
 # Test it with an account you know, before anyone depends on it:
 signari migration-source test -org <uuid> -username alice     # the password is read from stdin

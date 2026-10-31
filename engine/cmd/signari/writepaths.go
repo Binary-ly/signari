@@ -60,6 +60,7 @@ import (
 	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/provision"
 	"signari.dev/engine/internal/radius"
+	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
 )
@@ -2966,8 +2967,14 @@ func migrationSourceAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, name, 
 			}
 			c.CAPEM = string(raw)
 		}
+	case "hook":
+		c.Kind = "hook"
+		if tokenEndpoint != "" || ldapURL != "" || template != "" || caPath != "" {
+			return fmt.Errorf("a -kind hook source has no endpoint of its own: `signari provider add -hook " +
+				"password_verify` says where it is")
+		}
 	default:
-		return fmt.Errorf("-kind is oidc_password or ldap for a migration source")
+		return fmt.Errorf("-kind is oidc_password, ldap or hook for a migration source")
 	}
 	var root *keys.RootKey
 	if secret != "" {
@@ -3055,7 +3062,12 @@ func migrationSourceTest(ctx context.Context, conn *pgx.Conn, orgID, username st
 	if err != nil {
 		return err
 	}
-	r := delegated.New().Test(ctx, src, username, password)
+	var r delegated.Result
+	if src.Kind == "hook" {
+		r = store.TryPasswordProvider(ctx, conn, root, safedial.Client, orgID, username, password)
+	} else {
+		r = delegated.New().Test(ctx, src, username, password)
+	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -3115,11 +3127,15 @@ func migrationSourceShow(ctx context.Context, conn *pgx.Conn, orgID string) erro
 	if s.Enabled {
 		state = "ENABLED"
 	}
-	fmt.Printf("migration source %q (%s), %s\n  url      : %s\n", s.DisplayName, s.Kind, state, s.URL)
-	if s.Kind == "ldap" {
-		fmt.Printf("  bind dn  : %s\n  starttls : %v\n  own CA   : %v\n", s.BindDNTemplate, s.StartTLS, s.HasCA)
-	} else {
-		fmt.Printf("  client   : %s (secret %v)\n  scope    : %s\n", s.ClientID, s.HasSecret, s.Scope)
+	fmt.Printf("migration source %q (%s), %s\n", s.DisplayName, s.Kind, state)
+	switch s.Kind {
+	case "ldap":
+		fmt.Printf("  url      : %s\n  bind dn  : %s\n  starttls : %v\n  own CA   : %v\n", s.URL, s.BindDNTemplate,
+			s.StartTLS, s.HasCA)
+	case "hook":
+		fmt.Println("  asked    : the provider registered for password_verify")
+	default:
+		fmt.Printf("  url      : %s\n  client   : %s (secret %v)\n  scope    : %s\n", s.URL, s.ClientID, s.HasSecret, s.Scope)
 	}
 	fmt.Printf("  people   : %d pending, %d migrated through it\n", s.Pending, s.Migrated)
 	fmt.Printf("  verified : %d accepted, %d refused or unreachable", s.Successes, s.Failures)

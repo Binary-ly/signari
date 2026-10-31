@@ -80,6 +80,10 @@ type Server struct {
 	// trust root.
 	verify *delegated.Verifier
 
+	// outbound makes the client a provider is called through; nil is
+	// safedial.Client. A test points it at its own trust root.
+	outbound func(time.Duration) *http.Client
+
 	// accessIssuers verify this deployment's own access tokens audienced to
 	// the Admin API (accesstoken.go), one for each instance served. Empty until
 	// AcceptAccessTokens, and then only admin tokens are accepted.

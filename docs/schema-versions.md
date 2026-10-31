@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0224 password_verify_hook
+
+Not compatible with the release before: stop it before migrating.
+
+A password checked by the operator's own service during a migration (10.07, 10.14). A system that speaks neither the OIDC password grant nor LDAP could be left only with an export of its hashes, and many of those cannot be exported or cannot be read here. So the operator runs a small service that can check a password against the old system, and registers it as a provider (ADR-011) for the password_verify hook.
+
 ## 0223 idp_group_map
 
 Not compatible with the release before: stop it before migrating.

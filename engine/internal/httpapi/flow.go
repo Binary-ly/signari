@@ -3044,6 +3044,20 @@ func stepUpErrorCode(r oauth.StepUpReason) string {
 	return "login_required"
 }
 
+// verifyByProvider asks a `hook` source's provider, answering as delegator.Verify does,
+// so an outage there is handled as an outage anywhere else: not a wrong password, and
+// not charged to the person.
+func (s *Server) verifyByProvider(ctx context.Context, orgID, identifier, password string) error {
+	verified, err := store.ConsultPasswordProvider(ctx, s.db, s.cfg.Root, s.outboundClient, orgID, identifier, password)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w: %w", delegated.ErrUnavailable, err)
+	case !verified:
+		return delegated.ErrRejected
+	}
+	return nil
+}
+
 func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 	pageOrg, identifier, password, authzQuery string) bool {
 
@@ -3060,7 +3074,12 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 		return false
 	}
 
-	verr := s.delegator.Verify(ctx, pending.Source, identifier, password)
+	var verr error
+	if pending.Source.Kind == "hook" {
+		verr = s.verifyByProvider(ctx, pending.OrgID, identifier, password)
+	} else {
+		verr = s.delegator.Verify(ctx, pending.Source, identifier, password)
+	}
 	switch {
 	case errors.Is(verr, delegated.ErrUnavailable):
 		// The OLD provider is broken, not the user. Reported as a temporary

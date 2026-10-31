@@ -46,7 +46,7 @@ var schemaEnums = map[string][]string{
 	"DirectorySource.kind":       {"google", "entra", "ldap"},
 	"DirectorySource.flavour":    {"openldap", "ad", "freeipa"},
 	"DirectorySource.on_missing": {"report", "deactivate"},
-	"MigrationSource.kind":       {"oidc_password", "ldap"},
+	"MigrationSource.kind":       {"oidc_password", "ldap", "hook"},
 	"Outpost.kind":               store.OutpostKinds,
 	"SCIMSource.on_delete":       {"deactivate", "delete"},
 }

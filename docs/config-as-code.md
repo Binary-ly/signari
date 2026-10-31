@@ -187,7 +187,7 @@ duo:                          # Duo for multi-factor sign-in
   api_host: api-1234abcd.duosecurity.com
 
 migration_source:             # the old provider first password sign-ins are checked against
-  kind: ldap                  # or oidc_password, with client_id and client_secret
+  kind: ldap                  # or oidc_password, with client_id and client_secret, or hook
   name: Old directory
   url: ldaps://old.example.com
   bind_dn_template: uid={username},ou=people,dc=example,dc=com

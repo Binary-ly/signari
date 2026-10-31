@@ -582,7 +582,8 @@
         "kind": {
           "enum": [
             "oidc_password",
-            "ldap"
+            "ldap",
+            "hook"
           ],
           "type": "string"
         },
@@ -680,7 +681,8 @@
         "hook": {
           "enum": [
             "authorize",
-            "token_issue"
+            "token_issue",
+            "password_verify"
           ],
           "type": "string"
         },

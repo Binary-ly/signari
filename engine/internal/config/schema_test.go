@@ -44,7 +44,7 @@ func TestEverySchemaEnumIsWhatParseAccepts(t *testing.T) {
 		"ClaimMapper.destination":     "claim_mappers: [{attribute: a, claim: a, destination: %q, all_clients: true}]",
 		"SAMLProvider.name_id_format": "saml_providers: [{entity_id: e, acs_urls: ['https://sp.example.test/acs'], name_id_format: %q}]",
 		"Provider.mode":               "providers: [{hook: authorize, url: 'https://a.example.test/', mode: %q}]",
-		"Provider.hook":               "providers: [{hook: %q, url: 'https://a.example.test/', mode: fail_open}]",
+		"Provider.hook":               "providers: [{hook: %q, url: 'https://a.example.test/', mode: fail_closed}]",
 		"SCIMTarget.kind":             "scim_targets: [{slug: s, kind: %q, base_url: 'https://a.example.test/', token: {env: T}}]",
 		"SCIMTarget.on_deactivate":    "scim_targets: [{slug: s, base_url: 'https://a.example.test/', token: {env: T}, on_deactivate: %q}]",
 		"RACConnection.protocol":      "rac_connections: [{slug: r, protocol: %q, host: h}]",

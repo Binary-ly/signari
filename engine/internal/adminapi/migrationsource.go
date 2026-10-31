@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/delegated"
+	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/store"
 )
 
@@ -123,6 +125,14 @@ func (s *Server) verifier() *delegated.Verifier {
 	return s.verify
 }
 
+// hookClient is what a `hook` source's provider is called through.
+func (s *Server) hookClient(timeout time.Duration) *http.Client {
+	if s.outbound == nil {
+		return safedial.Client(timeout)
+	}
+	return s.outbound(timeout)
+}
+
 // testMigrationSource asks the organisation's source whether a credential is
 // correct, as a pending person's first sign-in does, and answers the step that
 // failed (7.18): a wrong CA, template or client is seen before somebody's
@@ -160,7 +170,12 @@ func (s *Server) testMigrationSource(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
-	result := s.verifier().Test(ctx, src, req.Username, req.Password)
+	var result delegated.Result
+	if src.Kind == "hook" {
+		result = store.TryPasswordProvider(ctx, s.db, s.root, s.hookClient, orgID, req.Username, req.Password)
+	} else {
+		result = s.verifier().Test(ctx, src, req.Username, req.Password)
+	}
 
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.migration_source_tested",

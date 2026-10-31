@@ -95,9 +95,16 @@ const (
 	// users' tokens" is the operator's question and an answer carried in the
 	// response would be the provider answering it.
 	HookTokenIssue Hook = "token_issue"
+
+	// HookPasswordVerify checks a password for somebody still to be migrated, against
+	// a system the engine cannot reach itself. It is told a password, the one hook that
+	// is, so it runs only for a person whose account is pending migration, and only when
+	// a `hook` migration source is enabled. A match takes a local hash, and the person
+	// never comes this way again.
+	HookPasswordVerify Hook = "password_verify"
 )
 
-var allHooks = []Hook{HookAuthorize, HookTokenIssue}
+var allHooks = []Hook{HookAuthorize, HookTokenIssue, HookPasswordVerify}
 
 // AllHooks returns every defined hook, for the CLI's help text and listings.
 func AllHooks() []Hook { return append([]Hook(nil), allHooks...) }
@@ -143,6 +150,10 @@ func (h Hook) Called() bool {
 		// grant has already been authorised. Same composition: a veto turns an
 		// issuance into a refusal, and contributed claims are bounded by the
 		// operator's allow-list.
+		return true
+	case HookPasswordVerify:
+		// Consulted by store.ConsultPasswordProvider from the sign-in form, for
+		// a person pending migration from a `hook` source.
 		return true
 	}
 	return false
@@ -247,6 +258,10 @@ func (p Provider) Validate() error {
 			"%s refuses the journey, %s continues without it. There is no default, "+
 			"because the safe answer differs per hook and both mistakes are silent",
 			p.Name, FailClosed, FailOpen)
+	}
+	if p.Hook == HookPasswordVerify && p.Mode != FailClosed {
+		return fmt.Errorf("provider %q must be %s: a password nobody could check is not a "+
+			"correct one, and continuing without it would sign anybody in", p.Name, FailClosed)
 	}
 	if p.Timeout <= 0 {
 		return fmt.Errorf("provider %q needs a timeout; without one a slow extension "+

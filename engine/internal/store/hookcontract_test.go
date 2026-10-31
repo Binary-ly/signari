@@ -48,6 +48,7 @@ func TestTheHookContractsMatchTheTypesOnTheWire(t *testing.T) {
 	}{
 		{provider.HookAuthorize, reflect.TypeOf(authzen.Request{}), reflect.TypeOf(answer{})},
 		{provider.HookTokenIssue, reflect.TypeOf(TokenHookRequest{}), reflect.TypeOf(TokenHookResponse{})},
+		{provider.HookPasswordVerify, reflect.TypeOf(PasswordHookRequest{}), reflect.TypeOf(PasswordHookResponse{})},
 	} {
 		contract, ok := provider.ContractFor(c.hook)
 		if !ok {
@@ -60,7 +61,7 @@ func TestTheHookContractsMatchTheTypesOnTheWire(t *testing.T) {
 			t.Errorf("%s: the contract's answer names %v, the engine reads %v", c.hook, got, want)
 		}
 	}
-	if len(provider.AllHooks()) != 2 {
+	if len(provider.AllHooks()) != 3 {
 		t.Error("a hook was added: name its request and answer here")
 	}
 }

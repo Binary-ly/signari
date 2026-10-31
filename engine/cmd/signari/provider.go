@@ -129,12 +129,13 @@ func providerTest(ctx context.Context, conn *pgx.Conn, orgID, hook string) error
 		return fmt.Errorf("%s did not answer, so a real decision would go by its %s mode: %w", p.URL, p.Mode, err)
 	}
 	took := time.Since(started).Round(time.Millisecond)
-	decision, ok := answer["decision"].(bool)
+	verdict, ok := answer[contract.Verdict].(bool)
 	if !ok {
-		return fmt.Errorf("%s answered in %s with no boolean decision, which contract %s requires",
-			p.URL, took, provider.ContractVersion)
+		return fmt.Errorf("%s answered in %s with no boolean %s, which contract %s requires",
+			p.URL, took, contract.Verdict, provider.ContractVersion)
 	}
-	fmt.Printf("%s answered in %s under contract %s: decision %v\n", p.URL, took, provider.ContractVersion, decision)
+	fmt.Printf("%s answered in %s under contract %s: %s %v\n", p.URL, took, provider.ContractVersion,
+		contract.Verdict, verdict)
 	if p.Secret == "" {
 		fmt.Println("  NOTE: the call was unsigned. `signari provider rotate` gives this provider a secret.")
 	}

@@ -57,6 +57,22 @@ func TestAProviderWithNoFailureModeIsRefused(t *testing.T) {
 // about one that does not.
 //
 // When a hook is wired, this test is what fails and says so.
+// A password nobody could check is not a correct one, so this hook has no failing open:
+// the mode that is a choice for every other hook would sign in anybody who typed anything
+// while the service was down.
+func TestThePasswordHookCannotFailOpen(t *testing.T) {
+	p := Provider{Name: "old-system", Hook: HookPasswordVerify, URL: "https://old-system.example.com/verify",
+		Mode: FailOpen, Timeout: time.Second}
+	err := p.Validate()
+	if err == nil || !strings.Contains(err.Error(), string(FailClosed)) {
+		t.Errorf("a fail_open password_verify provider gave %v, want a refusal naming fail_closed", err)
+	}
+	p.Mode = FailClosed
+	if err := p.Validate(); err != nil {
+		t.Errorf("a fail_closed one was refused: %v", err)
+	}
+}
+
 func TestCalledMatchesWhatIsWired(t *testing.T) {
 	// The hooks a decision point actually consults.
 	//
@@ -64,7 +80,9 @@ func TestCalledMatchesWhatIsWired(t *testing.T) {
 	//     evaluation path.
 	//   - HookTokenIssue: httpapi.handleToken, on the authorization_code grant,
 	//     after every local check has passed and before mintTokens.
-	wired := map[Hook]bool{HookAuthorize: true, HookTokenIssue: true}
+	//   - HookPasswordVerify: httpapi.tryDelegated, for somebody still to be
+	//     migrated from a source of kind hook.
+	wired := map[Hook]bool{HookAuthorize: true, HookTokenIssue: true, HookPasswordVerify: true}
 
 	for _, h := range allHooks {
 		if h.Called() != wired[h] {

@@ -135,6 +135,41 @@
         ],
         "type": "object"
       }
+    },
+    {
+      "hook": "password_verify",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "org_id": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password",
+          "org_id"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "verified": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "verified"
+        ],
+        "type": "object"
+      }
     }
   ],
   "version": "1"

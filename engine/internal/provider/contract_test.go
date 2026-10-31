@@ -58,8 +58,8 @@ func TestEveryHookHasAContractItsSampleKeeps(t *testing.T) {
 				t.Errorf("%s: the sample sends %s, which the contract does not name", h, member)
 			}
 		}
-		if answer, _ := c.Response["required"].([]string); !slices.Contains(answer, "decision") {
-			t.Errorf("%s: an answer need not carry a decision", h)
+		if answer, _ := c.Response["required"].([]string); c.Verdict == "" || !slices.Contains(answer, c.Verdict) {
+			t.Errorf("%s: an answer need not carry the verdict %q `provider test` reads", h, c.Verdict)
 		}
 	}
 }

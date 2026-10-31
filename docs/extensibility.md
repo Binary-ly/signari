@@ -166,6 +166,30 @@ members are fixed by its draft.
 Until October 2026 the hook was asked at the authorization code only, and the
 claims it was allowed to contribute were checked and then thrown away.
 
+## The `password_verify` hook
+
+Called from the sign-in form for somebody still to be migrated, when the organisation's
+[migration source](password-migration.md) is of kind `hook`. It is for a system the
+engine cannot reach itself, which speaks neither the password grant nor LDAP and whose
+hashes cannot be exported or read here. It is the one hook told a password, so it is called
+for nobody else: not somebody with a password here, and not once a person has migrated.
+
+```json
+→  {"username":"alice@example.com","password":"…","org_id":"…"}
+
+←  {"verified": true}
+```
+
+`"verified": true` takes a local hash in the sign-in's transaction, and the person never
+comes this way again. `false` is a wrong password, charged like any other. A provider that
+gives no answer is an outage: the person is told to try again and is not charged, and the
+failure is recorded against the source.
+
+**It must be registered `fail_closed`**, and `provider add` refuses anything else: a
+password nobody could check is not a correct one, so continuing without an answer would
+sign anybody in. Check `Signari-Signature` on every call: this is the one service that
+would otherwise answer any stranger's question about a password.
+
 ## Constraints on a provider URL
 
 - **https only.** Refused at registration and again in the database.
@@ -183,5 +207,5 @@ claims it was allowed to contribute were checked and then thrown away.
 
 `signari provider list` reports, per hook, whether any decision point actually
 consults it — so registering a provider for a hook nothing calls tells you at
-that moment rather than leaving a control that silently never fires. Both hooks,
-`authorize` and `token_issue`, are consulted.
+that moment rather than leaving a control that silently never fires. All three
+hooks, `authorize`, `token_issue` and `password_verify`, are consulted.

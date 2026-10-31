@@ -283,6 +283,15 @@ type DeleteOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse struct {
 	Slug          string `json:"slug"`
 }
 
+// DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse is a JSON object of the Admin API.
+type DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Group         string `json:"group"`
+	Mapped        bool   `json:"mapped"`
+	RemoteGroup   string `json:"remote_group"`
+	Slug          string `json:"slug"`
+}
+
 // DeleteOrganizationsOrgIDMigrationSourceResponse is a JSON object of the Admin API.
 type DeleteOrganizationsOrgIDMigrationSourceResponse struct {
 	ConfigVersion int64 `json:"config_version"`
@@ -981,6 +990,8 @@ type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem struct {
 	Enabled                bool                                                                          `json:"enabled"`
 	EndSessionURL          string                                                                        `json:"end_session_url"`
 	ForwardParameters      []string                                                                      `json:"forward_parameters"`
+	GroupClaim             string                                                                        `json:"group_claim"`
+	GroupMap               []GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemGroupMapItem     `json:"group_map"`
 	HasClientKey           bool                                                                          `json:"has_client_key"`
 	ID                     string                                                                        `json:"id"`
 	Issuer                 string                                                                        `json:"issuer"`
@@ -1002,6 +1013,12 @@ type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemAttributeMapItem
 	Claim     string `json:"claim"`
 	MaxLength int64  `json:"max_length"`
 	Overwrite bool   `json:"overwrite"`
+}
+
+// GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemGroupMapItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemGroupMapItem struct {
+	Group       string `json:"group"`
+	RemoteGroup string `json:"remote_group"`
 }
 
 // GetOrganizationsOrgIDMigrationSourceResponse is a JSON object of the Admin API.
@@ -1734,6 +1751,7 @@ type PatchOrganizationsOrgIDIdentityProvidersSlugRequest struct {
 	Enabled                *bool     `json:"enabled,omitempty"`
 	EndSessionURL          *string   `json:"end_session_url,omitempty"`
 	ForwardParameters      *[]string `json:"forward_parameters,omitempty"`
+	GroupClaim             *string   `json:"group_claim,omitempty"`
 	LoginDomains           *[]string `json:"login_domains,omitempty"`
 	MfaACR                 *[]string `json:"mfa_acr,omitempty"`
 	MfaAMR                 *[]string `json:"mfa_amr,omitempty"`
@@ -2923,6 +2941,21 @@ type PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse struct {
 	Slug          string `json:"slug"`
 }
 
+// PutOrganizationsOrgIDIdentityProvidersSlugGroupMapRequest is a JSON object of the Admin API.
+type PutOrganizationsOrgIDIdentityProvidersSlugGroupMapRequest struct {
+	Group       *string `json:"group,omitempty"`
+	RemoteGroup *string `json:"remote_group,omitempty"`
+}
+
+// PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse is a JSON object of the Admin API.
+type PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Group         string `json:"group"`
+	Mapped        bool   `json:"mapped"`
+	RemoteGroup   string `json:"remote_group"`
+	Slug          string `json:"slug"`
+}
+
 // PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest struct {
 	ClientCertificate *string `json:"client_certificate,omitempty"`
@@ -3443,6 +3476,18 @@ func (c *Client) DeleteOrganizationsOrgIDEventSubscriptionsName(ctx context.Cont
 func (c *Client) DeleteOrganizationsOrgIDIdentityProvidersSlugAttributeMap(ctx context.Context, orgID string, slug string, opts ...Option) (*DeleteOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse, int64, error) {
 	var out DeleteOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse
 	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/attribute-map", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMap is DELETE
+// /admin/organizations/{orgID}/identity-providers/{slug}/group-map: Stop a provider's group
+// granting a local one Needs organizations:write.
+func (c *Client) DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMap(ctx context.Context, orgID string, slug string, opts ...Option) (*DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse, int64, error) {
+	var out DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse
+	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/group-map", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -5315,6 +5360,18 @@ func (c *Client) PutOrganizationsOrgIDDuo(ctx context.Context, orgID string, bod
 func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugAttributeMap(ctx context.Context, orgID string, slug string, body PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapRequest, opts ...Option) (*PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse, int64, error) {
 	var out PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse
 	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/attribute-map", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutOrganizationsOrgIDIdentityProvidersSlugGroupMap is PUT
+// /admin/organizations/{orgID}/identity-providers/{slug}/group-map: Say a provider's group grants
+// a local one Needs organizations:write.
+func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugGroupMap(ctx context.Context, orgID string, slug string, body PutOrganizationsOrgIDIdentityProvidersSlugGroupMapRequest, opts ...Option) (*PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse, int64, error) {
+	var out PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse
+	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/group-map", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

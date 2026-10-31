@@ -158,7 +158,7 @@ func (s *Server) handlePasswordRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	removed, err := store.RemovePassword(ctx, tx, userID)
+	removed, err := store.RemovePassword(ctx, tx, userID, "user")
 	switch {
 	case errors.Is(err, store.ErrPasswordNeeded):
 		_ = tx.Rollback(ctx)

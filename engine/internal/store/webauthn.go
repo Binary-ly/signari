@@ -92,7 +92,7 @@ func SaveCredential(ctx context.Context, tx pgx.Tx, userID, orgID, rpID string,
 	if err != nil {
 		return fmt.Errorf("saving webauthn credential: %w", err)
 	}
-	return nil
+	return QueueCredentialChange(ctx, tx, userID, passkeyCredentialType(transports), ChangeCreate, "user")
 }
 
 // CredentialsForUser lists a user's authenticators.
@@ -256,7 +256,7 @@ var ErrPasswordNeeded = errors.New("the password is needed: fewer than two passk
 // one goes through (5.15): only while they hold MinCredentialsForPasswordless
 // passkeys, counted with the passkeys locked, so a removal racing this one
 // counts after it. Reports whether there was a password to remove.
-func RemovePassword(ctx context.Context, tx pgx.Tx, userID string) (bool, error) {
+func RemovePassword(ctx context.Context, tx pgx.Tx, userID, initiator string) (bool, error) {
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM core.webauthn_credentials WHERE user_id = $1::uuid FOR UPDATE`,
 		userID); err != nil {
 		return false, fmt.Errorf("locking the passkeys: %w", err)
@@ -272,7 +272,10 @@ func RemovePassword(ctx context.Context, tx pgx.Tx, userID string) (bool, error)
 	if err != nil {
 		return false, fmt.Errorf("removing the password: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	return true, QueueCredentialChange(ctx, tx, userID, CredentialPassword, ChangeDelete, initiator)
 }
 
 // CanGoPasswordless reports whether it is safe to let this user remove their
@@ -321,11 +324,11 @@ func DeleteCredential(ctx context.Context, tx pgx.Tx, userID, credentialRowID st
 	// owns the credential computes it from the WRONG account: a stranger with no
 	// credentials trips "this is your last one" and gets a misleading error,
 	// while the ownership check never runs at all. Order is the whole fix.
-	var owned bool
+	var transports []string
 	err := tx.QueryRow(ctx, `
-		SELECT true FROM core.webauthn_credentials
+		SELECT transports FROM core.webauthn_credentials
 		WHERE id = $1::uuid AND user_id = $2::uuid
-		FOR UPDATE`, credentialRowID, userID).Scan(&owned)
+		FOR UPDATE`, credentialRowID, userID).Scan(&transports)
 	if err == pgx.ErrNoRows {
 		// Same answer whether the credential does not exist or belongs to
 		// someone else -- distinguishing them would confirm which uuids are real.
@@ -352,7 +355,7 @@ func DeleteCredential(ctx context.Context, tx pgx.Tx, userID, credentialRowID st
 		WHERE id = $1::uuid AND user_id = $2::uuid`, credentialRowID, userID); err != nil {
 		return fmt.Errorf("deleting webauthn credential: %w", err)
 	}
-	return nil
+	return QueueCredentialChange(ctx, tx, userID, passkeyCredentialType(transports), ChangeDelete, "user")
 }
 
 // clampSignCount narrows a stored counter without wrapping.

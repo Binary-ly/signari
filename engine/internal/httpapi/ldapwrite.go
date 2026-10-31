@@ -290,7 +290,7 @@ func (w *LDAPWriter) Update(ctx context.Context, actor, username string, u *ldap
 			// anybody can bind to. Through the guard every removal passes (5.15):
 			// it deleted the password of somebody with no passkey at all, leaving
 			// an account nobody could sign in to.
-			if _, err := store.RemovePassword(ctx, tx, userID); errors.Is(err, store.ErrPasswordNeeded) {
+			if _, err := store.RemovePassword(ctx, tx, userID, "admin"); errors.Is(err, store.ErrPasswordNeeded) {
 				return fmt.Errorf("%w: the entry's password cannot be removed while it has fewer than "+
 					"%d passkeys, or nothing would be left to sign in with", ldapd.ErrConstraint,
 					store.MinCredentialsForPasswordless)
@@ -312,16 +312,22 @@ func (w *LDAPWriter) Update(ctx context.Context, actor, username string, u *ldap
 			// any of them behind attaches a previous password's history to a new
 			// one, most visibly as a user who changes their password as instructed
 			// and is asked to do it again.
-			if _, err := tx.Exec(ctx, `
+			var replaced bool
+			if err := tx.QueryRow(ctx, `
 				INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
 				VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)
 				ON CONFLICT (user_id) DO UPDATE
 				SET hash = EXCLUDED.hash, algorithm = 'argon2id', is_current = true,
 				    updated_at = now(), failed_attempts = 0, throttled_until = NULL,
 				    last_failure_at = NULL, must_change = false,
-				    must_change_reason = NULL, last_breach_check = NULL`,
-				userID, w.orgID, hash); err != nil {
+				    must_change_reason = NULL, last_breach_check = NULL
+				RETURNING xmax <> 0`,
+				userID, w.orgID, hash).Scan(&replaced); err != nil {
 				return fmt.Errorf("storing the password: %w", err)
+			}
+			if err := store.QueueCredentialChange(ctx, tx, userID, store.CredentialPassword,
+				store.ChangeOf(replaced), "admin"); err != nil {
+				return fmt.Errorf("queueing the credential change: %w", err)
 			}
 		}
 		passwordChanged = true

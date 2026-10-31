@@ -201,7 +201,7 @@ func CompleteTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, counte
 	if _, err := tx.Exec(ctx, `DELETE FROM core.totp_enrolments WHERE user_id = $1::uuid`, userID); err != nil {
 		return false, fmt.Errorf("clearing the TOTP enrolment: %w", err)
 	}
-	return replaced, nil
+	return replaced, QueueCredentialChange(ctx, tx, userID, CredentialApp, ChangeOf(replaced), "user")
 }
 
 // LoadTOTP reads and decrypts a credential.
@@ -295,7 +295,7 @@ func AssignOTPToken(ctx context.Context, tx pgx.Tx, userID, orgID string, secret
 	if _, err := tx.Exec(ctx, `DELETE FROM core.totp_enrolments WHERE user_id = $1::uuid`, userID); err != nil {
 		return false, fmt.Errorf("clearing a TOTP enrolment: %w", err)
 	}
-	return replaced, nil
+	return replaced, QueueCredentialChange(ctx, tx, userID, CredentialApp, ChangeOf(replaced), "admin")
 }
 
 // TOTPPolicy is what an organisation enrols new authenticator apps with

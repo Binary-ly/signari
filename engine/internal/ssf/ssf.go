@@ -44,6 +44,8 @@ const (
 	EventCredentialChange  = "https://schemas.openid.net/secevent/caep/event-type/credential-change"
 	EventAssuranceChange   = "https://schemas.openid.net/secevent/caep/event-type/assurance-level-change"
 	EventTokenClaimsChange = "https://schemas.openid.net/secevent/caep/event-type/token-claims-change"
+	EventAccountDisabled   = "https://schemas.openid.net/secevent/risc/event-type/account-disabled"
+	EventAccountEnabled    = "https://schemas.openid.net/secevent/risc/event-type/account-enabled"
 
 	// StreamUpdated is SSF 1.0 §8.1.5's notice that the transmitter changed a
 	// stream's status. Not in SupportedEvents: a receiver does not subscribe to
@@ -71,13 +73,13 @@ const (
 // never send waits forever for a signal that will not come, and would have been
 // better off knowing that when it subscribed.
 //
-// Credential-change was listed here and nothing emitted it, so a receiver
-// that subscribed to it waited forever, which is the failure this comment
-// describes. It is received (ssfreceive.go acts on it) and not sent; it comes
-// back when something sends it. TestEverySupportedEventIsBuilt holds the list
-// to the events an Event literal is actually built with.
+// Credential-change was listed here once with nothing emitting it, so a
+// receiver that subscribed to it waited forever, which is the failure this
+// comment describes. TestEverySupportedEventIsBuilt holds the list to the events
+// an Event literal is actually built with, and httpapi's
+// TestEveryAdvertisedEventReachesAReceiver to the ones something queues.
 func SupportedEvents() []string {
-	return []string{EventSessionRevoked}
+	return []string{EventSessionRevoked, EventCredentialChange, EventAccountDisabled, EventAccountEnabled}
 }
 
 // Subject identifies who an event is about.
@@ -108,6 +110,9 @@ type Event struct {
 	ReasonUser  string
 	// InitiatingEntity: policy, user, admin, or system (CAEP §3.1).
 	InitiatingEntity string
+	// Claims are what the event type says beyond that, such as a credential
+	// change's credential_type.
+	Claims map[string]any
 }
 
 // audience is a JWT `aud` claim, which is a string OR an array of strings.
@@ -235,6 +240,9 @@ func Mint(s Signer, issuer, audience, jti string, e Event, now time.Time) (strin
 	}
 	if e.InitiatingEntity != "" {
 		payload["initiating_entity"] = e.InitiatingEntity
+	}
+	for k, v := range e.Claims {
+		payload[k] = v
 	}
 	if e.ReasonAdmin != "" || e.ReasonUser != "" {
 		reason := map[string]any{}

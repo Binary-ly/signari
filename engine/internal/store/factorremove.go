@@ -71,6 +71,11 @@ func RemoveOwnFactor(ctx context.Context, tx pgx.Tx, userID, kind string) (recov
 	if tag.RowsAffected() == 0 {
 		return false, ErrFactorNotFound
 	}
+	if credential := factorCredentialTypes[kind]; credential != "" {
+		if err := QueueCredentialChange(ctx, tx, userID, credential, ChangeDelete, "user"); err != nil {
+			return false, err
+		}
+	}
 	has, err := HasSecondFactor(ctx, tx, userID)
 	if err != nil || has {
 		return false, err
@@ -109,6 +114,17 @@ func RemoveFactor(ctx context.Context, tx pgx.Tx, userID, kind, factorID string)
 	if spec.Keyed && factorID == "" && !spec.Whole {
 		return out, ErrFactorIDRequired
 	}
+	// Read first: once it is gone, a passkey cannot say what it was.
+	credential := factorCredentialTypes[kind]
+	if kind == "webauthn" {
+		var transports []string
+		err := tx.QueryRow(ctx, `SELECT transports FROM core.webauthn_credentials
+			WHERE user_id = $1::uuid AND id = $2::uuid`, userID, factorID).Scan(&transports)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return out, err
+		}
+		credential = passkeyCredentialType(transports)
+	}
 	// The user_id predicate is present on BOTH branches: without it a caller
 	// could delete another person's credential by id, which is the whole
 	// tenancy boundary undone by an omitted clause.
@@ -125,6 +141,11 @@ func RemoveFactor(ctx context.Context, tx pgx.Tx, userID, kind, factorID string)
 	}
 	if out.Removed = tag.RowsAffected(); out.Removed == 0 {
 		return out, ErrFactorNotFound
+	}
+	if credential != "" {
+		if err := QueueCredentialChange(ctx, tx, userID, credential, ChangeDelete, "admin"); err != nil {
+			return out, err
+		}
 	}
 	// The whole set gone, its count of wrong attempts goes with it, so a set
 	// generated afterwards does not inherit a disabled state.

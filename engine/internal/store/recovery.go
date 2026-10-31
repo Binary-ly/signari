@@ -216,6 +216,9 @@ func ConsumeRecovery(ctx context.Context, tx pgx.Tx, requestID, userID, newHash 
 		WHERE user_id = $1::uuid`, userID, newHash); err != nil {
 		return fmt.Errorf("setting the new password: %w", err)
 	}
+	if err := QueueCredentialChange(ctx, tx, userID, CredentialPassword, ChangeUpdate, "user"); err != nil {
+		return fmt.Errorf("queueing the credential change: %w", err)
+	}
 
 	// Every session, through the one termination path, so relying parties are
 	// told. A password reset that leaves the thief signed in is theatre.

@@ -441,7 +441,8 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 					s.log.Error("recording the retired password", "err", rerr)
 				}
 			}
-			if _, err := tx.Exec(ctx, `
+			var replaced bool
+			if err := tx.QueryRow(ctx, `
 				INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
 				VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)
 				ON CONFLICT (user_id) DO UPDATE SET
@@ -451,8 +452,13 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 					-- must_change would ask the user to replace a password an
 					-- administrator has just deliberately set for them.
 					must_change = false, must_change_reason = NULL,
-					last_breach_check = NULL`,
-				userID, orgID, newHash); err != nil {
+					last_breach_check = NULL
+				RETURNING xmax <> 0`,
+				userID, orgID, newHash).Scan(&replaced); err != nil {
+				return err
+			}
+			if err := store.QueueCredentialChange(ctx, tx, userID, store.CredentialPassword,
+				store.ChangeOf(replaced), "admin"); err != nil {
 				return err
 			}
 			// An administrator setting a password is a credential change, and every

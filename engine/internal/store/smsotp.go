@@ -395,7 +395,10 @@ func RecordSMSOTPFailure(ctx context.Context, tx pgx.Tx, userID string, ceiling 
 func ConfirmSMSOTPEnrolment(ctx context.Context, tx pgx.Tx, userID, submitted string, delegate SMSDelegate) (
 	ok bool, replaced string, err error) {
 	ok, replaced, _, err = checkSMSCode(ctx, tx, userID, submitted, smsCodeEnrol, delegate)
-	return ok, replaced, err
+	if err != nil || !ok {
+		return ok, replaced, err
+	}
+	return ok, replaced, QueueCredentialChange(ctx, tx, userID, CredentialSMS, ChangeOf(replaced != ""), "user")
 }
 
 func checkSMSCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose string, delegate SMSDelegate) (

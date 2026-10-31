@@ -24,6 +24,24 @@ func RevocationEvent(issuer, subject, reason string, eventTime time.Time) Event 
 	}
 }
 
+// EventFor builds the event a queued row describes, for either delivery path.
+// claims are what the row carries beyond the subject; a session-revoked row has
+// none, and a reason instead.
+func EventFor(eventType, issuer, subject, reason string, claims map[string]any, eventTime time.Time) Event {
+	about := Subject{Format: "iss_sub", Issuer: issuer, Sub: subject}
+	switch eventType {
+	case EventCredentialChange:
+		return Event{Type: EventCredentialChange, Subject: about, EventTime: eventTime, Claims: claims}
+	case EventAccountDisabled:
+		return Event{Type: EventAccountDisabled, Subject: about, EventTime: eventTime, Claims: claims}
+	case EventAccountEnabled:
+		return Event{Type: EventAccountEnabled, Subject: about, EventTime: eventTime, Claims: claims}
+	}
+	event := RevocationEvent(issuer, subject, reason, eventTime)
+	event.Type = eventType
+	return event
+}
+
 // InitiatingEntityFor maps a session-termination reason to the CAEP initiating
 // entity vocabulary (CAEP §3.1: policy, user, admin, or system).
 //

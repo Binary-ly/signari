@@ -276,9 +276,10 @@ Implemented in `internal/ssf/metadata.go`, served at `internal/httpapi/ssfmetada
 
 **What is deliberately absent, and why absence is the honest answer.** The §8
 management endpoints — `configuration_endpoint`, `status_endpoint`,
-`add_subject_endpoint`, `remove_subject_endpoint`, `verification_endpoint` — and
+`add_subject_endpoint`, `remove_subject_endpoint` — and
 `authorization_schemes` are all omitted, because this engine's streams are
-administered by its operator. Advertising a configuration endpoint that 404s is
+administered by its operator. `verification_endpoint` is the exception, since it
+changes nothing about a stream ([asking whether a stream works](ssf-caep.md#asking-whether-a-stream-works)). Advertising a configuration endpoint that 404s is
 worse than advertising nothing: the receiver's next move is to call it. This is
 the rule the project adopted after OIDC discovery once advertised three endpoints
 that did not exist.

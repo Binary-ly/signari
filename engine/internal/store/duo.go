@@ -101,12 +101,14 @@ func DuoUsernameFor(ctx context.Context, db rowQuerier, userID string) (string, 
 func EnrollDuo(ctx context.Context, q interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }, userID, orgID, duoUsername string) error {
-	_, err := q.Exec(ctx, `
+	if _, err := q.Exec(ctx, `
 		INSERT INTO core.duo_enrollments (user_id, org_id, duo_username)
 		VALUES ($1::uuid, $2::uuid, $3)
 		ON CONFLICT (user_id) DO UPDATE SET duo_username = EXCLUDED.duo_username`,
-		userID, orgID, duoUsername)
-	return err
+		userID, orgID, duoUsername); err != nil {
+		return err
+	}
+	return QueueCredentialChange(ctx, q, userID, CredentialApp, ChangeCreate, "admin")
 }
 
 // SetDuoIntegration stores an organisation's Duo application, its secret

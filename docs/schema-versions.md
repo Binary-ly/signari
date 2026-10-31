@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0212 security_events
+
+Not compatible with the release before: stop it before migrating.
+
+core.queue_security_event tells the streams that asked what happened to a person, and a trigger on core.users makes every status change a RISC event.
+
 ## 0211 idp_login_domains
 
 Compatible with the release before: its binary may still serve this schema.

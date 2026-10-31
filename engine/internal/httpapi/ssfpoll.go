@@ -225,8 +225,7 @@ func (s *Server) pollFetchAndMint(ctx context.Context, streamID, audience string
 			// event whichever way it arrives. EventTime is the queue time (when the
 			// session was revoked), not now (when the SET is minted) -- for poll the
 			// two can be far apart, and a receiver orders by when things happened.
-			event := ssf.RevocationEvent(s.cfg.Issuer, e.Subject, e.Reason, e.QueuedAt)
-			event.Type = e.EventType
+			event := ssf.EventFor(e.EventType, s.cfg.Issuer, e.Subject, e.Reason, e.Claims, e.QueuedAt)
 			jws, merr = ssf.Mint(signer, s.cfg.Issuer, audience, e.JTI, event, time.Now())
 		}
 		if merr != nil {

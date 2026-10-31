@@ -39,6 +39,8 @@ type ssfPending struct {
 	Status string `json:"status"`
 	// State is what a receiver asked to have echoed in a verification event.
 	State string `json:"state"`
+	// Claims are what the event type says beyond the subject (migration 0212).
+	Claims map[string]any `json:"claims"`
 }
 
 // ssfHoldInterval is how often a paused stream's held events are looked at
@@ -141,8 +143,7 @@ func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
 		token, err = ssf.MintVerification(tokens.NewSigner(key), as.issuer, p.ClientID, jti,
 			p.StreamID, p.State, time.Now())
 	default:
-		event := ssf.RevocationEvent(as.issuer, p.Subject, p.Reason, time.Now())
-		event.Type = p.Event
+		event := ssf.EventFor(p.Event, as.issuer, p.Subject, p.Reason, p.Claims, time.Now())
 		token, err = ssf.Mint(tokens.NewSigner(key), as.issuer, p.ClientID, jti, event, time.Now())
 	}
 	if err != nil {

@@ -203,10 +203,30 @@ to be told about session revocations, and sending them anyway discloses more
 about the user than that receiver was given.
 
 **Only events we actually emit are advertised.** A receiver subscribing to
-something we never send waits forever for a signal that will not come. Today
-that is session-revoked alone. Credential-change was advertised, and accepted
-in `ssf add-stream -events`, while nothing emitted it. It is no longer offered.
-This server still acts on it when it receives one ([receiving](shared-signals-receiver.md)).
+something we never send waits forever for a signal that will not come.
+Credential-change was once advertised and accepted in `ssf add-stream -events`
+while nothing emitted it, so a test now walks a person through each change and
+fails on any advertised event that never arrives. Four are offered:
+
+| Event | Sent when |
+|---|---|
+| CAEP `session-revoked` | a session ends |
+| CAEP `credential-change` | a password, authenticator app or hardware token, Duo enrolment, text-message number or passkey is added, replaced or removed |
+| RISC `account-disabled` | an active account is deactivated, by whatever path |
+| RISC `account-enabled` | a deactivated account is reactivated, by whatever path |
+
+A credential change names itself with `credential_type` (`password`, `app`,
+`phone-sms`, `fido2-platform`, `fido2-roaming`), `change_type` (`create`,
+`update`, `delete`) and `initiating_entity`. An emailed code and a recovery code
+have no word in CAEP's list, so changing them says nothing. A sign-in that
+upgrades a stored hash is not a credential change, because the password is the
+one it was. `session-revoked` stays the default for `-events`; the other three
+have to be asked for.
+
+**A stream hears of the people its client has met**: anyone with a session or
+a refresh token from that client, live or not. It has to include sessions that
+have ended, because deactivating somebody ends their sessions in the same
+transaction, and those are the applications that need telling.
 
 **`initiating_entity` is reported honestly** — `user`, `admin`, `policy` or
 `system`, mapped from the real termination reason. A receiver may treat an

@@ -186,8 +186,7 @@ because an upstream retries a 500 unchanged forever and acts on a 400.
 
 | | |
 |---|---|
-| bulk | `ServiceProviderConfig` says `supported: false` |
-| sort, etag, changePassword | same |
+| sort, etag, changePassword | `ServiceProviderConfig` says `supported: false` |
 
 Advertising a capability that 404s is the failure this project sweeps for —
 which is why `/Groups` entered `/ResourceTypes` only when it was implemented,
@@ -227,6 +226,26 @@ and a filter of more than 256 terms. A value is JSON, so a string is quoted and
 `userName eq "a" or userName eq "b"` is two comparisons, where it used to be read
 as a search for one user with an odd name, which matched nobody and invited a
 duplicate create.
+
+## Bulk
+
+`POST /scim/v2/Bulk` takes up to 1,000 operations in 4 MiB, the limits
+`ServiceProviderConfig` publishes, and past either answers **413** naming it. Each
+operation is a POST to `/Users` or `/Groups`, or a PUT, PATCH or DELETE of one by
+id, and goes through what its single request would: the same validation, the same
+audit record, the same refusals.
+
+- A POST needs a `bulkId`, and `"bulkId:qwerty"` anywhere else in the request is
+  replaced by the id it made: a group's member, a `manager.value`, a path. Only a
+  whole string is a reference.
+- Operations run in the order given, except that one naming a `bulkId` not yet made
+  waits for it. References that wait on each other answer **409**, as does one
+  naming a POST that failed. One naming nothing in the request answers **400**.
+- A failure is that operation's. The rest carry on and the job answers **200** with
+  a line for each, in the order asked. **What succeeded stays**: this is not a
+  transaction, as the RFC requires. `failOnErrors` stops after that many errors, and
+  an operation that never ran has no line.
+- `version` is ignored, since ETags are not supported.
 
 ## The enterprise user extension
 

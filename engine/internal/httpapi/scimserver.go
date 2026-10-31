@@ -92,7 +92,7 @@ func (s *Server) handleSCIMServiceProviderConfig(w http.ResponseWriter, r *http.
 	writeSCIM(w, http.StatusOK, map[string]any{
 		"schemas":        []string{"urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"},
 		"patch":          map[string]any{"supported": true},
-		"bulk":           map[string]any{"supported": false, "maxOperations": 0, "maxPayloadSize": 0},
+		"bulk":           map[string]any{"supported": true, "maxOperations": scimMaxBulkOperations, "maxPayloadSize": scimMaxBulkPayload},
 		"filter":         map[string]any{"supported": true, "maxResults": scimMaxPageSize},
 		"changePassword": map[string]any{"supported": false},
 		"sort":           map[string]any{"supported": false},
@@ -309,7 +309,11 @@ func (s *Server) handleSCIMUser(w http.ResponseWriter, r *http.Request) {
 		writeSCIMError(w, http.StatusNotFound, "no such user")
 		return
 	}
+	s.scimServeUser(w, r, src, id)
+}
 
+// scimServeUser does what a request asks of one person, however it arrived.
+func (s *Server) scimServeUser(w http.ResponseWriter, r *http.Request, src *store.SCIMSource, id string) {
 	switch r.Method {
 	case http.MethodGet:
 		u, gerr := store.GetSCIMUser(r.Context(), s.db, src.ID, id)

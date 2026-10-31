@@ -197,6 +197,11 @@ func (s *Server) handleSCIMGroup(w http.ResponseWriter, r *http.Request) {
 		writeSCIMError(w, http.StatusNotFound, "no such group")
 		return
 	}
+	s.scimServeGroup(w, r, src, id)
+}
+
+// scimServeGroup does what a request asks of one group, however it arrived.
+func (s *Server) scimServeGroup(w http.ResponseWriter, r *http.Request, src *store.SCIMSource, id string) {
 	ctx := r.Context()
 
 	switch r.Method {

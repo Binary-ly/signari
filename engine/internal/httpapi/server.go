@@ -684,6 +684,7 @@ func (s *Server) mux() *http.ServeMux {
 
 	mux.HandleFunc("/scim/v2/Groups", s.handleSCIMGroups)
 	mux.HandleFunc("/scim/v2/Groups/{id}", s.handleSCIMGroup)
+	mux.HandleFunc("/scim/v2/Bulk", s.handleSCIMBulk)
 	mux.HandleFunc("GET /proxy/verify", s.handleProxyVerify)
 	mux.HandleFunc("GET "+pathProxyVerifyRedirect, s.handleProxyVerify)
 	mux.HandleFunc("GET /proxy/start", s.handleProxyStart)

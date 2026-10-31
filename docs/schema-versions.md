@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0215 proxy_host_identity
+
+Compatible with the release before: its binary may still serve this schema.
+
+What a protected application is told about a person beyond who they are (8.24): the groups released to it, and a signed statement it can check for itself. Each is per host, because a group's name says something about a person, and an application should hear only the ones it needs. Empty and off, it hears what it always has.
+
 ## 0214 idp_end_session
 
 Compatible with the release before: its binary may still serve this schema.

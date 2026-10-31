@@ -162,18 +162,25 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 	}
 
 	rows, err = tx.Query(ctx, `
-		SELECT host, enabled FROM core.proxy_hosts WHERE org_id = $1::uuid`, orgID)
+		SELECT host, enabled, release_groups, signed_identity FROM core.proxy_hosts WHERE org_id = $1::uuid`, orgID)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var h ProxyHost
-		var enabled bool
-		if err := rows.Scan(&h.Host, &enabled); err != nil {
+		var enabled, signed bool
+		var release []string
+		if err := rows.Scan(&h.Host, &enabled, &release, &signed); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		h.Enabled = &enabled
+		if len(release) > 0 {
+			h.ReleaseGroups = &release
+		}
+		if signed {
+			h.SignedIdentity = &signed
+		}
 		c.proxyHosts[h.Host] = h
 	}
 	rows.Close()
@@ -264,6 +271,18 @@ func BuildPlanWith(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune 
 		if *have.Enabled != want {
 			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host,
 				Detail: fmt.Sprintf("enabled %v → %v", *have.Enabled, want)})
+			continue
+		}
+		var haveRelease []string
+		if have.ReleaseGroups != nil {
+			haveRelease = *have.ReleaseGroups
+		}
+		if h.ReleaseGroups != nil && !sameSet(haveRelease, *h.ReleaseGroups) {
+			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host, Detail: "release_groups"})
+			continue
+		}
+		if h.SignedIdentity != nil && *h.SignedIdentity != (have.SignedIdentity != nil) {
+			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host, Detail: "signed_identity"})
 		}
 	}
 
@@ -667,10 +686,20 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 			continue
 		}
 		enabled := h.Enabled == nil || *h.Enabled
+		var release any
+		if h.ReleaseGroups != nil {
+			if err := store.CheckReleaseGroups(*h.ReleaseGroups); err != nil {
+				return fmt.Errorf("proxy host %q: %w", h.Host, err)
+			}
+			release = append([]string{}, *h.ReleaseGroups...)
+		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO core.proxy_hosts (org_id, host, enabled) VALUES ($1::uuid, $2, $3)
-			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled`,
-			orgID, h.Host, enabled); err != nil {
+			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity)
+			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false))
+			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled,
+				release_groups = COALESCE($4::text[], core.proxy_hosts.release_groups),
+				signed_identity = COALESCE($5::boolean, core.proxy_hosts.signed_identity)`,
+			orgID, h.Host, enabled, release, h.SignedIdentity); err != nil {
 			var pg *pgconn.PgError
 			if errors.As(err, &pg) && pg.ConstraintName == "proxy_hosts_host_key" {
 				return fmt.Errorf("proxy host %q is registered by another organisation; a "+

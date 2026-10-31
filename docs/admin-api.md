@@ -393,7 +393,7 @@ and taking its configuration elsewhere is `signari export org`.
 | `PUT /admin/organizations/{orgID}/scopes` | Declare or update one. Needs `organizations:write` |
 | `DELETE /admin/organizations/{orgID}/scopes/{scope}` | Remove a declaration. Refused while a claim mapper requires it, `409 scope_in_use` with the count, since the mapper would then release nothing |
 | `GET /admin/organizations/{orgID}/proxy-hosts` | The applications [forward auth](forward-auth.md) protects. Needs `config:read` |
-| `PUT /admin/organizations/{orgID}/proxy-hosts` | Register one, or change whether it is enabled: `{"host": "grafana.example.com", "enabled": true}`. Needs `organizations:write` |
+| `PUT /admin/organizations/{orgID}/proxy-hosts` | Register one, or change whether it is enabled: `{"host": "grafana.example.com", "enabled": true}`, as `signari proxy add-host`, `disable-host` and `enable-host` do. `"release_groups": ["admins"]` and `"signed_identity": true` say what the application is told, as `signari proxy release` does, and are kept when left out; a group name holding a comma is `400 invalid_host`. See [forward auth](forward-auth.md#groups-and-a-signed-identity). Needs `organizations:write` |
 | `DELETE /admin/organizations/{orgID}/proxy-hosts/{host}` | Remove one |
 
 **Declaring a scope adds no gate on a request.** A client already cannot ask for

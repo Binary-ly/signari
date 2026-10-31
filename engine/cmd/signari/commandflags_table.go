@@ -173,6 +173,7 @@ var commandFlags = map[string][]string{
 	"proxy disable-host":              {"host", "org"},
 	"proxy enable-host":               {"host", "org"},
 	"proxy list":                      {"o"},
+	"proxy release":                   {"groups", "host", "org", "signed-identity"},
 	"proxy remove-host":               {"host", "org"},
 	"rac add":                         {"group", "host", "login", "login-password", "name", "org", "port", "protocol", "recording-path", "slug"},
 	"rac disable":                     {"org", "slug"},

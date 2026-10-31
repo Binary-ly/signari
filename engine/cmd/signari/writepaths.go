@@ -1661,6 +1661,53 @@ func proxyHostWrite(ctx context.Context, conn *pgx.Conn, orgID, host, event stri
 	return tx.Commit(ctx)
 }
 
+// proxyRelease says what a protected application is told beyond who: the groups it
+// may hear of, and whether it gets a signed statement. What is not given is kept.
+func proxyRelease(ctx context.Context, conn *pgx.Conn, orgID, raw, groups, signed string, groupsGiven bool) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org, the organisation the host is in")
+	}
+	host, err := normaliseProxyHost(raw)
+	if err != nil {
+		return err
+	}
+	var release any
+	if groupsGiven {
+		names := splitList(groups)
+		if err := store.CheckReleaseGroups(names); err != nil {
+			return err
+		}
+		release = append([]string{}, names...)
+	}
+	var identity any
+	switch signed {
+	case "":
+	case "on":
+		identity = true
+	case "off":
+		identity = false
+	default:
+		return fmt.Errorf("-signed-identity is on or off, not %q", signed)
+	}
+	if release == nil && identity == nil {
+		return fmt.Errorf("give -groups, -signed-identity or both")
+	}
+	err = proxyHostWrite(ctx, conn, orgID, host, "proxy.host_disclosure_set", func(tx pgx.Tx) (int64, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE core.proxy_hosts SET release_groups = COALESCE($3::text[], release_groups),
+			       signed_identity = COALESCE($4::boolean, signed_identity)
+			 WHERE org_id = $1::uuid AND host = $2`, orgID, host, release, identity)
+		return tag.RowsAffected(), err
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: what it is told has been set\n", host)
+	fmt.Println("\n  Your proxy has to pass X-Forwarded-Groups and X-Forwarded-Jwt on to the application,")
+	fmt.Println("  as it does X-Forwarded-User. See docs/forward-auth.md.")
+	return nil
+}
+
 func proxyAddHost(ctx context.Context, conn *pgx.Conn, orgID, raw string) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org, the organisation whose people may use this application")

@@ -1080,8 +1080,10 @@ type GetOrganizationsOrgIDProxyHostsResponse struct {
 
 // GetOrganizationsOrgIDProxyHostsResponseProxyHostsItem is a JSON object of the Admin API.
 type GetOrganizationsOrgIDProxyHostsResponseProxyHostsItem struct {
-	Enabled bool   `json:"enabled"`
-	Host    string `json:"host"`
+	Enabled        bool     `json:"enabled"`
+	Host           string   `json:"host"`
+	ReleaseGroups  []string `json:"release_groups"`
+	SignedIdentity bool     `json:"signed_identity"`
 }
 
 // GetOrganizationsOrgIDRACConnectionsResponse is a JSON object of the Admin API.
@@ -2982,8 +2984,10 @@ type PutOrganizationsOrgIDProvidersHookClaimsResponse struct {
 
 // PutOrganizationsOrgIDProxyHostsRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDProxyHostsRequest struct {
-	Enabled *bool   `json:"enabled,omitempty"`
-	Host    *string `json:"host,omitempty"`
+	Enabled        *bool     `json:"enabled,omitempty"`
+	Host           *string   `json:"host,omitempty"`
+	ReleaseGroups  *[]string `json:"release_groups,omitempty"`
+	SignedIdentity *bool     `json:"signed_identity,omitempty"`
 }
 
 // PutOrganizationsOrgIDProxyHostsResponse is a JSON object of the Admin API.

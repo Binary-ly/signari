@@ -25,6 +25,9 @@ type proxyHostRequest struct {
 	// Enabled defaults to TRUE when absent, which is why it is a pointer: the
 	// common case is registering a host to use it.
 	Enabled *bool `json:"enabled"`
+	// ReleaseGroups and SignedIdentity keep what the host has when absent.
+	ReleaseGroups  *[]string `json:"release_groups"`
+	SignedIdentity *bool     `json:"signed_identity"`
 }
 
 func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +65,14 @@ func (s *Server) putProxyHost(w http.ResponseWriter, r *http.Request) {
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	var release any
+	if req.ReleaseGroups != nil {
+		if err := store.CheckReleaseGroups(*req.ReleaseGroups); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_host", "detail": err.Error()})
+			return
+		}
+		release = append([]string{}, *req.ReleaseGroups...)
+	}
 
 	pre, ok := s.readPrecondition(w, r)
 	if !ok {
@@ -72,14 +83,18 @@ func (s *Server) putProxyHost(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO core.proxy_hosts (org_id, host, enabled) VALUES ($1::uuid, $2, $3)
-			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled`,
-			orgID, host, enabled); err != nil {
+			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity)
+			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false))
+			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled,
+				release_groups = COALESCE($4::text[], core.proxy_hosts.release_groups),
+				signed_identity = COALESCE($5::boolean, core.proxy_hosts.signed_identity)`,
+			orgID, host, enabled, release, req.SignedIdentity); err != nil {
 			return err
 		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.proxy_host_set", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
-			Detail: map[string]any{"host": host, "enabled": enabled},
+			Detail: map[string]any{"host": host, "enabled": enabled, "releases_groups": req.ReleaseGroups != nil,
+				"signed_identity": req.SignedIdentity},
 		})
 	})
 	var pg *pgconn.PgError

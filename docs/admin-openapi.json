@@ -13759,11 +13759,22 @@
                           },
                           "host": {
                             "type": "string"
+                          },
+                          "release_groups": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "signed_identity": {
+                            "type": "boolean"
                           }
                         },
                         "required": [
                           "host",
-                          "enabled"
+                          "enabled",
+                          "release_groups",
+                          "signed_identity"
                         ],
                         "type": "object"
                       },
@@ -13851,6 +13862,15 @@
                   },
                   "host": {
                     "type": "string"
+                  },
+                  "release_groups": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "signed_identity": {
+                    "type": "boolean"
                   }
                 },
                 "type": "object"

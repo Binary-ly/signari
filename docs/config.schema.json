@@ -685,6 +685,15 @@
         },
         "host": {
           "type": "string"
+        },
+        "release_groups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "signed_identity": {
+          "type": "boolean"
         }
       },
       "type": "object"

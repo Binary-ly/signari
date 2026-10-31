@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -184,8 +185,16 @@ func (s *Server) answerProxy(w http.ResponseWriter, r *http.Request, pc proxyCla
 	// passed every protected host of every organisation: anybody who could
 	// sign in anywhere in the deployment reached the payroll dashboard of a
 	// tenant they had never heard of.
-	if reason, ok := s.authorizeProxyHost(r, pc); !ok {
+	host, reason := s.authorizeProxyHost(r, pc)
+	if host == nil {
 		s.forbidProxy(w, reason)
+		return
+	}
+	groups, signed, err := s.proxyDisclosure(r.Context(), host, pc)
+	if err != nil {
+		s.log.Error("saying who is at a protected host", "host", host.Host, "err", err,
+			"correlation_id", correlationID(r.Context()))
+		s.forbidProxy(w, "what this application is told could not be read")
 		return
 	}
 
@@ -203,7 +212,59 @@ func (s *Server) answerProxy(w http.ResponseWriter, r *http.Request, pc proxyCla
 	w.Header().Set("X-Forwarded-User", pc.Subject)
 	w.Header().Set("X-Forwarded-Sub", pc.Subject)
 	w.Header().Set("X-Forwarded-Email", pc.Email)
+	w.Header().Set("X-Forwarded-Groups", strings.Join(groups, ","))
+	w.Header().Set("X-Forwarded-Jwt", signed)
 	w.WriteHeader(http.StatusOK)
+}
+
+// typProxyIdentity marks the statement an application is given, so it cannot be
+// taken for anything else this issuer signs.
+const typProxyIdentity = "proxy-identity+jwt"
+
+// proxyIdentityTTL is short because it is made afresh for every request.
+const proxyIdentityTTL = time.Minute
+
+// proxyIdentity is the signed statement: who, for which application, until when.
+type proxyIdentity struct {
+	Issuer   string   `json:"iss"`
+	Subject  string   `json:"sub"`
+	Audience string   `json:"aud"`
+	Email    string   `json:"email,omitempty"`
+	Groups   []string `json:"groups,omitempty"`
+	IssuedAt int64    `json:"iat"`
+	Expiry   int64    `json:"exp"`
+}
+
+// proxyDisclosure is what this host is told beyond who: the released groups this
+// person is in, and the signed statement when the host asked for one. A group's
+// name says something about a person, so only what the operator released goes.
+func (s *Server) proxyDisclosure(ctx context.Context, host *store.ProxyHost, pc proxyClaims) ([]string, string, error) {
+	var groups []string
+	if len(host.ReleaseGroups) > 0 {
+		if _, person := store.CanonicalUUID(pc.Subject); person {
+			held, err := store.AllGroupsForUser(ctx, s.db, pc.Subject)
+			if err != nil {
+				return nil, "", err
+			}
+			for _, g := range held {
+				if slices.Contains(host.ReleaseGroups, g) {
+					groups = append(groups, g)
+				}
+			}
+		}
+	}
+	if !host.SignedIdentity {
+		return groups, "", nil
+	}
+	key, err := s.anySigningKey()
+	if err != nil {
+		return nil, "", err
+	}
+	now := time.Now()
+	signed, err := tokens.NewSigner(key).SignJSON(proxyIdentity{Issuer: s.cfg.Issuer, Subject: pc.Subject,
+		Audience: "https://" + host.Host, Email: pc.Email, Groups: groups, IssuedAt: now.Unix(),
+		Expiry: now.Add(proxyIdentityTTL).Unix()}, typProxyIdentity)
+	return groups, signed, err
 }
 
 // authorizeProxyHost decides whether this person may reach the host the proxy
@@ -219,22 +280,21 @@ func (s *Server) answerProxy(w http.ResponseWriter, r *http.Request, pc proxyCla
 // to be passed with its address removed, which refused the network condition
 // and let the travel one through as "not checked", and left the device check
 // reading posture headers relayed by the proxy.
-func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims) (string, bool) {
+//
+// It answers the host, or nil and why not.
+func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims) (*store.ProxyHost, string) {
 	ctx := r.Context()
 	host := strings.ToLower(firstHeader(r, "X-Forwarded-Host"))
 	if host == "" {
-		return "the proxy did not say which application it is asking about (X-Forwarded-Host)", false
+		return nil, "the proxy did not say which application it is asking about (X-Forwarded-Host)"
 	}
-	var registered bool
-	if err := s.db.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM core.proxy_hosts
-		                WHERE org_id = $1::uuid AND lower(host) = $2 AND enabled)`,
-		pc.OrgID, host).Scan(&registered); err != nil {
+	registered, err := store.ProxyHostFor(ctx, s.db, pc.OrgID, host)
+	if err != nil {
 		s.log.Error("checking a protected host", "err", err)
-		return "the protected host could not be checked", false
+		return nil, "the protected host could not be checked"
 	}
-	if !registered {
-		return "this application is not one of your organisation's protected hosts", false
+	if registered == nil {
+		return nil, "this application is not one of your organisation's protected hosts"
 	}
 
 	mfa, amr := sessionFactors(ctx, s.db, pc.SID)
@@ -244,9 +304,9 @@ func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims) (string, bo
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "proxy", "host": host},
 		})
-		return pd.Message, false
+		return nil, pd.Message
 	}
-	return "", true
+	return registered, ""
 }
 
 // forbidProxy answers 403: the person is signed in and may not reach this host.

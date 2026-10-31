@@ -375,6 +375,7 @@ outposts and remote access:
   radius authorize       place a group's members on a VLAN or give them a Filter-Id
   proxy check            prove a forward-auth deployment actually protects the app
   proxy add-host         protect an application with forward auth
+  proxy release          the groups a protected application hears of, and a signed identity
   proxy list             the protected hosts
   proxy disable-host     stop protecting a host, keeping it
   proxy enable-host      protect a host again
@@ -720,7 +721,8 @@ func run(args []string) (err error) {
 	relObject := fs.String("object", "", "type:id, e.g. document:42")
 	relAction := fs.String("action", "", "e.g. write")
 	subEvents := fs.String("event-types", "", "comma-separated event types, or empty for all")
-	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins")
+	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins, or a protected host may hear of")
+	signedIdentity := fs.String("signed-identity", "", "on or off: give a protected host a signed statement of who it is")
 	inviteTTL := fs.Duration("expires", 7*24*time.Hour, "how long the invitation lasts")
 	inviteID := fs.String("invitation", "", "`invite revoke`: the invitation's id, from `invite list`")
 	inviteSend := fs.Bool("send", false, "`invite create`: mail the link to -email instead of printing it")
@@ -1507,6 +1509,10 @@ func run(args []string) (err error) {
 		return proxySetHostEnabled(ctx, conn, *orgID, *racHost, true)
 	case "proxy remove-host":
 		return proxyRemoveHost(ctx, conn, *orgID, *racHost)
+	case "proxy release":
+		groupsGiven := false
+		fs.Visit(func(f *flag.Flag) { groupsGiven = groupsGiven || f.Name == "groups" })
+		return proxyRelease(ctx, conn, *orgID, *racHost, *inviteGroups, *signedIdentity, groupsGiven)
 	case "admin-token create":
 		// Whether -expires-in was given, since unset is ninety days and an
 		// explicit 0 is never (6.04); the flag is shared with registration

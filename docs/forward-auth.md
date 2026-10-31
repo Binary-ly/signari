@@ -131,9 +131,13 @@ server {
         auth_request_set $signari_user  $upstream_http_x_forwarded_user;
         auth_request_set $signari_email $upstream_http_x_forwarded_email;
         auth_request_set $signari_sub   $upstream_http_x_forwarded_sub;
-        proxy_set_header X-Forwarded-User  $signari_user;
-        proxy_set_header X-Forwarded-Email $signari_email;
-        proxy_set_header X-Forwarded-Sub   $signari_sub;
+        auth_request_set $signari_groups $upstream_http_x_forwarded_groups;
+        auth_request_set $signari_jwt    $upstream_http_x_forwarded_jwt;
+        proxy_set_header X-Forwarded-User   $signari_user;
+        proxy_set_header X-Forwarded-Email  $signari_email;
+        proxy_set_header X-Forwarded-Sub    $signari_sub;
+        proxy_set_header X-Forwarded-Groups $signari_groups;
+        proxy_set_header X-Forwarded-Jwt    $signari_jwt;
 
         # On 401, send the browser to sign in. The target comes from the auth
         # response's Location header, which already carries the return URL.
@@ -275,9 +279,39 @@ in the deployment passed every protected host of every organisation.
 | `X-Forwarded-User` | the user's uuid |
 | `X-Forwarded-Sub` | the same uuid, for apps expecting `sub` |
 | `X-Forwarded-Email` | the email, or **empty** when the account has none — present either way, so a client-sent copy is overwritten |
+| `X-Forwarded-Groups` | the groups released to this application that the person is in, comma-separated, or **empty** |
+| `X-Forwarded-Jwt` | a signed statement of the above, or **empty** |
 
 The user id is sent rather than the email because an email can change and can be
 reassigned; the uuid is the stable identity.
+
+### Groups and a signed identity
+
+Nothing about groups is sent until you say which an application may hear of,
+because a group's name says something about a person:
+
+```sh
+signari proxy release -org <uuid> -host grafana.example.com -groups admins,viewers
+signari proxy release -org <uuid> -host grafana.example.com -signed-identity on
+```
+
+Each flag keeps what the other set. `-groups ""` releases none. A name holding a
+comma is refused, since the header is a comma-separated list.
+
+The headers are only as good as the network between the proxy and the application:
+anything that reaches the application directly can send them itself. With
+`-signed-identity on`, `X-Forwarded-Jwt` carries a JWT the application can check for
+itself against this issuer's keys:
+
+```json
+{"iss": "https://id.example.com", "aud": "https://grafana.example.com",
+ "sub": "7c1e…", "email": "ada@example.com", "groups": ["admins"],
+ "iat": 1793440000, "exp": 1793440060}
+```
+
+Check the signature against `jwks_uri`, that `typ` is `proxy-identity+jwt`, that
+`iss` and `aud` are what you expect, and `exp`. It lasts a minute and is made afresh
+for every request, so it is proof of this request and not something to keep.
 
 ## Programs: an access token instead of a cookie
 

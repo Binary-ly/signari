@@ -101,6 +101,9 @@ type File struct {
 type ProxyHost struct {
 	Host    string `yaml:"host"`
 	Enabled *bool  `yaml:"enabled"`
+	// ReleaseGroups and SignedIdentity keep what the host has when left out.
+	ReleaseGroups  *[]string `yaml:"release_groups,omitempty"`
+	SignedIdentity *bool     `yaml:"signed_identity,omitempty"`
 }
 
 // Group is a group of people.

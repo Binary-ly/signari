@@ -2345,6 +2345,8 @@ Takes:
 |---|---|---|
 | `enabled` | boolean |  |
 | `host` | string |  |
+| `release_groups` | list of string |  |
+| `signed_identity` | boolean |  |
 
 Answers:
 

@@ -2192,6 +2192,8 @@ export interface GetOrganizationsOrgIDProxyHostsResponse {
 export interface GetOrganizationsOrgIDProxyHostsResponseProxyHostsItem {
   enabled: boolean
   host: string
+  release_groups: string[]
+  signed_identity: boolean
 }
 
 /** A JSON object of the Admin API. */
@@ -4094,6 +4096,8 @@ export interface PutOrganizationsOrgIDProvidersHookClaimsResponse {
 export interface PutOrganizationsOrgIDProxyHostsRequest {
   enabled?: boolean
   host?: string
+  release_groups?: string[]
+  signed_identity?: boolean
 }
 
 /** A JSON object of the Admin API. */

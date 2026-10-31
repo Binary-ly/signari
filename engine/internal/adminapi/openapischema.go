@@ -316,7 +316,7 @@ var opSchemas = map[string]opSchema{
 			"required_scope": str(), "all_clients": boolean(), "client_id": str()}))})},
 	"GET /admin/organizations/{orgID}/migration-source": {http.StatusOK, nil, migrationSourceSchema},
 	"GET /admin/organizations/{orgID}/proxy-hosts": {http.StatusOK, nil, object([]string{"proxy_hosts"}, map[string]jsonSchema{
-		"proxy_hosts": arrayOf(object([]string{"host", "enabled"}, map[string]jsonSchema{"host": str(), "enabled": boolean()}))})},
+		"proxy_hosts": arrayOf(object([]string{"host", "enabled", "release_groups", "signed_identity"}, map[string]jsonSchema{"host": str(), "enabled": boolean(), "release_groups": arrayOf(str()), "signed_identity": boolean()}))})},
 	// A bare array, unlike every other list, kept for the callers it has.
 	"GET /admin/organizations/{orgID}/resource-servers": {http.StatusOK, nil, arrayOf(object([]string{"resource"},
 		map[string]jsonSchema{"resource": str(), "name": str(), "created_at": dateTime()}))},

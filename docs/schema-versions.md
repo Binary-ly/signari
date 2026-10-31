@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0222 user_foreign_key_indexes
+
+Compatible with the release before: its binary may still serve this schema.
+
+An index for every foreign key into core.users (0.50). Each one with none made a delete of a person scan that table to find their rows, so a person cost 10.7 ms, an organisation of a hundred thousand took eighteen minutes in one transaction, and `instance org-delete`, `-on-deactivate delete` and erasure all paid it. Full and not partial, because the check a cascade runs has no predicate to match one.
+
 ## 0221 refresh_reuse_grace
 
 Compatible with the release before: its binary may still serve this schema.

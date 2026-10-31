@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"net/http"
 	"strings"
@@ -159,6 +160,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		// addresses are trustworthy is a property of the deployment, recorded on
 		// the provider, not something the assertion can assert about itself.
 		EmailVerified: src.Policy.TrustsEmailVerification,
+		RawClaims:     samlAttributeClaims(assertion),
 	}
 
 	s.completeFederation(w, r, &federation.Config{
@@ -169,6 +171,26 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		Policy:      src.Policy,
 		Kind:        federation.KindSAML,
 	}, &store.PendingLogin{ReturnTo: returnPath}, ext)
+}
+
+// samlAttributeClaims is what an assertion's attributes look like to the attribute
+// mapping, which reads a verified payload by claim name (8.13). One value is a claim;
+// several stay a list, which maps onto nothing rather than onto a guess at which one.
+// It holds only what ConsumeResponse read out of the verified assertion.
+func samlAttributeClaims(assertion *saml.InboundAssertion) []byte {
+	claims := make(map[string]any, len(assertion.Attributes))
+	for name, values := range assertion.Attributes {
+		if len(values) == 1 {
+			claims[name] = values[0]
+		} else {
+			claims[name] = values
+		}
+	}
+	raw, err := json.Marshal(claims)
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 // samlSourceSlug pulls the slug out of /saml/source/{slug}/{suffix}.

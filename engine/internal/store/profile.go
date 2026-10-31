@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -697,8 +698,8 @@ func ApplyIDPAttributeMapping(ctx context.Context, tx pgx.Tx, userID, orgID, pro
 	}
 
 	for _, m := range maps {
-		v, ok := claims[m.claim]
-		if !ok || v == nil {
+		v := claimAt(claims, m.claim)
+		if v == nil {
 			continue
 		}
 		value := claimToString(v)
@@ -720,6 +721,23 @@ func ApplyIDPAttributeMapping(ctx context.Context, tx pgx.Tx, userID, orgID, pro
 		applied++
 	}
 	return applied, skipped, nil
+}
+
+// claimAt finds a claim by name, or by a dotted path into nested objects, as a provider
+// that groups its claims needs (8.13). The whole name is tried first, since many claim
+// names hold dots of their own: a URL, or a SAML attribute's OID.
+func claimAt(claims map[string]any, name string) any {
+	if v, ok := claims[name]; ok {
+		return v
+	}
+	head, rest, nested := strings.Cut(name, ".")
+	if !nested {
+		return nil
+	}
+	if inner, ok := claims[head].(map[string]any); ok {
+		return claimAt(inner, rest)
+	}
+	return nil
 }
 
 // claimToString renders a JSON claim as the text an attribute stores.

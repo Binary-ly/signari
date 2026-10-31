@@ -28,18 +28,19 @@ import (
 // record of what was done is written after it.
 
 type scimTargetView struct {
-	ID           string    `json:"id"`
-	Slug         string    `json:"slug"`
-	Name         string    `json:"name"`
-	Kind         string    `json:"kind"`
-	BaseURL      string    `json:"base_url"`
-	OnDeactivate string    `json:"on_deactivate"`
-	ScopeGroup   string    `json:"scope_group"`
-	DryRun       bool      `json:"dry_run"`
-	Enabled      bool      `json:"enabled"`
-	Linked       int       `json:"linked"`
-	ShouldBeGone int       `json:"should_be_gone"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID              string    `json:"id"`
+	Slug            string    `json:"slug"`
+	Name            string    `json:"name"`
+	Kind            string    `json:"kind"`
+	BaseURL         string    `json:"base_url"`
+	OnDeactivate    string    `json:"on_deactivate"`
+	ScopeGroup      string    `json:"scope_group"`
+	DryRun          bool      `json:"dry_run"`
+	Enabled         bool      `json:"enabled"`
+	RecreateMissing bool      `json:"recreate_missing"`
+	Linked          int       `json:"linked"`
+	ShouldBeGone    int       `json:"should_be_gone"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // addSCIMTargetRequest registers a target: a SCIM one by base_url and the
@@ -56,13 +57,17 @@ type addSCIMTargetRequest struct {
 	TargetDomain string          `json:"target_domain"`
 	OnDeactivate string          `json:"on_deactivate"`
 	DryRun       bool            `json:"dry_run"`
+	// RecreateMissing is whether a sync gives somebody a new account when the
+	// one linked to them is gone from the target.
+	RecreateMissing bool `json:"recreate_missing"`
 }
 
-// patchSCIMTargetRequest changes what is given: enabled, and scope_group,
-// the group whose members alone it provisions ("" for everybody).
+// patchSCIMTargetRequest changes what is given: enabled, recreate_missing, and
+// scope_group, the group whose members alone it provisions ("" for everybody).
 type patchSCIMTargetRequest struct {
-	Enabled    *bool   `json:"enabled"`
-	ScopeGroup *string `json:"scope_group"`
+	Enabled         *bool   `json:"enabled"`
+	ScopeGroup      *string `json:"scope_group"`
+	RecreateMissing *bool   `json:"recreate_missing"`
 }
 
 type syncRequest struct {
@@ -88,7 +93,7 @@ func (s *Server) listSCIMTargets(w http.ResponseWriter, r *http.Request) {
 	for _, t := range got {
 		out = append(out, scimTargetView{ID: t.ID, Slug: t.Slug, Name: t.Name, Kind: t.Kind, BaseURL: t.BaseURL,
 			OnDeactivate: t.OnDeactivate, ScopeGroup: t.ScopeGroup, DryRun: t.DryRun, Enabled: t.Enabled,
-			Linked: t.Linked, ShouldBeGone: t.ShouldBeGone, CreatedAt: t.CreatedAt})
+			RecreateMissing: t.RecreateMissing, Linked: t.Linked, ShouldBeGone: t.ShouldBeGone, CreatedAt: t.CreatedAt})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "targets": out})
 }
@@ -103,7 +108,7 @@ func (s *Server) addSCIMTarget(w http.ResponseWriter, r *http.Request) {
 	spec := provision.TargetSpec{Kind: req.Kind, Slug: req.Slug, Name: strings.TrimSpace(req.Name),
 		BaseURL: strings.TrimSpace(req.BaseURL), Token: req.Token, Credentials: []byte(req.Credentials),
 		Impersonate: strings.TrimSpace(req.Impersonate), Domain: strings.TrimSpace(req.TargetDomain),
-		OnDeactivate: req.OnDeactivate, DryRun: req.DryRun}
+		OnDeactivate: req.OnDeactivate, DryRun: req.DryRun, RecreateMissing: req.RecreateMissing}
 	if err := spec.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_target", "detail": err.Error()})
 		return
@@ -134,7 +139,7 @@ func (s *Server) addSCIMTarget(w http.ResponseWriter, r *http.Request) {
 		// Never the token or the credentials.
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.scim_target_added", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: map[string]any{"slug": spec.Slug, "kind": spec.Kind, "base_url": spec.BaseURL,
-				"on_deactivate": spec.OnDeactivate, "dry_run": spec.DryRun}})
+				"on_deactivate": spec.OnDeactivate, "dry_run": spec.DryRun, "recreate_missing": spec.RecreateMissing}})
 	})
 	if s.writeSCIMTargetFailure(w, err, orgID) {
 		return
@@ -152,9 +157,9 @@ func (s *Server) patchSCIMTarget(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrict(w, r, &req) {
 		return
 	}
-	if req.Enabled == nil && req.ScopeGroup == nil {
+	if req.Enabled == nil && req.ScopeGroup == nil && req.RecreateMissing == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change",
-			"detail": "give enabled, scope_group or both"})
+			"detail": "give enabled, scope_group or recreate_missing"})
 		return
 	}
 	if narrowedTokenRefused(w, r, scimTargetRefusal) {
@@ -182,6 +187,12 @@ func (s *Server) patchSCIMTarget(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			out["scope_group"], detail["scope_group"] = group, group
+		}
+		if req.RecreateMissing != nil {
+			if err := store.SetSCIMTargetRecreate(ctx, tx, orgID, slug, *req.RecreateMissing); err != nil {
+				return err
+			}
+			out["recreate_missing"], detail["recreate_missing"] = *req.RecreateMissing, *req.RecreateMissing
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.scim_target_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})
@@ -368,8 +379,8 @@ func (s *Server) syncSCIMTarget(w http.ResponseWriter, r *http.Request) {
 		failures = []string{}
 	}
 	out := map[string]any{"slug": slug, "applied": req.Apply, "created": result.Created,
-		"deactivated": result.Deactivated, "deleted": result.Deleted, "failed": result.Failed,
-		"failures": failures, "groups": groups}
+		"recreated": result.Recreated, "deactivated": result.Deactivated, "deleted": result.Deleted,
+		"failed": result.Failed, "failures": failures, "groups": groups}
 	if syncErr != nil {
 		out["error_detail"] = syncErr.Error()
 	}
@@ -377,7 +388,8 @@ func (s *Server) syncSCIMTarget(w http.ResponseWriter, r *http.Request) {
 	// has happened. Unconditional, as above.
 	version, err := s.mutate(ctx, func(tx pgx.Tx) error {
 		detail := map[string]any{"slug": slug, "apply": req.Apply, "created": result.Created,
-			"deactivated": result.Deactivated, "deleted": result.Deleted, "failed": result.Failed}
+			"recreated": result.Recreated, "deactivated": result.Deactivated, "deleted": result.Deleted,
+			"failed": result.Failed}
 		if syncErr != nil {
 			detail["error"] = syncErr.Error()
 		}

@@ -2344,6 +2344,7 @@ export interface GetOrganizationsOrgIDSCIMTargetsResponseTargetsItem {
   linked: number
   name: string
   on_deactivate: string
+  recreate_missing: boolean
   scope_group: string
   should_be_gone: number
   slug: string
@@ -2889,6 +2890,7 @@ export interface PatchOrganizationsOrgIDSCIMSourcesSlugResponse {
 /** A JSON object of the Admin API. */
 export interface PatchOrganizationsOrgIDSCIMTargetsSlugRequest {
   enabled?: boolean
+  recreate_missing?: boolean
   scope_group?: string
 }
 
@@ -2896,6 +2898,7 @@ export interface PatchOrganizationsOrgIDSCIMTargetsSlugRequest {
 export interface PatchOrganizationsOrgIDSCIMTargetsSlugResponse {
   config_version: number
   enabled?: boolean
+  recreate_missing?: boolean
   scope_group?: string
   slug: string
 }
@@ -3472,6 +3475,7 @@ export interface PostOrganizationsOrgIDSCIMTargetsRequest {
   kind?: string
   name?: string
   on_deactivate?: string
+  recreate_missing?: boolean
   slug?: string
   target_domain?: string
   token?: string
@@ -3502,6 +3506,7 @@ export interface PostOrganizationsOrgIDSCIMTargetsSlugSyncResponse {
   failed: number
   failures: string[]
   groups: PostOrganizationsOrgIDSCIMTargetsSlugSyncResponseGroupsItem[]
+  recreated: number
   slug: string
 }
 

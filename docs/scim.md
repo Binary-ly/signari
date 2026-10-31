@@ -115,11 +115,20 @@ Internal targets often sit behind a private CA, and the alternative operators
 reach for is disabling verification entirely. It *adds* to the system pool, so
 trusting an internal CA does not stop public targets from verifying.
 
-## Known limitation
+## An account that vanished at the target
 
-`sync` does not yet re-create an account that vanished at the target. If a
-remote account is deleted out from under us, verify reports it as a warning
-(*"should have access and the remote account does not exist"*) and the fix is
-manual: clear the link row and re-run sync. Repair is not automatic because
-re-creating an account somebody deliberately deleted at the target is not
-obviously the right thing to do without being asked.
+By default `sync` leaves it alone. Verify reports it as a warning (*"should have
+access and the remote account does not exist"*), because re-creating an account
+somebody deliberately deleted at the target is not obviously the right thing to
+do without being asked.
+
+To be asked once, set `-recreate-missing` on `scim add` or `provision add`,
+`recreate_missing` through the Admin API or a configuration file. Each sync then
+lists the target, and somebody active here whose linked account is not on the list
+gets a new one, which a preview counts as `recreated` without sending anything. A
+list that came back wrong looks exactly like everybody having been deleted, so when
+five or more accounts and over a quarter of those linked are missing, nobody is
+recreated and the sync reports it as a failure for an operator to look at.
+
+Somebody deactivated here whose account has already gone needs nothing done: the
+target's 404 ends the link, rather than failing on every sync.

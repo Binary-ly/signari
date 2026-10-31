@@ -76,6 +76,9 @@ type TargetSpec struct {
 	// deactivate, delete or nothing.
 	OnDeactivate string
 	DryRun       bool
+	// RecreateMissing gives somebody active here a new account when the one
+	// linked to them is gone from the target.
+	RecreateMissing bool
 }
 
 // Validate refuses a target before anything is sealed or written, and fills
@@ -147,9 +150,9 @@ func AddTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID st
 		}
 		_, err = q.Exec(ctx, `
 			INSERT INTO core.scim_targets
-				(org_id, slug, display_name, base_url, token, on_deactivate, dry_run)
-			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)`,
-			orgID, s.Slug, s.Name, s.BaseURL, sealed, s.OnDeactivate, s.DryRun)
+				(org_id, slug, display_name, base_url, token, on_deactivate, dry_run, recreate_missing)
+			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8)`,
+			orgID, s.Slug, s.Name, s.BaseURL, sealed, s.OnDeactivate, s.DryRun, s.RecreateMissing)
 	} else {
 		var sealed []byte
 		if sealed, err = root.Seal(s.Credentials, "provision_credentials"); err != nil {
@@ -158,9 +161,10 @@ func AddTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID st
 		_, err = q.Exec(ctx, `
 			INSERT INTO core.scim_targets
 				(org_id, slug, display_name, kind, credentials_enc, impersonate,
-				 target_domain, base_url, token, on_deactivate, dry_run)
-			VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), '', '', $8, $9)`,
-			orgID, s.Slug, s.Name, s.Kind, sealed, s.Impersonate, s.Domain, s.OnDeactivate, s.DryRun)
+				 target_domain, base_url, token, on_deactivate, dry_run, recreate_missing)
+			VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), '', '', $8, $9, $10)`,
+			orgID, s.Slug, s.Name, s.Kind, sealed, s.Impersonate, s.Domain, s.OnDeactivate, s.DryRun,
+			s.RecreateMissing)
 	}
 	if err != nil && strings.Contains(err.Error(), "duplicate key") {
 		return ErrTargetExists
@@ -172,7 +176,7 @@ func AddTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID st
 // as it is. The kind is fixed once registered.
 type TargetChange struct {
 	Name, BaseURL, OnDeactivate, Impersonate, Domain *string
-	DryRun                                           *bool
+	DryRun, RecreateMissing                          *bool
 	// Token is a SCIM target's, Credentials a native one's.
 	Token       *string
 	Credentials []byte
@@ -242,9 +246,11 @@ func UpdateTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID
 			target_domain   = COALESCE($7::text, target_domain),
 			dry_run         = COALESCE($8::boolean, dry_run),
 			token           = COALESCE($9::bytea, token),
-			credentials_enc = COALESCE($10::bytea, credentials_enc)
+			credentials_enc = COALESCE($10::bytea, credentials_enc),
+			recreate_missing = COALESCE($11::boolean, recreate_missing)
 		 WHERE org_id = $1::uuid AND slug = $2`,
-		orgID, slug, c.Name, c.BaseURL, c.OnDeactivate, c.Impersonate, c.Domain, c.DryRun, token, creds)
+		orgID, slug, c.Name, c.BaseURL, c.OnDeactivate, c.Impersonate, c.Domain, c.DryRun, token, creds,
+		c.RecreateMissing)
 	if err != nil {
 		return err
 	}
@@ -278,9 +284,65 @@ func HTTPClient() (*http.Client, error) {
 // SyncResult is what one pass did, or with apply false would do.
 type SyncResult struct {
 	Created, Deactivated, Deleted, Failed int
+	// Recreated gave somebody back an account the target no longer had. Each
+	// is one of Created too.
+	Recreated int
 	// Failures name each account that could not be changed, and why.
 	Failures []string
 	Groups   []GroupChange
+}
+
+// listPageSize is how many accounts one page of a target's list asks for.
+const listPageSize = 100
+
+// recreateFloor is how many missing accounts are taken on trust. SafetyLimit is
+// a share, and one person of two is not implausible.
+const recreateFloor = 5
+
+// missingAccounts says which of the people meant to have an account are linked
+// to one the target no longer lists.
+//
+// A list that came back wrong looks exactly like everybody having been deleted,
+// and answering that by creating everybody again is a duplicate of the company at
+// any target that does not refuse one. So a share past SafetyLimit is refused, as
+// a mass deactivation is, and an operator looks.
+func missingAccounts(ctx context.Context, client Provisioner, desired []store.SCIMDesiredUser) (map[string]bool, error) {
+	linked := 0
+	for _, d := range desired {
+		if d.RemoteID != "" && d.Active {
+			linked++
+		}
+	}
+	if linked == 0 {
+		return nil, nil
+	}
+	listed, err := client.ListUsers(ctx, listPageSize)
+	if err != nil {
+		return nil, fmt.Errorf("listing the target's accounts: %w", err)
+	}
+	there := make(map[string]bool, len(listed))
+	for _, u := range listed {
+		there[u.RemoteID] = true
+	}
+	missing := map[string]bool{}
+	for _, d := range desired {
+		if d.RemoteID != "" && d.Active && !there[d.RemoteID] {
+			missing[d.UserID] = true
+		}
+	}
+	if share := float64(len(missing)) / float64(linked); len(missing) >= recreateFloor && share > SafetyLimit {
+		return nil, fmt.Errorf("the target lists no account for %d of the %d people linked to one (%.0f%%), over "+
+			"the %.0f%% limit, so none were recreated: that is also what a list that came back wrong looks like",
+			len(missing), linked, share*100, SafetyLimit*100)
+	}
+	return missing, nil
+}
+
+// gone says the target has no such account, so there is nothing left to take
+// away: a deactivation that kept failing on one would fail on every sync.
+func gone(err error) bool {
+	var se *scim.Error
+	return errors.As(err, &se) && se.Status == http.StatusNotFound
 }
 
 // GroupChange is one provisioned group's reconciliation.
@@ -306,11 +368,24 @@ func Sync(ctx context.Context, db DB, t scim.Target, hc *http.Client, apply bool
 	if err != nil {
 		return r, err
 	}
+	var missing map[string]bool
+	if t.RecreateMissing {
+		if missing, err = missingAccounts(ctx, client, desired); err != nil {
+			r.Failures = append(r.Failures, err.Error())
+			r.Failed++
+		}
+	}
 	for _, d := range desired {
+		if missing[d.UserID] {
+			d.RemoteID = ""
+		}
 		switch {
 		case d.RemoteID == "" && d.Active:
 			if !apply {
 				r.Created++
+				if missing[d.UserID] {
+					r.Recreated++
+				}
 				continue
 			}
 			id, err := client.CreateUser(ctx, User{ExternalID: d.UserID, UserName: d.UserName,
@@ -334,6 +409,9 @@ func Sync(ctx context.Context, db DB, t scim.Target, hc *http.Client, apply bool
 				return r, err
 			}
 			r.Created++
+			if missing[d.UserID] {
+				r.Recreated++
+			}
 
 		case d.RemoteID != "" && !d.Active:
 			if t.OnDeactivate == "nothing" {
@@ -358,7 +436,13 @@ func Sync(ctx context.Context, db DB, t scim.Target, hc *http.Client, apply bool
 				r.Deleted++
 				continue
 			}
-			if err := client.SetActive(ctx, d.RemoteID, false); err != nil {
+			if err := client.SetActive(ctx, d.RemoteID, false); gone(err) {
+				if err := store.DropSCIMLink(ctx, db, t.ID, d.UserID); err != nil {
+					return r, err
+				}
+				r.Deactivated++
+				continue
+			} else if err != nil {
 				r.Failures = append(r.Failures, fmt.Sprintf("deactivate %s: %v", d.UserName, err))
 				r.Failed++
 				continue

@@ -17678,6 +17678,9 @@
                           "on_deactivate": {
                             "type": "string"
                           },
+                          "recreate_missing": {
+                            "type": "boolean"
+                          },
                           "scope_group": {
                             "type": "string"
                           },
@@ -17698,6 +17701,7 @@
                           "scope_group",
                           "dry_run",
                           "enabled",
+                          "recreate_missing",
                           "linked",
                           "should_be_gone",
                           "created_at"
@@ -17802,6 +17806,9 @@
                   },
                   "on_deactivate": {
                     "type": "string"
+                  },
+                  "recreate_missing": {
+                    "type": "boolean"
                   },
                   "slug": {
                     "type": "string"
@@ -17941,6 +17948,9 @@
                   "enabled": {
                     "type": "boolean"
                   },
+                  "recreate_missing": {
+                    "type": "boolean"
+                  },
                   "scope_group": {
                     "type": "string"
                   }
@@ -17962,6 +17972,9 @@
                       "type": "integer"
                     },
                     "enabled": {
+                      "type": "boolean"
+                    },
+                    "recreate_missing": {
                       "type": "boolean"
                     },
                     "scope_group": {
@@ -18394,6 +18407,9 @@
                       },
                       "type": "array"
                     },
+                    "recreated": {
+                      "type": "integer"
+                    },
                     "slug": {
                       "type": "string"
                     }
@@ -18402,6 +18418,7 @@
                     "slug",
                     "applied",
                     "created",
+                    "recreated",
                     "deactivated",
                     "deleted",
                     "failed",

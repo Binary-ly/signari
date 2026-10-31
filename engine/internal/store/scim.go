@@ -21,7 +21,7 @@ func LoadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgI
 		       dry_run, on_deactivate, kind,
 		       COALESCE(credentials_enc, ''::bytea),
 		       COALESCE(impersonate, ''), COALESCE(target_domain, ''),
-		       COALESCE(scope_group_id::text, '')
+		       COALESCE(scope_group_id::text, ''), recreate_missing
 		FROM core.scim_targets
 		WHERE enabled AND ($1 = '' OR slug = $1) AND ($2 = '' OR org_id = $2::uuid)
 		ORDER BY slug`, only, orgID)
@@ -37,7 +37,7 @@ func LoadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgI
 		var sealedCreds []byte
 		if err := rows.Scan(&t.ID, &t.OrgID, &t.Slug, &t.DisplayName, &t.BaseURL,
 			&sealed, &t.DryRun, &t.OnDeactivate, &t.Kind,
-			&sealedCreds, &t.Impersonate, &t.TargetDomain, &t.ScopeGroupID); err != nil {
+			&sealedCreds, &t.Impersonate, &t.TargetDomain, &t.ScopeGroupID, &t.RecreateMissing); err != nil {
 			return nil, err
 		}
 		// A SCIM target's secret is a bearer token; a native one's is a service

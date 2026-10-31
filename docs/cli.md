@@ -212,7 +212,7 @@ existed, and the test that exists to catch exactly that could not see this table
 
 | | |
 |---|---|
-| `signari scim add` / `scim list` / `scim sync` / `scim verify` | Outbound SCIM provisioning |
+| `signari scim add` / `scim list` / `scim sync` / `scim verify` | Outbound SCIM provisioning. `-recreate-missing` on `add` has a sync give somebody a new account when the one linked to them is gone from the target |
 | `signari scim enable` / `scim disable` | Take a target in or out of service. Disabling keeps the configuration, the links and the remote ids, and the next sync skips it — deleting the target would take the links with it and leave the far-end accounts unreachable rather than merely unmanaged |
 | `signari scim scope` | Limit a target to one group's members. Unscoped, a target receives every user in the organisation — right for a company directory, wrong for an application five people use |
 | `signari scim provision-group` / `scim deprovision-group` | Create or delete a group at the target and record that we own it. Reconciliation only ever touches groups this link names, so a group the target's own administrators maintain is left alone however similar its name |

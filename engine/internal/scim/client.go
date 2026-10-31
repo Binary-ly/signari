@@ -72,6 +72,10 @@ type Target struct {
 	// accounts that should no longer exist and deactivates them -- which is
 	// exactly the shape provision.CheckSafety refuses above 25%.
 	ScopeGroupID string
+
+	// RecreateMissing has a sync give somebody active here a new account when
+	// the one linked to them is gone from the target.
+	RecreateMissing bool
 }
 
 // User is the subset of the SCIM user schema we send.

@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0202 scim_target_recreate
+
+Compatible with the release before: its binary may still serve this schema.
+
+Whether a sync gives somebody back an account deleted at the target (7.14). A link said they had one, so nothing ever looked, and a person removed there by hand stayed removed for as long as they stayed active here.
+
 ## 0201 radius_attributes
 
 Not compatible with the release before: stop it before migrating.

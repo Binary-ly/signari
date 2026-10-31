@@ -235,6 +235,7 @@ scim_targets:                 # where people are provisioned to
     on_deactivate: deactivate # delete or nothing
     scope_group: platform     # only its members; "" for everybody
     dry_run: false
+    recreate_missing: false   # a new account for somebody whose linked one is gone
   - slug: workspace
     kind: google              # or entra; fixed once made
     credentials: {file: google-sa.json}

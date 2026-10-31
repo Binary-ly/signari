@@ -41,6 +41,9 @@ type SCIMTarget struct {
 	Enabled *bool `yaml:"enabled,omitempty"`
 	// ScopeGroup limits the target to one group's members; "" is everybody.
 	ScopeGroup *string `yaml:"scope_group,omitempty"`
+	// RecreateMissing has a sync give somebody a new account when the one
+	// linked to them is gone from the target.
+	RecreateMissing *bool `yaml:"recreate_missing,omitempty"`
 }
 
 func (w SCIMTarget) targetKind() string {
@@ -63,7 +66,7 @@ func (w SCIMTarget) secretRef() (*SecretRef, string) {
 func (w SCIMTarget) spec() provision.TargetSpec {
 	s := provision.TargetSpec{Kind: w.targetKind(), Slug: w.Slug, Name: w.Name, BaseURL: w.BaseURL,
 		Impersonate: w.Impersonate, Domain: w.TargetDomain, OnDeactivate: w.OnDeactivate,
-		DryRun: w.DryRun != nil && *w.DryRun}
+		DryRun: w.DryRun != nil && *w.DryRun, RecreateMissing: w.RecreateMissing != nil && *w.RecreateMissing}
 	if r, _ := w.secretRef(); r != nil && s.Kind == "scim" {
 		s.Token = r.value
 	} else if r != nil {
@@ -190,6 +193,7 @@ func (scimSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, p
 			c.note(w.DryRun != nil && h.DryRun != *w.DryRun, "dry_run")
 			c.note(w.Enabled != nil && h.Enabled != *w.Enabled, "enabled")
 			c.note(w.ScopeGroup != nil && h.ScopeGroup != *w.ScopeGroup, "scope_group")
+			c.note(w.RecreateMissing != nil && h.RecreateMissing != *w.RecreateMissing, "recreate_missing")
 			if r, where := w.secretRef(); r != nil && compared == nil {
 				if compared = p.needsRoot("scim_target", w.Slug, "comparing the secret the file names"); compared == nil {
 					var secret string
@@ -257,7 +261,7 @@ func (scimSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, 
 			if h.Kind == "google" {
 				change.Impersonate, change.Domain = &w.Impersonate, &w.TargetDomain
 			}
-			change.DryRun = w.DryRun
+			change.DryRun, change.RecreateMissing = w.DryRun, w.RecreateMissing
 			if r, _ := w.secretRef(); r != nil && h.Kind == "scim" {
 				change.Token = &r.value
 			} else if r != nil {
@@ -327,9 +331,9 @@ func (scimSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File)
 		return err
 	}
 	for _, h := range have {
-		dryRun, enabled, scope := h.DryRun, h.Enabled, h.ScopeGroup
+		dryRun, enabled, scope, recreate := h.DryRun, h.Enabled, h.ScopeGroup, h.RecreateMissing
 		w := SCIMTarget{Slug: h.Slug, Kind: h.Kind, Name: h.Name, OnDeactivate: h.OnDeactivate, DryRun: &dryRun,
-			Enabled: &enabled, ScopeGroup: &scope}
+			Enabled: &enabled, ScopeGroup: &scope, RecreateMissing: &recreate}
 		switch h.Kind {
 		case "scim":
 			w.Kind, w.BaseURL = "", h.BaseURL

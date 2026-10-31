@@ -2960,6 +2960,7 @@ Takes:
 | `kind` | string |  |
 | `name` | string |  |
 | `on_deactivate` | string |  |
+| `recreate_missing` | boolean |  |
 | `slug` | string |  |
 | `target_domain` | string |  |
 | `token` | string |  |
@@ -2984,6 +2985,7 @@ Takes:
 | Field | Type | |
 |---|---|---|
 | `enabled` | boolean |  |
+| `recreate_missing` | boolean |  |
 | `scope_group` | string |  |
 
 Answers:
@@ -2992,6 +2994,7 @@ Answers:
 |---|---|---|
 | `config_version` | integer | always |
 | `enabled` | boolean |  |
+| `recreate_missing` | boolean |  |
 | `scope_group` | string |  |
 | `slug` | string | always |
 
@@ -3053,6 +3056,7 @@ Answers:
 | `failed` | integer | always |
 | `failures` | list of string | always |
 | `groups` | list of object | always |
+| `recreated` | integer | always |
 | `slug` | string | always |
 
 ## scopes

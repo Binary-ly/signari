@@ -22,6 +22,10 @@ type fakeTarget struct {
 	groups  map[string]map[string]bool
 	next    int
 	deleted []string
+	// lists answers GET /Users, listed counts those, listNothing makes the answer
+	// an empty list, and strict answers 404 for what is not there.
+	lists, listNothing, strict bool
+	listed                     int
 }
 
 func newFakeTarget(t *testing.T) *fakeTarget {
@@ -44,7 +48,35 @@ func newFakeTarget(t *testing.T) *fakeTarget {
 		answer(w, http.StatusCreated, map[string]any{"id": id})
 	})
 	mux.HandleFunc("PATCH /Users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.strict && !f.users[r.PathValue("id")] {
+			answer(w, http.StatusNotFound, map[string]any{"detail": "no such user"})
+			return
+		}
 		answer(w, http.StatusOK, map[string]any{"id": r.PathValue("id")})
+	})
+	mux.HandleFunc("DELETE /Users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.strict && !f.users[r.PathValue("id")] {
+			answer(w, http.StatusNotFound, map[string]any{"detail": "no such user"})
+			return
+		}
+		delete(f.users, r.PathValue("id"))
+		answer(w, http.StatusNoContent, nil)
+	})
+	mux.HandleFunc("GET /Users", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.listed++
+		resources := []map[string]any{}
+		if f.lists && !f.listNothing {
+			for id := range f.users {
+				resources = append(resources, map[string]any{"id": id, "userName": id})
+			}
+		}
+		answer(w, http.StatusOK, map[string]any{"totalResults": len(resources), "Resources": resources})
 	})
 	mux.HandleFunc("POST /Groups", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()

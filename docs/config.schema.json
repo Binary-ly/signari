@@ -918,6 +918,9 @@
           ],
           "type": "string"
         },
+        "recreate_missing": {
+          "type": "boolean"
+        },
         "scope_group": {
           "type": "string"
         },

@@ -67,6 +67,20 @@ func SetSCIMTargetScope(ctx context.Context, q outpostDB, orgID, slug, group str
 	return nil
 }
 
+// SetSCIMTargetRecreate says whether a sync gives somebody a new account when
+// the one linked to them is gone from the target.
+func SetSCIMTargetRecreate(ctx context.Context, q Execer, orgID, slug string, recreate bool) error {
+	tag, err := q.Exec(ctx, `UPDATE core.scim_targets SET recreate_missing = $3
+		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, recreate)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSCIMTargetUnknown
+	}
+	return nil
+}
+
 // SCIMTargetRow is one target as an administrator sees it, without its
 // token or credentials.
 type SCIMTargetRow struct {
@@ -75,6 +89,7 @@ type SCIMTargetRow struct {
 	// domain, "" for any other kind.
 	Impersonate, TargetDomain string
 	DryRun, Enabled           bool
+	RecreateMissing           bool
 	Linked, ShouldBeGone      int
 	CreatedAt                 time.Time
 }
@@ -85,7 +100,7 @@ func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow,
 	rows, err := q.Query(ctx, `
 		SELECT t.id::text, t.slug, t.display_name, COALESCE(NULLIF(t.kind, ''), 'scim'), t.base_url,
 		       t.on_deactivate, COALESCE(g.name, ''), COALESCE(t.impersonate, ''), COALESCE(t.target_domain, ''),
-		       t.dry_run, t.enabled,
+		       t.dry_run, t.enabled, t.recreate_missing,
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id),
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id AND NOT l.should_be_active),
 		       t.created_at
@@ -100,8 +115,8 @@ func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow,
 	for rows.Next() {
 		var t SCIMTargetRow
 		if err := rows.Scan(&t.ID, &t.Slug, &t.Name, &t.Kind, &t.BaseURL, &t.OnDeactivate, &t.ScopeGroup,
-			&t.Impersonate, &t.TargetDomain, &t.DryRun, &t.Enabled, &t.Linked, &t.ShouldBeGone,
-			&t.CreatedAt); err != nil {
+			&t.Impersonate, &t.TargetDomain, &t.DryRun, &t.Enabled, &t.RecreateMissing, &t.Linked,
+			&t.ShouldBeGone, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

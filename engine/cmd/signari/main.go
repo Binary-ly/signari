@@ -748,6 +748,8 @@ func run(args []string) (err error) {
 	baseURL := fs.String("base-url", "", "SCIM base URL of the target application")
 	scimToken := fs.String("token", "", "bearer token the SCIM target issued")
 	onDeactivate := fs.String("on-deactivate", "deactivate", "deactivate, delete or nothing")
+	recreateMissing := fs.Bool("recreate-missing", false,
+		"give somebody a new account at the target when the one linked to them is gone from it")
 	dryRun2 := fs.Bool("scim-dry-run", false, "register the target in dry-run mode: record, never send")
 	groupName := fs.String("group", "", "group name")
 	memberEmail := fs.String("email-member", "", "member's email or username")
@@ -1723,10 +1725,10 @@ func run(args []string) (err error) {
 		return idpAttributeMap(ctx, conn, *slug, *upstreamClaim, *localAttribute,
 			*mapOverwrite, *mapMaxLength, *removeMember)
 	case "scim add":
-		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2)
+		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2, *recreateMissing)
 	case "provision add":
 		return provisionAdd(ctx, conn, *orgID, *slug, *name, *outpostKind,
-			*credsFile, *dirImpersonate, *targetDomain, *onDeactivate, *dryRun2)
+			*credsFile, *dirImpersonate, *targetDomain, *onDeactivate, *dryRun2, *recreateMissing)
 	case "duo set":
 		return duoSet(ctx, conn, *orgID, *duoClientID, *duoSecret, *duoAPIHost, *duoFailOpen)
 	case "duo enroll":
@@ -4282,7 +4284,7 @@ func scimHTTPClient() (*http.Client, error) { return provision.HTTPClient() }
 
 // scimAdd registers a provisioning target.
 func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, token,
-	onDeactivate string, dryRun bool) error {
+	onDeactivate string, dryRun, recreateMissing bool) error {
 
 	switch {
 	case orgID == "":
@@ -4296,7 +4298,7 @@ func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, to
 		return fmt.Errorf("give -token, the bearer token the target issued")
 	}
 	spec := provision.TargetSpec{Kind: "scim", Slug: slug, Name: name, BaseURL: baseURL, Token: token,
-		OnDeactivate: onDeactivate, DryRun: dryRun}
+		OnDeactivate: onDeactivate, DryRun: dryRun, RecreateMissing: recreateMissing}
 	if err := spec.Validate(); err != nil {
 		return err
 	}
@@ -4442,8 +4444,8 @@ func scimSync(ctx context.Context, conn *pgx.Conn, orgID, only string, apply boo
 		if apply {
 			verb = "did"
 		}
-		fmt.Printf("  %s: %s create %d, deactivate %d, delete %d, failed %d\n",
-			t.Slug, verb, r.Created, r.Deactivated, r.Deleted, r.Failed)
+		fmt.Printf("  %s: %s create %d (%d recreated), deactivate %d, delete %d, failed %d\n",
+			t.Slug, verb, r.Created, r.Recreated, r.Deactivated, r.Deleted, r.Failed)
 	}
 
 	if !apply {
@@ -7302,7 +7304,7 @@ func kindNamesForHelp() []string {
 // reconciliation above them is the same one SCIM targets use, which is why
 // adding them was a day rather than a quarter.
 func provisionAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind,
-	credsFile, impersonate, domain, onDeactivate string, dryRun bool) error {
+	credsFile, impersonate, domain, onDeactivate string, dryRun, recreateMissing bool) error {
 
 	switch {
 	case orgID == "":
@@ -7337,7 +7339,7 @@ func provisionAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind,
 	// so a wrong file is a message here instead of a cron job failing
 	// quietly at 3am.
 	spec := provision.TargetSpec{Kind: kind, Slug: slug, Name: name, Credentials: raw, Impersonate: impersonate,
-		Domain: domain, OnDeactivate: onDeactivate, DryRun: dryRun}
+		Domain: domain, OnDeactivate: onDeactivate, DryRun: dryRun, RecreateMissing: recreateMissing}
 	if err := spec.Validate(); err != nil {
 		return err
 	}

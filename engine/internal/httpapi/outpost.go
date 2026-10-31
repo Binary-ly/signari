@@ -303,7 +303,7 @@ func (s *Server) handleOutpostAuthenticate(w http.ResponseWriter, r *http.Reques
 	}
 
 	auth := NewLDAPAuthenticator(s.db, passwords.Shared(), orgID, s.log).
-		WithMFAGate(s.BindDemandsMFA)
+		WithMFAGate(s.BindDemandsMFA).WithCodes(s.BindCodeOK)
 	ident, err := auth.Authenticate(r.Context(), body.Username, body.Password)
 	if err != nil {
 		// One answer for every reason. An outpost sits somewhere less trusted by

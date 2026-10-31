@@ -229,8 +229,16 @@ spent the budget stays invisible.
 
 ### A password alone, and a second factor
 
-A bind carries a password and nothing else. RADIUS PAP and the outposts (see
-[outposts](outposts.md)) are the same. Each organisation decides what happens
+A bind has one credential field. RADIUS PAP and the outposts (see
+[outposts](outposts.md)) are the same. So a person with an authenticator can put
+their code after their password, `password;123456`: six to eight digits after
+the last semicolon. It is held to what the sign-in form holds a code to: spent
+once, and a wrong one charged to the authenticator and the person's budget. A
+code that is given has to be right, even where the password alone would have
+done, and a password that really does end that way still works. An emailed code
+cannot be used, since nothing here could have sent one.
+
+Each organisation decides what happens
 when the person binding is someone its sign-in page would ask for a second
 factor: under the built-in flow, anybody who has one enrolled; under an
 unconditional `mfa` stage, everybody. A registered security key or passkey
@@ -240,7 +248,7 @@ password-only bind under `refuse_when_mfa`.
 
 | `password_only_binds` | A correct password from such a person |
 |---|---|
-| `refuse_when_mfa` | refused, answered as `invalidCredentials` (49) like any other failure, and audited as `login.failed` with reason `second_factor_required`. **The default for organisations created since migration 0128** |
+| `refuse_when_mfa` | refused unless a code came with it, answered as `invalidCredentials` (49) like any other failure, and audited as `login.failed` with reason `second_factor_required`. **The default for organisations created since migration 0128** |
 | `allow` | accepted. The value every older organisation keeps until changed, so an upgrade does not stop a VPN working |
 
 Set it with `signari instance password-binds -org <id> -binds refuse_when_mfa`.

@@ -52,11 +52,18 @@ type LDAPAuthenticator struct {
 	// whether they have one enrolled, which is the built-in flow's answer and
 	// misses only an operator's unconditional mfa stage.
 	demandsMFA MFAGate
+	// codes checks a code that came with a bind (Server.BindCodeOK). nil means
+	// this protocol path can carry none, and a password ending in digits is
+	// only a password.
+	codes CodeCheck
 }
 
 // MFAGate reports whether the sign-in flow would demand a second factor of a
 // person who has proved only a password.
 type MFAGate func(ctx context.Context, orgID, userID string) (bool, error)
+
+// CodeCheck reports whether a code is good for a person, charging it if not.
+type CodeCheck func(ctx context.Context, orgID, userID, code string) (bool, error)
 
 func NewLDAPAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID string,
 	log *slog.Logger) *LDAPAuthenticator {
@@ -75,13 +82,36 @@ func (a *LDAPAuthenticator) WithMFAGate(g MFAGate) *LDAPAuthenticator {
 	return &c
 }
 
+// WithCodes lets a bind carry a code after its password (7.05).
+func (a *LDAPAuthenticator) WithCodes(c CodeCheck) *LDAPAuthenticator {
+	copied := *a
+	copied.codes = c
+	return &copied
+}
+
+// splitCode separates `password;123456`, the one way a protocol with a single
+// credential field can carry a second factor. Only that shape: a person whose
+// password ends so is tried with the whole of it too.
+func splitCode(password string) (secret, code string) {
+	i := strings.LastIndexByte(password, ';')
+	if i <= 0 || len(password)-i-1 < 6 || len(password)-i-1 > 8 {
+		return password, ""
+	}
+	for _, c := range password[i+1:] {
+		if c < '0' || c > '9' {
+			return password, ""
+		}
+	}
+	return password[:i], password[i+1:]
+}
+
 // errMFARequired is a correct password the organisation will not accept alone.
 // Answered as a refusal like any other -- the protocol layer collapses it into
 // invalid credentials -- and deliberately not errLDAPInvalid, so it is not
 // charged to the guessing budget: the password was right, and charging it would
 // let a VPN client retrying in a loop spend the person's budget at the sign-in
 // page too.
-var errMFARequired = errors.New("a second factor is required and this protocol cannot carry one")
+var errMFARequired = errors.New("a second factor is required and none came with the password")
 
 // refusesPasswordOnly applies core.organizations.password_only_binds (0128).
 func (a *LDAPAuthenticator) refusesPasswordOnly(ctx context.Context, orgID, userID string) (bool, error) {
@@ -272,12 +302,19 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("looking up the credential: %w", err)
 	}
+	secret, code := password, ""
+	if a.codes != nil {
+		secret, code = splitCode(password)
+	}
 	if !found || (a.orgID != "" && orgID != a.orgID) {
 		// The dummy verify keeps the timing of "no such user" indistinguishable
 		// from "wrong password". Skipping it here would make the LDAP port a
 		// user-enumeration oracle by stopwatch even though the error text is
-		// identical.
+		// identical. Twice for what looks like a code, as a wrong password is.
 		_, _ = a.hasher.Verify(ctx, dummyHash, password)
+		if code != "" {
+			_, _ = a.hasher.Verify(ctx, dummyHash, secret)
+		}
 		// No subject: there is nobody to name. The event still records that a
 		// bind was attempted against this directory, which is what makes a
 		// guessing run visible at all.
@@ -287,12 +324,20 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 		})
 		return nil, errLDAPInvalid
 	}
-	if _, err := a.hasher.Verify(ctx, hash, password); err != nil {
-		a.audit(ctx, audit.Event{
-			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
-			Detail: map[string]any{"via": a.via, "reason": "bad_password"},
-		})
-		return nil, errLDAPInvalid
+	if _, err := a.hasher.Verify(ctx, hash, secret); err != nil {
+		// A password of its own may end in what looks like a code.
+		whole := err
+		if code != "" {
+			_, whole = a.hasher.Verify(ctx, hash, password)
+			code = ""
+		}
+		if whole != nil {
+			a.audit(ctx, audit.Event{
+				Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+				Detail: map[string]any{"via": a.via, "reason": "bad_password"},
+			})
+			return nil, errLDAPInvalid
+		}
 	}
 
 	// After the password, so the answer and its timing are the same as for a
@@ -301,7 +346,18 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 	if err != nil {
 		return nil, fmt.Errorf("checking whether a password alone is accepted: %w", err)
 	}
-	if refuse {
+	amr := []string{"pwd"}
+	switch {
+	case code != "":
+		// Given, it has to be right, whether or not one was needed: a wrong code
+		// passing because the policy would not have asked is a person told
+		// nothing about a typing error, and a guesser told the password was
+		// right.
+		if err := a.secondFactor(ctx, orgID, userID, code); err != nil {
+			return nil, err
+		}
+		amr = append(amr, "otp", "mfa")
+	case refuse:
 		a.audit(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
 			Detail: map[string]any{"via": a.via, "reason": "second_factor_required"},
@@ -320,9 +376,26 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 
 	a.audit(ctx, audit.Event{
 		Type: audit.EventLoginSucceeded, OrgID: orgID, SubjectID: userID,
-		Detail: map[string]any{"via": a.via, "amr": []string{"pwd"}},
+		Detail: map[string]any{"via": a.via, "amr": amr},
 	})
 	return id, nil
+}
+
+// secondFactor checks a code for somebody whose password was right. A wrong one
+// is charged as a wrong password is, beside what Server.BindCodeOK charges it to.
+func (a *LDAPAuthenticator) secondFactor(ctx context.Context, orgID, userID, code string) error {
+	ok, err := a.codes(ctx, orgID, userID, code)
+	if err != nil {
+		return fmt.Errorf("checking a code: %w", err)
+	}
+	if !ok {
+		a.audit(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			Detail: map[string]any{"via": a.via, "reason": "bad_second_factor"},
+		})
+		return errLDAPInvalid
+	}
+	return nil
 }
 
 func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd.Identity, error) {

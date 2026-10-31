@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/store"
@@ -44,6 +45,34 @@ func (a *RADIUSAuthenticator) WithMFAGate(g MFAGate) *RADIUSAuthenticator {
 	return &RADIUSAuthenticator{inner: a.inner.WithMFAGate(g)}
 }
 
+// WithCodes is LDAPAuthenticator.WithCodes, and is also what lets a right
+// password without a code be answered with an Access-Challenge.
+func (a *RADIUSAuthenticator) WithCodes(c CodeCheck) *RADIUSAuthenticator {
+	return &RADIUSAuthenticator{inner: a.inner.WithCodes(c)}
+}
+
+// VerifyCode is the second half of an Access-Challenge: the person the password
+// was proved for, and the code they answered with.
+func (a *RADIUSAuthenticator) VerifyCode(ctx context.Context, username, code string) error {
+	var userID, orgID string
+	err := a.inner.db.QueryRow(ctx, `
+		SELECT u.id::text, u.org_id::text FROM core.users u
+		 WHERE u.org_id = $1::uuid AND u.status = 'active'
+		   AND (u.email_fold = lower($2) OR u.username_fold = lower($2))`,
+		store.ExactUUIDOrNil(a.inner.orgID), username).Scan(&userID, &orgID)
+	if err != nil {
+		return fmt.Errorf("finding who a code is for: %w", err)
+	}
+	if err := a.inner.secondFactor(ctx, orgID, userID, code); err != nil {
+		return err
+	}
+	a.inner.audit(ctx, audit.Event{
+		Type: audit.EventLoginSucceeded, OrgID: orgID, SubjectID: userID,
+		Detail: map[string]any{"via": a.inner.via, "amr": []string{"pwd", "otp", "mfa"}},
+	})
+	return nil
+}
+
 // Authenticate reports whether the credential is valid, and nothing else.
 //
 // The identity is discarded on purpose. RADIUS replies carry no user attributes
@@ -52,6 +81,9 @@ func (a *RADIUSAuthenticator) WithMFAGate(g MFAGate) *RADIUSAuthenticator {
 // leaking a directory.
 func (a *RADIUSAuthenticator) Authenticate(ctx context.Context, username, password string) error {
 	_, err := a.inner.Authenticate(ctx, username, password)
+	if errors.Is(err, errMFARequired) && a.inner.codes != nil {
+		return radius.ErrSecondFactor
+	}
 	return err
 }
 

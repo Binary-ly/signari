@@ -122,6 +122,8 @@ type Server struct {
 
 	eapTLS   *EAPTLSConfig
 	sessions *eapSessions
+
+	codes pendingCodes
 }
 
 // ReplaceClients swaps the devices this server answers.
@@ -336,6 +338,17 @@ func (s *Server) handle(ctx context.Context, conn net.PacketConn, addr net.Addr,
 		return
 	}
 
+	// An answer to a challenge carries the code where the password was.
+	if state, ok := p.Attr(AttrState); ok {
+		if p.Count(AttrState) > 1 {
+			s.reject(conn, addr, p, secret, "more than one state")
+			return
+		}
+		s.answerChallenge(ctx, conn, addr, p, secret, client, string(state),
+			strings.TrimSpace(string(username)), password)
+		return
+	}
+
 	// A deadline of its own, shorter than LDAP's. The verification waits for a
 	// slot in the hasher the sign-in form shares, and the listener's context
 	// lives as long as the process: a packet waited there without end, holding
@@ -344,6 +357,10 @@ func (s *Server) handle(ctx context.Context, conn net.PacketConn, addr net.Addr,
 	actx, cancel := context.WithTimeout(ctx, AuthTimeout)
 	err = s.auth.Authenticate(actx, strings.TrimSpace(string(username)), password)
 	cancel()
+	if errors.Is(err, ErrSecondFactor) {
+		s.askForCode(conn, addr, p, secret, client, strings.TrimSpace(string(username)))
+		return
+	}
 	if err != nil {
 		// Without the username: the authenticator audits each attempt by
 		// subject, and this log is kept wherever its collector keeps it.
@@ -351,6 +368,12 @@ func (s *Server) handle(ctx context.Context, conn net.PacketConn, addr net.Addr,
 		s.reject(conn, addr, p, secret, "authentication failed")
 		return
 	}
+	s.accept(ctx, conn, addr, p, secret, client, strings.TrimSpace(string(username)))
+}
+
+// accept answers Access-Accept for somebody who has proved who they are.
+func (s *Server) accept(ctx context.Context, conn net.PacketConn, addr net.Addr, p *Packet,
+	secret []byte, client Client, username string) {
 
 	s.log.Info("RADIUS authentication succeeded", "client", client.Name)
 
@@ -362,7 +385,7 @@ func (s *Server) handle(ctx context.Context, conn net.PacketConn, addr net.Addr,
 	// into a building full of people who cannot get on the network.
 	var attrs []Attribute
 	if s.authz != nil {
-		auth, aerr := s.authz.Authorize(ctx, strings.TrimSpace(string(username)))
+		auth, aerr := s.authz.Authorize(ctx, username)
 		if aerr != nil {
 			s.log.Error("reading RADIUS authorisation", "client", client.Name, "err", aerr)
 		} else {

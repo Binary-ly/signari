@@ -2667,7 +2667,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			// Who may search beyond their own entry. Empty means nobody.
 			SearchGroup: os.Getenv("SIGNARI_LDAP_SEARCH_GROUP"),
 		}, httpapi.NewLDAPAuthenticator(pool, ldapHasher, ldapOrgID, log).
-			WithMFAGate(srv.BindDemandsMFA), log)
+			WithMFAGate(srv.BindDemandsMFA).WithCodes(srv.BindCodeOK), log)
 
 		if ldapWriteGroup != "" {
 			ldapSrv = ldapSrv.WithWriter(httpapi.NewLDAPWriter(pool, ldapHasher,
@@ -2768,7 +2768,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 
 		radiusAuth := httpapi.NewRADIUSAuthenticator(pool,
 			passwords.Shared(), radiusOrgID, log).
-			WithMFAGate(srv.BindDemandsMFA)
+			WithMFAGate(srv.BindDemandsMFA).WithCodes(srv.BindCodeOK)
 		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg},
 			radiusAuth, log)
 		if rerr2 != nil {

@@ -392,6 +392,38 @@ func (s *Server) allowSecondFactorAttempt(ctx context.Context, w http.ResponseWr
 		secondFactorPerAccountWindow)
 }
 
+// BindCodeOK checks a code that came with a bind or a RADIUS request, as the
+// sign-in form checks one (7.05): a replay refused, a wrong code charged to the
+// factor it was a guess at and to the person's budget, and a factor it switched
+// off told to them. Not an emailed code: nothing here could have sent one.
+func (s *Server) BindCodeOK(ctx context.Context, orgID, userID, code string) (bool, error) {
+	spent, err := store.CountRate(ctx, s.db, secondFactorAccountKey(userID), secondFactorPerAccountWindow)
+	if err != nil {
+		return false, err
+	}
+	if spent >= secondFactorPerAccountLimit {
+		return false, nil
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	res, err := s.verifyCode(ctx, tx, userID, code, false)
+	if err != nil {
+		return false, err
+	}
+	// Committed either way: a success spends the code, and a failure is charged.
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	if !res.OK {
+		s.recordSecondFactorFailure(ctx, userID, "")
+		s.factorsDisabled(ctx, orgID, userID, res.Disabled)
+	}
+	return res.OK, nil
+}
+
 // recordSecondFactorFailure charges a wrong code to both budgets.
 func (s *Server) recordSecondFactorFailure(ctx context.Context, userID, ip string) {
 	if ip != "" {

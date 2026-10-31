@@ -188,9 +188,16 @@ of the system has, so `RADIUSAuthenticator` is a thin wrapper over the LDAP
 shim's authenticator rather than its own query.
 
 The same path also decides what PAP does for somebody the sign-in page would ask
-for a second factor. PAP carries only a password, so an organisation set to
-`refuse_when_mfa` sends an Access-Reject (the default since migration 0128). See
+for a second factor. See
 [a password alone, and a second factor](ldap.md#a-password-alone-and-a-second-factor).
+Under `refuse_when_mfa`, the default since migration 0128, a right password with
+no code is answered with an **Access-Challenge**: a prompt for the device to
+show, and a State for its next request, which carries the code where the password
+was. That State is good once, for two minutes, from that device and for that
+person. A device that shows no prompt sends `password;123456` in the one field.
+A State lives in the node that issued it, so behind a balancer that does not keep
+a device on one node, use the second form. Through a RADIUS outpost only the
+second form works, and a password alone is an Access-Reject.
 
 The identity is discarded: an Access-Accept carries no user attributes here,
 because a network device did not ask for a directory and should not be handed

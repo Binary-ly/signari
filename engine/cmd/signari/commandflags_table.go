@@ -53,6 +53,7 @@ var commandFlags = map[string][]string{
 	"dir list":                        {"o", "org"},
 	"dir set":                         {"dry-run", "enabled", "fetch-groups", "group-attribute", "max-deactivate", "on-missing", "org", "slug"},
 	"dir sync":                        {"apply", "org", "slug"},
+	"dir test":                        {"org", "slug"},
 	"doctor":                          {"issuer", "json"},
 	"duo enroll":                      {"duo-username", "email", "org"},
 	"duo set":                         {"duo-api-host", "duo-client-id", "duo-fail-open", "duo-secret", "org"},

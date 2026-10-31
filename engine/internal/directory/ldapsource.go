@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -47,7 +48,8 @@ const (
 
 // LDAPSource reads users from a directory server.
 type LDAPSource struct {
-	// URL is ldap:// or ldaps://.
+	// URL is ldap:// or ldaps://, or several separated by spaces, replicas of one
+	// directory, tried in order.
 	URL      string
 	BindDN   string
 	Password string
@@ -104,6 +106,9 @@ type ldapConn interface {
 	// reaches the wire -- see the comment in Fetch.
 	UnauthenticatedBind(username string) error
 	SearchWithPaging(req *ldap.SearchRequest, pageSize uint32) (*ldap.SearchResult, error)
+	// Search is for a test, which wants a few entries. A sync pages: a plain
+	// search stops at the server's limit and reports success.
+	Search(req *ldap.SearchRequest) (*ldap.SearchResult, error)
 	Close() error
 }
 
@@ -143,44 +148,13 @@ func (s *LDAPSource) Fetch(ctx context.Context) ([]RemoteUser, error) {
 			"most servers refuse it outright")
 	}
 
-	conn, err := s.connect(ctx)
+	conn, _, err := s.connect(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = conn.Close() }()
-
-	if s.BindDN != "" {
-		if s.Password == "" {
-			return nil, fmt.Errorf("bind DN %q has no password: on most servers that "+
-				"is an UNAUTHENTICATED bind, which succeeds and leaves the connection "+
-				"anonymous -- every later search would then read whatever the "+
-				"directory publishes to strangers while appearing to be authorised",
-				s.BindDN)
-		}
-		if err := conn.Bind(s.BindDN, s.Password); err != nil {
-			return nil, fmt.Errorf("binding as %q: %w", s.BindDN, err)
-		}
-	} else {
-		// An anonymous bind reads whatever the directory publishes to strangers,
-		// which is usually far less than the operator expects and occasionally
-		// nothing at all. Allowed, because some directories are configured that
-		// way, but never silently.
-		//
-		// UnauthenticatedBind, not Bind("", ""). The client library refuses a
-		// simple bind with an empty password before it reaches the wire, because
-		// a DN with an empty password succeeds AS ANONYMOUS on most servers --
-		// so an application that binds with a real DN and a blank password gets a
-		// successful bind and none of the access it thinks it has. Guarding
-		// against that also blocks the legitimately anonymous case, which needs
-		// this separate call.
-		//
-		// The first version called Bind("", "") and could never connect to any
-		// server at all. The test's fake connection accepted it, which is what a
-		// fake does.
-		if err := conn.UnauthenticatedBind(""); err != nil {
-			return nil, fmt.Errorf("binding anonymously: %w (set a bind DN if this "+
-				"directory does not allow anonymous search)", err)
-		}
+	if err := s.bind(conn); err != nil {
+		return nil, err
 	}
 
 	uidAttr, mailAttr, nameAttr, idAttr, disabledAttr := s.attributes()
@@ -272,6 +246,44 @@ func (s *LDAPSource) Fetch(ctx context.Context) ([]RemoteUser, error) {
 	return out, nil
 }
 
+// bind authenticates a connection, or anonymously when no bind DN is set.
+func (s *LDAPSource) bind(conn ldapConn) error {
+	if s.BindDN != "" {
+		if s.Password == "" {
+			return fmt.Errorf("bind DN %q has no password: on most servers that "+
+				"is an UNAUTHENTICATED bind, which succeeds and leaves the connection "+
+				"anonymous -- every later search would then read whatever the "+
+				"directory publishes to strangers while appearing to be authorised",
+				s.BindDN)
+		}
+		if err := conn.Bind(s.BindDN, s.Password); err != nil {
+			return fmt.Errorf("binding as %q: %w", s.BindDN, err)
+		}
+	} else {
+		// An anonymous bind reads whatever the directory publishes to strangers,
+		// which is usually far less than the operator expects and occasionally
+		// nothing at all. Allowed, because some directories are configured that
+		// way, but never silently.
+		//
+		// UnauthenticatedBind, not Bind("", ""). The client library refuses a
+		// simple bind with an empty password before it reaches the wire, because
+		// a DN with an empty password succeeds AS ANONYMOUS on most servers --
+		// so an application that binds with a real DN and a blank password gets a
+		// successful bind and none of the access it thinks it has. Guarding
+		// against that also blocks the legitimately anonymous case, which needs
+		// this separate call.
+		//
+		// The first version called Bind("", "") and could never connect to any
+		// server at all. The test's fake connection accepted it, which is what a
+		// fake does.
+		if err := conn.UnauthenticatedBind(""); err != nil {
+			return fmt.Errorf("binding anonymously: %w (set a bind DN if this "+
+				"directory does not allow anonymous search)", err)
+		}
+	}
+	return nil
+}
+
 // addNestedMembers adds each mapped group to the people AD says are in it at
 // any depth. A failed search is an error, never a partial answer: a missing
 // page would read as people leaving the group.
@@ -338,25 +350,109 @@ func (s *LDAPSource) disabled(e *ldap.Entry, attr string) bool {
 	return false
 }
 
-func (s *LDAPSource) connect(ctx context.Context) (ldapConn, error) {
+// connect reaches the first server that answers, of those URL lists separated by
+// spaces, which is how a directory's replicas are named. Only a server that cannot
+// be reached is passed over: one that answers and refuses the bind or the search
+// has said something true about the credentials or the directory, and asking a
+// replica would only ask it to say so again, or worse, read one that has fallen
+// behind.
+func (s *LDAPSource) connect(ctx context.Context) (ldapConn, string, error) {
+	urls := strings.Fields(s.URL)
+	if len(urls) == 0 {
+		urls = []string{s.URL}
+	}
+	var failures []error
+	for _, url := range urls {
+		conn, err := s.dial(ctx, url)
+		if err == nil {
+			return conn, url, nil
+		}
+		failures = append(failures, err)
+	}
+	return nil, "", errors.Join(failures...)
+}
+
+func (s *LDAPSource) dial(ctx context.Context, url string) (ldapConn, error) {
 	if s.Dial != nil {
-		return s.Dial(ctx, s.URL)
+		return s.Dial(ctx, url)
 	}
 
 	tlsCfg := &tls.Config{RootCAs: s.CAs, MinVersion: tls.VersionTLS12}
 
-	conn, err := ldap.DialURL(s.URL, ldap.DialWithTLSConfig(tlsCfg))
+	conn, err := ldap.DialURL(url, ldap.DialWithTLSConfig(tlsCfg))
 	if err != nil {
-		return nil, fmt.Errorf("connecting to %q: %w", s.URL, err)
+		return nil, fmt.Errorf("connecting to %q: %w", url, err)
 	}
 	conn.SetTimeout(30 * time.Second)
 
-	if s.StartTLS && strings.HasPrefix(s.URL, "ldap://") {
+	if s.StartTLS && strings.HasPrefix(url, "ldap://") {
 		if err := conn.StartTLS(tlsCfg); err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("StartTLS on %q: %w (a bind over plaintext sends "+
-				"the bind password in the clear)", s.URL, err)
+				"the bind password in the clear)", url, err)
 		}
 	}
 	return conn, nil
+}
+
+// TestResult is what a connection test found: every step that passed, and the one
+// that did not.
+type TestResult struct {
+	OK bool
+	// Step is the one that failed, connect, bind, search or identity, "" for none.
+	Step   string
+	Detail string
+	// Server is the URL that answered, and Found how many entries a small search
+	// read, at most testEntries.
+	Server string
+	Found  int
+}
+
+// testEntries is how many entries a test reads: enough to see the filter finds
+// people and that they carry what a sync needs, and not the directory.
+const testEntries = 5
+
+func failedAt(step string, err error) TestResult {
+	return TestResult{Step: step, Detail: err.Error()}
+}
+
+// Test does what a sync would up to the point it changes anything, and says where
+// it stopped. A sync that fails says so after an operator has already turned it
+// on, and a wrong flavour reads as everybody lacking an identifier.
+func (s *LDAPSource) Test(ctx context.Context) TestResult {
+	conn, server, err := s.connect(ctx)
+	if err != nil {
+		return failedAt("connect", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := s.bind(conn); err != nil {
+		r := failedAt("bind", err)
+		r.Server = server
+		return r
+	}
+	_, mailAttr, _, idAttr, _ := s.attributes()
+	filter := s.Filter
+	if filter == "" {
+		filter = s.defaultFilter()
+	}
+	res, err := conn.Search(ldap.NewSearchRequest(s.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,
+		testEntries, 0, false, filter, []string{idAttr, mailAttr}, nil))
+	// A size limit reached is the limit this asked for.
+	if err != nil && !ldap.IsErrorWithCode(err, ldap.LDAPResultSizeLimitExceeded) {
+		r := failedAt("search", fmt.Errorf("searching %q: %w", s.BaseDN, err))
+		r.Server = server
+		return r
+	}
+	if res == nil || len(res.Entries) == 0 {
+		return TestResult{Step: "search", Server: server, Detail: fmt.Sprintf("nothing under %q matches %s: a sync "+
+			"would find nobody, and read that as everybody having left", s.BaseDN, filter)}
+	}
+	for _, e := range res.Entries {
+		if s.immutableID(e, idAttr) == "" {
+			return TestResult{Step: "identity", Server: server, Found: len(res.Entries), Detail: fmt.Sprintf(
+				"%s lacks %q, which this flavour tracks people by. Active Directory uses objectGUID, OpenLDAP "+
+					"and FreeIPA use entryUUID or ipaUniqueID", e.DN, idAttr)}
+		}
+	}
+	return TestResult{OK: true, Server: server, Found: len(res.Entries)}
 }

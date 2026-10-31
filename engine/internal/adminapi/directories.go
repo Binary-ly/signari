@@ -224,6 +224,58 @@ func (s *Server) patchDirectory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"slug": slug, "config_version": version})
 }
 
+// testDirectory reads a source as a sync would and changes nothing there or here,
+// as `signari dir test` does, a disabled source too. The answer says where it
+// stopped: a directory that cannot be reached or refuses is a 200 with ok false,
+// the question having been answered.
+func (s *Server) testDirectory(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID, slug := r.PathValue("orgID"), r.PathValue("slug")
+	if err := requireOrg(ctx, orgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	if narrowedTokenRefused(w, r, directoryRefusal) {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	if err := s.preconditionHoldsNow(ctx, pre); err != nil {
+		if !writePreconditionFailure(w, err) {
+			s.writeDirectoryFailure(w, err, orgID)
+		}
+		return
+	}
+	if !s.orgExists(w, ctx, orgID) {
+		return
+	}
+	result, err := s.directoryTest(ctx, s.db, s.root, orgID, slug)
+	if errors.Is(err, directory.ErrSourceUnknown) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "source_not_found"})
+		return
+	}
+	if err != nil {
+		s.log.Error("testing a directory source", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	// Unconditional, as a sync's record is: the directory has been asked.
+	version, err := s.mutate(ctx, func(tx pgx.Tx) error {
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.directory_tested", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, Detail: map[string]any{"slug": slug, "ok": result.OK, "step": result.Step}})
+	})
+	if err != nil {
+		s.log.Error("recording a directory test", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"slug": slug, "ok": result.OK, "step": result.Step,
+		"detail": result.Detail, "server": result.Server, "found": result.Found, "config_version": version})
+}
+
 func (s *Server) mapDirectoryGroup(w http.ResponseWriter, r *http.Request) {
 	var req groupMapRequest
 	if !decodeStrict(w, r, &req) {

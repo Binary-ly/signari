@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"signari.dev/engine/internal/brand"
 	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/flow"
@@ -633,6 +635,18 @@ func allMutatingRoutes() []mutatingRoute {
 				return "/admin/organizations/" + newDriftDirectory(t, s) + "/directories/drift/sync"
 			},
 			body: func(*testing.T, *Server, string) string { return `{"apply":true}` },
+		},
+		{
+			// A stand-in for the directory, so nothing is dialled.
+			name: "POST /admin/organizations/{orgID}/directories/{slug}/test", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				s.directoryTest = func(context.Context, *pgxpool.Pool, *keys.RootKey, string, string) (
+					directory.TestResult, error) {
+					return directory.TestResult{OK: true, Found: 1}, nil
+				}
+				return "/admin/organizations/" + newDriftDirectory(t, s) + "/directories/drift/test"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
 			name: "POST /admin/organizations/{orgID}/scim-sources", method: http.MethodPost,

@@ -287,6 +287,7 @@ federation in:
   dir set                   a source's state, missing-people rule and deactivation ceiling
   dir group-map             which local group a directory group grants
   dir sync                  reconcile users from a directory (preview unless -apply)
+  dir test                  read a directory as a sync would and say where it stopped
   kerberos check            will this keytab work (no database needed)
   kerberos principals       the principals a realm holds
   kerberos sync             import a realm's principals as people
@@ -1392,6 +1393,8 @@ func run(args []string) (err error) {
 			*ldapPassword, *ldapBaseDN, *ldapFlavour, *ldapCA, *ldapStartTLS, *fetchGroups, *groupAttribute)
 	case "dir sync":
 		return dirSync(ctx, conn, *orgID, *slug, *apply)
+	case "dir test":
+		return dirTest(ctx, conn, *orgID, *slug)
 	case "dir group-map":
 		return dirGroupMap(ctx, conn, *orgID, *slug, *remoteGroup, *groupName, *removeMember)
 	case "dir set":
@@ -5880,6 +5883,41 @@ func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPa
 }
 
 // dirSync runs one reconciliation.
+// dirTest reads a source as a sync would and changes nothing, a disabled source
+// too, since finding out before turning it on is the point. It exits non-zero when
+// the directory cannot be read, so a deployment can check one.
+func dirTest(ctx context.Context, conn *pgx.Conn, givenOrg, slug string) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	_, orgID, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, givenOrg, "directory source")
+	if err != nil {
+		return err
+	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	pool, err := openPool(ctx, conn, root.PoolTag())
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	r, err := directory.TestSource(ctx, pool, root, orgID, slug)
+	if err != nil {
+		return err
+	}
+	if r.Server != "" {
+		fmt.Printf("  answered by %s\n", r.Server)
+	}
+	if !r.OK {
+		return fmt.Errorf("%s failed: %s", r.Step, r.Detail)
+	}
+	fmt.Printf("  read %d people, each with what a sync tracks them by\n", r.Found)
+	fmt.Println("\n  Nothing was changed. `signari dir sync -slug " + slug + "` previews what a sync would do.")
+	return nil
+}
+
 func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply bool) error {
 	if slug == "" {
 		return fmt.Errorf("give -slug")

@@ -605,6 +605,10 @@ var opSchemas = map[string]opSchema{
 		[]string{"slug", "config_version"}, withVersion(map[string]jsonSchema{"slug": str()}))},
 	"PUT /admin/organizations/{orgID}/directories/{slug}/group-map":    {http.StatusOK, typeOf[groupMapRequest](), groupMapSchema},
 	"DELETE /admin/organizations/{orgID}/directories/{slug}/group-map": {http.StatusOK, nil, groupMapSchema},
+	"POST /admin/organizations/{orgID}/directories/{slug}/test": {http.StatusOK, nil, object(
+		[]string{"slug", "ok", "step", "detail", "server", "found", "config_version"},
+		withVersion(map[string]jsonSchema{"slug": str(), "ok": boolean(), "step": str(), "detail": str(),
+			"server": str(), "found": integer()}))},
 	"POST /admin/organizations/{orgID}/directories/{slug}/sync": {http.StatusOK, typeOf[syncRequest](), object(
 		[]string{"slug", "upstream", "active_before", "plan", "groups", "applied", "dry_run_configured",
 			"groups_skipped", "config_version"}, withVersion(map[string]jsonSchema{"slug": str(),

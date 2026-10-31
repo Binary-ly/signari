@@ -104,9 +104,17 @@ func (s *SourceSpec) Validate() error {
 			return sourceInvalid{fmt.Sprintf("the LDAP flavour is openldap, ad or freeipa: it decides which "+
 				"attribute is the immutable identifier, and reading the wrong one makes every rename look "+
 				"like a departure and an arrival (got %q)", s.LDAPFlavour)}
-		case strings.HasPrefix(s.LDAPURL, "ldap://") && !s.LDAPStartTLS:
-			return sourceInvalid{fmt.Sprintf("refusing a plaintext bind to %q: the bind password can usually "+
-				"read the whole directory. Use ldaps:// or leave StartTLS on", s.LDAPURL)}
+		}
+		// Each of them, since a failover is when nobody is watching what it would
+		// send the password to.
+		for _, url := range strings.Fields(s.LDAPURL) {
+			switch {
+			case !strings.HasPrefix(url, "ldap://") && !strings.HasPrefix(url, "ldaps://"):
+				return sourceInvalid{fmt.Sprintf("%q is not an ldap:// or ldaps:// URL", url)}
+			case strings.HasPrefix(url, "ldap://") && !s.LDAPStartTLS:
+				return sourceInvalid{fmt.Sprintf("refusing a plaintext bind to %q: the bind password can usually "+
+					"read the whole directory. Use ldaps:// or leave StartTLS on", url)}
+			}
 		}
 		if s.LDAPCAPEM != "" {
 			if p := x509.NewCertPool(); !p.AppendCertsFromPEM([]byte(s.LDAPCAPEM)) {
@@ -375,99 +383,166 @@ type SyncReport struct {
 // for the root key, since a sync seals a new person's subject key.
 func Sync(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, slug string, apply bool) (SyncReport, error) {
 	var r SyncReport
-	var id, kind, domain, impersonate, filter, onMissing string
-	var lURL, lBindDN, lBaseDN, lFlavour, lCA, lGroupAttr string
-	var lStartTLS, fetchGroups, dryRun bool
+	src, err := loadSource(ctx, pool, root, orgID, slug, true)
+	if err != nil {
+		return r, err
+	}
+	r.DryRunConfigured = src.dryRun
+
+	var remote []RemoteUser
+	switch src.kind {
+	case "google", "entra":
+		var fetcher interface {
+			Fetch(context.Context) ([]RemoteUser, error)
+		}
+		if fetcher, err = src.apiSource(); err != nil {
+			return r, err
+		}
+		remote, err = fetcher.Fetch(ctx)
+	case "ldap":
+		var ldapSrc *LDAPSource
+		if ldapSrc, err = src.ldapSource(); err != nil {
+			return r, err
+		}
+		if src.fetchGroups && ldapSrc.Flavour == FlavourAD {
+			// The groups a mapping names, resolved through nesting.
+			mappings, merr := LoadGroupMappings(ctx, pool, src.id)
+			if merr != nil {
+				return r, merr
+			}
+			for _, m := range mappings {
+				ldapSrc.NestedGroups = append(ldapSrc.NestedGroups, m.RemoteGroup)
+			}
+		}
+		remote, err = ldapSrc.Fetch(ctx)
+	}
+	if err != nil {
+		RecordFailure(ctx, pool, src.id, err)
+		return r, err
+	}
+
+	local, err := LoadLocal(ctx, pool, src.id, orgID)
+	if err != nil {
+		return r, err
+	}
+	plan := BuildPlan(remote, local, src.onMissing, src.maxPct)
+	r.Upstream, r.ActiveBefore, r.Plan = len(remote), plan.ActiveBefore, plan.Describe()
+	if !plan.Safe() {
+		return r, ErrSyncRefused
+	}
+	if src.dryRun || !apply {
+		return r, nil
+	}
+	if err := Apply(ctx, pool, src.id, orgID, plan); err != nil {
+		RecordFailure(ctx, pool, src.id, err)
+		return r, err
+	}
+	r.Applied = true
+	if err := syncGroups(ctx, pool, src.id, orgID, remote, src.maxPct, src.fetchGroups, &r); err != nil {
+		RecordFailure(ctx, pool, src.id, err)
+		return r, err
+	}
+	return r, nil
+}
+
+// loadedSource is a source as a sync or a test reads it, its credentials opened.
+type loadedSource struct {
+	id, kind, domain, impersonate, filter, onMissing  string
+	lURL, lBindDN, lBaseDN, lFlavour, lCA, lGroupAttr string
+	lStartTLS, fetchGroups, dryRun                    bool
+	maxPct                                            int
+	raw                                               []byte
+}
+
+func loadSource(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, slug string,
+	enabledOnly bool) (*loadedSource, error) {
+	s := &loadedSource{}
 	var sealed []byte
-	var maxPct int
 	err := pool.QueryRow(ctx, `
 		SELECT id::text, kind, credentials_enc, COALESCE(domain,''), COALESCE(impersonate,''), user_filter,
 		       on_missing, dry_run, max_deactivate_percent,
 		       COALESCE(ldap_url,''), COALESCE(ldap_bind_dn,''), COALESCE(ldap_base_dn,''),
 		       COALESCE(ldap_flavour,''), ldap_start_tls, COALESCE(ldap_ca_pem,''), fetch_groups,
 		       COALESCE(ldap_group_attribute, 'memberOf')
-		FROM core.directory_sources WHERE org_id = $1::uuid AND slug = $2 AND enabled`, orgID, slug).
-		Scan(&id, &kind, &sealed, &domain, &impersonate, &filter, &onMissing, &dryRun, &maxPct,
-			&lURL, &lBindDN, &lBaseDN, &lFlavour, &lStartTLS, &lCA, &fetchGroups, &lGroupAttr)
+		FROM core.directory_sources WHERE org_id = $1::uuid AND slug = $2 AND (enabled OR NOT $3)`,
+		orgID, slug, enabledOnly).
+		Scan(&s.id, &s.kind, &sealed, &s.domain, &s.impersonate, &s.filter, &s.onMissing, &s.dryRun, &s.maxPct,
+			&s.lURL, &s.lBindDN, &s.lBaseDN, &s.lFlavour, &s.lStartTLS, &s.lCA, &s.fetchGroups, &s.lGroupAttr)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return r, ErrSourceUnknown
+		return nil, ErrSourceUnknown
 	}
 	if err != nil {
-		return r, err
+		return nil, err
 	}
-	r.DryRunConfigured = dryRun
-	raw, err := root.Open(sealed, SealContextCredentials)
-	if err != nil {
-		return r, fmt.Errorf("unsealing the credentials: %w", err)
+	if s.raw, err = root.Open(sealed, SealContextCredentials); err != nil {
+		return nil, fmt.Errorf("unsealing the credentials: %w", err)
 	}
+	return s, nil
+}
 
-	var remote []RemoteUser
-	switch kind {
-	case "google":
-		creds, perr := ParseGoogleCredentials(raw)
-		if perr != nil {
-			return r, perr
+func (s *loadedSource) apiSource() (interface {
+	Fetch(context.Context) ([]RemoteUser, error)
+}, error) {
+	if s.kind == "google" {
+		creds, err := ParseGoogleCredentials(s.raw)
+		if err != nil {
+			return nil, err
 		}
-		remote, err = (&GoogleSource{Creds: creds, Impersonate: impersonate, Domain: domain, Query: filter,
-			Groups: fetchGroups}).Fetch(ctx)
-	case "entra":
-		creds, perr := ParseEntraCredentials(raw)
-		if perr != nil {
-			return r, perr
-		}
-		remote, err = (&EntraSource{Creds: creds, Filter: filter, Groups: fetchGroups}).Fetch(ctx)
-	case "ldap":
-		var cas *x509.CertPool
-		if lCA != "" {
-			cas = x509.NewCertPool()
-			if !cas.AppendCertsFromPEM([]byte(lCA)) {
-				return r, fmt.Errorf("the stored CA bundle for %q contains no certificates", slug)
-			}
-		}
-		src := &LDAPSource{CAs: cas, URL: lURL, BindDN: lBindDN, Password: string(raw), BaseDN: lBaseDN,
-			Filter: filter, Flavour: LDAPFlavour(lFlavour), StartTLS: lStartTLS}
-		if fetchGroups {
-			src.GroupAttribute = lGroupAttr
-			if src.Flavour == FlavourAD {
-				// The groups a mapping names, resolved through nesting.
-				mappings, merr := LoadGroupMappings(ctx, pool, id)
-				if merr != nil {
-					return r, merr
-				}
-				for _, m := range mappings {
-					src.NestedGroups = append(src.NestedGroups, m.RemoteGroup)
-				}
-			}
-		}
-		remote, err = src.Fetch(ctx)
+		return &GoogleSource{Creds: creds, Impersonate: s.impersonate, Domain: s.domain, Query: s.filter,
+			Groups: s.fetchGroups}, nil
 	}
+	creds, err := ParseEntraCredentials(s.raw)
 	if err != nil {
-		RecordFailure(ctx, pool, id, err)
-		return r, err
+		return nil, err
 	}
+	return &EntraSource{Creds: creds, Filter: s.filter, Groups: s.fetchGroups}, nil
+}
 
-	local, err := LoadLocal(ctx, pool, id, orgID)
+func (s *loadedSource) ldapSource() (*LDAPSource, error) {
+	var cas *x509.CertPool
+	if s.lCA != "" {
+		cas = x509.NewCertPool()
+		if !cas.AppendCertsFromPEM([]byte(s.lCA)) {
+			return nil, fmt.Errorf("the stored CA bundle contains no certificates")
+		}
+	}
+	src := &LDAPSource{CAs: cas, URL: s.lURL, BindDN: s.lBindDN, Password: string(s.raw), BaseDN: s.lBaseDN,
+		Filter: s.filter, Flavour: LDAPFlavour(s.lFlavour), StartTLS: s.lStartTLS}
+	if s.fetchGroups {
+		src.GroupAttribute = s.lGroupAttr
+	}
+	return src, nil
+}
+
+// TestSource reads a source as a sync would and changes nothing: it records no
+// failure and needs no plan, and a disabled source can be tested, since finding out
+// before turning it on is the point. A Google or Entra source is read whole, as its
+// APIs have no smaller question that proves as much.
+func TestSource(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, slug string) (TestResult, error) {
+	src, err := loadSource(ctx, pool, root, orgID, slug, false)
 	if err != nil {
-		return r, err
+		return TestResult{}, err
 	}
-	plan := BuildPlan(remote, local, onMissing, maxPct)
-	r.Upstream, r.ActiveBefore, r.Plan = len(remote), plan.ActiveBefore, plan.Describe()
-	if !plan.Safe() {
-		return r, ErrSyncRefused
+	if src.kind == "ldap" {
+		l, err := src.ldapSource()
+		if err != nil {
+			return failedAt("connect", err), nil
+		}
+		return l.Test(ctx), nil
 	}
-	if dryRun || !apply {
-		return r, nil
+	fetcher, err := src.apiSource()
+	if err != nil {
+		return failedAt("connect", err), nil
 	}
-	if err := Apply(ctx, pool, id, orgID, plan); err != nil {
-		RecordFailure(ctx, pool, id, err)
-		return r, err
+	remote, err := fetcher.Fetch(ctx)
+	if err != nil {
+		return failedAt("search", err), nil
 	}
-	r.Applied = true
-	if err := syncGroups(ctx, pool, id, orgID, remote, maxPct, fetchGroups, &r); err != nil {
-		RecordFailure(ctx, pool, id, err)
-		return r, err
+	if len(remote) == 0 {
+		return TestResult{Step: "search", Detail: "the directory answered and listed nobody: a sync would read " +
+			"that as everybody having left"}, nil
 	}
-	return r, nil
+	return TestResult{OK: true, Found: len(remote)}, nil
 }
 
 // syncGroups reconciles group membership after the people are in place: a

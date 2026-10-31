@@ -170,3 +170,86 @@ func TestADirectorySourceIsManagedThroughTheAPI(t *testing.T) {
 		t.Errorf("an unknown source answered %q", e)
 	}
 }
+
+// Asking a directory whether it can be read is how a source is checked before it
+// is turned on, so a disabled one answers; a directory that will not is an answer
+// and not an error, and the record says how far it got and nothing it found.
+func TestADirectoryIsAskedWhereItStops(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	org := newDriftMigrationOrg(t, s, false)
+	closed := driftLDAPSource
+	closed.LDAPURL = "ldaps://127.0.0.1:1"
+	if _, err := directory.AddSource(ctx, s.db, s.root, org, closed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE core.directory_sources SET enabled = false
+		WHERE org_id = $1::uuid AND slug = 'drift'`, org); err != nil {
+		t.Fatal(err)
+	}
+	var before int64
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM core.audit_events WHERE org_id = $1::uuid
+		AND event_type = 'admin.directory_tested'`, org).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	base := "/admin/organizations/" + org + "/directories"
+
+	rec := call(t, s, http.MethodPost, base+"/drift/test", testToken, nil)
+	var out struct {
+		OK            bool   `json:"ok"`
+		Step          string `json:"step"`
+		Detail        string `json:"detail"`
+		ConfigVersion int64  `json:"config_version"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK || out.OK || out.Step != "connect" || out.Detail == "" {
+		t.Fatalf("a disabled source on a closed port: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("ETag") == "" || out.ConfigVersion == 0 {
+		t.Errorf("the answer carries no version: %s", rec.Body.String())
+	}
+
+	s.directoryTest = func(context.Context, *pgxpool.Pool, *keys.RootKey, string, string) (directory.TestResult, error) {
+		return directory.TestResult{OK: true, Server: "ldaps://dc02.example.test", Found: 5,
+			Detail: "ada@example.test"}, nil
+	}
+	rec = call(t, s, http.MethodPost, base+"/drift/test", testToken, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ok":true`) ||
+		!strings.Contains(rec.Body.String(), `"found":5`) ||
+		!strings.Contains(rec.Body.String(), `"server":"ldaps://dc02.example.test"`) {
+		t.Errorf("a directory that answers: %d %s", rec.Code, rec.Body.String())
+	}
+	var details []string
+	rows, err := s.db.Query(ctx, `SELECT detail::text FROM core.audit_events WHERE org_id = $1::uuid
+		AND event_type = 'admin.directory_tested' ORDER BY id`, org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			t.Fatal(err)
+		}
+		details = append(details, d)
+	}
+	if len(details) != int(before)+2 {
+		t.Fatalf("recorded %d, want %d more than %d", len(details), 2, before)
+	}
+	last := details[len(details)-1]
+	if strings.Contains(last, "ada@example.test") || !strings.Contains(last, `"ok": true`) {
+		t.Errorf("the record reads %s", last)
+	}
+
+	narrowed := narrowedToken(t, s, org, []string{ScopeOrganizationsWrite}, nil, []string{"00000000-0000-0000-0000-000000000001"})
+	if rec := call(t, s, http.MethodPost, base+"/drift/test", narrowed, nil); rec.Code != http.StatusForbidden {
+		t.Errorf("a token limited to a group asked a directory: %d %s", rec.Code, rec.Body.String())
+	}
+	s.directoryTest = directory.TestSource
+	if rec := call(t, s, http.MethodPost, base+"/elsewhere/test", testToken, nil); rec.Code != http.StatusNotFound ||
+		!strings.Contains(rec.Body.String(), "source_not_found") {
+		t.Errorf("an unknown source: %d %s", rec.Code, rec.Body.String())
+	}
+}

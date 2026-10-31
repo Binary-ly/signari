@@ -197,6 +197,7 @@ var cliAPI = map[string]string{
 	"dir group-map":            "PUT /admin/organizations/{orgID}/directories/{slug}/group-map",
 	"dir set":                  "PATCH /admin/organizations/{orgID}/directories/{slug}",
 	"dir sync":                 "POST /admin/organizations/{orgID}/directories/{slug}/sync",
+	"dir test":                 "POST /admin/organizations/{orgID}/directories/{slug}/test",
 	"kerberos sync":            cliOnly("asks the realm's admin server with a keytab on the operator's host"),
 	"kerberos check":           reads,
 	"kerberos principals":      reads,

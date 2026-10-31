@@ -24,7 +24,7 @@ refused with `412` when the configuration moved since the version it names.
 | [config-version](#config-version) | 1 |
 | [credential-configurations](#credential-configurations) | 2 |
 | [credential-proof-roots](#credential-proof-roots) | 3 |
-| [directories](#directories) | 6 |
+| [directories](#directories) | 7 |
 | [duo](#duo) | 2 |
 | [event-subscriptions](#event-subscriptions) | 6 |
 | [groups](#groups) | 5 |
@@ -986,6 +986,24 @@ Answers:
 | `plan` | string | always |
 | `slug` | string | always |
 | `upstream` | integer | always |
+
+### `POST /admin/organizations/{orgID}/directories/{slug}/test`
+
+Read a directory as a sync would and say where it stopped. Needs organizations:write.
+
+Go `PostOrganizationsOrgIDDirectoriesSlugTest`, TypeScript `postOrganizationsOrgIDDirectoriesSlugTest`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `detail` | string | always |
+| `found` | integer | always |
+| `ok` | boolean | always |
+| `server` | string | always |
+| `slug` | string | always |
+| `step` | string | always |
 
 ## duo
 

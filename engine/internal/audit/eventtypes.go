@@ -22,7 +22,7 @@ var EventTypes = []string{
 	"admin.config_applied", "admin.consent_revoked", "admin.credential_defined", "admin.credential_offered",
 	"admin.credential_root_trusted", "admin.credential_root_untrusted", "admin.directory_group_mapped",
 	"admin.directory_group_unmapped", "admin.directory_source_added", "admin.directory_source_updated",
-	"admin.directory_synced", "admin.duo_enrolled", "admin.duo_set",
+	"admin.directory_synced", "admin.directory_tested", "admin.duo_enrolled", "admin.duo_set",
 	"admin.factor_removed", "admin.federation_enabled", "admin.group_created", "admin.group_deleted",
 	"admin.group_member_added", "admin.group_member_removed", "admin.group_release_removed",
 	"admin.group_release_set", "admin.group_updated",

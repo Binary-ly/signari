@@ -276,6 +276,7 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/directories/{slug}/group-map":    "Say which local group a directory group grants.",
 	"DELETE /admin/organizations/{orgID}/directories/{slug}/group-map": "Stop a directory group granting a local group.",
 	"POST /admin/organizations/{orgID}/directories/{slug}/sync":        "Reconcile the organisation with a directory, or preview it.",
+	"POST /admin/organizations/{orgID}/directories/{slug}/test":        "Read a directory as a sync would and say where it stopped.",
 
 	// Inbound SCIM sources (6.07).
 	"GET /admin/organizations/{orgID}/scim-sources":          "The upstreams that provision people into the organisation; never a token.",

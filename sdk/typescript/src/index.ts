@@ -906,6 +906,12 @@ export class SignariAdmin {
     return this.call<PostOrganizationsOrgIDDirectoriesSlugSyncResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/directories/${encodeURIComponent(slug)}/sync`, body, opts)
   }
 
+  // POST /admin/organizations/{orgID}/directories/{slug}/test: Read a directory as a sync would
+  // and say where it stopped. Needs organizations:write.
+  postOrganizationsOrgIDDirectoriesSlugTest(orgID: string, slug: string, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDDirectoriesSlugTestResponse>> {
+    return this.call<PostOrganizationsOrgIDDirectoriesSlugTestResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/directories/${encodeURIComponent(slug)}/test`, undefined, opts)
+  }
+
   // POST /admin/organizations/{orgID}/event-subscriptions: Subscribe a URL to events; its signing
   // secret is shown once. Needs organizations:write.
   postOrganizationsOrgIDEventSubscriptions(orgID: string, body: PostOrganizationsOrgIDEventSubscriptionsRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDEventSubscriptionsResponse>> {
@@ -3263,6 +3269,17 @@ export interface PostOrganizationsOrgIDDirectoriesSlugSyncResponse {
   plan: string
   slug: string
   upstream: number
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDDirectoriesSlugTestResponse {
+  config_version: number
+  detail: string
+  found: number
+  ok: boolean
+  server: string
+  slug: string
+  step: string
 }
 
 /** A JSON object of the Admin API. */

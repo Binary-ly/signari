@@ -2161,6 +2161,17 @@ type PostOrganizationsOrgIDDirectoriesSlugSyncResponse struct {
 	Upstream         int64  `json:"upstream"`
 }
 
+// PostOrganizationsOrgIDDirectoriesSlugTestResponse is a JSON object of the Admin API.
+type PostOrganizationsOrgIDDirectoriesSlugTestResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Detail        string `json:"detail"`
+	Found         int64  `json:"found"`
+	Ok            bool   `json:"ok"`
+	Server        string `json:"server"`
+	Slug          string `json:"slug"`
+	Step          string `json:"step"`
+}
+
 // PostOrganizationsOrgIDEventSubscriptionsRequest is a JSON object of the Admin API.
 type PostOrganizationsOrgIDEventSubscriptionsRequest struct {
 	EventTypes *[]string `json:"event_types,omitempty"`
@@ -4714,6 +4725,18 @@ func (c *Client) PostOrganizationsOrgIDDirectories(ctx context.Context, orgID st
 func (c *Client) PostOrganizationsOrgIDDirectoriesSlugSync(ctx context.Context, orgID string, slug string, body PostOrganizationsOrgIDDirectoriesSlugSyncRequest, opts ...Option) (*PostOrganizationsOrgIDDirectoriesSlugSyncResponse, int64, error) {
 	var out PostOrganizationsOrgIDDirectoriesSlugSyncResponse
 	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/directories/"+url.PathEscape(slug)+"/sync", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PostOrganizationsOrgIDDirectoriesSlugTest is POST
+// /admin/organizations/{orgID}/directories/{slug}/test: Read a directory as a sync would and say
+// where it stopped. Needs organizations:write.
+func (c *Client) PostOrganizationsOrgIDDirectoriesSlugTest(ctx context.Context, orgID string, slug string, opts ...Option) (*PostOrganizationsOrgIDDirectoriesSlugTestResponse, int64, error) {
+	var out PostOrganizationsOrgIDDirectoriesSlugTestResponse
+	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/directories/"+url.PathEscape(slug)+"/test", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

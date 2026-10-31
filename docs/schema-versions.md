@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0214 idp_end_session
+
+Compatible with the release before: its binary may still serve this schema.
+
+Where to send a browser to sign out at an upstream provider too (8.18). Absent, a sign-out here ends the session here, as it always has, and a person who signed in through a company's provider is still signed in there, so the next sign-in here goes straight through without asking them anything.
+
 ## 0213 relations_follow_a_changed_name
 
 Not compatible with the release before: stop it before migrating.

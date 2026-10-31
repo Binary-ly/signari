@@ -2721,6 +2721,7 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	// signed out, and leaving a stale cookie behind is confusing.
 	s.clearSessionCookie(w)
 	s.clearParked(w, r)
+	s.forgetUpstream(w)
 
 	// post_logout_redirect_uri must be REGISTERED before we redirect to it.
 	// An unvalidated post-logout redirect is an open redirector reached from a
@@ -2759,7 +2760,12 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		// The post-logout target is now VALIDATED, so it is safe to hand to the
-		// SAML chain as the place to land once propagation finishes.
+		// SAML chain as the place to land once propagation finishes. The provider
+		// the person came through, when it asks to be told, is the last stop before
+		// it, since nothing here can resume once the browser has left.
+		if upstream := s.upstreamLogout(ctx, r, chainSID, target); upstream != "" {
+			target = upstream
+		}
 		if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, target); chain != "" {
 			// SAML first: its chain needs the browser, and the front channel would
 			// otherwise navigate away mid-chain.
@@ -2774,7 +2780,19 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// No post-logout redirect: propagate, then report.
+	// No post-logout redirect: propagate, then report, or leave for the provider.
+	if upstream := s.upstreamLogout(ctx, r, chainSID, ""); upstream != "" {
+		if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, upstream); chain != "" {
+			http.Redirect(w, r, chain, http.StatusSeeOther)
+			return
+		}
+		if len(frontChannel) > 0 {
+			s.renderFrontChannelLogout(w, r, frontChannel, upstream)
+			return
+		}
+		http.Redirect(w, r, upstream, http.StatusSeeOther)
+		return
+	}
 	if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, ""); chain != "" {
 		http.Redirect(w, r, chain, http.StatusSeeOther)
 		return

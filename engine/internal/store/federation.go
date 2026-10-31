@@ -60,6 +60,28 @@ func SetIdentityProviderEnabled(ctx context.Context, db interface {
 	return orgID, tx.Commit(ctx)
 }
 
+// UpstreamLogout is the end-session address and client id of the named provider,
+// when the session came through a provider at all and this one is in its
+// organisation, in service and has an address. Otherwise both are empty.
+func UpstreamLogout(ctx context.Context, q Querier, sid, slug string) (endSession, clientID string, err error) {
+	rows, err := q.Query(ctx, `
+		SELECT p.end_session_url, p.client_id
+		  FROM core.identity_providers p
+		  JOIN core.sessions s ON s.org_id = p.org_id
+		 WHERE s.sid = $1 AND 'fed' = ANY(s.amr)
+		   AND p.slug = $2 AND p.enabled AND p.end_session_url IS NOT NULL`, sid, slug)
+	if err != nil {
+		return "", "", err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		if err := rows.Scan(&endSession, &clientID); err != nil {
+			return "", "", err
+		}
+	}
+	return endSession, clientID, rows.Err()
+}
+
 // LoadIdentityProvider fetches an external provider by its URL slug.
 func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, slug string) (*federation.Config, error) {
 	var (
@@ -74,14 +96,14 @@ func LoadIdentityProvider(ctx context.Context, db *pgxpool.Pool, root *keys.Root
 		       client_secret, COALESCE(issuer,''), COALESCE(authorize_url,''),
 		       COALESCE(token_url,''), COALESCE(userinfo_url,''), COALESCE(jwks_url,''),
 		       scopes, allow_signup, allow_linking, require_verified_email, enabled,
-		       trust_email_verification, mfa_amr, mfa_acr
+		       trust_email_verification, mfa_amr, mfa_acr, COALESCE(end_session_url, '')
 		FROM core.identity_providers
 		WHERE slug = $1`, slug).Scan(
 		&c.ID, &c.OrgID, &c.Slug, &c.DisplayName, &kind, &c.ClientID,
 		&secretSealed, &c.IssuerOverride, &c.AuthorizeOverride,
 		&c.TokenOverride, &c.UserinfoOverride, &c.JWKSOverride,
 		&c.Scopes, &c.Policy.AllowSignup, &c.Policy.AllowLinking,
-		&c.Policy.RequireVerifiedEmail, &enabled, &trustEmail, &c.MFAAMR, &c.MFAACR)
+		&c.Policy.RequireVerifiedEmail, &enabled, &trustEmail, &c.MFAAMR, &c.MFAACR, &c.EndSessionURL)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProviderUnknown

@@ -387,6 +387,7 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 	if provider.UpstreamMFA(ext.RawClaims) {
 		amr = append(amr, oauth.AMRMFA)
 	}
+	s.rememberUpstream(w, provider)
 	s.completeSignIn(w, r, tx, userID, provider.OrgID, amr, federationAuthzQuery(pending.ReturnTo))
 }
 

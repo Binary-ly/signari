@@ -505,11 +505,11 @@ var opSchemas = map[string]opSchema{
 	"GET /admin/organizations/{orgID}/identity-providers": {http.StatusOK, nil, object([]string{"org_id", "providers"},
 		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "slug", "name", "kind",
 			"issuer", "enabled", "allow_signup", "allow_linking", "allow_assertions", "trust_email_verification",
-			"require_verified_email", "mfa_amr", "mfa_acr", "login_domains", "linked", "attribute_map"}, map[string]jsonSchema{
+			"require_verified_email", "mfa_amr", "mfa_acr", "login_domains", "end_session_url", "linked", "attribute_map"}, map[string]jsonSchema{
 			"id": uuidStr(), "slug": str(), "name": str(), "kind": str(), "issuer": str(), "enabled": boolean(),
 			"allow_signup": boolean(), "allow_linking": boolean(), "allow_assertions": boolean(),
 			"trust_email_verification": boolean(), "require_verified_email": boolean(), "mfa_amr": arrayOf(str()), "mfa_acr": arrayOf(str()),
-			"login_domains": arrayOf(str()), "linked": integer(),
+			"login_domains": arrayOf(str()), "end_session_url": str(), "linked": integer(),
 			"attribute_map": arrayOf(object([]string{"claim", "attribute", "overwrite", "max_length"},
 				map[string]jsonSchema{"claim": str(), "attribute": str(), "overwrite": boolean(),
 					"max_length": integer()}))}))})},

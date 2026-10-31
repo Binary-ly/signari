@@ -38,6 +38,9 @@ type Config struct {
 	// values this deployment trusts to mean the provider authenticated with
 	// more than one factor (`signari idp trust-mfa`). Empty trusts nothing.
 	MFAAMR, MFAACR []string
+	// EndSessionURL is where a sign-out here sends the browser next (`signari idp
+	// logout`). Empty stops at this side.
+	EndSessionURL string
 }
 
 // UpstreamMFA reports whether a verified upstream payload asserts

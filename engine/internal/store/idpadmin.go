@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -64,12 +65,31 @@ type IdentityProviderChange struct {
 	// LoginDomains are the address domains sent to this provider to sign in; empty
 	// sends nobody by address.
 	LoginDomains *[]string
+	// EndSessionURL is the provider's end_session_endpoint, where a sign-out here
+	// goes next; empty stops at this side.
+	EndSessionURL *string
 }
 
 // Empty reports whether the change names nothing.
 func (c IdentityProviderChange) Empty() bool {
 	return c.Enabled == nil && c.AllowAssertions == nil && c.TrustEmailVerification == nil &&
-		c.RequireVerifiedEmail == nil && c.MFAAMR == nil && c.MFAACR == nil && c.LoginDomains == nil
+		c.RequireVerifiedEmail == nil && c.MFAAMR == nil && c.MFAACR == nil && c.LoginDomains == nil &&
+		c.EndSessionURL == nil
+}
+
+// checkEndSession refuses an address a browser should not be sent to, and a
+// provider with no OIDC session to end there.
+func checkEndSession(slug, kind, address string) error {
+	if address == "" {
+		return nil
+	}
+	if kind == "saml" || kind == "assertion" {
+		return idpInvalid{fmt.Sprintf("%s is a %s provider, which has no OIDC end_session_endpoint", slug, kind)}
+	}
+	if u, err := url.Parse(address); err != nil || u.Scheme != "https" || u.Host == "" {
+		return idpInvalid{fmt.Sprintf("%q is not an https address", address)}
+	}
+	return nil
 }
 
 // loginDomain is a domain as an address holds one.
@@ -180,6 +200,11 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 		}
 		domains = checked
 	}
+	if c.EndSessionURL != nil {
+		if err := checkEndSession(slug, kind, *c.EndSessionURL); err != nil {
+			return err
+		}
+	}
 	_, err := q.Exec(ctx, `
 		UPDATE core.identity_providers
 		   SET enabled                  = COALESCE($3::boolean, enabled),
@@ -189,9 +214,11 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 		       mfa_amr                  = COALESCE($7::text[], mfa_amr),
 		       mfa_acr                  = COALESCE($8::text[], mfa_acr),
 		       login_domains            = COALESCE($9::text[], login_domains),
+		       end_session_url          = CASE WHEN $10::text IS NULL THEN end_session_url
+		                                       ELSE NULLIF($10, '') END,
 		       updated_at               = now()
 		 WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, c.Enabled, c.AllowAssertions, c.TrustEmailVerification,
-		c.RequireVerifiedEmail, amr, acr, domains)
+		c.RequireVerifiedEmail, amr, acr, domains, c.EndSessionURL)
 	return err
 }
 
@@ -265,7 +292,7 @@ func mappingIDs(ctx context.Context, q outpostDB, orgID, slug, attribute string)
 // IdentityProviderRow is one provider as an administrator sees it, without
 // its client secret.
 type IdentityProviderRow struct {
-	ID, Slug, Name, Kind, Issuer                                  string
+	ID, Slug, Name, Kind, Issuer, EndSessionURL                   string
 	Enabled, AllowSignup, AllowLinking                            bool
 	AllowAssertions, TrustEmailVerification, RequireVerifiedEmail bool
 	MFAAMR, MFAACR, LoginDomains                                  []string
@@ -286,7 +313,7 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		SELECT p.id::text, p.slug, p.display_name, p.kind, COALESCE(p.issuer, ''), p.enabled, p.allow_signup,
 		       p.allow_linking, p.allow_jwt_bearer, p.trust_email_verification, p.require_verified_email,
 		       p.mfa_amr, p.mfa_acr, (SELECT count(*) FROM core.federated_identities f WHERE f.provider_id = p.id),
-		       p.login_domains
+		       p.login_domains, COALESCE(p.end_session_url, '')
 		  FROM core.identity_providers p WHERE p.org_id = $1::uuid ORDER BY p.slug`, orgID)
 	if err != nil {
 		return nil, err
@@ -296,7 +323,7 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		var p IdentityProviderRow
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Kind, &p.Issuer, &p.Enabled, &p.AllowSignup,
 			&p.AllowLinking, &p.AllowAssertions, &p.TrustEmailVerification, &p.RequireVerifiedEmail, &p.MFAAMR,
-			&p.MFAACR, &p.Linked, &p.LoginDomains); err != nil {
+			&p.MFAACR, &p.Linked, &p.LoginDomains, &p.EndSessionURL); err != nil {
 			rows.Close()
 			return nil, err
 		}

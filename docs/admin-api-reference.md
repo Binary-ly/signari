@@ -1398,6 +1398,7 @@ Takes:
 |---|---|---|
 | `allow_assertions` | boolean |  |
 | `enabled` | boolean |  |
+| `end_session_url` | string |  |
 | `login_domains` | list of string |  |
 | `mfa_acr` | list of string |  |
 | `mfa_amr` | list of string |  |

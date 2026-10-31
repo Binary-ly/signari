@@ -47,6 +47,33 @@ fields of the same names in `signari apply`, and dynamic registration metadata.
 Until October 2026 nothing could register either one, so every
 `post_logout_redirect_uri` was refused and the front channel reached no client.
 
+## Signing out at the provider too
+
+Somebody who signed in through a company's provider is still signed in there after
+signing out here, so the next sign-in goes straight through without asking them
+anything. On a shared machine that is the wrong answer. An operator can send them
+on to the provider:
+
+```sh
+signari idp logout -slug corp -url https://idp.corp.example/logout
+```
+
+The address is the provider's `end_session_endpoint`, which `signari idp check`
+reads from its discovery document if you need it. Register
+`https://<this issuer>/logout/complete` there as a post-logout redirect. After a
+sign-out the browser goes to the provider with `client_id`,
+`post_logout_redirect_uri` and a `state`, and comes back to `/logout/complete`,
+which carries on to the application's own `post_logout_redirect_uri`, or reports
+the sign-out if there was none.
+
+This is the last stop, after back-channel notices, the front channel and any SAML
+chain, because nothing here can resume once the browser has left. Sessions end here
+first, so a provider that fails or refuses leaves the person signed out here, and
+only here. It happens only for a session that came through a provider, in the
+browser it came through. The upstream `id_token` is not kept, so no `id_token_hint`
+goes with it and the provider may ask the person to confirm. A SAML upstream has no
+such address.
+
 ## Why both OIDC channels
 
 Back-channel logout is server-to-server: reliable, retryable, invisible to the

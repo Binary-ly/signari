@@ -2031,6 +2031,25 @@ func idpTrustMFA(ctx context.Context, conn *pgx.Conn, slug, amr, acr string) err
 	return nil
 }
 
+// idpLogoutSet says where a sign-out here goes next, at the provider a person came
+// through; no address stops it at this side.
+func idpLogoutSet(ctx context.Context, conn *pgx.Conn, slug, address string) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{EndSessionURL: &address}); err != nil {
+		return err
+	}
+	if address == "" {
+		fmt.Printf("%s: a sign-out here stops here\n", slug)
+		return nil
+	}
+	fmt.Printf("%s: a sign-out here goes on to %s\n", slug, address)
+	fmt.Println("\n  Register /logout/complete on this issuer at the provider as a post-logout")
+	fmt.Println("  redirect, or it will refuse to send anybody back.")
+	return nil
+}
+
 // idpDomainsSet says which address domains a provider signs in.
 func idpDomainsSet(ctx context.Context, conn *pgx.Conn, slug, domains string) error {
 	if slug == "" {

@@ -465,6 +465,9 @@
         "enabled": {
           "type": "boolean"
         },
+        "end_session_url": {
+          "type": "string"
+        },
         "issuer": {
           "type": "string"
         },

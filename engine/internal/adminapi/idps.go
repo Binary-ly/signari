@@ -34,6 +34,7 @@ type identityProviderView struct {
 	MFAAMR                 []string         `json:"mfa_amr"`
 	MFAACR                 []string         `json:"mfa_acr"`
 	LoginDomains           []string         `json:"login_domains"`
+	EndSessionURL          string           `json:"end_session_url"`
 	Linked                 int              `json:"linked"`
 	AttributeMap           []map[string]any `json:"attribute_map"`
 }
@@ -48,6 +49,7 @@ type patchIdentityProviderRequest struct {
 	MFAAMR                 *[]string `json:"mfa_amr"`
 	MFAACR                 *[]string `json:"mfa_acr"`
 	LoginDomains           *[]string `json:"login_domains"`
+	EndSessionURL          *string   `json:"end_session_url"`
 }
 
 type idpAttributeMapRequest struct {
@@ -211,7 +213,7 @@ func (s *Server) listIdentityProviders(w http.ResponseWriter, r *http.Request) {
 			Enabled: p.Enabled, AllowSignup: p.AllowSignup, AllowLinking: p.AllowLinking,
 			AllowAssertions: p.AllowAssertions, TrustEmailVerification: p.TrustEmailVerification,
 			RequireVerifiedEmail: p.RequireVerifiedEmail, MFAAMR: p.MFAAMR, MFAACR: p.MFAACR, Linked: p.Linked,
-			LoginDomains: p.LoginDomains, AttributeMap: maps})
+			LoginDomains: p.LoginDomains, EndSessionURL: p.EndSessionURL, AttributeMap: maps})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "providers": out})
 }
@@ -234,6 +236,7 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 		change.MFAACR = &l
 	}
 	change.LoginDomains = req.LoginDomains
+	change.EndSessionURL = req.EndSessionURL
 	if change.Empty() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change"})
 		return

@@ -966,6 +966,7 @@ type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem struct {
 	AllowSignup            bool                                                                          `json:"allow_signup"`
 	AttributeMap           []GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemAttributeMapItem `json:"attribute_map"`
 	Enabled                bool                                                                          `json:"enabled"`
+	EndSessionURL          string                                                                        `json:"end_session_url"`
 	ID                     string                                                                        `json:"id"`
 	Issuer                 string                                                                        `json:"issuer"`
 	Kind                   string                                                                        `json:"kind"`
@@ -1708,6 +1709,7 @@ type PatchOrganizationsOrgIDDirectoriesSlugResponse struct {
 type PatchOrganizationsOrgIDIdentityProvidersSlugRequest struct {
 	AllowAssertions        *bool     `json:"allow_assertions,omitempty"`
 	Enabled                *bool     `json:"enabled,omitempty"`
+	EndSessionURL          *string   `json:"end_session_url,omitempty"`
 	LoginDomains           *[]string `json:"login_domains,omitempty"`
 	MfaACR                 *[]string `json:"mfa_acr,omitempty"`
 	MfaAMR                 *[]string `json:"mfa_amr,omitempty"`

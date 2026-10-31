@@ -522,6 +522,7 @@ func (s *Server) mux() *http.ServeMux {
 	// confirmation form submits when no valid id_token_hint was supplied.
 	mux.HandleFunc("GET "+oidc.PathEndSession, s.handleEndSession)
 	mux.HandleFunc("POST "+oidc.PathEndSession, s.handleEndSession)
+	mux.HandleFunc("GET "+pathLogoutComplete, s.handleLogoutComplete)
 	mux.HandleFunc("POST "+oidc.PathRevocation, formCapped(s.handleRevoke))
 	// draft-ietf-oauth-attestation-based-client-auth-10 §6.1. Unauthenticated by
 	// necessity: a client fetches a challenge in order to authenticate.

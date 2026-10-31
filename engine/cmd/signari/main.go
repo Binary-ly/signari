@@ -273,6 +273,7 @@ federation in:
   idp links                 a provider's subjects and the people they act as
   idp trust-mfa             which upstream amr and acr values count as multi-factor
   idp domains               the address domains a provider signs in
+  idp logout                sign out at the provider too, at its end_session_endpoint
   idp verified-email        whether to believe a provider's email_verified, and require it
   idp attribute-map         route a provider's claim into a local attribute
   idp apple-secret          mint the client secret Apple requires
@@ -661,7 +662,7 @@ func run(args []string) (err error) {
 	// without -tls-cert refuses to start rather than take passwords in clear.
 	outpostLDAPInsecure := fs.Bool("ldap-insecure", os.Getenv("SIGNARI_OUTPOST_LDAP_INSECURE") == "1",
 		"`outpost run`: serve LDAP without TLS (only behind a TLS terminator on loopback)")
-	subURL := fs.String("url", "", "https endpoint events are POSTed to")
+	subURL := fs.String("url", "", "https endpoint events are POSTed to, or a provider's end_session_endpoint")
 	resourceURI := fs.String("resource", "", "an RFC 8707 resource indicator: the absolute URI a resource server is known by")
 	srcIssuer := fs.String("source-issuer", "", "the transmitter's issuer")
 	srcJWKS := fs.String("source-jwks", "", "the transmitter's JWKS URI (https)")
@@ -1717,6 +1718,8 @@ func run(args []string) (err error) {
 		return idpVerifiedEmail(ctx, conn, *slug, emailTrust, emailRequired)
 	case "idp domains":
 		return idpDomainsSet(ctx, conn, *slug, *signupDomains)
+	case "idp logout":
+		return idpLogoutSet(ctx, conn, *slug, *subURL)
 	case "idp trust-mfa":
 		return idpTrustMFA(ctx, conn, *slug, *idpMFAAMR, *idpMFAACR)
 	case "idp disable":
@@ -4024,7 +4027,11 @@ func idpCheck(ctx context.Context, conn *pgx.Conn, slug string) error {
 		fmt.Printf("  %s\n", r.Detail)
 		return nil
 	}
-	fmt.Printf("  discovery and %d signing keys read.\n\n", r.Keys)
+	fmt.Printf("  discovery and %d signing keys read.\n", r.Keys)
+	if r.EndSession != "" {
+		fmt.Printf("  it publishes %s for `signari idp logout`.\n", r.EndSession)
+	}
+	fmt.Println()
 	fmt.Println("  That proves the provider is where it is said to be. Only a sign-in shows the")
 	fmt.Println("  client id and secret are right.")
 	return nil

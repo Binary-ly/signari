@@ -15,6 +15,8 @@ type CheckResult struct {
 	Step, Detail string
 	// Keys is how many signing keys the provider publishes.
 	Keys int
+	// EndSession is its end_session_endpoint, for `signari idp logout`.
+	EndSession string
 }
 
 // Check asks a provider what a sign-in would rely on, so that a mistyped issuer or a
@@ -27,11 +29,13 @@ func (c Config) Check(ctx context.Context, hc *http.Client) CheckResult {
 		return CheckResult{OK: true, Detail: "this provider publishes no discovery document or keys, so there is " +
 			"nothing to ask of it without signing in"}
 	}
+	endSession := ""
 	if issuer != "" {
 		d, err := Discover(ctx, hc, issuer)
 		if err != nil {
 			return CheckResult{Step: "discovery", Detail: err.Error()}
 		}
+		endSession = d.EndSessionURL
 		// Only what an operator wrote can disagree: a preset is what the provider
 		// is known to publish, and a sign-in has been working from it.
 		for _, e := range []struct{ name, set, published string }{
@@ -55,5 +59,5 @@ func (c Config) Check(ctx context.Context, hc *http.Client) CheckResult {
 	if len(keys.Keys) == 0 {
 		return CheckResult{Step: "keys", Detail: "the provider publishes no signing keys, so no token from it could be verified"}
 	}
-	return CheckResult{OK: true, Keys: len(keys.Keys)}
+	return CheckResult{OK: true, Keys: len(keys.Keys), EndSession: endSession}
 }

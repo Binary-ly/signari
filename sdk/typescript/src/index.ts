@@ -2076,6 +2076,7 @@ export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem {
   allow_signup: boolean
   attribute_map: GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemAttributeMapItem[]
   enabled: boolean
+  end_session_url: string
   id: string
   issuer: string
   kind: string
@@ -2818,6 +2819,7 @@ export interface PatchOrganizationsOrgIDDirectoriesSlugResponse {
 export interface PatchOrganizationsOrgIDIdentityProvidersSlugRequest {
   allow_assertions?: boolean
   enabled?: boolean
+  end_session_url?: string
   login_domains?: string[]
   mfa_acr?: string[]
   mfa_amr?: string[]

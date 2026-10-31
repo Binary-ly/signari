@@ -16,6 +16,9 @@ type Discovered struct {
 	TokenURL     string `json:"token_endpoint"`
 	UserinfoURL  string `json:"userinfo_endpoint"`
 	JWKSURL      string `json:"jwks_uri"`
+	// EndSessionURL is read for `signari idp check` to show, and nothing follows
+	// it unless an operator sets it (`signari idp logout`).
+	EndSessionURL string `json:"end_session_endpoint"`
 }
 
 // Discover fetches a provider's OIDC metadata.

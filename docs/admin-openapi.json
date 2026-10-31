@@ -11036,6 +11036,9 @@
                           "enabled": {
                             "type": "boolean"
                           },
+                          "end_session_url": {
+                            "type": "string"
+                          },
                           "id": {
                             "format": "uuid",
                             "type": "string"
@@ -11095,6 +11098,7 @@
                           "mfa_amr",
                           "mfa_acr",
                           "login_domains",
+                          "end_session_url",
                           "linked",
                           "attribute_map"
                         ],
@@ -11382,6 +11386,9 @@
                   },
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "end_session_url": {
+                    "type": "string"
                   },
                   "login_domains": {
                     "items": {

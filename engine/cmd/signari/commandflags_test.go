@@ -263,7 +263,7 @@ func TestACommandTakesOnlyItsOwnFlags(t *testing.T) {
 		t.Errorf("keys rotate -h answered %v:\n%s", err, out)
 	}
 	out, err = captureStdout(t, func() error { return run([]string{"completion", "bash"}) })
-	if err != nil || !strings.Contains(out, `"keys rotate") flags="-dsn -timeout -alg -now"`) ||
+	if err != nil || !strings.Contains(out, `"keys rotate") flags="-dsn -timeout -alg -now -rsa-bits"`) ||
 		!strings.Contains(out, "complete -F _signari signari") {
 		t.Errorf("the bash completion answered %v:\n%.400s", err, out)
 	}

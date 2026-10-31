@@ -31,8 +31,12 @@ type signingKeyView struct {
 }
 
 type rotateKeysRequest struct {
-	// Algorithm rotates only that one; every one in use when empty.
+	// Algorithm rotates only that one, publishing its first key if it has
+	// none; every one in use when empty.
 	Algorithm string `json:"algorithm"`
+	// RSABits sizes the key published for an RSA algorithm named above: 2048,
+	// 3072 or 4096. Empty keeps the size of the key it replaces.
+	RSABits int `json:"rsa_bits"`
 	// PromoteNow promotes a published key before its publication wait is
 	// over: right for a compromised key, and relying parties whose key cache
 	// predates it reject its signatures until they refresh.
@@ -122,7 +126,7 @@ func (s *Server) rotateSigningKeys(w http.ResponseWriter, r *http.Request) {
 			return store.ErrInstanceUnknown
 		}
 		steps, err = keys.Rotate(ctx, tx, instanceID, s.root, keys.Algorithm(strings.TrimSpace(req.Algorithm)),
-			req.PromoteNow, "admin_api")
+			req.RSABits, req.PromoteNow, "admin_api")
 		if err != nil {
 			return err
 		}

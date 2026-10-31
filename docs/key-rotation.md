@@ -82,6 +82,37 @@ snapshot per operation.
   and no amount of advance publication fixes that. The 24 hours is what makes it
   survivable for the ones that refetch on a schedule.
 
+## A new algorithm, or a smaller key
+
+An instance starts with ES256 and RS256. Any other algorithm gets its first key the
+same way, published and then promoted, because a relying party needs the same day to
+see it before it signs:
+
+```sh
+signari keys rotate -alg ES384     # publishes a `next` key
+# …24 hours later…
+signari keys rotate -alg ES384     # promotes it; there is nothing to demote
+signari client set-alg -client-id web-app -alg ES384
+```
+
+ES256, ES384, ES512, RS256, RS384, RS512, PS256, PS384, PS512 and EdDSA are the
+choices. Each ES algorithm is held to its own curve, P-256, P-384 and P-521, and a key
+on another is refused when it loads. Discovery lists only what has an active key. Until
+November 2026 this command refused any algorithm without a key already, so although
+EdDSA and PS256 could be chosen for a client, nothing could publish a key for them.
+
+RSA keys are 3072 bits. A relying party whose library stops at 2048 can be given that
+by name, on one algorithm:
+
+```sh
+signari keys rotate -alg RS256 -rsa-bits 2048
+```
+
+Rotation keeps the size of the key it replaces, by hand and unattended, so a key made
+small for a reason does not grow behind that reason's back. `signari doctor` reports
+one for as long as it signs, and `-rsa-bits 3072` goes back. 2048 is the floor: a
+smaller key is refused when it loads.
+
 ## Retirement
 
 For a long time the machine stopped at `passive`. The state diagram said

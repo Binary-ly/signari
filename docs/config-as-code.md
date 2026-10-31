@@ -38,7 +38,7 @@ clients:
       audiences: [https://billing.example.com/api]
     access_token_ttl: 10m        # 1m to 1h; omit to leave as it is (default 5m)
     refresh_token_ttl: 168h      # 5m to 8760h (default 720h)
-    id_token_signed_response_alg: RS256   # ES256 (default), RS256, PS256, EdDSA
+    id_token_signed_response_alg: RS256   # ES256 (default), or one the instance holds a key for
     require_pushed_authorization_requests: true   # RFC 9126; omit to leave as it is
     first_party: false           # true skips the consent screen
     issuer_alias: https://old.example.com   # a live alias of the instance; "" clears

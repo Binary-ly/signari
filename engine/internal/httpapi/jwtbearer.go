@@ -278,7 +278,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		return
 	}
 
-	alg := keys.Algorithm(c.IDTokenAlg)
+	alg := keys.Algorithm(c.AccessTokenAlg())
 	key, err := s.cfg.Keys.Active(alg)
 	if err != nil {
 		s.log.Error("no active key for jwt-bearer", "alg", alg, "err", err)

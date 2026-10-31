@@ -518,6 +518,7 @@ Answers:
 
 | Field | Type | |
 |---|---|---|
+| `access_token_signed_alg` | string or null |  |
 | `access_token_ttl_s` | integer |  |
 | `admin_api` | boolean |  |
 | `allow_hybrid` | boolean |  |
@@ -580,6 +581,7 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `access_token_signed_response_alg` | string |  |
 | `access_token_ttl_s` | integer |  |
 | `admin_api` | boolean |  |
 | `allow_hybrid` | boolean |  |
@@ -629,6 +631,7 @@ Answers:
 
 | Field | Type | |
 |---|---|---|
+| `access_token_signed_response_alg` | string |  |
 | `access_token_ttl_s` | integer |  |
 | `client_id` | string | always |
 | `config_version` | integer | always |
@@ -1805,6 +1808,7 @@ Takes:
 |---|---|---|
 | `algorithm` | string |  |
 | `promote_now` | boolean |  |
+| `rsa_bits` | integer |  |
 
 Answers:
 

@@ -132,7 +132,7 @@ func (r *Rotator) Once(ctx context.Context) ([]string, error) {
 				return nil, err
 			}
 		case time.Since(active.PublishedAt()) >= r.Every:
-			generated, err := Generate(NewKID(), a)
+			generated, err := Successor(NewKID(), active)
 			if err != nil {
 				return nil, err
 			}

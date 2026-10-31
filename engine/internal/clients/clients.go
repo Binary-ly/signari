@@ -132,8 +132,10 @@ type Client struct {
 	// Off unless somebody turned it on. It exists for applications being
 	// migrated in that cannot be changed as a precondition of the migration; an
 	// estate should end up with it off everywhere.
-	AllowHybrid  bool
-	IDTokenAlg   string
+	AllowHybrid bool
+	IDTokenAlg  string
+	// AccessAlg is what signs the client's access tokens, empty for IDTokenAlg.
+	AccessAlg    string
 	RedirectURIs []string
 
 	// ClaimsRedirectURIs is UMA 2.0 §3.3.2's separate list.
@@ -166,6 +168,14 @@ type Client struct {
 	// MinimumACR is the weakest authentication the client accepts, "1" to
 	// "4" (migrations 0166, 0174; oauth.Meets), whatever its request asks for.
 	MinimumACR string
+}
+
+// AccessTokenAlg is what signs the client's access tokens.
+func (c *Client) AccessTokenAlg() string {
+	if c.AccessAlg != "" {
+		return c.AccessAlg
+	}
+	return c.IDTokenAlg
 }
 
 // AccessTokenTTL is the client's access-token lifetime, with the built-in
@@ -233,7 +243,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	err := q.QueryRow(ctx, `
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce,
-		       id_token_signed_alg, refresh_token_ttl_s, first_party,
+		       id_token_signed_alg, COALESCE(access_token_signed_alg, ''), refresh_token_ttl_s, first_party,
 		       -- The alias only while it is still claimed: past its retirement a
 		       -- token minted under it carries an issuer this deployment no longer
 		       -- accepts, so the client gets the instance's own.
@@ -259,7 +269,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
 			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE,
-			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias,
+			&c.IDTokenAlg, &c.AccessAlg, &c.RefreshTTL, &c.FirstParty, &alias,
 			&c.MayExchange, &c.ExchangeAudiences, &c.JWTBearerProviders,
 			&tlsDN, &tlsDNS, &tlsURI, &tlsIP, &tlsEmail,
 			&c.TLSThumbprint, &c.TLSBoundTokens,

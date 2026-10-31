@@ -1666,6 +1666,7 @@ export interface GetClientsResponseClientsItem {
 
 /** A JSON object of the Admin API. */
 export interface GetClientsClientIDResponse {
+  access_token_signed_alg?: string | null
   access_token_ttl_s?: number
   admin_api?: boolean
   allow_hybrid?: boolean
@@ -2783,6 +2784,7 @@ export interface GetUsersUserIDSessionsResponseSessionsItem {
 
 /** A JSON object of the Admin API. */
 export interface PatchClientsClientIDRequest {
+  access_token_signed_response_alg?: string
   access_token_ttl_s?: number
   admin_api?: boolean
   allow_hybrid?: boolean
@@ -2831,6 +2833,7 @@ export interface PatchClientsClientIDRequest {
 
 /** A JSON object of the Admin API. */
 export interface PatchClientsClientIDResponse {
+  access_token_signed_response_alg?: string
   access_token_ttl_s?: number
   client_id: string
   config_version: number
@@ -3201,6 +3204,7 @@ export interface PostInstancesInstanceIDKeysRetireResponse {
 export interface PostInstancesInstanceIDKeysRotateRequest {
   algorithm?: string
   promote_now?: boolean
+  rsa_bits?: number
 }
 
 /** A JSON object of the Admin API. */

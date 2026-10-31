@@ -502,8 +502,12 @@ func run(args []string) (err error) {
 	auditHead := fs.String("head", "", "a signed audit head kept outside the database, or @file holding one (audit verify)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
 	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
-	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm (default: all in use); "+
-		"`client set-alg`: what signs the client's tokens, ES256, RS256, PS256 or EdDSA")
+	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm, publishing its first key if it has none "+
+		"(default: all in use); `client set-alg`: what signs the client's tokens, one the instance holds a key for")
+	rsaBits := fs.Int("rsa-bits", 0, "`keys rotate -alg`: the size of the RSA key published, 2048, 3072 or 4096 "+
+		"(default: the size of the key it replaces)")
+	clientAccessAlg := fs.String("access-alg", "", "`client set-alg`: what signs the client's access tokens alone; "+
+		"empty goes back to what signs its ID tokens")
 	promoteNow := fs.Bool("now", false, "promote without waiting for the publication dwell -- key compromise only")
 	allowAssertions := fs.Bool("allow-assertions", false, "`idp assertions`: let this provider's JWTs be exchanged for tokens (RFC 7523)")
 	jwksURL := fs.String("jwks-url", "", "`idp add-issuer`: URL publishing the issuer's signing keys")
@@ -1382,7 +1386,13 @@ func run(args []string) (err error) {
 		})
 		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL, grace, *consentTTL)
 	case "client set-alg":
-		return clientSetAlg(ctx, conn, *clientID, *alg)
+		var accessAlg *string
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "access-alg" {
+				accessAlg = clientAccessAlg
+			}
+		})
+		return clientSetAlg(ctx, conn, *clientID, *alg, accessAlg)
 	case "client set-issuer-alias":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{IssuerAlias: issuerAlias},
 			map[bool]string{true: "tokens are minted under this instance's own issuer",
@@ -1583,7 +1593,7 @@ func run(args []string) (err error) {
 	case "keys list":
 		return keysList(ctx, conn, *outputFormat)
 	case "keys rotate":
-		return keysRotate(ctx, conn, *alg, *promoteNow)
+		return keysRotate(ctx, conn, *alg, *rsaBits, *promoteNow)
 	case "keys retire":
 		return keysRetire(ctx, conn, *dryRun)
 	case "keys rewrap-root":
@@ -2032,7 +2042,7 @@ func keysList(ctx context.Context, conn *pgx.Conn, format string) error {
 // everything the new key signs, and plenty of them refresh only at boot. Signing
 // with a key nobody has fetched is how a routine rotation becomes an outage --
 // so the wait is enforced rather than documented.
-func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow bool) error {
+func keysRotate(ctx context.Context, conn *pgx.Conn, only string, rsaBits int, promoteNow bool) error {
 	instanceID, _, root, err := loadInstanceKeys(ctx, conn)
 	if err != nil {
 		return err
@@ -2044,9 +2054,8 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// The step the Admin API shares. Rotation replaces the algorithms in use;
-	// it is not the place to introduce one.
-	steps, err := keys.Rotate(ctx, tx, instanceID, root, keys.Algorithm(only), promoteNow, "cli")
+	// The step the Admin API shares.
+	steps, err := keys.Rotate(ctx, tx, instanceID, root, keys.Algorithm(only), rsaBits, promoteNow, "cli")
 	if err != nil {
 		return err
 	}
@@ -9433,16 +9442,20 @@ func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, ac
 
 // clientSetAlg sets the algorithm the client's ID and access tokens are signed
 // with, refusing one the instance holds no active key for.
-func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string) error {
-	if clientID == "" || alg == "" {
-		return fmt.Errorf("give -client-id and -alg (%s)", strings.Join(store.ClientAlgorithms, ", "))
+func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string, accessAlg *string) error {
+	if clientID == "" || alg == "" && accessAlg == nil {
+		return fmt.Errorf("give -client-id and -alg or -access-alg (%s)", strings.Join(store.ClientAlgorithms, ", "))
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := store.SetClientSettings(ctx, tx, clientID, store.ClientSettings{IDTokenAlg: &alg}); err != nil {
+	settings := store.ClientSettings{AccessTokenAlg: accessAlg}
+	if alg != "" {
+		settings.IDTokenAlg = &alg
+	}
+	if err := store.SetClientSettings(ctx, tx, clientID, settings); err != nil {
 		if errors.Is(err, store.ErrClientNotFound) {
 			return fmt.Errorf("no client %q", clientID)
 		}
@@ -9451,7 +9464,14 @@ func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string) err
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	fmt.Printf("%s: ID and access tokens are signed with %s\n", clientID, alg)
+	switch {
+	case accessAlg == nil:
+		fmt.Printf("%s: ID tokens are signed with %s, and access tokens unless they are set apart\n", clientID, alg)
+	case *accessAlg == "":
+		fmt.Printf("%s: access tokens are signed as its ID tokens are\n", clientID)
+	default:
+		fmt.Printf("%s: access tokens are signed with %s\n", clientID, *accessAlg)
+	}
 	return nil
 }
 

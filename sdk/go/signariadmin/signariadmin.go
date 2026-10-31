@@ -514,6 +514,7 @@ type GetClientsResponseClientsItem struct {
 
 // GetClientsClientIDResponse is a JSON object of the Admin API.
 type GetClientsClientIDResponse struct {
+	AccessTokenSignedAlg                  *string        `json:"access_token_signed_alg,omitempty"`
 	AccessTokenTTLS                       int64          `json:"access_token_ttl_s,omitempty"`
 	AdminAPI                              bool           `json:"admin_api,omitempty"`
 	AllowHybrid                           bool           `json:"allow_hybrid,omitempty"`
@@ -1631,6 +1632,7 @@ type GetUsersUserIDSessionsResponseSessionsItem struct {
 
 // PatchClientsClientIDRequest is a JSON object of the Admin API.
 type PatchClientsClientIDRequest struct {
+	AccessTokenSignedResponseAlg          *string         `json:"access_token_signed_response_alg,omitempty"`
 	AccessTokenTTLS                       *int64          `json:"access_token_ttl_s,omitempty"`
 	AdminAPI                              *bool           `json:"admin_api,omitempty"`
 	AllowHybrid                           *bool           `json:"allow_hybrid,omitempty"`
@@ -1679,6 +1681,7 @@ type PatchClientsClientIDRequest struct {
 
 // PatchClientsClientIDResponse is a JSON object of the Admin API.
 type PatchClientsClientIDResponse struct {
+	AccessTokenSignedResponseAlg       string   `json:"access_token_signed_response_alg,omitempty"`
 	AccessTokenTTLS                    int64    `json:"access_token_ttl_s,omitempty"`
 	ClientID                           string   `json:"client_id"`
 	ConfigVersion                      int64    `json:"config_version"`
@@ -2049,6 +2052,7 @@ type PostInstancesInstanceIDKeysRetireResponse struct {
 type PostInstancesInstanceIDKeysRotateRequest struct {
 	Algorithm  *string `json:"algorithm,omitempty"`
 	PromoteNow *bool   `json:"promote_now,omitempty"`
+	RsaBits    *int64  `json:"rsa_bits,omitempty"`
 }
 
 // PostInstancesInstanceIDKeysRotateResponse is a JSON object of the Admin API.

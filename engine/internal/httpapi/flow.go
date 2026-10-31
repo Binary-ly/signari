@@ -1104,6 +1104,14 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		return nil, nil, fmt.Errorf("no active key for the client's algorithm %s: %w", alg, err)
 	}
 	signer := tokens.NewSigner(key)
+	accessSigner := signer
+	if a := keys.Algorithm(c.AccessTokenAlg()); a != alg {
+		accessKey, err := s.cfg.Keys.Active(a)
+		if err != nil {
+			return nil, nil, fmt.Errorf("no active key for the client's access tokens, %s: %w", a, err)
+		}
+		accessSigner = tokens.NewSigner(accessKey)
+	}
 
 	now := time.Now()
 	jti, err := newSID()
@@ -1222,7 +1230,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		accessAuthTime = authTime.Unix()
 	}
 
-	at, err := signAccessToken(ctx, signer, tokens.AccessTokenClaims{
+	at, err := signAccessToken(ctx, accessSigner, tokens.AccessTokenClaims{
 		Issuer:    issuer,
 		Subject:   userID,
 		Audience:  audience,
@@ -1544,7 +1552,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	alg := keys.Algorithm(c.IDTokenAlg)
+	alg := keys.Algorithm(c.AccessTokenAlg())
 	key, err := s.cfg.Keys.Active(alg)
 	if err != nil {
 		s.log.Error("no active key for client_credentials", "alg", alg, "err", err)
@@ -3397,7 +3405,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		return
 	}
 
-	key, err := s.cfg.Keys.Active(keys.Algorithm(c.IDTokenAlg))
+	key, err := s.cfg.Keys.Active(keys.Algorithm(c.AccessTokenAlg()))
 	if err != nil {
 		s.log.Error("token exchange: no active key", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})

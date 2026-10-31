@@ -3,7 +3,8 @@ package tokens
 
 import (
 	"crypto"
-	"crypto/sha256"
+	_ "crypto/sha256" // for crypto.SHA256 in AtHash
+	_ "crypto/sha512" // for crypto.SHA384 and crypto.SHA512 in AtHash
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -205,12 +206,24 @@ func (s *Signer) joseAlg() (jose.SignatureAlgorithm, error) {
 	switch s.key.Algorithm() {
 	case keys.RS256:
 		return jose.RS256, nil
+	case keys.RS384:
+		return jose.RS384, nil
+	case keys.RS512:
+		return jose.RS512, nil
 	case keys.ES256:
 		return jose.ES256, nil
+	case keys.ES384:
+		return jose.ES384, nil
+	case keys.ES512:
+		return jose.ES512, nil
 	case keys.EdDSA:
 		return jose.EdDSA, nil
 	case keys.PS256:
 		return jose.PS256, nil
+	case keys.PS384:
+		return jose.PS384, nil
+	case keys.PS512:
+		return jose.PS512, nil
 	default:
 		return "", fmt.Errorf("unsupported signing algorithm %q", s.key.Algorithm())
 	}
@@ -285,7 +298,7 @@ func CHash(alg keys.Algorithm, code string) (string, error) {
 
 // AtHash computes the at_hash claim: the base64url of the left-most half of the
 // hash of the ASCII access token, using the hash paired with the signing
-// algorithm (SHA-256 for ES256, RS256 and PS256).
+// algorithm (SHA-256 for ES256, RS256 and PS256, SHA-384 and SHA-512 for theirs).
 //
 // Getting the "left-most half" wrong is the classic at_hash bug: it is half the
 // HASH, not half the token, and it is the raw bytes that are halved, not the
@@ -306,6 +319,10 @@ func AtHash(alg keys.Algorithm, accessToken string) (string, error) {
 	switch alg {
 	case keys.RS256, keys.ES256, keys.PS256:
 		h = crypto.SHA256
+	case keys.RS384, keys.ES384, keys.PS384:
+		h = crypto.SHA384
+	case keys.RS512, keys.ES512, keys.PS512:
+		h = crypto.SHA512
 	case keys.EdDSA:
 		// Ed25519 has no paired hash in the JOSE registry, so at_hash is omitted
 		// rather than guessed.
@@ -313,10 +330,9 @@ func AtHash(alg keys.Algorithm, accessToken string) (string, error) {
 	default:
 		return "", fmt.Errorf("no at_hash defined for %s", alg)
 	}
-	if h != crypto.SHA256 {
-		return "", fmt.Errorf("unsupported hash")
-	}
-	sum := sha256.Sum256([]byte(accessToken))
+	d := h.New()
+	d.Write([]byte(accessToken))
+	sum := d.Sum(nil)
 	return base64.RawURLEncoding.EncodeToString(sum[:len(sum)/2]), nil
 }
 

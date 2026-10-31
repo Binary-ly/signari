@@ -26,11 +26,14 @@ type ClientSettings struct {
 	// once more for the same answer, 0 for never and MaxRefreshReuseGrace at most.
 	// Past that reuse is a theft signal again, which is the whole point of rotating.
 	RefreshReuseGrace *time.Duration
-	// IDTokenAlg signs the client's ID and access tokens: ES256 (the default),
-	// RS256, PS256 or EdDSA, and only one the client's instance holds an active
+	// IDTokenAlg signs the client's ID and access tokens: ES256 by default, one
+	// of ClientAlgorithms, and only one the client's instance holds an active
 	// key for, since a token endpoint asked to sign with a key it does not have
 	// answers every request with an error.
 	IDTokenAlg *string
+	// AccessTokenAlg signs the client's access tokens alone, for a resource server
+	// that takes something else; "" goes back to IDTokenAlg. The same rules.
+	AccessTokenAlg *string
 	// RequirePAR refuses any authorization the client did not push first (RFC
 	// 9126 §6, require_pushed_authorization_requests).
 	RequirePAR *bool
@@ -64,7 +67,8 @@ var ClientACRs = []string{"1", "2", "3", "4"}
 
 // ClientAlgorithms are the JWS algorithms a client may be set to sign with,
 // the schema's own CHECK. No symmetric algorithm, ever.
-var ClientAlgorithms = []string{"ES256", "RS256", "PS256", "EdDSA"}
+var ClientAlgorithms = []string{"ES256", "ES384", "ES512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
+	"EdDSA"}
 
 // The bounds, which migration 0144 enforces in the schema as well.
 const (
@@ -109,24 +113,45 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
-	if a := s.IDTokenAlg; a != nil {
-		var held bool
+	held := func(alg string) error {
+		var known, held bool
 		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS (SELECT 1 FROM core.signing_keys k
+			SELECT EXISTS (SELECT 1 FROM core.clients WHERE client_id = $1),
+			       EXISTS (SELECT 1 FROM core.signing_keys k
 			                 JOIN core.organizations o ON o.instance_id = k.instance_id
 			                 JOIN core.clients c ON c.org_id = o.id
 			                WHERE c.client_id = $1 AND k.algorithm = $2
 			                  AND k.state = 'active' AND k.purpose = 'oidc')`,
-			clientID, *a).Scan(&held); err != nil {
+			clientID, alg).Scan(&known, &held); err != nil {
 			return err
+		}
+		if !known {
+			return ErrClientNotFound
 		}
 		if !held {
 			return fmt.Errorf("%w: this instance holds no active %s signing key, so every token "+
 				"for the client would fail to sign; publish one with `signari keys rotate -alg %s` "+
-				"and promote it with the same command after the dwell", ErrInvalidClientSetting, *a, *a)
+				"and promote it with the same command after the dwell", ErrInvalidClientSetting, alg, alg)
+		}
+		return nil
+	}
+	if a := s.IDTokenAlg; a != nil {
+		if err := held(*a); err != nil {
+			return err
 		}
 		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET id_token_signed_alg = $2, updated_at = now()
 			WHERE client_id = $1`, clientID, *a)); err != nil {
+			return err
+		}
+	}
+	if a := s.AccessTokenAlg; a != nil {
+		if *a != "" {
+			if err := held(*a); err != nil {
+				return err
+			}
+		}
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET access_token_signed_alg = NULLIF($2, ''),
+			updated_at = now() WHERE client_id = $1`, clientID, *a)); err != nil {
 			return err
 		}
 	}
@@ -211,6 +236,10 @@ func CheckClientSettings(s ClientSettings) error {
 		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
 			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
 	}
+	if a := s.AccessTokenAlg; a != nil && *a != "" && !slices.Contains(ClientAlgorithms, *a) {
+		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
+			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
+	}
 	if d := s.ConsentLifetime; d != nil && *d != 0 &&
 		(*d < MinConsentLifetime || *d > MaxConsentLifetime || *d%time.Second != 0) {
 		return fmt.Errorf("%w: a consent lifetime must be whole seconds from %s to %s, or 0 for "+
@@ -241,6 +270,7 @@ type ClientSettingsView struct {
 	RefreshTokenTTL   time.Duration
 	RefreshReuseGrace time.Duration
 	IDTokenAlg        string
+	AccessTokenAlg    string
 	RequirePAR        bool
 	RequireState      bool
 	FirstParty        bool
@@ -257,11 +287,11 @@ func ClientSettingsOf(ctx context.Context, q interface {
 	var v ClientSettingsView
 	var access, refresh, grace, consent int
 	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, refresh_reuse_grace_s, id_token_signed_alg,
-		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr,
-		       COALESCE(consent_lifetime_s, 0), require_state
+		       COALESCE(access_token_signed_alg, ''), require_pushed_authorization, first_party,
+		       COALESCE(issuer_alias, ''), minimum_acr, COALESCE(consent_lifetime_s, 0), require_state
 		FROM core.clients WHERE client_id = $1`, clientID).
-		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias,
-			&v.MinimumACR, &consent, &v.RequireState)
+		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RequirePAR, &v.FirstParty,
+			&v.IssuerAlias, &v.MinimumACR, &consent, &v.RequireState)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

@@ -16,7 +16,8 @@ import (
 // Admin API (6.07), one implementation for both. The unattended Rotator takes
 // the same steps on a period and never forces one.
 
-// ErrNotRotatable is a rotation of an algorithm nothing signs with.
+// ErrNotRotatable is a rotation that cannot be taken: an instance with no keys,
+// or an algorithm or size this server does not make.
 var ErrNotRotatable = errors.New("nothing to rotate")
 
 // Step is what one rotation did for one algorithm: a key published as next,
@@ -41,21 +42,35 @@ type Step struct {
 // and a passive key stays published so they keep verifying. Each step is
 // audited with via.
 //
+// An algorithm named by only need not be in use: its first key is published
+// like any other, so relying parties have the same day to see it before it
+// signs. Nothing else publishes one, and without this every algorithm but the
+// two an instance is made with could be chosen for a client and never held.
+//
+// rsaBits sizes the key published for an RSA algorithm named by only; 0 keeps
+// the size of the key it replaces, or RSABits for a first one.
+//
 // Under the unattended Rotator's lock, waited for rather than tried, and the
 // keys read once it is held, so a pass cannot run between the read and the
 // write.
-func Rotate(ctx context.Context, tx pgx.Tx, instanceID string, root *RootKey, only Algorithm,
+func Rotate(ctx context.Context, tx pgx.Tx, instanceID string, root *RootKey, only Algorithm, rsaBits int,
 	promoteNow bool, via string) ([]Step, error) {
 	set, err := lockedSet(ctx, tx, instanceID, root)
 	if err != nil {
 		return nil, err
 	}
+	if rsaBits != 0 {
+		if !isRSA(only) {
+			return nil, fmt.Errorf("%w: a key size is for one RSA algorithm, so name it", ErrNotRotatable)
+		}
+		if !slices.Contains(RSASizes, rsaBits) {
+			return nil, fmt.Errorf("%w: an RSA key is one of %v bits, not %d", ErrNotRotatable, RSASizes, rsaBits)
+		}
+	}
 	algs := set.Algorithms()
 	if only != "" {
-		// Rotation replaces an algorithm in use; it is not the place to
-		// introduce one.
-		if !slices.Contains(algs, only) {
-			return nil, fmt.Errorf("%w: %s signs nothing here", ErrNotRotatable, only)
+		if !slices.Contains(AllAlgorithms, only) {
+			return nil, fmt.Errorf("%w: %s is not one of %v", ErrNotRotatable, only, AllAlgorithms)
 		}
 		algs = []Algorithm{only}
 	}
@@ -71,8 +86,22 @@ func Rotate(ctx context.Context, tx pgx.Tx, instanceID string, root *RootKey, on
 				break
 			}
 		}
+		if next != nil && rsaBits != 0 {
+			return nil, fmt.Errorf("%w: a %s key is already published at its own size; promote it first",
+				ErrNotRotatable, a)
+		}
 		if next == nil {
-			generated, err := Generate(NewKID(), a)
+			var generated Key
+			var err error
+			active, noneActive := set.Active(a)
+			switch {
+			case rsaBits != 0:
+				generated, err = GenerateSized(NewKID(), a, rsaBits)
+			case noneActive != nil:
+				generated, err = Generate(NewKID(), a)
+			default:
+				generated, err = Successor(NewKID(), active)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("generating %s key: %w", a, err)
 			}

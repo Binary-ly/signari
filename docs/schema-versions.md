@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0227 signing_algorithms
+
+Not compatible with the release before: stop it before migrating.
+
+The 384 and 512 families (9.04). A relying party or a policy that asks for ES384, ES512, RS384, RS512, PS384 or PS512 can now be given it, with the curve each ES algorithm names pinned in internal/keys. Nothing signs with one until an operator publishes a key for it, and a client is refused one its instance does not hold.
+
 ## 0226 relations_page
 
 Compatible with the release before: its binary may still serve this schema.

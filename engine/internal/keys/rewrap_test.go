@@ -112,6 +112,7 @@ var columnClass = map[string]string{
 	"clients.client_secret_hash": "oneWay",
 
 	// Public or non-secret material.
+	"clients.access_token_signed_alg":    "public",
 	"clients.tls_thumbprint":             "public",
 	"credential_proof_roots.certificate": "public",
 	"signing_keys.certificate":           "public",

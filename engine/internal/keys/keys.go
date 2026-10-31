@@ -28,6 +28,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -49,7 +50,43 @@ const (
 	EdDSA Algorithm = "EdDSA"
 	// PS256 is for FAPI profiles.
 	PS256 Algorithm = "PS256"
+	// The longer hashes are for a relying party or a policy that asks for them.
+	// Nothing here signs with one until an operator publishes a key for it.
+	RS384 Algorithm = "RS384"
+	RS512 Algorithm = "RS512"
+	PS384 Algorithm = "PS384"
+	PS512 Algorithm = "PS512"
+	ES384 Algorithm = "ES384"
+	ES512 Algorithm = "ES512"
 )
+
+// AllAlgorithms is every algorithm a key may be made for, the schema's CHECK on
+// core.signing_keys. No symmetric algorithm, ever.
+var AllAlgorithms = []Algorithm{ES256, ES384, ES512, RS256, RS384, RS512, PS256, PS384, PS512, EdDSA}
+
+// isRSA reports the algorithms an RSA key signs.
+func isRSA(alg Algorithm) bool {
+	switch alg {
+	case RS256, RS384, RS512, PS256, PS384, PS512:
+		return true
+	}
+	return false
+}
+
+// curveFor is the one curve each ECDSA algorithm may use, or nil for an
+// algorithm that is not ECDSA. RFC 7518 pairs them, and a P-256 key under ES384
+// is a key that does not give what its name says.
+func curveFor(alg Algorithm) elliptic.Curve {
+	switch alg {
+	case ES256:
+		return elliptic.P256()
+	case ES384:
+		return elliptic.P384()
+	case ES512:
+		return elliptic.P521()
+	}
+	return nil
+}
 
 // State is a key's position in the rotation machine.
 type State string
@@ -177,17 +214,51 @@ func NewSoftwareKey(kid string, alg Algorithm, state State, signer crypto.Signer
 // point rather than an inconsistency.
 const RSABits = 3072
 
+// MinRSABits is the smallest key this server will make or load. A deployment
+// asks for it by name, for a relying party whose library stops at 2048 (`keys
+// rotate -rsa-bits 2048`): RSABits above is the default and stays it, and
+// `signari doctor` says so of a key below it for as long as there is one.
+const MinRSABits = 2048
+
+// RSASizes are the moduli an operator may ask for.
+var RSASizes = []int{MinRSABits, RSABits, 4096}
+
 func Generate(kid string, alg Algorithm) (Key, error) {
+	return generate(kid, alg, RSABits)
+}
+
+// GenerateSized is Generate at a modulus an operator chose.
+func GenerateSized(kid string, alg Algorithm, bits int) (Key, error) {
+	if !isRSA(alg) {
+		return nil, fmt.Errorf("%s has no modulus to size", alg)
+	}
+	if !slices.Contains(RSASizes, bits) {
+		return nil, fmt.Errorf("an RSA key is one of %v bits, not %d", RSASizes, bits)
+	}
+	return generate(kid, alg, bits)
+}
+
+// Successor makes the key that takes over from k. An operator who chose a size
+// chose it for a relying party, and a rotation nobody is watching must not
+// change it behind them.
+func Successor(kid string, k Key) (Key, error) {
+	if pub, ok := k.Signer().Public().(*rsa.PublicKey); ok && slices.Contains(RSASizes, pub.N.BitLen()) {
+		return generate(kid, k.Algorithm(), pub.N.BitLen())
+	}
+	return Generate(kid, k.Algorithm())
+}
+
+func generate(kid string, alg Algorithm, rsaBits int) (Key, error) {
 	var (
 		signer crypto.Signer
 		err    error
 	)
-	switch alg {
-	case RS256, PS256:
-		signer, err = rsa.GenerateKey(rand.Reader, RSABits)
-	case ES256:
-		signer, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	case EdDSA:
+	switch {
+	case isRSA(alg):
+		signer, err = rsa.GenerateKey(rand.Reader, rsaBits)
+	case curveFor(alg) != nil:
+		signer, err = ecdsa.GenerateKey(curveFor(alg), rand.Reader)
+	case alg == EdDSA:
 		_, priv, e := ed25519.GenerateKey(rand.Reader)
 		signer, err = priv, e
 	default:
@@ -210,20 +281,25 @@ func Generate(kid string, alg Algorithm) (Key, error) {
 // the token's own `alg` header to pick the method -- is a recurring JWT CVE class,
 // and the defence starts by pinning algorithm to key at construction.
 func checkSignerMatchesAlg(alg Algorithm, signer crypto.Signer) error {
-	switch alg {
-	case RS256, PS256:
-		if _, ok := signer.Public().(*rsa.PublicKey); !ok {
+	switch {
+	case isRSA(alg):
+		pub, ok := signer.Public().(*rsa.PublicKey)
+		if !ok {
 			return fmt.Errorf("algorithm %s requires an RSA key, got %T", alg, signer.Public())
 		}
-	case ES256:
+		if n := pub.N.BitLen(); n < MinRSABits {
+			return fmt.Errorf("algorithm %s requires at least %d bits, got %d", alg, MinRSABits, n)
+		}
+	case curveFor(alg) != nil:
 		pub, ok := signer.Public().(*ecdsa.PublicKey)
 		if !ok {
-			return fmt.Errorf("algorithm ES256 requires an ECDSA key, got %T", signer.Public())
+			return fmt.Errorf("algorithm %s requires an ECDSA key, got %T", alg, signer.Public())
 		}
-		if pub.Curve != elliptic.P256() {
-			return fmt.Errorf("algorithm ES256 requires curve P-256, got %s", pub.Curve.Params().Name)
+		if want := curveFor(alg); pub.Curve != want {
+			return fmt.Errorf("algorithm %s requires curve %s, got %s", alg, want.Params().Name,
+				pub.Curve.Params().Name)
 		}
-	case EdDSA:
+	case alg == EdDSA:
 		if _, ok := signer.Public().(ed25519.PublicKey); !ok {
 			return fmt.Errorf("algorithm EdDSA requires an Ed25519 key, got %T", signer.Public())
 		}

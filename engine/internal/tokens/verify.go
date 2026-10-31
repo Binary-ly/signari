@@ -234,7 +234,8 @@ func VerifyTypedJSON(set *keys.Set, issuers []string, raw, wantTyp string, into 
 // verifiedPayload does the signature and header checks common to every token we
 // verify, and returns the raw payload.
 func verifiedPayload(set *keys.Set, raw, wantTyp string) ([]byte, error) {
-	permitted := []jose.SignatureAlgorithm{jose.RS256, jose.ES256, jose.PS256, jose.EdDSA}
+	permitted := []jose.SignatureAlgorithm{jose.RS256, jose.RS384, jose.RS512, jose.PS256, jose.PS384, jose.PS512,
+		jose.ES256, jose.ES384, jose.ES512, jose.EdDSA}
 
 	tok, err := jose.ParseSigned(raw, permitted)
 	if err != nil {

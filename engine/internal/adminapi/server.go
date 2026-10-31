@@ -834,6 +834,9 @@ type patchClientRequest struct {
 	// IDTokenSignedResponseAlg, by its dynamic-registration name, signs the
 	// client's ID and access tokens.
 	IDTokenSignedResponseAlg *string `json:"id_token_signed_response_alg"`
+	// AccessTokenSignedResponseAlg signs its access tokens alone; "" goes back
+	// to the above.
+	AccessTokenSignedResponseAlg *string `json:"access_token_signed_response_alg"`
 	// RequirePushedAuthorizationRequests is RFC 9126 §6's name; FirstParty
 	// skips the consent screen.
 	RequirePushedAuthorizationRequests *bool `json:"require_pushed_authorization_requests"`
@@ -1058,7 +1061,7 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 		d := time.Duration(*r.RefreshReuseGraceSeconds) * time.Second
 		s.RefreshReuseGrace = &d
 	}
-	s.IDTokenAlg = r.IDTokenSignedResponseAlg
+	s.IDTokenAlg, s.AccessTokenAlg = r.IDTokenSignedResponseAlg, r.AccessTokenSignedResponseAlg
 	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
 	s.RequireState = r.RequireState
 	s.MinimumACR = r.MinimumACR
@@ -1067,7 +1070,8 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 		s.ConsentLifetime = &d
 	}
 	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil ||
-		r.RefreshReuseGraceSeconds != nil || r.IDTokenSignedResponseAlg != nil || r.RequirePushedAuthorizationRequests != nil ||
+		r.RefreshReuseGraceSeconds != nil || r.IDTokenSignedResponseAlg != nil ||
+		r.AccessTokenSignedResponseAlg != nil || r.RequirePushedAuthorizationRequests != nil ||
 		r.FirstParty != nil || r.IssuerAlias != nil || r.MinimumACR != nil || r.ConsentLifetimeSeconds != nil
 }
 
@@ -1217,6 +1221,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				"refresh_token_ttl_s":                   int(got.RefreshTokenTTL.Seconds()),
 				"refresh_reuse_grace_s":                 int(got.RefreshReuseGrace.Seconds()),
 				"id_token_signed_response_alg":          got.IDTokenAlg,
+				"access_token_signed_response_alg":      got.AccessTokenAlg,
 				"require_pushed_authorization_requests": got.RequirePAR,
 				"require_state":                         got.RequireState,
 				"first_party":                           got.FirstParty,

@@ -569,6 +569,33 @@ func checkNotificationChannels(ctx context.Context, conn *pgx.Conn, r *Report) e
 
 func checkSigningKeys(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	r.ran("signing keys")
+	// A key made smaller than the default on purpose, for a relying party that
+	// could take no more, stays in view so the reason can be asked about again.
+	small, err := conn.Query(ctx, `
+		SELECT kid, algorithm, length(public_jwk->>'n') * 6 / 8 * 8
+		  FROM core.signing_keys
+		 WHERE purpose = 'oidc' AND state IN ('active', 'next') AND public_jwk ? 'n'
+		   AND length(public_jwk->>'n') * 6 / 8 * 8 < $1
+		 ORDER BY kid LIMIT 20`, keys.RSABits)
+	if err != nil {
+		return err
+	}
+	for small.Next() {
+		var kid, alg string
+		var bits int
+		if err := small.Scan(&kid, &alg, &bits); err != nil {
+			small.Close()
+			return err
+		}
+		r.add(Warning, "keys", fmt.Sprintf("%s key %s is %d bits, below the %d this server makes by default",
+			alg, kid, bits, keys.RSABits),
+			"it was asked for, and rotation keeps the size. `signari keys rotate -alg "+alg+" -rsa-bits 3072` "+
+				"goes back once the relying party can take it")
+	}
+	small.Close()
+	if err := small.Err(); err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT algorithm, count(*) FILTER (WHERE state = 'active'),
 		       count(*) FILTER (WHERE state = 'next')
@@ -648,11 +675,13 @@ func checkClients(ctx context.Context, conn interface {
 	// `client set-alg` refuses one, but a key can be retired afterwards, and
 	// then every token request from that client fails at the signature.
 	unsigned, err := conn.Query(ctx, `
-		SELECT c.client_id, c.id_token_signed_alg FROM core.clients c
+		SELECT c.client_id, a.alg FROM core.clients c
 		  JOIN core.organizations o ON o.id = c.org_id
+		 CROSS JOIN LATERAL (SELECT DISTINCT unnest(ARRAY[c.id_token_signed_alg,
+		                            COALESCE(c.access_token_signed_alg, c.id_token_signed_alg)]) AS alg) a
 		 WHERE c.enabled AND NOT EXISTS (
 		       SELECT 1 FROM core.signing_keys k
-		        WHERE k.instance_id = o.instance_id AND k.algorithm = c.id_token_signed_alg
+		        WHERE k.instance_id = o.instance_id AND k.algorithm = a.alg
 		          AND k.state = 'active' AND k.purpose = 'oidc')
 		 ORDER BY c.client_id LIMIT 20`)
 	if err != nil {

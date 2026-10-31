@@ -657,6 +657,12 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
+                    "access_token_signed_alg": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "access_token_ttl_s": {
                       "type": "integer"
                     },
@@ -974,6 +980,9 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "access_token_signed_response_alg": {
+                    "type": "string"
+                  },
                   "access_token_ttl_s": {
                     "type": "integer"
                   },
@@ -1142,6 +1151,9 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
+                    "access_token_signed_response_alg": {
+                      "type": "string"
+                    },
                     "access_token_ttl_s": {
                       "type": "integer"
                     },
@@ -4539,6 +4551,9 @@
                   },
                   "promote_now": {
                     "type": "boolean"
+                  },
+                  "rsa_bits": {
+                    "type": "integer"
                   }
                 },
                 "type": "object"

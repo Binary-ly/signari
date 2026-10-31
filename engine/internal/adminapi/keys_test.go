@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,8 +88,17 @@ func TestAnInstancesKeysAreRotatedThroughTheAPI(t *testing.T) {
 		}
 	}
 
-	if rec := call(t, s, http.MethodPost, base+"/rotate", testToken, map[string]any{"algorithm": "EdDSA"}); rec.Code != http.StatusBadRequest {
-		t.Errorf("rotating an algorithm nothing signs with answered %d", rec.Code)
+	if rec := call(t, s, http.MethodPost, base+"/rotate", testToken, map[string]any{"algorithm": "HS256"}); rec.Code != http.StatusBadRequest {
+		t.Errorf("rotating an algorithm this server does not make answered %d", rec.Code)
+	}
+	if rec := call(t, s, http.MethodPost, base+"/rotate", testToken, map[string]any{"algorithm": "ES256",
+		"rsa_bits": 2048}); rec.Code != http.StatusBadRequest {
+		t.Errorf("sizing a key with no modulus answered %d", rec.Code)
+	}
+	// Nothing signs with it yet, and this is how it comes to.
+	if rec := call(t, s, http.MethodPost, base+"/rotate", testToken, map[string]any{"algorithm": "EdDSA"}); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"published"`) {
+		t.Errorf("publishing an algorithm's first key answered %d %s", rec.Code, rec.Body)
 	}
 	tenant := mintToken(t, s, fmt.Sprintf("keys-tenant-%d", time.Now().UnixNano()), anyOrgID(t, s),
 		[]string{ScopeOrganizationsWrite, ScopeConfigRead}, nil)

@@ -109,6 +109,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 			return nil, err
 		}
 		cl.AccessTokenTTL, cl.RefreshTokenTTL, cl.IDTokenAlg = &st.AccessTokenTTL, &st.RefreshTokenTTL, &st.IDTokenAlg
+		cl.AccessTokenAlg = &st.AccessTokenAlg
 		cl.RequirePAR, cl.FirstParty, cl.IssuerAlias = &st.RequirePAR, &st.FirstParty, &st.IssuerAlias
 		cl.RequireState = &st.RequireState
 		cl.MinimumACR = &st.MinimumACR
@@ -423,6 +424,9 @@ func clientDiff(have, want Client) string {
 	}
 	if w, h := want.IDTokenAlg, have.IDTokenAlg; w != nil && h != nil && *w != *h {
 		d = append(d, "id_token_signed_response_alg")
+	}
+	if w, h := want.AccessTokenAlg, have.AccessTokenAlg; w != nil && h != nil && *w != *h {
+		d = append(d, "access_token_signed_response_alg")
 	}
 	if w, h := want.RequirePAR, have.RequirePAR; w != nil && h != nil && *w != *h {
 		d = append(d, "require_pushed_authorization_requests")

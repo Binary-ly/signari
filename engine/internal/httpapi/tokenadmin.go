@@ -329,6 +329,15 @@ func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RFC 7662 §2.1: a hint is an optimisation, so one that misses still searches
+	// everything (specs/rfc7662.txt:204-212). Told it is a refresh token, the lookup
+	// comes first and no signature is checked against a string that is not a JWT.
+	if r.PostForm.Get("token_type_hint") == "refresh_token" {
+		if resp := s.introspectRefreshToken(ctx, c, raw); resp.Active {
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+	}
 	if resp := s.introspectAccessToken(ctx, c, raw); resp != nil {
 		writeJSON(w, http.StatusOK, resp)
 		return

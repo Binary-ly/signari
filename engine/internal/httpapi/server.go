@@ -496,9 +496,9 @@ func (s *Server) mux() *http.ServeMux {
 	// merged. The CORS exclusion at cors.go:39 is unaffected and must stay: this
 	// is a top-level navigation endpoint, not one script calls cross-origin.
 	mux.HandleFunc("POST "+oidc.PathAuthorize, s.handleAuthorize)
-	mux.HandleFunc("POST "+oidc.PathToken, s.handleToken)
+	mux.HandleFunc("POST "+oidc.PathToken, formCapped(s.handleToken))
 	mux.HandleFunc("POST /oauth2/par", s.handlePAR)
-	mux.HandleFunc("POST /oauth2/device_authorization", s.handleDeviceAuthorization)
+	mux.HandleFunc("POST /oauth2/device_authorization", formCapped(s.handleDeviceAuthorization))
 	mux.HandleFunc("POST /oauth2/register", s.handleRegister)
 	mux.HandleFunc("GET /oauth2/register/{clientID}", s.handleRegisteredClient)
 	mux.HandleFunc("PUT /oauth2/register/{clientID}", s.handleRegisteredClient)
@@ -518,11 +518,11 @@ func (s *Server) mux() *http.ServeMux {
 	// confirmation form submits when no valid id_token_hint was supplied.
 	mux.HandleFunc("GET "+oidc.PathEndSession, s.handleEndSession)
 	mux.HandleFunc("POST "+oidc.PathEndSession, s.handleEndSession)
-	mux.HandleFunc("POST "+oidc.PathRevocation, s.handleRevoke)
+	mux.HandleFunc("POST "+oidc.PathRevocation, formCapped(s.handleRevoke))
 	// draft-ietf-oauth-attestation-based-client-auth-10 §6.1. Unauthenticated by
 	// necessity: a client fetches a challenge in order to authenticate.
 	mux.HandleFunc("POST "+oidc.PathAttestationChallenge, s.handleAttestationChallenge)
-	mux.HandleFunc("POST "+oidc.PathIntrospection, s.handleIntrospect)
+	mux.HandleFunc("POST "+oidc.PathIntrospection, formCapped(s.handleIntrospect))
 	mux.HandleFunc("GET /login/with/{slug}", s.handleFederatedStart)
 	mux.HandleFunc("GET /login/callback/{slug}", s.handleFederatedCallback)
 	mux.HandleFunc("POST /login/callback/{slug}/backchannel-logout", s.handleFederatedBackchannelLogout)
@@ -605,7 +605,7 @@ func (s *Server) mux() *http.ServeMux {
 
 	// CIBA Core 1.0. The backchannel endpoint authenticates the client; the
 	// approval page authenticates the person.
-	mux.HandleFunc("POST /oauth2/backchannel", s.handleBackchannelAuth)
+	mux.HandleFunc("POST /oauth2/backchannel", formCapped(s.handleBackchannelAuth))
 	mux.HandleFunc("/account/requests", s.handleBackchannelRequests)
 
 	mux.HandleFunc("POST /access/v1/evaluation", s.handleAuthzEvaluate)

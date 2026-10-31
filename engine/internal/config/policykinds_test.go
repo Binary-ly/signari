@@ -10,13 +10,18 @@ import (
 // A prompt a pruned file leaves out is switched off and kept (6.19): its
 // answers are the record of who agreed to what, and deleting the prompt would
 // delete them.
+//
+// In an organisation of its own: a prune plans the removal of everything the
+// file leaves out, so in the shared one another test's client made the plan
+// destructive.
 func TestAPrunedPromptIsDisabledNotDeleted(t *testing.T) {
-	ctx, pool, org := applyFixture(t)
+	ctx, pool, _ := applyFixture(t)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	org := freshOrg(t, ctx, tx)
 	slug := fmt.Sprintf("terms-%d", time.Now().UnixNano())
 	apply := func(raw string, prune bool) *Plan {
 		t.Helper()

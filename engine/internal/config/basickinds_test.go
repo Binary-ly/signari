@@ -9,14 +9,16 @@ import (
 
 // What a file may not say about scopes, attributes and the sign-up rule
 // (6.19), refused before anything is written: by Validate where the file alone
-// shows it, by the plan where only the deployment does.
+// shows it, by the plan where only the deployment does. In an organisation of
+// its own, since it prunes.
 func TestTheNewKindsRefuseWhatTheDeploymentCannotHonour(t *testing.T) {
-	ctx, pool, org := applyFixture(t)
+	ctx, pool, _ := applyFixture(t)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	org := freshOrg(t, ctx, tx)
 
 	for name, raw := range map[string]string{
 		"a standard scope declared":  "scopes: [{name: email}]",

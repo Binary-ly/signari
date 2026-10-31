@@ -31,7 +31,7 @@ func summary(sql string) string {
 		}
 		text := strings.TrimSpace(strings.TrimPrefix(t, "--"))
 		switch {
-		case text == "" || strings.HasPrefix(text, "#") || "-- "+text == compatibleMarker || fileLine.MatchString(text):
+		case text == "" || strings.HasPrefix(text, "#") || strings.HasPrefix(text, "signari:") || fileLine.MatchString(text):
 			if len(para) > 0 {
 				return strings.Join(para, " ")
 			}
@@ -120,7 +120,8 @@ func TestASummaryIsTheHeadersFirstParagraph(t *testing.T) {
 		"-- 0195_x.sql\n--\n-- A handle of 1 to 64\n-- bytes.\n--\n-- More.\nALTER": "A handle of 1 to 64 bytes.",
 		"-- # Heading\n--\n-- The point.\nSELECT 1;":                                "The point.",
 		"\nCREATE TABLE x ();": "",
-		"-- signari:compatible-with-previous\n--\n-- Adds a column.\nALTER": "Adds a column.",
+		"-- signari:compatible-with-previous\n--\n-- Adds a column.\nALTER":                                           "Adds a column.",
+		"-- signari:no-transaction\n-- signari:compatible-with-previous\n--\n-- 0196_x.sql\n--\n-- An index.\nCREATE": "An index.",
 	} {
 		if got := summary(sql); got != want {
 			t.Errorf("summary(%q) = %q, want %q", sql, got, want)

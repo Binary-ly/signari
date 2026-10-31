@@ -255,16 +255,22 @@ func ListSCIMUsers(ctx context.Context, db *pgxpool.Pool, sourceID, userNameFilt
 		return nil, total, nil
 	}
 
+	// The offset is walked in the index and only the page reaches the join, as
+	// in ListSCIMGroups.
 	rows, err := db.Query(ctx, `
+		WITH page AS (
+			SELECT external_id FROM core.scim_source_links
+			WHERE source_id = $1::uuid
+			  AND ($2 = '' OR lower(user_name) = lower($2))
+			ORDER BY created_at, external_id
+			LIMIT $3 OFFSET $4)
 		SELECT l.resource_id::text, l.external_id, l.user_id::text, l.user_name,
 		       l.display_name, COALESCE(u.email,''),
 		       u.status = 'active', l.created_at, l.updated_at
-		FROM core.scim_source_links l
+		FROM page
+		JOIN core.scim_source_links l ON l.source_id = $1::uuid AND l.external_id = page.external_id
 		JOIN core.users u ON u.id = l.user_id
-		WHERE l.source_id = $1::uuid
-		  AND ($2 = '' OR lower(l.user_name) = lower($2))
-		ORDER BY l.created_at, l.external_id
-		LIMIT $3 OFFSET $4`, sourceID, userNameFilter, count, offset)
+		ORDER BY l.created_at, l.external_id`, sourceID, userNameFilter, count, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -287,6 +293,9 @@ func GetSCIMUser(ctx context.Context, db *pgxpool.Pool, sourceID, resourceID str
 	SCIMUser, error) {
 
 	var u SCIMUser
+	if !isResourceID(resourceID) {
+		return u, pgx.ErrNoRows
+	}
 	err := db.QueryRow(ctx, `
 		SELECT l.resource_id::text, l.external_id, l.user_id::text, l.user_name,
 		       l.display_name, COALESCE(u.email,''),
@@ -610,6 +619,9 @@ func scimLinkByResourceID(ctx context.Context, tx pgx.Tx, sourceID, resourceID s
 	scimLink, error) {
 
 	var l scimLink
+	if !isResourceID(resourceID) {
+		return l, pgx.ErrNoRows
+	}
 	err := tx.QueryRow(ctx, `
 		SELECT resource_id::text, external_id, user_id::text
 		FROM core.scim_source_links

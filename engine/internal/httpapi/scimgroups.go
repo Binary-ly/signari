@@ -17,6 +17,13 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
+// scimGroupBodyLimit holds a group of some thirty thousand as upstreams send
+// one, a reference and a display name beside each id, about 130 bytes a member.
+// A user's bodies keep the megabyte; a group is the one resource whose size is
+// the size of the company, and at a megabyte ten thousand members were refused
+// as not being JSON.
+const scimGroupBodyLimit = 4 << 20
+
 // handleSCIMGroups is the collection: list, filter and create.
 func (s *Server) handleSCIMGroups(w http.ResponseWriter, r *http.Request) {
 	src, err := s.scimAuth(r)
@@ -122,7 +129,7 @@ func (g *inboundGroup) memberIDs() []string {
 
 func decodeInboundGroup(w http.ResponseWriter, r *http.Request) (*inboundGroup, error) {
 	var probe map[string]json.RawMessage
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, scimGroupBodyLimit))
 	if err := dec.Decode(&probe); err != nil {
 		return nil, err
 	}
@@ -256,7 +263,7 @@ func (s *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request,
 
 	ctx := r.Context()
 	var req scim.PatchRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, scimGroupBodyLimit)).Decode(&req); err != nil {
 		writeSCIMError(w, http.StatusBadRequest, "body is not SCIM JSON")
 		return
 	}

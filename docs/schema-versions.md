@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0196 scim_page_indexes
+
+Compatible with the release before: its binary may still serve this schema.
+
+The indexes behind a page of SCIM users or groups (7.13). A list is ordered by when each was provisioned, and nothing served that order, so every page sorted the source's whole collection. SCIM pages by index, so the offset stays; with these it walks an index rather than a sort.
+
 ## 0195 user_handle_any_length
 
 Not compatible with the release before: stop it before migrating.
@@ -47,7 +53,7 @@ signari_maintenance may read which schema version is applied (6.08). Every other
 
 Compatible with the release before: its binary may still serve this schema.
 
-signari:no-transaction
+Finding a person by address or name across organisations (6.08). The Admin API's user list takes ?email= (exact) and ?q= (a prefix of the address or the user name), and the only indexes on either lead with org_id, so a deployment-wide token's lookup read every user. text_pattern_ops, because one index then serves both the equality and the prefix match.
 
 ## 0188 consent_lifetime
 
@@ -245,7 +251,7 @@ The resource servers an organisation's access tokens may be audienced to.
 
 Not compatible with the release before: stop it before migrating.
 
-signari:no-transaction
+refresh_token_families had only its primary key (3.30). Ending a session revokes its families by sid, a consent withdrawal and a client disconnect revoke a person's live families for one client, and each of those scanned the whole table: store/sessions.go and store/consent.go on every sign-out and withdrawal, and the cascade from core.sessions on every expired session the janitor deletes.
 
 ## 0155 directory_group_fetch
 

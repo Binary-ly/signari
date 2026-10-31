@@ -34,6 +34,8 @@ type scimFixture struct {
 	nameB  string
 	srcID  string
 	groups []string
+	// queries counts the statements the pool sends.
+	queries *statementCount
 }
 
 func newSCIMFixture(t *testing.T) *scimFixture {
@@ -52,6 +54,8 @@ func newSCIMFixture(t *testing.T) *scimFixture {
 		_, err := c.Exec(ctx, "SET ROLE signari_maintenance")
 		return err
 	}
+	queries := &statementCount{}
+	cfg.ConnConfig.Tracer = queries
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +78,7 @@ func newSCIMFixture(t *testing.T) *scimFixture {
 		t.Fatal(err)
 	}
 
-	f := &scimFixture{srv: srv, pool: pool}
+	f := &scimFixture{srv: srv, pool: pool, queries: queries}
 	if err := pool.QueryRow(ctx, `
 		WITH i AS (
 			INSERT INTO core.instances (issuer, display_name)

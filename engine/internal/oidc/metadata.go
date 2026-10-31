@@ -105,6 +105,12 @@ type Metadata struct {
 	ChallengeEndpoint             string   `json:"challenge_endpoint,omitempty"`
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported"`
 	ClaimsSupported               []string `json:"claims_supported"`
+	// ClaimsParameterSupported is true: the `claims` request parameter is read, as a
+	// request for what its scopes release (oauth.CompileClaims).
+	ClaimsParameterSupported bool `json:"claims_parameter_supported"`
+	// DisplayValuesSupported are what the one page there is suits. `display` is not
+	// read: every page is the same responsive page, so there is nothing to choose.
+	DisplayValuesSupported []string `json:"display_values_supported"`
 
 	// OIDC Core §3.1.2.1 defines ui_locales as a request parameter, and the
 	// Discovery spec defines this as the list a relying party may choose from.
@@ -385,6 +391,8 @@ func Build(cfg Config) (*Metadata, error) {
 			// added one, and the claims followed only with 2.15.
 			"preferred_username", "name", "given_name", "family_name",
 		},
+		ClaimsParameterSupported: true,
+		DisplayValuesSupported:   []string{"page", "popup", "touch"},
 
 		AuthorizationResponseIssParamSupported: true,
 

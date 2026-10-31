@@ -75,6 +75,7 @@ command or an environment variable exists in code and not on its page.
 | [key-rotation.md](key-rotation.md) | next → active → passive → retired |
 | [logout.md](logout.md) | Three mechanisms, because none reaches everything |
 | [accounts.md](accounts.md) | Several accounts in one browser, and `prompt=select_account` |
+| [oidc-parameters.md](oidc-parameters.md) | `login_hint`, `id_token_hint`, `display` and the `claims` parameter |
 | [new-device-sign-in.md](new-device-sign-in.md) | Telling a person their account was signed in to from somewhere new |
 | [logout-conformance.md](logout-conformance.md) | Proving a relying party actually honours it |
 | [cors.md](cors.md) | Which endpoints, and the one that must never have it |

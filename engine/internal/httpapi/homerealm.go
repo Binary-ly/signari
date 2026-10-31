@@ -35,6 +35,28 @@ func emailDomain(address string) string {
 	return address[at+1:]
 }
 
+// loginHintMax is the longest hint put in the sign-in box. Longer is no address or name
+// anybody has, and this comes from a URL.
+const loginHintMax = 256
+
+// loginHint is what the parked request suggests for the sign-in box. A suggestion and no
+// more: the person can type over it, and it proves nothing.
+func loginHint(authzQuery string) string {
+	q, err := url.ParseQuery(authzQuery)
+	if err != nil {
+		return ""
+	}
+	if dest, ok := parkedReturn(authzQuery); ok {
+		if u, err := url.Parse(dest); err == nil {
+			q = u.Query()
+		}
+	}
+	if hint := q.Get("login_hint"); len(hint) <= loginHintMax {
+		return hint
+	}
+	return ""
+}
+
 // homeRealm finds where an authorization request should sign in: the provider idp_hint
 // names, or the one that signs in login_hint's domain. A hint naming nothing here is
 // ignored, as a hint may be, and the sign-in page is shown. Only ever a provider of the

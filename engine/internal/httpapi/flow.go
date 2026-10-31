@@ -104,6 +104,35 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthzError(w, r, req, authzErr)
 		return
 	}
+
+	// `claims` is compiled into the ordinary parameters here, and the pages after
+	// this hand on the compiled request, so what is consented to is what is granted.
+	// A pushed request was compiled when it was pushed. wantSubject is who this
+	// request says it is for.
+	wantSubject, cerr := oauth.CompileClaims(query, c)
+	if cerr != nil {
+		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "invalid_request", Description: cerr.Error(),
+			Disposition: oauth.DispositionRedirect})
+		return
+	}
+	if query.Get("claims") != "" {
+		req = oauth.ParseAuthz(query)
+		if !wasPushed {
+			r = r.Clone(ctx)
+			r.URL.RawQuery = query.Encode()
+		}
+	}
+	if req.IDTokenHint != "" {
+		subject, audience, herr := tokens.VerifyIDTokenHint(s.cfg.Keys, s.cfg.Issuer, req.IDTokenHint)
+		if herr != nil || audience != c.ClientID || (wantSubject != "" && wantSubject != subject) {
+			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "invalid_request",
+				Description: "id_token_hint is not an ID token this server issued to this client for this person",
+				Disposition: oauth.DispositionRedirect})
+			return
+		}
+		wantSubject = subject
+	}
+
 	// Redirected like the shape check: the redirect_uri is validated by now.
 	if c != nil {
 		if err := s.checkResources(ctx, s.db, c, c.OrgID, req.Resources); err != nil {
@@ -210,6 +239,24 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// would satisfy every future multi-factor demand for as long as it lives.
 	// What the sign-in form says when a step-up sends a person to it.
 	loginMsg := ""
+
+	// A session of somebody other than the person the request names is no session
+	// for this request: not refused, since the right person may be there to sign in,
+	// and never answered with a code for the wrong one.
+	somebodyElse := false
+	if live && wantSubject != "" {
+		var holder string
+		if err := s.db.QueryRow(ctx, `SELECT user_id::text FROM core.sessions WHERE sid = $1`, sid).Scan(&holder); err != nil {
+			s.log.Error("reading whose session this is", "err", err)
+			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
+				Description: "could not verify session", Disposition: oauth.DispositionRedirect})
+			return
+		}
+		if holder != wantSubject {
+			live, somebodyElse = false, true
+			loginMsg = "This application is asking for somebody else. Sign in as them to go on."
+		}
+	}
 	if live {
 		var authTime time.Time
 		var amr []string
@@ -316,10 +363,12 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		// prompt=none means "do not interact". A client asking for silent
 		// authentication must get an error it can handle, not a login page.
 		if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
-			s.writeAuthzError(w, r, req,
-				&oauth.AuthzError{Code: "login_required",
-					Description: "no active session and prompt=none was requested",
-					Disposition: oauth.DispositionRedirect})
+			description := "no active session and prompt=none was requested"
+			if somebodyElse {
+				description = "the session here is not the person this request names, and prompt=none was requested"
+			}
+			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "login_required", Description: description,
+				Disposition: oauth.DispositionRedirect})
 			return
 		}
 		// Only with no session at all: one short of what is asked needs a factor

@@ -199,6 +199,12 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, aerr.Code, aerr.Description)
 		return
 	}
+	// As the authorization endpoint would, and here because the redeemed request is
+	// all it will see.
+	if _, cerr := oauth.CompileClaims(r.PostForm, c); cerr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", cerr.Error())
+		return
+	}
 	if err := s.checkResources(ctx, s.db, c, c.OrgID, req.Resources); err != nil {
 		if refusedTarget(err) {
 			writeError(w, http.StatusBadRequest, "invalid_target", err.Error())

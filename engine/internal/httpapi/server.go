@@ -989,7 +989,7 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 	}
 	data := map[string]any{
 		"Authz": authzQuery, "Error": msg, "CSRF": csrf, "CSRFField": csrfFormField,
-		"Reference": ref,
+		"Reference": ref, "LoginHint": loginHint(authzQuery),
 		// The external providers are read per render rather than cached at
 		// startup: adding one should take effect immediately, and an operator who
 		// has to restart the engine to see their new sign-in button will assume it

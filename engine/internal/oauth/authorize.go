@@ -47,6 +47,10 @@ type AuthzRequest struct {
 	// correctly-proofed key, which is the behaviour that existed before.
 	DPoPJKT string
 
+	// IDTokenHint is an ID token this server issued, naming who the client expects
+	// to be signed in.
+	IDTokenHint string
+
 	// RequestObject and RequestURI are RFC 9101 `request` / `request_uri`, kept
 	// only so they can be REFUSED.
 	//
@@ -83,6 +87,7 @@ func ParseAuthz(q url.Values) AuthzRequest {
 		ResponseMode:        q.Get("response_mode"),
 		Prompt:              q.Get("prompt"),
 		ACRValues:           q.Get("acr_values"),
+		IDTokenHint:         q.Get("id_token_hint"),
 		// A POINTER, so "absent" and "max_age=0" stay distinguishable. They mean
 		// opposite things: absent is "reuse whatever you have", zero is
 		// "authenticate right now".

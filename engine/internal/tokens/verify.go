@@ -116,6 +116,14 @@ func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 // make logout harder precisely when it matters. The signature and issuer still
 // must check out, so the hint cannot be forged.
 func VerifyIDTokenAudience(set *keys.Set, issuer, raw string) (string, error) {
+	_, audience, err := VerifyIDTokenHint(set, issuer, raw)
+	return audience, err
+}
+
+// VerifyIDTokenHint verifies an `id_token_hint` and returns who it names and whom it was
+// for. Past its expiry is no matter, for the reason above: it is a statement of who, and
+// an ID token long expired is the usual one a client has to hand.
+func VerifyIDTokenHint(set *keys.Set, issuer, raw string) (subject, audience string, err error) {
 	// Through the SHARED verifier, which is the whole point of there being one.
 	//
 	// This function used to hand-roll its own copy of the header hardening, and
@@ -135,16 +143,16 @@ func VerifyIDTokenAudience(set *keys.Set, issuer, raw string) (string, error) {
 	// the tests went through code that did not use it.
 	payload, err := verifiedPayload(set, raw, TypIDToken)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var c IDTokenClaims
 	if err := json.Unmarshal(payload, &c); err != nil {
-		return "", fmt.Errorf("%w: malformed claims", ErrInvalidToken)
+		return "", "", fmt.Errorf("%w: malformed claims", ErrInvalidToken)
 	}
 	if c.Issuer != issuer {
-		return "", fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
+		return "", "", fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
 	}
-	return c.Audience, nil
+	return c.Subject, c.Audience, nil
 }
 
 // VerifyTyped verifies a token this server issued for its own internal use and

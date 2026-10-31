@@ -76,8 +76,19 @@ func TestAnExactAddressLookupUsesAnIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	sql, args := userListQuery("", nil, 51, "somebody@example.test", "", "", nil)
+	// Whether the index can serve it, not whether it pays to: a table another
+	// package has just emptied is rightly read whole, and row security is what
+	// would really stop an index being used, which this still sees.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatal(err)
+	}
 	var plan []byte
-	if err := s.db.QueryRow(ctx, "EXPLAIN (FORMAT JSON) "+sql, args...).Scan(&plan); err != nil {
+	if err := tx.QueryRow(ctx, "EXPLAIN (FORMAT JSON) "+sql, args...).Scan(&plan); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(plan), "users_email_fold_idx") {

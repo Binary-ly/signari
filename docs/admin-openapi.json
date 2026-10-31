@@ -16513,7 +16513,7 @@
                 }
               }
             },
-            "description": "The token lacks organizations:write, or is scoped to another organisation."
+            "description": "The token lacks relations:write, or is scoped to another organisation."
           },
           "412": {
             "content": {
@@ -16529,11 +16529,120 @@
         "security": [
           {
             "bearerAuth": [
-              "organizations:write"
+              "relations:write"
             ]
           }
         ],
         "summary": "Revoke a relation named by subject, relation and object."
+      },
+      "get": {
+        "operationId": "get_organizations_orgID_relations",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "next_cursor": {
+                      "type": "string"
+                    },
+                    "org_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "relations": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "expires_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "object": {
+                            "type": "string"
+                          },
+                          "relation": {
+                            "type": "string"
+                          },
+                          "subject": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "subject",
+                          "relation",
+                          "object",
+                          "expires_at"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "org_id",
+                    "relations",
+                    "next_cursor"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks relations:read, or is scoped to another organisation."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "relations:read"
+            ]
+          }
+        ],
+        "summary": "The live relations, paged by id, by subject, object or relation when given."
       },
       "put": {
         "operationId": "put_organizations_orgID_relations",
@@ -16651,7 +16760,7 @@
                 }
               }
             },
-            "description": "The token lacks organizations:write, or is scoped to another organisation."
+            "description": "The token lacks relations:write, or is scoped to another organisation."
           },
           "412": {
             "content": {
@@ -16667,7 +16776,7 @@
         "security": [
           {
             "bearerAuth": [
-              "organizations:write"
+              "relations:write"
             ]
           }
         ],

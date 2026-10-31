@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,6 +35,13 @@ const (
 	// decision from being able to reset a password.
 	ScopeGroupsRead  = "groups:read"
 	ScopeGroupsWrite = "groups:write"
+	// Relations get a pair of their own for the application that keeps them
+	// (11.01): something enforcing access writes who owns what as people do
+	// things, and has no business with the organisation's settings, which is
+	// what organizations:write was the only way to reach them. It still reaches
+	// them, so no token issued before this lost anything.
+	ScopeRelationsRead  = "relations:read"
+	ScopeRelationsWrite = "relations:write"
 	// ScopeSubjectsErase is its own scope rather than part of users:write.
 	//
 	// A token that may rename a user should not thereby be able to destroy one
@@ -78,7 +86,7 @@ const (
 // KnownScopes is what `admin-token create` will accept.
 var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
 	ScopeSubjectsErase, ScopeSubjectsExport, ScopeUsersRead, ScopeClientsRead,
-	ScopeGroupsRead, ScopeGroupsWrite, ScopeOrganizationsWrite,
+	ScopeGroupsRead, ScopeGroupsWrite, ScopeRelationsRead, ScopeRelationsWrite, ScopeOrganizationsWrite,
 	ScopeAuditRead, ScopePrivilegedUsersWrite, ScopeTokensRead, ScopeTokensWrite}
 
 // ScopeTokensWrite mints, rotates and revokes admin tokens over the API, and
@@ -95,11 +103,16 @@ const (
 // be granted would mean every existing write-scoped token silently lost the
 // ability to read the thing it edits the moment read endpoints existed. The
 // implication runs one way only: a read scope never grants a write.
+//
+// It is followed to the end, so organizations:write satisfies relations:read
+// through relations:write.
 var impliedBy = map[string]string{
-	ScopeUsersRead:   ScopeUsersWrite,
-	ScopeClientsRead: ScopeClientsWrite,
-	ScopeGroupsRead:  ScopeGroupsWrite,
-	ScopeTokensRead:  ScopeTokensWrite,
+	ScopeUsersRead:      ScopeUsersWrite,
+	ScopeClientsRead:    ScopeClientsWrite,
+	ScopeGroupsRead:     ScopeGroupsWrite,
+	ScopeRelationsRead:  ScopeRelationsWrite,
+	ScopeRelationsWrite: ScopeOrganizationsWrite,
+	ScopeTokensRead:     ScopeTokensWrite,
 }
 
 // Principal is whoever is making an admin request.
@@ -192,12 +205,11 @@ func (p *Principal) mayActOnObject(kind, id string, allowed []string) error {
 // adding read endpoints would have quietly broken every token already issued with
 // `clients:write`, which would have been an upgrade that removed access.
 func (p *Principal) Can(scope string) bool {
-	implied := impliedBy[scope]
-	for _, s := range p.Scopes {
-		if s == scope || s == ScopeAll {
-			return true
-		}
-		if implied != "" && s == implied {
+	if slices.Contains(p.Scopes, ScopeAll) {
+		return true
+	}
+	for ; scope != ""; scope = impliedBy[scope] {
+		if slices.Contains(p.Scopes, scope) {
 			return true
 		}
 	}

@@ -725,6 +725,10 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/organizations/{orgID}/authorization-model": {http.StatusOK, typeOf[putModelRequest](), object(
 		[]string{"org_id", "types", "actions", "tests_passed", "config_version"}, withVersion(map[string]jsonSchema{
 			"org_id": uuidStr(), "types": integer(), "actions": integer(), "tests_passed": integer()}))},
+	"GET /admin/organizations/{orgID}/relations": {http.StatusOK, nil, object([]string{"org_id", "relations", "next_cursor"},
+		map[string]jsonSchema{"org_id": uuidStr(), "next_cursor": str(), "relations": arrayOf(object(
+			[]string{"subject", "relation", "object", "expires_at"}, map[string]jsonSchema{"subject": str(),
+				"relation": str(), "object": str(), "expires_at": nullable(dateTime())}))})},
 	"PUT /admin/organizations/{orgID}/relations":    {http.StatusOK, typeOf[relationRequest](), relationSchema},
 	"DELETE /admin/organizations/{orgID}/relations": {http.StatusOK, nil, relationSchema},
 	"POST /admin/organizations/{orgID}/config": {http.StatusOK, typeOf[applyConfigRequest](), object(

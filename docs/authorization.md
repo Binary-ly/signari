@@ -227,9 +227,24 @@ change it, the grant moves to their id, so the access stays with them and whoeve
 takes the old name up next starts with nothing. Deleting a person, or a group,
 takes their grants with them.
 
-The Admin API stores the model and grants and revokes relations the same way,
-under `/admin/organizations/{orgID}/authorization-model` and
+The Admin API stores the model and grants, revokes and lists relations the same
+way, under `/admin/organizations/{orgID}/authorization-model` and
 `/admin/organizations/{orgID}/relations`; see [admin-api.md](admin-api.md).
+
+An application that keeps its own relations, writing an owner when somebody creates
+a document, needs a token and nothing else from an operator:
+
+```sh
+signari admin-token create -name documents -org <uuid> -scopes relations:write
+
+curl -X PUT https://auth.example.com/admin/organizations/<uuid>/relations \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"subject": "user:alice@example.com", "relation": "owner", "object": "document:42"}'
+```
+
+The next decision sees it. `relations:write` reaches nothing else about the
+organisation, and several writes that must stand or fall together go through
+[`POST /admin/batch`](admin-api.md).
 
 A relation is `(subject, relation, object)`. Roles are the special case where the
 object is the whole application, and they collapse the moment somebody asks "who

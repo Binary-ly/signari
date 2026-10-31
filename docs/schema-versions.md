@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0226 relations_page
+
+Compatible with the release before: its binary may still serve this schema.
+
+A page of an organisation's relations (11.01). An application that keeps its own relations reads them back through the Admin API, by id, so a page holds still while it goes on writing. Both existing indexes lead with a subject or an object, so a page with neither would have walked the primary key past every other organisation's rows. Built concurrently, outside a transaction, as 0196's were, so decisions go on being answered.
+
 ## 0225 outpost_version
 
 Compatible with the release before: its binary may still serve this schema.

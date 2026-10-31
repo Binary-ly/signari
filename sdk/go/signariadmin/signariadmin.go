@@ -1206,6 +1206,21 @@ type GetOrganizationsOrgIDRegistrationTokensResponseRegistrationTokensItem struc
 	RevokedAt *string `json:"revoked_at"`
 }
 
+// GetOrganizationsOrgIDRelationsResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDRelationsResponse struct {
+	NextCursor string                                                `json:"next_cursor"`
+	OrgID      string                                                `json:"org_id"`
+	Relations  []GetOrganizationsOrgIDRelationsResponseRelationsItem `json:"relations"`
+}
+
+// GetOrganizationsOrgIDRelationsResponseRelationsItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDRelationsResponseRelationsItem struct {
+	ExpiresAt *string `json:"expires_at"`
+	Object    string  `json:"object"`
+	Relation  string  `json:"relation"`
+	Subject   string  `json:"subject"`
+}
+
 // GetOrganizationsOrgIDResourceServersResponseItem is a JSON object of the Admin API.
 type GetOrganizationsOrgIDResourceServersResponseItem struct {
 	CreatedAt string `json:"created_at,omitempty"`
@@ -3579,7 +3594,7 @@ func (c *Client) DeleteOrganizationsOrgIDRegistrationTokensTokenID(ctx context.C
 }
 
 // DeleteOrganizationsOrgIDRelations is DELETE /admin/organizations/{orgID}/relations: Revoke a
-// relation named by subject, relation and object. Needs organizations:write.
+// relation named by subject, relation and object. Needs relations:write.
 func (c *Client) DeleteOrganizationsOrgIDRelations(ctx context.Context, orgID string, opts ...Option) (*DeleteOrganizationsOrgIDRelationsResponse, int64, error) {
 	var out DeleteOrganizationsOrgIDRelationsResponse
 	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/relations", nil, &out, opts)
@@ -4255,6 +4270,17 @@ func (c *Client) GetOrganizationsOrgIDRegistration(ctx context.Context, orgID st
 func (c *Client) GetOrganizationsOrgIDRegistrationTokens(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDRegistrationTokensResponse, int64, error) {
 	var out GetOrganizationsOrgIDRegistrationTokensResponse
 	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/registration-tokens", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetOrganizationsOrgIDRelations is GET /admin/organizations/{orgID}/relations: The live
+// relations, paged by id, by subject, object or relation when given. Needs relations:read.
+func (c *Client) GetOrganizationsOrgIDRelations(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDRelationsResponse, int64, error) {
+	var out GetOrganizationsOrgIDRelationsResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/relations", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -5499,7 +5525,7 @@ func (c *Client) PutOrganizationsOrgIDRegistration(ctx context.Context, orgID st
 }
 
 // PutOrganizationsOrgIDRelations is PUT /admin/organizations/{orgID}/relations: Grant a subject a
-// relation on an object. Needs organizations:write.
+// relation on an object. Needs relations:write.
 func (c *Client) PutOrganizationsOrgIDRelations(ctx context.Context, orgID string, body PutOrganizationsOrgIDRelationsRequest, opts ...Option) (*PutOrganizationsOrgIDRelationsResponse, int64, error) {
 	var out PutOrganizationsOrgIDRelationsResponse
 	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/relations", body, &out, opts)

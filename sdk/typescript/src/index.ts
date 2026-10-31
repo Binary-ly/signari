@@ -235,7 +235,7 @@ export class SignariAdmin {
   }
 
   // DELETE /admin/organizations/{orgID}/relations: Revoke a relation named by subject, relation
-  // and object. Needs organizations:write.
+  // and object. Needs relations:write.
   deleteOrganizationsOrgIDRelations(orgID: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDRelationsResponse>> {
     return this.call<DeleteOrganizationsOrgIDRelationsResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/relations`, undefined, opts)
   }
@@ -591,6 +591,12 @@ export class SignariAdmin {
   // tokens, never their secrets. Needs config:read.
   getOrganizationsOrgIDRegistrationTokens(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDRegistrationTokensResponse>> {
     return this.call<GetOrganizationsOrgIDRegistrationTokensResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/registration-tokens`, undefined, opts)
+  }
+
+  // GET /admin/organizations/{orgID}/relations: The live relations, paged by id, by subject,
+  // object or relation when given. Needs relations:read.
+  getOrganizationsOrgIDRelations(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDRelationsResponse>> {
+    return this.call<GetOrganizationsOrgIDRelationsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/relations`, undefined, opts)
   }
 
   // GET /admin/organizations/{orgID}/resource-servers: The RFC 8707 resources this organisation's
@@ -1245,7 +1251,7 @@ export class SignariAdmin {
   }
 
   // PUT /admin/organizations/{orgID}/relations: Grant a subject a relation on an object. Needs
-  // organizations:write.
+  // relations:write.
   putOrganizationsOrgIDRelations(orgID: string, body: PutOrganizationsOrgIDRelationsRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDRelationsResponse>> {
     return this.call<PutOrganizationsOrgIDRelationsResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/relations`, body, opts)
   }
@@ -2350,6 +2356,21 @@ export interface GetOrganizationsOrgIDRegistrationTokensResponseRegistrationToke
   name: string
   remaining: number | null
   revoked_at: string | null
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDRelationsResponse {
+  next_cursor: string
+  org_id: string
+  relations: GetOrganizationsOrgIDRelationsResponseRelationsItem[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDRelationsResponseRelationsItem {
+  expires_at: string | null
+  object: string
+  relation: string
+  subject: string
 }
 
 /** A JSON object of the Admin API. */

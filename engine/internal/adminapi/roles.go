@@ -37,7 +37,7 @@ var Roles = map[string][]string{
 	// Applications, and the organisation's configuration they are read with.
 	"app-manager": {ScopeClientsWrite, ScopeConfigRead},
 	// Every read, and the trail.
-	"auditor": {ScopeUsersRead, ScopeClientsRead, ScopeGroupsRead, ScopeConfigRead,
+	"auditor": {ScopeUsersRead, ScopeClientsRead, ScopeGroupsRead, ScopeRelationsRead, ScopeConfigRead,
 		ScopeAuditRead, ScopeTokensRead},
 }
 

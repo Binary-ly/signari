@@ -305,6 +305,7 @@ var summaries = map[string]string{
 	"GET /admin/organizations/{orgID}/authorization-model":   "The organisation's authorization model as written; none permits nothing.",
 	"PUT /admin/organizations/{orgID}/authorization-model":   "Store a model once its own tests pass.",
 	"GET /admin/organizations/{orgID}/authorization/explain": "How a question would come out on relations, and whose grant answers it.",
+	"GET /admin/organizations/{orgID}/relations":             "The live relations, paged by id, by subject, object or relation when given.",
 	"PUT /admin/organizations/{orgID}/relations":             "Grant a subject a relation on an object.",
 	"DELETE /admin/organizations/{orgID}/relations":          "Revoke a relation named by subject, relation and object.",
 

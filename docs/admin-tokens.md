@@ -42,6 +42,8 @@ wholesale, which is exactly the situation being replaced.
 | `organizations:write` | `POST /admin/organizations`. Useless to an organisation-scoped token — see below |
 | `audit:read` | `GET /admin/audit-events`. **Not implied by any write scope** — see below |
 | `privileged-users:write` | Needed as well as the route's own scope to write on a user who may impersonate, or on a group that confers it (including its membership). See [admin-api.md](admin-api.md#groups) |
+| `relations:read` | `GET /admin/organizations/{orgID}/relations` |
+| `relations:write` | Grant and revoke relations, and nothing else about the organisation, for an application that keeps its own. `organizations:write` satisfies both |
 | `tokens:read` | `GET /admin/tokens` |
 | `tokens:write` | `POST /admin/tokens`, rotate and revoke, each only for a token no wider than the caller — see below |
 

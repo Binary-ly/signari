@@ -54,7 +54,7 @@ refused with `412` when the configuration moved since the version it names.
 | [radius-clients](#radius-clients) | 3 |
 | [registration](#registration) | 3 |
 | [registration-tokens](#registration-tokens) | 3 |
-| [relations](#relations) | 2 |
+| [relations](#relations) | 3 |
 | [resource-servers](#resource-servers) | 3 |
 | [role-bindings](#role-bindings) | 3 |
 | [saml-providers](#saml-providers) | 7 |
@@ -2740,7 +2740,7 @@ Answers:
 
 ### `DELETE /admin/organizations/{orgID}/relations`
 
-Revoke a relation named by subject, relation and object. Needs organizations:write.
+Revoke a relation named by subject, relation and object. Needs relations:write.
 
 Go `DeleteOrganizationsOrgIDRelations`, TypeScript `deleteOrganizationsOrgIDRelations`.
 
@@ -2755,9 +2755,23 @@ Answers:
 | `relation` | string | always |
 | `subject` | string | always |
 
+### `GET /admin/organizations/{orgID}/relations`
+
+The live relations, paged by id, by subject, object or relation when given. Needs relations:read.
+
+Go `GetOrganizationsOrgIDRelations`, TypeScript `getOrganizationsOrgIDRelations`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `next_cursor` | string | always |
+| `org_id` | string | always |
+| `relations` | list of object | always |
+
 ### `PUT /admin/organizations/{orgID}/relations`
 
-Grant a subject a relation on an object. Needs organizations:write.
+Grant a subject a relation on an object. Needs relations:write.
 
 Go `PutOrganizationsOrgIDRelations`, TypeScript `putOrganizationsOrgIDRelations`.
 

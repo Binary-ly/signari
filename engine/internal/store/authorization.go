@@ -252,6 +252,52 @@ func ListRelations(ctx context.Context, q Querier, orgID, subjectType, subjectID
 	return out, false, nil
 }
 
+// RelationFilter narrows a page of relations; an empty member names no filter.
+type RelationFilter struct {
+	SubjectType, SubjectID string
+	Relation               string
+	ObjectType, ObjectID   string
+}
+
+// PageRelations reads the live relations after an id, in order of id, and answers
+// the id to carry on from, or 0 at the end.
+func PageRelations(ctx context.Context, q Querier, orgID string, f RelationFilter, after int64, limit int) (
+	[]RelationRow, int64, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id, subject_type, subject_id, relation, object_type, object_id, expires_at
+		  FROM core.relations
+		 WHERE org_id = $1::uuid AND id > $2
+		   AND (expires_at IS NULL OR expires_at > now())
+		   AND ($3 = '' OR (subject_type = $3 AND subject_id = $4))
+		   AND ($5 = '' OR (object_type = $5 AND object_id = $6))
+		   AND ($7 = '' OR relation = $7)
+		 ORDER BY id
+		 LIMIT $8`, orgID, after, f.SubjectType, f.SubjectID, f.ObjectType, f.ObjectID, f.Relation, limit+1)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]RelationRow, 0, limit)
+	var last, next int64
+	for rows.Next() {
+		var id int64
+		var st, sid, relation, ot, oid string
+		var expires *time.Time
+		if err := rows.Scan(&id, &st, &sid, &relation, &ot, &oid, &expires); err != nil {
+			return nil, 0, err
+		}
+		if len(out) == limit {
+			next = last
+			break
+		}
+		last = id
+		out = append(out, RelationRow{Subject: authzen.Ref(st, sid), Relation: relation,
+			Object: authzen.Ref(ot, oid), ExpiresAt: expires})
+	}
+	rows.Close()
+	return out, next, rows.Err()
+}
+
 // ObjectsWith returns the objects of a type on which the subject holds any of
 // these relations. For the resource-search endpoint.
 func ObjectsWith(ctx context.Context, q Querier, orgID, subjectType, subjectID string,

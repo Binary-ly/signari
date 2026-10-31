@@ -377,8 +377,9 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/authorization-model", ScopeConfigRead, s.getAuthzModel)
 	route("GET /admin/organizations/{orgID}/authorization/explain", ScopeConfigRead, s.explainAuthz)
 	route("PUT /admin/organizations/{orgID}/authorization-model", ScopeOrganizationsWrite, s.putAuthzModel)
-	route("PUT /admin/organizations/{orgID}/relations", ScopeOrganizationsWrite, s.grantRelation)
-	route("DELETE /admin/organizations/{orgID}/relations", ScopeOrganizationsWrite, s.revokeRelation)
+	route("GET /admin/organizations/{orgID}/relations", ScopeRelationsRead, s.listRelations)
+	route("PUT /admin/organizations/{orgID}/relations", ScopeRelationsWrite, s.grantRelation)
+	route("DELETE /admin/organizations/{orgID}/relations", ScopeRelationsWrite, s.revokeRelation)
 	// Configuration as code, `signari plan` and `signari apply`
 	// (configapply.go). Each change also needs the scope its own route takes.
 	route("POST /admin/organizations/{orgID}/config", ScopeOrganizationsWrite, s.applyConfig)

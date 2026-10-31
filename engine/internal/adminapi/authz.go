@@ -6,6 +6,7 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -169,6 +170,72 @@ func (s *Server) grantRelation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.changeRelation(w, r, req, true)
+}
+
+// relationView is one relation in a list.
+type relationView struct {
+	Subject   string     `json:"subject"`
+	Relation  string     `json:"relation"`
+	Object    string     `json:"object"`
+	ExpiresAt *time.Time `json:"expires_at"`
+}
+
+// listRelations pages through the live relations, by subject, object or relation
+// when they are given. By id, so the next page does not depend on what has been
+// written since: a person's rows are never skipped or shown twice while the
+// application reading them goes on granting.
+func (s *Server) listRelations(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.PathValue("orgID")
+	if err := requireOrg(ctx, orgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	if narrowedTokenRefused(w, r, "read who may do what to everything in the organisation") {
+		return
+	}
+	q := r.URL.Query()
+	filter := store.RelationFilter{Relation: q.Get("relation")}
+	ref := func(raw string, typ, id *string) bool {
+		if raw == "" {
+			return true
+		}
+		var ok bool
+		*typ, *id, ok = authzen.ParseRef(raw)
+		return ok
+	}
+	if !ref(q.Get("subject"), &filter.SubjectType, &filter.SubjectID) ||
+		!ref(q.Get("object"), &filter.ObjectType, &filter.ObjectID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_relation",
+			"detail": "give subject and object as type:id"})
+		return
+	}
+	limit, cursor := pageParams(r)
+	var after int64
+	if cursor != "" {
+		var err error
+		if after, err = strconv.ParseInt(cursor, 10, 64); err != nil || after <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_cursor",
+				"detail": "give back the next_cursor of the page before"})
+			return
+		}
+	}
+	rows, next, err := store.PageRelations(ctx, s.db, orgID, filter, after, limit)
+	if err != nil {
+		s.log.Error("listing relations", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	out := make([]relationView, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, relationView{Subject: row.Subject, Relation: row.Relation, Object: row.Object,
+			ExpiresAt: row.ExpiresAt})
+	}
+	nextCursor := ""
+	if next != 0 {
+		nextCursor = strconv.FormatInt(next, 10)
+	}
+	s.writeList(w, r, map[string]any{"org_id": orgID, "relations": out, "next_cursor": nextCursor})
 }
 
 // revokeRelation takes the tuple from the query, as a DELETE carries no body.

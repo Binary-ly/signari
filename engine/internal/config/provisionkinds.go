@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -40,8 +41,9 @@ type SCIMTarget struct {
 	// Each left as it is when absent.
 	DryRun  *bool `yaml:"dry_run,omitempty"`
 	Enabled *bool `yaml:"enabled,omitempty"`
-	// ScopeGroup limits the target to one group's members; "" is everybody.
-	ScopeGroup *string `yaml:"scope_group,omitempty"`
+	// ScopeGroups limits the target to these groups' members. Left as it is when
+	// absent, and [] is everybody, which is why it is written even when empty.
+	ScopeGroups []string `yaml:"scope_groups"`
 	// RecreateMissing has a sync give somebody a new account when the one
 	// linked to them is gone from the target.
 	RecreateMissing *bool `yaml:"recreate_missing,omitempty"`
@@ -176,9 +178,7 @@ func (scimSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, p
 	var scopes []string
 	for _, w := range f.SCIMTargets {
 		at := "scim_targets[" + w.Slug + "]"
-		if w.ScopeGroup != nil && *w.ScopeGroup != "" {
-			scopes = append(scopes, *w.ScopeGroup)
-		}
+		scopes = append(scopes, w.ScopeGroups...)
 		h, exists := held[w.Slug]
 		r, where := w.secretRef()
 		switch {
@@ -228,7 +228,7 @@ func (scimSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, p
 			c.note(h.TargetDomain != w.TargetDomain && h.Kind == "google", "target_domain")
 			c.note(w.DryRun != nil && h.DryRun != *w.DryRun, "dry_run")
 			c.note(w.Enabled != nil && h.Enabled != *w.Enabled, "enabled")
-			c.note(w.ScopeGroup != nil && h.ScopeGroup != *w.ScopeGroup, "scope_group")
+			c.note(w.ScopeGroups != nil && !sameSet(h.ScopeGroups, w.ScopeGroups), "scope_groups")
 			c.note(w.RecreateMissing != nil && h.RecreateMissing != *w.RecreateMissing, "recreate_missing")
 			c.note(h.Kind == "scim" && w.oauth() != heldOAuth(h), "oauth")
 			c.note(w.Compatibility != nil && !sameSet(h.Compatibility, w.Compatibility), "compatibility")
@@ -319,8 +319,8 @@ func (scimSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, 
 				return err
 			}
 		}
-		if w.ScopeGroup != nil {
-			if err := store.SetSCIMTargetScope(ctx, tx, orgID, w.Slug, *w.ScopeGroup); err != nil {
+		if w.ScopeGroups != nil {
+			if err := store.SetSCIMTargetScope(ctx, tx, orgID, w.Slug, w.ScopeGroups); err != nil {
 				return err
 			}
 		}
@@ -337,10 +337,12 @@ func (scimSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, 
 
 // scopedTo refuses deleting a group a provisioning target is left limited to,
 // as the schema does at the delete: the target would provision everybody.
-// Given another scope_group in the same file, the target moves before the
+// Given scope_groups without it in the same file, the target moves before the
 // group goes, since deletions are made last.
 func scopedTo(ctx context.Context, tx pgx.Tx, orgID string, f *File, group string) error {
-	rows, err := tx.Query(ctx, `SELECT t.slug FROM core.scim_targets t JOIN core.groups g ON g.id = t.scope_group_id
+	rows, err := tx.Query(ctx, `SELECT t.slug FROM core.scim_targets t
+		JOIN core.scim_target_scope_groups s ON s.target_id = t.id
+		JOIN core.groups g ON g.id = s.group_id
 		WHERE t.org_id = $1::uuid AND g.name = $2 ORDER BY t.slug`, orgID, group)
 	if err != nil {
 		return err
@@ -351,11 +353,11 @@ func scopedTo(ctx context.Context, tx pgx.Tx, orgID string, f *File, group strin
 	}
 	inFile := keyBy(f.SCIMTargets, func(w SCIMTarget) string { return w.Slug })
 	for _, slug := range slugs {
-		if w, ok := inFile[slug]; ok && w.ScopeGroup != nil && *w.ScopeGroup != group {
+		if w, ok := inFile[slug]; ok && w.ScopeGroups != nil && !slices.Contains(w.ScopeGroups, group) {
 			continue
 		}
-		return refuse("group %s: provisioning target %s is limited to it, and deleting the group would widen "+
-			"the target to everybody; give the target another scope_group in the same file, \"\" for everybody",
+		return refuse("group %s: provisioning target %s is limited to it, and deleting the group could widen "+
+			"the target to everybody; give the target scope_groups without it in the same file, [] for everybody",
 			group, slug)
 	}
 	return nil
@@ -374,9 +376,9 @@ func (scimSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File)
 		return err
 	}
 	for _, h := range have {
-		dryRun, enabled, scope, recreate := h.DryRun, h.Enabled, h.ScopeGroup, h.RecreateMissing
+		dryRun, enabled, recreate := h.DryRun, h.Enabled, h.RecreateMissing
 		w := SCIMTarget{Slug: h.Slug, Kind: h.Kind, Name: h.Name, OnDeactivate: h.OnDeactivate, DryRun: &dryRun,
-			Enabled: &enabled, ScopeGroup: &scope, RecreateMissing: &recreate, OAuthTokenURL: h.OAuthTokenURL,
+			Enabled: &enabled, ScopeGroups: h.ScopeGroups, RecreateMissing: &recreate, OAuthTokenURL: h.OAuthTokenURL,
 			OAuthClientID: h.OAuthClientID, OAuthScope: h.OAuthScope, Compatibility: h.Compatibility}
 		switch h.Kind {
 		case "scim":

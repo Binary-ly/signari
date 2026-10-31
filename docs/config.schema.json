@@ -936,8 +936,11 @@
         "recreate_missing": {
           "type": "boolean"
         },
-        "scope_group": {
-          "type": "string"
+        "scope_groups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "slug": {
           "type": "string"

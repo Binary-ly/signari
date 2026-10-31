@@ -35,7 +35,7 @@ type scimTargetView struct {
 	Kind            string    `json:"kind"`
 	BaseURL         string    `json:"base_url"`
 	OnDeactivate    string    `json:"on_deactivate"`
-	ScopeGroup      string    `json:"scope_group"`
+	ScopeGroups     []string  `json:"scope_groups"`
 	DryRun          bool      `json:"dry_run"`
 	Enabled         bool      `json:"enabled"`
 	RecreateMissing bool      `json:"recreate_missing"`
@@ -75,11 +75,11 @@ type addSCIMTargetRequest struct {
 }
 
 // patchSCIMTargetRequest changes what is given: enabled, recreate_missing,
-// compatibility, and scope_group, the group whose members alone it provisions
-// ("" for everybody).
+// compatibility, and scope_groups, the groups whose members alone it provisions
+// ([] for everybody).
 type patchSCIMTargetRequest struct {
 	Enabled         *bool    `json:"enabled"`
-	ScopeGroup      *string  `json:"scope_group"`
+	ScopeGroups     []string `json:"scope_groups"`
 	RecreateMissing *bool    `json:"recreate_missing"`
 	Compatibility   []string `json:"compatibility"`
 }
@@ -106,7 +106,7 @@ func (s *Server) listSCIMTargets(w http.ResponseWriter, r *http.Request) {
 	out := make([]scimTargetView, 0, len(got))
 	for _, t := range got {
 		out = append(out, scimTargetView{ID: t.ID, Slug: t.Slug, Name: t.Name, Kind: t.Kind, BaseURL: t.BaseURL,
-			OnDeactivate: t.OnDeactivate, ScopeGroup: t.ScopeGroup, DryRun: t.DryRun, Enabled: t.Enabled,
+			OnDeactivate: t.OnDeactivate, ScopeGroups: t.ScopeGroups, DryRun: t.DryRun, Enabled: t.Enabled,
 			RecreateMissing: t.RecreateMissing, OAuthTokenURL: t.OAuthTokenURL, OAuthClientID: t.OAuthClientID,
 			OAuthScope: t.OAuthScope, Compatibility: t.Compatibility, Linked: t.Linked,
 			ShouldBeGone: t.ShouldBeGone, CreatedAt: t.CreatedAt})
@@ -183,9 +183,9 @@ func (s *Server) patchSCIMTarget(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrict(w, r, &req) {
 		return
 	}
-	if req.Enabled == nil && req.ScopeGroup == nil && req.RecreateMissing == nil && req.Compatibility == nil {
+	if req.Enabled == nil && req.ScopeGroups == nil && req.RecreateMissing == nil && req.Compatibility == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change",
-			"detail": "give enabled, scope_group, recreate_missing or compatibility"})
+			"detail": "give enabled, scope_groups, recreate_missing or compatibility"})
 		return
 	}
 	if err := scim.CheckCompatibility(req.Compatibility); err != nil {
@@ -211,12 +211,11 @@ func (s *Server) patchSCIMTarget(w http.ResponseWriter, r *http.Request) {
 			}
 			out["enabled"], detail["enabled"] = *req.Enabled, *req.Enabled
 		}
-		if req.ScopeGroup != nil {
-			group := strings.TrimSpace(*req.ScopeGroup)
-			if err := store.SetSCIMTargetScope(ctx, tx, orgID, slug, group); err != nil {
+		if req.ScopeGroups != nil {
+			if err := store.SetSCIMTargetScope(ctx, tx, orgID, slug, req.ScopeGroups); err != nil {
 				return err
 			}
-			out["scope_group"], detail["scope_group"] = group, group
+			out["scope_groups"], detail["scope_groups"] = req.ScopeGroups, req.ScopeGroups
 		}
 		if req.RecreateMissing != nil {
 			if err := store.SetSCIMTargetRecreate(ctx, tx, orgID, slug, *req.RecreateMissing); err != nil {

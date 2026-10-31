@@ -65,13 +65,13 @@ func TestAProvisioningTargetIsDeclaredWithItsTokenByReference(t *testing.T) {
 		return rows[0], token
 	}
 	const target = "groups: [{name: staff}]\nscim_targets:\n  - {slug: slack, base_url: 'https://%s.example.test/scim/v2', " +
-		"token: {env: SLACK_TOKEN}, dry_run: true, scope_group: staff}\n"
+		"token: {env: SLACK_TOKEN}, dry_run: true, scope_groups: [staff]}\n"
 
 	p := apply(org, fmt.Sprintf(target, "api"), false)
 	if !strings.Contains(p.String(), "token from $SLACK_TOKEN; nothing is sent until it is synced") {
 		t.Errorf("the create was planned as\n%s", p)
 	}
-	if h, token := held(org); token != "xoxp-first" || !h.DryRun || h.ScopeGroup != "staff" || !h.Enabled {
+	if h, token := held(org); token != "xoxp-first" || !h.DryRun || len(h.ScopeGroups) != 1 || h.ScopeGroups[0] != "staff" || !h.Enabled {
 		t.Errorf("the target is %+v holding %q", h, token)
 	}
 	if _, p, _ := plan(org, fmt.Sprintf(target, "api"), false); !p.Empty() {
@@ -144,10 +144,10 @@ func TestAProvisioningTargetIsDeclaredWithItsTokenByReference(t *testing.T) {
 		t.Errorf("pruned again it plans\n%s", p)
 	}
 	// Moved to everybody in the same file, the group can go.
-	apply(org, "scim_targets: [{slug: slack, base_url: 'https://elsewhere.example.test/scim/v2', scope_group: ''}]\n",
+	apply(org, "scim_targets: [{slug: slack, base_url: 'https://elsewhere.example.test/scim/v2', scope_groups: []}]\n",
 		true)
-	if h, _ := held(org); h.ScopeGroup != "" {
-		t.Errorf("the target is still limited to %q", h.ScopeGroup)
+	if h, _ := held(org); len(h.ScopeGroups) != 0 {
+		t.Errorf("the target is still limited to %q", h.ScopeGroups)
 	}
 }
 
@@ -195,7 +195,7 @@ func TestATargetTheFileCannotDescribeIsRefused(t *testing.T) {
 		t.Errorf("credentials that will not parse answered %v", err)
 	}
 	if err := plan("scim_targets: [{slug: s, base_url: 'https://a.example.test/', token: {env: T}, "+
-		"scope_group: nobody-has-this}]", "tok"); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no group") {
+		"scope_groups: [nobody-has-this]}]", "tok"); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no group") {
 		t.Errorf("a target limited to a group nobody has answered %v", err)
 	}
 	f, err := Parse([]byte("version: 1\nscim_targets: [{slug: g, kind: google, impersonate: x, target_domain: y, " +

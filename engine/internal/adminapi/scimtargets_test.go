@@ -253,11 +253,11 @@ func TestAProvisioningTargetIsRunThroughTheAPI(t *testing.T) {
 	}
 
 	// Scoped to a group that does not exist, then disabled.
-	if e := errorOf(http.MethodPatch, base+"/drift", map[string]any{"scope_group": "nobody"}, http.StatusNotFound); e != "group_not_found" {
+	if e := errorOf(http.MethodPatch, base+"/drift", map[string]any{"scope_groups": []string{"nobody"}}, http.StatusNotFound); e != "group_not_found" {
 		t.Errorf("an unknown scope group answered %q", e)
 	}
 	if rec := call(t, s, http.MethodPatch, base+"/drift", testToken, map[string]any{"enabled": false,
-		"scope_group": "drift-group"}); rec.Code != http.StatusOK {
+		"scope_groups": []string{"drift-group"}}); rec.Code != http.StatusOK {
 		t.Fatalf("disabling and scoping: %d %s", rec.Code, rec.Body.String())
 	}
 	if e := errorOf(http.MethodPost, sync, map[string]any{"apply": true}, http.StatusConflict); e != "target_unavailable" {

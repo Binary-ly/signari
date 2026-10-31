@@ -232,7 +232,7 @@ event_subscriptions:
   - {name: siem-%[1]d, url: 'https://siem-%[1]d.example.test/in', event_types: [login.failed]}
 scim_targets:
   - {slug: slack-%[1]d, base_url: 'https://scim-%[1]d.example.test/v2', token: {env: LIFECYCLE_SCIM_TOKEN},
-     scope_group: staff-%[1]d, dry_run: true}
+     scope_groups: [staff-%[1]d], dry_run: true}
 rac_connections:
   - {slug: build-%[1]d, protocol: ssh, host: build-%[1]d.internal, require_group: staff-%[1]d,
      parameters: {font-size: '12'}}

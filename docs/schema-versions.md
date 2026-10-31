@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0205 scim_target_scope_groups
+
+Not compatible with the release before: stop it before migrating.
+
+A provisioning target limited to several groups (7.11), its members being the members of any of them. One column held one group, so an application used by two teams took a third group kept by hand, or everybody.
+
 ## 0204 scim_target_compatibility
 
 Compatible with the release before: its binary may still serve this schema.

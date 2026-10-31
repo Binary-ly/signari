@@ -2349,7 +2349,7 @@ export interface GetOrganizationsOrgIDSCIMTargetsResponseTargetsItem {
   oauth_token_url: string
   on_deactivate: string
   recreate_missing: boolean
-  scope_group: string
+  scope_groups: string[]
   should_be_gone: number
   slug: string
 }
@@ -2896,7 +2896,7 @@ export interface PatchOrganizationsOrgIDSCIMTargetsSlugRequest {
   compatibility?: string[]
   enabled?: boolean
   recreate_missing?: boolean
-  scope_group?: string
+  scope_groups?: string[]
 }
 
 /** A JSON object of the Admin API. */
@@ -2905,7 +2905,7 @@ export interface PatchOrganizationsOrgIDSCIMTargetsSlugResponse {
   config_version: number
   enabled?: boolean
   recreate_missing?: boolean
-  scope_group?: string
+  scope_groups?: string[]
   slug: string
 }
 

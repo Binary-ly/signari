@@ -17696,8 +17696,11 @@
                           "recreate_missing": {
                             "type": "boolean"
                           },
-                          "scope_group": {
-                            "type": "string"
+                          "scope_groups": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
                           },
                           "should_be_gone": {
                             "type": "integer"
@@ -17713,7 +17716,7 @@
                           "kind",
                           "base_url",
                           "on_deactivate",
-                          "scope_group",
+                          "scope_groups",
                           "dry_run",
                           "enabled",
                           "recreate_missing",
@@ -17991,8 +17994,11 @@
                   "recreate_missing": {
                     "type": "boolean"
                   },
-                  "scope_group": {
-                    "type": "string"
+                  "scope_groups": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
                   }
                 },
                 "type": "object"
@@ -18023,8 +18029,11 @@
                     "recreate_missing": {
                       "type": "boolean"
                     },
-                    "scope_group": {
-                      "type": "string"
+                    "scope_groups": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     },
                     "slug": {
                       "type": "string"

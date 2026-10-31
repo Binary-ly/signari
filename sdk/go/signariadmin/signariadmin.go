@@ -1245,7 +1245,7 @@ type GetOrganizationsOrgIDSCIMTargetsResponseTargetsItem struct {
 	OauthTokenURL   string   `json:"oauth_token_url"`
 	OnDeactivate    string   `json:"on_deactivate"`
 	RecreateMissing bool     `json:"recreate_missing"`
-	ScopeGroup      string   `json:"scope_group"`
+	ScopeGroups     []string `json:"scope_groups"`
 	ShouldBeGone    int64    `json:"should_be_gone"`
 	Slug            string   `json:"slug"`
 }
@@ -1792,7 +1792,7 @@ type PatchOrganizationsOrgIDSCIMTargetsSlugRequest struct {
 	Compatibility   *[]string `json:"compatibility,omitempty"`
 	Enabled         *bool     `json:"enabled,omitempty"`
 	RecreateMissing *bool     `json:"recreate_missing,omitempty"`
-	ScopeGroup      *string   `json:"scope_group,omitempty"`
+	ScopeGroups     *[]string `json:"scope_groups,omitempty"`
 }
 
 // PatchOrganizationsOrgIDSCIMTargetsSlugResponse is a JSON object of the Admin API.
@@ -1801,7 +1801,7 @@ type PatchOrganizationsOrgIDSCIMTargetsSlugResponse struct {
 	ConfigVersion   int64    `json:"config_version"`
 	Enabled         bool     `json:"enabled,omitempty"`
 	RecreateMissing bool     `json:"recreate_missing,omitempty"`
-	ScopeGroup      string   `json:"scope_group,omitempty"`
+	ScopeGroups     []string `json:"scope_groups,omitempty"`
 	Slug            string   `json:"slug"`
 }
 

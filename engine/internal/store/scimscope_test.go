@@ -53,7 +53,7 @@ func scimScopeFixture(t *testing.T, scoped bool) (scim.Target, string, string) {
 	})
 
 	if scoped {
-		target.ScopeGroupID = groupID
+		target.ScopeGroupIDs = []string{groupID}
 	}
 	return target, inGroup, outsideGroup
 }

@@ -2991,7 +2991,7 @@ Takes:
 | `compatibility` | list of string |  |
 | `enabled` | boolean |  |
 | `recreate_missing` | boolean |  |
-| `scope_group` | string |  |
+| `scope_groups` | list of string |  |
 
 Answers:
 
@@ -3001,7 +3001,7 @@ Answers:
 | `config_version` | integer | always |
 | `enabled` | boolean |  |
 | `recreate_missing` | boolean |  |
-| `scope_group` | string |  |
+| `scope_groups` | list of string |  |
 | `slug` | string | always |
 
 ### `DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}`

@@ -103,7 +103,6 @@ var knownUnindexedFKs = map[string]string{
 	"scim_group_links.org_id":               unindexedOrg,
 	"scim_links.org_id":                     unindexedOrg,
 	"scim_source_links.user_id":             unindexedUser,
-	"scim_targets.scope_group_id":           unindexedBacklog,
 	"session_clients.client_id":             unindexedClient,
 	"sessions.impersonator_id":              unindexedUser,
 	"sessions.org_id":                       unindexedOrg,

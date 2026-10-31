@@ -308,7 +308,7 @@ federation out:
   scim verify             read each target back and report anyone still active
   scim enable             put a target back in service
   scim disable            take a target out of service, keeping its links
-  scim scope              limit a target to one group's members
+  scim scope              limit a target to the members of these groups
   scim provision-group    create a group at a target and own it there
   scim deprovision-group  delete a group this deployment made at a target
   provision add           register a native provisioning target

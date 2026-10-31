@@ -39,25 +39,43 @@ func SetSCIMTargetEnabled(ctx context.Context, q Execer, orgID, slug string, ena
 	return nil
 }
 
-// SetSCIMTargetScope limits a target to one group's members, or with "" lets
-// it provision everybody in the organisation. Narrowing deprovisions, at the
-// next sync, the people who fall out of scope; widening provisions the ones
-// who come in. The column is ON DELETE RESTRICT, so deleting the group cannot
-// widen the target as a side effect.
-func SetSCIMTargetScope(ctx context.Context, q outpostDB, orgID, slug, group string) error {
-	var groupID any
-	if group = strings.TrimSpace(group); group != "" {
+// SetSCIMTargetScope limits a target to these groups' members, or with none lets
+// it provision everybody in the organisation. Narrowing deprovisions, at the next
+// sync, the people who fall out of scope; widening provisions the ones who come
+// in. A group held here cannot be deleted, so deleting one cannot widen the target
+// as a side effect.
+//
+// One statement, so the CLI, which writes outside a transaction, cannot leave a
+// target between the two and provisioning everybody. It leaves out of the delete
+// what the insert would put back, because the two see one snapshot.
+func SetSCIMTargetScope(ctx context.Context, q outpostDB, orgID, slug string, groups []string) error {
+	ids := make([]string, 0, len(groups))
+	for _, group := range groups {
+		if group = strings.TrimSpace(group); group == "" {
+			continue
+		}
 		id, err := GroupIDNamed(ctx, q, orgID, group)
 		if err != nil {
 			return err
 		}
 		if id == "" {
-			return ErrScopeGroupUnknown
+			return fmt.Errorf("%w: %s", ErrScopeGroupUnknown, group)
 		}
-		groupID = id
+		ids = append(ids, id)
 	}
-	tag, err := q.Exec(ctx, `UPDATE core.scim_targets SET scope_group_id = $3::uuid
-		WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, groupID)
+	tag, err := q.Exec(ctx, `
+		WITH target AS (
+			SELECT id, org_id FROM core.scim_targets WHERE org_id = $1::uuid AND slug = $2
+		), dropped AS (
+			DELETE FROM core.scim_target_scope_groups s USING target
+			 WHERE s.target_id = target.id AND s.group_id <> ALL($3::uuid[])
+		), added AS (
+			INSERT INTO core.scim_target_scope_groups (target_id, group_id, org_id)
+			SELECT target.id, g, target.org_id FROM target, unnest($3::uuid[]) g
+			ON CONFLICT DO NOTHING
+		)
+		UPDATE core.scim_targets t SET updated_at = now() FROM target WHERE t.id = target.id`,
+		orgID, slug, ids)
 	if err != nil {
 		return err
 	}
@@ -98,7 +116,9 @@ func SetSCIMTargetCompatibility(ctx context.Context, q Execer, orgID, slug strin
 // SCIMTargetRow is one target as an administrator sees it, without its
 // token or credentials.
 type SCIMTargetRow struct {
-	ID, Slug, Name, Kind, BaseURL, OnDeactivate, ScopeGroup string
+	ID, Slug, Name, Kind, BaseURL, OnDeactivate string
+	// ScopeGroups are the groups it is limited to, by name; none is everybody.
+	ScopeGroups []string
 	// Impersonate and TargetDomain are a Google target's administrator and
 	// domain, "" for any other kind.
 	Impersonate, TargetDomain string
@@ -118,14 +138,16 @@ type SCIMTargetRow struct {
 func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow, error) {
 	rows, err := q.Query(ctx, `
 		SELECT t.id::text, t.slug, t.display_name, COALESCE(NULLIF(t.kind, ''), 'scim'), t.base_url,
-		       t.on_deactivate, COALESCE(g.name, ''), COALESCE(t.impersonate, ''), COALESCE(t.target_domain, ''),
+		       t.on_deactivate,
+		       ARRAY(SELECT g.name FROM core.scim_target_scope_groups s JOIN core.groups g ON g.id = s.group_id
+		              WHERE s.target_id = t.id ORDER BY g.name),
+		       COALESCE(t.impersonate, ''), COALESCE(t.target_domain, ''),
 		       t.dry_run, t.enabled, t.recreate_missing,
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id),
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id AND NOT l.should_be_active),
 		       t.created_at, COALESCE(t.oauth_token_url, ''), COALESCE(t.oauth_client_id, ''),
 		       COALESCE(t.oauth_scope, ''), t.compatibility
 		  FROM core.scim_targets t
-		  LEFT JOIN core.groups g ON g.id = t.scope_group_id
 		 WHERE t.org_id = $1::uuid ORDER BY t.slug`, orgID)
 	if err != nil {
 		return nil, err
@@ -134,7 +156,7 @@ func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow,
 	var out []SCIMTargetRow
 	for rows.Next() {
 		var t SCIMTargetRow
-		if err := rows.Scan(&t.ID, &t.Slug, &t.Name, &t.Kind, &t.BaseURL, &t.OnDeactivate, &t.ScopeGroup,
+		if err := rows.Scan(&t.ID, &t.Slug, &t.Name, &t.Kind, &t.BaseURL, &t.OnDeactivate, &t.ScopeGroups,
 			&t.Impersonate, &t.TargetDomain, &t.DryRun, &t.Enabled, &t.RecreateMissing, &t.Linked,
 			&t.ShouldBeGone, &t.CreatedAt, &t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope,
 			&t.Compatibility); err != nil {

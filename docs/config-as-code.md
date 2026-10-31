@@ -233,7 +233,7 @@ scim_targets:                 # where people are provisioned to
     base_url: https://api.slack.com/scim/v2
     token: {env: SLACK_SCIM_TOKEN}   # the target issued it: by reference only
     on_deactivate: deactivate # delete or nothing
-    scope_group: platform     # only its members; "" for everybody
+    scope_groups: [platform, data]  # only their members; [] for everybody
     dry_run: false
     recreate_missing: false   # a new account for somebody whose linked one is gone
     compatibility: [no-patch] # no-filter, typed-members; [] for none
@@ -539,9 +539,9 @@ about this deployment and not configuration.
 A provisioning target that a pruned file leaves out is **disabled, not
 deleted**. Its links are the only record of which accounts at the far end are
 this organisation's people, and without them nothing could deactivate those
-accounts. Nor is the group a target is limited to pruned out from under it:
-deleting the group would widen the target to everybody. Give the target
-another `scope_group` in the same file and the group can go. Nothing is sent
+accounts. Nor is a group a target is limited to pruned out from under it:
+deleting its last group would widen the target to everybody. Give the target
+`scope_groups` without it in the same file and the group can go. Nothing is sent
 to a target the file creates until it is synced.
 
 A remote-access connection that a pruned file leaves out is disabled too, not

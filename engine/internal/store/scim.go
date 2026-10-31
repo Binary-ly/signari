@@ -17,16 +17,17 @@ import (
 // organisation's target, or the call refuses.
 func LoadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgID, only string) ([]scim.Target, error) {
 	rows, err := conn.Query(ctx, `
-		SELECT id::text, org_id::text, slug, display_name, base_url, token,
-		       dry_run, on_deactivate, kind,
-		       COALESCE(credentials_enc, ''::bytea),
-		       COALESCE(impersonate, ''), COALESCE(target_domain, ''),
-		       COALESCE(scope_group_id::text, ''), recreate_missing,
-		       COALESCE(oauth_token_url, ''), COALESCE(oauth_client_id, ''), COALESCE(oauth_scope, ''),
-		       compatibility
-		FROM core.scim_targets
-		WHERE enabled AND ($1 = '' OR slug = $1) AND ($2 = '' OR org_id = $2::uuid)
-		ORDER BY slug`, only, orgID)
+		SELECT t.id::text, t.org_id::text, t.slug, t.display_name, t.base_url, t.token,
+		       t.dry_run, t.on_deactivate, t.kind,
+		       COALESCE(t.credentials_enc, ''::bytea),
+		       COALESCE(t.impersonate, ''), COALESCE(t.target_domain, ''),
+		       ARRAY(SELECT s.group_id::text FROM core.scim_target_scope_groups s WHERE s.target_id = t.id),
+		       t.recreate_missing,
+		       COALESCE(t.oauth_token_url, ''), COALESCE(t.oauth_client_id, ''), COALESCE(t.oauth_scope, ''),
+		       t.compatibility
+		FROM core.scim_targets t
+		WHERE t.enabled AND ($1 = '' OR t.slug = $1) AND ($2 = '' OR t.org_id = $2::uuid)
+		ORDER BY t.slug`, only, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +40,7 @@ func LoadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgI
 		var sealedCreds []byte
 		if err := rows.Scan(&t.ID, &t.OrgID, &t.Slug, &t.DisplayName, &t.BaseURL,
 			&sealed, &t.DryRun, &t.OnDeactivate, &t.Kind,
-			&sealedCreds, &t.Impersonate, &t.TargetDomain, &t.ScopeGroupID, &t.RecreateMissing,
+			&sealedCreds, &t.Impersonate, &t.TargetDomain, &t.ScopeGroupIDs, &t.RecreateMissing,
 			&t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope, &t.Compatibility); err != nil {
 			return nil, err
 		}
@@ -96,21 +97,25 @@ type SCIMDesiredUser struct {
 // Reconciling from desired state has no such hole. Whatever went wrong last
 // time, the next pass sees the same disagreement and fixes it.
 func SCIMDesiredState(ctx context.Context, conn Querier, target scim.Target) ([]SCIMDesiredUser, error) {
+	scope := target.ScopeGroupIDs
+	if scope == nil {
+		scope = []string{}
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT u.id::text,
 		       COALESCE(NULLIF(u.username,''), u.email, u.id::text),
 		       COALESCE(u.email,''),
 		       -- Active AT THIS TARGET, which is not the same as active here.
 		       --
-		       -- Somebody who leaves the scope group is still an active user of
+		       -- Somebody who leaves the scope's groups is still an active user of
 		       -- this deployment and must become INACTIVE at the target, so the
 		       -- reconciliation deactivates their remote account. Reporting the
 		       -- account's own status instead would leave a live account for
 		       -- somebody who lost access — the precise failure that
 		       -- reconciling from desired state is supposed to make impossible.
-		       u.status = 'active' AND ($3 = '' OR EXISTS (
+		       u.status = 'active' AND (cardinality($3::uuid[]) = 0 OR EXISTS (
 		           SELECT 1 FROM core.group_members gm
-		           WHERE gm.user_id = u.id AND gm.group_id = $3::uuid)),
+		           WHERE gm.user_id = u.id AND gm.group_id = ANY($3::uuid[]))),
 		       COALESCE(l.remote_id,''),
 		       l.last_synced_at IS NOT NULL
 		FROM core.users u
@@ -130,10 +135,10 @@ func SCIMDesiredState(ctx context.Context, conn Querier, target scim.Target) ([]
 		  -- entirely would leave a live account for somebody who lost access,
 		  -- which is the exact failure reconciling-from-desired-state exists to
 		  -- prevent.
-		  AND ($3 = '' OR l.remote_id IS NOT NULL OR EXISTS (
+		  AND (cardinality($3::uuid[]) = 0 OR l.remote_id IS NOT NULL OR EXISTS (
 		        SELECT 1 FROM core.group_members gm
-		        WHERE gm.user_id = u.id AND gm.group_id = $3::uuid))
-		ORDER BY u.created_at`, target.ID, target.OrgID, target.ScopeGroupID)
+		        WHERE gm.user_id = u.id AND gm.group_id = ANY($3::uuid[])))
+		ORDER BY u.created_at`, target.ID, target.OrgID, scope)
 	if err != nil {
 		return nil, err
 	}

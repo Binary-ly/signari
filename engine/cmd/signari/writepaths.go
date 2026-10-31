@@ -554,13 +554,14 @@ func providerClaimsSet(ctx context.Context, conn *pgx.Conn, orgID, hook, claims 
 	return nil
 }
 
-// scimScope limits a provisioning target to one group's members.
+// scimScope limits a provisioning target to the members of these groups, a
+// comma-separated list.
 //
 // Without it a target receives every user in the organisation, which is right
-// for a company-wide directory and wrong for an application five people use. The
-// column is ON DELETE RESTRICT: deleting the group would silently widen the
-// target to everybody, and a widening that happens as a side effect of deleting
-// something else is not a change anybody would look for.
+// for a company-wide directory and wrong for an application five people use. A
+// group held here cannot be deleted: that would silently widen the target to
+// everybody, and a widening that happens as a side effect of deleting something
+// else is not a change anybody would look for.
 func scimScope(ctx context.Context, conn *pgx.Conn, givenOrg, slug, group string) error {
 	if slug == "" {
 		return fmt.Errorf("give -slug")
@@ -571,22 +572,20 @@ func scimScope(ctx context.Context, conn *pgx.Conn, givenOrg, slug, group string
 	if err != nil {
 		return err
 	}
-	if err := store.SetSCIMTargetScope(ctx, conn, orgID, slug, group); err != nil {
-		if errors.Is(err, store.ErrScopeGroupUnknown) {
-			return fmt.Errorf("no group named %q in that organisation", group)
-		}
+	groups := splitList(group)
+	if err := store.SetSCIMTargetScope(ctx, conn, orgID, slug, groups); err != nil {
 		return err
 	}
 
-	if strings.TrimSpace(group) == "" {
+	if len(groups) == 0 {
 		fmt.Printf("%s is no longer scoped; every user in the organisation is provisioned\n", slug)
 		fmt.Println("\n  Widening a target does NOT deprovision anybody. The next sync adds the")
 		fmt.Println("  people who were previously out of scope.")
 		return nil
 	}
 
-	fmt.Printf("%s now provisions only members of %q\n", slug, group)
-	fmt.Println("\n  People already provisioned who are NOT in that group are handled by the")
+	fmt.Printf("%s now provisions only members of %s\n", slug, strings.Join(groups, ", "))
+	fmt.Println("\n  People already provisioned who are in none of them are handled by the")
 	fmt.Println("  target's -on-deactivate setting (from `signari scim add`) on the next sync.")
 	fmt.Println("  Preview it first:")
 	fmt.Println("    signari scim sync -slug " + slug)

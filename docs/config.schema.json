@@ -727,7 +727,8 @@
             "user_create",
             "client_access",
             "userinfo",
-            "saml_assertion"
+            "saml_assertion",
+            "flow_condition"
           ],
           "type": "string"
         },

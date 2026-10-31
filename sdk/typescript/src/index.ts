@@ -192,6 +192,12 @@ export class SignariAdmin {
     return this.call<DeleteOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/attribute-map`, undefined, opts)
   }
 
+  // DELETE /admin/organizations/{orgID}/identity-providers/{slug}/group-map: Stop a provider's
+  // group granting a local one Needs organizations:write.
+  deleteOrganizationsOrgIDIdentityProvidersSlugGroupMap(orgID: string, slug: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse>> {
+    return this.call<DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/group-map`, undefined, opts)
+  }
+
   // DELETE /admin/organizations/{orgID}/migration-source: Remove the migration source. Needs
   // organizations:write.
   deleteOrganizationsOrgIDMigrationSource(orgID: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDMigrationSourceResponse>> {
@@ -1178,6 +1184,12 @@ export class SignariAdmin {
     return this.call<PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/attribute-map`, body, opts)
   }
 
+  // PUT /admin/organizations/{orgID}/identity-providers/{slug}/group-map: Say a provider's group
+  // grants a local one Needs organizations:write.
+  putOrganizationsOrgIDIdentityProvidersSlugGroupMap(orgID: string, slug: string, body: PutOrganizationsOrgIDIdentityProvidersSlugGroupMapRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse>> {
+    return this.call<PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/group-map`, body, opts)
+  }
+
   // PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth: Say how this engine
   // proves itself at the provider's token endpoint. Needs organizations:write.
   putOrganizationsOrgIDIdentityProvidersSlugTokenAuth(orgID: string, slug: string, body: PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse>> {
@@ -1402,6 +1414,15 @@ export interface DeleteOrganizationsOrgIDIdentityProvidersSlugAttributeMapRespon
   claim: string
   config_version: number
   mapped: boolean
+  slug: string
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse {
+  config_version: number
+  group: string
+  mapped: boolean
+  remote_group: string
   slug: string
 }
 
@@ -2103,6 +2124,8 @@ export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem {
   enabled: boolean
   end_session_url: string
   forward_parameters: string[]
+  group_claim: string
+  group_map: GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemGroupMapItem[]
   has_client_key: boolean
   id: string
   issuer: string
@@ -2124,6 +2147,12 @@ export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemAttr
   claim: string
   max_length: number
   overwrite: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemGroupMapItem {
+  group: string
+  remote_group: string
 }
 
 /** A JSON object of the Admin API. */
@@ -2856,6 +2885,7 @@ export interface PatchOrganizationsOrgIDIdentityProvidersSlugRequest {
   enabled?: boolean
   end_session_url?: string
   forward_parameters?: string[]
+  group_claim?: string
   login_domains?: string[]
   mfa_acr?: string[]
   mfa_amr?: string[]
@@ -4042,6 +4072,21 @@ export interface PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse 
   claim: string
   config_version: number
   mapped: boolean
+  slug: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDIdentityProvidersSlugGroupMapRequest {
+  group?: string
+  remote_group?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse {
+  config_version: number
+  group: string
+  mapped: boolean
+  remote_group: string
   slug: string
 }
 

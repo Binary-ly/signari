@@ -275,6 +275,8 @@ federation in:
   idp domains               the address domains a provider signs in
   idp logout                sign out at the provider too, at its end_session_endpoint
   idp forward               what a sign-in here passes on to the provider
+  idp group-map             say a provider's group grants a local one
+  idp group-claim           which claim a provider's groups arrive in
   idp auth                  how this engine proves itself at a provider's token endpoint
   idp verified-email        whether to believe a provider's email_verified, and require it
   idp attribute-map         route a provider's claim into a local attribute
@@ -1783,6 +1785,10 @@ func run(args []string) (err error) {
 		return idpLogoutSet(ctx, conn, *slug, *subURL)
 	case "idp forward":
 		return idpForwardSet(ctx, conn, *slug, *idpForward)
+	case "idp group-map":
+		return idpGroupMap(ctx, conn, *slug, *remoteGroup, *groupName, *removeMember)
+	case "idp group-claim":
+		return idpGroupClaimSet(ctx, conn, *slug, *upstreamClaim)
 	case "idp auth":
 		return idpTokenAuthSet(ctx, conn, *slug, *idpAuthMethod, *idpClientKeyFile, *idpClientCertFile)
 	case "idp trust-mfa":

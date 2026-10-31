@@ -51,7 +51,10 @@ type IdentityProvider struct {
 	LoginDomains           *[]string     `yaml:"login_domains,omitempty"`
 	EndSessionURL          *string       `yaml:"end_session_url,omitempty"`
 	ForwardParameters      *[]string     `yaml:"forward_parameters,omitempty"`
+	GroupClaim             *string       `yaml:"group_claim,omitempty"`
 	AttributeMap           *[]IdPMapping `yaml:"attribute_map,omitempty"`
+	// GroupMap is what the provider's groups grant here, replaced whole.
+	GroupMap *[]IdPGroupMapping `yaml:"group_map,omitempty"`
 }
 
 // SAMLUpstream is a SAML identity provider's side of the federation. Its
@@ -74,6 +77,14 @@ func (s *SAMLUpstream) settings() *store.SAMLUpstreamSettings {
 		NameIDFormat: s.NameIDFormat, ForceAuthn: s.ForceAuthn, AllowUnsolicited: s.AllowUnsolicited,
 		SkewSeconds: s.SkewSeconds}
 }
+
+// IdPGroupMapping says one of the provider's groups grants a local one.
+type IdPGroupMapping struct {
+	RemoteGroup string `yaml:"remote_group"`
+	Group       string `yaml:"group"`
+}
+
+func (m IdPGroupMapping) key() string { return m.RemoteGroup + " grants " + m.Group }
 
 // IdPMapping routes a claim the provider sends into a declared attribute.
 type IdPMapping struct {
@@ -122,7 +133,7 @@ func (w IdentityProvider) change() store.IdentityProviderChange {
 	return store.IdentityProviderChange{Enabled: w.Enabled, AllowAssertions: w.AllowAssertions,
 		TrustEmailVerification: w.TrustEmailVerification, RequireVerifiedEmail: w.RequireVerifiedEmail,
 		MFAAMR: w.MFAAMR, MFAACR: w.MFAACR, LoginDomains: w.LoginDomains, EndSessionURL: w.EndSessionURL,
-		ForwardParameters: w.ForwardParameters}
+		ForwardParameters: w.ForwardParameters, GroupClaim: w.GroupClaim}
 }
 
 type idpSection struct{}
@@ -190,6 +201,18 @@ func (idpSection) validate(f *File, add func(string, ...any)) {
 		} else if w.TrustEmailVerification != nil && w.named() {
 			add("%s: a %s provider's email_verified is believed or not as that provider is known to behave; "+
 				"only a generic OIDC provider's or a SAML upstream's is set here", w.at(), w.Kind)
+		}
+		if w.GroupMap != nil {
+			seen := map[string]bool{}
+			for _, m := range *w.GroupMap {
+				switch {
+				case m.RemoteGroup == "" || m.Group == "":
+					add("%s: a group_map entry needs its remote_group and group", w.at())
+				case seen[m.key()]:
+					add("%s: group_map maps %s twice", w.at(), m.key())
+				}
+				seen[m.key()] = true
+			}
 		}
 		if w.AttributeMap != nil {
 			pairs := map[string]bool{}
@@ -305,6 +328,17 @@ func (idpSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, pr
 			c.note(w.EndSessionURL != nil && h.EndSessionURL != *w.EndSessionURL, "end_session_url")
 			c.note(w.ForwardParameters != nil && !sameSet(h.ForwardParameters, *w.ForwardParameters),
 				"forward_parameters")
+			c.note(w.GroupClaim != nil && h.GroupClaim != *w.GroupClaim, "group_claim")
+			if w.GroupMap != nil {
+				var have, want []string
+				for _, m := range h.GroupMap {
+					have = append(have, IdPGroupMapping{RemoteGroup: m.RemoteGroup, Group: m.Group}.key())
+				}
+				for _, m := range *w.GroupMap {
+					want = append(want, m.key())
+				}
+				c.note(!sameSet(have, want), "group_map")
+			}
 			c.note(w.MFAACR != nil && !sameSet(h.MFAACR, *w.MFAACR), "mfa_acr")
 			if w.AttributeMap != nil {
 				have := map[string]IdPMapping{}
@@ -411,6 +445,22 @@ func (idpSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p
 				return refuse("%s: %v", w.at(), err)
 			}
 		}
+		if w.GroupMap != nil {
+			want := map[string]bool{}
+			for _, m := range *w.GroupMap {
+				want[m.key()] = true
+				if err := store.SetIdPGroupMap(ctx, tx, orgID, w.Slug, m.RemoteGroup, m.Group); err != nil {
+					return refuse("%s: %v", w.at(), err)
+				}
+			}
+			for _, m := range held[w.Slug].GroupMap {
+				if !want[IdPGroupMapping{RemoteGroup: m.RemoteGroup, Group: m.Group}.key()] {
+					if err := store.RemoveIdPGroupMap(ctx, tx, orgID, w.Slug, m.RemoteGroup, m.Group); err != nil {
+						return err
+					}
+				}
+			}
+		}
 		if w.AttributeMap == nil {
 			continue
 		}
@@ -488,6 +538,17 @@ func (idpSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File) 
 		if len(h.ForwardParameters) > 0 {
 			forward := sortedCopy(h.ForwardParameters)
 			w.ForwardParameters = &forward
+		}
+		if h.GroupClaim != "groups" {
+			claim := h.GroupClaim
+			w.GroupClaim = &claim
+		}
+		if len(h.GroupMap) > 0 {
+			var groups []IdPGroupMapping
+			for _, m := range h.GroupMap {
+				groups = append(groups, IdPGroupMapping{RemoteGroup: m.RemoteGroup, Group: m.Group})
+			}
+			w.GroupMap = &groups
 		}
 		if len(h.MFAACR) > 0 {
 			acr := sortedCopy(h.MFAACR)

@@ -36,6 +36,8 @@ type identityProviderView struct {
 	LoginDomains           []string         `json:"login_domains"`
 	EndSessionURL          string           `json:"end_session_url"`
 	ForwardParameters      []string         `json:"forward_parameters"`
+	GroupClaim             string           `json:"group_claim"`
+	GroupMap               []map[string]any `json:"group_map"`
 	TokenAuthMethod        string           `json:"token_auth_method"`
 	HasClientKey           bool             `json:"has_client_key"`
 	Linked                 int              `json:"linked"`
@@ -56,6 +58,14 @@ type patchIdentityProviderRequest struct {
 	// ForwardParameters names what a sign-in passes on to the provider: prompt,
 	// login_hint or acr_values. Empty tells it nothing.
 	ForwardParameters *[]string `json:"forward_parameters"`
+	// GroupClaim is the claim the provider's groups arrive in.
+	GroupClaim *string `json:"group_claim"`
+}
+
+// idpGroupMapRequest says one of a provider's groups grants a local one.
+type idpGroupMapRequest struct {
+	RemoteGroup string `json:"remote_group"`
+	Group       string `json:"group"`
 }
 
 type idpAttributeMapRequest struct {
@@ -215,12 +225,17 @@ func (s *Server) listIdentityProviders(w http.ResponseWriter, r *http.Request) {
 			maps = append(maps, map[string]any{"claim": m.Claim, "attribute": m.Attribute, "overwrite": m.Overwrite,
 				"max_length": m.MaxLength})
 		}
+		groups := make([]map[string]any, 0, len(p.GroupMap))
+		for _, m := range p.GroupMap {
+			groups = append(groups, map[string]any{"remote_group": m.RemoteGroup, "group": m.Group})
+		}
 		out = append(out, identityProviderView{ID: p.ID, Slug: p.Slug, Name: p.Name, Kind: p.Kind, Issuer: p.Issuer,
 			Enabled: p.Enabled, AllowSignup: p.AllowSignup, AllowLinking: p.AllowLinking,
 			AllowAssertions: p.AllowAssertions, TrustEmailVerification: p.TrustEmailVerification,
 			RequireVerifiedEmail: p.RequireVerifiedEmail, MFAAMR: p.MFAAMR, MFAACR: p.MFAACR, Linked: p.Linked,
 			LoginDomains: p.LoginDomains, EndSessionURL: p.EndSessionURL, TokenAuthMethod: p.TokenAuthMethod,
-			HasClientKey: p.HasClientKey, AttributeMap: maps, ForwardParameters: p.ForwardParameters})
+			HasClientKey: p.HasClientKey, AttributeMap: maps, ForwardParameters: p.ForwardParameters,
+			GroupClaim: p.GroupClaim, GroupMap: groups})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "providers": out})
 }
@@ -245,6 +260,7 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 	change.LoginDomains = req.LoginDomains
 	change.EndSessionURL = req.EndSessionURL
 	change.ForwardParameters = req.ForwardParameters
+	change.GroupClaim = req.GroupClaim
 	if change.Empty() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change"})
 		return
@@ -284,6 +300,9 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.ForwardParameters != nil {
 			detail["forward_parameters"] = *req.ForwardParameters
+		}
+		if req.GroupClaim != nil {
+			detail["group_claim"] = *req.GroupClaim
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.identity_provider_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})
@@ -396,6 +415,63 @@ func (s *Server) changeIdPAttributeMap(w http.ResponseWriter, r *http.Request, r
 		"mapped": add, "config_version": version})
 }
 
+func (s *Server) putIdPGroupMap(w http.ResponseWriter, r *http.Request) {
+	var req idpGroupMapRequest
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	s.changeIdPGroupMap(w, r, req, true)
+}
+
+func (s *Server) deleteIdPGroupMap(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	s.changeIdPGroupMap(w, r, idpGroupMapRequest{RemoteGroup: q.Get("remote_group"), Group: q.Get("group")}, false)
+}
+
+// changeIdPGroupMap says one of a provider's groups grants a local one, or stops it, as
+// `signari idp map-group` does.
+func (s *Server) changeIdPGroupMap(w http.ResponseWriter, r *http.Request, req idpGroupMapRequest, add bool) {
+	ctx := r.Context()
+	orgID, slug := r.PathValue("orgID"), r.PathValue("slug")
+	req.RemoteGroup, req.Group = strings.TrimSpace(req.RemoteGroup), strings.TrimSpace(req.Group)
+	if req.RemoteGroup == "" || req.Group == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_mapping",
+			"detail": "give remote_group and group"})
+		return
+	}
+	if narrowedTokenRefused(w, r, idpRefusal) {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
+			return err
+		}
+		event := "admin.idp_group_mapped"
+		if add {
+			if err := store.SetIdPGroupMap(ctx, tx, orgID, slug, req.RemoteGroup, req.Group); err != nil {
+				return err
+			}
+		} else {
+			event = "admin.idp_group_unmapped"
+			if err := store.RemoveIdPGroupMap(ctx, tx, orgID, slug, req.RemoteGroup, req.Group); err != nil {
+				return err
+			}
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: event, AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
+			Detail: map[string]any{"provider": slug, "remote_group": req.RemoteGroup, "group": req.Group}})
+	})
+	if s.writeIdPFailure(w, err, orgID) {
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"slug": slug, "remote_group": req.RemoteGroup, "group": req.Group,
+		"mapped": add, "config_version": version})
+}
+
 // writeIdPFailure answers a refused or failed identity provider write, and
 // reports whether it wrote anything.
 func (s *Server) writeIdPFailure(w http.ResponseWriter, err error, orgID string) bool {
@@ -412,6 +488,10 @@ func (s *Server) writeIdPFailure(w http.ResponseWriter, err error, orgID string)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "provider_not_found"})
 	case errors.Is(err, store.ErrIdPMappingUnknown):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "mapping_not_found"})
+	case errors.Is(err, store.ErrIdPGroupUnknown):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown_group", "detail": err.Error()})
+	case errors.Is(err, store.ErrIdPGroupImpersonates):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group_impersonates", "detail": err.Error()})
 	default:
 		s.log.Error("writing an identity provider", "org_id", orgID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})

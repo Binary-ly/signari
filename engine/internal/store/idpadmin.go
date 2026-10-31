@@ -74,13 +74,15 @@ type IdentityProviderChange struct {
 	// ForwardParameters names what a sign-in here passes on to the provider, from
 	// federation.ForwardableParameters; empty tells it nothing.
 	ForwardParameters *[]string
+	// GroupClaim is the claim the provider's groups arrive in.
+	GroupClaim *string
 }
 
 // Empty reports whether the change names nothing.
 func (c IdentityProviderChange) Empty() bool {
 	return c.Enabled == nil && c.AllowAssertions == nil && c.TrustEmailVerification == nil &&
 		c.RequireVerifiedEmail == nil && c.MFAAMR == nil && c.MFAACR == nil && c.LoginDomains == nil &&
-		c.EndSessionURL == nil && c.ForwardParameters == nil
+		c.EndSessionURL == nil && c.ForwardParameters == nil && c.GroupClaim == nil
 }
 
 // checkForwardParameters refuses a name nothing would pass on, and a provider with no
@@ -237,6 +239,9 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 		}
 		forward = nonNil(*c.ForwardParameters)
 	}
+	if c.GroupClaim != nil && strings.TrimSpace(*c.GroupClaim) == "" {
+		return idpInvalid{"the group claim is the name of a claim"}
+	}
 	_, err := q.Exec(ctx, `
 		UPDATE core.identity_providers
 		   SET enabled                  = COALESCE($3::boolean, enabled),
@@ -249,9 +254,10 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 		       end_session_url          = CASE WHEN $10::text IS NULL THEN end_session_url
 		                                       ELSE NULLIF($10, '') END,
 		       forward_parameters       = COALESCE($11::text[], forward_parameters),
+		       group_claim              = COALESCE($12::text, group_claim),
 		       updated_at               = now()
 		 WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, c.Enabled, c.AllowAssertions, c.TrustEmailVerification,
-		c.RequireVerifiedEmail, amr, acr, domains, c.EndSessionURL, forward)
+		c.RequireVerifiedEmail, amr, acr, domains, c.EndSessionURL, forward, c.GroupClaim)
 	return err
 }
 
@@ -331,7 +337,13 @@ type IdentityProviderRow struct {
 	MFAAMR, MFAACR, LoginDomains, ForwardParameters               []string
 	Linked                                                        int
 	AttributeMap                                                  []IdPAttributeMapping
+	// GroupClaim is the claim its groups arrive in, and GroupMap what they grant here.
+	GroupClaim string
+	GroupMap   []IdPGroupMapping
 }
+
+// IdPGroupMapping is one of a provider's groups and the local group it grants.
+type IdPGroupMapping struct{ RemoteGroup, Group string }
 
 // IdPAttributeMapping is one claim and the attribute it fills.
 type IdPAttributeMapping struct {
@@ -347,7 +359,7 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		       p.allow_linking, p.allow_jwt_bearer, p.trust_email_verification, p.require_verified_email,
 		       p.mfa_amr, p.mfa_acr, (SELECT count(*) FROM core.federated_identities f WHERE f.provider_id = p.id),
 		       p.login_domains, COALESCE(p.end_session_url, ''), p.token_auth_method, p.client_key IS NOT NULL,
-		       p.forward_parameters
+		       p.forward_parameters, p.group_claim
 		  FROM core.identity_providers p WHERE p.org_id = $1::uuid ORDER BY p.slug`, orgID)
 	if err != nil {
 		return nil, err
@@ -358,11 +370,11 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Kind, &p.Issuer, &p.Enabled, &p.AllowSignup,
 			&p.AllowLinking, &p.AllowAssertions, &p.TrustEmailVerification, &p.RequireVerifiedEmail, &p.MFAAMR,
 			&p.MFAACR, &p.Linked, &p.LoginDomains, &p.EndSessionURL, &p.TokenAuthMethod, &p.HasClientKey,
-			&p.ForwardParameters); err != nil {
+			&p.ForwardParameters, &p.GroupClaim); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		p.AttributeMap = []IdPAttributeMapping{}
+		p.AttributeMap, p.GroupMap = []IdPAttributeMapping{}, []IdPGroupMapping{}
 		out = append(out, p)
 	}
 	rows.Close()
@@ -370,6 +382,24 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		return nil, err
 	}
 	for i := range out {
+		groups, err := q.Query(ctx, `
+			SELECT m.remote_group, g.name FROM core.idp_group_map m JOIN core.groups g ON g.id = m.group_id
+			 WHERE m.provider_id = $1::uuid ORDER BY m.remote_group, g.name`, out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		for groups.Next() {
+			var m IdPGroupMapping
+			if err := groups.Scan(&m.RemoteGroup, &m.Group); err != nil {
+				groups.Close()
+				return nil, err
+			}
+			out[i].GroupMap = append(out[i].GroupMap, m)
+		}
+		groups.Close()
+		if err := groups.Err(); err != nil {
+			return nil, err
+		}
 		maps, err := q.Query(ctx, `
 			SELECT m.upstream_claim, a.name, m.overwrite, m.max_length
 			  FROM core.idp_attribute_map m JOIN core.user_attribute_schema a ON a.id = m.attribute_id

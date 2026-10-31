@@ -417,6 +417,18 @@
       },
       "type": "object"
     },
+    "IdPGroupMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "type": "string"
+        },
+        "remote_group": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "IdPMapping": {
       "additionalProperties": false,
       "properties": {
@@ -471,6 +483,15 @@
         "forward_parameters": {
           "items": {
             "type": "string"
+          },
+          "type": "array"
+        },
+        "group_claim": {
+          "type": "string"
+        },
+        "group_map": {
+          "items": {
+            "$ref": "#/$defs/IdPGroupMapping"
           },
           "type": "array"
         },

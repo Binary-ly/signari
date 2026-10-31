@@ -541,6 +541,34 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/group-map", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org, _, p := newDriftIdP(t, s, "google")
+				if _, err := s.db.Exec(context.Background(), `INSERT INTO core.groups (org_id, name, display_name)
+					VALUES ($1::uuid, 'drift-mapped', 'Drift')`, org); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/group-map"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"remote_group":"eng","group":"drift-mapped"}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/identity-providers/{slug}/group-map", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				ctx := context.Background()
+				org, slug, p := newDriftIdP(t, s, "google")
+				if _, err := s.db.Exec(ctx, `INSERT INTO core.groups (org_id, name, display_name)
+					VALUES ($1::uuid, 'drift-mapped', 'Drift')`, org); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.SetIdPGroupMap(ctx, s.db, org, slug, "eng", "drift-mapped"); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/group-map?remote_group=eng&group=drift-mapped"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations/{orgID}/saml-providers", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/saml-providers"

@@ -284,6 +284,9 @@ identity_providers:           # where people sign in from
     jwks_url: https://login.corp.example.com/jwks
     mfa_amr: [mfa]            # upstream values that count as multi-factor
     forward_parameters: [prompt, login_hint]   # what a sign-in passes on; see social-login.md
+    group_claim: roles        # `groups` when left out
+    group_map:                # what its groups grant here, replaced whole
+      - {remote_group: Engineering, group: platform}
   - slug: adfs
     kind: saml
     saml:

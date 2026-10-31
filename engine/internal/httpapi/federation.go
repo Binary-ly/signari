@@ -377,6 +377,28 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
+	// Not advisory, unlike the attributes: a group is what somebody may reach, and
+	// a sign-in that could not take away a group the provider took away would keep
+	// a privilege past its revocation.
+	if userID != "" {
+		joined, left, gerr := store.ApplyIdPGroups(ctx, tx, userID, provider.OrgID, provider.ID, ext.RawClaims)
+		if gerr != nil {
+			s.log.Error("applying the provider's group mapping", "err", gerr,
+				"provider", provider.Slug, "correlation_id", correlationID(ctx))
+			fail("Something went wrong. Please try again.")
+			return
+		}
+		if joined+left > 0 {
+			if aerr := audit.Write(ctx, tx, audit.Event{
+				Type: "federation.groups_synced", OrgID: provider.OrgID, SubjectID: userID,
+				CorrelationID: correlationID(ctx),
+				Detail:        map[string]any{"provider": provider.Slug, "joined": joined, "left": left},
+			}); aerr != nil {
+				s.log.Error("recording the group sync", "err", aerr)
+			}
+		}
+	}
+
 	// A link performed by an already signed-in user does NOT re-establish the
 	// session -- they already have one, and minting a second would rotate their
 	// sid for no reason.

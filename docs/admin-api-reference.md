@@ -31,7 +31,7 @@ refused with `412` when the configuration moved since the version it names.
 | [groups](#groups) | 5 |
 | [groups / members](#groups--members) | 3 |
 | [groups / radius](#groups--radius) | 2 |
-| [identity-providers](#identity-providers) | 6 |
+| [identity-providers](#identity-providers) | 8 |
 | [instances](#instances) | 1 |
 | [instances / brand](#instances--brand) | 3 |
 | [instances / federation](#instances--federation) | 2 |
@@ -1424,6 +1424,7 @@ Takes:
 | `enabled` | boolean |  |
 | `end_session_url` | string |  |
 | `forward_parameters` | list of string |  |
+| `group_claim` | string |  |
 | `login_domains` | list of string |  |
 | `mfa_acr` | list of string |  |
 | `mfa_amr` | list of string |  |
@@ -1476,6 +1477,45 @@ Answers:
 | `claim` | string | always |
 | `config_version` | integer | always |
 | `mapped` | boolean | always |
+| `slug` | string | always |
+
+### `DELETE /admin/organizations/{orgID}/identity-providers/{slug}/group-map`
+
+Stop a provider's group granting a local one Needs organizations:write.
+
+Go `DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMap`, TypeScript `deleteOrganizationsOrgIDIdentityProvidersSlugGroupMap`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `group` | string | always |
+| `mapped` | boolean | always |
+| `remote_group` | string | always |
+| `slug` | string | always |
+
+### `PUT /admin/organizations/{orgID}/identity-providers/{slug}/group-map`
+
+Say a provider's group grants a local one Needs organizations:write.
+
+Go `PutOrganizationsOrgIDIdentityProvidersSlugGroupMap`, TypeScript `putOrganizationsOrgIDIdentityProvidersSlugGroupMap`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `group` | string |  |
+| `remote_group` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `group` | string | always |
+| `mapped` | boolean | always |
+| `remote_group` | string | always |
 | `slug` | string | always |
 
 ### `PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth`

@@ -62,6 +62,33 @@ whether its `email_verified` is believed and its attribute mapping, are
 `attribute-map` in the [Admin API](admin-api.md#organisations), for a console or
 automation that has no shell.
 
+## A provider's groups
+
+A group here decides what its members reach, so a provider grants one only because
+somebody said so:
+
+```
+signari idp group-map -slug corp -remote-group Engineering -group engineering
+signari idp group-claim -slug corp -claim roles    # `groups` until told otherwise
+```
+
+Nothing is created and nothing is joined otherwise. At each sign-in the groups a mapping
+names become what the claim says: somebody in `Engineering` there joins `engineering` here,
+and somebody no longer in it leaves, however they were added. A group no mapping names is
+none of the provider's business. A SAML upstream's attribute is read the same way, by name.
+
+A claim that is **absent** changes nothing; one present and **empty** leaves every mapped
+group. Providers leave a claim out for reasons that say nothing about membership, and one
+with too many groups to fit in a token is the usual one. A provider that has stopped
+sending the claim therefore stops taking people out of groups.
+
+A group whose members may impersonate cannot be mapped, and a mapped group cannot be
+given impersonation afterwards: whoever administers the provider decides who is in the
+remote group, and could otherwise add themselves and act as anybody. A sign-in that cannot
+apply the mapping is refused, since a group the provider took away would otherwise
+outlive that. Removing a mapping takes nobody out of the group. Each change is
+audited `federation.groups_synced`, with how many joined and left.
+
 ## Sending people to their own provider
 
 Three things take somebody past the password box, straight to their provider:

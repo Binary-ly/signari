@@ -79,6 +79,7 @@ func TestIdentityProvidersAreDeclaredWithTheirSecretsByReference(t *testing.T) {
 	}
 	cert := strings.ReplaceAll(strings.TrimSpace(testCertificate(t)), "\n", "\n        ")
 	file := fmt.Sprintf(`attributes: [{name: team}]
+groups: [{name: platform}]
 identity_providers:
   - slug: gh-%[1]d
     kind: github
@@ -96,6 +97,8 @@ identity_providers:
     jwks_url: https://login.corp.example.test/jwks
     mfa_amr: [mfa]
     forward_parameters: [prompt, acr_values]
+    group_claim: roles
+    group_map: [{remote_group: Engineering, group: platform}]
   - slug: adfs-%[1]d
     kind: saml
     saml:
@@ -129,6 +132,10 @@ identity_providers:
 	}
 	if corp := byKind["oidc"]; !sameSet(corp.ForwardParameters, []string{"prompt", "acr_values"}) {
 		t.Errorf("the provider is told %v", corp.ForwardParameters)
+	}
+	if corp := byKind["oidc"]; corp.GroupClaim != "roles" || len(corp.GroupMap) != 1 ||
+		corp.GroupMap[0].RemoteGroup != "Engineering" || corp.GroupMap[0].Group != "platform" {
+		t.Errorf("the provider's groups are read from %q and map %+v", corp.GroupClaim, corp.GroupMap)
 	}
 	if ci := byKind["assertion"]; !ci.AllowAssertions || ci.AllowSignup {
 		t.Errorf("the assertion issuer is %+v", ci)
@@ -184,7 +191,7 @@ identity_providers:
 		t.Errorf("the export applied elsewhere plans\n%s", p)
 	}
 
-	if p := apply(org, "attributes: [{name: team}]\n", true); strings.Count(p.String(), keptProvider) != 4 ||
+	if p := apply(org, "attributes: [{name: team}]\ngroups: [{name: platform}]\n", true); strings.Count(p.String(), keptProvider) != 4 ||
 		p.Destructive() != nil {
 		t.Errorf("the pruned plan reads\n%s", p)
 	}
@@ -194,7 +201,7 @@ identity_providers:
 			t.Errorf("pruned, %s is still enabled", r.Slug)
 		}
 	}
-	if _, p, _ := plan(org, "attributes: [{name: team}]\n", true); !p.Empty() {
+	if _, p, _ := plan(org, "attributes: [{name: team}]\ngroups: [{name: platform}]\n", true); !p.Empty() {
 		t.Errorf("pruned again it plans\n%s", p)
 	}
 }

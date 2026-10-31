@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0223 idp_group_map
+
+Not compatible with the release before: stop it before migrating.
+
+What a provider's groups grant here (8.14). Only a directory could say who is in a group; somebody who comes through a provider, and is in `Engineering` there, was in nothing here until an administrator added them, one at a time, for good.
+
 ## 0222 user_foreign_key_indexes
 
 Compatible with the release before: its binary may still serve this schema.

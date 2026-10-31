@@ -344,6 +344,10 @@ func (s *Server) Routes() http.Handler {
 		s.putIdPAttributeMap)
 	route("DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", ScopeOrganizationsWrite,
 		s.deleteIdPAttributeMap)
+	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/group-map", ScopeOrganizationsWrite,
+		s.putIdPGroupMap)
+	route("DELETE /admin/organizations/{orgID}/identity-providers/{slug}/group-map", ScopeOrganizationsWrite,
+		s.deleteIdPGroupMap)
 	// SAML service providers, `signari saml` (saml.go).
 	route("GET /admin/organizations/{orgID}/saml-providers", ScopeConfigRead, s.listSAMLProviders)
 	route("POST /admin/organizations/{orgID}/saml-providers", ScopeOrganizationsWrite, s.addSAMLProvider)

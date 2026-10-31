@@ -2113,6 +2113,50 @@ func idpTokenAuthSet(ctx context.Context, conn *pgx.Conn, slug, method, keyFile,
 	return nil
 }
 
+// idpGroupMap says one of a provider's groups grants a local one.
+func idpGroupMap(ctx context.Context, conn *pgx.Conn, slug, remote, group string, remove bool) error {
+	if slug == "" || remote == "" || group == "" {
+		return fmt.Errorf("give -slug, -remote-group and -group")
+	}
+	orgID, _, err := store.IdentityProviderOrg(ctx, conn, slug)
+	if errors.Is(err, store.ErrProviderUnknown) {
+		return fmt.Errorf("no identity provider with slug %q", slug)
+	}
+	if err != nil {
+		return err
+	}
+	if remove {
+		err := store.RemoveIdPGroupMap(ctx, conn, orgID, slug, remote, group)
+		if errors.Is(err, store.ErrIdPMappingUnknown) {
+			return fmt.Errorf("%s does not map %q to %q", slug, remote, group)
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s: %q no longer grants %q; anybody in it stays until somebody removes them\n", slug, remote, group)
+		return nil
+	}
+	if err := store.SetIdPGroupMap(ctx, conn, orgID, slug, remote, group); err != nil {
+		return err
+	}
+	fmt.Printf("%s: %q now grants %q at each sign-in\n", slug, remote, group)
+	fmt.Println("\n  The provider now governs this group: somebody who signs in through it and is")
+	fmt.Println("  not in that group there leaves it, however they were added.")
+	return nil
+}
+
+// idpGroupClaimSet says which claim a provider's groups arrive in.
+func idpGroupClaimSet(ctx context.Context, conn *pgx.Conn, slug, claim string) error {
+	if slug == "" || claim == "" {
+		return fmt.Errorf("give -slug and -claim")
+	}
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{GroupClaim: &claim}); err != nil {
+		return err
+	}
+	fmt.Printf("%s: its groups are read from the %q claim\n", slug, claim)
+	return nil
+}
+
 // idpForwardSet says what a sign-in here passes on to a provider; nothing named
 // tells it nothing.
 func idpForwardSet(ctx context.Context, conn *pgx.Conn, slug, names string) error {

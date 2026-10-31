@@ -16,7 +16,7 @@ import (
 var declaredBy = map[string]string{
 	"access_policies": "access_policy", "claim_mappers": "claim_mapper", "clients": "client",
 	"event_subscriptions": "event_subscription", "groups": "group", "identity_providers": "identity_provider",
-	"idp_attribute_map": "identity_provider", "saml_sources": "identity_provider", "prompts": "prompt",
+	"idp_attribute_map": "identity_provider", "idp_group_map": "identity_provider", "saml_sources": "identity_provider", "prompts": "prompt",
 	"providers": "provider", "proxy_hosts": "proxy_host", "rac_connections": "rac_connection",
 	"radius_clients": "radius_client", "resource_servers": "resource", "saml_providers": "saml_provider",
 	"scim_targets": "scim_target", "scim_target_scope_groups": "scim_target", "scopes": "scope", "sign_in_flows": "sign_in_flow", "signup_rules": "signup",

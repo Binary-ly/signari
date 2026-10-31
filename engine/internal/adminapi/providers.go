@@ -232,6 +232,9 @@ func (s *Server) changeProvider(w http.ResponseWriter, r *http.Request, action s
 	case errors.Is(err, store.ErrProtocolClaim):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "protocol_claim", "detail": err.Error()})
 		return
+	case errors.Is(err, store.ErrHookAddsNothing):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hook_adds_nothing", "detail": err.Error()})
+		return
 	case err != nil:
 		s.log.Error("changing a provider", "org_id", orgID, "hook", hook, "action", action, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})

@@ -174,6 +174,10 @@ func (e providerNotRegistered) Is(target error) bool { return target == ErrProvi
 // for the wrong subject. The database refuses it too.
 var ErrProtocolClaim = errors.New("a hook may not be allowed to set a protocol claim")
 
+// ErrHookAddsNothing is a list for a hook that only answers yes or no, which would be a
+// setting that reads as working and does nothing.
+var ErrHookAddsNothing = errors.New("this hook adds nothing, so it has no list of what it may add")
+
 // SetProviderClaims replaces the claims a token hook may add; empty lets it
 // add none. The allow-list is the hook's whole security model: without it a
 // service returning {"admin": true} would put that in a token this engine
@@ -181,6 +185,9 @@ var ErrProtocolClaim = errors.New("a hook may not be allowed to set a protocol c
 func SetProviderClaims(ctx context.Context, tx Execer, orgID string, hook provider.Hook, claims []string) error {
 	if claims == nil {
 		claims = []string{}
+	}
+	if len(claims) > 0 && !hook.Contributes() {
+		return ErrHookAddsNothing
 	}
 	tag, err := tx.Exec(ctx, `UPDATE core.providers SET allowed_claims = $3
 		WHERE org_id = $1::uuid AND hook = $2`, orgID, string(hook), claims)

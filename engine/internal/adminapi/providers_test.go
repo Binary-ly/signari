@@ -96,9 +96,13 @@ func TestAProviderIsManagedThroughTheAPI(t *testing.T) {
 		!strings.Contains(list.Body.String(), `"timeout_ms":1500`) {
 		t.Errorf("the providers read %s", list.Body.String())
 	}
-	if e := errorOf(http.MethodPut, base+"/authorize/claims", map[string]any{"claims": []string{"x"}},
+	if e := errorOf(http.MethodPut, base+"/userinfo/claims", map[string]any{"claims": []string{"x"}},
 		http.StatusNotFound); e != "provider_not_found" {
 		t.Errorf("claims for an unregistered hook answered %q", e)
+	}
+	if e := errorOf(http.MethodPut, base+"/authorize/claims", map[string]any{"claims": []string{"x"}},
+		http.StatusBadRequest); e != "hook_adds_nothing" {
+		t.Errorf("claims for a hook that adds nothing answered %q", e)
 	}
 
 	rec = call(t, s, http.MethodPost, base+"/token_issue/rotate-secret", testToken, nil)

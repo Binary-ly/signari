@@ -23,6 +23,7 @@ import (
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/rar"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -456,6 +457,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.renderAuthzFailure(w, r, pd.Message)
 		return
 	}
+	if s.clientAccessRefused(ctx, c.OrgID, c.ClientID, userID) {
+		s.renderAuthzFailure(w, r, clientAccessRefusal)
+		return
+	}
 
 	decision, ask, err := s.needsConsent(r, c, userID, req)
 	if err != nil {
@@ -498,6 +503,10 @@ func (s *Server) startCreateAccount(w http.ResponseWriter, r *http.Request, c *c
 	}
 	s.renderLogin(w, r, authz, s.tr(r).Text("signup.notoffered"))
 }
+
+// clientAccessRefusal is what a person is told when the client_access provider says no.
+// Not its reason, which was written outside this deployment.
+const clientAccessRefusal = "You do not have access to this application."
 
 // consentRequiredReason says WHICH unapproved thing blocked a prompt=none request.
 //
@@ -2449,6 +2458,17 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 		return
 	case decisionSession:
 		// Fall through.
+	}
+
+	// The operator's provider, about a sign-in every step has passed, here for every
+	// way in as the status check above is. It can only take this back.
+	if hook := s.askHook(ctx, tx, orgID, provider.HookAuthenticate, store.AuthenticateHookRequest{
+		Subject: userID, OrgID: orgID, AMR: amr, ClientIP: clientIP(r)}); hook.Vetoed {
+		_ = tx.Rollback(ctx)
+		s.clearPending(w)
+		s.recordHookRefusal(ctx, provider.HookAuthenticate, orgID, userID, "", hook.Reason)
+		s.renderLogin(w, r, authzQuery, "You cannot sign in at the moment. Please contact your administrator.")
+		return
 	}
 
 	// ASVS 5.0.0 V7.2.4: "generates a new session token on user authentication,

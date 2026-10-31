@@ -220,11 +220,11 @@ authorization_model: |        # the relation model, as `signari authz model` tak
       permissions: {read: [viewer]}
 
 providers:                    # your own service consulted at a hook, one per hook
-  - hook: token_issue         # or authorize
+  - hook: token_issue         # or any other hook in extensibility.md
     url: https://hooks.example.com/claims
     mode: fail_open           # or fail_closed; never assumed
     timeout: 2s               # the default; at most 5s
-    claims: [department]      # what a token_issue provider may add
+    claims: [department]      # what a token_issue, userinfo or saml_assertion provider may add
     secret: {env: CLAIMS_HOOK_SECRET}   # or {file: path}; left out, one is minted
 
 event_subscriptions:          # where the organisation's events are delivered

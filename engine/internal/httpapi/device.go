@@ -346,6 +346,11 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 			render("", pd.Message, nil)
 			return
 		}
+		if s.clientAccessRefused(ctx, orgID, d.ClientID, userID) {
+			s.refuseDeviceAuthorization(ctx, d)
+			render("", clientAccessRefusal, nil)
+			return
+		}
 		// The client's floor (clientacr.go). Not a denial: the device keeps
 		// waiting, so the person can sign in again with a second factor and
 		// enter the code once more.

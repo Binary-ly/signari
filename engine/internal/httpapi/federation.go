@@ -314,6 +314,14 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 
 	case federation.CreateUser:
 		ext.Email = email
+		// The operator's provider, about somebody arriving from an identity provider
+		// who has no account here. Through the transaction this callback holds.
+		if reason, refused := s.userCreateRefused(ctx, tx, provider.OrgID, email, "federation"); refused {
+			_ = tx.Rollback(ctx)
+			s.recordFederatedRefusal(ctx, provider.OrgID, reason)
+			fail("Your account cannot be created here. Please contact your administrator.")
+			return
+		}
 		userID, err = store.CreateUserFromExternal(ctx, tx, provider.OrgID, ext)
 		if err != nil {
 			s.log.Error("creating a user from an external identity", "err", err)

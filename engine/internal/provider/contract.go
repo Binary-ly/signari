@@ -47,6 +47,8 @@ func Contracts() []Contract {
 		return objectSchema(required, map[string]any{"type": stringSchema(), "id": stringSchema(),
 			"properties": anyObjectSchema()})
 	}
+	gate := objectSchema([]string{"decision"}, map[string]any{
+		"decision": map[string]any{"type": "boolean"}, "reason": stringSchema()})
 	out := make([]Contract, 0, len(allHooks))
 	for _, h := range allHooks {
 		switch h {
@@ -80,6 +82,51 @@ func Contracts() []Contract {
 				Response: objectSchema([]string{"verified"}, map[string]any{
 					"verified": map[string]any{"type": "boolean"}}),
 				Sample: map[string]any{"username": "provider-test", "password": "provider-test",
+					"org_id": "provider-test"}})
+		case HookAuthenticate:
+			out = append(out, Contract{Hook: h, Verdict: "decision",
+				Request: objectSchema([]string{"subject", "org_id", "amr"}, map[string]any{
+					"subject": stringSchema(), "org_id": stringSchema(), "client_ip": stringSchema(),
+					"amr": map[string]any{"type": "array", "items": stringSchema()}}),
+				Response: gate,
+				Sample: map[string]any{"subject": "provider-test", "org_id": "provider-test",
+					"amr": []string{"pwd"}}})
+		case HookUserCreate:
+			out = append(out, Contract{Hook: h, Verdict: "decision",
+				Request: objectSchema([]string{"org_id", "email", "source"}, map[string]any{
+					"org_id": stringSchema(), "email": stringSchema(), "source": stringSchema()}),
+				Response: gate,
+				Sample: map[string]any{"org_id": "provider-test", "email": "provider-test@example.invalid",
+					"source": "provider-test"}})
+		case HookClientAccess:
+			out = append(out, Contract{Hook: h, Verdict: "decision",
+				Request: objectSchema([]string{"subject", "resource", "action"}, map[string]any{
+					"subject": entity("type", "id"), "resource": entity("type"),
+					"action": objectSchema([]string{"name"}, map[string]any{"name": stringSchema(),
+						"properties": anyObjectSchema()}),
+					"context": anyObjectSchema()}),
+				Response: gate,
+				Sample: map[string]any{"subject": map[string]any{"type": "user", "id": "provider-test"},
+					"resource": map[string]any{"type": "client", "id": "provider-test"},
+					"action":   map[string]any{"name": "access"}}})
+		case HookUserinfo:
+			out = append(out, Contract{Hook: h, Verdict: "decision",
+				Request: objectSchema([]string{"subject", "client_id", "scopes", "org_id"}, map[string]any{
+					"subject": stringSchema(), "client_id": stringSchema(), "org_id": stringSchema(),
+					"scopes": map[string]any{"type": "array", "items": stringSchema()}}),
+				Response: objectSchema([]string{"decision"}, map[string]any{
+					"decision": map[string]any{"type": "boolean"}, "reason": stringSchema(),
+					"claims": anyObjectSchema()}),
+				Sample: map[string]any{"subject": "provider-test", "client_id": "provider-test",
+					"scopes": []string{}, "org_id": "provider-test"}})
+		case HookSAMLAssertion:
+			out = append(out, Contract{Hook: h, Verdict: "decision",
+				Request: objectSchema([]string{"subject", "entity_id", "org_id"}, map[string]any{
+					"subject": stringSchema(), "entity_id": stringSchema(), "org_id": stringSchema()}),
+				Response: objectSchema([]string{"decision"}, map[string]any{
+					"decision": map[string]any{"type": "boolean"}, "reason": stringSchema(),
+					"claims": anyObjectSchema()}),
+				Sample: map[string]any{"subject": "provider-test", "entity_id": "provider-test",
 					"org_id": "provider-test"}})
 		default:
 			panic(fmt.Sprintf("the %q hook has no contract", h))

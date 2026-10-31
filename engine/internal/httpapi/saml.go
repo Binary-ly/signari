@@ -14,6 +14,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/policy"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/store"
 )
@@ -328,6 +329,21 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 
 // policyDenied is an access-policy refusal, carried as an error so a caller
 // can answer it as a refusal rather than as a failure.
+// attributeValues is a value a provider answered in JSON as a SAML attribute's values.
+func attributeValues(value any) []string {
+	switch v := value.(type) {
+	case string:
+		return []string{v}
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			out = append(out, fmt.Sprint(item))
+		}
+		return out
+	}
+	return []string{fmt.Sprint(value)}
+}
+
 type policyDenied struct{ d *policy.Decision }
 
 func (e *policyDenied) Error() string { return "refused by the access policy: " + e.d.Message }
@@ -546,6 +562,21 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 	// transaction, and the document is returned only once that commits.
 	if err := tx.Commit(ctx); err != nil {
 		return "", "", err
+	}
+
+	// The operator's provider, with the transaction closed for the same reason. What it
+	// adds cannot take a name already released, and refusing is told to the service
+	// provider as a policy refusal is, by the caller.
+	hook := s.askHook(ctx, s.db, orgID, provider.HookSAMLAssertion,
+		store.SAMLAssertionHookRequest{Subject: userID, EntityID: p.EntityID, OrgID: orgID})
+	if hook.Vetoed {
+		s.recordHookRefusal(ctx, provider.HookSAMLAssertion, orgID, userID, "", hook.Reason)
+		return "", "", &policyDenied{&policy.Decision{Rule: "provider", Message: clientAccessRefusal}}
+	}
+	for name, value := range hook.Claims {
+		if _, taken := attrs[name]; !taken {
+			attrs[name] = attributeValues(value)
+		}
 	}
 
 	lifetime := time.Duration(p.LifetimeSeconds) * time.Second

@@ -82,7 +82,15 @@ func TestCalledMatchesWhatIsWired(t *testing.T) {
 	//     after every local check has passed and before mintTokens.
 	//   - HookPasswordVerify: httpapi.tryDelegated, for somebody still to be
 	//     migrated from a source of kind hook.
-	wired := map[Hook]bool{HookAuthorize: true, HookTokenIssue: true, HookPasswordVerify: true}
+	//   - HookAuthenticate: httpapi.completeSignIn, for every way in.
+	//   - HookUserCreate: httpapi.createAccount and completeFederation.
+	//   - HookClientAccess: httpapi.clientAccessRefused, from handleAuthorize and
+	//     the device and CIBA approvals.
+	//   - HookUserinfo: httpapi.handleUserinfo.
+	//   - HookSAMLAssertion: httpapi.issueSAMLAssertion.
+	wired := map[Hook]bool{HookAuthorize: true, HookTokenIssue: true, HookPasswordVerify: true,
+		HookAuthenticate: true, HookUserCreate: true, HookClientAccess: true, HookUserinfo: true,
+		HookSAMLAssertion: true}
 
 	for _, h := range allHooks {
 		if h.Called() != wired[h] {

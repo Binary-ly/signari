@@ -11,8 +11,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/authzen"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
@@ -145,6 +147,58 @@ func (s *Server) verifyPresentedIn(ctx context.Context, q interface {
 		claims.Pairwise, claims.Subject = claims.Subject, person
 	}
 	return claims, nil
+}
+
+// askHook asks a hook's provider about something this engine has said yes to. A row
+// that will not load refuses, as at the token endpoint: the operator registered something,
+// and it is not for this process to decide it can be ignored. Through q, for a caller
+// holding a transaction: the call is bounded by the provider's timeout, and it is the one
+// thing a sign-in waits on.
+func (s *Server) askHook(ctx context.Context, q dbReader, orgID string, hook provider.Hook, req any) store.TokenHookResult {
+	res, err := store.ConsultHook(ctx, q, s.root, s.outboundClient, s.log, orgID, hook, req)
+	if err != nil {
+		s.log.Error("consulting a provider", "hook", string(hook), "err", err,
+			"correlation_id", correlationID(ctx))
+		return store.TokenHookResult{Vetoed: true, Reason: "the provider could not be read"}
+	}
+	return res
+}
+
+// recordHookRefusal logs and audits a provider's refusal. The reason stays here: it was
+// written by somebody outside this deployment, and is not for the person refused.
+func (s *Server) recordHookRefusal(ctx context.Context, hook provider.Hook, orgID, subject, clientID, reason string) {
+	s.log.Warn("a provider refused", "hook", string(hook), "client_id", clientID, "reason", reason,
+		"correlation_id", correlationID(ctx))
+	s.auditDetached(ctx, audit.Event{Type: "provider.refused", OrgID: orgID, SubjectID: subject,
+		ClientID: clientID, CorrelationID: correlationID(ctx),
+		Detail: map[string]any{"hook": string(hook), "reason": reason}})
+}
+
+// userCreateRefused asks the user_create provider about an account about to be made by
+// somebody other than an operator. source is signup or federation.
+func (s *Server) userCreateRefused(ctx context.Context, q dbReader, orgID, email, source string) (string, bool) {
+	res := s.askHook(ctx, q, orgID, provider.HookUserCreate,
+		store.UserCreateHookRequest{OrgID: orgID, Email: email, Source: source})
+	return res.Reason, res.Vetoed
+}
+
+// recordFederatedRefusal is recordHookRefusal for the federated callback, where the name
+// of this package is taken by the identity provider.
+func (s *Server) recordFederatedRefusal(ctx context.Context, orgID, reason string) {
+	s.recordHookRefusal(ctx, provider.HookUserCreate, orgID, "", "", reason)
+}
+
+// clientAccessRefused asks the client_access provider about a person reaching an
+// application the access policy has let them reach, in AuthZEN's shape, so what answers
+// the authorize hook can answer this.
+func (s *Server) clientAccessRefused(ctx context.Context, orgID, clientID, userID string) bool {
+	res := s.askHook(ctx, s.db, orgID, provider.HookClientAccess, authzen.Request{
+		Subject: authzen.Subject{Type: "user", ID: userID}, Action: authzen.Action{Name: "access"},
+		Resource: authzen.Resource{Type: "client", ID: clientID}})
+	if res.Vetoed {
+		s.recordHookRefusal(ctx, provider.HookClientAccess, orgID, userID, clientID, res.Reason)
+	}
+	return res.Vetoed
 }
 
 // consultTokenHook asks the token_issue provider about an issuance this engine

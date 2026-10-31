@@ -97,6 +97,7 @@ var EventTypes = []string{
 	"org.totp_policy_set",
 	"password.breached", "password.changed",
 	"prompt.answered",
+	"provider.refused",
 	"proxy.host_added", "proxy.host_disabled", "proxy.host_disclosure_set", "proxy.host_enabled", "proxy.host_removed",
 	"proxy.session_issued",
 	"rac.session_ended", "rac.session_requested",

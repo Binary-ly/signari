@@ -722,7 +722,12 @@
           "enum": [
             "authorize",
             "token_issue",
-            "password_verify"
+            "password_verify",
+            "authenticate",
+            "user_create",
+            "client_access",
+            "userinfo",
+            "saml_assertion"
           ],
           "type": "string"
         },

@@ -15,6 +15,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/store"
 )
 
@@ -452,6 +453,10 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 			fail(err.Error())
 			return
 		}
+		if errors.Is(err, errAccountRefused) {
+			fail("An account cannot be created with that address. Please contact your administrator.")
+			return
+		}
 		s.log.Error("creating an account", "err", err)
 		fail("The account could not be created. Reference: " +
 			shortCode(correlationID(ctx)))
@@ -502,6 +507,15 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 // person set on the form (store.SetOwnAttributes).
 func (s *Server) createAccount(ctx context.Context, orgID, email, password string,
 	groups []string, selfSignup, verify, pending bool, attrs map[string]string) (string, []string, error) {
+
+	// The operator's provider, about somebody signing themselves up. An invitation
+	// came from the operator, so it is not asked of again.
+	if selfSignup {
+		if reason, refused := s.userCreateRefused(ctx, s.db, orgID, email, "signup"); refused {
+			s.recordHookRefusal(ctx, provider.HookUserCreate, orgID, "", "", reason)
+			return "", nil, errAccountRefused
+		}
+	}
 
 	handle := make([]byte, 64)
 	if _, err := io.ReadFull(rand.Reader, handle); err != nil {
@@ -583,6 +597,9 @@ func (s *Server) createAccount(ctx context.Context, orgID, email, password strin
 }
 
 var errAddressTaken = errors.New("an account with that address already exists")
+
+// errAccountRefused is the user_create provider saying no.
+var errAccountRefused = errors.New("the account was refused")
 
 // signupOffered reports whether the sign-in page should link to sign-up: only
 // when self-service sign-up is open. An invitation carries its own link, and a

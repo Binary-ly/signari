@@ -190,6 +190,53 @@ password nobody could check is not a correct one, so continuing without an answe
 sign anybody in. Check `Signari-Signature` on every call: this is the one service that
 would otherwise answer any stranger's question about a password.
 
+## Hooks that can take a yes back
+
+The five below follow the composition rule above: each is asked after this engine has
+decided yes, so a provider can refuse what would have happened and can grant nothing. The
+answer is `{"decision": true}`, or `{"decision": false, "reason": "…"}`. A reason goes to the
+log and to a `provider.refused` audit record, and never to the person or the client, because
+it is written by somebody outside this deployment.
+
+There is no hook for a refresh, because `token_issue` is asked at every grant, and says so
+in `grant_type`.
+
+## The `authenticate` hook
+
+Asked when every step of a sign-in has passed, before the session, for every way in: a
+password, a passkey, a provider, a one-time code. Told `subject`, `org_id`, `amr` and
+`client_ip`. A refusal shows the person the same page a deactivated account does.
+
+## The `user_create` hook
+
+Asked before an account is made by somebody signing themselves up or arriving from an
+identity provider. Told `org_id`, `email` and `source`, `signup` or `federation`. It is not
+asked about what an operator does: an invitation, the Admin API, `signari user create`,
+SCIM, a directory sync or an import.
+
+## The `client_access` hook
+
+Asked when a person reaches an application, after the access policy has let them: at the
+authorization endpoint, and when a device or CIBA request is approved. Told an AuthZEN
+request, a `user` subject, a `client` resource and the action `access`, so a policy engine
+you already run out of process can answer it, as it can `authorize`.
+
+## The `userinfo` hook
+
+Asked when userinfo answers. Told `subject`, `client_id`, `scopes` and `org_id`. A refusal is
+`403`. As with `token_issue`, the answer may carry `claims`, and only names on the list you
+give `signari provider claims` are kept. Nothing overwrites what is already there, and no
+protocol claim can be set.
+
+## The `saml_assertion` hook
+
+Asked when an assertion is built. Told `subject`, `entity_id` and `org_id`. A refusal is told
+to the service provider as a policy refusal is. The answer may add attributes by the same
+list and the same rule as `userinfo`, and a value that is a list becomes several attribute
+values.
+
+On any other hook a list is refused rather than ignored.
+
 ## Constraints on a provider URL
 
 - **https only.** Refused at registration and again in the database.
@@ -207,5 +254,5 @@ would otherwise answer any stranger's question about a password.
 
 `signari provider list` reports, per hook, whether any decision point actually
 consults it — so registering a provider for a hook nothing calls tells you at
-that moment rather than leaving a control that silently never fires. All three
-hooks, `authorize`, `token_issue` and `password_verify`, are consulted.
+that moment rather than leaving a control that silently never fires. All eight hooks
+are consulted.

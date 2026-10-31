@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"signari.dev/engine/internal/dpop"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
@@ -218,6 +219,23 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			_ = tx.Rollback(ctx)
+		}
+	}
+
+	// The operator's provider, last, so what it adds cannot take a name already
+	// released, and a refusal is a refusal of the whole answer.
+	if roleOrg != "" {
+		hook := s.askHook(ctx, s.db, roleOrg, provider.HookUserinfo, store.UserinfoHookRequest{
+			Subject: claims.Subject, ClientID: claims.ClientID, Scopes: strings.Fields(claims.Scope), OrgID: roleOrg})
+		if hook.Vetoed {
+			s.recordHookRefusal(ctx, provider.HookUserinfo, roleOrg, claims.Subject, claims.ClientID, hook.Reason)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		for name, value := range hook.Claims {
+			if _, taken := out[name]; !taken {
+				out[name] = value
+			}
 		}
 	}
 

@@ -464,6 +464,8 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 					Detail: map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "ciba"},
 				})
 				approve, refusal = false, pd.Message
+			} else if s.clientAccessRefused(ctx, orgID, d.ClientID, userID) {
+				approve, refusal = false, clientAccessRefusal
 			}
 		}
 		// The request's acr_values, which the approving session must meet, as

@@ -102,9 +102,39 @@ const (
 	// a `hook` migration source is enabled. A match takes a local hash, and the person
 	// never comes this way again.
 	HookPasswordVerify Hook = "password_verify"
+
+	// HookAuthenticate is asked about a sign-in every step of the flow has passed,
+	// before it gets a session. It can refuse it, and that is all it can do.
+	HookAuthenticate Hook = "authenticate"
+
+	// HookUserCreate is asked before an account is made by somebody other than an
+	// operator: a person signing up, or arriving from an identity provider. What an
+	// operator or their automation creates is theirs to decide.
+	HookUserCreate Hook = "user_create"
+
+	// HookClientAccess is asked about a person reaching an application, after the
+	// access policy has let them. It speaks AuthZEN, as HookAuthorize does, so a
+	// policy engine an operator already runs can answer it out of process.
+	HookClientAccess Hook = "client_access"
+
+	// HookUserinfo is asked as userinfo answers, and may refuse or add claims from
+	// the operator's list.
+	HookUserinfo Hook = "userinfo"
+
+	// HookSAMLAssertion is asked as an assertion is built, and may refuse or add
+	// attributes from the operator's list.
+	HookSAMLAssertion Hook = "saml_assertion"
 )
 
-var allHooks = []Hook{HookAuthorize, HookTokenIssue, HookPasswordVerify}
+var allHooks = []Hook{HookAuthorize, HookTokenIssue, HookPasswordVerify, HookAuthenticate, HookUserCreate,
+	HookClientAccess, HookUserinfo, HookSAMLAssertion}
+
+// Contributes reports whether a hook's provider may add to what is said, bounded by
+// the operator's list. The others only ever answer yes or no, or a list would be a
+// setting that does nothing.
+func (h Hook) Contributes() bool {
+	return h == HookTokenIssue || h == HookUserinfo || h == HookSAMLAssertion
+}
 
 // AllHooks returns every defined hook, for the CLI's help text and listings.
 func AllHooks() []Hook { return append([]Hook(nil), allHooks...) }
@@ -154,6 +184,23 @@ func (h Hook) Called() bool {
 	case HookPasswordVerify:
 		// Consulted by store.ConsultPasswordProvider from the sign-in form, for
 		// a person pending migration from a `hook` source.
+		return true
+	case HookAuthenticate:
+		// httpapi.completeSignIn, where every way in arrives, once the flow says
+		// a session is due.
+		return true
+	case HookUserCreate:
+		// httpapi.createAccount and the federated callback's CreateUser branch.
+		return true
+	case HookClientAccess:
+		// httpapi.clientAccessRefused, at the authorization endpoint and when a
+		// device or CIBA request is approved.
+		return true
+	case HookUserinfo:
+		// httpapi.handleUserinfo, once the local claims are in.
+		return true
+	case HookSAMLAssertion:
+		// httpapi.issueSAMLAssertion, once the attributes are read.
 		return true
 	}
 	return false

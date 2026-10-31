@@ -103,8 +103,56 @@ type TokenHookResult struct {
 func ConsultTokenProvider(ctx context.Context, q providerReader, root *keys.RootKey,
 	client func(time.Duration) *http.Client,
 	log *slog.Logger, orgID string, req TokenHookRequest) (TokenHookResult, error) {
+	return ConsultHook(ctx, q, root, client, log, orgID, provider.HookTokenIssue, req)
+}
 
-	p, err := LoadProvider(ctx, q, root, orgID, provider.HookTokenIssue)
+// AuthenticateHookRequest is what the authenticate hook is told: who has got through,
+// and by what. Nothing that proves it.
+type AuthenticateHookRequest struct {
+	Subject  string   `json:"subject"`
+	OrgID    string   `json:"org_id"`
+	AMR      []string `json:"amr"`
+	ClientIP string   `json:"client_ip,omitempty"`
+}
+
+// UserCreateHookRequest is what the user_create hook is told. Source is `signup` or
+// `federation`.
+type UserCreateHookRequest struct {
+	OrgID  string `json:"org_id"`
+	Email  string `json:"email"`
+	Source string `json:"source"`
+}
+
+// UserinfoHookRequest is what the userinfo hook is told.
+type UserinfoHookRequest struct {
+	Subject  string   `json:"subject"`
+	ClientID string   `json:"client_id"`
+	Scopes   []string `json:"scopes"`
+	OrgID    string   `json:"org_id"`
+}
+
+// SAMLAssertionHookRequest is what the saml_assertion hook is told.
+type SAMLAssertionHookRequest struct {
+	Subject  string `json:"subject"`
+	EntityID string `json:"entity_id"`
+	OrgID    string `json:"org_id"`
+}
+
+// GateHookResponse is what a hook that contributes nothing answers.
+type GateHookResponse struct {
+	Decision bool   `json:"decision"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// ConsultHook asks the operator's provider for a hook about something this engine has
+// already said yes to, by the rule at the top of this file: a yes can be taken back,
+// and what is added is bounded by the operator's list, which for a hook that does not
+// Contribute is empty. The same for every hook, so no hook has a composition of its own.
+func ConsultHook(ctx context.Context, q providerReader, root *keys.RootKey,
+	client func(time.Duration) *http.Client,
+	log *slog.Logger, orgID string, hook provider.Hook, req any) (TokenHookResult, error) {
+
+	p, err := LoadProvider(ctx, q, root, orgID, hook)
 	if err != nil {
 		// A provider row that will not load is a configuration fault, not a
 		// decision. Failing rather than silently issuing: the operator
@@ -123,12 +171,12 @@ func ConsultTokenProvider(ctx context.Context, q providerReader, root *keys.Root
 		// answering means an operator's veto is no longer being enforced, and
 		// nothing else would record that.
 		if p.Decide(callErr) {
-			log.Warn("the token provider did not answer; issuing because it is "+
-				"registered fail_open", "provider", p.Name, "err", callErr)
+			log.Warn("a provider did not answer; going on because it is registered fail_open",
+				"hook", string(hook), "provider", p.Name, "err", callErr)
 			return TokenHookResult{}, nil
 		}
-		log.Error("the token provider did not answer; refusing because it is "+
-			"registered fail_closed", "provider", p.Name, "err", callErr)
+		log.Error("a provider did not answer; refusing because it is registered fail_closed",
+			"hook", string(hook), "provider", p.Name, "err", callErr)
 		return TokenHookResult{
 			Vetoed: true,
 			Reason: fmt.Sprintf("the %s provider was unreachable and is registered fail_closed", p.Name),
@@ -154,8 +202,8 @@ func ConsultTokenProvider(ctx context.Context, q providerReader, root *keys.Root
 		// Named in the log so an operator can see a provider reaching for
 		// something it was not granted -- which is either a misconfiguration
 		// worth fixing or a provider worth removing.
-		log.Warn("the token provider returned claims it may not contribute",
-			"provider", p.Name, "dropped", res.Dropped)
+		log.Warn("a provider returned claims it may not contribute",
+			"hook", string(hook), "provider", p.Name, "dropped", res.Dropped)
 	}
 	return res, nil
 }

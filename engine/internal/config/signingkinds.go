@@ -65,9 +65,9 @@ func (providerSection) validate(f *File, add func(string, ...any)) {
 			add("providers[%s]: %v", w.Hook, err)
 		}
 		if w.Claims != nil {
-			if len(*w.Claims) > 0 && reg.Hook != provider.HookTokenIssue {
-				add("providers[%s]: claims are what a %s provider may add to a token, and this hook adds none",
-					w.Hook, provider.HookTokenIssue)
+			if len(*w.Claims) > 0 && !reg.Hook.Contributes() {
+				add("providers[%s]: claims are what a provider may add to what is said, and this hook adds nothing",
+					w.Hook)
 			}
 			reg.AllowedClaims = *w.Claims
 			for _, c := range *w.Claims {

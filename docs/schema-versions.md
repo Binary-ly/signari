@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0234 more_hooks
+
+Not compatible with the release before: stop it before migrating.
+
+Five more decisions an operator's own service can take part in (10.01): a sign-in about to get a session, an account about to be made, a person about to reach an application, and what userinfo and a SAML assertion say. Each is consulted after this engine has decided yes, so a provider can only take a yes back, and the last two can add what the operator's list lets them. A refresh has no hook of its own: token_issue is asked at every grant, and says so in grant_type.
+
 ## 0233 security_profile
 
 Compatible with the release before: its binary may still serve this schema.

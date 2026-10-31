@@ -50,8 +50,10 @@ func AnswerPushedPrompts(ctx context.Context, q SubjectDB, uriHash []byte, answe
 }
 
 // SweepExpiredPushedRequests drops handles nobody redeemed.
-func SweepExpiredPushedRequests(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM core.pushed_requests WHERE expires_at <= now()`)
+func SweepExpiredPushedRequests(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.pushed_requests WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.pushed_requests WHERE expires_at <= now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

@@ -30,7 +30,7 @@ func TestThePurgeKeepsADailyWindowThatIsStillOpen(t *testing.T) {
 		    ($1 || ':over', now() - interval '25 hours', 7)`, key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PurgeRateLimits(ctx, tx); err != nil {
+	if _, err := PurgeRateLimits(ctx, tx, 1<<20); err != nil {
 		t.Fatal(err)
 	}
 	var open, over int

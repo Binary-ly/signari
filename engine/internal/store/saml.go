@@ -458,9 +458,10 @@ func AdvanceLogoutChain(ctx context.Context, tx pgx.Tx, token string, previousFa
 }
 
 // SweepExpiredLogoutChains removes abandoned chains. Called by the janitor.
-func SweepExpiredLogoutChains(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx,
-		`DELETE FROM core.saml_logout_progress WHERE expires_at <= now()`)
+func SweepExpiredLogoutChains(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.saml_logout_progress WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.saml_logout_progress WHERE expires_at <= now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

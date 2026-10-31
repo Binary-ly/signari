@@ -229,8 +229,10 @@ func ConsumeRecovery(ctx context.Context, tx pgx.Tx, requestID, userID, newHash 
 }
 
 // PurgeExpiredRecoveries drops requests nobody can use any more.
-func PurgeExpiredRecoveries(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM core.recovery_requests WHERE expires_at < now()`)
+func PurgeExpiredRecoveries(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.recovery_requests WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.recovery_requests WHERE expires_at < now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

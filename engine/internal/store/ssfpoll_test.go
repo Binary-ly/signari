@@ -212,7 +212,7 @@ func TestPurgeStalePollEventsDropsOnlyTheOld(t *testing.T) {
 	must(t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	n, err := PurgeStalePollEvents(ctx, tx, 30*24*time.Hour)
+	n, err := PurgeStalePollEvents(ctx, tx, 30*24*time.Hour, before+1)
 	must(t, err)
 	if n != before {
 		t.Fatalf("purged %d of %d stale rows; a purge must take every row past "+

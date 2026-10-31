@@ -214,9 +214,10 @@ func ConsumeInteraction(ctx context.Context, db *pgxpool.Pool, handleHash []byte
 }
 
 // PurgeExpiredInteractions is the janitor's share.
-func PurgeExpiredInteractions(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx,
-		`DELETE FROM core.uma_claims_interactions WHERE expires_at < now()`)
+func PurgeExpiredInteractions(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.uma_claims_interactions WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.uma_claims_interactions WHERE expires_at < now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -410,9 +411,10 @@ func DecidePendingRequest(ctx context.Context, e Execer, id, state, decidedBy,
 // A pending request is a standing offer to grant access. One nobody decided for
 // a month should lapse rather than sit there to be approved later by somebody
 // who no longer remembers the context.
-func PurgeExpiredPendingRequests(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx,
-		`DELETE FROM core.uma_pending_requests WHERE expires_at < now()`)
+func PurgeExpiredPendingRequests(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.uma_pending_requests WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.uma_pending_requests WHERE expires_at < now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

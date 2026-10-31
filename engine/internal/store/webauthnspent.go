@@ -34,8 +34,10 @@ func SpendCeremonyChallenge(ctx context.Context, db *pgxpool.Pool, challenge str
 }
 
 // SweepSpentCeremonies drops challenge records past their window.
-func SweepSpentCeremonies(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM core.webauthn_spent_challenges WHERE expires_at <= now()`)
+func SweepSpentCeremonies(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.webauthn_spent_challenges WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.webauthn_spent_challenges WHERE expires_at <= now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

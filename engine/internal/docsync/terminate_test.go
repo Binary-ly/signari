@@ -61,7 +61,7 @@ func TestEverySessionEndsThroughTerminateSessions(t *testing.T) {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			isTerminate := rel == "internal/store/sessions.go" && fn.Name.Name == "TerminateSessions"
+			isTerminate := rel == "internal/store/sessions.go" && fn.Name.Name == "terminate"
 			terminates := false
 			var ends []string
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -69,9 +69,9 @@ func TestEverySessionEndsThroughTerminateSessions(t *testing.T) {
 				case *ast.CallExpr:
 					switch f := n.Fun.(type) {
 					case *ast.Ident:
-						terminates = terminates || f.Name == "TerminateSessions"
+						terminates = terminates || f.Name == "TerminateSessions" || f.Name == "TerminateEachSession"
 					case *ast.SelectorExpr:
-						terminates = terminates || f.Sel.Name == "TerminateSessions"
+						terminates = terminates || f.Sel.Name == "TerminateSessions" || f.Sel.Name == "TerminateEachSession"
 					}
 				case *ast.BasicLit:
 					if n.Kind != token.STRING {

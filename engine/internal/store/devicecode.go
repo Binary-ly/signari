@@ -249,12 +249,12 @@ func PollDeviceCode(ctx context.Context, db *pgxpool.Pool, deviceHash []byte,
 
 // PurgeExpiredDeviceCodes removes dead records. Called by the janitor.
 //
-// Takes a transaction rather than the pool so it joins the janitor's single
-// advisory-locked pass, like every other sweep.
-func PurgeExpiredDeviceCodes(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `
-		DELETE FROM core.device_authorizations
-		WHERE expires_at < now() - interval '1 hour'`)
+// Takes a transaction rather than the pool so it runs under the janitor's
+// advisory lock, like every other sweep.
+func PurgeExpiredDeviceCodes(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.device_authorizations WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.device_authorizations WHERE expires_at < now() - interval '1 hour'
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

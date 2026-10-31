@@ -214,10 +214,10 @@ func RevokeFamilyForCode(ctx context.Context, tx pgx.Tx, hash []byte) (int64, er
 
 // PurgeExpiredCodes removes spent and expired codes. A singleton job, not
 // something every node runs -- see ADR on what must not be horizontal.
-func PurgeExpiredCodes(ctx context.Context, tx pgx.Tx, olderThan time.Duration) (int64, error) {
-	tag, err := tx.Exec(ctx,
-		`DELETE FROM core.authorization_codes WHERE expires_at < now() - $1::interval`,
-		olderThan.String())
+func PurgeExpiredCodes(ctx context.Context, tx pgx.Tx, olderThan time.Duration, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.authorization_codes WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.authorization_codes WHERE expires_at < now() - $1::interval
+		LIMIT $2 FOR UPDATE SKIP LOCKED))`, olderThan.String(), limit)
 	if err != nil {
 		return 0, err
 	}

@@ -222,9 +222,10 @@ func ConsumeDuoChallenge(ctx context.Context, db *pgxpool.Pool, state string) (
 }
 
 // PurgeExpiredDuoChallenges drops challenges nobody finished.
-func PurgeExpiredDuoChallenges(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx,
-		`DELETE FROM core.duo_challenges WHERE expires_at < now() - interval '1 hour'`)
+func PurgeExpiredDuoChallenges(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.duo_challenges WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.duo_challenges WHERE expires_at < now() - interval '1 hour'
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

@@ -178,7 +178,7 @@ Some things stay with the process rather than an instance:
 
 ## Retention
 
-The janitor deletes, every pass and up to a thousand rows a table at a time,
+The janitor deletes, every pass and a thousand rows a table to a transaction,
 rows that nothing reads any more. Each is a Go duration of at least `1h`.
 
 | Variable | Default | Deletes |

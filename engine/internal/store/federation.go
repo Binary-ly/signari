@@ -418,8 +418,10 @@ func CreateUserFromExternal(ctx context.Context, tx pgx.Tx, orgID string, ext fe
 }
 
 // SweepExpiredFederatedLogins drops abandoned external logins.
-func SweepExpiredFederatedLogins(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM core.federated_logins WHERE expires_at <= now()`)
+func SweepExpiredFederatedLogins(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.federated_logins WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.federated_logins WHERE expires_at <= now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

@@ -148,7 +148,7 @@ func TestAnOpaqueAccessTokenThroughItsLife(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if n, err := store.PurgeExpiredOpaqueTokens(ctx, tx); err != nil || n == 0 {
+	if n, err := store.PurgeExpiredOpaqueTokens(ctx, tx, 1000); err != nil || n == 0 {
 		t.Errorf("the sweep: %d, %v", n, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -31,8 +31,10 @@ func MarkDPoPProofSeen(ctx context.Context, db *pgxpool.Pool, jkt, jti string, t
 }
 
 // SweepExpiredDPoPProofs drops proof records past their window.
-func SweepExpiredDPoPProofs(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM core.dpop_seen_jtis WHERE expires_at <= now()`)
+func SweepExpiredDPoPProofs(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.dpop_seen_jtis WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.dpop_seen_jtis WHERE expires_at <= now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

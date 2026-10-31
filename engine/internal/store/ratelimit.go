@@ -156,10 +156,11 @@ const MaxRateWindow = 24 * time.Hour
 // permit anything, since the current window is computed from the clock. It is
 // here because a table that only grows is how a deployment discovers its disk
 // on a Sunday. It keeps every row that could still be a live window.
-func PurgeRateLimits(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx,
-		`DELETE FROM core.rate_limits WHERE window_start < now() - $1::interval`,
-		fmt.Sprintf("%d seconds", int(MaxRateWindow.Seconds())))
+func PurgeRateLimits(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.rate_limits WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.rate_limits WHERE window_start < now() - $1::interval
+		LIMIT $2 FOR UPDATE SKIP LOCKED))`,
+		fmt.Sprintf("%d seconds", int(MaxRateWindow.Seconds())), limit)
 	if err != nil {
 		return 0, err
 	}

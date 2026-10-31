@@ -126,10 +126,10 @@ func PollFetch(ctx context.Context, tx pgx.Tx, streamID string, max int, onlyOfT
 // The age is generous by design: dropping a security event the receiver has not
 // yet seen is a real loss, so this is a backstop against an ABANDONED stream, not
 // a delivery deadline for a slow one.
-func PurgeStalePollEvents(ctx context.Context, tx pgx.Tx, age time.Duration) (int, error) {
-	tag, err := tx.Exec(ctx, `
-		DELETE FROM core.ssf_poll_queue
-		WHERE queued_at < now() - $1::interval`, age.String())
+func PurgeStalePollEvents(ctx context.Context, tx pgx.Tx, age time.Duration, limit int) (int, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.ssf_poll_queue WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.ssf_poll_queue WHERE queued_at < now() - $1::interval
+		LIMIT $2 FOR UPDATE SKIP LOCKED))`, age.String(), limit)
 	if err != nil {
 		return 0, fmt.Errorf("purging stale poll events: %w", err)
 	}

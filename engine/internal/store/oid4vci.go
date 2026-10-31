@@ -221,9 +221,10 @@ func ClaimPreAuthorizedCode(ctx context.Context, db Execer, id string) error {
 // so removing it while that token is still live would refuse a wallet holding
 // a valid token. A redemption happens before the offer expires, so an offer
 // expired by more than the token's lifetime cannot have a live token.
-func SweepSpentPreAuthorizedCodes(ctx context.Context, tx pgx.Tx, tokenTTL time.Duration) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM core.preauthorized_codes
-		WHERE expires_at < now() - $1::interval`, tokenTTL.String())
+func SweepSpentPreAuthorizedCodes(ctx context.Context, tx pgx.Tx, tokenTTL time.Duration, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.preauthorized_codes WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.preauthorized_codes WHERE expires_at < now() - $1::interval
+		LIMIT $2 FOR UPDATE SKIP LOCKED))`, tokenTTL.String(), limit)
 	if err != nil {
 		return 0, err
 	}

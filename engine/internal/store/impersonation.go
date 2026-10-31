@@ -220,10 +220,8 @@ func ExpireImpersonations(ctx context.Context, tx pgx.Tx) (int, error) {
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	for _, sid := range sids {
-		if _, err := TerminateSessions(ctx, tx, sid, "", ReasonImpersonationEnded); err != nil {
-			return len(sids), err
-		}
+	if _, err := TerminateEachSession(ctx, tx, sids, ReasonImpersonationEnded); err != nil {
+		return len(sids), err
 	}
 	return len(sids), nil
 }

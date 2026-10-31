@@ -223,8 +223,10 @@ func ClaimAssertionJTI(ctx context.Context, tx pgx.Tx, providerID, jti string, e
 //
 // Keeping them longer protects nothing: an assertion past its `exp` is refused
 // for being expired before this table is ever consulted.
-func SweepUsedAssertions(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM core.jwt_bearer_replay WHERE expires_at < now()`)
+func SweepUsedAssertions(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.jwt_bearer_replay WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.jwt_bearer_replay WHERE expires_at < now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

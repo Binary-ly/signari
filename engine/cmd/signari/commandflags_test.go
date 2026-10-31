@@ -472,8 +472,12 @@ func TestPlanExitsThreeOnDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	if err := conn.QueryRow(context.Background(), `SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).
-		Scan(&org); err != nil {
+	// One of its own: the oldest is what other packages' tests add clients to and
+	// delete them from while this reads them.
+	if err := conn.QueryRow(context.Background(), `
+		INSERT INTO core.organizations (instance_id, slug, display_name)
+		SELECT instance_id, 'plan-' || substr(gen_random_uuid()::text, 1, 8), 'Plan' FROM core.organizations
+		 ORDER BY created_at LIMIT 1 RETURNING id::text`).Scan(&org); err != nil {
 		t.Skipf("no organisation: %v", err)
 	}
 	if _, err := captureStdout(t, func() error { return run([]string{"plan", "-dsn", dsn, "-org", org, "-f", same}) }); err != nil {

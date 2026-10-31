@@ -20,7 +20,12 @@ token minted by one verifies at the other.
 
 The janitor coordinates with a transaction-scoped advisory lock — one instance
 sweeps, the others record `Skipped`, and a node that dies mid-pass releases the
-lock by rolling back rather than leaving the janitor wedged.
+lock by rolling back rather than leaving the janitor wedged. A pass is many short
+transactions rather than one long one: up to 500 sessions or 1,000 rows of a table
+to a batch, each committed on its own and taking the lock again, each kind of row
+getting a batch before any gets a second. A sweep that fails stops only itself. At
+45 seconds a pass stops starting batches and logs what it left, and the next
+carries on, so a backlog after an outage is worked through and nobody waits on it.
 
 **Rate limiting did not.** It was a token bucket in process memory.
 

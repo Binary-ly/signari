@@ -57,8 +57,10 @@ func JTIRevoked(ctx context.Context, db *pgxpool.Pool, jti string) (bool, error)
 // PurgeExpiredRevocations drops denylist rows for tokens that have expired on
 // their own. Keeping them would make the table grow forever while proving
 // nothing: an expired token is rejected on its expiry regardless.
-func PurgeExpiredRevocations(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM core.revoked_jtis WHERE expires_at < now()`)
+func PurgeExpiredRevocations(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.revoked_jtis WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.revoked_jtis WHERE expires_at < now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

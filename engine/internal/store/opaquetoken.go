@@ -101,8 +101,10 @@ func OpenOpaqueToken(ctx context.Context, q interface {
 }
 
 // PurgeExpiredOpaqueTokens drops handles past their expiry, which refuse anyway.
-func PurgeExpiredOpaqueTokens(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM core.opaque_access_tokens WHERE expires_at < now()`)
+func PurgeExpiredOpaqueTokens(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.opaque_access_tokens WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.opaque_access_tokens WHERE expires_at < now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

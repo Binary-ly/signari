@@ -53,6 +53,10 @@ func newTestServer(t *testing.T) (*Server, *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Tests of how a request is answered call every route, some several times,
+	// and on a fast database that is past the limit: a 429 says nothing about
+	// what they ask. The limits have their own tests, which set their own.
+	s.arrivals, s.perToken = nil, nil
 
 	// A root key, so the user-attribute routes are registered.
 	//

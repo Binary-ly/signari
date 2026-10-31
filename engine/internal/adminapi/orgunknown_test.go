@@ -24,10 +24,6 @@ import (
 // body is given when it leaves the field out.
 func TestAWriteToAnUnknownOrganisationIsTheCallersMistake(t *testing.T) {
 	s, _ := newTestServer(t)
-	// This is how a write is answered, not how many are allowed: every route is
-	// asked three times, which on a fast database is past the limit, and a 429
-	// says nothing about the organisation.
-	s.arrivals, s.perToken = nil, nil
 
 	tested := 0
 	for _, rt := range allMutatingRoutes() {

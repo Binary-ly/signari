@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0198 directory_page_index
+
+Compatible with the release before: its binary may still serve this schema.
+
+The order an LDAP subtree search reads an organisation's people in (7.01), so a page is a walk of this index from where the last one stopped however far into the directory that is. Only the active, as the directory lists.
+
 ## 0197 identifier_lock_per_organisation
 
 Not compatible with the release before: stop it before migrating.

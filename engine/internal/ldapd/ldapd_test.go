@@ -56,7 +56,7 @@ func (f *fakeAuth) Lookup(_ context.Context, u string) (*Identity, error) {
 		Groups: f.groups}, nil
 }
 
-func (f *fakeAuth) List(_ context.Context, limit int) ([]*Identity, error) {
+func (f *fakeAuth) List(context.Context, Query) ([]*Identity, error) {
 	var out []*Identity
 	for u, r := range fixtures {
 		out = append(out, &Identity{Username: u, Email: r.email, DisplayName: r.name, Active: true})
@@ -697,7 +697,7 @@ func TestAnOrdinarySearchStillCarriesValues(t *testing.T) {
 // query that is slower than the client is prepared to wait.
 type slowAuth struct{ fakeAuth }
 
-func (s *slowAuth) List(ctx context.Context, _ int) ([]*Identity, error) {
+func (s *slowAuth) List(ctx context.Context, _ Query) ([]*Identity, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }

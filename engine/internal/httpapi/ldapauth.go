@@ -364,24 +364,49 @@ func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd
 	return &id, nil
 }
 
-func (a *LDAPAuthenticator) List(ctx context.Context, limit int) ([]*ldapd.Identity, error) {
+// List answers a page of the directory (7.01), ordered by id so a position
+// stays one, and narrowed by what the filter says about who could match. The
+// page is chosen before anybody's groups are read.
+func (a *LDAPAuthenticator) List(ctx context.Context, q ldapd.Query) ([]*ldapd.Identity, error) {
+	if q.Limit <= 0 {
+		return nil, nil
+	}
+	args := []any{a.orgID, q.Limit}
+	var where strings.Builder
+	if q.After != "" {
+		after, ok := store.CanonicalUUID(q.After)
+		if !ok {
+			return nil, ldapd.ErrBadPosition
+		}
+		args = append(args, after)
+		fmt.Fprintf(&where, " AND u.id > $%d::uuid", len(args))
+	}
+	if q.Narrow != nil {
+		condition, err := ldapCondition(q.Narrow, &args, 0)
+		if err != nil {
+			return nil, err
+		}
+		where.WriteString(" AND " + condition)
+	}
 	// Groups come back in the SAME query. The obvious shape -- list users, then
 	// look up each one's groups -- is a query per user on a path a client can
 	// call repeatedly, which is a denial of service with a valid bind.
 	rows, err := a.db.Query(ctx, `
-		SELECT COALESCE(NULLIF(u.username,''), u.email, u.id::text), COALESCE(u.email,''),
-		       COALESCE(u.display_name,''), COALESCE(u.surname,''),
-		       COALESCE(u.given_name,''),
-		       COALESCE(array_agg(g.name ORDER BY g.name)
-		                FILTER (WHERE g.name IS NOT NULL), '{}')
-		FROM core.users u
-		LEFT JOIN core.group_members m ON m.user_id = u.id
-		LEFT JOIN core.groups g ON g.id = m.group_id
-		WHERE u.org_id = $1::uuid AND u.status = 'active' AND `+store.OrgInService("u.org_id")+`
-		GROUP BY u.id, u.username, u.email, u.display_name, u.surname,
-		         u.given_name, u.created_at
-		ORDER BY u.created_at
-		LIMIT $2`, a.orgID, limit)
+		WITH page AS (
+			SELECT u.id, u.username, u.email, u.display_name, u.surname, u.given_name
+			  FROM core.users u
+			 WHERE u.org_id = $1::uuid AND u.status = 'active' AND `+store.OrgInService("u.org_id")+where.String()+`
+			 ORDER BY u.id
+			 LIMIT $2)
+		SELECT p.id::text, COALESCE(NULLIF(p.username,''), p.email, p.id::text), COALESCE(p.email,''),
+		       COALESCE(p.display_name,''), COALESCE(p.surname,''),
+		       COALESCE(p.given_name,''),
+		       COALESCE((SELECT array_agg(g.name ORDER BY g.name)
+		                   FROM core.group_members m
+		                   JOIN core.groups g ON g.id = m.group_id
+		                  WHERE m.user_id = p.id), '{}')
+		FROM page p
+		ORDER BY p.id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +415,7 @@ func (a *LDAPAuthenticator) List(ctx context.Context, limit int) ([]*ldapd.Ident
 	var out []*ldapd.Identity
 	for rows.Next() {
 		var id ldapd.Identity
-		if err := rows.Scan(&id.Username, &id.Email, &id.DisplayName,
+		if err := rows.Scan(&id.Position, &id.Username, &id.Email, &id.DisplayName,
 			&id.Surname, &id.GivenName, &id.Groups); err != nil {
 			return nil, err
 		}

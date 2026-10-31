@@ -126,6 +126,19 @@ the port is a user-enumeration oracle for anyone who can reach it.
 **Unsupported filters match nothing.** Failing open on a filter we cannot parse
 would answer it with the entire directory.
 
+**Everybody can be found, and a short list says so.** A filter on `uid`, `mail`,
+`cn` or `memberOf`, alone or in an AND or OR, is asked of the database, so one
+person among a hundred thousand is one query. Anything else is read a page at a
+time and checked here: slower and just as right, since the database only ever
+narrows and this check decides. A search returns 500 entries at most. Past that
+it answers `adminLimitExceeded`, or `sizeLimitExceeded` for a limit the client
+set, with the entries so far, never success. To read more, use the RFC 2696 paged
+results control (`ldapsearch -E pr=500/noprompt`), advertised in the root DSE; a
+page carries on from its last entry however far in that is, and a cookie this
+directory did not issue is a `protocolError`. Until October 2026 the directory
+read the first 500 people and filtered those, so nobody after them could be
+found by any search.
+
 **The search base and scope are honoured.** Every person is a direct child of
 the base DN, so a one-level search reaches people only from the base DN, a
 subtree search reaches everyone from the base DN or one person from that
@@ -383,8 +396,8 @@ password-verification oracle and nothing more.
 
 ## Not implemented
 
-Referrals, aliases, paged results and every other request control, substring
-and approximate filters, and SASL.
+Referrals, aliases, every request control but paged results, substring and
+approximate filters, and SASL.
 Substring filters in particular are absent on purpose: they ask the server to do
 open-ended work on behalf of whoever opened the connection.
 

@@ -25,8 +25,10 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, username, password string) (*Identity, error)
 	// Lookup finds a user without verifying a credential, for search.
 	Lookup(ctx context.Context, username string) (*Identity, error)
-	// List returns users for a subtree search.
-	List(ctx context.Context, limit int) ([]*Identity, error)
+	// List answers a page of the people a subtree search could reach, each
+	// with its Position, in an order that does not change between pages. See
+	// Query. A position it did not issue is ErrBadPosition.
+	List(ctx context.Context, q Query) ([]*Identity, error)
 }
 
 // Identity is what the directory exposes about a person.
@@ -61,6 +63,10 @@ type Identity struct {
 	// what the outpost's token may; the in-process authenticator leaves it
 	// empty, having no boundary to prove anything across.
 	BindProof string
+
+	// Position is where List found this person, for the next page to carry on
+	// from. Never published as an attribute.
+	Position string
 }
 
 // Config is one LDAP listener.
@@ -285,12 +291,17 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 
 		// RFC 4511 §4.1.11 (specs/rfc4511.txt:766-771): a critical control the
 		// server does not apply means it "MUST NOT perform the operation" and
-		// answers unavailableCriticalExtension. None is applied here, so every
-		// critical one is refused. They were ignored: a client asking for, say,
-		// a server-side sort it relies on got the operation done without it.
-		// Unbind's criticality MUST be ignored, and abandon has no response.
-		if len(packet.Children) > 2 && op.Tag != appUnbindRequest {
-			if oid, critical := criticalControl(packet.Children[2]); critical {
+		// answers unavailableCriticalExtension. Only paged results on a search
+		// is applied, so every other critical one is refused. They were ignored:
+		// a client asking for, say, a server-side sort it relies on got the
+		// operation done without it. Unbind's criticality MUST be ignored, and
+		// abandon has no response.
+		var controls *ber.Packet
+		if len(packet.Children) > 2 {
+			controls = packet.Children[2]
+		}
+		if controls != nil && op.Tag != appUnbindRequest {
+			if oid, critical := criticalControl(controls, op.Tag); critical {
 				if op.Tag == appAbandonRequest {
 					continue
 				}
@@ -307,17 +318,18 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		if sess.bound && sess.identity != nil && sess.identity.BindProof != "" {
 			opCtx = WithBindProof(ctx, sess.identity.BindProof)
 		}
-		if !s.dispatch(opCtx, c, sess, messageID, op) {
+		if !s.dispatch(opCtx, c, sess, messageID, op, controls) {
 			return
 		}
 	}
 }
 
-// criticalControl reports the first control marked critical in an
-// LDAPMessage's controls ([0] SEQUENCE OF Control, RFC 4511 §4.1.11), and its
-// type. A malformed controls element is treated as critical: refusing is the
-// reading that cannot perform an operation the client meant to constrain.
-func criticalControl(p *ber.Packet) (string, bool) {
+// criticalControl reports the first control marked critical that the operation
+// tagged op does not apply, among an LDAPMessage's controls ([0] SEQUENCE OF
+// Control, RFC 4511 §4.1.11), and its type. A malformed controls element is
+// treated as critical: refusing is the reading that cannot perform an
+// operation the client meant to constrain.
+func criticalControl(p *ber.Packet, op ber.Tag) (string, bool) {
 	if p.ClassType != ber.ClassContext || p.Tag != 0 {
 		return "", false
 	}
@@ -326,6 +338,9 @@ func criticalControl(p *ber.Packet) (string, bool) {
 			return "(malformed)", true
 		}
 		oid := ber.DecodeString(ctl.Children[0].Data.Bytes())
+		if oid == oidPagedResults && op == appSearchRequest {
+			continue
+		}
 		if len(ctl.Children) > 1 && ctl.Children[1].Tag == ber.TagBoolean {
 			if v, ok := ctl.Children[1].Value.(bool); ok && v {
 				return oid, true
@@ -350,13 +365,13 @@ func responseTag(request ber.Tag) ber.Tag {
 }
 
 // dispatch handles one operation. It returns false to close the connection.
-func (s *Server) dispatch(ctx context.Context, c net.Conn, sess *session, messageID int64, op *ber.Packet) bool {
+func (s *Server) dispatch(ctx context.Context, c net.Conn, sess *session, messageID int64, op, controls *ber.Packet) bool {
 	switch op.Tag {
 	case appBindRequest:
 		return s.handleBind(ctx, c, sess, messageID, op)
 
 	case appSearchRequest:
-		return s.handleSearch(ctx, c, sess, messageID, op)
+		return s.handleSearch(ctx, c, sess, messageID, op, controls)
 
 	case appUnbindRequest:
 		// No response is defined for unbind; the client expects the connection
@@ -575,11 +590,16 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 }
 
 // handleSearch answers a search.
-func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, messageID int64, op *ber.Packet) bool {
+func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, messageID int64, op, controls *ber.Packet) bool {
 	req, err := decodeSearch(op)
 	if err != nil {
 		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
 			resultProtocolError, "", "malformed search request")))
+	}
+	paged, err := pagedResultsOf(controls)
+	if err != nil {
+		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
+			resultProtocolError, "", "malformed paged results control")))
 	}
 
 	// The root DSE probe: base "", scope base. Clients send it before binding to
@@ -601,9 +621,17 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 			resultNoSuchObject, s.cfg.BaseDN, "no such object")))
 	}
 
+	// Size zero with a cookie is a client giving up on a paged search; it has
+	// nothing left to be told. (go-ldap's SearchWithPaging ends one that way.)
+	if paged != nil && paged.size == 0 && paged.cookie != "" {
+		return s.write(c, pagedDone(messageID, resultSuccess, ""))
+	}
 	limit := s.cfg.MaxResults
 	if req.SizeLimit > 0 && req.SizeLimit < limit {
 		limit = req.SizeLimit
+	}
+	if paged != nil && paged.size > 0 && paged.size < limit {
+		limit = paged.size
 	}
 
 	// §4.5.1.5's client-requested time limit. Zero means none, and the server's
@@ -619,10 +647,20 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 	}
 
 	var entries []*entry
+	var position string
+	var more bool
 	if s.maySearchDirectory(ctx, sess) {
-		entries, err = s.entriesFor(ctx, req, limit)
+		after := ""
+		if paged != nil {
+			after = paged.cookie
+		}
+		entries, position, more, err = s.entriesFor(ctx, req, after, limit)
 	} else {
 		entries, err = s.ownEntry(ctx, sess, req)
+	}
+	if errors.Is(err, ErrBadPosition) {
+		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
+			resultProtocolError, "", "the paged results cookie is not one this directory issued")))
 	}
 	// `ctx.Err()` rather than `errors.Is(err, context.DeadlineExceeded)` alone:
 	// a backing store is free to report cancellation as its own error type, and
@@ -647,6 +685,23 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 		if !s.write(c, newMessage(messageID, newSearchEntry(e, req.Attrs, req.TypesOnly))) {
 			return false
 		}
+	}
+
+	// A list cut short says so. Success said a directory of 501 had 500 people
+	// in it, which an application reads as the person after them not existing.
+	switch {
+	case paged != nil && more:
+		return s.write(c, pagedDone(messageID, resultSuccess, position))
+	case paged != nil:
+		return s.write(c, pagedDone(messageID, resultSuccess, ""))
+	case more && req.SizeLimit > 0 && req.SizeLimit <= s.cfg.MaxResults:
+		// specs/rfc4511.txt:2780: "the size limit specified by the client".
+		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
+			resultSizeLimitExceeded, "", "more entries match than the size limit asked for")))
+	case more:
+		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
+			resultAdminLimitExceeded, "", "more entries match than one search returns; "+
+				"ask for them a page at a time with the paged results control")))
 	}
 	return s.write(c, newMessage(messageID, newResult(appSearchResultDone, resultSuccess, "", "")))
 }
@@ -727,8 +782,10 @@ func normalDN(dn string) string {
 	return strings.Join(parts, ",")
 }
 
-// entriesFor resolves a search to entries.
-func (s *Server) entriesFor(ctx context.Context, req *searchRequest, limit int) ([]*entry, error) {
+// entriesFor resolves a search to entries, from after, at most limit of them.
+// more says others match past the position it answers.
+func (s *Server) entriesFor(ctx context.Context, req *searchRequest, after string, limit int) (
+	[]*entry, string, bool, error) {
 	// A base-object search on a specific user DN is the common shape: an
 	// application binds as a service account and reads one person. So is a
 	// subtree search based on that DN, which reaches the same one entry.
@@ -736,42 +793,27 @@ func (s *Server) entriesFor(ctx context.Context, req *searchRequest, limit int) 
 		(req.Scope == scopeWholeSubtree && normalDN(req.BaseDN) != normalDN(s.cfg.BaseDN)) {
 		username, err := s.usernameFromDN(req.BaseDN)
 		if err != nil {
-			return nil, nil
+			return nil, "", false, nil
 		}
 		if !s.scopeReaches(req, s.dnFor(username)) {
-			return nil, nil
+			return nil, "", false, nil
 		}
 		id, err := s.auth.Lookup(ctx, username)
 		if err != nil || id == nil {
-			return nil, nil
+			return nil, "", false, nil
 		}
 		e := s.entryFor(id)
 		if req.Filter.Matches(e) {
-			return []*entry{e}, nil
+			return []*entry{e}, "", false, nil
 		}
-		return nil, nil
+		return nil, "", false, nil
 	}
 	// The people are the base DN's children and nobody else's: a one-level
 	// search anywhere else reaches none of them.
 	if normalDN(req.BaseDN) != normalDN(s.cfg.BaseDN) {
-		return nil, nil
+		return nil, "", false, nil
 	}
-
-	users, err := s.auth.List(ctx, limit)
-	if err != nil {
-		return nil, err
-	}
-	var out []*entry
-	for _, id := range users {
-		e := s.entryFor(id)
-		if req.Filter.Matches(e) {
-			out = append(out, e)
-			if len(out) >= limit {
-				break
-			}
-		}
-	}
-	return out, nil
+	return s.walk(ctx, req, after, limit)
 }
 
 // entryFor renders one identity.
@@ -875,7 +917,8 @@ func (s *Server) writeRootDSE(c net.Conn, messageID int64, req *searchRequest) b
 		// No supportedExtension, and specifically no StartTLS: advertising an
 		// extension that is refused is how a client decides to try it, fails,
 		// and falls back to plaintext.
-		"vendorName": {"Signari"},
+		"supportedControl": {oidPagedResults},
+		"vendorName":       {"Signari"},
 	}}
 	if !s.write(c, newMessage(messageID, newSearchEntry(e, req.Attrs, req.TypesOnly))) {
 		return false

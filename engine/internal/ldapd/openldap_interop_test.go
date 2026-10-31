@@ -163,7 +163,7 @@ func (interopAuth) Lookup(_ context.Context, u string) (*Identity, error) {
 	return nil, errInteropDenied
 }
 
-func (interopAuth) List(_ context.Context, _ int) ([]*Identity, error) {
+func (interopAuth) List(_ context.Context, _ Query) ([]*Identity, error) {
 	return []*Identity{interopAlice()}, nil
 }
 

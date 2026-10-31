@@ -32,6 +32,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -131,6 +132,9 @@ type identityJSON struct {
 	// Only on an authenticate answer: what this connection presents with every
 	// later lookup and list, so the core answers for the person who bound.
 	BindProof string `json:"bind_proof,omitempty"`
+	// Only on a list answer: where the next page carries on from. Absent from a
+	// core that predates paging, and the directory then stops at that page.
+	Position string `json:"position,omitempty"`
 }
 
 func (i identityJSON) toLDAP() *ldapd.Identity {
@@ -138,7 +142,7 @@ func (i identityJSON) toLDAP() *ldapd.Identity {
 		Username: i.Username, Email: i.Email, DisplayName: i.DisplayName,
 		Active: i.Active, Groups: i.Groups,
 		Surname: i.Surname, GivenName: i.GivenName,
-		BindProof: i.BindProof,
+		BindProof: i.BindProof, Position: i.Position,
 	}
 }
 
@@ -182,15 +186,19 @@ func (c *Client) Lookup(ctx context.Context, username string) (*ldapd.Identity, 
 	return out.toLDAP(), nil
 }
 
-// List returns users for a subtree search: the directory for a member of this
-// outpost's search group, the asker's own entry for anyone else.
-func (c *Client) List(ctx context.Context, limit int) ([]*ldapd.Identity, error) {
+// List returns a page of users for a subtree search: the directory for a member
+// of this outpost's search group, the asker's own entry for anyone else.
+func (c *Client) List(ctx context.Context, q ldapd.Query) ([]*ldapd.Identity, error) {
 	var out struct {
 		Users []identityJSON `json:"users"`
 	}
-	if err := c.post(ctx, "/outpost/list", map[string]any{
-		"limit": limit, "bind_proof": ldapd.BindProof(ctx),
-	}, &out); err != nil {
+	err := c.post(ctx, "/outpost/list", map[string]any{
+		"limit": q.Limit, "after": q.After, "narrow": q.Narrow, "bind_proof": ldapd.BindProof(ctx),
+	}, &out)
+	if errors.Is(err, errBadRequest) && q.After != "" {
+		return nil, ldapd.ErrBadPosition
+	}
+	if err != nil {
 		return nil, err
 	}
 	ids := make([]*ldapd.Identity, 0, len(out.Users))
@@ -227,7 +235,12 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 		return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
 	case http.StatusUnauthorized, http.StatusNotFound:
 		return ErrRefused
+	case http.StatusBadRequest:
+		return errBadRequest
 	default:
 		return fmt.Errorf("the core answered %s", resp.Status)
 	}
 }
+
+// errBadRequest is the core refusing what it was asked.
+var errBadRequest = errors.New("the core refused the request as malformed")

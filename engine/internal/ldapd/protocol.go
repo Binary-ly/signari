@@ -72,7 +72,9 @@ const (
 	resultSuccess                = 0
 	resultProtocolError          = 2
 	resultTimeLimitExceeded      = 3
+	resultSizeLimitExceeded      = 4
 	resultAuthMethodNotSupported = 7
+	resultAdminLimitExceeded     = 11
 	// A critical control this server does not apply. RFC 4511 §4.1.11,
 	// specs/rfc4511.txt:766-771: such an operation MUST NOT be performed.
 	resultUnavailableCriticalExtension = 12
@@ -371,6 +373,67 @@ func newMessage(messageID int64, op *ber.Packet) *ber.Packet {
 	m := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "LDAPMessage")
 	m.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, messageID, "MessageID"))
 	m.AppendChild(op)
+	return m
+}
+
+// oidPagedResults is RFC 2696's control. Its value is a BER SEQUENCE of a size
+// and an opaque cookie, in both directions.
+const oidPagedResults = "1.2.840.113556.1.4.319"
+
+// pagedResults is that control on a request.
+type pagedResults struct {
+	size   int
+	cookie string
+}
+
+// pagedResultsOf finds the control among an LDAPMessage's controls.
+func pagedResultsOf(controls *ber.Packet) (*pagedResults, error) {
+	if controls == nil {
+		return nil, nil
+	}
+	for _, ctl := range controls.Children {
+		if len(ctl.Children) == 0 || ber.DecodeString(ctl.Children[0].Data.Bytes()) != oidPagedResults {
+			continue
+		}
+		// The value is the last child: the criticality before it is optional.
+		value := ctl.Children[len(ctl.Children)-1]
+		if len(ctl.Children) < 2 || value.Tag != ber.TagOctetString {
+			return nil, fmt.Errorf("the paged results control has no value")
+		}
+		seq, err := ber.DecodePacketErr(value.Data.Bytes())
+		if err != nil {
+			return nil, err
+		}
+		if len(seq.Children) != 2 {
+			return nil, fmt.Errorf("the paged results value has %d fields, expected 2", len(seq.Children))
+		}
+		size, ok := seq.Children[0].Value.(int64)
+		if !ok || size < 0 {
+			return nil, fmt.Errorf("the paged results size is not a size")
+		}
+		return &pagedResults{size: int(size), cookie: string(seq.Children[1].Data.Bytes())}, nil
+	}
+	return nil, nil
+}
+
+// pagedDone is a SearchResultDone carrying the control back: the cookie to send
+// for the next page, empty when there is none. The estimate of the total stays
+// zero, which means it is not known; counting would read everybody.
+func pagedDone(messageID, code int64, cookie string) *ber.Packet {
+	seq := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "realSearchControlValue")
+	seq.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, int64(0), "size"))
+	seq.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, cookie, "cookie"))
+	value := ber.Encode(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, nil, "controlValue")
+	value.Data.Write(seq.Bytes())
+
+	ctl := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "Control")
+	ctl.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, oidPagedResults, "controlType"))
+	ctl.AppendChild(value)
+	controls := ber.Encode(ber.ClassContext, ber.TypeConstructed, 0, nil, "Controls")
+	controls.AppendChild(ctl)
+
+	m := newMessage(messageID, newResult(appSearchResultDone, code, "", ""))
+	m.AppendChild(controls)
 	return m
 }
 

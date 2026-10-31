@@ -34,8 +34,12 @@ func asOutpostIdentity(i *ldapd.Identity) outpostIdentity {
 		// from the display name for every account, including the ones where we
 		// know the real answer.
 		Surname: i.Surname, GivenName: i.GivenName,
+		Position: i.Position,
 	}
 }
+
+// outpostListLimit is the most people one list answers.
+const outpostListLimit = 1000
 
 // What an outpost is allowed to ask.
 //
@@ -93,6 +97,8 @@ type outpostIdentity struct {
 	GivenName string `json:"given_name,omitempty"`
 	// BindProof is set on an LDAP outpost's authenticate answer only.
 	BindProof string `json:"bind_proof,omitempty"`
+	// Position is set on a list answer, for the next page to carry on from.
+	Position string `json:"position,omitempty"`
 }
 
 // outpostCaller is the registration an outpost token resolved to.
@@ -375,12 +381,17 @@ func (s *Server) handleOutpostList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Limit     int
+		ldapd.Query
 		BindProof string `json:"bind_proof"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "unreadable body")
 		return
+	}
+	// An outpost pages at most this many at a time; asking for more was asking
+	// the database for the whole directory in one answer.
+	if body.Limit > outpostListLimit {
+		body.Limit = outpostListLimit
 	}
 	auth := NewLDAPAuthenticator(s.db, passwords.Shared(), c.OrgID, s.log)
 	asker := s.outpostAsker(r, c, auth, body.BindProof)
@@ -392,7 +403,11 @@ func (s *Server) handleOutpostList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"users": []outpostIdentity{asOutpostIdentity(asker)}})
 		return
 	}
-	found, err := auth.List(r.Context(), body.Limit)
+	found, err := auth.List(r.Context(), body.Query)
+	if errors.Is(err, ldapd.ErrBadPosition) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "not a position in the directory")
+		return
+	}
 	if err != nil {
 		s.log.Error("listing the directory for an outpost", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")

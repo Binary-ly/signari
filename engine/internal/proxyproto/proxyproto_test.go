@@ -221,7 +221,9 @@ func (a *recordingAuth) Authenticate(ctx context.Context, _, _ string) (*ldapd.I
 	return nil, errors.New("refused")
 }
 func (a *recordingAuth) Lookup(context.Context, string) (*ldapd.Identity, error) { return nil, nil }
-func (a *recordingAuth) List(context.Context, int) ([]*ldapd.Identity, error)    { return nil, nil }
+func (a *recordingAuth) List(context.Context, ldapd.Query) ([]*ldapd.Identity, error) {
+	return nil, nil
+}
 
 // The LDAP listener behind a balancer charges a bind to the client the header
 // names, and a header from anyone else gets no bind at all.

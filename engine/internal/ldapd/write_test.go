@@ -84,7 +84,7 @@ func (d *writableDir) Lookup(_ context.Context, u string) (*Identity, error) {
 	return &copied, nil
 }
 
-func (d *writableDir) List(_ context.Context, limit int) ([]*Identity, error) {
+func (d *writableDir) List(context.Context, Query) ([]*Identity, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var out []*Identity

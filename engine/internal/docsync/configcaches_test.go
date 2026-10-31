@@ -78,6 +78,13 @@ var declaredCaches = []declaredCache{
 			"Never stale, so it carries no propagation delay.",
 	},
 	{
+		symbol: "discoveryCache",
+		delays: false,
+		why: "The discovery document, built again when the configuration version " +
+			"or the algorithms this process holds differ, both read on every " +
+			"request, so a change shows on commit. Public, and no decision reads it.",
+	},
+	{
 		symbol: "ssfKeys",
 		delays: false,
 		why: "Remote transmitters' signing keys, not this deployment's " +

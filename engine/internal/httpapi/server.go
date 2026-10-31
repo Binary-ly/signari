@@ -60,7 +60,16 @@ type Server struct {
 	jwksMu    sync.Mutex
 	jwksCache []byte
 	jwksETag  string
-	login     *ratelimit.Bucket
+
+	// discoveryCache is the discovery document as of discoveryVersion and the
+	// algorithms in discoveryKeys. See discoveryDocument.
+	discoveryMu      sync.Mutex
+	discoveryCache   []byte
+	discoveryETag    string
+	discoveryVersion int64
+	discoveryKeys    string
+
+	login *ratelimit.Bucket
 	// captcha is nil-safe: every method tolerates a nil receiver, so a
 	// deployment that has never configured one needs no branches elsewhere.
 	captcha *captcha.Verifier
@@ -1115,18 +1124,73 @@ func (s *Server) firstOrgID(ctx context.Context) string {
 }
 
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
-	md, err := oidc.Build(s.cfg)
+	body, etag, err := s.discoveryDocument(r.Context())
 	if err != nil {
 		s.log.Error("building discovery metadata", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "metadata unavailable")
 		return
+	}
+	// Discovery is public, stable, and polled. Let it be cached, but not so long
+	// that adding a signing algorithm takes a day to become visible.
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("ETag", etag)
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// discoveryDocument is the document and its ETag, built again only when something it
+// says could have changed: the configuration version, read on every request, so a change
+// shows on commit as it does everywhere else (ADR-008), and the keys this process holds,
+// which a rotation reaches on its own schedule and the version does not describe. What
+// remains per request is one read. It was four, on a document that is polled.
+func (s *Server) discoveryDocument(ctx context.Context) ([]byte, string, error) {
+	version, verr := store.CurrentConfigVersion(ctx, s.db)
+	if verr != nil {
+		s.log.Error("reading the configuration version for discovery", "err", verr)
+	}
+	held := fmt.Sprint(s.cfg.Keys.Algorithms())
+	if verr == nil {
+		s.discoveryMu.Lock()
+		if s.discoveryCache != nil && s.discoveryVersion == version && s.discoveryKeys == held {
+			defer s.discoveryMu.Unlock()
+			return s.discoveryCache, s.discoveryETag, nil
+		}
+		s.discoveryMu.Unlock()
+	}
+	md, err := s.buildDiscovery(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	body, err := json.Marshal(md)
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(body)
+	etag := `"` + base64.RawURLEncoding.EncodeToString(sum[:16]) + `"`
+	if verr == nil {
+		s.discoveryMu.Lock()
+		defer s.discoveryMu.Unlock()
+		s.discoveryCache, s.discoveryETag, s.discoveryVersion, s.discoveryKeys = body, etag, version, held
+	}
+	return body, etag, nil
+}
+
+func (s *Server) buildDiscovery(ctx context.Context) (*oidc.Metadata, error) {
+	md, err := oidc.Build(s.cfg)
+	if err != nil {
+		return nil, err
 	}
 	// registration_endpoint is advertised only where dynamic registration is
 	// actually enabled. The endpoint exists either way, but a discovery document
 	// naming one that answers 401 to every possible caller is the "advertised
 	// before it works" mistake this project refuses elsewhere -- and a client
 	// that reads it will try, fail, and blame its own configuration.
-	if on, cerr := store.AnyRegistrationEnabled(r.Context(), s.db, s.instanceID); cerr != nil {
+	if on, cerr := store.AnyRegistrationEnabled(ctx, s.db, s.instanceID); cerr != nil {
 		s.log.Error("checking whether dynamic registration is enabled", "err", cerr)
 	} else if on {
 		md.RegistrationEndpoint = s.cfg.Issuer + "/oauth2/register"
@@ -1144,24 +1208,20 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	// Failure here is not fatal. Discovery must not become unanswerable because
 	// an optional catalogue could not be read -- AdvertisedScopes returns the
 	// standard set on any error.
-	if orgID := s.firstOrgID(r.Context()); orgID != "" {
-		md.ScopesSupported = store.AdvertisedScopes(r.Context(), s.db, orgID)
+	if orgID := s.firstOrgID(ctx); orgID != "" {
+		md.ScopesSupported = store.AdvertisedScopes(ctx, s.db, orgID)
 	}
 
 	// RFC 9396 §10: advertise the registered authorization details types, and
 	// only those. The same rule this file already applies to
 	// registration_endpoint -- a type named here that no client may request is a
 	// capability advertised before it works.
-	if types, terr := store.AllAuthorizationDetailTypes(r.Context(), s.db, s.instanceID); terr != nil {
+	if types, terr := store.AllAuthorizationDetailTypes(ctx, s.db, s.instanceID); terr != nil {
 		s.log.Error("listing authorization detail types", "err", terr)
 	} else if len(types) > 0 {
 		md.AuthorizationDetailsTypesSupported = types
 	}
-
-	// Discovery is public, stable, and polled. Let it be cached, but not so long
-	// that adding a signing algorithm takes a day to become visible.
-	w.Header().Set("Cache-Control", "public, max-age=300")
-	writeJSON(w, http.StatusOK, md)
+	return md, nil
 }
 
 func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {

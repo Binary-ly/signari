@@ -182,7 +182,10 @@ by an operator whose alerting never fired for the one type that mattered.
 Filtering is per subscription. `-events` empty means every event in the
 organisation, which is a choice an operator makes rather than a default they
 inherit. Matching is exact: subscribing to `login` does not quietly subscribe you
-to `login.failed`.
+to `login.failed`. To take a whole family, say so: `-events 'admin.*,login.failed'`
+receives every event under `admin.` as well, including ones added in a later
+release. A family no event belongs to is refused, as a misspelt name is, because a
+subscription that can never fire looks exactly like a quiet one.
 
 ## Event catalogue
 

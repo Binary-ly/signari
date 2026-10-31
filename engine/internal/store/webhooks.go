@@ -122,6 +122,17 @@ func CheckEventTypes(types []string) error {
 		if audit.IsEventType(t) {
 			continue
 		}
+		// A family, written "group.*". It must name one, or a typo in it would be
+		// a subscription that receives nothing and says so to nobody.
+		if family, ok := strings.CutSuffix(t, ".*"); ok {
+			if slices.ContainsFunc(audit.EventTypes, func(known string) bool {
+				return strings.HasPrefix(known, family+".") && !slices.Contains(audit.InstanceEventTypes, known)
+			}) {
+				continue
+			}
+			return fmt.Errorf("%w: no event is in the %q family; docs/events.md lists every type",
+				ErrUnknownEventType, family)
+		}
 		best, bestLen := "", 0
 		for _, known := range audit.EventTypes {
 			n := 0
@@ -320,10 +331,12 @@ func PublishEvent(ctx context.Context, tx pgx.Tx, env EventEnvelope) (int, error
 		SELECT id::text, url
 		  FROM core.event_subscriptions
 		 WHERE org_id = $1::uuid AND enabled AND disabled_at IS NULL
-		   -- An empty list means every event. Matching is exact rather than by
-		   -- prefix: "login" must not quietly subscribe somebody to
-		   -- "login.failed" as well.
-		   AND (cardinality(event_types) = 0 OR $2 = ANY (event_types))`,
+		   -- An empty list means every event. Matching is exact unless a name
+		   -- asks otherwise: "login" must not quietly subscribe somebody to
+		   -- "login.failed" as well, and "login.*" says that it should.
+		   AND (cardinality(event_types) = 0 OR $2 = ANY (event_types)
+		        OR EXISTS (SELECT 1 FROM unnest(event_types) AS pattern
+		                    WHERE pattern LIKE '%.*' AND starts_with($2, left(pattern, -1))))`,
 		env.OrgID, env.Type)
 	if err != nil {
 		return 0, err

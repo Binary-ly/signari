@@ -2773,8 +2773,8 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		radiusAuth := httpapi.NewRADIUSAuthenticator(pool,
 			passwords.Shared(), radiusOrgID, log).
 			WithMFAGate(srv.BindDemandsMFA).WithCodes(srv.BindCodeOK)
-		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg},
-			radiusAuth, log)
+		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg,
+			Workers: 2 * passwords.Shared().Concurrency()}, radiusAuth, log)
 		if rerr2 != nil {
 			return fmt.Errorf("%w -- register one with `signari radius add-client`", rerr2)
 		}

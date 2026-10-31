@@ -137,9 +137,30 @@ the network login screen a user-enumeration oracle.
 **Empty passwords are rejected** before the credential checker, matching the
 LDAP shim's rule about unauthenticated binds.
 
-**Packets are handled inline, not one goroutine each.** UDP has no handshake, so
-a goroutine per datagram is a spawn primitive for anybody who can send packets —
-and the work here is one Argon2 verification, which is deliberately expensive.
+**A fixed set of workers answers, and only a device can make them.** The loop
+reading the socket checks the source and the Message-Authenticator, and only a
+packet that passes takes a place in a queue of 1,024. UDP has no handshake, so a
+goroutine per datagram would be a spawn primitive for anybody who can send
+packets, and a forged packet costs one HMAC here. There are twice as many workers
+as the hasher has slots, so a slow password holds up nobody behind it, and
+throughput is what the hasher can do. Past the queue a packet is dropped, which a
+device treats as any lost datagram, and the log says how many.
+
+**A retransmission is answered, not asked again.** The same bytes from the same
+source within thirty seconds get the same reply, or nothing while the first is
+still being answered. Otherwise a device retrying a wrong password counted twice
+towards the budget, a retried code was refused because the first had spent it,
+and an access point that missed an Accept was sent a Reject. The packet is
+checked first, so a device disabled since is answered nothing.
+
+**A supplicant can resume.** The session stays on the server for eight hours and
+the supplicant holds a random name for it, because a sealed ticket carries the
+client certificate and costs what it saves. With a three-kilobyte certificate a
+resumption takes three round trips where the whole handshake takes seven under
+TLS 1.2, and five where it takes nine under TLS 1.3. Certificate expiry and the
+chain are checked again and the owner is asked about again, so somebody
+deactivated since is refused. A restart, or a node that does not know the name,
+means the whole handshake.
 
 **A zero-length attribute is refused.** It would not advance the parse cursor,
 so the loop would spin forever on a packet an attacker sends once.
@@ -159,11 +180,12 @@ long as it kept sending.
 product — same Argon2 parameters, same throttling, same audit trail. That
 includes the budget [LDAP](ldap.md) claims before verifying a password.
 
-**An Access-Request has five seconds**, the wait for the shared hasher
-included, and is rejected after that. Packets are answered one at a time, and
-the verification waits for the hasher slots the sign-in form also uses. Without
-a deadline, one packet could hold the listener while a sign-in flood kept
-the slots busy, long after the client had retransmitted and given up.
+**An Access-Request has five seconds from arrival**, the queue and the wait for
+the shared hasher included. The verification waits for the hasher slots the
+sign-in form also uses, so without a deadline a sign-in flood could keep a worker
+busy long after the client had retransmitted and given up. One that has waited
+that long in the queue is dropped unanswered, and one that runs out of time at
+the hasher is rejected.
 
 ## The bug the round-trip caught
 

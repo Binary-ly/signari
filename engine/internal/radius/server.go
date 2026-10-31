@@ -2,11 +2,13 @@ package radius
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -98,6 +100,10 @@ type Config struct {
 	// asks for EAP and is offered a password method has been downgraded, and
 	// the whole point of EAP-TLS is that there is no password to downgrade to.
 	EAPTLS *EAPTLSConfig
+	// Workers is how many packets are answered at once. Zero is twice the
+	// processors. Twice whatever bounds the hasher is enough: a worker past its
+	// slots waits for one, and those short of them answer what does not hash.
+	Workers int
 }
 
 // Server answers Access-Requests.
@@ -122,8 +128,14 @@ type Server struct {
 
 	eapTLS   *EAPTLSConfig
 	sessions *eapSessions
+	// tlsConfig is the one every conversation runs under, which is what lets a
+	// supplicant resume: a session ticket is sealed under keys the Config holds.
+	tlsConfig *tls.Config
 
 	codes pendingCodes
+
+	// queueLength is how many packets wait for a worker.
+	queueLength int
 }
 
 // ReplaceClients swaps the devices this server answers.
@@ -190,6 +202,9 @@ func New(cfg Config, auth Authenticator, log *slog.Logger) (*Server, error) {
 	if cfg.ReadTimeout == 0 {
 		cfg.ReadTimeout = 5 * time.Second
 	}
+	if cfg.Workers <= 0 {
+		cfg.Workers = 2 * runtime.GOMAXPROCS(0)
+	}
 	if cfg.EAPTLS != nil {
 		switch {
 		case cfg.EAPTLS.ClientCAs == nil:
@@ -204,8 +219,12 @@ func New(cfg Config, auth Authenticator, log *slog.Logger) (*Server, error) {
 				"verify it, and one they do not trust makes every login fail")
 		}
 	}
-	return &Server{cfg: cfg, auth: auth, log: log, clients: cfg.Clients,
-		eapTLS: cfg.EAPTLS, sessions: newEAPSessions()}, nil
+	s := &Server{cfg: cfg, auth: auth, log: log, clients: cfg.Clients,
+		eapTLS: cfg.EAPTLS, sessions: newEAPSessions(), queueLength: maxQueuedPackets}
+	if cfg.EAPTLS != nil {
+		s.tlsConfig = eapTLSConfig(cfg.EAPTLS)
+	}
+	return s, nil
 }
 
 // clientFor finds the configured device for a source address: the most
@@ -251,13 +270,56 @@ func (s *Server) clientFor(addr net.Addr) (Client, bool) {
 	return best, true
 }
 
+// maxQueuedPackets is how many believed packets wait for a worker. Past it a
+// packet is dropped and the device retransmits, as it does for any lost datagram.
+// At the most a packet can hold this is four megabytes, and a queue longer than
+// what the workers answer within AuthTimeout holds only questions nobody is
+// still asking.
+const maxQueuedPackets = 1024
+
+// shedReportEvery bounds the log line for a full queue, which otherwise a flood
+// would write a line per packet of.
+const shedReportEvery = 10 * time.Second
+
 // Serve answers packets until the context is cancelled.
+//
+// The loop reading the socket decides what to believe, which is cheap, and a
+// fixed set of workers answer, which is not. It used to do both, so a password
+// took the listener for as long as its hash and throughput was one hash at a
+// time whatever the processors: 30 a second, and everybody behind a slow one.
+// It is not a goroutine per packet, because UDP has no handshake and that would
+// be a spawn primitive for anybody who can send one. A packet from nobody
+// configured, or without the secret, costs one HMAC here and takes no worker and
+// no place in the queue, so only a device can fill it.
 func (s *Server) Serve(ctx context.Context, conn net.PacketConn) error {
 	go func() {
 		<-ctx.Done()
 		_ = conn.Close()
 	}()
 
+	seen := newSeenRequests()
+	queue := make(chan queuedRequest, s.queueLength)
+	var workers sync.WaitGroup
+	for range s.cfg.Workers {
+		workers.Go(func() {
+			for q := range queue {
+				reply := &rememberedReply{PacketConn: conn, seen: seen, digest: q.digest}
+				s.answer(ctx, reply, q.request)
+				if !reply.answered {
+					// Nothing was said, so a retransmission is a question to answer
+					// and not one answered already.
+					seen.forget(q.digest)
+				}
+			}
+		})
+	}
+	defer func() {
+		close(queue)
+		workers.Wait()
+	}()
+
+	var shed int
+	var reported time.Time
 	buf := make([]byte, maxPacket)
 	for {
 		n, addr, err := conn.ReadFrom(buf)
@@ -271,40 +333,94 @@ func (s *Server) Serve(ctx context.Context, conn net.PacketConn) error {
 			}
 			return err
 		}
-		// Handled inline rather than in a goroutine per packet. UDP has no
-		// handshake, so a goroutine per datagram is a spawn primitive for anybody
-		// who can send packets -- and the work here is one Argon2 verification,
-		// which is deliberately expensive.
-		s.handle(ctx, conn, addr, append([]byte(nil), buf[:n]...))
+		r, ok := s.admit(addr, append([]byte(nil), buf[:n]...))
+		if !ok {
+			continue
+		}
+		digest := digestOf(addr, buf[:n])
+		if reply, asked := seen.arrive(digest, r.arrived); asked {
+			// Still being answered, which a device need only wait for, or
+			// answered and the answer lost.
+			if reply != nil {
+				_, _ = conn.WriteTo(reply, addr)
+			}
+			continue
+		}
+		select {
+		case queue <- queuedRequest{request: r, digest: digest}:
+		default:
+			seen.forget(digest)
+			shed++
+			if time.Since(reported) >= shedReportEvery {
+				s.log.Warn("RADIUS requests dropped: more are arriving than can be answered", "dropped", shed)
+				shed, reported = 0, time.Now()
+			}
+		}
 	}
 }
 
+// request is a packet that has been believed: from a configured device, well
+// formed, and signed with its secret.
+type request struct {
+	addr    net.Addr
+	packet  *Packet
+	client  Client
+	secret  []byte
+	arrived time.Time
+}
+
+// handle answers one packet where it stands.
 func (s *Server) handle(ctx context.Context, conn net.PacketConn, addr net.Addr, raw []byte) {
+	if r, ok := s.admit(addr, raw); ok {
+		s.answer(ctx, conn, r)
+	}
+}
+
+// admit decides whether a packet is believed at all.
+func (s *Server) admit(addr net.Addr, raw []byte) (request, bool) {
+	arrived := time.Now()
 	client, ok := s.clientFor(addr)
 	if !ok {
 		// Silence, not a rejection. An unconfigured source gets no answer at all:
 		// replying would confirm a RADIUS server is here and turn the port into a
 		// discovery tool.
 		s.log.Info("RADIUS packet from an unconfigured source", "addr", addr.String())
-		return
+		return request{}, false
 	}
 	secret := []byte(client.Secret)
 
 	p, err := Decode(raw)
 	if err != nil {
 		s.log.Info("malformed RADIUS packet", "client", client.Name, "err", err)
-		return
+		return request{}, false
 	}
 	if p.Code != CodeAccessRequest {
 		// Only Access-Request. Accounting and CoA are separate protocols with
 		// separate risks, and answering a code we do not implement invites a
 		// device to believe we do.
-		return
+		return request{}, false
 	}
 
 	// THE Blast-RADIUS check, before anything in the packet is believed.
 	if err := p.VerifyMessageAuthenticator(secret); err != nil {
 		s.log.Warn("RADIUS request refused", "client", client.Name, "err", err)
+		return request{}, false
+	}
+	return request{addr: addr, packet: p, client: client, secret: secret, arrived: arrived}, true
+}
+
+// answer does what a believed packet asks.
+func (s *Server) answer(ctx context.Context, conn net.PacketConn, r request) {
+	addr, p, secret, client := r.addr, r.packet, r.secret, r.client
+
+	// A deadline of its own, shorter than LDAP's, and counted from arrival: the
+	// queue spends it too. Verifying waits for a slot in the hasher the sign-in
+	// form shares, and the listener's context lives as long as the process, so
+	// a packet waited there without end for an answer a RADIUS client stopped
+	// waiting for after its first retransmission.
+	ctx, cancel := context.WithDeadline(ctx, r.arrived.Add(AuthTimeout))
+	defer cancel()
+	if ctx.Err() != nil {
 		return
 	}
 
@@ -349,14 +465,7 @@ func (s *Server) handle(ctx context.Context, conn net.PacketConn, addr net.Addr,
 		return
 	}
 
-	// A deadline of its own, shorter than LDAP's. The verification waits for a
-	// slot in the hasher the sign-in form shares, and the listener's context
-	// lives as long as the process: a packet waited there without end, holding
-	// the one goroutine that answers every client, for an answer a RADIUS
-	// client stopped waiting for after its first retransmission.
-	actx, cancel := context.WithTimeout(ctx, AuthTimeout)
-	err = s.auth.Authenticate(actx, strings.TrimSpace(string(username)), password)
-	cancel()
+	err = s.auth.Authenticate(ctx, strings.TrimSpace(string(username)), password)
 	if errors.Is(err, ErrSecondFactor) {
 		s.askForCode(conn, addr, p, secret, client, strings.TrimSpace(string(username)))
 		return

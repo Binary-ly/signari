@@ -144,6 +144,16 @@ type supplicant struct {
 	// secondState sends another State after the real one in every
 	// continuation, as a request meaning two conversations would.
 	secondState []byte
+
+	// send carries a request instead of the server's handler, when set.
+	send func(req []byte) ([]byte, error)
+	// cache keeps tickets between conversations, and maxVersion is the TLS
+	// version to go no higher than.
+	cache      tls.ClientSessionCache
+	maxVersion uint16
+	// rounds counts requests, and resumed says the handshake skipped the chain.
+	rounds  int
+	resumed bool
 }
 
 // nextFragment takes the next piece of our outbound flight.
@@ -223,6 +233,9 @@ func (s *supplicant) run() (byte, *Packet, error) {
 		RootCAs:      s.pool,
 		ServerName:   "radius.test",
 		MinVersion:   tls.VersionTLS12,
+		MaxVersion:   s.maxVersion,
+
+		ClientSessionCache: s.cache,
 	})
 	handshakeDone := make(chan struct{})
 	var handshakeErr error
@@ -247,6 +260,13 @@ func (s *supplicant) run() (byte, *Packet, error) {
 			case <-time.After(time.Second):
 			}
 			_ = handshakeErr
+			if s.cache != nil {
+				// Closed first: a handshake still waiting holds what this reads.
+				// TLS 1.3 delivers its ticket after the handshake, to a read.
+				s.pipe.closeBoth()
+				s.resumed = s.tlsConn.ConnectionState().DidResume
+				_, _ = s.tlsConn.Read(make([]byte, 1))
+			}
 			return reply.Code, reply, nil
 		}
 
@@ -322,6 +342,14 @@ func (s *supplicant) exchange(eap, state []byte) (*Packet, error) {
 	req, err := buildTestRequest(s.secret, attrs)
 	if err != nil {
 		return nil, err
+	}
+	s.rounds++
+	if s.send != nil {
+		raw, err := s.send(req)
+		if err != nil {
+			return nil, err
+		}
+		return Decode(raw)
 	}
 	s.server.handle(context.Background(), s.conn,
 		&net.UDPAddr{IP: net.IPv4(10, 0, 0, 9), Port: 5000}, req)

@@ -122,10 +122,7 @@ func (s *Server) answerChallenge(ctx context.Context, conn net.PacketConn, addr 
 		s.reject(conn, addr, p, secret, "no such challenge")
 		return
 	}
-	actx, cancel := context.WithTimeout(ctx, AuthTimeout)
-	err := verifier.VerifyCode(actx, username, code)
-	cancel()
-	if err != nil {
+	if err := verifier.VerifyCode(ctx, username, code); err != nil {
 		s.log.Info("RADIUS code refused", "client", client.Name)
 		s.reject(conn, addr, p, secret, "authentication failed")
 		return

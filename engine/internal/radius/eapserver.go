@@ -80,6 +80,10 @@ func (s *Server) handleEAP(ctx context.Context, conn net.PacketConn, addr net.Ad
 			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
 			return
 		}
+		if !sess.busy.TryLock() {
+			return
+		}
+		defer sess.busy.Unlock()
 
 		next, done, ok := s.continueEAPTLS(sess, eap)
 		switch {

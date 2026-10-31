@@ -34,6 +34,14 @@ const (
 	// dropped: refusing new ones instead would let an attacker who fills the
 	// table lock every legitimate user out.
 	eapMaxSessions = 256
+
+	// eapResumptionLife is how long a handshake can be resumed: a working day of
+	// walking between access points.
+	eapResumptionLife = 8 * time.Hour
+
+	// eapMaxResumptions bounds what those hold, some kilobytes each for the
+	// certificates. Past it the oldest does the whole handshake.
+	eapMaxResumptions = 8192
 )
 
 // CertificateAuthenticator maps a verified client certificate to a user.
@@ -60,6 +68,11 @@ type EAPTLSConfig struct {
 
 // eapSession is one in-flight conversation.
 type eapSession struct {
+	// busy admits one packet at a time. A device retransmits the same bytes, which
+	// are answered without coming here, so a second one at once is not a
+	// conversation, and it must not move the handshake from under the first.
+	busy sync.Mutex
+
 	// state is the RADIUS State attribute value, and the map key.
 	state string
 
@@ -267,6 +280,97 @@ type eapAddr struct{}
 func (eapAddr) Network() string { return "eap" }
 func (eapAddr) String() string  { return "eap" }
 
+// eapTLSConfig is the one TLS configuration of a listener. One, because a
+// conversation has to find what an earlier one left: built per conversation,
+// nothing it issued could be read by the next, so a supplicant that offered a
+// ticket did the whole handshake anyway.
+//
+// # Resumption is a short name and not a sealed ticket
+//
+// What a ticket seals includes the client's certificates, so it costs what it
+// saves: the chain crosses in the ClientHello instead of the Certificate, and a
+// new ticket crosses back. Measured with a three-kilobyte certificate, resuming
+// took more round trips than not. So the state stays here and the supplicant is
+// given thirty-two random bytes for it, and the same certificate resumes in three
+// round trips where the whole handshake takes seven under TLS 1.2, and five where
+// it takes nine under TLS 1.3.
+//
+// A resumed handshake skips the chain and not the decision. crypto/tls restores
+// the certificates, checks they have not expired and that they still chain to
+// ClientCAs, and finishEAPTLS then asks about their owner as it would have, so
+// somebody deactivated since is refused. A process that has restarted, or a node
+// the supplicant has not met, does not know the name and does the whole handshake.
+func eapTLSConfig(c *EAPTLSConfig) *tls.Config {
+	kept := newEAPResumptions()
+	return &tls.Config{
+		Certificates: []tls.Certificate{c.Certificate},
+		ClientCAs:    c.ClientCAs,
+		// RequireAndVerifyClientCert: a handshake that completes without a
+		// client certificate has authenticated nobody. EAP-TLS has no other
+		// credential, so anything weaker here is anonymous network access.
+		ClientAuth:    tls.RequireAndVerifyClientCert,
+		MinVersion:    tls.VersionTLS12,
+		WrapSession:   kept.wrap,
+		UnwrapSession: kept.unwrap,
+	}
+}
+
+// eapResumptions keeps sessions a supplicant may resume, oldest overwritten
+// first, as seenRequests does.
+type eapResumptions struct {
+	mu      sync.Mutex
+	byName  map[string]eapResumption
+	slots   []string
+	next    int
+	keepFor time.Duration
+}
+
+type eapResumption struct {
+	state   []byte
+	expires time.Time
+}
+
+func newEAPResumptions() *eapResumptions {
+	return &eapResumptions{byName: map[string]eapResumption{}, slots: make([]string, eapMaxResumptions),
+		keepFor: eapResumptionLife}
+}
+
+func (r *eapResumptions) wrap(_ tls.ConnectionState, s *tls.SessionState) ([]byte, error) {
+	state, err := s.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	// It crosses in the clear, and whoever could guess one would resume somebody
+	// else's session, so it is random and not a counter.
+	name := make([]byte, 32)
+	if _, err := rand.Read(name); err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.byName, r.slots[r.next])
+	r.slots[r.next] = string(name)
+	r.next = (r.next + 1) % len(r.slots)
+	r.byName[string(name)] = eapResumption{state: state, expires: time.Now().Add(r.keepFor)}
+	return name, nil
+}
+
+// unwrap is nil, nil for a name it does not know, which crypto/tls answers with
+// the whole handshake.
+func (r *eapResumptions) unwrap(name []byte, _ tls.ConnectionState) (*tls.SessionState, error) {
+	r.mu.Lock()
+	kept, ok := r.byName[string(name)]
+	if ok && time.Now().After(kept.expires) {
+		delete(r.byName, string(name))
+		ok = false
+	}
+	r.mu.Unlock()
+	if !ok {
+		return nil, nil
+	}
+	return tls.ParseSessionState(kept.state)
+}
+
 // newState returns a fresh RADIUS State value.
 func newState() (string, error) {
 	b := make([]byte, 16)
@@ -293,15 +397,7 @@ func (s *Server) startEAPTLS(id byte) (*eapSession, *EAPPacket, error) {
 		created:       time.Now(), lastSeen: time.Now(),
 	}
 
-	sess.tls = tls.Server(conn, &tls.Config{
-		Certificates: []tls.Certificate{s.eapTLS.Certificate},
-		ClientCAs:    s.eapTLS.ClientCAs,
-		// RequireAndVerifyClientCert: a handshake that completes without a
-		// client certificate has authenticated nobody. EAP-TLS has no other
-		// credential, so anything weaker here is anonymous network access.
-		ClientAuth: tls.RequireAndVerifyClientCert,
-		MinVersion: tls.VersionTLS12,
-	})
+	sess.tls = tls.Server(conn, s.tlsConfig)
 
 	// The handshake runs in its own goroutine because crypto/tls is blocking and
 	// the EAP layer is a series of separate UDP packets. It ends when the

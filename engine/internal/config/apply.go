@@ -99,12 +99,22 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		return nil, fmt.Errorf("reading the clients: %w", err)
 	}
 	for id, cl := range c.clients {
+		// A client deleted since the list above is not there to compare, and
+		// somebody else deleting one must not fail a plan of everything else.
 		uris, fc, sid, err := store.ClientLogoutOf(ctx, tx, id)
+		if errors.Is(err, store.ErrClientNotFound) {
+			delete(c.clients, id)
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
 		cl.PostLogoutRedirectURIs, cl.FrontchannelLogoutURI, cl.FrontchannelSessionRequired = &uris, &fc, &sid
 		st, err := store.ClientSettingsOf(ctx, tx, id)
+		if errors.Is(err, store.ErrClientNotFound) {
+			delete(c.clients, id)
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}

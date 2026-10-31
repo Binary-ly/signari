@@ -254,7 +254,7 @@ var (
 			"initiate_login_uri": nullable(str()), "issuer_alias": nullable(str()),
 			"jwks": nullable(openObject()), "jwt_bearer_providers": arrayOf(str()), "logo_uri": nullable(str()),
 			"may_exchange": boolean(), "minimum_acr": str(), "org_id": uuidStr(), "portal_hidden": boolean(),
-			"redirect_uris": arrayOf(str()), "refresh_token_ttl_s": integer(),
+			"redirect_uris": arrayOf(str()), "refresh_reuse_grace_s": integer(), "refresh_token_ttl_s": integer(),
 			"registered_at": nullable(dateTime()), "require_pkce": boolean(),
 			"require_pushed_authorization": boolean(), "require_state": boolean(), "response_types": arrayOf(str()),
 			"scopes": arrayOf(str()), "tls_bound_tokens": boolean(), "tls_san_dns": nullable(str()),

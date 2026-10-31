@@ -533,6 +533,7 @@ type GetClientsClientIDResponse struct {
 	OrgID                                 string         `json:"org_id"`
 	PortalHidden                          bool           `json:"portal_hidden,omitempty"`
 	RedirectURIs                          []string       `json:"redirect_uris"`
+	RefreshReuseGraceS                    int64          `json:"refresh_reuse_grace_s,omitempty"`
 	RefreshTokenTTLS                      int64          `json:"refresh_token_ttl_s,omitempty"`
 	RegisteredAt                          *string        `json:"registered_at,omitempty"`
 	RequirePkce                           bool           `json:"require_pkce,omitempty"`
@@ -979,6 +980,7 @@ type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem struct {
 	AttributeMap           []GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemAttributeMapItem `json:"attribute_map"`
 	Enabled                bool                                                                          `json:"enabled"`
 	EndSessionURL          string                                                                        `json:"end_session_url"`
+	ForwardParameters      []string                                                                      `json:"forward_parameters"`
 	HasClientKey           bool                                                                          `json:"has_client_key"`
 	ID                     string                                                                        `json:"id"`
 	Issuer                 string                                                                        `json:"issuer"`
@@ -1108,17 +1110,19 @@ type GetOrganizationsOrgIDRACConnectionsResponse struct {
 
 // GetOrganizationsOrgIDRACConnectionsResponseConnectionsItem is a JSON object of the Admin API.
 type GetOrganizationsOrgIDRACConnectionsResponseConnectionsItem struct {
-	Enabled        bool           `json:"enabled"`
-	HasCredentials bool           `json:"has_credentials"`
-	Host           string         `json:"host"`
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Parameters     map[string]any `json:"parameters"`
-	Port           int64          `json:"port"`
-	Protocol       string         `json:"protocol"`
-	Recorded       bool           `json:"recorded"`
-	RequireGroup   string         `json:"require_group"`
-	Slug           string         `json:"slug"`
+	Enabled            bool           `json:"enabled"`
+	HasCredentials     bool           `json:"has_credentials"`
+	Host               string         `json:"host"`
+	ID                 string         `json:"id"`
+	MaxConnections     int64          `json:"max_connections"`
+	MaxDurationSeconds int64          `json:"max_duration_seconds"`
+	Name               string         `json:"name"`
+	Parameters         map[string]any `json:"parameters"`
+	Port               int64          `json:"port"`
+	Protocol           string         `json:"protocol"`
+	Recorded           bool           `json:"recorded"`
+	RequireGroup       string         `json:"require_group"`
+	Slug               string         `json:"slug"`
 }
 
 // GetOrganizationsOrgIDRADIUSAuthorizationsResponse is a JSON object of the Admin API.
@@ -1209,12 +1213,14 @@ type GetOrganizationsOrgIDSAMLProvidersResponse struct {
 type GetOrganizationsOrgIDSAMLProvidersResponseProvidersItem struct {
 	ACSURLs            []string                                                             `json:"acs_urls"`
 	AttributeRelease   map[string]any                                                       `json:"attribute_release"`
+	DefaultRelayState  string                                                               `json:"default_relay_state"`
 	Enabled            bool                                                                 `json:"enabled"`
 	Encrypted          bool                                                                 `json:"encrypted"`
 	EntityID           string                                                               `json:"entity_id"`
 	GroupRelease       *GetOrganizationsOrgIDSAMLProvidersResponseProvidersItemGroupRelease `json:"group_release"`
 	HasSigningCert     bool                                                                 `json:"has_signing_cert"`
 	ID                 string                                                               `json:"id"`
+	IdPInitiated       bool                                                                 `json:"idp_initiated"`
 	LifetimeS          int64                                                                `json:"lifetime_s"`
 	Name               string                                                               `json:"name"`
 	NameIDAttribute    string                                                               `json:"name_id_attribute"`
@@ -1615,6 +1621,7 @@ type PatchClientsClientIDRequest struct {
 	PortalHidden                          *bool           `json:"portal_hidden,omitempty"`
 	PostLogoutRedirectURIs                *[]string       `json:"post_logout_redirect_uris,omitempty"`
 	RedirectURIs                          *[]string       `json:"redirect_uris,omitempty"`
+	RefreshReuseGraceS                    *int64          `json:"refresh_reuse_grace_s,omitempty"`
 	RefreshTokenTTLS                      *int64          `json:"refresh_token_ttl_s,omitempty"`
 	RequirePkce                           *bool           `json:"require_pkce,omitempty"`
 	RequirePushedAuthorizationRequests    *bool           `json:"require_pushed_authorization_requests,omitempty"`
@@ -1726,6 +1733,7 @@ type PatchOrganizationsOrgIDIdentityProvidersSlugRequest struct {
 	AllowAssertions        *bool     `json:"allow_assertions,omitempty"`
 	Enabled                *bool     `json:"enabled,omitempty"`
 	EndSessionURL          *string   `json:"end_session_url,omitempty"`
+	ForwardParameters      *[]string `json:"forward_parameters,omitempty"`
 	LoginDomains           *[]string `json:"login_domains,omitempty"`
 	MfaACR                 *[]string `json:"mfa_acr,omitempty"`
 	MfaAMR                 *[]string `json:"mfa_amr,omitempty"`
@@ -1767,16 +1775,20 @@ type PatchOrganizationsOrgIDPromptsSlugResponse struct {
 
 // PatchOrganizationsOrgIDRACConnectionsSlugRequest is a JSON object of the Admin API.
 type PatchOrganizationsOrgIDRACConnectionsSlugRequest struct {
-	Enabled    *bool           `json:"enabled,omitempty"`
-	Parameters *map[string]any `json:"parameters,omitempty"`
+	Enabled            *bool           `json:"enabled,omitempty"`
+	MaxConnections     *int64          `json:"max_connections,omitempty"`
+	MaxDurationSeconds *int64          `json:"max_duration_seconds,omitempty"`
+	Parameters         *map[string]any `json:"parameters,omitempty"`
 }
 
 // PatchOrganizationsOrgIDRACConnectionsSlugResponse is a JSON object of the Admin API.
 type PatchOrganizationsOrgIDRACConnectionsSlugResponse struct {
-	ConfigVersion int64          `json:"config_version"`
-	Enabled       bool           `json:"enabled,omitempty"`
-	Parameters    map[string]any `json:"parameters,omitempty"`
-	Slug          string         `json:"slug"`
+	ConfigVersion      int64          `json:"config_version"`
+	Enabled            bool           `json:"enabled,omitempty"`
+	MaxConnections     int64          `json:"max_connections,omitempty"`
+	MaxDurationSeconds int64          `json:"max_duration_seconds,omitempty"`
+	Parameters         map[string]any `json:"parameters,omitempty"`
+	Slug               string         `json:"slug"`
 }
 
 // PatchOrganizationsOrgIDRADIUSClientsDeviceIDRequest is a JSON object of the Admin API.
@@ -1793,11 +1805,13 @@ type PatchOrganizationsOrgIDRADIUSClientsDeviceIDResponse struct {
 
 // PatchOrganizationsOrgIDSAMLProvidersProviderIDRequest is a JSON object of the Admin API.
 type PatchOrganizationsOrgIDSAMLProvidersProviderIDRequest struct {
-	LifetimeS       *int64  `json:"lifetime_s,omitempty"`
-	NameIDAttribute *string `json:"name_id_attribute,omitempty"`
-	SignAssertions  *bool   `json:"sign_assertions,omitempty"`
-	SignResponses   *bool   `json:"sign_responses,omitempty"`
-	SignatureAlg    *string `json:"signature_alg,omitempty"`
+	DefaultRelayState *string `json:"default_relay_state,omitempty"`
+	IdPInitiated      *bool   `json:"idp_initiated,omitempty"`
+	LifetimeS         *int64  `json:"lifetime_s,omitempty"`
+	NameIDAttribute   *string `json:"name_id_attribute,omitempty"`
+	SignAssertions    *bool   `json:"sign_assertions,omitempty"`
+	SignResponses     *bool   `json:"sign_responses,omitempty"`
+	SignatureAlg      *string `json:"signature_alg,omitempty"`
 }
 
 // PatchOrganizationsOrgIDSAMLProvidersProviderIDResponse is a JSON object of the Admin API.
@@ -2322,8 +2336,10 @@ type PostOrganizationsOrgIDRACConnectionsRequest struct {
 	Host         *string `json:"host,omitempty"`
 	Login        *string `json:"login,omitempty"`
 	Name         *string `json:"name,omitempty"`
+	Passphrase   *string `json:"passphrase,omitempty"`
 	Password     *string `json:"password,omitempty"`
 	Port         *int64  `json:"port,omitempty"`
+	PrivateKey   *string `json:"private_key,omitempty"`
 	Protocol     *string `json:"protocol,omitempty"`
 	RequireGroup *string `json:"require_group,omitempty"`
 	Slug         *string `json:"slug,omitempty"`

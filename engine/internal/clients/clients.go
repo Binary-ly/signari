@@ -150,6 +150,9 @@ type Client struct {
 	ClaimsRedirectURIs []string
 
 	RefreshTTL int
+	// RefreshReuseGrace is how long after a rotation, in seconds, a refresh token
+	// may be presented once more for the same answer; 0 for never.
+	RefreshReuseGrace int
 	// AccessTTL is the access-token lifetime in seconds. It is the revocation
 	// window too: an issued access token is self-contained and holds until it
 	// expires (ADR-007). Bounded to a minute and tokens.MaxAccessTokenTTL by the
@@ -245,7 +248,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       backchannel_token_delivery_mode,
 		       coalesce(backchannel_client_notification_endpoint, ''),
 		       coalesce(claims_redirect_uris, ARRAY[]::text[]),
-		       access_token_ttl_s, require_pushed_authorization, require_state, minimum_acr, admin_api,
+		       access_token_ttl_s, refresh_reuse_grace_s, require_pushed_authorization, require_state,
+		       minimum_acr, admin_api,
 		       -- store.OrgInService's question, which this package cannot import.
 		       NOT EXISTS (SELECT 1 FROM core.organizations o
 		                    WHERE o.id = core.clients.org_id AND o.status = 'active'),
@@ -264,7 +268,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.BackchannelTokenDeliveryMode,
 			&c.BackchannelClientNotificationEndpoint,
 			&c.ClaimsRedirectURIs,
-			&c.AccessTTL, &c.RequirePAR, &c.RequireState, &c.MinimumACR, &c.AdminAPI, &c.OrgSuspended, &c.InstanceID)
+			&c.AccessTTL, &c.RefreshReuseGrace, &c.RequirePAR, &c.RequireState, &c.MinimumACR, &c.AdminAPI,
+			&c.OrgSuspended, &c.InstanceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

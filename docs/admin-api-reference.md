@@ -553,6 +553,7 @@ Answers:
 | `org_id` | string | always |
 | `portal_hidden` | boolean |  |
 | `redirect_uris` | list of string | always |
+| `refresh_reuse_grace_s` | integer |  |
 | `refresh_token_ttl_s` | integer |  |
 | `registered_at` | string or null |  |
 | `require_pkce` | boolean |  |
@@ -610,6 +611,7 @@ Takes:
 | `portal_hidden` | boolean |  |
 | `post_logout_redirect_uris` | list of string |  |
 | `redirect_uris` | list of string |  |
+| `refresh_reuse_grace_s` | integer |  |
 | `refresh_token_ttl_s` | integer |  |
 | `require_pkce` | boolean |  |
 | `require_pushed_authorization_requests` | boolean |  |

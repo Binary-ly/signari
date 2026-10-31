@@ -813,6 +813,9 @@
                       },
                       "type": "array"
                     },
+                    "refresh_reuse_grace_s": {
+                      "type": "integer"
+                    },
                     "refresh_token_ttl_s": {
                       "type": "integer"
                     },
@@ -1082,6 +1085,9 @@
                       "type": "string"
                     },
                     "type": "array"
+                  },
+                  "refresh_reuse_grace_s": {
+                    "type": "integer"
                   },
                   "refresh_token_ttl_s": {
                     "type": "integer"

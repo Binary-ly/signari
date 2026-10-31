@@ -604,6 +604,8 @@ func run(args []string) (err error) {
 	accessTTL := fs.Duration("access-ttl", 0,
 		"`client set-lifetimes`: access-token lifetime, 1m to 1h; it is also how long a revoked token keeps working")
 	refreshTTL := fs.Duration("refresh-ttl", 0, "`client set-lifetimes`: refresh-token lifetime, 5m to 8760h")
+	refreshGrace := fs.Duration("refresh-grace", 0,
+		"`client set-lifetimes`: how long after a rotation the old refresh token may be retried once, 0s to 30s")
 	consentTTL := fs.String("consent-ttl", "",
 		"`client set-lifetimes`: how long a person's consent lasts before they are asked again, 1h to 87600h, "+
 			"or never")
@@ -1366,7 +1368,13 @@ func run(args []string) (err error) {
 		return clientSetLogout(ctx, conn, *clientID, *postLogoutRedirects, *frontchannelURI, *frontchannelSID,
 			backchannel, backchannelSession)
 	case "client set-lifetimes":
-		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL, *consentTTL)
+		var grace *time.Duration
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "refresh-grace" {
+				grace = refreshGrace
+			}
+		})
+		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL, grace, *consentTTL)
 	case "client set-alg":
 		return clientSetAlg(ctx, conn, *clientID, *alg)
 	case "client set-issuer-alias":
@@ -9298,9 +9306,9 @@ func clientSetLogout(ctx context.Context, conn *pgx.Conn, clientID, postLogout, 
 // Any may be given alone; the others keep their values. consent is a duration,
 // "never", or "" to leave it.
 func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, access, refresh time.Duration,
-	consent string) error {
-	if clientID == "" || (access == 0 && refresh == 0 && consent == "") {
-		return fmt.Errorf("give -client-id and any of -access-ttl, -refresh-ttl and -consent-ttl")
+	grace *time.Duration, consent string) error {
+	if clientID == "" || (access == 0 && refresh == 0 && grace == nil && consent == "") {
+		return fmt.Errorf("give -client-id and any of -access-ttl, -refresh-ttl, -refresh-grace and -consent-ttl")
 	}
 	var consentTTL *time.Duration
 	switch consent {
@@ -9334,6 +9342,7 @@ func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, ac
 	if refresh != 0 {
 		s.RefreshTokenTTL = &refresh
 	}
+	s.RefreshReuseGrace = grace
 	s.ConsentLifetime = consentTTL
 	if err := store.SetClientSettings(ctx, tx, clientID, s); err != nil {
 		return err
@@ -9346,6 +9355,9 @@ func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, ac
 		return err
 	}
 	fmt.Printf("%s: access tokens live %s, refresh tokens %s\n", clientID, after.AccessTokenTTL, after.RefreshTokenTTL)
+	if after.RefreshReuseGrace > 0 {
+		fmt.Printf("  a refresh token may be retried once within %s of being used\n", after.RefreshReuseGrace)
+	}
 	if after.ConsentLifetime == 0 {
 		fmt.Println("  a person's consent to it does not expire")
 	} else {

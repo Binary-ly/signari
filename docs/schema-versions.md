@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0221 refresh_reuse_grace
+
+Compatible with the release before: its binary may still serve this schema.
+
+A retry of a refresh whose answer was lost (9.17). A refresh token is good once, and a second use is taken for theft and ends the whole lineage, which is right and which also signs somebody out when a phone loses signal between the server answering and the application hearing it. refresh_reuse_grace_s lets a client opt in to one retry, within at most thirty seconds, answered with the successor it already should have had. 0, the default, is the old behaviour exactly.
+
 ## 0220 idp_forward_parameters
 
 Compatible with the release before: its binary may still serve this schema.

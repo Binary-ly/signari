@@ -89,7 +89,7 @@ var EventTypes = []string{
 	"mfa.passkey_removed", "mfa.recovery_codes_regenerated", "mfa.skipped_duo_unavailable",
 	"mfa.sms_enrolled", "mfa.sms_removed", "mfa.totp_enrolled", "mfa.totp_removed",
 	"oauth.code_reused", "oauth.consent_denied", "oauth.consent_granted", "oauth.pkce_challenge_reused",
-	"oauth.refresh_reused", "oauth.token_exchanged", "oauth.token_revoked",
+	"oauth.refresh_retried", "oauth.refresh_reused", "oauth.token_exchanged", "oauth.token_revoked",
 	"oid4vci.credential_issued",
 	"org.login_throttle_set", "org.new_device_notice_set", "org.password_only_binds_set", "org.reauth_window_set",
 	"org.remember_device_set", "org.session_lifetime_set", "org.session_limit_set", "org.sms_numbers_set",

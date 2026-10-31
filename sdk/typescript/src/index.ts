@@ -1655,6 +1655,7 @@ export interface GetClientsClientIDResponse {
   org_id: string
   portal_hidden?: boolean
   redirect_uris: string[]
+  refresh_reuse_grace_s?: number
   refresh_token_ttl_s?: number
   registered_at?: string | null
   require_pkce?: boolean
@@ -2742,6 +2743,7 @@ export interface PatchClientsClientIDRequest {
   portal_hidden?: boolean
   post_logout_redirect_uris?: string[]
   redirect_uris?: string[]
+  refresh_reuse_grace_s?: number
   refresh_token_ttl_s?: number
   require_pkce?: boolean
   require_pushed_authorization_requests?: boolean

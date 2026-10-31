@@ -92,6 +92,7 @@ var columnClass = map[string]string{
 	"recovery_requests.cancel_hash":                 "oneWay",
 	"recovery_requests.token_hash":                  "oneWay",
 	"refresh_tokens.successor_hash":                 "oneWay",
+	"refresh_tokens.successor_sealed":               "oneWay", // under a key from the token it replaced, which nothing holds
 	"refresh_tokens.token_hash":                     "oneWay",
 	"registration_tokens.token_hash":                "oneWay",
 	"saml_logout_progress.token_hash":               "oneWay",

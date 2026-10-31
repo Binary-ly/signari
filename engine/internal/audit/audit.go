@@ -63,6 +63,7 @@ const (
 	EventLogout         = "session.logout"
 	EventCodeReused     = "oauth.code_reused"
 	EventRefreshReused  = "oauth.refresh_reused"
+	EventRefreshRetried = "oauth.refresh_retried"
 	EventTokenRevoked   = "oauth.token_revoked"
 	EventClientUpdated  = "admin.client_updated"
 	EventKeyRotated     = "keys.rotated"

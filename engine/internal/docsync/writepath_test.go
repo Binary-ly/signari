@@ -372,7 +372,6 @@ var knownUnread = map[string]string{
 	// changes behaviour, which is why they are allowed here; each is a place a
 	// future list or detail view can read from.
 	"webauthn_credentials.attestation_type":   "what the authenticator presented at registration; decisions read attestation_verified",
-	"refresh_tokens.successor_hash":           "the rotation chain, for tracing a reuse after the fact; reuse is detected by family",
 	"rac_sessions.guacd_id":                   "guacd's id for the session, for matching its own logs",
 	"rac_sessions.ended_reason":               "why a remote-access session ended",
 	"impersonations.ended_reason":             "why an impersonation ended",

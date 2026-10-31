@@ -1605,6 +1605,19 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 
 	grant, rerr := store.RotateRefreshToken(ctx, tx, oldHash)
 
+	// A client that opted in gets one retry at the same answer, for an answer lost
+	// on the way back. Everything below still holds: this replaces the rotation and
+	// nothing else.
+	var retried []byte
+	if errors.Is(rerr, store.ErrRefreshReused) && c.RefreshReuseGrace > 0 {
+		if g, sealed, gerr := store.RefreshRetry(ctx, tx, oldHash,
+			time.Duration(c.RefreshReuseGrace)*time.Second); gerr == nil {
+			grant, rerr, retried = g, nil, sealed
+		} else if !errors.Is(gerr, store.ErrRefreshReused) {
+			s.log.Error("retrying a refresh", "err", gerr)
+		}
+	}
+
 	if errors.Is(rerr, store.ErrRefreshReused) {
 		holderOrg, holder, herr := store.RefreshTokenHolder(ctx, tx, oldHash)
 		if herr != nil {
@@ -1813,8 +1826,35 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		writeMintError(w, err)
 		return
 	}
-	if err := store.LinkSuccessor(ctx, tx, oldHash, newHash); err != nil {
-		s.log.Error("linking successor", "err", err)
+	if retried != nil {
+		// The token this answer should have carried, and not a second line of
+		// descent: a retry leaves one live token, as a rotation does.
+		successor, oerr := store.OpenSuccessor(req.RefreshToken, retried)
+		if oerr == nil {
+			oerr = store.DiscardRefreshToken(ctx, tx, newHash)
+		}
+		if oerr == nil {
+			oerr = audit.Write(ctx, tx, audit.Event{Type: audit.EventRefreshRetried, OrgID: grant.OrgID,
+				SubjectID: grant.UserID, ClientID: c.ClientID, CorrelationID: correlationID(ctx)})
+		}
+		if oerr != nil {
+			s.log.Error("answering a retried refresh", "err", oerr)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		resp.RefreshToken = successor
+	} else {
+		var sealed []byte
+		if c.RefreshReuseGrace > 0 && resp.RefreshToken != "" {
+			var serr error
+			if sealed, serr = store.SealSuccessor(req.RefreshToken, resp.RefreshToken); serr != nil {
+				// A retry is a kindness. Without it the rotation is still sound.
+				s.log.Error("sealing a successor", "err", serr)
+			}
+		}
+		if err := store.LinkSuccessor(ctx, tx, oldHash, newHash, sealed); err != nil {
+			s.log.Error("linking successor", "err", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})

@@ -2,6 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"time"
@@ -161,10 +166,107 @@ func RotateRefreshToken(ctx context.Context, tx pgx.Tx, hash []byte) (*RefreshGr
 }
 
 // LinkSuccessor records which token replaced another, so an audit can walk a
-// lineage after the fact and see exactly where a replay entered it.
-func LinkSuccessor(ctx context.Context, tx pgx.Tx, oldHash, newHash []byte) error {
-	_, err := tx.Exec(ctx,
-		`UPDATE core.refresh_tokens SET successor_hash = $2 WHERE token_hash = $1`, oldHash, newHash)
+// lineage after the fact and see exactly where a replay entered it. sealed is the
+// successor for a client with a retry grace (SealSuccessor), nil for any other.
+func LinkSuccessor(ctx context.Context, tx pgx.Tx, oldHash, newHash, sealed []byte) error {
+	_, err := tx.Exec(ctx, `UPDATE core.refresh_tokens SET successor_hash = $2, successor_sealed = $3
+		WHERE token_hash = $1`, oldHash, newHash, sealed)
+	return err
+}
+
+// successorContext separates this key from anything else derived from a token.
+const successorContext = "signari refresh token successor"
+
+// successorCipher is the cipher derived from a refresh token. A token is 256 bits of
+// random, so nothing stretches it.
+func successorCipher(token string) (cipher.AEAD, error) {
+	key, err := hkdf.Key(sha256.New, []byte(token), nil, successorContext, 32)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+// SealSuccessor seals a successor under a key only the token it replaced gives, so
+// whoever presents that token again can have the same answer, and a read of the row
+// gives nobody anything: the row holds the old token's hash, not the old token.
+func SealSuccessor(oldToken, successor string) ([]byte, error) {
+	aead, err := successorCipher(oldToken)
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	return aead.Seal(nonce, nonce, []byte(successor), nil), nil
+}
+
+// OpenSuccessor opens what SealSuccessor sealed.
+func OpenSuccessor(oldToken string, sealed []byte) (string, error) {
+	aead, err := successorCipher(oldToken)
+	if err != nil {
+		return "", err
+	}
+	if len(sealed) < aead.NonceSize() {
+		return "", errors.New("a sealed successor too short to hold one")
+	}
+	nonce, body := sealed[:aead.NonceSize()], sealed[aead.NonceSize():]
+	plain, err := aead.Open(nil, nonce, body, nil)
+	if err != nil {
+		return "", fmt.Errorf("opening a sealed successor: %w", err)
+	}
+	return string(plain), nil
+}
+
+// RefreshRetry spends a token's one retry: a token already rotated, presented again
+// within grace, whose successor has not been used and whose lineage is as live as a
+// rotation would demand. It answers ErrRefreshReused for anything else, which is the
+// caller's cue to revoke as for any reuse. A successor that has been used was received,
+// so the token presented now is not a retry by whoever lost the answer.
+func RefreshRetry(ctx context.Context, tx pgx.Tx, hash []byte, grace time.Duration) (*RefreshGrant, []byte, error) {
+	var g RefreshGrant
+	var sealed []byte
+	err := tx.QueryRow(ctx, `
+		WITH held AS (SELECT token_hash, successor_sealed FROM core.refresh_tokens
+		               WHERE token_hash = $1 FOR UPDATE)
+		UPDATE core.refresh_tokens rt
+		SET successor_sealed = NULL
+		FROM held, core.refresh_token_families f
+		JOIN core.users u ON u.id = f.user_id
+		LEFT JOIN core.sessions s ON s.sid = f.sid
+		WHERE rt.token_hash = held.token_hash
+		  AND rt.consumed_at > now() - make_interval(secs => $2)
+		  AND held.successor_sealed IS NOT NULL
+		  AND rt.family_id   = f.id
+		  AND f.revoked_at IS NULL
+		  AND u.status = 'active'
+		  AND `+OrgInService("f.org_id")+`
+		  AND (f.offline_not_after > now() OR (s.revoked_at IS NULL AND s.not_after > now()))
+		  AND NOT EXISTS (SELECT 1 FROM core.refresh_tokens used
+		                   WHERE used.token_hash = rt.successor_hash AND used.consumed_at IS NOT NULL)
+		RETURNING f.id::text, f.client_id, f.user_id::text,
+		          COALESCE(f.sid, ''), f.org_id::text, rt.scopes, rt.resources,
+		          f.authorization_details, COALESCE(f.dpop_jkt, ''),
+		          COALESCE(f.cert_thumbprint, ''), held.successor_sealed`, hash, grace.Seconds()).
+		Scan(&g.FamilyID, &g.ClientID, &g.UserID, &g.SessionID, &g.OrgID, &g.Scopes,
+			&g.Resources, &g.Details, &g.DPoPJKT, &g.CertThumbprint, &sealed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, ErrRefreshReused
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("retrying a refresh: %w", err)
+	}
+	return &g, sealed, nil
+}
+
+// DiscardRefreshToken removes a token made and never handed out.
+func DiscardRefreshToken(ctx context.Context, tx pgx.Tx, hash []byte) error {
+	_, err := tx.Exec(ctx, `DELETE FROM core.refresh_tokens WHERE token_hash = $1`, hash)
 	return err
 }
 

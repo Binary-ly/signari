@@ -22,6 +22,10 @@ type ClientSettings struct {
 	AccessTokenTTL *time.Duration
 	// RefreshTokenTTL is how long a refresh token lives. Five minutes to a year.
 	RefreshTokenTTL *time.Duration
+	// RefreshReuseGrace is how long after a rotation the old token may be presented
+	// once more for the same answer, 0 for never and MaxRefreshReuseGrace at most.
+	// Past that reuse is a theft signal again, which is the whole point of rotating.
+	RefreshReuseGrace *time.Duration
 	// IDTokenAlg signs the client's ID and access tokens: ES256 (the default),
 	// RS256, PS256 or EdDSA, and only one the client's instance holds an active
 	// key for, since a token endpoint asked to sign with a key it does not have
@@ -67,6 +71,10 @@ const (
 	MinAccessTokenTTL  = time.Minute
 	MinRefreshTokenTTL = 5 * time.Minute
 	MaxRefreshTokenTTL = 365 * 24 * time.Hour
+	// MaxRefreshReuseGrace is the bound on a retry, which only the code holds: a
+	// network that loses an answer retries within seconds, and any longer is a
+	// window in which a stolen token goes unnoticed.
+	MaxRefreshReuseGrace = 30 * time.Second
 )
 
 // ErrInvalidClientSetting wraps every reason a setting is refused.
@@ -91,6 +99,12 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 	}
 	if d := s.RefreshTokenTTL; d != nil {
 		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET refresh_token_ttl_s = $2, updated_at = now()
+			WHERE client_id = $1`, clientID, int(d.Seconds()))); err != nil {
+			return err
+		}
+	}
+	if d := s.RefreshReuseGrace; d != nil {
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET refresh_reuse_grace_s = $2, updated_at = now()
 			WHERE client_id = $1`, clientID, int(d.Seconds()))); err != nil {
 			return err
 		}
@@ -189,6 +203,10 @@ func CheckClientSettings(s ClientSettings) error {
 		return fmt.Errorf("%w: a refresh token lifetime must be whole seconds from %s to %s",
 			ErrInvalidClientSetting, MinRefreshTokenTTL, MaxRefreshTokenTTL)
 	}
+	if d := s.RefreshReuseGrace; d != nil && (*d < 0 || *d > MaxRefreshReuseGrace || *d%time.Second != 0) {
+		return fmt.Errorf("%w: a refresh retry grace must be whole seconds from 0 to %s",
+			ErrInvalidClientSetting, MaxRefreshReuseGrace)
+	}
 	if a := s.IDTokenAlg; a != nil && !slices.Contains(ClientAlgorithms, *a) {
 		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
 			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
@@ -219,14 +237,15 @@ func clientUpdated(tag pgconn.CommandTag, err error) error {
 
 // ClientSettingsView is what SetClientSettings writes, read back.
 type ClientSettingsView struct {
-	AccessTokenTTL  time.Duration
-	RefreshTokenTTL time.Duration
-	IDTokenAlg      string
-	RequirePAR      bool
-	RequireState    bool
-	FirstParty      bool
-	IssuerAlias     string
-	MinimumACR      string
+	AccessTokenTTL    time.Duration
+	RefreshTokenTTL   time.Duration
+	RefreshReuseGrace time.Duration
+	IDTokenAlg        string
+	RequirePAR        bool
+	RequireState      bool
+	FirstParty        bool
+	IssuerAlias       string
+	MinimumACR        string
 	// ConsentLifetime is 0 for a consent that does not expire.
 	ConsentLifetime time.Duration
 }
@@ -236,18 +255,19 @@ func ClientSettingsOf(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, clientID string) (ClientSettingsView, error) {
 	var v ClientSettingsView
-	var access, refresh, consent int
-	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, id_token_signed_alg,
+	var access, refresh, grace, consent int
+	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, refresh_reuse_grace_s, id_token_signed_alg,
 		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr,
 		       COALESCE(consent_lifetime_s, 0), require_state
 		FROM core.clients WHERE client_id = $1`, clientID).
-		Scan(&access, &refresh, &v.IDTokenAlg, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias,
+		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias,
 			&v.MinimumACR, &consent, &v.RequireState)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}
 	v.AccessTokenTTL = time.Duration(access) * time.Second
 	v.RefreshTokenTTL = time.Duration(refresh) * time.Second
+	v.RefreshReuseGrace = time.Duration(grace) * time.Second
 	v.ConsentLifetime = time.Duration(consent) * time.Second
 	return v, err
 }

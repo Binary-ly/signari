@@ -40,7 +40,7 @@ var commandFlags = map[string][]string{
 	"client set-hybrid":               {"client-id", "review-by"},
 	"client set-issuer-alias":         {"alias", "client-id"},
 	"client set-keys":                 {"client-id", "jwks"},
-	"client set-lifetimes":            {"access-ttl", "client-id", "consent-ttl", "refresh-ttl"},
+	"client set-lifetimes":            {"access-ttl", "client-id", "consent-ttl", "refresh-grace", "refresh-ttl"},
 	"client set-logout":               {"backchannel-sid", "backchannel-uri", "client-id", "frontchannel-sid", "frontchannel-uri", "post-logout-redirects"},
 	"client set-par":                  {"client-id", "require-par"},
 	"client set-state":                {"client-id", "require-state"},

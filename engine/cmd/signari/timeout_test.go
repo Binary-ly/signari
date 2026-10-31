@@ -131,7 +131,20 @@ func TestAnAuditExportOutlivesTheConfigurationDeadline(t *testing.T) {
 			read <- n
 		}()
 		err := run(append([]string{"export", "audit", "-dsn", dsn, "-out", pipe}, extra...))
-		return <-read, err
+		// A deadline that passes before the export opens its output leaves the
+		// reader waiting in open(2) for a writer that will never come, and this
+		// test waiting on the reader until the suite's own timeout. So be that
+		// writer, for as long as the reader has not answered.
+		for {
+			select {
+			case n := <-read:
+				return n, err
+			case <-time.After(50 * time.Millisecond):
+				if w, oerr := os.OpenFile(pipe, os.O_WRONLY|syscall.O_NONBLOCK, 0); oerr == nil {
+					_ = w.Close()
+				}
+			}
+		}
 	}
 
 	n, err := export()

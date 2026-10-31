@@ -320,7 +320,7 @@ func (s *Server) handleAccountsPost(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account", http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, oidc.PathAuthorize+"?"+consumePrompt(authz, oauth.PromptSelectAccount), http.StatusSeeOther)
+	http.Redirect(w, r, oidc.PathAuthorize+"?"+s.answerPrompts(r.Context(), authz, oauth.PromptSelectAccount), http.StatusSeeOther)
 }
 
 // errorToClient reports an error to the client of a parked authorization
@@ -328,7 +328,7 @@ func (s *Server) handleAccountsPost(w http.ResponseWriter, r *http.Request) {
 // registered: the request came back from a form, so it is the browser's to
 // change, and a redirect taken from it unchecked goes wherever it says.
 func (s *Server) errorToClient(w http.ResponseWriter, r *http.Request, authz, code, description string) {
-	req := oauth.ParseAuthz(parseQuery(authz))
+	req := oauth.ParseAuthz(s.parkedRequest(r.Context(), authz))
 	// In any state: ValidateAuthz refuses a disabled client, saying so.
 	c, lookupErr := s.lookupClientAnyState(r.Context(), req.ClientID)
 	if aerr := oauth.ValidateAuthz(req, c, lookupErr); aerr != nil && aerr.Disposition != oauth.DispositionRedirect {

@@ -81,7 +81,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	wasPushed := false
 	if requestURI := query.Get("request_uri"); requestURI != "" {
 		wasPushed = true
-		pushed, err := s.consumePushedRequest(ctx, requestURI, query.Get("client_id"))
+		pushed, err := s.readPushedRequest(ctx, requestURI, query.Get("client_id"))
 		if err != nil {
 			s.log.Info("pushed request refused", "err", err,
 				"correlation_id", correlationID(ctx))
@@ -92,6 +92,18 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pushed.Set("client_id", query.Get("client_id"))
+
+		// What the pages from here carry through the browser is the handle, and
+		// the three things they read to choose what to show, which come from the
+		// push and decide nothing: this block replaces them on every arrival.
+		parked := url.Values{"client_id": {query.Get("client_id")}, "request_uri": {requestURI}}
+		for _, hint := range []string{"login_hint", "ui_locales", "acr_values"} {
+			if v := pushed.Get(hint); v != "" {
+				parked.Set(hint, v)
+			}
+		}
+		r = r.Clone(ctx)
+		r.URL.RawQuery = parked.Encode()
 		query = pushed
 	}
 
@@ -475,7 +487,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 // whether an OP makes a new identity or signs in an existing one out of scope.
 // create is consumed either way, or that sign-in would resume to here again.
 func (s *Server) startCreateAccount(w http.ResponseWriter, r *http.Request, c *clients.Client) {
-	authz := consumePrompt(r.URL.RawQuery, oauth.PromptCreate)
+	authz := s.answerPrompts(r.Context(), r.URL.RawQuery, oauth.PromptCreate)
 	rule, err := s.signupRule(r.Context())
 	if err != nil {
 		s.log.Error("reading the sign-up rule for prompt=create", "err", err)
@@ -566,6 +578,21 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		s.log.Error("encoding authorization_details", "err", derr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+	// A pushed request gives one code. Spent here and in this transaction, so of two
+	// racing for it one has none, and an issuance that fails leaves it good.
+	if handle := r.URL.Query().Get("request_uri"); handle != "" {
+		spent, serr := store.SpendPushedRequest(ctx, tx, pushedHash(handle))
+		if serr != nil {
+			s.log.Error("spending a pushed request", "err", serr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !spent {
+			_ = tx.Rollback(ctx)
+			s.renderAuthzFailure(w, r, errPushedRequestSpent.Error())
+			return
+		}
 	}
 	if err := store.IssueCode(ctx, tx, orgID, c.ClientID, sid, userID, grant, hash,
 		req.Resources, details); err != nil {
@@ -2603,7 +2630,8 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 
 	// Back to whatever was parked, if anything was.
 	if authzQuery != "" {
-		http.Redirect(w, r, resumeAfterSignIn(authzQuery), http.StatusSeeOther)
+		answered := s.answerPrompts(ctx, authzQuery, oauth.PromptLogin, oauth.PromptSelectAccount)
+		http.Redirect(w, r, resumeAfterSignIn(answered), http.StatusSeeOther)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "signed in"})

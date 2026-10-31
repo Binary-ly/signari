@@ -411,7 +411,8 @@ requirement whose subject is unknown.
 |---|---|
 | "shall not use the HTTP 307 status code when redirecting a request that contains user credentials" | never used; `responsemode.go` cites the rule and uses 303 |
 | "shall issue authorization codes with a maximum lifetime of 60 seconds" | `codeTTL = 60s` — exactly at the ceiling |
-| "shall issue ... `request_uri` with `expires_in` values of less than 600 seconds" | `parLifetime` = 90s |
+| "shall issue ... `request_uri` with `expires_in` values of less than 600 seconds" | `parLifetime` = 5 minutes, which has to cover the whole sign-in |
+| NOTE 3: one-time use enforced "at the point of authorization, not at the point of loading an authorization page" | **was wrong — now implemented.** The first page spent the handle, so nobody who was not already signed in could finish a pushed request. A handle is now spent in the transaction that issues its code |
 | "shall support `nonce` parameter values up to 64 characters in length" | no length bound, so any length is accepted |
 
 The two lifetime ceilings were met by constants that **did not know they were

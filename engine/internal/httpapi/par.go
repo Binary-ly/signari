@@ -57,10 +57,12 @@ const (
 	// different prefix means a handle nothing recognises.
 	requestURIPrefix = "urn:ietf:params:oauth:request_uri:"
 
-	// parLifetime is short because the handle is used immediately -- the client
-	// redirects the browser as soon as it has one. Anything longer is a window
-	// in which a captured handle still works.
-	parLifetime = 90 * time.Second
+	// parLifetime is how long a person has from the client's redirect to the code,
+	// which is the whole sign-in, a second factor and a consent screen included,
+	// because the handle is spent at the code and not at the first page. Longer is a
+	// window in which a captured handle still works, though only for its client and
+	// only by somebody who can then sign in. FAPI 2.0 §5.3.2.2 wants under 600.
+	parLifetime = 5 * time.Minute
 
 	maxPARBody = 64 << 10
 )
@@ -287,12 +289,11 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	sum := sha256.Sum256([]byte(handle))
 	if _, err := s.db.Exec(ctx, `
 		INSERT INTO core.pushed_requests
 			(uri_hash, org_id, client_id, params, expires_at, dpop_jkt)
 		VALUES ($1, $2::uuid, $3, $4, now() + $5::interval, NULLIF($6,''))`,
-		sum[:], c.OrgID, clientID, blob, parLifetime.String(), jkt); err != nil {
+		pushedHash(handle), c.OrgID, clientID, blob, parLifetime.String(), jkt); err != nil {
 		s.log.Error("storing a pushed request", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
@@ -305,27 +306,37 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// consumePushedRequest redeems a handle at the authorization endpoint.
+// errPushedRequestSpent is a handle that has given a code, or run out.
+var errPushedRequestSpent = errors.New("this request_uri has already been used, or has expired")
+
+// pushedHash is what a handle is stored and found by.
+func pushedHash(requestURI string) []byte {
+	sum := sha256.Sum256([]byte(requestURI))
+	return sum[:]
+}
+
+// readPushedRequest answers the parameters behind a handle, and leaves it as it found it.
 //
-// Returns the pushed parameters. Single use, enforced in the same statement
-// that reads, so two concurrent redemptions cannot both succeed.
-func (s *Server) consumePushedRequest(ctx context.Context, requestURI, clientID string) (url.Values, error) {
+// A person arrives at this endpoint several times on one handle: for the sign-in page,
+// back from it, back from a second factor, back from the consent screen. Software that
+// fetches a link to see what is there arrives too. So the handle is not spent here but in
+// the transaction that issues the code, which is the point FAPI 2.0 §5.3.2.2 NOTE 3 names:
+// "at the point of authorization, not at the point of loading an authorization page".
+func (s *Server) readPushedRequest(ctx context.Context, requestURI, clientID string) (url.Values, error) {
 	if !strings.HasPrefix(requestURI, requestURIPrefix) {
 		return nil, fmt.Errorf("request_uri is not a pushed request handle")
 	}
-	sum := sha256.Sum256([]byte(requestURI))
 
 	var blob []byte
 	var storedClient string
 	var storedJKT *string
 	err := s.db.QueryRow(ctx, `
-		UPDATE core.pushed_requests
-		SET used_at = now()
-		WHERE uri_hash = $1 AND used_at IS NULL AND expires_at > now()
-		RETURNING params, client_id, dpop_jkt`, sum[:]).Scan(&blob, &storedClient, &storedJKT)
+		SELECT params, client_id, dpop_jkt FROM core.pushed_requests
+		WHERE uri_hash = $1 AND used_at IS NULL AND expires_at > now()`,
+		pushedHash(requestURI)).Scan(&blob, &storedClient, &storedJKT)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("this request_uri has already been used, or has expired")
+			return nil, errPushedRequestSpent
 		}
 		return nil, err
 	}
@@ -364,6 +375,39 @@ func (s *Server) consumePushedRequest(ctx context.Context, requestURI, clientID 
 		out[k] = append([]string(nil), v...)
 	}
 	return out, nil
+}
+
+// parkedRequest is a parked query as the request it stands for: the query itself, or for
+// a pushed request what was pushed, which is the only place its redirect_uri is. A handle
+// that opens nothing answers the query, with no redirect_uri to send anybody to.
+func (s *Server) parkedRequest(ctx context.Context, authzQuery string) url.Values {
+	q := parseQuery(authzQuery)
+	handle := q.Get("request_uri")
+	if handle == "" {
+		return q
+	}
+	pushed, err := s.readPushedRequest(ctx, handle, q.Get("client_id"))
+	if err != nil {
+		s.log.Info("a parked pushed request could not be read", "err", err, "correlation_id", correlationID(ctx))
+		return q
+	}
+	pushed.Set("client_id", q.Get("client_id"))
+	return pushed
+}
+
+// answerPrompts says these prompts have been answered, wherever the request is kept:
+// taken out of the query a browser carries, or for a pushed request, out of the row. The
+// browser's copy of a pushed request holds no prompt to take out, and has no say in it,
+// or whoever held the browser could answer prompt=login by editing a URL.
+func (s *Server) answerPrompts(ctx context.Context, authzQuery string, answered ...string) string {
+	handle := parseQuery(authzQuery).Get("request_uri")
+	if handle == "" {
+		return consumePrompt(authzQuery, answered...)
+	}
+	if err := store.AnswerPushedPrompts(ctx, s.db, pushedHash(handle), answered); err != nil {
+		s.log.Error("recording an answered prompt", "err", err, "correlation_id", correlationID(ctx))
+	}
+	return authzQuery
 }
 
 // newRequestURI mints an opaque handle.

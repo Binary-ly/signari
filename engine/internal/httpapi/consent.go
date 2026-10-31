@@ -307,7 +307,7 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 	//
 	// Found by the conformance suite (oidcc-refresh-token, which sends
 	// prompt=consent), and the same defect that made prompt=login loop.
-	http.Redirect(w, r, oidc.PathAuthorize+"?"+consumePrompt(authzQuery, oauth.PromptConsent),
+	http.Redirect(w, r, oidc.PathAuthorize+"?"+s.answerPrompts(ctx, authzQuery, oauth.PromptConsent),
 		http.StatusSeeOther)
 }
 

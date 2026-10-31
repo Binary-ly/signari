@@ -5,7 +5,7 @@ authenticated, and gets back an opaque handle. The browser carries only that.
 
 ```
 POST /oauth2/par        ->  {"request_uri": "urn:ietf:params:oauth:request_uri:...",
-                             "expires_in": 90}
+                             "expires_in": 300}
 GET  /oauth2/authorize?client_id=...&request_uri=...
 ```
 
@@ -20,28 +20,37 @@ It is also **editable**. Nothing stops whoever controls the browser changing
 `scope` or `redirect_uri` before it arrives.
 
 PAR moves the parameters onto a back channel from an authenticated client. What
-the browser carries is a handle that is single-use, expires in 90 seconds, and
+the browser carries is a handle that gives one code, expires in five minutes, and
 means nothing to anyone who captures it after use.
 
 ## Verified against the running server
 
 ```
-1. push, valid                    -> request_uri issued, expires_in=90
+1. push, valid                    -> request_uri issued, expires_in=300
 2. push with NO client auth       -> invalid_client
 3. push, unregistered redirect    -> redirect_uri is not registered for this client
-4. authorize with the handle      -> 200 (login page)
-5. REUSE the same handle          -> 400 (single use)
-6. a DIFFERENT client redeems it  -> 400 (bound to its pusher)
-7. query tries to add scope       -> 200, and the extra scope is IGNORED
+4. authorize with the handle      -> 200 (login page), as often as it is loaded
+5. sign in, and come back         -> a code
+6. the handle again after a code  -> 400 (one code)
+7. a DIFFERENT client redeems it  -> 400 (bound to its pusher)
+8. query tries to add scope       -> 200, and the extra scope is IGNORED
 ```
 
-**Line 7 is the rule that makes it worth having.** When `request_uri` is
+**Line 5 is why line 6 is after it.** A person arrives at the authorization
+endpoint several times on one handle: for the sign-in page, back from it, back
+from a second factor and from the consent screen. Software that fetches a link to
+see what is there arrives too. So a handle is spent in the transaction that issues
+the code, and nothing before that uses it up. It used to be spent by the first page,
+which looked exactly like single use and meant nobody who was not already signed in
+could finish a pushed request.
+
+**Line 8 is the rule that makes it worth having.** When `request_uri` is
 present, the pushed parameters *replace* the query entirely — only `client_id`
 survives, because it is needed to find the handle. Merging the two would undo
 the feature: whoever controls the browser could append `scope=admin` to a URL
 whose other parameters are protected.
 
-**Line 6:** the handle is bound to the client that pushed it. Otherwise a client
+**Line 7:** the handle is bound to the client that pushed it. Otherwise a client
 could redeem another's handle and begin an authorization carrying someone else's
 registered `redirect_uri`.
 
@@ -120,10 +129,15 @@ was used buys nothing and breaks real clients.
 
 ## Two properties worth knowing
 
-- **The `request_uri` lifetime is a fixed 90 seconds**, not configurable. RFC 9126
-  §2.2 says only "short-lived" and names no value; a fixed short default is
-  conformant and removes the footgun of an operator setting it long enough to
-  matter.
+- **The `request_uri` lifetime is a fixed five minutes**, not configurable, and it
+  covers the whole sign-in: a person has that long from the client's redirect to the
+  code, a second factor and a consent screen included. RFC 9126 §2.2 says only
+  "short-lived" and names no value, and FAPI 2.0 asks for under 600 seconds; a fixed
+  default removes the footgun of an operator setting it long enough to matter.
+- **What a page reads from the push decides nothing.** `login_hint`, `ui_locales` and
+  `acr_values` travel beside the handle so the sign-in page can use them, and are
+  replaced from the push on every arrival. A `prompt` is answered in the stored
+  request, never by the browser, so `prompt=login` cannot be skipped by editing a URL.
 - **Duplicate parameters are refused** (`dupeparams.go`), while the repeats
   RFC 8707 and RFC 8693 legitimately permit — `resource`, `audience` — are
   preserved as lists through the push.

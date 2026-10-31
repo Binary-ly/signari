@@ -49,7 +49,7 @@ client and why. It does not go on being served as if nothing had happened.
 
 These hold for all clients, and the profile asks nothing more of them: an authorization
 code lasts 60 seconds and is single use; `S256` is the only PKCE method; a pushed request
-must carry a `redirect_uri` and expires in 90 seconds; `iss` is in every authorization
+must carry a `redirect_uri`, expires in five minutes and gives one code; `iss` is in every authorization
 response; a client assertion dated more than 10 seconds ahead, or a DPoP proof more than 30,
 is refused; codes are bound to the DPoP key; `none` and symmetric algorithms are refused
 everywhere; and there is no password grant.

@@ -93,16 +93,11 @@ func (s *Server) resolveAccessToken(ctx context.Context, raw string) (*Principal
 	if claims.Cnf != nil {
 		return nil, errTokenRejected
 	}
-	if revoked, err := store.JTIRevoked(ctx, s.db, claims.JTI); err != nil || revoked {
-		return nil, rejectedOr(err)
-	}
-	if claims.GrantID != "" {
-		if revoked, err := store.GrantRevoked(ctx, s.db, claims.GrantID); err != nil || revoked {
-			return nil, rejectedOr(err)
-		}
-	}
-	// The client enabled and in service, and a person holder active.
-	if live, err := store.TokenHolderLive(ctx, s.db, claims.ClientID, claims.Subject); err != nil || !live {
+	// Not revoked, and the client enabled and in service, and a person holder
+	// active. Its session is not asked after: an Admin API token stands for an
+	// application, and what ended a person's sign-in does not end that.
+	st, err := store.TokenStandingOf(ctx, s.db, claims)
+	if err != nil || st.JTIRevoked || st.GrantRevoked || st.HolderGone {
 		return nil, rejectedOr(err)
 	}
 	// And of the instance that signed (6.12): an application of another

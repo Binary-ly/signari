@@ -17,6 +17,10 @@ import (
 // oracle.
 var ErrInvalidToken = errors.New("token is invalid")
 
+// ErrWrongIssuer is a sound token from an issuer not among those asked about, the
+// one failure that asking about more issuers can change.
+var ErrWrongIssuer = errors.New("wrong issuer")
+
 // Leeway absorbs clock skew between us and whoever minted the token. Small on
 // purpose -- generous leeway extends the life of a revoked token.
 const Leeway = 60 * time.Second
@@ -76,7 +80,7 @@ func VerifyAccessTokenAny(set *keys.Set, issuers []string, raw string) (*AccessT
 	now := time.Now()
 	switch {
 	case !accepted:
-		return nil, fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidToken, ErrWrongIssuer)
 	case c.Subject == "":
 		return nil, fmt.Errorf("%w: no subject", ErrInvalidToken)
 	case c.Expiry == 0 || now.After(time.Unix(c.Expiry, 0).Add(Leeway)):

@@ -55,11 +55,6 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 		}
 	}()
 
-	method, jwks, err := store.ClientAuthMethod(ctx, s.db, c.ClientID)
-	if err != nil {
-		return fmt.Errorf("reading the client's authentication method: %w", err)
-	}
-
 	// Mutual-TLS first: a client registered for it authenticates by the
 	// certificate on the connection, not by anything in the body. Checked before
 	// the stored method because the expectation lives on the client row rather
@@ -73,7 +68,7 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 		return nil
 	}
 
-	switch method {
+	switch c.TokenEndpointAuthMethod {
 	case "private_key_jwt":
 		mechanism = "client_assertion"
 		assertionType := r.PostFormValue("client_assertion_type")
@@ -82,6 +77,10 @@ func (s *Server) authenticateConfidentialClient(ctx context.Context, r *http.Req
 				"client_assertion_type must be %q", clientauth.AssertionType)
 		}
 		assertion := r.PostFormValue("client_assertion")
+		jwks, err := store.ClientJWKS(ctx, s.db, c.ClientID)
+		if err != nil {
+			return fmt.Errorf("reading the client's keys: %w", err)
+		}
 
 		// Accepted audiences: the issuer, the token endpoint, and THE ENDPOINT
 		// BEING CALLED.
@@ -193,8 +192,9 @@ func (s *Server) clientAuthAllowed(ctx context.Context, r *http.Request, clientI
 		ip = "unknown"
 	}
 
-	pair, err := store.CountRate(ctx, s.db,
-		"clientauth:fail:pair:"+clientID+":"+budgetIP(ip), clientAuthPerPairWindow)
+	spent, err := store.CountRates(ctx, s.db,
+		store.RateWindow{Key: "clientauth:fail:pair:" + clientID + ":" + budgetIP(ip), Window: clientAuthPerPairWindow},
+		store.RateWindow{Key: "clientauth:fail:ip:" + budgetIP(ip), Window: clientAuthPerIPWindow})
 	if err != nil {
 		// Fail closed, for the reason allowSignInAttempt gives: authenticating a
 		// client needs the database one query later anyway, so refusing here costs
@@ -203,16 +203,7 @@ func (s *Server) clientAuthAllowed(ctx context.Context, r *http.Request, clientI
 		s.log.Error("checking the client authentication rate limit", "err", err)
 		return false
 	}
-	if pair >= clientAuthPerPairLimit {
-		return false
-	}
-
-	byIP, err := store.CountRate(ctx, s.db, "clientauth:fail:ip:"+budgetIP(ip), clientAuthPerIPWindow)
-	if err != nil {
-		s.log.Error("checking the client authentication rate limit", "err", err)
-		return false
-	}
-	return byIP < clientAuthPerIPLimit
+	return spent[0] < clientAuthPerPairLimit && spent[1] < clientAuthPerIPLimit
 }
 
 // recordClientAuthFailure charges both budgets. Called only when the proof was

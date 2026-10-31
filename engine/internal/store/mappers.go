@@ -12,6 +12,13 @@ import (
 	"signari.dev/engine/internal/tokens"
 )
 
+// claimReader is what resolving a claim reads through: a transaction at a mint,
+// and the pool at userinfo, which has nothing to hold one open for.
+type claimReader interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 // Resolving operator-defined claims at token-mint time.
 //
 // # Nothing is released that a mapper did not name
@@ -52,10 +59,10 @@ const (
 // client asked for. A mapper that requires a scope releases nothing unless the
 // grant carries it — which is what keeps a consent decision meaningful after
 // the fact.
-func MappedClaims(ctx context.Context, tx pgx.Tx, userID, orgID, clientID string,
+func MappedClaims(ctx context.Context, q claimReader, userID, orgID, clientID string,
 	dest ClaimDestination, granted string, root *keys.RootKey) (map[string]any, error) {
 
-	rows, err := tx.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		SELECT m.claim_name, m.required_scope, m.source, m.source_value, m.transform, m.transform_arg,
 		       COALESCE(s.name, ''), COALESCE(s.personal, false), COALESCE(s.value_type, ''),
 		       a.value, a.value_sealed
@@ -130,7 +137,7 @@ func MappedClaims(ctx context.Context, tx pgx.Tx, userID, orgID, clientID string
 			continue
 		case "user_field":
 			if record == nil {
-				if record, err = userRecord(ctx, tx, userID); err != nil {
+				if record, err = userRecord(ctx, q, userID); err != nil {
 					return nil, err
 				}
 			}
@@ -139,11 +146,11 @@ func MappedClaims(ctx context.Context, tx pgx.Tx, userID, orgID, clientID string
 			}
 			continue
 		case "groups":
-			if list, err = GroupsForUser(ctx, tx, userID, clientID); err != nil {
+			if list, err = GroupsForUser(ctx, q, userID, clientID); err != nil {
 				return nil, fmt.Errorf("reading groups for a claim: %w", err)
 			}
 		case "relation":
-			if list, err = ApplicationRoles(ctx, tx, orgID, userID, clientID); err != nil {
+			if list, err = ApplicationRoles(ctx, q, orgID, userID, clientID); err != nil {
 				return nil, fmt.Errorf("reading roles for a claim: %w", err)
 			}
 		}
@@ -166,7 +173,7 @@ func MappedClaims(ctx context.Context, tx pgx.Tx, userID, orgID, clientID string
 			value = *p.clear
 		default:
 			if !skTried {
-				sk, _ = keys.LoadSubjectKey(ctx, tx, userID, root)
+				sk, _ = keys.LoadSubjectKey(ctx, q, userID, root)
 				skTried = true
 			}
 			if sk == nil {
@@ -220,9 +227,9 @@ func applyTransform(value, transform, arg string) (string, bool) {
 }
 
 // userRecord reads the fields a claim can be made from.
-func userRecord(ctx context.Context, tx pgx.Tx, userID string) (map[string]string, error) {
+func userRecord(ctx context.Context, q claimReader, userID string) (map[string]string, error) {
 	var email, username, display, given, surname, locale *string
-	if err := tx.QueryRow(ctx, `SELECT email, username, display_name, given_name, surname, locale
+	if err := q.QueryRow(ctx, `SELECT email, username, display_name, given_name, surname, locale
 		FROM core.users WHERE id = $1::uuid`, userID).Scan(&email, &username, &display, &given, &surname,
 		&locale); err != nil {
 		return nil, fmt.Errorf("reading a person's record for a claim: %w", err)

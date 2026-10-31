@@ -3390,30 +3390,8 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	// A revoked or signed-out token must not be exchangeable. Otherwise
 	// exchange becomes a way to launder a dead credential into a live one --
 	// the token the user revoked yesterday still produces working tokens today.
-	if gone, gerr := store.GrantRevoked(ctx, s.db, subject.GrantID); gerr != nil || gone {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the authorization behind the subject token has been revoked",
-			Status:      http.StatusBadRequest})
-		return
-	}
-	if revoked, rerr := store.JTIRevoked(ctx, s.db, subject.JTI); rerr != nil || revoked {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the subject token has been revoked", Status: http.StatusBadRequest})
-		return
-	}
-	if subject.SessionID != "" {
-		live, serr := store.TokenSessionLive(ctx, s.db, subject.SessionID, subject.GrantID)
-		if serr != nil || !live {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the session behind the subject token has ended",
-				Status:      http.StatusBadRequest})
-			return
-		}
-	}
-	if live, lerr := store.TokenHolderLive(ctx, s.db, subject.ClientID, subject.Subject); lerr != nil || !live {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the client or subject of the subject token is no longer active",
-			Status:      http.StatusBadRequest})
+	if terr := s.exchangeRefusal(ctx, subject, "subject"); terr != nil {
+		writeTokenError(w, terr)
 		return
 	}
 
@@ -3454,30 +3432,8 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 				Status:      http.StatusBadRequest})
 			return
 		}
-		if gone, gerr := store.GrantRevoked(ctx, s.db, actor.GrantID); gerr != nil || gone {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the authorization behind the actor token has been revoked",
-				Status:      http.StatusBadRequest})
-			return
-		}
-		if revoked, rerr := store.JTIRevoked(ctx, s.db, actor.JTI); rerr != nil || revoked {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the actor token has been revoked", Status: http.StatusBadRequest})
-			return
-		}
-		if actor.SessionID != "" {
-			live, serr := store.TokenSessionLive(ctx, s.db, actor.SessionID, actor.GrantID)
-			if serr != nil || !live {
-				writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-					Description: "the session behind the actor token has ended",
-					Status:      http.StatusBadRequest})
-				return
-			}
-		}
-		if live, lerr := store.TokenHolderLive(ctx, s.db, actor.ClientID, actor.Subject); lerr != nil || !live {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the client or subject of the actor token is no longer active",
-				Status:      http.StatusBadRequest})
+		if terr := s.exchangeRefusal(ctx, actor, "actor"); terr != nil {
+			writeTokenError(w, terr)
 			return
 		}
 		actorSubject = actor.Subject

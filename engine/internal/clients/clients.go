@@ -277,7 +277,9 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       NOT EXISTS (SELECT 1 FROM core.organizations o
 		                    WHERE o.id = core.clients.org_id AND o.status = 'active'),
 		       (SELECT o.instance_id::text FROM core.organizations o
-		         WHERE o.id = core.clients.org_id)
+		         WHERE o.id = core.clients.org_id),
+		       COALESCE((SELECT array_agg(r.redirect_uri ORDER BY r.redirect_uri) FROM core.client_redirect_uris r
+		                  WHERE r.client_id = core.clients.client_id), ARRAY[]::text[])
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -293,7 +295,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.BackchannelClientNotificationEndpoint,
 			&c.ClaimsRedirectURIs,
 			&c.AccessTTL, &c.RefreshReuseGrace, &c.RequirePAR, &c.RequireState, &c.MinimumACR, &c.AdminAPI,
-			&c.OrgSuspended, &c.InstanceID)
+			&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -321,21 +323,10 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	if tlsEmail != nil {
 		c.TLSSANEmail = *tlsEmail
 	}
-
-	rows, err := q.Query(ctx,
-		`SELECT redirect_uri FROM core.client_redirect_uris WHERE client_id = $1`, clientID)
-	if err != nil {
-		return nil, fmt.Errorf("loading redirect URIs for %q: %w", clientID, err)
+	if len(c.RedirectURIs) == 0 {
+		c.RedirectURIs = nil
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var u string
-		if err := rows.Scan(&u); err != nil {
-			return nil, err
-		}
-		c.RedirectURIs = append(c.RedirectURIs, u)
-	}
-	return c, rows.Err()
+	return c, nil
 }
 
 // HasRedirectURI reports whether the candidate is registered, by exact string

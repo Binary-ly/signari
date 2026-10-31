@@ -6,9 +6,11 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/tokens"
 )
 
-// TokenHolderLive is the ADR-007 read for an access token's client and
+// TokenStandingOf is the ADR-007 read for an access token's client and
 // subject (2.50). Each row is one way a token outlived its holder before.
 func TestATokenIsOnlyAsLiveAsItsClientAndSubject(t *testing.T) {
 	dsn := os.Getenv("SIGNARI_TEST_DSN")
@@ -86,12 +88,12 @@ func TestATokenIsOnlyAsLiveAsItsClientAndSubject(t *testing.T) {
 		{"a client named by a deactivated person's id", impostor, impostor, false},
 		{"a client whose id looks like a UUID", uuidShaped, uuidShaped, true},
 	} {
-		got, err := TokenHolderLive(ctx, tx, c.clientID, c.sub)
+		got, err := TokenStandingOf(ctx, tx, &tokens.AccessTokenClaims{JTI: "holder-test", ClientID: c.clientID, Subject: c.sub})
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
-		if got != c.want {
-			t.Errorf("%s: live = %v, want %v", c.name, got, c.want)
+		if got.Live() != c.want {
+			t.Errorf("%s: live = %v, want %v (%+v)", c.name, got.Live(), c.want, got)
 		}
 	}
 }

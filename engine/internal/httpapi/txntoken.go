@@ -203,31 +203,8 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		// Txn-Token. Otherwise exchange laundered a dead credential into one
 		// that every internal service will honour for the next five minutes --
 		// and the internal services have no way to check.
-		if gone, gerr := store.GrantRevoked(ctx, s.db, subject.GrantID); gerr != nil || gone {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the authorization behind the subject token has been revoked",
-				Status:      http.StatusBadRequest})
-			return
-		}
-		if revoked, rerr := store.JTIRevoked(ctx, s.db, subject.JTI); rerr != nil || revoked {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the subject token has been revoked",
-				Status:      http.StatusBadRequest})
-			return
-		}
-		if subject.SessionID != "" {
-			live, serr := store.TokenSessionLive(ctx, s.db, subject.SessionID, subject.GrantID)
-			if serr != nil || !live {
-				writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-					Description: "the session behind the subject token has ended",
-					Status:      http.StatusBadRequest})
-				return
-			}
-		}
-		if live, lerr := store.TokenHolderLive(ctx, s.db, subject.ClientID, subject.Subject); lerr != nil || !live {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the client or subject of the subject token is no longer active",
-				Status:      http.StatusBadRequest})
+		if terr := s.exchangeRefusal(ctx, subject, "subject"); terr != nil {
+			writeTokenError(w, terr)
 			return
 		}
 

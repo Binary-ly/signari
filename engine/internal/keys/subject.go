@@ -61,10 +61,12 @@ var ErrNoSubjectKey = errors.New("subject has no key")
 // is a write on a read, and worse, would mint one for a subject who has no
 // sealed data and therefore should have no key at all. Reading a profile must
 // not leave a trace that says data was stored for this person.
-func LoadSubjectKey(ctx context.Context, tx pgx.Tx, subjectID string, root *RootKey) (*SubjectKey, error) {
+func LoadSubjectKey(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, subjectID string, root *RootKey) (*SubjectKey, error) {
 	var wrapped []byte
 	var erased bool
-	err := tx.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT wrapped_dek, erased_at IS NOT NULL
 		FROM core.subject_keys WHERE subject_id = $1::uuid`, subjectID).
 		Scan(&wrapped, &erased)

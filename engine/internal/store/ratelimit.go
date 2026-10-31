@@ -200,6 +200,36 @@ func CountRate(ctx context.Context, q interface {
 	return n, nil
 }
 
+// RateWindow names one counter.
+type RateWindow struct {
+	Key    string
+	Window time.Duration
+}
+
+// CountRates is CountRate for several counters, in the order given, in one
+// statement. A client authenticates under two, and on every request it makes.
+func CountRates(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, windows ...RateWindow) ([]int, error) {
+	keys, seconds := make([]string, len(windows)), make([]float64, len(windows))
+	for i, w := range windows {
+		if w.Window <= 0 || w.Window > MaxRateWindow {
+			return nil, fmt.Errorf("no usable window given for %q (%s; at most %s)", w.Key, w.Window, MaxRateWindow)
+		}
+		keys[i], seconds[i] = w.Key, w.Window.Seconds()
+	}
+	rows, err := q.Query(ctx, `
+		SELECT COALESCE(r.count, 0)
+		  FROM unnest($1::text[], $2::float8[]) WITH ORDINALITY AS v(key, seconds, i)
+		  LEFT JOIN core.rate_limits r ON r.bucket_key = v.key
+		   AND r.window_start = to_timestamp(floor(extract(epoch FROM now()) / v.seconds) * v.seconds)
+		 ORDER BY v.i`, keys, seconds)
+	if err != nil {
+		return nil, fmt.Errorf("reading the counters: %w", err)
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int])
+}
+
 // ClearRate forgets a counter, for a caller that has a reason to.
 //
 // A successful sign-in clears the adaptive CAPTCHA pressure for that address:

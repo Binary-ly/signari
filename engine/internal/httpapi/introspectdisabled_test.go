@@ -141,14 +141,15 @@ func TestASessionlessTokenEndsWithItsPersonAndUserinfoWithItsClient(t *testing.T
 
 // Every place that accepts an access token reads its holder. Found by the
 // direction the failure travels: a new acceptance site is a new call to
-// tokens.VerifyAccessTokenAny, so each call's claims variable must reach a
-// store.TokenHolderLive call as `<claims>.ClientID, <claims>.Subject` in the
-// same function. The revocation endpoint is the one exemption: it ends the
-// token rather than honouring it.
+// tokens.VerifyAccessTokenAny, so each call's claims variable must reach
+// store.TokenStandingOf, or a helper that asks it, in the same function. The
+// revocation endpoint is the one exemption: it ends the token rather than
+// honouring it.
 func TestEveryPlaceThatAcceptsAnAccessTokenReadsItsHolder(t *testing.T) {
 	exempt := map[string]string{
 		"handleRevoke":      "revocation ends the token; it does not act on its authority",
 		"verifyPresentedIn": "the one way a token is read, and every caller is one of the places checked here",
+		"verifyAccepted":    "the same, naming the issuers for a caller checked here",
 	}
 	var files []string
 	for _, root := range []string{"..", "../../cmd"} {
@@ -185,17 +186,24 @@ func TestEveryPlaceThatAcceptsAnAccessTokenReadsItsHolder(t *testing.T) {
 				switch n := n.(type) {
 				case *ast.AssignStmt:
 					if len(n.Rhs) == 1 && (isCall(n.Rhs[0], "tokens", "VerifyAccessTokenAny") ||
-						isCall(n.Rhs[0], "s", "verifyPresented") || isCall(n.Rhs[0], "s", "verifyPresentedIn")) {
+						isCall(n.Rhs[0], "s", "verifyPresented") || isCall(n.Rhs[0], "s", "verifyPresentedIn") ||
+						isCall(n.Rhs[0], "s", "verifyAccepted")) {
 						if id, ok := n.Lhs[0].(*ast.Ident); ok {
 							verified = append(verified, id.Name)
 						}
 					}
 				case *ast.CallExpr:
-					if isCall(n, "store", "TokenHolderLive") && len(n.Args) == 4 &&
-						isField(n.Args[2], "ClientID") == isField(n.Args[3], "Subject") {
-						if v := isField(n.Args[2], "ClientID"); v != "" {
-							checked[v] = true
-						}
+					// The token is the argument after the context, or after the
+					// database for the store's own.
+					var asked ast.Expr
+					switch {
+					case isCall(n, "store", "TokenStandingOf") && len(n.Args) == 3:
+						asked = n.Args[2]
+					case (isCall(n, "s", "standing") || isCall(n, "s", "exchangeRefusal")) && len(n.Args) == 3:
+						asked = n.Args[1]
+					}
+					if id, ok := asked.(*ast.Ident); ok {
+						checked[id.Name] = true
 					}
 				}
 				return true
@@ -206,10 +214,9 @@ func TestEveryPlaceThatAcceptsAnAccessTokenReadsItsHolder(t *testing.T) {
 					continue
 				}
 				if !checked[v] {
-					t.Errorf("%s: %s accepts an access token as %q and never passes %s.ClientID "+
-						"and %s.Subject to store.TokenHolderLive, so a disabled client's or a "+
-						"deactivated person's token is honoured there until it expires",
-						p, fn.Name.Name, v, v, v)
+					t.Errorf("%s: %s accepts an access token as %q and never asks store.TokenStandingOf "+
+						"about it, so a disabled client's or a deactivated person's token is honoured "+
+						"there until it expires", p, fn.Name.Name, v)
 				}
 			}
 		}
@@ -231,16 +238,4 @@ func isCall(e ast.Expr, pkg, name string) bool {
 	}
 	x, ok := sel.X.(*ast.Ident)
 	return ok && x.Name == pkg && sel.Sel.Name == name
-}
-
-// isField returns v when e is `v.<field>`, and "" otherwise.
-func isField(e ast.Expr, field string) string {
-	sel, ok := e.(*ast.SelectorExpr)
-	if !ok || sel.Sel.Name != field {
-		return ""
-	}
-	if x, ok := sel.X.(*ast.Ident); ok {
-		return x.Name
-	}
-	return ""
 }

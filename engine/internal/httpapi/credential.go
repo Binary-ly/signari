@@ -146,29 +146,9 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	// Revoked and ended are read now, as userinfo reads them (ADR-007). This
 	// endpoint checked neither, so a token its client had revoked went on
 	// minting credentials until it expired.
-	if revoked, rerr := store.GrantRevoked(ctx, s.db, claims.GrantID); rerr != nil || revoked {
+	if ended := endedDescription(s.standing(ctx, claims, "the credential endpoint")); ended != "" {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
-			`error_description="The authorization behind this token has been revoked"`)
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	if revoked, rerr := store.JTIRevoked(ctx, s.db, claims.JTI); rerr != nil || revoked {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
-			`error_description="The access token has been revoked"`)
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	if claims.SessionID != "" {
-		if live, lerr := store.TokenSessionLive(ctx, s.db, claims.SessionID, claims.GrantID); lerr != nil || !live {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
-				`error_description="The session has ended"`)
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-	}
-	if live, lerr := store.TokenHolderLive(ctx, s.db, claims.ClientID, claims.Subject); lerr != nil || !live {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
-			`error_description="The client or subject of this token is no longer active"`)
+			`error_description="`+ended+`"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

@@ -151,19 +151,8 @@ func (s *Server) proxyClaimsFromToken(r *http.Request, raw string) (proxyClaims,
 	if claims.Cnf != nil {
 		return proxyClaims{}, "a sender-constrained access token cannot be presented through a proxy"
 	}
-	if revoked, err := store.GrantRevoked(ctx, s.db, claims.GrantID); err != nil || revoked {
-		return proxyClaims{}, "the authorization behind this access token has been revoked"
-	}
-	if revoked, err := store.JTIRevoked(ctx, s.db, claims.JTI); err != nil || revoked {
-		return proxyClaims{}, "the access token has been revoked"
-	}
-	if claims.SessionID != "" {
-		if live, err := store.TokenSessionLive(ctx, s.db, claims.SessionID, claims.GrantID); err != nil || !live {
-			return proxyClaims{}, "the session behind this access token has ended"
-		}
-	}
-	if live, err := store.TokenHolderLive(ctx, s.db, claims.ClientID, claims.Subject); err != nil || !live {
-		return proxyClaims{}, "the client or subject of this access token is no longer active"
+	if ended := endedDescription(s.standing(ctx, claims, "the proxy")); ended != "" {
+		return proxyClaims{}, ended
 	}
 	c, err := s.lookupClient(ctx, claims.ClientID)
 	if err != nil || c == nil {

@@ -170,6 +170,14 @@ func TestOnlyATokenForTheAdminAPIFromThisIssuerIsAccepted(t *testing.T) {
 	if rec := call(t, a.s, http.MethodGet, "/admin/clients?limit=1", a.sign(t, revoked), nil); rec.Code != http.StatusUnauthorized {
 		t.Errorf("a revoked token answered %d", rec.Code)
 	}
+
+	// Its application taken out of service: the token is sound, and its holder is not.
+	if _, err := a.s.db.Exec(context.Background(), `UPDATE core.clients SET enabled = false WHERE client_id = $1`, a.client); err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(t, a.s, http.MethodGet, "/admin/clients?limit=1", a.sign(t, a.claims(a.client, "")), nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a disabled application's token answered %d", rec.Code)
+	}
 }
 
 // With several instances served (6.12), a token is verified by the instance

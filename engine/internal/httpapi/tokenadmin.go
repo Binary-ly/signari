@@ -348,7 +348,7 @@ func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 // introspectAccessToken returns nil when raw is not one of our access tokens, so
 // the caller can try it as a refresh token.
 func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, raw string) *introspectionResponse {
-	claims, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), raw)
+	claims, err := s.verifyAccepted(ctx, raw)
 	if err != nil {
 		return nil
 	}
@@ -372,47 +372,9 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 	if time.Now().After(time.Unix(claims.Expiry, 0)) {
 		return inactive
 	}
-	// RFC 7009 §2.1's cascade, checked before the per-jti denylist: revoking the
-	// refresh token invalidates every access token from the same grant, and a
-	// client revokes the refresh token far more often than each access token.
-	if grantRevoked, gerr := store.GrantRevoked(ctx, s.db, claims.GrantID); gerr != nil || grantRevoked {
-		if gerr != nil {
-			s.log.Error("introspection grant revocation check failed", "err", gerr)
-		}
-		return inactive
-	}
-	revoked, err := store.JTIRevoked(ctx, s.db, claims.JTI)
-	if err != nil {
-		// JTIRevoked fails closed and says why. Report inactive rather than
-		// erroring: a resource server that cannot get an answer must not treat
-		// the token as good.
-		s.log.Error("introspection revocation check failed", "err", err)
-		return inactive
-	}
-	if revoked {
-		return inactive
-	}
-
-	// A token minted from a session is only as live as that session, or the
-	// offline grant it came from. A token from client_credentials has no session
-	// and is not subject to this.
-	if claims.SessionID != "" {
-		live, err := store.TokenSessionLive(ctx, s.db, claims.SessionID, claims.GrantID)
-		if err != nil {
-			s.log.Error("introspection session check failed", "err", err)
-			return inactive
-		}
-		if !live {
-			return inactive
-		}
-	}
-
-	// The client it was issued to and the subject it names, read now (ADR-007):
-	// a token with no session or grant behind it has nothing else to end it.
-	if live, err := store.TokenHolderLive(ctx, s.db, claims.ClientID, claims.Subject); err != nil || !live {
-		if err != nil {
-			s.log.Error("introspection holder check failed", "err", err)
-		}
+	// Inactive rather than an error when it cannot be read: a resource server that
+	// cannot get an answer must not treat the token as good.
+	if !s.standing(ctx, claims, "introspection").Live() {
 		return inactive
 	}
 

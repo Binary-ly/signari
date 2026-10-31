@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -25,33 +24,6 @@ func RevokeJTI(ctx context.Context, tx pgx.Tx, jti, clientID string, expiresAt t
 		return fmt.Errorf("revoking jti: %w", err)
 	}
 	return nil
-}
-
-// JTIRevoked reports whether an access token has been revoked.
-//
-// On a database error this returns TRUE. That is deliberate and it is the whole
-// point of the function: the caller is asking "may I honour this credential",
-// and the safe answer when we cannot tell is no. Returning false on error would
-// turn a database blip into a window where revoked tokens are accepted -- a
-// fail-open on exactly the check that exists to fail closed.
-func JTIRevoked(ctx context.Context, db *pgxpool.Pool, jti string) (bool, error) {
-	if jti == "" {
-		// A token with no jti cannot be individually revoked. Treat it as
-		// revoked rather than guess: every token we mint has one, so an absent
-		// jti means the token did not come from us in the shape we expect.
-		return true, fmt.Errorf("access token has no jti")
-	}
-	var exists bool
-	err := db.QueryRow(ctx,
-		`SELECT true FROM core.revoked_jtis WHERE jti = $1`, jti).Scan(&exists)
-	switch {
-	case err == pgx.ErrNoRows:
-		return false, nil
-	case err != nil:
-		return true, fmt.Errorf("checking revocation: %w", err)
-	default:
-		return exists, nil
-	}
 }
 
 // PurgeExpiredRevocations drops denylist rows for tokens that have expired on
@@ -119,15 +91,7 @@ func TokenSessionLive(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, sid, grantID string) (bool, error) {
 	var live bool
-	err := q.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM core.sessions s JOIN core.users u ON u.id = s.user_id
-		                WHERE s.sid = $1 AND s.revoked_at IS NULL AND s.not_after > now()
-		                  AND u.status = 'active' AND `+OrgInService("u.org_id")+`)
-		    OR EXISTS (SELECT 1 FROM core.refresh_token_families f JOIN core.users u ON u.id = f.user_id
-		                WHERE f.id = NULLIF($2, '')::uuid AND f.sid = $1 AND f.revoked_at IS NULL
-		                  AND f.offline_not_after > now() AND u.status = 'active'
-		                  AND `+OrgInService("u.org_id")+`)`,
-		sid, grantID).Scan(&live)
+	err := q.QueryRow(ctx, `SELECT `+tokenSessionLive("$1", "$2"), sid, grantID).Scan(&live)
 	if err != nil {
 		return false, fmt.Errorf("checking a token's session: %w", err)
 	}
@@ -194,79 +158,6 @@ func SessionLive(ctx context.Context, db *pgxpool.Pool, sid string) (bool, error
 	default:
 		return live, nil
 	}
-}
-
-// GrantRevoked reports whether the refresh token family an access token was
-// minted from has been revoked.
-//
-// RFC 7009 §2.1's cascade: revoking a refresh token SHOULD invalidate "all
-// access tokens based on the same authorization grant". Revocation is otherwise
-// recorded per-jti, and nothing links a minted access token back to its grant,
-// so the cascade had nowhere to land -- the access tokens simply ran to
-// expiry.
-//
-// Fails CLOSED on a database error, like JTIRevoked beside it: a checkpoint that
-// cannot determine whether a grant is live must not answer that it is.
-func GrantRevoked(ctx context.Context, db *pgxpool.Pool, grantID string) (bool, error) {
-	if grantID == "" {
-		// No grant to check. Tokens from an authorization with no refresh token
-		// carry no gid, and there is no refresh token whose revocation could
-		// cascade to them.
-		return false, nil
-	}
-	var revoked bool
-	err := db.QueryRow(ctx,
-		`SELECT revoked_at IS NOT NULL FROM core.refresh_token_families WHERE id = $1::uuid`,
-		grantID).Scan(&revoked)
-	switch {
-	case err == pgx.ErrNoRows:
-		// The family is gone. Treat as revoked: a token naming a grant this
-		// server cannot find is not one to honour.
-		return true, nil
-	case err != nil:
-		return true, fmt.Errorf("checking grant revocation: %w", err)
-	}
-	return revoked, nil
-}
-
-// TokenHolderLive reports whether the parties an access token names are still
-// in good standing: the client it was issued to exists and is enabled, and its
-// subject is an active person or, for a token a client holds for itself, an
-// enabled client.
-//
-// ADR-007 lists client disabled and user deactivated among the decisions read
-// on the request path. The other checks follow the token's grant, jti and
-// session, and a token with none of those behind it -- client credentials,
-// jwt-bearer, most exchanges -- was good until it expired after its client was
-// disabled or deleted, or its person deactivated or deleted.
-//
-// A subject shaped like a UUID that names a person is held to that person, so a
-// client registered under somebody's id cannot stand in for them. The client's
-// organisation must be in service too (6.09), which is the subject's as well.
-// Fails CLOSED.
-func TokenHolderLive(ctx context.Context, db interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, clientID, subject string) (bool, error) {
-	var person *string
-	if id, err := uuid.Parse(subject); err == nil {
-		s := id.String()
-		person = &s
-	}
-	var live bool
-	err := db.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM core.clients c WHERE c.client_id = $1 AND c.enabled
-		                  AND `+OrgInService("c.org_id")+`)
-		   AND CASE
-		         WHEN EXISTS (SELECT 1 FROM core.users WHERE id = $2::uuid)
-		           THEN EXISTS (SELECT 1 FROM core.users u WHERE u.id = $2::uuid AND u.status = 'active'
-		                           AND `+OrgInService("u.org_id")+`)
-		         ELSE EXISTS (SELECT 1 FROM core.clients WHERE client_id = $3 AND enabled)
-		       END`,
-		clientID, person, subject).Scan(&live)
-	if err != nil {
-		return false, fmt.Errorf("checking the token's client and subject: %w", err)
-	}
-	return live, nil
 }
 
 // RefreshTokenHolder returns the organisation and person a refresh token's

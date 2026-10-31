@@ -43,7 +43,7 @@ func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, wh
 		return
 	}
 
-	claims, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), raw)
+	claims, err := s.verifyAccepted(ctx, raw)
 	if err != nil {
 		// Logged with the reason, returned without it.
 		s.log.Info("a token was rejected", "where", where, "err", err)
@@ -77,48 +77,11 @@ func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, wh
 
 	// An explicitly revoked token must stop working here immediately. This is the
 	// endpoint where /revoke earns its 200: we are the resource server, so there
-	// is no excuse for honouring a token the client told us to drop.
-	if revoked, err := store.GrantRevoked(ctx, s.db, claims.GrantID); err != nil || revoked {
-		// RFC 7009 §2.1: revoking the refresh token invalidates the access tokens
-		// from the same grant. Checked alongside the per-jti denylist because a
-		// client revokes the refresh token far more often than each access token.
-		if err != nil {
-			s.log.Error("grant revocation check failed", "where", where, "err", err)
-		}
+	// is no excuse for honouring a token the client told us to drop. The session
+	// must still be live, and the client the token was issued to still enabled.
+	if ended := endedDescription(s.standing(ctx, claims, where)); ended != "" {
 		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="signari", error="invalid_token", error_description="The authorization behind this token has been revoked"`)
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	if revoked, err := store.JTIRevoked(ctx, s.db, claims.JTI); err != nil || revoked {
-		if err != nil {
-			s.log.Error("revocation check failed", "where", where, "err", err)
-		}
-		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="signari", error="invalid_token", error_description="The access token has been revoked"`)
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-
-	// The session must still be live. See (1) above.
-	if claims.SessionID != "" {
-		live, err := store.TokenSessionLive(ctx, s.db, claims.SessionID, claims.GrantID)
-		if err != nil || !live {
-			w.Header().Set("WWW-Authenticate",
-				`Bearer realm="signari", error="invalid_token", error_description="The session has ended"`)
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-	}
-
-	// The client the token was issued to must still be enabled (ADR-007). The
-	// person is checked below, where their claims are read.
-	if live, err := store.TokenHolderLive(ctx, s.db, claims.ClientID, claims.Subject); err != nil || !live {
-		if err != nil {
-			s.log.Error("holder check failed", "where", where, "err", err)
-		}
-		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="signari", error="invalid_token", error_description="The client or subject of this token is no longer active"`)
+			`Bearer realm="signari", error="invalid_token", error_description="`+ended+`"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -156,13 +119,8 @@ func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *
 
 	// Claims are released strictly by granted scope. `profile` and `email` are
 	// separate grants and must not leak into each other.
-	var email, username, name, given, family string
-	var verified *bool
-	if err := s.db.QueryRow(ctx,
-		`SELECT COALESCE(email,''), COALESCE(username,''), email_verified_at IS NOT NULL,
-		        COALESCE(display_name,''), COALESCE(given_name,''), COALESCE(surname,'')
-		 FROM core.users WHERE id = $1 AND status = 'active'`,
-		claims.Subject).Scan(&email, &username, &verified, &name, &given, &family); err != nil {
+	person, err := store.UserinfoPersonOf(ctx, s.db, claims.Subject, claims.ClientID)
+	if err != nil {
 		// A token for a user who no longer exists or is deactivated.
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", error_description="The subject is not active"`)
@@ -170,13 +128,13 @@ func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *
 		return
 	}
 
-	if tokens.HasScope(claims.Scope, "email") && email != "" {
-		out["email"] = email
-		out["email_verified"] = verified != nil && *verified
+	if tokens.HasScope(claims.Scope, "email") && person.Email != "" {
+		out["email"] = person.Email
+		out["email_verified"] = person.EmailVerified
 	}
 	if tokens.HasScope(claims.Scope, "profile") {
-		for claim, v := range map[string]string{"preferred_username": username,
-			"name": name, "given_name": given, "family_name": family} {
+		for claim, v := range map[string]string{"preferred_username": person.Username,
+			"name": person.Name, "given_name": person.Given, "family_name": person.Family} {
 			if v != "" {
 				out[claim] = v
 			}
@@ -196,17 +154,12 @@ func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *
 
 	// Roles in the application, read fresh for the same reason, under the claim the
 	// client named. A failure to read them is logged and leaves them out, as above.
-	var roleOrg, rolesClaim string
-	if err := s.db.QueryRow(ctx, `
-		SELECT u.org_id::text, COALESCE(c.roles_claim, '')
-		  FROM core.users u JOIN core.clients c ON c.org_id = u.org_id
-		 WHERE u.id = $1::uuid AND c.client_id = $2`, claims.Subject, claims.ClientID).
-		Scan(&roleOrg, &rolesClaim); err == nil && rolesClaim != "" {
-		roles, rerr := store.ApplicationRoles(ctx, s.db, roleOrg, claims.Subject, claims.ClientID)
+	if person.ClientOfOrg && person.RolesClaim != "" {
+		roles, rerr := store.ApplicationRoles(ctx, s.db, person.OrgID, claims.Subject, claims.ClientID)
 		if rerr != nil {
 			s.log.Error("loading roles for userinfo", "err", rerr)
-		} else if _, taken := out[rolesClaim]; !taken && len(roles) > 0 {
-			out[rolesClaim] = roles
+		} else if _, taken := out[person.RolesClaim]; !taken && len(roles) > 0 {
+			out[person.RolesClaim] = roles
 		}
 	}
 
@@ -218,34 +171,26 @@ func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *
 	// loop refuses to overwrite anything already released above. Between them a
 	// mapper can only ADD, which means no configuration change can alter the
 	// meaning of a claim a relying party already trusts.
-	if s.root != nil {
-		if tx, err := s.db.Begin(ctx); err == nil {
-			var orgID string
-			if err := tx.QueryRow(ctx,
-				`SELECT org_id::text FROM core.users WHERE id = $1::uuid`,
-				claims.Subject).Scan(&orgID); err == nil {
-				mapped, merr := store.MappedClaims(ctx, tx, claims.Subject, orgID,
-					claims.ClientID, store.ClaimInUserInfo, claims.Scope, s.root)
-				if merr != nil {
-					s.log.Error("resolving mapped claims", "err", merr)
-				}
-				for name, value := range mapped {
-					if _, taken := out[name]; !taken {
-						out[name] = value
-					}
-				}
+	if s.root != nil && person.HasMappers {
+		mapped, merr := store.MappedClaims(ctx, s.db, claims.Subject, person.OrgID,
+			claims.ClientID, store.ClaimInUserInfo, claims.Scope, s.root)
+		if merr != nil {
+			s.log.Error("resolving mapped claims", "err", merr)
+		}
+		for name, value := range mapped {
+			if _, taken := out[name]; !taken {
+				out[name] = value
 			}
-			_ = tx.Rollback(ctx)
 		}
 	}
 
 	// The operator's provider, last, so what it adds cannot take a name already
 	// released, and a refusal is a refusal of the whole answer.
-	if roleOrg != "" {
-		hook := s.askHook(ctx, s.db, roleOrg, provider.HookUserinfo, store.UserinfoHookRequest{
-			Subject: claims.Subject, ClientID: claims.ClientID, Scopes: strings.Fields(claims.Scope), OrgID: roleOrg})
+	if person.ClientOfOrg && person.HasProvider {
+		hook := s.askHook(ctx, s.db, person.OrgID, provider.HookUserinfo, store.UserinfoHookRequest{
+			Subject: claims.Subject, ClientID: claims.ClientID, Scopes: strings.Fields(claims.Scope), OrgID: person.OrgID})
 		if hook.Vetoed {
-			s.recordHookRefusal(ctx, provider.HookUserinfo, roleOrg, claims.Subject, claims.ClientID, hook.Reason)
+			s.recordHookRefusal(ctx, provider.HookUserinfo, person.OrgID, claims.Subject, claims.ClientID, hook.Reason)
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
